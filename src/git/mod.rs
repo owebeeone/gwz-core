@@ -257,7 +257,14 @@ impl GitBackend for Git2Backend {
         let repo = open_repo(path)?;
         match repo.revparse_single(ref_spec) {
             Ok(object) => Ok(Some(object.id().to_string())),
-            Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(err)
+                if matches!(
+                    err.code(),
+                    git2::ErrorCode::NotFound | git2::ErrorCode::UnbornBranch
+                ) =>
+            {
+                Ok(None)
+            }
             Err(err) => Err(git_error(err)),
         }
     }
@@ -281,7 +288,13 @@ fn find_remote<'repo>(
 }
 
 fn repo_head(repo: &git2::Repository) -> ModelResult<GitHeadState> {
-    let head = repo.head().map_err(git_error)?;
+    let head = match repo.head() {
+        Ok(head) => head,
+        Err(err) if err.code() == git2::ErrorCode::UnbornBranch => {
+            return unborn_head(repo);
+        }
+        Err(err) => return Err(git_error(err)),
+    };
     let branch = if head.is_branch() {
         Some(head.shorthand().map_err(git_error)?.to_owned())
     } else {
@@ -291,6 +304,19 @@ fn repo_head(repo: &git2::Repository) -> ModelResult<GitHeadState> {
         branch,
         commit: head.target().map(|target| target.to_string()),
         is_detached: !head.is_branch(),
+    })
+}
+
+fn unborn_head(repo: &git2::Repository) -> ModelResult<GitHeadState> {
+    let head = fs::read_to_string(repo.path().join("HEAD")).map_err(io_error)?;
+    let branch = head
+        .trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(ToOwned::to_owned);
+    Ok(GitHeadState {
+        branch,
+        commit: None,
+        is_detached: false,
     })
 }
 
@@ -364,6 +390,21 @@ mod tests {
         assert!(backend.is_repository(&repo_path).unwrap());
         assert!(!backend.is_repository(&temp.path().join("missing")).unwrap());
         assert!(!git2::Repository::open(&repo_path).unwrap().is_bare());
+    }
+
+    #[test]
+    fn empty_repository_head_reports_unborn_branch_without_commit() {
+        let temp = TempDir::new("empty-head");
+        let backend = Git2Backend::new();
+        let repo_path = temp.path().join("repo");
+        backend.create_repo(&repo_path).unwrap();
+
+        let head = backend.head(&repo_path).unwrap();
+
+        assert_eq!(head.branch, Some("main".to_owned()));
+        assert_eq!(head.commit, None);
+        assert!(!head.is_detached);
+        assert_eq!(backend.read_ref(&repo_path, "HEAD").unwrap(), None);
     }
 
     #[test]

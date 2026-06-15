@@ -10,6 +10,7 @@ pub mod protocol;
 pub mod runtime;
 pub mod status;
 pub mod workspace;
+pub mod workspace_ops;
 
 pub use cbor::{Cbor, decode, encode};
 pub use protocol::generated::*;
