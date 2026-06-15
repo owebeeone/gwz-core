@@ -21,6 +21,7 @@ pub trait GitBackend {
     fn add_remote(&self, path: &Path, name: &str, url: &str) -> ModelResult<GitRemoteResult>;
     fn push(&self, path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult>;
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>>;
+    fn is_ancestor(&self, path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool>;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -267,6 +268,14 @@ impl GitBackend for Git2Backend {
             }
             Err(err) => Err(git_error(err)),
         }
+    }
+
+    fn is_ancestor(&self, path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool> {
+        let repo = open_repo(path)?;
+        let ancestor = git2::Oid::from_str(ancestor).map_err(git_error)?;
+        let descendant = git2::Oid::from_str(descendant).map_err(git_error)?;
+        repo.graph_descendant_of(descendant, ancestor)
+            .map_err(git_error)
     }
 }
 
@@ -534,6 +543,21 @@ mod tests {
         let head = backend.head(&clone_path).unwrap();
         assert!(head.is_detached);
         assert_eq!(head.commit, Some(first));
+    }
+
+    #[test]
+    fn reports_commit_ancestry_without_moving_head() {
+        let temp = TempDir::new("ancestry");
+        let backend = Git2Backend::new();
+        let repo_path = temp.path().join("repo");
+        backend.create_repo(&repo_path).unwrap();
+        let first = commit_file(&repo_path, "README.md", "one", "initial", &[]).unwrap();
+        let first_oid = git2::Oid::from_str(&first).unwrap();
+        let second = commit_file(&repo_path, "README.md", "two", "second", &[first_oid]).unwrap();
+
+        assert!(backend.is_ancestor(&repo_path, &first, &second).unwrap());
+        assert!(!backend.is_ancestor(&repo_path, &second, &first).unwrap());
+        assert_eq!(backend.head(&repo_path).unwrap().commit, Some(second));
     }
 
     fn commit_file(
