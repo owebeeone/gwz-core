@@ -4,6 +4,7 @@ pub mod cbor;
 
 pub mod artifact;
 pub mod model;
+pub mod operation;
 pub mod protocol;
 pub mod runtime;
 pub mod workspace;
