@@ -2,6 +2,7 @@
 #[path = "cbor.rs"]
 pub mod cbor;
 
+pub mod artifact;
 pub mod model;
 pub mod protocol;
 pub mod runtime;
