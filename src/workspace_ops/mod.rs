@@ -391,6 +391,89 @@ pub fn load_tag_target(
     Ok(artifact::read_tag(root, tag_name)?.members)
 }
 
+pub fn handle_materialize<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::MaterializeRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::MaterializeResponse>
+where
+    B: GitBackend,
+{
+    let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
+    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let manifest = artifact::read_manifest(&root)?;
+    assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
+    let (target_members, rewrite_lock) = materialize_target_members(&root, &request.target)?;
+    let target_lock = LockArtifact {
+        schema: artifact::LOCK_SCHEMA.to_owned(),
+        workspace_id: manifest.workspace.id.clone(),
+        manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
+        created_at: now_marker(),
+        members: target_members,
+    };
+    let selected =
+        resolve_locked_selection(&manifest, &target_lock, request.meta.selection.as_ref())?;
+    let dry_run = request.meta.dry_run.unwrap_or(false);
+    let destructive_allowed = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.destructive)
+        == Some(crate::DestructiveBehavior::Allow);
+
+    let plans = materialize_preflight(
+        backend,
+        &root,
+        &manifest,
+        &target_lock,
+        &selected,
+        destructive_allowed,
+    )?;
+    if dry_run {
+        return Ok(crate::MaterializeResponse {
+            response: response_envelope(
+                context,
+                crate::AggregateStatus::Accepted,
+                plans.into_iter().map(|plan| plan.response).collect(),
+            ),
+        });
+    }
+
+    let mut responses = Vec::with_capacity(plans.len());
+    for plan in plans {
+        if plan.clone_url.is_some() {
+            backend.clone_repo(
+                plan.clone_url.as_deref().unwrap(),
+                &root.join(&plan.state.path),
+            )?;
+        }
+        if let Some(commit) = &plan.state.commit {
+            backend.checkout_commit(&root.join(&plan.state.path), commit)?;
+        }
+        responses.push(materialized_response(
+            &manifest,
+            &plan.member_id,
+            &plan.state,
+        ));
+    }
+
+    if rewrite_lock {
+        let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+        for member_id in &selected {
+            if let Some(state) = target_lock.members.get(member_id) {
+                lock.members.insert(member_id.clone(), state.clone());
+            }
+        }
+        lock.created_at = now_marker();
+        artifact::write_lock(&root, &lock)?;
+    }
+
+    Ok(crate::MaterializeResponse {
+        response: response_envelope(context, crate::AggregateStatus::Ok, responses),
+    })
+}
+
 fn resolve_workspace_root(
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
@@ -685,6 +768,165 @@ fn read_lock_or_empty(root: &Path, workspace_id: &str) -> ModelResult<LockArtifa
             created_at: now_marker(),
             members: BTreeMap::new(),
         })
+    }
+}
+
+fn materialize_target_members(
+    root: &Path,
+    target: &crate::MaterializeTarget,
+) -> ModelResult<(BTreeMap<String, ResolvedMemberArtifact>, bool)> {
+    match target.kind {
+        crate::MaterializeTargetKind::Lock => {
+            if !root.join(artifact::LOCK_PATH).exists() {
+                return Err(ModelError::new(ErrorCode::LockNotFound, "lock not found"));
+            }
+            Ok((artifact::read_lock(root)?.members, false))
+        }
+        crate::MaterializeTargetKind::Snapshot => {
+            let name = target
+                .name
+                .as_ref()
+                .ok_or_else(|| invalid("snapshot target requires a name"))?;
+            if !root
+                .join(artifact::SNAPSHOT_DIR)
+                .join(format!("{name}.yaml"))
+                .exists()
+            {
+                return Err(ModelError::new(
+                    ErrorCode::SnapshotNotFound,
+                    "snapshot not found",
+                ));
+            }
+            Ok((load_snapshot_target(root, name)?, true))
+        }
+        crate::MaterializeTargetKind::Tag => {
+            let name = target
+                .name
+                .as_ref()
+                .ok_or_else(|| invalid("tag target requires a name"))?;
+            if !root
+                .join(artifact::TAG_DIR)
+                .join(format!("{name}.yml"))
+                .exists()
+            {
+                return Err(ModelError::new(ErrorCode::TagNotFound, "tag not found"));
+            }
+            Ok((load_tag_target(root, name)?, true))
+        }
+        crate::MaterializeTargetKind::Commit | crate::MaterializeTargetKind::Head => {
+            Err(ModelError::new(
+                ErrorCode::UnsupportedOperation,
+                "target is not supported here",
+            ))
+        }
+    }
+}
+
+struct MaterializePlan {
+    member_id: String,
+    state: ResolvedMemberArtifact,
+    clone_url: Option<String>,
+    response: crate::MemberResponse,
+}
+
+fn materialize_preflight<B>(
+    backend: &B,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    target_lock: &LockArtifact,
+    selected: &[String],
+    destructive_allowed: bool,
+) -> ModelResult<Vec<MaterializePlan>>
+where
+    B: GitBackend,
+{
+    let mut plans = Vec::with_capacity(selected.len());
+    for member_id in selected {
+        let member = manifest
+            .members
+            .iter()
+            .find(|member| &member.id == member_id)
+            .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
+        let state = target_lock.members.get(member_id).cloned().ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::LockNotFound,
+                format!("target state missing for member '{member_id}'"),
+            )
+        })?;
+        let member_root = root.join(&state.path);
+        let is_repo = member_root.exists() && backend.is_repository(&member_root)?;
+        let clone_url = if is_repo {
+            let status = backend.status(&member_root)?;
+            if status.is_dirty && !destructive_allowed {
+                return Err(ModelError::new(
+                    ErrorCode::DirtyMember,
+                    format!("member '{member_id}' has uncommitted changes"),
+                ));
+            }
+            None
+        } else {
+            Some(first_remote_url(member)?)
+        };
+        let action = if clone_url.is_some() {
+            crate::PlannedAction::Clone
+        } else if state.commit.is_some() {
+            crate::PlannedAction::Checkout
+        } else {
+            crate::PlannedAction::Noop
+        };
+        plans.push(MaterializePlan {
+            member_id: member_id.clone(),
+            state: state.clone(),
+            clone_url,
+            response: crate::MemberResponse {
+                member_id: member_id.clone(),
+                member_path: state.path.clone(),
+                source_kind: crate::SourceKind::Git,
+                status: crate::MemberStatus::Planned,
+                error: None,
+                planned: Some(crate::PlannedChange {
+                    action,
+                    from_ref: None,
+                    to_ref: state.commit.clone(),
+                    message: None,
+                }),
+                state: Some(protocol_state(member, &state)),
+                git_status: None,
+                lock_match: Some(crate::LockMatch::Differs),
+            },
+        });
+    }
+    Ok(plans)
+}
+
+fn first_remote_url(member: &ManifestMember) -> ModelResult<String> {
+    member
+        .remotes
+        .iter()
+        .find(|remote| remote.fetch)
+        .map(|remote| remote.url.clone())
+        .ok_or_else(|| ModelError::new(ErrorCode::MissingRemote, "member has no fetch remote"))
+}
+
+fn materialized_response(
+    manifest: &ManifestArtifact,
+    member_id: &str,
+    state: &ResolvedMemberArtifact,
+) -> crate::MemberResponse {
+    let member = manifest
+        .members
+        .iter()
+        .find(|member| member.id == member_id);
+    crate::MemberResponse {
+        member_id: member_id.to_owned(),
+        member_path: state.path.clone(),
+        source_kind: crate::SourceKind::Git,
+        status: crate::MemberStatus::Ok,
+        error: None,
+        planned: None,
+        state: member.map(|member| protocol_state(member, state)),
+        git_status: None,
+        lock_match: Some(crate::LockMatch::Matches),
     }
 }
 
@@ -1111,6 +1353,111 @@ mod tests {
         );
     }
 
+    #[test]
+    fn materialize_lock_clones_missing_member_and_checks_out_recorded_commit() {
+        let temp = TempDir::new("materialize-clone");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let fixture = RemoteFixture::new("clone-source");
+        let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
+        write_materialize_fixture(temp.path(), fixture.remote_url(), &commit);
+
+        let response = handle_materialize(
+            &backend,
+            temp.path(),
+            materialize_lock_request(false),
+            "op_materialize",
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.response.members.single().status,
+            crate::MemberStatus::Ok
+        );
+        assert_eq!(
+            backend.head(&temp.path().join("repos/app")).unwrap().commit,
+            Some(commit)
+        );
+    }
+
+    #[test]
+    fn materialize_lock_blocks_dirty_member_by_default() {
+        let temp = TempDir::new("materialize-dirty");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let fixture = RemoteFixture::new("dirty-source");
+        let first = fixture.commit_and_push("README.md", "one", "initial", &backend);
+        let second = fixture.commit_and_push("README.md", "two", "second", &backend);
+        write_materialize_fixture(temp.path(), fixture.remote_url(), &first);
+        backend
+            .clone_repo(fixture.remote_url(), &temp.path().join("repos/app"))
+            .unwrap();
+        fs::write(temp.path().join("repos/app/README.md"), "dirty").unwrap();
+
+        let err = handle_materialize(
+            &backend,
+            temp.path(),
+            materialize_lock_request(false),
+            "op_materialize",
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::DirtyMember);
+        assert_eq!(
+            backend.head(&temp.path().join("repos/app")).unwrap().commit,
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn materialize_lock_moves_clean_member_and_dry_run_does_not_mutate() {
+        let temp = TempDir::new("materialize-clean");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let fixture = RemoteFixture::new("clean-source");
+        let first = fixture.commit_and_push("README.md", "one", "initial", &backend);
+        let second = fixture.commit_and_push("README.md", "two", "second", &backend);
+        write_materialize_fixture(temp.path(), fixture.remote_url(), &first);
+        backend
+            .clone_repo(fixture.remote_url(), &temp.path().join("repos/app"))
+            .unwrap();
+
+        let dry_run = handle_materialize(
+            &backend,
+            temp.path(),
+            materialize_lock_request(true),
+            "op_materialize",
+        )
+        .unwrap();
+        assert_eq!(
+            dry_run
+                .response
+                .members
+                .single()
+                .planned
+                .as_ref()
+                .unwrap()
+                .action,
+            crate::PlannedAction::Checkout
+        );
+        assert_eq!(
+            backend.head(&temp.path().join("repos/app")).unwrap().commit,
+            Some(second)
+        );
+
+        handle_materialize(
+            &backend,
+            temp.path(),
+            materialize_lock_request(false),
+            "op_materialize",
+        )
+        .unwrap();
+        assert_eq!(
+            backend.head(&temp.path().join("repos/app")).unwrap().commit,
+            Some(first)
+        );
+    }
+
     fn create_workspace_request(root: &Path) -> crate::CreateWorkspaceRequest {
         crate::CreateWorkspaceRequest {
             meta: request_meta(),
@@ -1203,6 +1550,132 @@ mod tests {
                 ..Default::default()
             }),
             ..request_meta_with_workspace()
+        }
+    }
+
+    fn materialize_lock_request(dry_run: bool) -> crate::MaterializeRequest {
+        crate::MaterializeRequest {
+            meta: crate::RequestMeta {
+                dry_run: Some(dry_run),
+                ..request_meta_with_workspace()
+            },
+            target: crate::MaterializeTarget {
+                kind: crate::MaterializeTargetKind::Lock,
+                name: None,
+                commit: None,
+            },
+        }
+    }
+
+    fn write_materialize_fixture(root: &Path, remote_url: &str, commit: &str) {
+        crate::artifact::write_manifest(
+            root,
+            &crate::artifact::ManifestArtifact {
+                schema: crate::artifact::WORKSPACE_SCHEMA.to_owned(),
+                workspace: crate::artifact::WorkspaceHeader {
+                    id: "ws_ops".to_owned(),
+                },
+                members: vec![crate::artifact::ManifestMember {
+                    id: "mem_app".to_owned(),
+                    path: "repos/app".to_owned(),
+                    source_kind: crate::artifact::ArtifactSourceKind::Git,
+                    source_id: "src_app".to_owned(),
+                    active: true,
+                    desired: Some(crate::artifact::DesiredRefArtifact {
+                        branch: Some("main".to_owned()),
+                        ..Default::default()
+                    }),
+                    remotes: vec![crate::artifact::RemoteArtifact {
+                        name: "origin".to_owned(),
+                        url: remote_url.to_owned(),
+                        fetch: true,
+                        push: true,
+                    }],
+                }],
+            },
+        )
+        .unwrap();
+        crate::artifact::write_lock(
+            root,
+            &test_lock("mem_app", "repos/app", Some(commit.to_owned()), false),
+        )
+        .unwrap();
+    }
+
+    fn test_lock(
+        member_id: &str,
+        path: &str,
+        commit: Option<String>,
+        dirty: bool,
+    ) -> crate::artifact::LockArtifact {
+        crate::artifact::LockArtifact {
+            schema: crate::artifact::LOCK_SCHEMA.to_owned(),
+            workspace_id: "ws_ops".to_owned(),
+            manifest_schema: crate::artifact::WORKSPACE_SCHEMA.to_owned(),
+            created_at: "2026-06-15T00:00:00Z".to_owned(),
+            members: std::collections::BTreeMap::from([(
+                member_id.to_owned(),
+                crate::artifact::ResolvedMemberArtifact {
+                    path: path.to_owned(),
+                    source_id: Some("src_app".to_owned()),
+                    source_kind: crate::artifact::ArtifactSourceKind::Git,
+                    commit,
+                    branch: Some("main".to_owned()),
+                    detached: Some(false),
+                    upstream: None,
+                    dirty: Some(dirty),
+                    materialized: Some(true),
+                },
+            )]),
+        }
+    }
+
+    struct RemoteFixture {
+        _temp: TempDir,
+        source: PathBuf,
+        remote: PathBuf,
+    }
+
+    impl RemoteFixture {
+        fn new(prefix: &str) -> Self {
+            let temp = TempDir::new(prefix);
+            let source = temp.path().join("source");
+            let remote = temp.path().join("remote.git");
+            Git2Backend::new().create_repo(&source).unwrap();
+            git2::Repository::init_bare(&remote).unwrap();
+            Git2Backend::new()
+                .add_remote(&source, "origin", remote.to_str().unwrap())
+                .unwrap();
+            Self {
+                _temp: temp,
+                source,
+                remote,
+            }
+        }
+
+        fn remote_url(&self) -> &str {
+            self.remote.to_str().unwrap()
+        }
+
+        fn commit_and_push(
+            &self,
+            relative_path: &str,
+            content: &str,
+            message: &str,
+            backend: &Git2Backend,
+        ) -> String {
+            let parent = backend
+                .head(&self.source)
+                .unwrap()
+                .commit
+                .and_then(|commit| git2::Oid::from_str(&commit).ok());
+            let parents = parent.into_iter().collect::<Vec<_>>();
+            let commit =
+                commit_file(&self.source, relative_path, content, message, &parents).unwrap();
+            backend
+                .push(&self.source, "origin", "refs/heads/main:refs/heads/main")
+                .unwrap();
+            commit
         }
     }
 
