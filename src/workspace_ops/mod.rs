@@ -474,6 +474,38 @@ where
     })
 }
 
+pub fn handle_pull_snapshot<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::PullSnapshotRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::PullSnapshotResponse>
+where
+    B: GitBackend,
+{
+    let context = OperationRequest::PullSnapshot(request.clone()).context(operation_id.into())?;
+    let materialize = crate::MaterializeRequest {
+        meta: request.meta,
+        target: crate::MaterializeTarget {
+            kind: crate::MaterializeTargetKind::Snapshot,
+            name: Some(request.snapshot_id),
+            commit: None,
+        },
+    };
+    let mut response =
+        handle_materialize(backend, start, materialize, context.operation_id.clone())?.response;
+    response.meta = crate::ResponseMeta {
+        request_id: context.request_id,
+        schema_version: context.schema_version,
+        action: context.action.into(),
+        aggregate_status: response.meta.aggregate_status,
+        operation_id: Some(context.operation_id),
+        message: response.meta.message,
+        attribution: context.attribution.as_ref().map(Into::into),
+    };
+    Ok(crate::PullSnapshotResponse { response })
+}
+
 fn resolve_workspace_root(
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
@@ -1458,6 +1490,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn materialize_snapshot_and_tag_rewrite_lock_after_success() {
+        let temp = TempDir::new("materialize-snapshot-tag");
+        let backend = Git2Backend::new();
+        let fixture = materialize_snapshot_fixture(temp.path(), &backend);
+
+        handle_materialize(
+            &backend,
+            temp.path(),
+            materialize_named_request(crate::MaterializeTargetKind::Snapshot, "snap_first"),
+            "op_materialize",
+        )
+        .unwrap();
+        assert_eq!(
+            read_lock(temp.path()).unwrap().members["mem_app"].commit,
+            Some(fixture.first.clone())
+        );
+
+        write_materialize_fixture(temp.path(), fixture.remote_url(), &fixture.second);
+        handle_materialize(
+            &backend,
+            temp.path(),
+            materialize_named_request(crate::MaterializeTargetKind::Tag, "tag_first"),
+            "op_materialize",
+        )
+        .unwrap();
+        assert_eq!(
+            read_lock(temp.path()).unwrap().members["mem_app"].commit,
+            Some(fixture.first)
+        );
+    }
+
+    #[test]
+    fn pull_snapshot_rewrites_lock_after_success() {
+        let temp = TempDir::new("pull-snapshot");
+        let backend = Git2Backend::new();
+        let fixture = materialize_snapshot_fixture(temp.path(), &backend);
+
+        handle_pull_snapshot(
+            &backend,
+            temp.path(),
+            crate::PullSnapshotRequest {
+                meta: request_meta_with_workspace(),
+                snapshot_id: "snap_first".to_owned(),
+            },
+            "op_pull_snapshot",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_lock(temp.path()).unwrap().members["mem_app"].commit,
+            Some(fixture.first)
+        );
+    }
+
+    #[test]
+    fn missing_snapshot_or_tag_fails_before_mutation() {
+        let temp = TempDir::new("missing-target");
+        let backend = Git2Backend::new();
+        let fixture = materialize_snapshot_fixture(temp.path(), &backend);
+
+        assert_eq!(
+            handle_materialize(
+                &backend,
+                temp.path(),
+                materialize_named_request(crate::MaterializeTargetKind::Snapshot, "missing"),
+                "op_materialize",
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::SnapshotNotFound
+        );
+        assert_eq!(
+            handle_materialize(
+                &backend,
+                temp.path(),
+                materialize_named_request(crate::MaterializeTargetKind::Tag, "missing"),
+                "op_materialize",
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::TagNotFound
+        );
+        assert_eq!(
+            backend.head(&temp.path().join("repos/app")).unwrap().commit,
+            Some(fixture.second)
+        );
+    }
+
     fn create_workspace_request(root: &Path) -> crate::CreateWorkspaceRequest {
         crate::CreateWorkspaceRequest {
             meta: request_meta(),
@@ -1567,6 +1688,82 @@ mod tests {
         }
     }
 
+    fn materialize_named_request(
+        kind: crate::MaterializeTargetKind,
+        name: &str,
+    ) -> crate::MaterializeRequest {
+        crate::MaterializeRequest {
+            meta: request_meta_with_workspace(),
+            target: crate::MaterializeTarget {
+                kind,
+                name: Some(name.to_owned()),
+                commit: None,
+            },
+        }
+    }
+
+    struct SnapshotFixture {
+        remote: String,
+        first: String,
+        second: String,
+    }
+
+    impl SnapshotFixture {
+        fn remote_url(&self) -> &str {
+            &self.remote
+        }
+    }
+
+    fn materialize_snapshot_fixture(root: &Path, backend: &Git2Backend) -> SnapshotFixture {
+        handle_create_workspace(create_workspace_request(root), "op_create").unwrap();
+        let fixture = RemoteFixture::new("snapshot-source");
+        let first = fixture.commit_and_push("README.md", "one", "initial", backend);
+        let second = fixture.commit_and_push("README.md", "two", "second", backend);
+        write_materialize_fixture(root, fixture.remote_url(), &second);
+        backend
+            .clone_repo(fixture.remote_url(), &root.join("repos/app"))
+            .unwrap();
+        let snapshot_members = std::collections::BTreeMap::from([(
+            "mem_app".to_owned(),
+            test_member_state("repos/app", Some(first.clone()), false),
+        )]);
+        crate::artifact::write_snapshot(
+            root,
+            &crate::artifact::SnapshotArtifact {
+                schema: crate::artifact::SNAPSHOT_SCHEMA.to_owned(),
+                workspace_id: "ws_ops".to_owned(),
+                snapshot_id: "snap_first".to_owned(),
+                created_at: "2026-06-15T00:00:00Z".to_owned(),
+                created_by: crate::artifact::CreatedByArtifact {
+                    actor_id: "agent://tester".to_owned(),
+                },
+                selected_members: vec!["mem_app".to_owned()],
+                members: snapshot_members.clone(),
+            },
+        )
+        .unwrap();
+        crate::artifact::write_tag(
+            root,
+            &crate::artifact::TagArtifact {
+                schema: crate::artifact::TAG_SCHEMA.to_owned(),
+                workspace_id: "ws_ops".to_owned(),
+                tag: "tag_first".to_owned(),
+                created_at: "2026-06-15T00:00:00Z".to_owned(),
+                created_by: crate::artifact::CreatedByArtifact {
+                    actor_id: "agent://tester".to_owned(),
+                },
+                selected_members: vec!["mem_app".to_owned()],
+                members: snapshot_members,
+            },
+        )
+        .unwrap();
+        SnapshotFixture {
+            remote: fixture.remote_url().to_owned(),
+            first,
+            second,
+        }
+    }
+
     fn write_materialize_fixture(root: &Path, remote_url: &str, commit: &str) {
         crate::artifact::write_manifest(
             root,
@@ -1615,18 +1812,26 @@ mod tests {
             created_at: "2026-06-15T00:00:00Z".to_owned(),
             members: std::collections::BTreeMap::from([(
                 member_id.to_owned(),
-                crate::artifact::ResolvedMemberArtifact {
-                    path: path.to_owned(),
-                    source_id: Some("src_app".to_owned()),
-                    source_kind: crate::artifact::ArtifactSourceKind::Git,
-                    commit,
-                    branch: Some("main".to_owned()),
-                    detached: Some(false),
-                    upstream: None,
-                    dirty: Some(dirty),
-                    materialized: Some(true),
-                },
+                test_member_state(path, commit, dirty),
             )]),
+        }
+    }
+
+    fn test_member_state(
+        path: &str,
+        commit: Option<String>,
+        dirty: bool,
+    ) -> crate::artifact::ResolvedMemberArtifact {
+        crate::artifact::ResolvedMemberArtifact {
+            path: path.to_owned(),
+            source_id: Some("src_app".to_owned()),
+            source_kind: crate::artifact::ArtifactSourceKind::Git,
+            commit,
+            branch: Some("main".to_owned()),
+            detached: Some(false),
+            upstream: None,
+            dirty: Some(dirty),
+            materialized: Some(true),
         }
     }
 
