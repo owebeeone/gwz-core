@@ -17,6 +17,12 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Status(request.clone()).context(operation_id.into())?;
+    if request.mode == Some(crate::StatusMode::Combined) {
+        return Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "combined status is specified but not implemented yet",
+        ));
+    }
     let workspace_root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let manifest = artifact::read_manifest(&workspace_root)?;
     if let Some(expected) = request
@@ -59,6 +65,7 @@ where
             members,
             errors: Vec::new(),
         },
+        workspace_git_status: None,
     })
 }
 
@@ -436,6 +443,22 @@ mod tests {
     }
 
     #[test]
+    fn combined_status_mode_is_explicitly_unsupported_until_file_entries_exist() {
+        let temp = TempDir::new("combined");
+        write_manifest(temp.path(), &manifest(vec![])).unwrap();
+        let mut request = status_request(None);
+        request.mode = Some(crate::StatusMode::Combined);
+        request.include_file_changes = Some(true);
+        request.include_branch_summary = Some(true);
+        request.path_style = Some(crate::StatusPathStyle::WorkspaceRelative);
+
+        let err =
+            handle_status(&Git2Backend::new(), temp.path(), request, "op_status").unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::UnsupportedOperation);
+    }
+
+    #[test]
     fn unknown_inactive_and_ambiguous_selection_fail_before_member_work() {
         let temp = TempDir::new("selection");
         write_manifest(
@@ -491,6 +514,7 @@ mod tests {
                 selection,
                 ..Default::default()
             },
+            ..Default::default()
         }
     }
 

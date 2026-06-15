@@ -307,6 +307,40 @@ impl LockMatch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum StatusMode {
+    #[default] Summary,
+    Combined,
+}
+impl StatusMode {
+    pub fn wire(self) -> i64 { match self {
+        Self::Summary => 0,
+        Self::Combined => 1,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::Summary,
+        1 => Self::Combined,
+        _ => panic!("bad StatusMode wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum StatusPathStyle {
+    #[default] MemberRelative,
+    WorkspaceRelative,
+}
+impl StatusPathStyle {
+    pub fn wire(self) -> i64 { match self {
+        Self::MemberRelative => 0,
+        Self::WorkspaceRelative => 1,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::MemberRelative,
+        1 => Self::WorkspaceRelative,
+        _ => panic!("bad StatusPathStyle wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum EventKind {
     #[default] OperationStarted,
     MemberStarted,
@@ -945,6 +979,166 @@ impl GitStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct GitFileChange {
+    pub member_id: String,
+    pub member_path: String,
+    pub repo_path: String,
+    pub workspace_path: String,
+    pub index_status: String,
+    pub worktree_status: String,
+    pub original_repo_path: Option<String>,
+}
+impl GitFileChange {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.member_id.clone())),
+            (2, Cbor::Text(self.member_path.clone())),
+            (3, Cbor::Text(self.repo_path.clone())),
+            (4, Cbor::Text(self.workspace_path.clone())),
+            (5, Cbor::Text(self.index_status.clone())),
+            (6, Cbor::Text(self.worktree_status.clone())),
+            (7, match &self.original_repo_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            member_id: c.get(1).text(),
+            member_path: c.get(2).text(),
+            repo_path: c.get(3).text(),
+            workspace_path: c.get(4).text(),
+            index_status: c.get(5).text(),
+            worktree_status: c.get(6).text(),
+            original_repo_path: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct GitMemberBranchStatus {
+    pub member_id: String,
+    pub member_path: String,
+    pub label: String,
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub unborn: bool,
+    pub head: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: Option<i64>,
+    pub behind: Option<i64>,
+}
+impl GitMemberBranchStatus {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.member_id.clone())),
+            (2, Cbor::Text(self.member_path.clone())),
+            (3, Cbor::Text(self.label.clone())),
+            (4, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, Cbor::Bool(self.detached)),
+            (6, Cbor::Bool(self.unborn)),
+            (7, match &self.head { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (8, match &self.upstream { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (9, match &self.ahead { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (10, match &self.behind { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            member_id: c.get(1).text(),
+            member_path: c.get(2).text(),
+            label: c.get(3).text(),
+            branch: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
+            detached: c.get(5).boolean(),
+            unborn: c.get(6).boolean(),
+            head: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
+            upstream: { let v = c.get(8); if v.is_null() { None } else { Some(v.text()) } },
+            ahead: { let v = c.get(9); if v.is_null() { None } else { Some(v.int()) } },
+            behind: { let v = c.get(10); if v.is_null() { None } else { Some(v.int()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct GitBranchGroup {
+    pub label: String,
+    pub member_ids: Vec<String>,
+    pub member_paths: Vec<String>,
+}
+impl GitBranchGroup {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.label.clone())),
+            (2, Cbor::Array(self.member_ids.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (3, Cbor::Array(self.member_paths.iter().map(|x| Cbor::Text(x.clone())).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            label: c.get(1).text(),
+            member_ids: c.get(2).array().iter().map(|x| x.text()).collect(),
+            member_paths: c.get(3).array().iter().map(|x| x.text()).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct GitBranchDifference {
+    pub label: String,
+    pub majority_label: Option<String>,
+    pub member_ids: Vec<String>,
+    pub member_paths: Vec<String>,
+    pub message: Option<String>,
+}
+impl GitBranchDifference {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.label.clone())),
+            (2, match &self.majority_label { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, Cbor::Array(self.member_ids.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (4, Cbor::Array(self.member_paths.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (5, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            label: c.get(1).text(),
+            majority_label: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
+            member_ids: c.get(3).array().iter().map(|x| x.text()).collect(),
+            member_paths: c.get(4).array().iter().map(|x| x.text()).collect(),
+            message: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct WorkspaceGitStatus {
+    pub clean: bool,
+    pub file_changes: Vec<GitFileChange>,
+    pub branches: Vec<GitMemberBranchStatus>,
+    pub branch_groups: Vec<GitBranchGroup>,
+    pub branch_differences: Vec<GitBranchDifference>,
+}
+impl WorkspaceGitStatus {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Bool(self.clean)),
+            (2, Cbor::Array(self.file_changes.iter().map(|x| x.to_cbor()).collect())),
+            (3, Cbor::Array(self.branches.iter().map(|x| x.to_cbor()).collect())),
+            (4, Cbor::Array(self.branch_groups.iter().map(|x| x.to_cbor()).collect())),
+            (5, Cbor::Array(self.branch_differences.iter().map(|x| x.to_cbor()).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            clean: c.get(1).boolean(),
+            file_changes: c.get(2).array().iter().map(|x| GitFileChange::from_cbor(x)).collect(),
+            branches: c.get(3).array().iter().map(|x| GitMemberBranchStatus::from_cbor(x)).collect(),
+            branch_groups: c.get(4).array().iter().map(|x| GitBranchGroup::from_cbor(x)).collect(),
+            branch_differences: c.get(5).array().iter().map(|x| GitBranchDifference::from_cbor(x)).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct PlannedChange {
     pub action: PlannedAction,
     pub from_ref: Option<String>,
@@ -1258,16 +1452,28 @@ impl MaterializeRequest {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct StatusRequest {
     pub meta: RequestMeta,
+    pub mode: Option<StatusMode>,
+    pub include_file_changes: Option<bool>,
+    pub include_branch_summary: Option<bool>,
+    pub path_style: Option<StatusPathStyle>,
 }
 impl StatusRequest {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.meta.to_cbor()),
+            (2, match &self.mode { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (3, match &self.include_file_changes { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (4, match &self.include_branch_summary { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (5, match &self.path_style { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Self {
         Self {
             meta: RequestMeta::from_cbor(c.get(1)),
+            mode: { let v = c.get(2); if v.is_null() { None } else { Some(StatusMode::from_wire(v.int())) } },
+            include_file_changes: { let v = c.get(3); if v.is_null() { None } else { Some(v.boolean()) } },
+            include_branch_summary: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
+            path_style: { let v = c.get(5); if v.is_null() { None } else { Some(StatusPathStyle::from_wire(v.int())) } },
         }
     }
 }
@@ -1460,16 +1666,19 @@ impl MaterializeResponse {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct StatusResponse {
     pub response: ResponseEnvelope,
+    pub workspace_git_status: Option<WorkspaceGitStatus>,
 }
 impl StatusResponse {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.response.to_cbor()),
+            (2, match &self.workspace_git_status { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Self {
         Self {
             response: ResponseEnvelope::from_cbor(c.get(1)),
+            workspace_git_status: { let v = c.get(2); if v.is_null() { None } else { Some(WorkspaceGitStatus::from_cbor(v)) } },
         }
     }
 }

@@ -724,6 +724,7 @@ mod tests {
                 attribution: Some(crate::OperationAttribution::from(&sample_attribution())),
                 ..crate::RequestMeta::default()
             },
+            ..Default::default()
         };
 
         let context = OperationRequest::Status(request)

@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gws_core::{
-    ActionKind, AggregateStatus, EventKind, GitObjectIdentity, GwsError, GwsErrorCode,
-    MemberResponse, MemberStatus, OperationActor, OperationAttribution, OperationEvent,
-    RequestMeta, ResponseEnvelope, ResponseMeta, Severity, SourceKind, StatusRequest, decode,
-    encode,
+    ActionKind, AggregateStatus, EventKind, GitBranchDifference, GitBranchGroup, GitFileChange,
+    GitMemberBranchStatus, GitObjectIdentity, GwsError, GwsErrorCode, MemberResponse, MemberStatus,
+    OperationActor, OperationAttribution, OperationEvent, RequestMeta, ResponseEnvelope,
+    ResponseMeta, Severity, SourceKind, StatusMode, StatusPathStyle, StatusRequest, StatusResponse,
+    WorkspaceGitStatus, decode, encode,
 };
 
 fn round_trip<T>(
@@ -26,11 +27,77 @@ fn status_request_round_trips() {
             attribution: Some(attribution()),
             ..RequestMeta::default()
         },
+        mode: Some(StatusMode::Combined),
+        include_file_changes: Some(true),
+        include_branch_summary: Some(true),
+        path_style: Some(StatusPathStyle::WorkspaceRelative),
     };
 
     assert_eq!(
         round_trip(&request, StatusRequest::to_cbor, StatusRequest::from_cbor),
         request
+    );
+}
+
+#[test]
+fn status_response_round_trips_combined_workspace_status() {
+    let response = StatusResponse {
+        response: ResponseEnvelope {
+            meta: ResponseMeta {
+                request_id: "req-1".to_owned(),
+                schema_version: "gws.v0".to_owned(),
+                action: ActionKind::Status,
+                aggregate_status: AggregateStatus::Ok,
+                ..ResponseMeta::default()
+            },
+            members: Vec::new(),
+            errors: Vec::new(),
+        },
+        workspace_git_status: Some(WorkspaceGitStatus {
+            clean: false,
+            file_changes: vec![GitFileChange {
+                member_id: "mem_core".to_owned(),
+                member_path: "repos/core".to_owned(),
+                repo_path: "src/lib.rs".to_owned(),
+                workspace_path: "repos/core/src/lib.rs".to_owned(),
+                index_status: " ".to_owned(),
+                worktree_status: "M".to_owned(),
+                original_repo_path: None,
+            }],
+            branches: vec![GitMemberBranchStatus {
+                member_id: "mem_core".to_owned(),
+                member_path: "repos/core".to_owned(),
+                label: "main".to_owned(),
+                branch: Some("main".to_owned()),
+                detached: false,
+                unborn: false,
+                head: Some("abc123".to_owned()),
+                upstream: Some("origin/main".to_owned()),
+                ahead: Some(1),
+                behind: Some(0),
+            }],
+            branch_groups: vec![GitBranchGroup {
+                label: "main".to_owned(),
+                member_ids: vec!["mem_core".to_owned()],
+                member_paths: vec!["repos/core".to_owned()],
+            }],
+            branch_differences: vec![GitBranchDifference {
+                label: "feature/app".to_owned(),
+                majority_label: Some("main".to_owned()),
+                member_ids: vec!["mem_app".to_owned()],
+                member_paths: vec!["repos/app".to_owned()],
+                message: Some("repos/app differs from majority branch main".to_owned()),
+            }],
+        }),
+    };
+
+    assert_eq!(
+        round_trip(
+            &response,
+            StatusResponse::to_cbor,
+            StatusResponse::from_cbor
+        ),
+        response
     );
 }
 
