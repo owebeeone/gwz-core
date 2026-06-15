@@ -149,6 +149,158 @@ where
     })
 }
 
+pub fn handle_add_existing_repo<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::AddExistingRepoRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::AddExistingRepoResponse>
+where
+    B: GitBackend,
+{
+    let context =
+        OperationRequest::AddExistingRepo(request.clone()).context(operation_id.into())?;
+    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let mut manifest = artifact::read_manifest(&root)?;
+    assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
+    let repo_path = PathBuf::from(&request.repository_path);
+    if !backend.is_repository(&repo_path)? {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "repository_path is not a git repository",
+        ));
+    }
+
+    let member_path = existing_repo_member_path(&root, &repo_path, request.member_path.as_ref())?;
+    reject_existing_member_path(&manifest, &member_path)?;
+    let slug = path_slug(member_path.as_str())?;
+    let member_id = request.member_id.unwrap_or_else(|| format!("mem_{slug}"));
+    let source_id = request.source_id.unwrap_or_else(|| format!("src_{slug}"));
+    MemberId::parse_str(&member_id)?;
+    SourceId::parse_str(&source_id)?;
+    reject_duplicate_member_id(&manifest, &member_id)?;
+
+    let head = backend.head(&repo_path)?;
+    let status = backend.status(&repo_path)?;
+    let remotes = backend.remotes(&repo_path)?;
+    let manifest_member = ManifestMember {
+        id: member_id.clone(),
+        path: member_path.as_str().to_owned(),
+        source_kind: ArtifactSourceKind::Git,
+        source_id: source_id.clone(),
+        active: true,
+        desired: Some(desired_from_head(&head)),
+        remotes: remotes
+            .iter()
+            .map(|remote| RemoteArtifact {
+                name: remote.name.clone(),
+                url: remote.url.clone().unwrap_or_default(),
+                fetch: true,
+                push: true,
+            })
+            .collect(),
+    };
+    manifest.members.push(manifest_member.clone());
+    let paths = manifest
+        .members
+        .iter()
+        .map(|member| MemberPath::parse(&member.path))
+        .collect::<ModelResult<Vec<_>>>()?;
+    validate_member_path_set(&paths)?;
+    artifact::write_manifest(&root, &manifest)?;
+
+    let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+    let locked = resolved_member(&manifest_member, &head, &status);
+    lock.members.insert(member_id.clone(), locked.clone());
+    lock.created_at = now_marker();
+    artifact::write_lock(&root, &lock)?;
+
+    Ok(crate::AddExistingRepoResponse {
+        response: response_envelope(
+            context,
+            crate::AggregateStatus::Ok,
+            vec![crate::MemberResponse {
+                member_id,
+                member_path: manifest_member.path.clone(),
+                source_kind: crate::SourceKind::Git,
+                status: crate::MemberStatus::Ok,
+                error: None,
+                planned: None,
+                state: Some(protocol_state(&manifest_member, &locked)),
+                git_status: None,
+                lock_match: Some(crate::LockMatch::Matches),
+            }],
+        ),
+    })
+}
+
+pub fn handle_init_from_sources(
+    start: &Path,
+    request: crate::InitFromSourcesRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::InitFromSourcesResponse> {
+    let context =
+        OperationRequest::InitFromSources(request.clone()).context(operation_id.into())?;
+    let root = if request.workspace_root.trim().is_empty() {
+        start.to_path_buf()
+    } else {
+        PathBuf::from(&request.workspace_root)
+    };
+    let manifest = artifact::read_manifest(&root)?;
+    if let Some(expected) = &request.workspace_id {
+        if expected != &manifest.workspace.id {
+            return Err(ModelError::new(
+                ErrorCode::WorkspaceNotFound,
+                "workspace id does not match manifest",
+            ));
+        }
+    }
+    if request.sources.is_empty() {
+        return Err(invalid("init from sources requires at least one source"));
+    }
+
+    let mut paths = Vec::with_capacity(manifest.members.len() + request.sources.len());
+    for member in &manifest.members {
+        paths.push(MemberPath::parse(&member.path)?);
+    }
+    let mut members = Vec::with_capacity(request.sources.len());
+    for source in &request.sources {
+        let path = source
+            .path
+            .clone()
+            .unwrap_or_else(|| format!("repos/{}", repo_name_from_url(&source.url)));
+        let member_path = MemberPath::parse(&path)?;
+        paths.push(member_path.clone());
+        let slug = path_slug(member_path.as_str())?;
+        let member_id = format!("mem_{slug}");
+        members.push(crate::MemberResponse {
+            member_id,
+            member_path: member_path.as_str().to_owned(),
+            source_kind: crate::SourceKind::Git,
+            status: crate::MemberStatus::Planned,
+            error: None,
+            planned: Some(crate::PlannedChange {
+                action: crate::PlannedAction::Clone,
+                from_ref: None,
+                to_ref: source.branch.clone(),
+                message: Some(format!(
+                    "clone {} as {}",
+                    source.url,
+                    source.remote_name.as_deref().unwrap_or("origin")
+                )),
+            }),
+            state: None,
+            git_status: None,
+            lock_match: None,
+        });
+    }
+    validate_member_path_set(&paths)?;
+
+    Ok(crate::InitFromSourcesResponse {
+        response: response_envelope(context, crate::AggregateStatus::Accepted, members),
+    })
+}
+
 fn resolve_workspace_root(
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
@@ -198,6 +350,50 @@ fn reject_duplicate_member_id(manifest: &ManifestArtifact, member_id: &str) -> M
         ))
     } else {
         Ok(())
+    }
+}
+
+fn existing_repo_member_path(
+    root: &Path,
+    repo_path: &Path,
+    requested: Option<&String>,
+) -> ModelResult<MemberPath> {
+    let member_path = if let Some(path) = requested {
+        MemberPath::parse(path)?
+    } else {
+        let relative = repo_path.strip_prefix(root).map_err(|_| {
+            ModelError::new(
+                ErrorCode::PathEscape,
+                "repository_path must be inside the workspace when member_path is omitted",
+            )
+        })?;
+        MemberPath::parse(&relative.to_string_lossy())?
+    };
+    if root.join(member_path.as_str()) != repo_path {
+        return Err(ModelError::new(
+            ErrorCode::PathEscape,
+            "member_path must point at repository_path",
+        ));
+    }
+    Ok(member_path)
+}
+
+fn desired_from_head(head: &GitHeadState) -> DesiredRefArtifact {
+    if let Some(branch) = &head.branch {
+        DesiredRefArtifact {
+            branch: Some(branch.clone()),
+            ..Default::default()
+        }
+    } else if let Some(commit) = &head.commit {
+        DesiredRefArtifact {
+            commit: Some(commit.clone()),
+            ..Default::default()
+        }
+    } else {
+        DesiredRefArtifact {
+            local_only: Some(true),
+            ..Default::default()
+        }
     }
 }
 
@@ -330,6 +526,12 @@ fn path_slug(path: &str) -> ModelResult<String> {
     }
 }
 
+fn repo_name_from_url(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    let tail = trimmed.rsplit(['/', ':']).next().unwrap_or(trimmed);
+    tail.strip_suffix(".git").unwrap_or(tail).to_owned()
+}
+
 fn now_marker() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -443,6 +645,124 @@ mod tests {
         assert_eq!(locked.materialized, Some(true));
     }
 
+    #[test]
+    fn add_existing_repo_records_current_git_state_and_remotes_without_reclone() {
+        let temp = TempDir::new("add-existing");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let repo_path = temp.path().join("repos/existing");
+        backend.create_repo(&repo_path).unwrap();
+        let commit = commit_file(&repo_path, "README.md", "one", "initial", &[]).unwrap();
+        backend
+            .add_remote(&repo_path, "origin", "file:///tmp/existing.git")
+            .unwrap();
+        fs::write(repo_path.join("README.md"), "dirty").unwrap();
+
+        let response = handle_add_existing_repo(
+            &backend,
+            temp.path(),
+            crate::AddExistingRepoRequest {
+                meta: request_meta_with_workspace(),
+                repository_path: repo_path.to_string_lossy().into_owned(),
+                member_path: None,
+                member_id: None,
+                source_id: None,
+            },
+            "op_add",
+        )
+        .unwrap();
+
+        let member = response.response.members.single();
+        assert_eq!(member.member_path, "repos/existing");
+        assert_eq!(member.state.as_ref().unwrap().commit, Some(commit.clone()));
+        assert_eq!(member.state.as_ref().unwrap().dirty, Some(true));
+        assert!(repo_path.join(".git").is_dir());
+
+        let manifest = read_manifest(temp.path()).unwrap();
+        assert_eq!(
+            manifest.members[0].remotes[0].url,
+            "file:///tmp/existing.git"
+        );
+        let locked = read_lock(temp.path())
+            .unwrap()
+            .members
+            .get("mem_existing")
+            .cloned()
+            .unwrap();
+        assert_eq!(locked.commit, Some(commit));
+        assert_eq!(locked.dirty, Some(true));
+    }
+
+    #[test]
+    fn init_from_sources_derives_default_paths_and_rejects_collisions() {
+        let temp = TempDir::new("init-sources");
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+
+        let response = handle_init_from_sources(
+            temp.path(),
+            crate::InitFromSourcesRequest {
+                meta: request_meta(),
+                workspace_root: temp.path().to_string_lossy().into_owned(),
+                sources: vec![
+                    crate::SourceUrl {
+                        url: "git@github.com:org/repo-a.git".to_owned(),
+                        path: None,
+                        remote_name: None,
+                        branch: None,
+                    },
+                    crate::SourceUrl {
+                        url: "https://github.com/org/repo-b".to_owned(),
+                        path: None,
+                        remote_name: Some("github".to_owned()),
+                        branch: Some("main".to_owned()),
+                    },
+                ],
+                target: None,
+                workspace_id: Some("ws_ops".to_owned()),
+            },
+            "op_init",
+        )
+        .unwrap();
+
+        assert_eq!(response.response.members[0].member_path, "repos/repo-a");
+        assert_eq!(response.response.members[1].member_path, "repos/repo-b");
+        assert_eq!(
+            response.response.members[0]
+                .planned
+                .as_ref()
+                .unwrap()
+                .action,
+            crate::PlannedAction::Clone
+        );
+
+        let collision = handle_init_from_sources(
+            temp.path(),
+            crate::InitFromSourcesRequest {
+                meta: request_meta(),
+                workspace_root: temp.path().to_string_lossy().into_owned(),
+                sources: vec![
+                    crate::SourceUrl {
+                        url: "https://example.invalid/dup.git".to_owned(),
+                        path: None,
+                        remote_name: None,
+                        branch: None,
+                    },
+                    crate::SourceUrl {
+                        url: "ssh://example.invalid/dup".to_owned(),
+                        path: None,
+                        remote_name: None,
+                        branch: None,
+                    },
+                ],
+                target: None,
+                workspace_id: Some("ws_ops".to_owned()),
+            },
+            "op_init",
+        )
+        .unwrap_err();
+        assert_eq!(collision.code, ErrorCode::PathCollision);
+    }
+
     fn create_workspace_request(root: &Path) -> crate::CreateWorkspaceRequest {
         crate::CreateWorkspaceRequest {
             meta: request_meta(),
@@ -463,6 +783,38 @@ mod tests {
             member_id: member_id.map(ToOwned::to_owned),
             source_id: source_id.map(ToOwned::to_owned),
         }
+    }
+
+    fn commit_file(
+        repo_path: &Path,
+        relative_path: &str,
+        content: &str,
+        message: &str,
+        parents: &[git2::Oid],
+    ) -> Result<String, git2::Error> {
+        fs::write(repo_path.join(relative_path), content).unwrap();
+        let repo = git2::Repository::open(repo_path)?;
+        let mut index = repo.index()?;
+        index.add_path(Path::new(relative_path))?;
+        index.write()?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let signature = git2::Signature::now("GWS Test", "gws@example.invalid")?;
+        let parent_commits = parents
+            .iter()
+            .map(|id| repo.find_commit(*id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let parent_refs = parent_commits.iter().collect::<Vec<_>>();
+        Ok(repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &parent_refs,
+            )?
+            .to_string())
     }
 
     fn request_meta() -> crate::RequestMeta {
