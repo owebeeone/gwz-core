@@ -1,3 +1,8 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::model;
 use crate::runtime::clock::TimestampMs;
 
@@ -204,6 +209,266 @@ impl ResponseBuilder {
                 .collect(),
             attribution: context.attribution.as_ref().map(Into::into),
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct OperationRuntime {
+    records: Arc<Mutex<HashMap<String, Arc<OperationRecord>>>>,
+    event_capacity: usize,
+}
+
+impl OperationRuntime {
+    pub fn new(event_capacity: usize) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(HashMap::new())),
+            event_capacity: event_capacity.max(2),
+        }
+    }
+
+    pub fn submit<F>(
+        &self,
+        context: OperationContext,
+        handler: F,
+    ) -> model::ModelResult<crate::ResponseEnvelope>
+    where
+        F: FnOnce(OperationContext, EventSink) -> ExecutionReport + Send + 'static,
+    {
+        let record = Arc::new(OperationRecord::new(self.event_capacity));
+        self.records
+            .lock()
+            .expect("operation registry poisoned")
+            .insert(context.operation_id.clone(), Arc::clone(&record));
+
+        let accepted = ResponseBuilder::accepted(&context, &[]);
+        thread::spawn(move || {
+            let started_at_ms = now_ms();
+            let sink = EventSink {
+                context: context.clone(),
+                record: Arc::clone(&record),
+            };
+            sink.emit(
+                crate::EventKind::OperationStarted,
+                crate::Severity::Info,
+                None,
+                None,
+                Some("operation started".to_owned()),
+            );
+            let report = handler(context.clone(), sink.clone());
+            sink.emit(
+                crate::EventKind::OperationFinished,
+                crate::Severity::Info,
+                None,
+                None,
+                Some("operation finished".to_owned()),
+            );
+            let result = ResponseBuilder::result(&context, &report, started_at_ms, now_ms());
+            record.complete(result);
+        });
+        Ok(accepted)
+    }
+
+    pub fn subscribe(&self, operation_id: &str) -> model::ModelResult<EventSubscription> {
+        Ok(EventSubscription {
+            record: self.record(operation_id)?,
+            next_sequence: 0,
+        })
+    }
+
+    pub fn try_result(
+        &self,
+        operation_id: &str,
+    ) -> model::ModelResult<Option<crate::OperationResult>> {
+        let record = self.record(operation_id)?;
+        Ok(record
+            .state
+            .lock()
+            .expect("operation record poisoned")
+            .result
+            .clone())
+    }
+
+    pub fn wait(&self, operation_id: &str) -> model::ModelResult<crate::OperationResult> {
+        let record = self.record(operation_id)?;
+        let mut state = record.state.lock().expect("operation record poisoned");
+        loop {
+            if let Some(result) = &state.result {
+                return Ok(result.clone());
+            }
+            state = record
+                .complete
+                .wait(state)
+                .expect("operation record poisoned");
+        }
+    }
+
+    fn record(&self, operation_id: &str) -> model::ModelResult<Arc<OperationRecord>> {
+        self.records
+            .lock()
+            .expect("operation registry poisoned")
+            .get(operation_id)
+            .cloned()
+            .ok_or_else(|| {
+                model::ModelError::new(
+                    model::ErrorCode::OperationNotFound,
+                    format!("operation {operation_id} not found"),
+                )
+            })
+    }
+}
+
+#[derive(Clone)]
+pub struct EventSink {
+    context: OperationContext,
+    record: Arc<OperationRecord>,
+}
+
+impl EventSink {
+    pub fn emit(
+        &self,
+        kind: crate::EventKind,
+        severity: crate::Severity,
+        member_id: Option<String>,
+        member_path: Option<String>,
+        message: Option<String>,
+    ) {
+        let mut state = self.record.state.lock().expect("operation record poisoned");
+        push_event(&mut state, &self.context);
+        let event = crate::OperationEvent {
+            operation_id: self.context.operation_id.clone(),
+            request_id: self.context.request_id.clone(),
+            sequence: state.next_sequence,
+            timestamp_ms: now_ms().0,
+            kind,
+            severity,
+            member_id,
+            member_path,
+            message,
+            member: None,
+            error: None,
+            attribution: self.context.attribution.as_ref().map(Into::into),
+        };
+        state.next_sequence += 1;
+        state.events.push_back(event);
+    }
+}
+
+pub struct EventSubscription {
+    record: Arc<OperationRecord>,
+    next_sequence: i64,
+}
+
+impl EventSubscription {
+    pub fn drain(&mut self) -> Vec<crate::OperationEvent> {
+        let state = self.record.state.lock().expect("operation record poisoned");
+        let events: Vec<_> = state
+            .events
+            .iter()
+            .filter(|event| event.sequence >= self.next_sequence)
+            .cloned()
+            .collect();
+        if let Some(last) = events.last() {
+            self.next_sequence = last.sequence + 1;
+        }
+        events
+    }
+}
+
+struct OperationRecord {
+    state: Mutex<OperationState>,
+    complete: Condvar,
+}
+
+impl OperationRecord {
+    fn new(event_capacity: usize) -> Self {
+        Self {
+            state: Mutex::new(OperationState {
+                events: VecDeque::with_capacity(event_capacity),
+                event_capacity,
+                next_sequence: 0,
+                result: None,
+            }),
+            complete: Condvar::new(),
+        }
+    }
+
+    fn complete(&self, result: crate::OperationResult) {
+        let mut state = self.state.lock().expect("operation record poisoned");
+        state.result = Some(result);
+        self.complete.notify_all();
+    }
+}
+
+struct OperationState {
+    events: VecDeque<crate::OperationEvent>,
+    event_capacity: usize,
+    next_sequence: i64,
+    result: Option<crate::OperationResult>,
+}
+
+fn push_event(state: &mut OperationState, context: &OperationContext) {
+    if state.events.len() < state.event_capacity {
+        return;
+    }
+
+    state.events.clear();
+    let reset = crate::OperationEvent {
+        operation_id: context.operation_id.clone(),
+        request_id: context.request_id.clone(),
+        sequence: state.next_sequence,
+        timestamp_ms: now_ms().0,
+        kind: crate::EventKind::Reset,
+        severity: crate::Severity::Warn,
+        member_id: None,
+        member_path: None,
+        message: Some("event buffer overflow; history incomplete".to_owned()),
+        member: None,
+        error: None,
+        attribution: context.attribution.as_ref().map(Into::into),
+    };
+    state.next_sequence += 1;
+    state.events.push_back(reset);
+}
+
+fn now_ms() -> TimestampMs {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    TimestampMs(millis.min(i64::MAX as u128) as i64)
+}
+
+#[derive(Default)]
+pub struct MemberLockManager {
+    locked: Mutex<HashSet<String>>,
+}
+
+impl MemberLockManager {
+    pub fn try_lock<'a>(&'a self, member_id: &model::MemberId) -> Option<MemberMutationGuard<'a>> {
+        let mut locked = self.locked.lock().expect("member lock manager poisoned");
+        if locked.insert(member_id.to_string()) {
+            Some(MemberMutationGuard {
+                manager: self,
+                member_id: member_id.to_string(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+pub struct MemberMutationGuard<'a> {
+    manager: &'a MemberLockManager,
+    member_id: String,
+}
+
+impl Drop for MemberMutationGuard<'_> {
+    fn drop(&mut self) {
+        self.manager
+            .locked
+            .lock()
+            .expect("member lock manager poisoned")
+            .remove(&self.member_id);
     }
 }
 
@@ -480,6 +745,157 @@ mod tests {
                 .actor_id,
             "agent://local/session"
         );
+    }
+
+    #[test]
+    fn submit_returns_accepted_before_handler_finishes() {
+        let runtime = OperationRuntime::new(8);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let response = runtime
+            .submit(sample_context(false), move |_context, _sink| {
+                release_rx.recv().unwrap();
+                ExecutionReport::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            response.meta.aggregate_status,
+            crate::AggregateStatus::Accepted
+        );
+        assert_eq!(response.meta.operation_id.as_deref(), Some("op_0001"));
+        assert!(runtime.try_result("op_0001").unwrap().is_none());
+
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            runtime.wait("op_0001").unwrap().aggregate_status,
+            crate::AggregateStatus::Noop
+        );
+    }
+
+    #[test]
+    fn subscriber_receives_events_and_wait_does_not_require_drain() {
+        let runtime = OperationRuntime::new(8);
+        runtime
+            .submit(sample_context(false), |_context, sink| {
+                sink.emit(
+                    crate::EventKind::MemberProgress,
+                    crate::Severity::Info,
+                    Some("mem_01".to_owned()),
+                    Some("repos/example".to_owned()),
+                    Some("checking status".to_owned()),
+                );
+                ExecutionReport::default()
+            })
+            .unwrap();
+        let mut subscription = runtime.subscribe("op_0001").unwrap();
+
+        let result = runtime.wait("op_0001").unwrap();
+        let events = subscription.drain();
+
+        assert_eq!(result.aggregate_status, crate::AggregateStatus::Noop);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == crate::EventKind::OperationStarted)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == crate::EventKind::MemberProgress)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == crate::EventKind::OperationFinished)
+        );
+        assert_eq!(
+            events
+                .first()
+                .and_then(|event| event.attribution.as_ref())
+                .and_then(|attribution| attribution.actor.as_ref())
+                .map(|actor| actor.actor_id.as_str()),
+            Some("agent://local/session")
+        );
+    }
+
+    #[test]
+    fn event_buffer_overflow_emits_reset_and_preserves_result() {
+        let runtime = OperationRuntime::new(3);
+        runtime
+            .submit(sample_context(false), |_context, sink| {
+                for index in 0..10 {
+                    sink.emit(
+                        crate::EventKind::MemberProgress,
+                        crate::Severity::Info,
+                        Some("mem_01".to_owned()),
+                        Some("repos/example".to_owned()),
+                        Some(format!("event {index}")),
+                    );
+                }
+                ExecutionReport::default()
+            })
+            .unwrap();
+        let mut subscription = runtime.subscribe("op_0001").unwrap();
+
+        let result = runtime.wait("op_0001").unwrap();
+        let events = subscription.drain();
+
+        assert_eq!(result.operation_id, "op_0001");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == crate::EventKind::Reset)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == crate::EventKind::OperationFinished)
+        );
+    }
+
+    #[test]
+    fn event_sequence_numbers_are_monotonic() {
+        let runtime = OperationRuntime::new(16);
+        runtime
+            .submit(sample_context(false), |_context, sink| {
+                sink.emit(
+                    crate::EventKind::MemberStarted,
+                    crate::Severity::Info,
+                    None,
+                    None,
+                    None,
+                );
+                sink.emit(
+                    crate::EventKind::MemberFinished,
+                    crate::Severity::Info,
+                    None,
+                    None,
+                    None,
+                );
+                ExecutionReport::default()
+            })
+            .unwrap();
+        let mut subscription = runtime.subscribe("op_0001").unwrap();
+
+        runtime.wait("op_0001").unwrap();
+        let events = subscription.drain();
+
+        assert!(
+            events
+                .windows(2)
+                .all(|window| window[0].sequence < window[1].sequence)
+        );
+    }
+
+    #[test]
+    fn member_lock_manager_serializes_mutating_member_access() {
+        let locks = MemberLockManager::default();
+        let member_id = MemberId::parse_str("mem_01").unwrap();
+        let first = locks.try_lock(&member_id).expect("first lock");
+
+        assert!(locks.try_lock(&member_id).is_none());
+        drop(first);
+        assert!(locks.try_lock(&member_id).is_some());
     }
 
     fn sample_context(dry_run: bool) -> OperationContext {
