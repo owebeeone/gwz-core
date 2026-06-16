@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::artifact::{
@@ -10,7 +10,8 @@ use crate::artifact::{
 use crate::git::{Git2Backend, GitBackend, GitHeadState, GitStatus, git_host};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::{
-    EventEmitter, EventSink, OperationRequest, par_map_per_host, resolve_jobs, resolve_per_host,
+    EventEmitter, EventSink, NullSink, OperationRequest, par_map_per_host, resolve_jobs,
+    resolve_per_host,
 };
 use crate::workspace::{
     MemberPath, WORKSPACE_DIR, WORKSPACE_MANIFEST, discover_workspace_root,
@@ -172,7 +173,7 @@ where
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let repo_path = PathBuf::from(&request.repository_path);
+    let repo_path = resolve_input_path(start, &request.repository_path);
     if !backend.is_repository(&repo_path)? {
         return Err(ModelError::new(
             ErrorCode::GitCommandFailed,
@@ -723,7 +724,20 @@ pub fn handle_pull_head<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::PullHeadResponse>
 where
-    B: GitBackend,
+    B: GitBackend + Sync,
+{
+    handle_pull_head_with_events(backend, start, request, operation_id, &NullSink)
+}
+
+pub fn handle_pull_head_with_events<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::PullHeadRequest,
+    operation_id: impl Into<String>,
+    events: &dyn EventSink,
+) -> ModelResult<crate::PullHeadResponse>
+where
+    B: GitBackend + Sync,
 {
     let context = OperationRequest::PullHead(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
@@ -731,15 +745,16 @@ where
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let mut lock = artifact::read_lock(&root)?;
     let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
-    let plans = pull_head_preflight(
-        backend,
-        &root,
-        &manifest,
-        &lock,
-        &selected,
-        request.meta.policy.as_ref(),
-    )?;
     if request.meta.dry_run.unwrap_or(false) {
+        let plans = pull_head_preflight(
+            backend,
+            &root,
+            &manifest,
+            &lock,
+            &selected,
+            request.meta.policy.as_ref(),
+            None,
+        )?;
         return Ok(crate::PullHeadResponse {
             response: response_envelope(
                 context,
@@ -749,6 +764,23 @@ where
         });
     }
 
+    let progress_interval = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.progress_min_interval_ms)
+        .unwrap_or(0);
+    let emitter = EventEmitter::new(&context, events, progress_interval);
+    emitter.operation_started();
+    let plans = pull_head_preflight(
+        backend,
+        &root,
+        &manifest,
+        &lock,
+        &selected,
+        request.meta.policy.as_ref(),
+        Some(&emitter),
+    )?;
     let mut responses = Vec::with_capacity(plans.len());
     for plan in plans {
         if let PullHeadAction::FastForward { remote_ref } = &plan.action {
@@ -772,6 +804,7 @@ where
     }
     lock.created_at = now_marker();
     artifact::write_lock(&root, &lock)?;
+    emitter.operation_finished();
 
     Ok(crate::PullHeadResponse {
         response: response_envelope(context, pull_response_aggregate(&responses), responses),
@@ -785,30 +818,92 @@ pub fn handle_push<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::PushResponse>
 where
-    B: GitBackend,
+    B: GitBackend + Sync,
+{
+    handle_push_with_events(backend, start, request, operation_id, &NullSink)
+}
+
+pub fn handle_push_with_events<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::PushRequest,
+    operation_id: impl Into<String>,
+    events: &dyn EventSink,
+) -> ModelResult<crate::PushResponse>
+where
+    B: GitBackend + Sync,
 {
     let context = OperationRequest::Push(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let selected = resolve_manifest_selection(&manifest, request.meta.selection.as_ref())?;
-    let responses = selected
-        .iter()
-        .map(|member_id| {
+    if request.meta.dry_run.unwrap_or(false) {
+        let responses = selected
+            .iter()
+            .map(|member_id| {
+                let member = manifest
+                    .members
+                    .iter()
+                    .find(|member| &member.id == member_id)
+                    .ok_or_else(|| {
+                        ModelError::new(ErrorCode::MemberNotFound, "member not found")
+                    })?;
+                Ok(push_member(backend, &root, member, &request, true))
+            })
+            .collect::<ModelResult<Vec<_>>>()?;
+
+        return Ok(crate::PushResponse {
+            response: response_envelope(context, push_aggregate_status(&responses), responses),
+        });
+    }
+
+    let progress_interval = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.progress_min_interval_ms)
+        .unwrap_or(0);
+    let emitter = EventEmitter::new(&context, events, progress_interval);
+    emitter.operation_started();
+    let responses = par_map_per_host(
+        selected,
+        resolve_jobs(
+            request
+                .meta
+                .policy
+                .as_ref()
+                .and_then(|policy| policy.concurrency),
+        ),
+        resolve_per_host(
+            request
+                .meta
+                .policy
+                .as_ref()
+                .and_then(|policy| policy.max_connections_per_host),
+        ),
+        |member_id| {
+            manifest
+                .members
+                .iter()
+                .find(|member| member.id == *member_id)
+                .and_then(|member| push_remote_host(member, &request))
+        },
+        |member_id| {
             let member = manifest
                 .members
                 .iter()
-                .find(|member| &member.id == member_id)
+                .find(|member| member.id == member_id)
                 .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
-            Ok(push_member(
-                backend,
-                &root,
-                member,
-                &request,
-                request.meta.dry_run.unwrap_or(false),
-            ))
-        })
-        .collect::<ModelResult<Vec<_>>>()?;
+            emitter.member_started(&member.id, &member.path);
+            let response = push_member(backend, &root, member, &request, false);
+            emitter.member_finished(&member.id, &member.path);
+            Ok(response)
+        },
+    )
+    .into_iter()
+    .collect::<ModelResult<Vec<_>>>()?;
+    emitter.operation_finished();
 
     Ok(crate::PushResponse {
         response: response_envelope(context, push_aggregate_status(&responses), responses),
@@ -1041,10 +1136,12 @@ fn existing_repo_member_path(
     repo_path: &Path,
     requested: Option<&String>,
 ) -> ModelResult<MemberPath> {
+    let root = normalize_path(root);
+    let repo_path = normalize_path(repo_path);
     let member_path = if let Some(path) = requested {
         MemberPath::parse(path)?
     } else {
-        let relative = repo_path.strip_prefix(root).map_err(|_| {
+        let relative = repo_path.strip_prefix(&root).map_err(|_| {
             ModelError::new(
                 ErrorCode::PathEscape,
                 "repository_path must be inside the workspace when member_path is omitted",
@@ -1052,13 +1149,46 @@ fn existing_repo_member_path(
         })?;
         MemberPath::parse(&relative.to_string_lossy())?
     };
-    if root.join(member_path.as_str()) != repo_path {
+    if normalize_path(&root.join(member_path.as_str())) != repo_path {
         return Err(ModelError::new(
             ErrorCode::PathEscape,
             "member_path must point at repository_path",
         ));
     }
     Ok(member_path)
+}
+
+fn resolve_input_path(start: &Path, value: &str) -> PathBuf {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        normalize_path(path)
+    } else {
+        normalize_path(&start_dir(start).join(path))
+    }
+}
+
+fn start_dir(start: &Path) -> &Path {
+    if start.is_file() {
+        start.parent().unwrap_or(start)
+    } else {
+        start
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut normalized = PathBuf::new();
+    for component in canonical.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn desired_from_head(head: &GitHeadState) -> DesiredRefArtifact {
@@ -1409,9 +1539,25 @@ fn materialized_response(
     }
 }
 
+const NO_FETCH_REMOTE_PULL_MESSAGE: &str = "no fetch remote configured; skipping pull";
+
 enum PullHeadAction {
     Noop,
+    SkipNoFetchRemote,
     FastForward { remote_ref: String },
+}
+
+impl PullHeadAction {
+    fn is_noop(&self) -> bool {
+        matches!(self, Self::Noop | Self::SkipNoFetchRemote)
+    }
+
+    fn planned_message(&self) -> Option<String> {
+        match self {
+            Self::SkipNoFetchRemote => Some(NO_FETCH_REMOTE_PULL_MESSAGE.to_owned()),
+            Self::Noop | Self::FastForward { .. } => None,
+        }
+    }
 }
 
 struct PullHeadPlan {
@@ -1428,18 +1574,22 @@ impl PullHeadPlan {
             member_path: self.state.path.clone(),
             source_kind: crate::SourceKind::Git,
             status: match self.action {
-                PullHeadAction::Noop => crate::MemberStatus::Noop,
+                PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => {
+                    crate::MemberStatus::Noop
+                }
                 PullHeadAction::FastForward { .. } => crate::MemberStatus::Planned,
             },
             error: None,
             planned: Some(crate::PlannedChange {
                 action: match self.action {
-                    PullHeadAction::Noop => crate::PlannedAction::Noop,
+                    PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => {
+                        crate::PlannedAction::Noop
+                    }
                     PullHeadAction::FastForward { .. } => crate::PlannedAction::FastForward,
                 },
                 from_ref: self.state.commit.clone(),
                 to_ref: None,
-                message: None,
+                message: self.action.planned_message(),
             }),
             state: None,
             git_status: None,
@@ -1455,105 +1605,176 @@ fn pull_head_preflight<B>(
     lock: &LockArtifact,
     selected: &[String],
     policy: Option<&crate::OperationPolicy>,
+    emitter: Option<&EventEmitter<'_>>,
 ) -> ModelResult<Vec<PullHeadPlan>>
+where
+    B: GitBackend + Sync,
+{
+    par_map_per_host(
+        selected.to_vec(),
+        resolve_jobs(policy.and_then(|policy| policy.concurrency)),
+        resolve_per_host(policy.and_then(|policy| policy.max_connections_per_host)),
+        |member_id| {
+            manifest
+                .members
+                .iter()
+                .find(|member| member.id == *member_id)
+                .and_then(|member| pull_remote_host(member, policy))
+        },
+        |member_id| {
+            pull_head_member_preflight(backend, root, manifest, lock, member_id, policy, emitter)
+        },
+    )
+    .into_iter()
+    .collect()
+}
+
+fn pull_head_member_preflight<B>(
+    backend: &B,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    lock: &LockArtifact,
+    member_id: String,
+    policy: Option<&crate::OperationPolicy>,
+    emitter: Option<&EventEmitter<'_>>,
+) -> ModelResult<PullHeadPlan>
 where
     B: GitBackend,
 {
-    let mut plans = Vec::with_capacity(selected.len());
-    for member_id in selected {
-        let member = manifest
-            .members
-            .iter()
-            .find(|member| &member.id == member_id)
-            .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
-        let state = lock.members.get(member_id).cloned().ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::LockNotFound,
-                format!("lock record missing for member '{member_id}'"),
-            )
-        })?;
-        let branch = state
-            .branch
-            .clone()
-            .or_else(|| {
-                member
-                    .desired
-                    .as_ref()
-                    .and_then(|desired| desired.branch.clone())
-            })
-            .unwrap_or_else(|| "main".to_owned());
-        if member
-            .desired
-            .as_ref()
-            .and_then(|desired| desired.local_only)
-            == Some(true)
-        {
-            plans.push(PullHeadPlan {
-                member_id: member_id.clone(),
-                branch,
-                state,
-                action: PullHeadAction::Noop,
-            });
-            continue;
+    let member = manifest
+        .members
+        .iter()
+        .find(|member| member.id == member_id)
+        .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
+    let state = lock.members.get(&member_id).cloned().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::LockNotFound,
+            format!("lock record missing for member '{member_id}'"),
+        )
+    })?;
+    let branch = state
+        .branch
+        .clone()
+        .or_else(|| {
+            member
+                .desired
+                .as_ref()
+                .and_then(|desired| desired.branch.clone())
+        })
+        .unwrap_or_else(|| "main".to_owned());
+    if let Some(emitter) = emitter {
+        emitter.member_started(&member.id, &state.path);
+    }
+    if member
+        .desired
+        .as_ref()
+        .and_then(|desired| desired.local_only)
+        == Some(true)
+    {
+        if let Some(emitter) = emitter {
+            emitter.member_finished(&member.id, &state.path);
         }
-
-        let member_root = root.join(&state.path);
-        if !backend.is_repository(&member_root)? {
-            return Err(ModelError::new(
-                ErrorCode::MemberNotFound,
-                format!("member '{member_id}' is not materialized"),
-            ));
-        }
-        let status = backend.status(&member_root)?;
-        if status.is_dirty {
-            return Err(ModelError::new(
-                ErrorCode::DirtyMember,
-                format!("member '{member_id}' has uncommitted changes"),
-            ));
-        }
-        let remote = policy
-            .and_then(|policy| policy.remote.as_ref())
-            .cloned()
-            .or_else(|| {
-                member
-                    .remotes
-                    .iter()
-                    .find(|remote| remote.fetch)
-                    .map(|remote| remote.name.clone())
-            })
-            .ok_or_else(|| {
-                ModelError::new(ErrorCode::MissingRemote, "member has no fetch remote")
-            })?;
-        backend.fetch(&member_root, &remote)?;
-        let remote_ref = format!("refs/remotes/{remote}/{branch}");
-        let remote_commit = backend
-            .read_ref(&member_root, &remote_ref)?
-            .ok_or_else(|| ModelError::new(ErrorCode::MissingRemote, "remote branch not found"))?;
-        let head = backend.head(&member_root)?;
-        let Some(local_commit) = head.commit.clone() else {
-            return Err(ModelError::new(
-                ErrorCode::DivergedMember,
-                "cannot fast-forward unborn member",
-            ));
-        };
-        let action = if local_commit == remote_commit {
-            PullHeadAction::Noop
-        } else if backend.is_ancestor(&member_root, &local_commit, &remote_commit)? {
-            PullHeadAction::FastForward { remote_ref }
-        } else {
-            return Err(ModelError::new(
-                ErrorCode::DivergedMember,
-                format!("member '{member_id}' has diverged from remote"),
-            ));
-        };
-        plans.push(PullHeadPlan {
-            member_id: member_id.clone(),
+        return Ok(PullHeadPlan {
+            member_id,
             branch,
             state,
-            action,
+            action: PullHeadAction::Noop,
         });
     }
-    Ok(plans)
+
+    let member_root = root.join(&state.path);
+    if !backend.is_repository(&member_root)? {
+        return Err(ModelError::new(
+            ErrorCode::MemberNotFound,
+            format!("member '{member_id}' is not materialized"),
+        ));
+    }
+    let status = backend.status(&member_root)?;
+    if status.is_dirty {
+        return Err(ModelError::new(
+            ErrorCode::DirtyMember,
+            format!("member '{member_id}' has uncommitted changes"),
+        ));
+    }
+    let Some(remote) = pull_fetch_remote_name(member, policy) else {
+        if let Some(emitter) = emitter {
+            emitter.member_finished(&member.id, &state.path);
+        }
+        return Ok(PullHeadPlan {
+            member_id,
+            branch,
+            state,
+            action: PullHeadAction::SkipNoFetchRemote,
+        });
+    };
+    backend.fetch(&member_root, &remote)?;
+    let remote_ref = format!("refs/remotes/{remote}/{branch}");
+    let remote_commit = backend
+        .read_ref(&member_root, &remote_ref)?
+        .ok_or_else(|| ModelError::new(ErrorCode::MissingRemote, "remote branch not found"))?;
+    let head = backend.head(&member_root)?;
+    let Some(local_commit) = head.commit.clone() else {
+        return Err(ModelError::new(
+            ErrorCode::DivergedMember,
+            "cannot fast-forward unborn member",
+        ));
+    };
+    let action = if local_commit == remote_commit {
+        PullHeadAction::Noop
+    } else if backend.is_ancestor(&member_root, &local_commit, &remote_commit)? {
+        PullHeadAction::FastForward { remote_ref }
+    } else {
+        return Err(ModelError::new(
+            ErrorCode::DivergedMember,
+            format!("member '{member_id}' has diverged from remote"),
+        ));
+    };
+    if let Some(emitter) = emitter {
+        emitter.member_finished(&member.id, &state.path);
+    }
+    Ok(PullHeadPlan {
+        member_id,
+        branch,
+        state,
+        action,
+    })
+}
+
+fn pull_fetch_remote_name(
+    member: &ManifestMember,
+    policy: Option<&crate::OperationPolicy>,
+) -> Option<String> {
+    policy
+        .and_then(|policy| policy.remote.as_ref())
+        .cloned()
+        .or_else(|| {
+            member
+                .remotes
+                .iter()
+                .find(|remote| remote.fetch)
+                .map(|remote| remote.name.clone())
+        })
+}
+
+fn pull_remote_host(
+    member: &ManifestMember,
+    policy: Option<&crate::OperationPolicy>,
+) -> Option<String> {
+    let remote = pull_fetch_remote_name(member, policy)?;
+    member
+        .remotes
+        .iter()
+        .find(|candidate| candidate.name == remote)
+        .and_then(|candidate| git_host(&candidate.url))
+}
+
+fn push_remote_host(member: &ManifestMember, request: &crate::PushRequest) -> Option<String> {
+    let remote = resolve_push_remote(member, request).ok()?;
+    member
+        .remotes
+        .iter()
+        .find(|candidate| candidate.name == remote)
+        .and_then(|candidate| git_host(&candidate.url))
 }
 
 fn pull_result_response(
@@ -1566,11 +1787,18 @@ fn pull_result_response(
         member_path: state.path.clone(),
         source_kind: crate::SourceKind::Git,
         status: match action {
-            PullHeadAction::Noop => crate::MemberStatus::Noop,
+            PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => crate::MemberStatus::Noop,
             PullHeadAction::FastForward { .. } => crate::MemberStatus::Ok,
         },
         error: None,
-        planned: None,
+        planned: action
+            .planned_message()
+            .map(|message| crate::PlannedChange {
+                action: crate::PlannedAction::Noop,
+                from_ref: state.commit.clone(),
+                to_ref: None,
+                message: Some(message),
+            }),
         state: Some(protocol_state(member, state)),
         git_status: None,
         lock_match: Some(crate::LockMatch::Matches),
@@ -1578,10 +1806,7 @@ fn pull_result_response(
 }
 
 fn pull_aggregate_status(plans: &[PullHeadPlan]) -> crate::AggregateStatus {
-    if plans
-        .iter()
-        .all(|plan| matches!(plan.action, PullHeadAction::Noop))
-    {
+    if plans.iter().all(|plan| plan.action.is_noop()) {
         crate::AggregateStatus::Noop
     } else {
         crate::AggregateStatus::Accepted
@@ -2042,7 +2267,9 @@ fn tag_error(error: ModelError) -> ModelError {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use crate::artifact::{read_lock, read_manifest, read_snapshot, read_tag};
     use crate::git::{Git2Backend, GitBackend};
@@ -2065,6 +2292,198 @@ mod tests {
     impl CollectingSink {
         fn take(&self) -> Vec<crate::OperationEvent> {
             self.events.lock().unwrap().clone()
+        }
+    }
+
+    const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[derive(Clone)]
+    struct TrackingBackend {
+        fetch: Arc<OverlapTracker>,
+        push: Arc<OverlapTracker>,
+    }
+
+    impl TrackingBackend {
+        fn new(expected_overlap: usize) -> Self {
+            Self {
+                fetch: Arc::new(OverlapTracker::new(expected_overlap)),
+                push: Arc::new(OverlapTracker::new(expected_overlap)),
+            }
+        }
+
+        fn fetch_peak(&self) -> usize {
+            self.fetch.peak()
+        }
+
+        fn push_peak(&self) -> usize {
+            self.push.peak()
+        }
+    }
+
+    struct OverlapTracker {
+        expected_overlap: usize,
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        entered: Mutex<usize>,
+        all_entered: Condvar,
+    }
+
+    impl OverlapTracker {
+        fn new(expected_overlap: usize) -> Self {
+            Self {
+                expected_overlap,
+                active: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                entered: Mutex::new(0),
+                all_entered: Condvar::new(),
+            }
+        }
+
+        fn run(&self) {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.record_peak(active);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut entered = self.entered.lock().unwrap();
+            *entered += 1;
+            self.all_entered.notify_all();
+            while *entered < self.expected_overlap {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                let (next, timeout) = self.all_entered.wait_timeout(entered, remaining).unwrap();
+                entered = next;
+                if timeout.timed_out() {
+                    break;
+                }
+            }
+            drop(entered);
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn record_peak(&self, active: usize) {
+            let mut observed = self.peak.load(Ordering::SeqCst);
+            while active > observed {
+                match self.peak.compare_exchange(
+                    observed,
+                    active,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(next) => observed = next,
+                }
+            }
+        }
+
+        fn peak(&self) -> usize {
+            self.peak.load(Ordering::SeqCst)
+        }
+    }
+
+    impl GitBackend for TrackingBackend {
+        fn is_repository(&self, _path: &Path) -> ModelResult<bool> {
+            Ok(true)
+        }
+
+        fn create_repo(&self, path: &Path) -> ModelResult<crate::git::GitCreateResult> {
+            Ok(crate::git::GitCreateResult {
+                path: path.to_path_buf(),
+            })
+        }
+
+        fn clone_repo(&self, url: &str, path: &Path) -> ModelResult<crate::git::GitCloneResult> {
+            let _ = url;
+            Ok(crate::git::GitCloneResult {
+                path: path.to_path_buf(),
+                head: self.head(path)?,
+            })
+        }
+
+        fn fetch(&self, _path: &Path, remote: &str) -> ModelResult<crate::git::GitFetchResult> {
+            self.fetch.run();
+            Ok(crate::git::GitFetchResult {
+                remote: remote.to_owned(),
+            })
+        }
+
+        fn fast_forward(
+            &self,
+            _path: &Path,
+            _branch: &str,
+            _upstream_ref: &str,
+        ) -> ModelResult<crate::git::GitUpdateResult> {
+            Ok(crate::git::GitUpdateResult {
+                updated: false,
+                commit: Some(TEST_COMMIT.to_owned()),
+            })
+        }
+
+        fn checkout_commit(
+            &self,
+            _path: &Path,
+            commit: &str,
+        ) -> ModelResult<crate::git::GitUpdateResult> {
+            Ok(crate::git::GitUpdateResult {
+                updated: true,
+                commit: Some(commit.to_owned()),
+            })
+        }
+
+        fn status(&self, _path: &Path) -> ModelResult<crate::git::GitStatus> {
+            Ok(crate::git::GitStatus::clean())
+        }
+
+        fn head(&self, _path: &Path) -> ModelResult<crate::git::GitHeadState> {
+            Ok(crate::git::GitHeadState {
+                branch: Some("main".to_owned()),
+                commit: Some(TEST_COMMIT.to_owned()),
+                is_detached: false,
+            })
+        }
+
+        fn remotes(&self, _path: &Path) -> ModelResult<Vec<crate::git::GitRemote>> {
+            Ok(Vec::new())
+        }
+
+        fn add_remote(
+            &self,
+            _path: &Path,
+            name: &str,
+            url: &str,
+        ) -> ModelResult<crate::git::GitRemoteResult> {
+            Ok(crate::git::GitRemoteResult {
+                remote: crate::git::GitRemote {
+                    name: name.to_owned(),
+                    url: Some(url.to_owned()),
+                    push_url: None,
+                },
+            })
+        }
+
+        fn push(
+            &self,
+            _path: &Path,
+            remote: &str,
+            refspec: &str,
+        ) -> ModelResult<crate::git::GitPushResult> {
+            self.push.run();
+            Ok(crate::git::GitPushResult {
+                remote: remote.to_owned(),
+                refspec: refspec.to_owned(),
+            })
+        }
+
+        fn read_ref(&self, _path: &Path, _ref_spec: &str) -> ModelResult<Option<String>> {
+            Ok(Some(TEST_COMMIT.to_owned()))
+        }
+
+        fn is_ancestor(
+            &self,
+            _path: &Path,
+            _ancestor: &str,
+            _descendant: &str,
+        ) -> ModelResult<bool> {
+            Ok(true)
         }
     }
 
@@ -2218,6 +2637,35 @@ mod tests {
             .unwrap();
         assert_eq!(locked.commit, Some(commit));
         assert_eq!(locked.dirty, Some(true));
+    }
+
+    #[test]
+    fn add_existing_repo_accepts_relative_path_inside_workspace() {
+        let temp = TempDir::new("add-existing-relative");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let repo_path = temp.path().join("local-repo");
+        backend.create_repo(&repo_path).unwrap();
+        commit_file(&repo_path, "README.md", "one", "initial", &[]).unwrap();
+        let start = temp.path().join("gwz.conf");
+
+        let response = handle_add_existing_repo(
+            &backend,
+            &start,
+            crate::AddExistingRepoRequest {
+                meta: request_meta_with_workspace(),
+                repository_path: "../local-repo".to_owned(),
+                member_path: None,
+                member_id: None,
+                source_id: None,
+            },
+            "op_add",
+        )
+        .unwrap();
+
+        assert_eq!(response.response.members.single().member_path, "local-repo");
+        let manifest = read_manifest(temp.path()).unwrap();
+        assert_eq!(manifest.members[0].path, "local-repo");
     }
 
     #[test]
@@ -2804,6 +3252,76 @@ mod tests {
     }
 
     #[test]
+    fn pull_head_noops_member_without_fetch_remote_and_continues() {
+        let temp = TempDir::new("pull-no-fetch-remote");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+
+        let local_path = temp.path().join("local-repo");
+        backend.create_repo(&local_path).unwrap();
+        commit_file(&local_path, "README.md", "one", "initial", &[]).unwrap();
+        handle_add_existing_repo(
+            &backend,
+            temp.path(),
+            crate::AddExistingRepoRequest {
+                meta: request_meta_with_workspace(),
+                repository_path: local_path.to_string_lossy().into_owned(),
+                member_path: None,
+                member_id: None,
+                source_id: None,
+            },
+            "op_add_local",
+        )
+        .unwrap();
+
+        let fixture = RemoteFixture::new("pull-no-fetch-source");
+        fixture.commit_and_push("README.md", "one", "initial", &backend);
+        let remote_path = temp.path().join("remote");
+        backend
+            .clone_repo(fixture.remote_url(), &remote_path)
+            .unwrap();
+        handle_add_existing_repo(
+            &backend,
+            temp.path(),
+            crate::AddExistingRepoRequest {
+                meta: request_meta_with_workspace(),
+                repository_path: remote_path.to_string_lossy().into_owned(),
+                member_path: None,
+                member_id: None,
+                source_id: None,
+            },
+            "op_add_remote",
+        )
+        .unwrap();
+
+        let response =
+            handle_pull_head(&backend, temp.path(), pull_head_request(), "op_pull").unwrap();
+
+        assert_eq!(response.response.members.len(), 2);
+        let local = response
+            .response
+            .members
+            .iter()
+            .find(|member| member.member_path == "local-repo")
+            .unwrap();
+        assert_eq!(local.status, crate::MemberStatus::Noop);
+        assert_eq!(
+            local
+                .planned
+                .as_ref()
+                .and_then(|planned| planned.message.as_deref()),
+            Some("no fetch remote configured; skipping pull")
+        );
+        let remote = response
+            .response
+            .members
+            .iter()
+            .find(|member| member.member_path == "remote")
+            .unwrap();
+        assert_eq!(remote.status, crate::MemberStatus::Noop);
+    }
+
+    #[test]
     fn pull_head_fast_forwards_clean_member_and_rewrites_lock() {
         let temp = TempDir::new("pull-ff");
         let backend = Git2Backend::new();
@@ -2834,6 +3352,45 @@ mod tests {
             read_lock(temp.path()).unwrap().members["mem_app"].commit,
             Some(second)
         );
+    }
+
+    #[test]
+    fn pull_head_fetches_selected_members_in_parallel() {
+        let temp = TempDir::new("pull-parallel");
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let backend = TrackingBackend::new(2);
+        write_pull_fixture(
+            temp.path(),
+            vec![
+                (
+                    "mem_app",
+                    "repos/app",
+                    "ssh://one.invalid/app.git",
+                    TEST_COMMIT,
+                ),
+                (
+                    "mem_lib",
+                    "repos/lib",
+                    "ssh://two.invalid/lib.git",
+                    TEST_COMMIT,
+                ),
+            ],
+        );
+
+        let response = handle_pull_head_with_events(
+            &backend,
+            temp.path(),
+            pull_head_request(),
+            "op_pull",
+            &NullSink,
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Noop
+        );
+        assert_eq!(backend.fetch_peak(), 2);
     }
 
     #[test]
@@ -2977,6 +3534,45 @@ mod tests {
             crate::MemberStatus::Ok
         );
         assert_eq!(read_repo_ref(&remote, "refs/heads/main"), Some(commit));
+    }
+
+    #[test]
+    fn push_runs_selected_members_in_parallel() {
+        let temp = TempDir::new("push-parallel");
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let backend = TrackingBackend::new(2);
+        write_pull_fixture(
+            temp.path(),
+            vec![
+                (
+                    "mem_app",
+                    "repos/app",
+                    "ssh://one.invalid/app.git",
+                    TEST_COMMIT,
+                ),
+                (
+                    "mem_lib",
+                    "repos/lib",
+                    "ssh://two.invalid/lib.git",
+                    TEST_COMMIT,
+                ),
+            ],
+        );
+
+        let response = handle_push_with_events(
+            &backend,
+            temp.path(),
+            push_request(None, None),
+            "op_push",
+            &NullSink,
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Ok
+        );
+        assert_eq!(backend.push_peak(), 2);
     }
 
     #[test]
