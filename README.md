@@ -1,25 +1,75 @@
 # gws-core
 
-GWS Core is the Rust library for defining, materializing, observing, and
-operating on a multi-repository GWS workspace.
+`gws-core` is the embeddable Rust control plane for a GWS workspace: a local
+workspace made from many repositories, driven by typed requests instead of
+ad-hoc shell glue.
 
-GWS Core owns workspace artifacts, protocol types, operation handlers, Git
-backend behavior, and local operation tests. It does not own the command-line
-interface; `gws-cli` is the thin driver that builds requests and renders
-responses.
+It gives tools, agents, and UIs one stable place to ask:
 
-The accepted design and implementation plan live in `dev-docs/`.
+- What repositories are in this workspace?
+- What Git state are they in?
+- Can this workspace be materialized to a lock, snapshot, tag, head, or commit?
+- What changed, what failed, and which member caused it?
 
-## Current Scope
+The point is not to replace Git. The point is to make multi-repo workspace
+operations deterministic, inspectable, and scriptable without forcing callers
+to know the artifact layout or reimplement cross-repo policy.
 
-- Workspace artifact I/O for `workspace/gws.yml`, `workspace/gws.lock.yml`,
-  `.gws/snapshots/<id>.yaml`, and `workspace/tags/<name>.yml`.
-- Git-backed workspace operations for status, workspace creation, add existing
-  repo, create repo, init from source URLs, materialize, snapshot, tag, pull,
-  and push.
-- Generated taut protocol types and CBOR round-trip tests.
-- Local Git fixtures for clone, fetch, fast-forward, checkout, status, and
-  push behavior.
+## Why Embed It
+
+- **Typed protocol:** callers build generated request structs and receive typed
+  responses, member results, errors, and operation metadata.
+- **Workspace artifacts:** manifest, lock, snapshots, and GWS tags are read and
+  written through one library boundary.
+- **Git backend boundary:** Git behavior is isolated behind `GitBackend`; the
+  default backend supports local, SSH, and HTTPS Git repositories.
+- **Agent-friendly surface:** every operation can carry request metadata,
+  selection, dry-run policy, attribution, and per-member status.
+- **CLI-ready, UI-ready:** `gws-cli` is the thin command driver; richer tools can
+  call the same request handlers directly.
+
+For command workflows and examples, use `gws-cli` as the definitive how-to. This
+crate is the reusable engine behind that command.
+
+## Small Shape
+
+```rust
+use std::path::Path;
+
+use gws_core::git::Git2Backend;
+use gws_core::workspace_ops::handle_create_repo;
+use gws_core::{CreateRepoRequest, RequestMeta, WorkspaceRef};
+
+fn create_member_repo() -> gws_core::model::ModelResult<()> {
+    let backend = Git2Backend::new();
+    let request = CreateRepoRequest {
+        meta: RequestMeta {
+            request_id: "req-1".to_owned(),
+            schema_version: "gws.protocol/v0".to_owned(),
+            workspace: Some(WorkspaceRef {
+                root: Some("/work/my-ws".to_owned()),
+                ..WorkspaceRef::default()
+            }),
+            ..RequestMeta::default()
+        },
+        member_path: "tools/new-lib".to_owned(),
+        ..CreateRepoRequest::default()
+    };
+
+    let response = handle_create_repo(&backend, Path::new("/work/my-ws"), request, "op-1")?;
+    for member in response.response.members {
+        eprintln!("{}: {:?}", member.member_path, member.status);
+    }
+    Ok(())
+}
+```
+
+## Documentation
+
+- [docs/Reference.md](docs/Reference.md) describes the request/response model,
+  request types, and direct library usage.
+- `protocol/gws.taut.py` is the protocol contract used to generate Rust types.
+- `dev-docs/` contains design history and implementation plans.
 
 ## Development
 
@@ -29,21 +79,9 @@ cargo test
 cargo fmt --check
 ```
 
-## Protocol Codegen
+When `protocol/gws.taut.py` changes, regenerate through the taut workflow and
+run `cargo test`; do not hand-edit generated protocol output.
 
-The taut schema is `protocol/gws.taut.py`. Generated Rust protocol files live
-under `src/protocol/` and are checked by the protocol staleness test in
-`tests/protocol.rs`.
+## License
 
-When the schema changes, regenerate through the existing taut workflow and run
-`cargo test`; do not hand-edit generated protocol output.
-
-## Deferred Work
-
-- Source catalog persistence beyond manifest-local source records.
-- Archive, package, local, and generated source materialization.
-- File watching and live workspace status streams.
-- Branch and merge selection beyond v0 fast-forward and exact-commit paths.
-- Alternate Git storage backends such as local mirrors or bare worktree stores.
-- Remote capability enforcement and credential storage.
-- Persistent `.gws/operations/<operation-id>.jsonl` event logs.
+`gws-core` is licensed under GPL-2.0-only, the same license family used by Git.
