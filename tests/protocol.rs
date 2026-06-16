@@ -224,6 +224,34 @@ fn generated_protocol_is_current() {
     fs::remove_dir_all(&out_dir).expect("failed to clean generated protocol temp dir");
 }
 
+#[test]
+fn protocol_schema_uses_keyword_message_dsl() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let schema = fs::read_to_string(root.join("protocol/gws.taut.py"))
+        .expect("failed to read protocol/gws.taut.py");
+
+    assert!(
+        !schema.contains("Msg(\""),
+        "protocol/gws.taut.py should name messages with schema keywords"
+    );
+    assert!(
+        !schema.contains("Enum(\""),
+        "protocol/gws.taut.py should name enums with schema keywords"
+    );
+    assert!(
+        !schema.contains("F(\""),
+        "protocol/gws.taut.py should name fields with Msg keywords"
+    );
+    assert!(
+        !schema.contains("Ref(\""),
+        "protocol/gws.taut.py should reference messages and enums with Ref attributes"
+    );
+    assert!(
+        !schema.contains("params=[("),
+        "protocol/gws.taut.py should name method params with Params keywords"
+    );
+}
+
 fn attribution() -> OperationAttribution {
     OperationAttribution {
         actor: Some(OperationActor {
