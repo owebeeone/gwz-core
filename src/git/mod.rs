@@ -24,12 +24,34 @@ pub trait GitBackend {
     fn is_ancestor(&self, path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool>;
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Git2Backend;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialHelperPolicy {
+    Disabled,
+    AllowConfigured,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Git2Backend {
+    credential_helpers: CredentialHelperPolicy,
+}
 
 impl Git2Backend {
     pub fn new() -> Self {
-        Self
+        Self {
+            credential_helpers: CredentialHelperPolicy::AllowConfigured,
+        }
+    }
+
+    pub fn without_credential_helpers() -> Self {
+        Self {
+            credential_helpers: CredentialHelperPolicy::Disabled,
+        }
+    }
+}
+
+impl Default for Git2Backend {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -114,7 +136,9 @@ impl GitBackend for Git2Backend {
 
     fn clone_repo(&self, url: &str, path: &Path) -> ModelResult<GitCloneResult> {
         ensure_clone_target_is_empty(path)?;
-        git2::Repository::clone(url, path).map_err(git_error)?;
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(remote_fetch_options(self.credential_helpers));
+        builder.clone(url, path).map_err(git_error)?;
         Ok(GitCloneResult {
             path: path.to_path_buf(),
             head: self.head(path)?,
@@ -126,7 +150,11 @@ impl GitBackend for Git2Backend {
         let mut remote_handle = find_remote(&repo, remote)?;
         let refspecs: [&str; 0] = [];
         remote_handle
-            .fetch(&refspecs, None, Some("gws fetch"))
+            .fetch(
+                &refspecs,
+                Some(&mut remote_fetch_options(self.credential_helpers)),
+                Some("gws fetch"),
+            )
             .map_err(git_error)?;
         Ok(GitFetchResult {
             remote: remote.to_owned(),
@@ -247,7 +275,12 @@ impl GitBackend for Git2Backend {
     fn push(&self, path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult> {
         let repo = open_repo(path)?;
         let mut remote_handle = find_remote(&repo, remote)?;
-        remote_handle.push(&[refspec], None).map_err(git_error)?;
+        remote_handle
+            .push(
+                &[refspec],
+                Some(&mut remote_push_options(self.credential_helpers)),
+            )
+            .map_err(git_error)?;
         Ok(GitPushResult {
             remote: remote.to_owned(),
             refspec: refspec.to_owned(),
@@ -294,6 +327,56 @@ fn find_remote<'repo>(
             git_error(err)
         }
     })
+}
+
+fn remote_fetch_options(credential_helpers: CredentialHelperPolicy) -> git2::FetchOptions<'static> {
+    let mut options = git2::FetchOptions::new();
+    options.remote_callbacks(remote_callbacks(credential_helpers));
+    options
+}
+
+fn remote_push_options(credential_helpers: CredentialHelperPolicy) -> git2::PushOptions<'static> {
+    let mut options = git2::PushOptions::new();
+    options.remote_callbacks(remote_callbacks(credential_helpers));
+    options
+}
+
+fn remote_callbacks(credential_helpers: CredentialHelperPolicy) -> git2::RemoteCallbacks<'static> {
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed_types| {
+        remote_credential(url, username_from_url, allowed_types, credential_helpers)
+    });
+    callbacks
+}
+
+fn remote_credential(
+    url: &str,
+    username_from_url: Option<&str>,
+    allowed_types: git2::CredentialType,
+    credential_helpers: CredentialHelperPolicy,
+) -> Result<git2::Cred, git2::Error> {
+    let username = username_from_url.unwrap_or("git");
+    if allowed_types.is_ssh_key() {
+        return git2::Cred::ssh_key_from_agent(username);
+    }
+    if allowed_types.is_username() {
+        return git2::Cred::username(username);
+    }
+    if allowed_types.is_user_pass_plaintext()
+        && credential_helpers == CredentialHelperPolicy::AllowConfigured
+    {
+        if let Ok(config) = git2::Config::open_default() {
+            if let Ok(credential) = git2::Cred::credential_helper(&config, url, username_from_url) {
+                return Ok(credential);
+            }
+        }
+    }
+    if allowed_types.is_default() {
+        return git2::Cred::default();
+    }
+    Err(git2::Error::from_str(
+        "GWS could not acquire credentials for the requested remote",
+    ))
 }
 
 fn repo_head(repo: &git2::Repository) -> ModelResult<GitHeadState> {
@@ -492,6 +575,63 @@ mod tests {
         assert_eq!(err.code, ErrorCode::PathCollision);
         assert!(blocked_path.join("keep.txt").is_file());
         assert!(!blocked_path.join(".git").exists());
+    }
+
+    #[test]
+    fn new_backend_allows_configured_credential_helpers() {
+        assert_eq!(
+            Git2Backend::new().credential_helpers,
+            CredentialHelperPolicy::AllowConfigured
+        );
+        assert_eq!(
+            Git2Backend::without_credential_helpers().credential_helpers,
+            CredentialHelperPolicy::Disabled
+        );
+    }
+
+    #[test]
+    fn remote_credentials_support_ssh_agent_username_and_default_auth() {
+        let ssh = remote_credential(
+            "ssh://github.com/example/repo.git",
+            Some("git"),
+            git2::CredentialType::SSH_KEY,
+            CredentialHelperPolicy::Disabled,
+        )
+        .unwrap();
+        assert!(ssh.has_username());
+
+        let username = remote_credential(
+            "ssh://github.com/example/repo.git",
+            None,
+            git2::CredentialType::USERNAME,
+            CredentialHelperPolicy::Disabled,
+        )
+        .unwrap();
+        assert!(username.has_username());
+
+        remote_credential(
+            "https://github.com/example/repo.git",
+            None,
+            git2::CredentialType::DEFAULT,
+            CredentialHelperPolicy::Disabled,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn remote_credentials_reject_plaintext_auth_when_helpers_are_disabled() {
+        let result = remote_credential(
+            "https://github.com/example/repo.git",
+            None,
+            git2::CredentialType::USER_PASS_PLAINTEXT,
+            CredentialHelperPolicy::Disabled,
+        );
+        let err = match result {
+            Ok(_) => panic!("expected disabled credential helpers to reject plaintext auth"),
+            Err(err) => err,
+        };
+
+        assert!(err.message().contains("could not acquire credentials"));
     }
 
     #[test]

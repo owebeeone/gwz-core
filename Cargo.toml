@@ -9,6 +9,6 @@ rust-version = "1.95"
 path = "src/lib.rs"
 
 [dependencies]
-git2 = "0.21"
+git2 = { version = "0.21", features = ["https", "ssh"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
