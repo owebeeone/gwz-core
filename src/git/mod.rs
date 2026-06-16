@@ -7,6 +7,16 @@ pub trait GitBackend {
     fn is_repository(&self, path: &Path) -> ModelResult<bool>;
     fn create_repo(&self, path: &Path) -> ModelResult<GitCreateResult>;
     fn clone_repo(&self, url: &str, path: &Path) -> ModelResult<GitCloneResult>;
+    /// Clone, forwarding libgit2 transfer progress to `progress`. The default
+    /// ignores progress; backends that support it override this.
+    fn clone_repo_with_progress(
+        &self,
+        url: &str,
+        path: &Path,
+        _progress: &dyn Fn(crate::GitTransferProgress),
+    ) -> ModelResult<GitCloneResult> {
+        self.clone_repo(url, path)
+    }
     fn fetch(&self, path: &Path, remote: &str) -> ModelResult<GitFetchResult>;
     fn fast_forward(
         &self,
@@ -144,9 +154,21 @@ impl GitBackend for Git2Backend {
     }
 
     fn clone_repo(&self, url: &str, path: &Path) -> ModelResult<GitCloneResult> {
+        self.clone_repo_with_progress(url, path, &|_progress| {})
+    }
+
+    fn clone_repo_with_progress(
+        &self,
+        url: &str,
+        path: &Path,
+        progress: &dyn Fn(crate::GitTransferProgress),
+    ) -> ModelResult<GitCloneResult> {
         ensure_clone_target_is_empty(path)?;
         let mut builder = git2::build::RepoBuilder::new();
-        builder.fetch_options(remote_fetch_options(self.credential_helpers));
+        builder.fetch_options(fetch_options_with_progress(
+            self.credential_helpers,
+            Some(progress),
+        ));
         builder.clone(url, path).map_err(git_error)?;
         Ok(GitCloneResult {
             path: path.to_path_buf(),
@@ -342,9 +364,43 @@ fn find_remote<'repo>(
 }
 
 fn remote_fetch_options(credential_helpers: CredentialHelperPolicy) -> git2::FetchOptions<'static> {
+    fetch_options_with_progress(credential_helpers, None)
+}
+
+fn fetch_options_with_progress<'a>(
+    credential_helpers: CredentialHelperPolicy,
+    progress: Option<&'a dyn Fn(crate::GitTransferProgress)>,
+) -> git2::FetchOptions<'a> {
+    let mut callbacks = remote_callbacks(credential_helpers);
+    if let Some(progress) = progress {
+        callbacks.transfer_progress(move |stats| {
+            progress(git_transfer_progress(&stats));
+            true
+        });
+    }
     let mut options = git2::FetchOptions::new();
-    options.remote_callbacks(remote_callbacks(credential_helpers));
+    options.remote_callbacks(callbacks);
     options
+}
+
+fn git_transfer_progress(stats: &git2::Progress) -> crate::GitTransferProgress {
+    let received_objects = stats.received_objects();
+    let total_objects = stats.total_objects();
+    // libgit2's transfer callback hands the same counters for both phases; once
+    // every object is received, remaining work is delta resolution.
+    let phase = if total_objects > 0 && received_objects >= total_objects {
+        crate::GitProgressPhase::Resolving
+    } else {
+        crate::GitProgressPhase::Receiving
+    };
+    crate::GitTransferProgress {
+        phase,
+        received_objects: Some(received_objects as i64),
+        total_objects: Some(total_objects as i64),
+        received_bytes: Some(stats.received_bytes() as i64),
+        indexed_deltas: Some(stats.indexed_deltas() as i64),
+        total_deltas: Some(stats.total_deltas() as i64),
+    }
 }
 
 fn remote_push_options(credential_helpers: CredentialHelperPolicy) -> git2::PushOptions<'static> {
@@ -353,7 +409,7 @@ fn remote_push_options(credential_helpers: CredentialHelperPolicy) -> git2::Push
     options
 }
 
-fn remote_callbacks(credential_helpers: CredentialHelperPolicy) -> git2::RemoteCallbacks<'static> {
+fn remote_callbacks<'a>(credential_helpers: CredentialHelperPolicy) -> git2::RemoteCallbacks<'a> {
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed_types| {
         remote_credential(url, username_from_url, allowed_types, credential_helpers)

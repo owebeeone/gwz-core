@@ -143,6 +143,9 @@ impl From<&model::OperationPolicy> for generated::OperationPolicy {
             unsupported_member: Some(value.unsupported_member.into()),
             remote: value.remote.clone(),
             concurrency: value.concurrency.map(|value| value as i64),
+            // Progress coalescing is read directly from the wire policy by
+            // handlers; the internal model does not carry it.
+            progress_min_interval_ms: None,
         }
     }
 }

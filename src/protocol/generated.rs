@@ -657,6 +657,7 @@ pub struct OperationPolicy {
     pub unsupported_member: Option<UnsupportedMemberBehavior>,
     pub remote: Option<String>,
     pub concurrency: Option<i64>,
+    pub progress_min_interval_ms: Option<i64>,
 }
 impl OperationPolicy {
     pub fn to_cbor(&self) -> Cbor {
@@ -667,6 +668,7 @@ impl OperationPolicy {
             (4, match &self.unsupported_member { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
             (5, match &self.remote { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (6, match &self.concurrency { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (7, match &self.progress_min_interval_ms { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Self {
@@ -677,6 +679,7 @@ impl OperationPolicy {
             unsupported_member: { let v = c.get(4); if v.is_null() { None } else { Some(UnsupportedMemberBehavior::from_wire(v.int())) } },
             remote: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
             concurrency: { let v = c.get(6); if v.is_null() { None } else { Some(v.int()) } },
+            progress_min_interval_ms: { let v = c.get(7); if v.is_null() { None } else { Some(v.int()) } },
         }
     }
 }

@@ -232,7 +232,7 @@ impl OperationRuntime {
         handler: F,
     ) -> model::ModelResult<crate::ResponseEnvelope>
     where
-        F: FnOnce(OperationContext, EventSink) -> ExecutionReport + Send + 'static,
+        F: FnOnce(OperationContext, RuntimeEventSink) -> ExecutionReport + Send + 'static,
     {
         let record = Arc::new(OperationRecord::new(self.event_capacity));
         self.records
@@ -243,7 +243,7 @@ impl OperationRuntime {
         let accepted = ResponseBuilder::accepted(&context, &[]);
         thread::spawn(move || {
             let started_at_ms = now_ms();
-            let sink = EventSink {
+            let sink = RuntimeEventSink {
                 context: context.clone(),
                 record: Arc::clone(&record),
             };
@@ -317,13 +317,168 @@ impl OperationRuntime {
     }
 }
 
+/// Delivery seam for operation events: an implementation decides what to do
+/// with each event (buffer it, stream it as JSONL, render progress, drop it).
+/// Handlers stay producers; consumers plug in here without the thread runtime.
+pub trait EventSink {
+    fn deliver(&self, event: crate::OperationEvent);
+}
+
+/// Discards every event. Default for callers that do not consume events.
+pub struct NullSink;
+
+impl EventSink for NullSink {
+    fn deliver(&self, _event: crate::OperationEvent) {}
+}
+
+/// Builds protocol `OperationEvent`s (envelope + monotonic sequence) and
+/// forwards them to a sink. A handler holds one per operation and emits as it
+/// works; the sink decides how to consume them.
+pub struct EventEmitter<'a> {
+    operation_id: String,
+    request_id: String,
+    attribution: Option<crate::OperationAttribution>,
+    sequence: std::cell::Cell<i64>,
+    /// Minimum ms between member_progress events per member; 0 = no limit.
+    progress_min_interval_ms: i64,
+    last_progress_ms: std::cell::RefCell<HashMap<String, i64>>,
+    sink: &'a dyn EventSink,
+}
+
+impl<'a> EventEmitter<'a> {
+    pub fn new(
+        context: &OperationContext,
+        sink: &'a dyn EventSink,
+        progress_min_interval_ms: i64,
+    ) -> Self {
+        Self {
+            operation_id: context.operation_id.clone(),
+            request_id: context.request_id.clone(),
+            attribution: context.attribution.as_ref().map(Into::into),
+            sequence: std::cell::Cell::new(0),
+            progress_min_interval_ms: progress_min_interval_ms.max(0),
+            last_progress_ms: std::cell::RefCell::new(HashMap::new()),
+            sink,
+        }
+    }
+
+    fn emit(
+        &self,
+        kind: crate::EventKind,
+        severity: crate::Severity,
+        member_id: Option<String>,
+        member_path: Option<String>,
+        message: Option<String>,
+        progress: Option<crate::GitTransferProgress>,
+    ) {
+        let sequence = self.sequence.get();
+        self.sequence.set(sequence + 1);
+        self.sink.deliver(crate::OperationEvent {
+            operation_id: self.operation_id.clone(),
+            request_id: self.request_id.clone(),
+            sequence,
+            timestamp_ms: now_ms().0,
+            kind,
+            severity,
+            member_id,
+            member_path,
+            message,
+            member: None,
+            error: None,
+            attribution: self.attribution.clone(),
+            progress,
+        });
+    }
+
+    pub fn operation_started(&self) {
+        self.emit(
+            crate::EventKind::OperationStarted,
+            crate::Severity::Info,
+            None,
+            None,
+            Some("operation started".to_owned()),
+            None,
+        );
+    }
+
+    pub fn operation_finished(&self) {
+        self.emit(
+            crate::EventKind::OperationFinished,
+            crate::Severity::Info,
+            None,
+            None,
+            Some("operation finished".to_owned()),
+            None,
+        );
+    }
+
+    pub fn member_started(&self, member_id: &str, member_path: &str) {
+        self.emit(
+            crate::EventKind::MemberStarted,
+            crate::Severity::Info,
+            Some(member_id.to_owned()),
+            Some(member_path.to_owned()),
+            None,
+            None,
+        );
+    }
+
+    pub fn member_progress(
+        &self,
+        member_id: &str,
+        member_path: &str,
+        progress: crate::GitTransferProgress,
+    ) {
+        if !self.should_emit_progress(member_path) {
+            return;
+        }
+        self.emit(
+            crate::EventKind::MemberProgress,
+            crate::Severity::Info,
+            Some(member_id.to_owned()),
+            Some(member_path.to_owned()),
+            None,
+            Some(progress),
+        );
+    }
+
+    /// Rate-limits per-member progress to one event per
+    /// `progress_min_interval_ms`. The first update for a member always passes,
+    /// so a fast member still reports at least once.
+    fn should_emit_progress(&self, member_path: &str) -> bool {
+        if self.progress_min_interval_ms == 0 {
+            return true;
+        }
+        let now = now_ms().0;
+        let mut last = self.last_progress_ms.borrow_mut();
+        match last.get(member_path) {
+            Some(&prev) if now - prev < self.progress_min_interval_ms => false,
+            _ => {
+                last.insert(member_path.to_owned(), now);
+                true
+            }
+        }
+    }
+
+    pub fn member_finished(&self, member_id: &str, member_path: &str) {
+        self.emit(
+            crate::EventKind::MemberFinished,
+            crate::Severity::Info,
+            Some(member_id.to_owned()),
+            Some(member_path.to_owned()),
+            None,
+            None,
+        );
+    }
+}
+
 #[derive(Clone)]
-pub struct EventSink {
+pub struct RuntimeEventSink {
     context: OperationContext,
     record: Arc<OperationRecord>,
 }
 
-impl EventSink {
+impl RuntimeEventSink {
     pub fn emit(
         &self,
         kind: crate::EventKind,
@@ -634,6 +789,119 @@ mod tests {
     use crate::runtime::clock::TimestampMs;
 
     use super::*;
+
+    #[derive(Default)]
+    struct CollectingSink {
+        events: std::cell::RefCell<Vec<crate::OperationEvent>>,
+    }
+
+    impl EventSink for CollectingSink {
+        fn deliver(&self, event: crate::OperationEvent) {
+            self.events.borrow_mut().push(event);
+        }
+    }
+
+    impl CollectingSink {
+        fn take(&self) -> Vec<crate::OperationEvent> {
+            self.events.borrow().clone()
+        }
+    }
+
+    fn sample_progress() -> crate::GitTransferProgress {
+        crate::GitTransferProgress {
+            phase: crate::GitProgressPhase::Receiving,
+            received_objects: Some(1),
+            total_objects: Some(10),
+            received_bytes: None,
+            indexed_deltas: None,
+            total_deltas: None,
+        }
+    }
+
+    fn progress_event_count(events: &[crate::OperationEvent]) -> usize {
+        events
+            .iter()
+            .filter(|event| event.kind == crate::EventKind::MemberProgress)
+            .count()
+    }
+
+    #[test]
+    fn member_progress_rate_limit_coalesces_per_member() {
+        let context = sample_context(false);
+        let sink = CollectingSink::default();
+        // A 10s window: rapid successive updates fall inside it and coalesce.
+        let emitter = EventEmitter::new(&context, &sink, 10_000);
+
+        emitter.member_progress("mem_a", "repos/a", sample_progress()); // first: emits
+        emitter.member_progress("mem_a", "repos/a", sample_progress()); // coalesced
+        emitter.member_progress("mem_a", "repos/a", sample_progress()); // coalesced
+        emitter.member_progress("mem_b", "repos/b", sample_progress()); // other member: emits
+
+        // One per member (the first update each), the rest within the window dropped.
+        assert_eq!(progress_event_count(&sink.take()), 2);
+    }
+
+    #[test]
+    fn member_progress_unlimited_when_interval_zero() {
+        let context = sample_context(false);
+        let sink = CollectingSink::default();
+        let emitter = EventEmitter::new(&context, &sink, 0);
+
+        for _ in 0..5 {
+            emitter.member_progress("mem_a", "repos/a", sample_progress());
+        }
+
+        assert_eq!(progress_event_count(&sink.take()), 5);
+    }
+
+    #[test]
+    fn event_emitter_sequences_events_and_carries_progress() {
+        let context = sample_context(false);
+        let sink = CollectingSink::default();
+        let emitter = EventEmitter::new(&context, &sink, 0);
+
+        emitter.operation_started();
+        emitter.member_started("mem_app", "repos/app");
+        emitter.member_progress(
+            "mem_app",
+            "repos/app",
+            crate::GitTransferProgress {
+                phase: crate::GitProgressPhase::Receiving,
+                received_objects: Some(5),
+                total_objects: Some(10),
+                received_bytes: Some(1024),
+                indexed_deltas: None,
+                total_deltas: None,
+            },
+        );
+        emitter.member_finished("mem_app", "repos/app");
+        emitter.operation_finished();
+
+        let events = sink.take();
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            vec![
+                crate::EventKind::OperationStarted,
+                crate::EventKind::MemberStarted,
+                crate::EventKind::MemberProgress,
+                crate::EventKind::MemberFinished,
+                crate::EventKind::OperationFinished,
+            ]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+        assert_eq!(events[0].operation_id, "op_0001");
+        assert_eq!(events[1].member_path.as_deref(), Some("repos/app"));
+        let progress = events[2].progress.as_ref().expect("progress carried");
+        assert_eq!(progress.phase, crate::GitProgressPhase::Receiving);
+        assert_eq!(progress.received_objects, Some(5));
+        assert!(events[3].progress.is_none());
+    }
 
     #[test]
     fn dry_run_plan_reports_member_plans_without_execution() {

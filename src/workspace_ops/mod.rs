@@ -9,7 +9,7 @@ use crate::artifact::{
 };
 use crate::git::{Git2Backend, GitBackend, GitHeadState, GitStatus};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
-use crate::operation::OperationRequest;
+use crate::operation::{EventEmitter, EventSink, OperationRequest};
 use crate::workspace::{
     MemberPath, WORKSPACE_DIR, WORKSPACE_MANIFEST, discover_workspace_root,
     preflight_create_workspace, validate_member_path_set,
@@ -247,6 +247,7 @@ pub fn handle_init_from_sources<B>(
     start: &Path,
     request: crate::InitFromSourcesRequest,
     operation_id: impl Into<String>,
+    events: &dyn EventSink,
 ) -> ModelResult<crate::InitFromSourcesResponse>
 where
     B: GitBackend,
@@ -317,12 +318,24 @@ where
         created_at: now_marker(),
         members: BTreeMap::new(),
     };
+    let progress_interval = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.progress_min_interval_ms)
+        .unwrap_or(0);
+    let emitter = EventEmitter::new(&context, events, progress_interval);
+    emitter.operation_started();
     let mut members = Vec::with_capacity(plans.len());
     for plan in plans {
         let member_root = root.join(plan.path.as_str());
-        backend.clone_repo(&plan.source.url, &member_root)?;
+        emitter.member_started(&plan.member_id, plan.path.as_str());
+        backend.clone_repo_with_progress(&plan.source.url, &member_root, &|progress| {
+            emitter.member_progress(&plan.member_id, plan.path.as_str(), progress)
+        })?;
         let head = backend.head(&member_root)?;
         let status = backend.status(&member_root)?;
+        emitter.member_finished(&plan.member_id, plan.path.as_str());
         let remotes = backend.remotes(&member_root)?;
         let manifest_member = ManifestMember {
             id: plan.member_id.clone(),
@@ -360,6 +373,7 @@ where
     lock.created_at = now_marker();
     artifact::write_lock(&root, &lock)?;
     sync_workspace_git_metadata(&root, &manifest.members)?;
+    emitter.operation_finished();
 
     Ok(crate::InitFromSourcesResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, members),
@@ -461,6 +475,7 @@ pub fn handle_materialize<B>(
     start: &Path,
     request: crate::MaterializeRequest,
     operation_id: impl Into<String>,
+    events: &dyn EventSink,
 ) -> ModelResult<crate::MaterializeResponse>
 where
     B: GitBackend,
@@ -505,23 +520,33 @@ where
         });
     }
 
+    let progress_interval = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.progress_min_interval_ms)
+        .unwrap_or(0);
+    let emitter = EventEmitter::new(&context, events, progress_interval);
+    emitter.operation_started();
     let mut responses = Vec::with_capacity(plans.len());
     for plan in plans {
-        if plan.clone_url.is_some() {
-            backend.clone_repo(
-                plan.clone_url.as_deref().unwrap(),
-                &root.join(&plan.state.path),
-            )?;
+        emitter.member_started(&plan.member_id, &plan.state.path);
+        if let Some(url) = plan.clone_url.as_deref() {
+            backend.clone_repo_with_progress(url, &root.join(&plan.state.path), &|progress| {
+                emitter.member_progress(&plan.member_id, &plan.state.path, progress)
+            })?;
         }
         if let Some(commit) = &plan.state.commit {
             backend.checkout_commit(&root.join(&plan.state.path), commit)?;
         }
+        emitter.member_finished(&plan.member_id, &plan.state.path);
         responses.push(materialized_response(
             &manifest,
             &plan.member_id,
             &plan.state,
         ));
     }
+    emitter.operation_finished();
 
     if rewrite_lock {
         let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
@@ -553,6 +578,7 @@ pub fn handle_clone_workspace<B>(
     url: &str,
     target: &str,
     operation_id: impl Into<String>,
+    events: &dyn EventSink,
 ) -> ModelResult<crate::MaterializeResponse>
 where
     B: GitBackend,
@@ -593,7 +619,7 @@ where
             commit: None,
         },
     };
-    handle_materialize(backend, &target_path, materialize, operation_id)
+    handle_materialize(backend, &target_path, materialize, operation_id, events)
 }
 
 pub fn handle_pull_snapshot<B>(
@@ -601,6 +627,7 @@ pub fn handle_pull_snapshot<B>(
     start: &Path,
     request: crate::PullSnapshotRequest,
     operation_id: impl Into<String>,
+    events: &dyn EventSink,
 ) -> ModelResult<crate::PullSnapshotResponse>
 where
     B: GitBackend,
@@ -614,8 +641,14 @@ where
             commit: None,
         },
     };
-    let mut response =
-        handle_materialize(backend, start, materialize, context.operation_id.clone())?.response;
+    let mut response = handle_materialize(
+        backend,
+        start,
+        materialize,
+        context.operation_id.clone(),
+        events,
+    )?
+    .response;
     response.meta = crate::ResponseMeta {
         request_id: context.request_id,
         schema_version: context.schema_version,
@@ -1959,8 +1992,26 @@ mod tests {
     use crate::artifact::{read_lock, read_manifest, read_snapshot, read_tag};
     use crate::git::{Git2Backend, GitBackend};
     use crate::model::ErrorCode;
+    use crate::operation::NullSink;
 
     use super::*;
+
+    #[derive(Default)]
+    struct CollectingSink {
+        events: std::cell::RefCell<Vec<crate::OperationEvent>>,
+    }
+
+    impl EventSink for CollectingSink {
+        fn deliver(&self, event: crate::OperationEvent) {
+            self.events.borrow_mut().push(event);
+        }
+    }
+
+    impl CollectingSink {
+        fn take(&self) -> Vec<crate::OperationEvent> {
+            self.events.borrow().clone()
+        }
+    }
 
     #[test]
     fn create_workspace_writes_empty_manifest_and_lock() {
@@ -2144,6 +2195,7 @@ mod tests {
                 workspace_id: Some("ws_ops".to_owned()),
             },
             "op_init",
+            &NullSink,
         )
         .unwrap();
 
@@ -2182,6 +2234,7 @@ mod tests {
                 workspace_id: Some("ws_ops".to_owned()),
             },
             "op_init",
+            &NullSink,
         )
         .unwrap_err();
         assert_eq!(collision.code, ErrorCode::PathCollision);
@@ -2220,6 +2273,7 @@ mod tests {
         let fixture = RemoteFixture::new("init-exec-source");
         let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
 
+        let events = CollectingSink::default();
         let response = handle_init_from_sources(
             &backend,
             temp.path(),
@@ -2236,8 +2290,16 @@ mod tests {
                 workspace_id: Some("ws_ops".to_owned()),
             },
             "op_init",
+            &events,
         )
         .unwrap();
+
+        // init emits the per-member lifecycle, bracketed by operation events.
+        let kinds: Vec<_> = events.take().into_iter().map(|event| event.kind).collect();
+        assert_eq!(kinds.first(), Some(&crate::EventKind::OperationStarted));
+        assert_eq!(kinds.last(), Some(&crate::EventKind::OperationFinished));
+        assert!(kinds.contains(&crate::EventKind::MemberStarted));
+        assert!(kinds.contains(&crate::EventKind::MemberFinished));
 
         assert_eq!(
             response.response.meta.aggregate_status,
@@ -2370,11 +2432,13 @@ mod tests {
         let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
         write_materialize_fixture(temp.path(), fixture.remote_url(), &commit);
 
+        let events = CollectingSink::default();
         let response = handle_materialize(
             &backend,
             temp.path(),
             materialize_lock_request(false),
             "op_materialize",
+            &events,
         )
         .unwrap();
 
@@ -2386,6 +2450,38 @@ mod tests {
             backend.head(&temp.path().join("repos/app")).unwrap().commit,
             Some(commit)
         );
+
+        // The clone-missing materialize emits a per-member lifecycle bracketed
+        // by operation_started/finished. Transfer-progress volume depends on
+        // libgit2's local-clone behavior, so assert the deterministic envelope
+        // and that any emitted progress is well-formed for this member.
+        let collected = events.take();
+        let kinds: Vec<_> = collected.iter().map(|event| event.kind).collect();
+        assert_eq!(kinds.first(), Some(&crate::EventKind::OperationStarted));
+        assert_eq!(kinds.last(), Some(&crate::EventKind::OperationFinished));
+        let started = collected
+            .iter()
+            .position(|event| event.kind == crate::EventKind::MemberStarted)
+            .expect("member_started emitted");
+        let finished = collected
+            .iter()
+            .position(|event| event.kind == crate::EventKind::MemberFinished)
+            .expect("member_finished emitted");
+        assert!(
+            started < finished,
+            "member_started precedes member_finished"
+        );
+        assert_eq!(collected[started].member_path.as_deref(), Some("repos/app"));
+        for event in &collected {
+            if event.kind == crate::EventKind::MemberProgress {
+                assert_eq!(event.member_path.as_deref(), Some("repos/app"));
+                let progress = event.progress.as_ref().expect("progress payload present");
+                assert!(matches!(
+                    progress.phase,
+                    crate::GitProgressPhase::Receiving | crate::GitProgressPhase::Resolving
+                ));
+            }
+        }
     }
 
     #[test]
@@ -2410,6 +2506,7 @@ mod tests {
             source_ws.to_str().unwrap(),
             target.to_str().unwrap(),
             "op_clone",
+            &NullSink,
         )
         .unwrap();
 
@@ -2443,6 +2540,7 @@ mod tests {
             fixture.remote_url(),
             target.to_str().unwrap(),
             "op_clone",
+            &NullSink,
         )
         .unwrap_err();
 
@@ -2468,6 +2566,7 @@ mod tests {
             temp.path(),
             materialize_lock_request(false),
             "op_materialize",
+            &NullSink,
         )
         .unwrap_err();
 
@@ -2496,6 +2595,7 @@ mod tests {
             temp.path(),
             materialize_lock_request(true),
             "op_materialize",
+            &NullSink,
         )
         .unwrap();
         assert_eq!(
@@ -2519,6 +2619,7 @@ mod tests {
             temp.path(),
             materialize_lock_request(false),
             "op_materialize",
+            &NullSink,
         )
         .unwrap();
         assert_eq!(
@@ -2538,6 +2639,7 @@ mod tests {
             temp.path(),
             materialize_named_request(crate::MaterializeTargetKind::Snapshot, "snap_first"),
             "op_materialize",
+            &NullSink,
         )
         .unwrap();
         assert_eq!(
@@ -2551,6 +2653,7 @@ mod tests {
             temp.path(),
             materialize_named_request(crate::MaterializeTargetKind::Tag, "tag_first"),
             "op_materialize",
+            &NullSink,
         )
         .unwrap();
         assert_eq!(
@@ -2573,6 +2676,7 @@ mod tests {
                 snapshot_id: "snap_first".to_owned(),
             },
             "op_pull_snapshot",
+            &NullSink,
         )
         .unwrap();
 
@@ -2594,6 +2698,7 @@ mod tests {
                 temp.path(),
                 materialize_named_request(crate::MaterializeTargetKind::Snapshot, "missing"),
                 "op_materialize",
+                &NullSink,
             )
             .unwrap_err()
             .code,
@@ -2605,6 +2710,7 @@ mod tests {
                 temp.path(),
                 materialize_named_request(crate::MaterializeTargetKind::Tag, "missing"),
                 "op_materialize",
+                &NullSink,
             )
             .unwrap_err()
             .code,

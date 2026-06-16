@@ -283,7 +283,11 @@ SCHEMA = schema(
         # Preferred remote name for fetch/push when the request omits one.
         remote=F(5, STR, optional=True),
         # Driver-requested maximum member concurrency.
-        concurrency=F(6, INT, optional=True)),
+        concurrency=F(6, INT, optional=True),
+        # Minimum milliseconds between member_progress events per member.
+        # Coalesces high-frequency Git transfer updates at emit time; absent or
+        # 0 means no limit (emit every update).
+        progress_min_interval_ms=F(7, INT, optional=True)),
 
     # Common operation metadata supplied by every request.
     RequestMeta=Msg(
