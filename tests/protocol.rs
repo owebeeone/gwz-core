@@ -259,6 +259,14 @@ fn taut_command_can_use_configured_python_executable() {
     assert_eq!(command.get_program().to_string_lossy(), "python");
 }
 
+#[test]
+fn taut_command_forces_utf8_for_generated_source_files() {
+    let command = taut_command_for_python(Path::new("/tmp/gwz-core"), "python");
+
+    assert_command_env(&command, "PYTHONUTF8", "1");
+    assert_command_env(&command, "PYTHONIOENCODING", "utf-8");
+}
+
 fn attribution() -> OperationAttribution {
     OperationAttribution {
         actor: Some(OperationActor {
@@ -306,9 +314,21 @@ fn taut_command_for_python(root: &Path, python: &str) -> Command {
         .join("taut/src");
     command
         .current_dir(root)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONPATH", taut_src)
         .args(["-m", "taut.cli"]);
     command
+}
+
+fn assert_command_env(command: &Command, key: &str, expected: &str) {
+    let actual = command
+        .get_envs()
+        .find_map(|(name, value)| (name.to_string_lossy() == key).then_some(value))
+        .flatten()
+        .map(|value| value.to_string_lossy().into_owned());
+
+    assert_eq!(actual.as_deref(), Some(expected));
 }
 
 fn assert_same(committed: &Path, generated: &Path) {
