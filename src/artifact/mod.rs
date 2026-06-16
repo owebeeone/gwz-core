@@ -12,9 +12,9 @@ pub const WORKSPACE_SCHEMA: &str = "gwz.workspace/v0";
 pub const LOCK_SCHEMA: &str = "gwz.lock/v0";
 pub const SNAPSHOT_SCHEMA: &str = "gwz.snapshot/v0";
 pub const TAG_SCHEMA: &str = "gwz.tag/v0";
-pub const LOCK_PATH: &str = "workspace/gwz.lock.yml";
-pub const SNAPSHOT_DIR: &str = ".gwz/snapshots";
-pub const TAG_DIR: &str = "workspace/tags";
+pub const LOCK_PATH: &str = "gwz.conf/gwz.lock.yml";
+pub const SNAPSHOT_DIR: &str = "gwz.conf/snapshots";
+pub const TAG_DIR: &str = "gwz.conf/tags";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ManifestArtifact {

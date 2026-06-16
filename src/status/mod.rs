@@ -47,8 +47,14 @@ where
         .iter()
         .map(|report| report.response.clone())
         .collect::<Vec<_>>();
-    let workspace_git_status = (request.mode == Some(crate::StatusMode::Combined)).then(|| {
+    let root_report = root_status(backend, &workspace_root)?;
+    let workspace_git_status = matches!(
+        request.mode,
+        Some(crate::StatusMode::Combined | crate::StatusMode::Summary)
+    )
+    .then(|| {
         workspace_git_status(
+            root_report.as_ref(),
             &reports,
             request.include_file_changes.unwrap_or(true),
             request.include_branch_summary.unwrap_or(true),
@@ -211,6 +217,26 @@ struct StatusMemberReport {
     status: Option<BackendGitStatus>,
 }
 
+#[derive(Clone, Debug)]
+struct RootStatusReport {
+    head: GitHeadState,
+    status: BackendGitStatus,
+}
+
+fn root_status<B>(backend: &B, workspace_root: &Path) -> ModelResult<Option<RootStatusReport>>
+where
+    B: GitBackend,
+{
+    if !backend.is_repository(workspace_root)? {
+        return Ok(None);
+    }
+
+    Ok(Some(RootStatusReport {
+        head: backend.head(workspace_root)?,
+        status: backend.status(workspace_root)?,
+    }))
+}
+
 fn status_member<B>(
     backend: &B,
     workspace_root: &Path,
@@ -238,6 +264,26 @@ where
     }
 
     let member_root = workspace_root.join(&member.path);
+    match backend.is_repository(&member_root) {
+        // The member is declared in gwz.conf but its working tree was never
+        // cloned (e.g. right after a bare `git clone` of the workspace root).
+        // That is an expected, recoverable state, not a git failure.
+        Ok(false) => {
+            return StatusMemberReport {
+                response: member_not_materialized(member, source_kind, lock),
+                head: None,
+                status: None,
+            };
+        }
+        Err(error) => {
+            return StatusMemberReport {
+                response: member_error(member, source_kind, error, crate::MemberStatus::Failed),
+                head: None,
+                status: None,
+            };
+        }
+        Ok(true) => {}
+    }
     let head = match backend.head(&member_root) {
         Ok(head) => head,
         Err(error) => {
@@ -278,15 +324,23 @@ where
 }
 
 fn workspace_git_status(
+    root: Option<&RootStatusReport>,
     reports: &[StatusMemberReport],
     include_file_changes: bool,
     include_branch_summary: bool,
     path_style: crate::StatusPathStyle,
 ) -> crate::WorkspaceGitStatus {
-    let clean = reports.iter().all(|report| {
+    let root_clean = root.is_none_or(|report| !report.status.is_dirty);
+    let members_clean = reports.iter().all(|report| {
         report.response.status == crate::MemberStatus::Ok
             && report.status.as_ref().is_none_or(|status| !status.is_dirty)
     });
+    let clean = root_clean && members_clean;
+    let root_file_changes = if include_file_changes {
+        root.map(root_file_changes).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let file_changes = if include_file_changes {
         reports
             .iter()
@@ -311,11 +365,28 @@ fn workspace_git_status(
 
     crate::WorkspaceGitStatus {
         clean,
+        root_status: root.map(protocol_root_git_status),
+        root_file_changes,
         file_changes,
         branches,
         branch_groups,
         branch_differences,
     }
+}
+
+fn root_file_changes(report: &RootStatusReport) -> Vec<crate::WorkspaceRootFileChange> {
+    report
+        .status
+        .files
+        .iter()
+        .map(|file| crate::WorkspaceRootFileChange {
+            repo_path: file.path.clone(),
+            workspace_path: file.path.clone(),
+            index_status: file.index_status.clone(),
+            worktree_status: file.worktree_status.clone(),
+            original_repo_path: file.original_path.clone(),
+        })
+        .collect()
 }
 
 fn report_file_changes(
@@ -457,6 +528,19 @@ fn protocol_git_status(
     }
 }
 
+fn protocol_root_git_status(report: &RootStatusReport) -> crate::WorkspaceRootGitStatus {
+    crate::WorkspaceRootGitStatus {
+        branch: report.head.branch.clone(),
+        detached: report.head.is_detached,
+        head: report.head.commit.clone(),
+        staged: report.status.staged as i64,
+        unstaged: report.status.unstaged as i64,
+        untracked: report.status.untracked as i64,
+        dirty: report.status.is_dirty,
+        unborn: report.head.commit.is_none() && !report.head.is_detached,
+    }
+}
+
 fn lock_match(
     lock: Option<&LockArtifact>,
     member: &ManifestMember,
@@ -473,6 +557,48 @@ fn lock_match(
         crate::LockMatch::Matches
     } else {
         crate::LockMatch::Differs
+    }
+}
+
+fn member_not_materialized(
+    member: &ManifestMember,
+    source_kind: crate::SourceKind,
+    lock: Option<&LockArtifact>,
+) -> crate::MemberResponse {
+    let locked = lock.and_then(|lock| lock.members.get(&member.id));
+    crate::MemberResponse {
+        member_id: member.id.clone(),
+        member_path: member.path.clone(),
+        source_kind,
+        status: crate::MemberStatus::Noop,
+        error: None,
+        planned: None,
+        state: Some(crate::ResolvedMemberState {
+            member_id: member.id.clone(),
+            path: locked
+                .map(|state| state.path.clone())
+                .unwrap_or_else(|| member.path.clone()),
+            source_id: member.source_id.clone(),
+            source_kind,
+            commit: locked.and_then(|state| state.commit.clone()),
+            branch: locked.and_then(|state| state.branch.clone()),
+            detached: locked.and_then(|state| state.detached),
+            upstream: locked.and_then(|state| state.upstream.clone()),
+            dirty: None,
+            materialized: false,
+            remotes: member
+                .remotes
+                .iter()
+                .map(|remote| crate::RemoteSpec {
+                    name: remote.name.clone(),
+                    url: remote.url.clone(),
+                    fetch: Some(remote.fetch),
+                    push: Some(remote.push),
+                })
+                .collect(),
+        }),
+        git_status: None,
+        lock_match: Some(crate::LockMatch::Missing),
     }
 }
 
@@ -638,9 +764,51 @@ mod tests {
     }
 
     #[test]
+    fn status_on_unmaterialized_member_reports_missing_not_failure() {
+        // Right after a bare `git clone` of a workspace root, members are
+        // declared in gwz.conf but their working trees were never cloned. That
+        // is an expected, recoverable state, not a git failure.
+        let temp = TempDir::new("unmaterialized");
+        let backend = Git2Backend::new();
+        let commit = "0".repeat(40);
+        write_manifest(
+            temp.path(),
+            &manifest(vec![member("mem_app", "repos/app", true)]),
+        )
+        .unwrap();
+        write_lock(
+            temp.path(),
+            &lock("mem_app", "repos/app", Some(commit.clone()), false),
+        )
+        .unwrap();
+
+        let mut request = status_request(None);
+        request.mode = Some(crate::StatusMode::Combined);
+        let response = handle_status(&backend, temp.path(), request, "op_status").unwrap();
+        let member = response.response.members.single();
+
+        assert_eq!(member.status, crate::MemberStatus::Noop);
+        assert!(member.error.is_none());
+        assert!(member.git_status.is_none());
+        assert_eq!(member.lock_match, Some(crate::LockMatch::Missing));
+        let state = member.state.as_ref().expect("member state present");
+        assert!(!state.materialized);
+        assert_eq!(state.commit.as_deref(), Some(commit.as_str()));
+        assert_eq!(state.branch.as_deref(), Some("main"));
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Ok
+        );
+        // The absent member must not appear as a phantom branch group.
+        let workspace_status = response.workspace_git_status.as_ref().unwrap();
+        assert!(workspace_status.branch_groups.is_empty());
+    }
+
+    #[test]
     fn combined_status_reports_workspace_file_changes_and_branches() {
         let temp = TempDir::new("combined");
         let backend = Git2Backend::new();
+        backend.create_repo(temp.path()).unwrap();
         let repo_path = temp.path().join("repos/app");
         backend.create_repo(&repo_path).unwrap();
         let commit = commit_file(&repo_path, "README.md", "clean", "initial", &[]).unwrap();
@@ -666,6 +834,15 @@ mod tests {
         let workspace_status = response.workspace_git_status.as_ref().unwrap();
 
         assert!(!workspace_status.clean);
+        let root_status = workspace_status.root_status.as_ref().unwrap();
+        assert_eq!(root_status.branch, Some("main".to_owned()));
+        assert!(root_status.dirty);
+        assert!(!workspace_status.root_file_changes.is_empty());
+        assert!(workspace_status.root_file_changes.iter().any(|change| {
+            change.repo_path == "gwz.conf/gwz.yml"
+                && change.workspace_path == "gwz.conf/gwz.yml"
+                && change.worktree_status == "?"
+        }));
         assert_eq!(workspace_status.file_changes.len(), 2);
         assert!(workspace_status.file_changes.iter().any(|change| {
             change.member_id == "mem_app"

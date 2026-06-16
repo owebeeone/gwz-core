@@ -418,6 +418,35 @@ SCHEMA = schema(
         # Rename/copy source path relative to member root.
         original_repo_path=F(7, STR, optional=True)),
 
+    # Root workspace Git summary used in status responses.
+    WorkspaceRootGitStatus=Msg(
+        branch=F(1, STR, optional=True),
+        detached=F(2, BOOL),
+        # Current root HEAD commit.
+        head=F(3, STR, optional=True),
+        # Count of staged file changes in the root repository.
+        staged=F(4, INT),
+        # Count of unstaged file changes in the root repository.
+        unstaged=F(5, INT),
+        # Count of untracked files in the root repository.
+        untracked=F(6, INT),
+        dirty=F(7, BOOL),
+        # True when the root repo has no commits yet.
+        unborn=F(8, BOOL)),
+
+    # File-level Git porcelain projection for the workspace root repository.
+    WorkspaceRootFileChange=Msg(
+        # Path relative to the workspace root repository.
+        repo_path=F(1, STR),
+        # Path relative to the workspace root.
+        workspace_path=F(2, STR),
+        # Index status character from porcelain-style status.
+        index_status=F(3, STR),
+        # Worktree status character from porcelain-style status.
+        worktree_status=F(4, STR),
+        # Rename/copy source path relative to workspace root.
+        original_repo_path=F(5, STR, optional=True)),
+
     # Branch/head state for one member in combined status output.
     GitMemberBranchStatus=Msg(
         member_id=F(1, STR),
@@ -453,7 +482,9 @@ SCHEMA = schema(
         file_changes=F(2, List(Ref.GitFileChange)),
         branches=F(3, List(Ref.GitMemberBranchStatus)),
         branch_groups=F(4, List(Ref.GitBranchGroup)),
-        branch_differences=F(5, List(Ref.GitBranchDifference))),
+        branch_differences=F(5, List(Ref.GitBranchDifference)),
+        root_status=F(6, Ref.WorkspaceRootGitStatus, optional=True),
+        root_file_changes=F(7, List(Ref.WorkspaceRootFileChange))),
 
     # Planned member mutation returned by dry-run or accepted responses.
     PlannedChange=Msg(

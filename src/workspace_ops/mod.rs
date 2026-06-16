@@ -7,13 +7,16 @@ use crate::artifact::{
     self, ArtifactSourceKind, CreatedByArtifact, DesiredRefArtifact, LockArtifact,
     ManifestArtifact, ManifestMember, RemoteArtifact, ResolvedMemberArtifact, WorkspaceHeader,
 };
-use crate::git::{GitBackend, GitHeadState, GitStatus};
+use crate::git::{Git2Backend, GitBackend, GitHeadState, GitStatus};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::OperationRequest;
 use crate::workspace::{
-    MemberPath, WORKSPACE_MANIFEST, discover_workspace_root, preflight_create_workspace,
-    validate_member_path_set,
+    MemberPath, WORKSPACE_DIR, WORKSPACE_MANIFEST, discover_workspace_root,
+    preflight_create_workspace, validate_member_path_set,
 };
+
+const GITIGNORE_GWZ_BEGIN: &str = "# BEGIN GWZ managed member repositories";
+const GITIGNORE_GWZ_END: &str = "# END GWZ managed member repositories";
 
 pub fn handle_create_workspace(
     request: crate::CreateWorkspaceRequest,
@@ -28,6 +31,7 @@ pub fn handle_create_workspace(
         .clone()
         .unwrap_or_else(|| "ws_default".to_owned());
     crate::model::WorkspaceId::parse_str(&workspace_id)?;
+    ensure_workspace_git_repo(&root)?;
 
     artifact::write_manifest(
         &root,
@@ -49,6 +53,7 @@ pub fn handle_create_workspace(
             members: BTreeMap::new(),
         },
     )?;
+    sync_workspace_git_metadata(&root, &[])?;
 
     Ok(crate::CreateWorkspaceResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
@@ -130,6 +135,7 @@ where
     lock.members.insert(member_id.clone(), locked.clone());
     lock.created_at = now_marker();
     artifact::write_lock(&root, &lock)?;
+    sync_workspace_git_metadata(&root, &manifest.members)?;
 
     Ok(crate::CreateRepoResponse {
         response: response_envelope(
@@ -215,6 +221,7 @@ where
     lock.members.insert(member_id.clone(), locked.clone());
     lock.created_at = now_marker();
     artifact::write_lock(&root, &lock)?;
+    sync_workspace_git_metadata(&root, &manifest.members)?;
 
     Ok(crate::AddExistingRepoResponse {
         response: response_envelope(
@@ -302,6 +309,7 @@ where
         });
     }
 
+    ensure_workspace_git_repo(&root)?;
     let mut lock = LockArtifact {
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id,
@@ -351,6 +359,7 @@ where
     artifact::write_manifest(&root, &manifest)?;
     lock.created_at = now_marker();
     artifact::write_lock(&root, &lock)?;
+    sync_workspace_git_metadata(&root, &manifest.members)?;
 
     Ok(crate::InitFromSourcesResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, members),
@@ -528,6 +537,63 @@ where
     Ok(crate::MaterializeResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, responses),
     })
+}
+
+/// Clone a workspace from its root repository URL and complete it.
+///
+/// This is the one-shot form of `git clone <url> <target>` followed by
+/// `gwz materialize --lock`: it clones the workspace root (the git repository
+/// that owns `gwz.conf/`), verifies it is a GWZ workspace, then materializes
+/// every member to the committed lock — cloning missing member repositories and
+/// checking out their locked commits. The recorded operation is a lock
+/// materialization; no new wire request type is introduced.
+pub fn handle_clone_workspace<B>(
+    backend: &B,
+    meta: crate::RequestMeta,
+    url: &str,
+    target: &str,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::MaterializeResponse>
+where
+    B: GitBackend,
+{
+    let target_path = PathBuf::from(target);
+    // Refuse to clone over an existing workspace rather than corrupt it.
+    if target_path.join(WORKSPACE_MANIFEST).exists() {
+        return Err(ModelError::new(
+            ErrorCode::WorkspaceAlreadyExists,
+            "clone target already contains a GWZ workspace",
+        ));
+    }
+    // Clone the workspace root repository — the step the CLI cannot perform.
+    backend.clone_repo(url, &target_path)?;
+    // Verify the cloned repository really is a GWZ workspace before mutating it.
+    if !target_path.join(WORKSPACE_MANIFEST).is_file() {
+        return Err(ModelError::new(
+            ErrorCode::WorkspaceNotFound,
+            format!("cloned repository is not a GWZ workspace: {WORKSPACE_MANIFEST} missing"),
+        ));
+    }
+    // Complete the clone: materialize members to the committed lock.
+    let workspace_id = meta
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.workspace_id.clone());
+    let materialize = crate::MaterializeRequest {
+        meta: crate::RequestMeta {
+            workspace: Some(crate::WorkspaceRef {
+                root: Some(target_path.to_string_lossy().into_owned()),
+                workspace_id,
+            }),
+            ..meta
+        },
+        target: crate::MaterializeTarget {
+            kind: crate::MaterializeTargetKind::Lock,
+            name: None,
+            commit: None,
+        },
+    };
+    handle_materialize(backend, &target_path, materialize, operation_id)
 }
 
 pub fn handle_pull_snapshot<B>(
@@ -1772,6 +1838,99 @@ fn now_marker() -> String {
     format!("unix-ms:{millis}")
 }
 
+fn ensure_workspace_git_repo(root: &Path) -> ModelResult<()> {
+    if root.join(".git").exists() {
+        Ok(())
+    } else {
+        Git2Backend::new().create_repo(root).map(|_| ())
+    }
+}
+
+fn sync_workspace_git_metadata(root: &Path, members: &[ManifestMember]) -> ModelResult<()> {
+    update_workspace_gitignore(root, members)?;
+    stage_workspace_git_metadata(root)
+}
+
+fn update_workspace_gitignore(root: &Path, members: &[ManifestMember]) -> ModelResult<()> {
+    let managed = managed_gitignore_block(members);
+    let path = root.join(".gitignore");
+    let existing = match fs::read_to_string(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(io_error(error)),
+    };
+    let updated = replace_managed_gitignore_block(&existing, &managed);
+    if updated != existing {
+        fs::write(path, updated).map_err(io_error)?;
+    }
+    Ok(())
+}
+
+fn managed_gitignore_block(members: &[ManifestMember]) -> String {
+    let mut paths = members
+        .iter()
+        .map(|member| member.path.as_str())
+        .collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths.dedup();
+
+    let mut lines = vec![
+        GITIGNORE_GWZ_BEGIN.to_owned(),
+        format!("/{WORKSPACE_DIR}/.tmp/"),
+    ];
+    lines.extend(paths.into_iter().map(|path| format!("/{path}/")));
+    lines.push(GITIGNORE_GWZ_END.to_owned());
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn replace_managed_gitignore_block(existing: &str, managed: &str) -> String {
+    if let Some(begin) = existing.find(GITIGNORE_GWZ_BEGIN)
+        && let Some(relative_end) = existing[begin..].find(GITIGNORE_GWZ_END)
+    {
+        let end = begin + relative_end + GITIGNORE_GWZ_END.len();
+        let after_end = if existing[end..].starts_with("\r\n") {
+            end + 2
+        } else if existing[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
+        let mut out = String::with_capacity(existing.len() + managed.len());
+        out.push_str(&existing[..begin]);
+        out.push_str(managed);
+        out.push_str(&existing[after_end..]);
+        return out;
+    }
+
+    if existing.trim().is_empty() {
+        managed.to_owned()
+    } else if existing.ends_with('\n') {
+        format!("{existing}\n{managed}")
+    } else {
+        format!("{existing}\n\n{managed}")
+    }
+}
+
+fn stage_workspace_git_metadata(root: &Path) -> ModelResult<()> {
+    let repo = git2::Repository::open(root).map_err(git_command_error)?;
+    let mut index = repo.index().map_err(git_command_error)?;
+    index
+        .add_all([WORKSPACE_DIR], git2::IndexAddOption::DEFAULT, None)
+        .map_err(git_command_error)?;
+    if root.join(".gitignore").is_file() {
+        index
+            .add_path(Path::new(".gitignore"))
+            .map_err(git_command_error)?;
+    }
+    index.write().map_err(git_command_error)?;
+    Ok(())
+}
+
+fn git_command_error(error: git2::Error) -> ModelError {
+    ModelError::new(ErrorCode::GitCommandFailed, error.message())
+}
+
 fn invalid(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::InvalidRequest, message)
 }
@@ -1806,6 +1965,7 @@ mod tests {
     #[test]
     fn create_workspace_writes_empty_manifest_and_lock() {
         let temp = TempDir::new("create-workspace");
+        let backend = Git2Backend::new();
         let response =
             handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
 
@@ -1814,6 +1974,24 @@ mod tests {
             crate::AggregateStatus::Ok
         );
         assert!(response.response.members.is_empty());
+        assert!(backend.is_repository(temp.path()).unwrap());
+        assert!(temp.path().join("gwz.conf/gwz.yml").is_file());
+        assert!(temp.path().join("gwz.conf/gwz.lock.yml").is_file());
+        assert!(!temp.path().join("workspace").exists());
+        let root_status = backend.status(temp.path()).unwrap();
+        assert_eq!(root_status.untracked, 0);
+        assert!(
+            root_status
+                .files
+                .iter()
+                .any(|file| { file.path == "gwz.conf/gwz.yml" && file.index_status == "A" })
+        );
+        assert!(
+            root_status
+                .files
+                .iter()
+                .any(|file| { file.path == "gwz.conf/gwz.lock.yml" && file.index_status == "A" })
+        );
         assert_eq!(read_manifest(temp.path()).unwrap().members.len(), 0);
         assert_eq!(read_lock(temp.path()).unwrap().members.len(), 0);
     }
@@ -2065,6 +2243,26 @@ mod tests {
             response.response.meta.aggregate_status,
             crate::AggregateStatus::Ok
         );
+        assert!(backend.is_repository(temp.path()).unwrap());
+        assert!(temp.path().join("gwz.conf/gwz.yml").is_file());
+        assert!(temp.path().join("gwz.conf/gwz.lock.yml").is_file());
+        assert!(!temp.path().join("workspace").exists());
+        let ignore = fs::read_to_string(temp.path().join(".gitignore")).unwrap();
+        assert!(ignore.contains("/remote/"));
+        let root_status = backend.status(temp.path()).unwrap();
+        assert_eq!(root_status.untracked, 0);
+        assert!(
+            root_status
+                .files
+                .iter()
+                .any(|file| { file.path == ".gitignore" && file.index_status == "A" })
+        );
+        assert!(
+            root_status
+                .files
+                .iter()
+                .any(|file| { file.path == "gwz.conf/gwz.yml" && file.index_status == "A" })
+        );
         assert_eq!(
             backend.head(&temp.path().join("remote")).unwrap().commit,
             Some(commit.clone())
@@ -2188,6 +2386,67 @@ mod tests {
             backend.head(&temp.path().join("repos/app")).unwrap().commit,
             Some(commit)
         );
+    }
+
+    #[test]
+    fn clone_workspace_clones_root_and_materializes_missing_members() {
+        let temp = TempDir::new("clone-workspace");
+        let backend = Git2Backend::new();
+        // Build a source workspace whose root repo commits gwz.conf, with a
+        // member that lives at a remote and is absent from the root tree.
+        let source_ws = temp.path().join("origin");
+        fs::create_dir_all(&source_ws).unwrap();
+        handle_create_workspace(create_workspace_request(&source_ws), "op_create").unwrap();
+        let fixture = RemoteFixture::new("clone-workspace-member");
+        let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
+        write_materialize_fixture(&source_ws, fixture.remote_url(), &commit);
+        commit_workspace_root(&source_ws);
+
+        // Clone the workspace from its root URL into a fresh target.
+        let target = temp.path().join("clone");
+        let response = handle_clone_workspace(
+            &backend,
+            request_meta(),
+            source_ws.to_str().unwrap(),
+            target.to_str().unwrap(),
+            "op_clone",
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Ok
+        );
+        assert_eq!(
+            response.response.members.single().status,
+            crate::MemberStatus::Ok
+        );
+        // gwz.conf came over with the clone, and the member was materialized.
+        assert!(target.join(crate::artifact::LOCK_PATH).is_file());
+        assert_eq!(
+            backend.head(&target.join("repos/app")).unwrap().commit,
+            Some(commit)
+        );
+    }
+
+    #[test]
+    fn clone_workspace_rejects_url_that_is_not_a_workspace() {
+        let temp = TempDir::new("clone-non-workspace");
+        let backend = Git2Backend::new();
+        let fixture = RemoteFixture::new("clone-non-workspace-source");
+        fixture.commit_and_push("README.md", "one", "initial", &backend);
+        let target = temp.path().join("clone");
+
+        let err = handle_clone_workspace(
+            &backend,
+            request_meta(),
+            fixture.remote_url(),
+            target.to_str().unwrap(),
+            "op_clone",
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::WorkspaceNotFound);
     }
 
     #[test]
@@ -2744,6 +3003,27 @@ mod tests {
                 &parent_refs,
             )?
             .to_string())
+    }
+
+    fn commit_workspace_root(root: &Path) {
+        let repo = git2::Repository::open(root).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["."], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("GWZ Test", "gwz@example.invalid").unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "init workspace",
+            &tree,
+            &[],
+        )
+        .unwrap();
     }
 
     fn request_meta() -> crate::RequestMeta {

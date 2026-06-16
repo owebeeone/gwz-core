@@ -7,7 +7,7 @@ use gwz_core::{
     GitMemberBranchStatus, GitObjectIdentity, GwzError, GwzErrorCode, MemberResponse, MemberStatus,
     OperationActor, OperationAttribution, OperationEvent, RequestMeta, ResponseEnvelope,
     ResponseMeta, Severity, SourceKind, StatusMode, StatusPathStyle, StatusRequest, StatusResponse,
-    WorkspaceGitStatus, decode, encode,
+    WorkspaceGitStatus, WorkspaceRootFileChange, WorkspaceRootGitStatus, decode, encode,
 };
 
 fn round_trip<T>(
@@ -55,6 +55,23 @@ fn status_response_round_trips_combined_workspace_status() {
         },
         workspace_git_status: Some(WorkspaceGitStatus {
             clean: false,
+            root_status: Some(WorkspaceRootGitStatus {
+                branch: Some("main".to_owned()),
+                detached: false,
+                head: Some("def456".to_owned()),
+                staged: 2,
+                unstaged: 0,
+                untracked: 0,
+                dirty: true,
+                unborn: false,
+            }),
+            root_file_changes: vec![WorkspaceRootFileChange {
+                repo_path: "gwz.conf/gwz.yml".to_owned(),
+                workspace_path: "gwz.conf/gwz.yml".to_owned(),
+                index_status: "A".to_owned(),
+                worktree_status: " ".to_owned(),
+                original_repo_path: None,
+            }],
             file_changes: vec![GitFileChange {
                 member_id: "mem_core".to_owned(),
                 member_path: "repos/core".to_owned(),

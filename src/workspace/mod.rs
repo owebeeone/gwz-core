@@ -3,8 +3,8 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-pub const WORKSPACE_DIR: &str = "workspace";
-pub const WORKSPACE_MANIFEST: &str = "workspace/gwz.yml";
+pub const WORKSPACE_DIR: &str = "gwz.conf";
+pub const WORKSPACE_MANIFEST: &str = "gwz.conf/gwz.yml";
 pub const RUNTIME_DIR: &str = ".gwz";
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -78,7 +78,7 @@ pub fn discover_workspace_root(start: &Path) -> ModelResult<PathBuf> {
     let mut current = if start.is_file() {
         start
             .parent()
-            .ok_or_else(|| ModelError::new(ErrorCode::WorkspaceNotFound, "workspace not found"))?
+            .ok_or_else(workspace_config_missing)?
             .to_path_buf()
     } else {
         start.to_path_buf()
@@ -89,12 +89,16 @@ pub fn discover_workspace_root(start: &Path) -> ModelResult<PathBuf> {
             return Ok(current);
         }
         if !current.pop() {
-            return Err(ModelError::new(
-                ErrorCode::WorkspaceNotFound,
-                "workspace not found",
-            ));
+            return Err(workspace_config_missing());
         }
     }
+}
+
+fn workspace_config_missing() -> ModelError {
+    ModelError::new(
+        ErrorCode::WorkspaceNotFound,
+        format!("{WORKSPACE_MANIFEST} missing"),
+    )
 }
 
 pub fn preflight_create_workspace(target: &Path) -> ModelResult<&Path> {
@@ -174,7 +178,7 @@ mod tests {
             ErrorCode::PathEscape
         );
         assert_eq!(
-            MemberPath::parse("workspace/meta").unwrap_err().code,
+            MemberPath::parse("gwz.conf/meta").unwrap_err().code,
             ErrorCode::PathReserved
         );
         assert_eq!(

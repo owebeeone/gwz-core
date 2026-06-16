@@ -1014,6 +1014,73 @@ impl GitFileChange {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct WorkspaceRootGitStatus {
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub head: Option<String>,
+    pub staged: i64,
+    pub unstaged: i64,
+    pub untracked: i64,
+    pub dirty: bool,
+    pub unborn: bool,
+}
+impl WorkspaceRootGitStatus {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (2, Cbor::Bool(self.detached)),
+            (3, match &self.head { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, Cbor::Int(self.staged)),
+            (5, Cbor::Int(self.unstaged)),
+            (6, Cbor::Int(self.untracked)),
+            (7, Cbor::Bool(self.dirty)),
+            (8, Cbor::Bool(self.unborn)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            branch: { let v = c.get(1); if v.is_null() { None } else { Some(v.text()) } },
+            detached: c.get(2).boolean(),
+            head: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
+            staged: c.get(4).int(),
+            unstaged: c.get(5).int(),
+            untracked: c.get(6).int(),
+            dirty: c.get(7).boolean(),
+            unborn: c.get(8).boolean(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct WorkspaceRootFileChange {
+    pub repo_path: String,
+    pub workspace_path: String,
+    pub index_status: String,
+    pub worktree_status: String,
+    pub original_repo_path: Option<String>,
+}
+impl WorkspaceRootFileChange {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.repo_path.clone())),
+            (2, Cbor::Text(self.workspace_path.clone())),
+            (3, Cbor::Text(self.index_status.clone())),
+            (4, Cbor::Text(self.worktree_status.clone())),
+            (5, match &self.original_repo_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            repo_path: c.get(1).text(),
+            workspace_path: c.get(2).text(),
+            index_status: c.get(3).text(),
+            worktree_status: c.get(4).text(),
+            original_repo_path: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct GitMemberBranchStatus {
     pub member_id: String,
     pub member_path: String,
@@ -1116,6 +1183,8 @@ pub struct WorkspaceGitStatus {
     pub branches: Vec<GitMemberBranchStatus>,
     pub branch_groups: Vec<GitBranchGroup>,
     pub branch_differences: Vec<GitBranchDifference>,
+    pub root_status: Option<WorkspaceRootGitStatus>,
+    pub root_file_changes: Vec<WorkspaceRootFileChange>,
 }
 impl WorkspaceGitStatus {
     pub fn to_cbor(&self) -> Cbor {
@@ -1125,6 +1194,8 @@ impl WorkspaceGitStatus {
             (3, Cbor::Array(self.branches.iter().map(|x| x.to_cbor()).collect())),
             (4, Cbor::Array(self.branch_groups.iter().map(|x| x.to_cbor()).collect())),
             (5, Cbor::Array(self.branch_differences.iter().map(|x| x.to_cbor()).collect())),
+            (6, match &self.root_status { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (7, Cbor::Array(self.root_file_changes.iter().map(|x| x.to_cbor()).collect())),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Self {
@@ -1134,6 +1205,8 @@ impl WorkspaceGitStatus {
             branches: c.get(3).array().iter().map(|x| GitMemberBranchStatus::from_cbor(x)).collect(),
             branch_groups: c.get(4).array().iter().map(|x| GitBranchGroup::from_cbor(x)).collect(),
             branch_differences: c.get(5).array().iter().map(|x| GitBranchDifference::from_cbor(x)).collect(),
+            root_status: { let v = c.get(6); if v.is_null() { None } else { Some(WorkspaceRootGitStatus::from_cbor(v)) } },
+            root_file_changes: c.get(7).array().iter().map(|x| WorkspaceRootFileChange::from_cbor(x)).collect(),
         }
     }
 }
