@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -320,7 +321,7 @@ impl OperationRuntime {
 /// Delivery seam for operation events: an implementation decides what to do
 /// with each event (buffer it, stream it as JSONL, render progress, drop it).
 /// Handlers stay producers; consumers plug in here without the thread runtime.
-pub trait EventSink {
+pub trait EventSink: Send + Sync {
     fn deliver(&self, event: crate::OperationEvent);
 }
 
@@ -338,10 +339,10 @@ pub struct EventEmitter<'a> {
     operation_id: String,
     request_id: String,
     attribution: Option<crate::OperationAttribution>,
-    sequence: std::cell::Cell<i64>,
+    sequence: AtomicI64,
     /// Minimum ms between member_progress events per member; 0 = no limit.
     progress_min_interval_ms: i64,
-    last_progress_ms: std::cell::RefCell<HashMap<String, i64>>,
+    last_progress_ms: Mutex<HashMap<String, i64>>,
     sink: &'a dyn EventSink,
 }
 
@@ -355,9 +356,9 @@ impl<'a> EventEmitter<'a> {
             operation_id: context.operation_id.clone(),
             request_id: context.request_id.clone(),
             attribution: context.attribution.as_ref().map(Into::into),
-            sequence: std::cell::Cell::new(0),
+            sequence: AtomicI64::new(0),
             progress_min_interval_ms: progress_min_interval_ms.max(0),
-            last_progress_ms: std::cell::RefCell::new(HashMap::new()),
+            last_progress_ms: Mutex::new(HashMap::new()),
             sink,
         }
     }
@@ -371,8 +372,7 @@ impl<'a> EventEmitter<'a> {
         message: Option<String>,
         progress: Option<crate::GitTransferProgress>,
     ) {
-        let sequence = self.sequence.get();
-        self.sequence.set(sequence + 1);
+        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         self.sink.deliver(crate::OperationEvent {
             operation_id: self.operation_id.clone(),
             request_id: self.request_id.clone(),
@@ -450,7 +450,7 @@ impl<'a> EventEmitter<'a> {
             return true;
         }
         let now = now_ms().0;
-        let mut last = self.last_progress_ms.borrow_mut();
+        let mut last = self.last_progress_ms.lock().expect("progress map poisoned");
         match last.get(member_path) {
             Some(&prev) if now - prev < self.progress_min_interval_ms => false,
             _ => {
@@ -470,6 +470,67 @@ impl<'a> EventEmitter<'a> {
             None,
         );
     }
+}
+
+/// Resolves the worker count for parallel member operations: the driver's
+/// `--jobs` value when valid, otherwise the host's available parallelism.
+pub fn resolve_concurrency(requested: Option<i64>) -> usize {
+    match requested {
+        Some(jobs) if jobs >= 1 => jobs as usize,
+        _ => std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1),
+    }
+}
+
+/// Applies `f` to each item across up to `concurrency` scoped worker threads,
+/// returning results in input order. Workers pull from a shared index, so a
+/// slow item does not stall the others. `f` runs concurrently, so anything it
+/// borrows (sink, backend, workspace root) must be `Sync`.
+pub fn par_map<T, R, F>(items: Vec<T>, concurrency: usize, f: F) -> Vec<R>
+where
+    T: Send,
+    R: Send,
+    F: Fn(T) -> R + Sync,
+{
+    let count = items.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let workers = concurrency.clamp(1, count);
+    let items: Vec<Mutex<Option<T>>> = items
+        .into_iter()
+        .map(|item| Mutex::new(Some(item)))
+        .collect();
+    let results: Vec<Mutex<Option<R>>> = (0..count).map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= count {
+                        break;
+                    }
+                    let item = items[index]
+                        .lock()
+                        .expect("par_map item poisoned")
+                        .take()
+                        .expect("each item is taken once");
+                    let result = f(item);
+                    *results[index].lock().expect("par_map result poisoned") = Some(result);
+                }
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|cell| {
+            cell.into_inner()
+                .expect("par_map result poisoned")
+                .expect("every index produces a result")
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -792,18 +853,18 @@ mod tests {
 
     #[derive(Default)]
     struct CollectingSink {
-        events: std::cell::RefCell<Vec<crate::OperationEvent>>,
+        events: Mutex<Vec<crate::OperationEvent>>,
     }
 
     impl EventSink for CollectingSink {
         fn deliver(&self, event: crate::OperationEvent) {
-            self.events.borrow_mut().push(event);
+            self.events.lock().unwrap().push(event);
         }
     }
 
     impl CollectingSink {
         fn take(&self) -> Vec<crate::OperationEvent> {
-            self.events.borrow().clone()
+            self.events.lock().unwrap().clone()
         }
     }
 
@@ -852,6 +913,28 @@ mod tests {
         }
 
         assert_eq!(progress_event_count(&sink.take()), 5);
+    }
+
+    #[test]
+    fn par_map_preserves_order_and_runs_concurrently() {
+        let active = AtomicUsize::new(0);
+        let max_active = AtomicUsize::new(0);
+
+        let results = par_map((0..8).collect(), 4, |value: usize| {
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            max_active.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            active.fetch_sub(1, Ordering::SeqCst);
+            value * 10
+        });
+
+        assert_eq!(results, (0..8).map(|value| value * 10).collect::<Vec<_>>());
+        assert!(
+            max_active.load(Ordering::SeqCst) > 1,
+            "expected concurrent execution, peak workers was {}",
+            max_active.load(Ordering::SeqCst)
+        );
+        assert_eq!(par_map(Vec::<usize>::new(), 4, |value| value), Vec::new());
     }
 
     #[test]

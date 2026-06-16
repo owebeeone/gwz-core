@@ -9,7 +9,7 @@ use crate::artifact::{
 };
 use crate::git::{Git2Backend, GitBackend, GitHeadState, GitStatus};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
-use crate::operation::{EventEmitter, EventSink, OperationRequest};
+use crate::operation::{EventEmitter, EventSink, OperationRequest, par_map, resolve_concurrency};
 use crate::workspace::{
     MemberPath, WORKSPACE_DIR, WORKSPACE_MANIFEST, discover_workspace_root,
     preflight_create_workspace, validate_member_path_set,
@@ -250,7 +250,7 @@ pub fn handle_init_from_sources<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::InitFromSourcesResponse>
 where
-    B: GitBackend,
+    B: GitBackend + Sync,
 {
     let context =
         OperationRequest::InitFromSources(request.clone()).context(operation_id.into())?;
@@ -326,8 +326,19 @@ where
         .unwrap_or(0);
     let emitter = EventEmitter::new(&context, events, progress_interval);
     emitter.operation_started();
-    let mut members = Vec::with_capacity(plans.len());
-    for plan in plans {
+    let concurrency = resolve_concurrency(
+        request
+            .meta
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.concurrency),
+    );
+    type InitOutcome = (
+        ManifestMember,
+        ResolvedMemberArtifact,
+        crate::MemberResponse,
+    );
+    let outcomes = par_map(plans, concurrency, |plan| -> ModelResult<InitOutcome> {
         let member_root = root.join(plan.path.as_str());
         emitter.member_started(&plan.member_id, plan.path.as_str());
         backend.clone_repo_with_progress(&plan.source.url, &member_root, &|progress| {
@@ -355,8 +366,7 @@ where
                 .collect(),
         };
         let locked = resolved_member(&manifest_member, &head, &status);
-        lock.members.insert(plan.member_id.clone(), locked.clone());
-        members.push(crate::MemberResponse {
+        let response = crate::MemberResponse {
             member_id: plan.member_id,
             member_path: manifest_member.path.clone(),
             source_kind: crate::SourceKind::Git,
@@ -366,7 +376,14 @@ where
             state: Some(protocol_state(&manifest_member, &locked)),
             git_status: None,
             lock_match: Some(crate::LockMatch::Matches),
-        });
+        };
+        Ok((manifest_member, locked, response))
+    });
+    let mut members = Vec::with_capacity(outcomes.len());
+    for outcome in outcomes {
+        let (manifest_member, locked, response) = outcome?;
+        lock.members.insert(manifest_member.id.clone(), locked);
+        members.push(response);
         manifest.members.push(manifest_member);
     }
     artifact::write_manifest(&root, &manifest)?;
@@ -478,7 +495,7 @@ pub fn handle_materialize<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::MaterializeResponse>
 where
-    B: GitBackend,
+    B: GitBackend + Sync,
 {
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
@@ -528,23 +545,41 @@ where
         .unwrap_or(0);
     let emitter = EventEmitter::new(&context, events, progress_interval);
     emitter.operation_started();
-    let mut responses = Vec::with_capacity(plans.len());
-    for plan in plans {
-        emitter.member_started(&plan.member_id, &plan.state.path);
-        if let Some(url) = plan.clone_url.as_deref() {
-            backend.clone_repo_with_progress(url, &root.join(&plan.state.path), &|progress| {
-                emitter.member_progress(&plan.member_id, &plan.state.path, progress)
-            })?;
-        }
-        if let Some(commit) = &plan.state.commit {
-            backend.checkout_commit(&root.join(&plan.state.path), commit)?;
-        }
-        emitter.member_finished(&plan.member_id, &plan.state.path);
-        responses.push(materialized_response(
-            &manifest,
-            &plan.member_id,
-            &plan.state,
-        ));
+    let concurrency = resolve_concurrency(
+        request
+            .meta
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.concurrency),
+    );
+    let outcomes = par_map(
+        plans,
+        concurrency,
+        |plan| -> ModelResult<crate::MemberResponse> {
+            emitter.member_started(&plan.member_id, &plan.state.path);
+            if let Some(url) = plan.clone_url.as_deref() {
+                backend.clone_repo_with_progress(
+                    url,
+                    &root.join(&plan.state.path),
+                    &|progress| {
+                        emitter.member_progress(&plan.member_id, &plan.state.path, progress)
+                    },
+                )?;
+            }
+            if let Some(commit) = &plan.state.commit {
+                backend.checkout_commit(&root.join(&plan.state.path), commit)?;
+            }
+            emitter.member_finished(&plan.member_id, &plan.state.path);
+            Ok(materialized_response(
+                &manifest,
+                &plan.member_id,
+                &plan.state,
+            ))
+        },
+    );
+    let mut responses = Vec::with_capacity(outcomes.len());
+    for outcome in outcomes {
+        responses.push(outcome?);
     }
     emitter.operation_finished();
 
@@ -581,7 +616,7 @@ pub fn handle_clone_workspace<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::MaterializeResponse>
 where
-    B: GitBackend,
+    B: GitBackend + Sync,
 {
     let target_path = PathBuf::from(target);
     // Refuse to clone over an existing workspace rather than corrupt it.
@@ -630,7 +665,7 @@ pub fn handle_pull_snapshot<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::PullSnapshotResponse>
 where
-    B: GitBackend,
+    B: GitBackend + Sync,
 {
     let context = OperationRequest::PullSnapshot(request.clone()).context(operation_id.into())?;
     let materialize = crate::MaterializeRequest {
@@ -1998,18 +2033,18 @@ mod tests {
 
     #[derive(Default)]
     struct CollectingSink {
-        events: std::cell::RefCell<Vec<crate::OperationEvent>>,
+        events: std::sync::Mutex<Vec<crate::OperationEvent>>,
     }
 
     impl EventSink for CollectingSink {
         fn deliver(&self, event: crate::OperationEvent) {
-            self.events.borrow_mut().push(event);
+            self.events.lock().unwrap().push(event);
         }
     }
 
     impl CollectingSink {
         fn take(&self) -> Vec<crate::OperationEvent> {
-            self.events.borrow().clone()
+            self.events.lock().unwrap().clone()
         }
     }
 
