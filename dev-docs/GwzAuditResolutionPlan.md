@@ -47,16 +47,21 @@ splitting `workspace_ops/mod.rs` (§6).
 Recommended answers given; override as needed, but answer them before §4. AD1/AD2
 are architecture decisions; Q1–Q6 are policy.
 
+**Ratified 2026-06-17:** AD1, AD2, Q6 (the ✅ rows + detail below) — this clears the
+architecture gate, so WS-api / WS-contract / WS-backend may start. Q1–Q5 stand at
+*recommended* and are non-blocking for the backend API shape; confirm them at their
+workstreams or on request.
+
 | # | Decision | Recommended answer |
 | --- | --- | --- |
-| AD1 | Mutating-Git strategy (revisits `GWZGitBackendDecision`) | libgit2 stays *behind a strict boundary*, each mutating primitive **contract-proven porcelain-grade** (detail below). Not "porcelain-only CLI" by fiat. |
-| AD2 | Root/member boundary model | `.git/info/exclude` as the interim; **bare-gitlink is a spike, not yet a recommendation** (detail below). Not "resync `.gitignore`". |
+| AD1 ✅ | Mutating-Git strategy (revisits `GWZGitBackendDecision`) | **Ratified 2026-06-17.** libgit2 stays *behind a strict boundary*, each mutating primitive **contract-proven porcelain-grade** (detail below). Not "porcelain-only CLI" by fiat. |
+| AD2 ✅ | Root/member boundary model | **Ratified 2026-06-17.** `gwz.yml` stays authoritative for membership; `.git/info/exclude` is the interim boundary. **Gitlink buys no consistency over the yml-recorded SHA** (recorded ≠ live; pinned oid goes stale/unreachable; pointer only moves on an explicit root commit — relocates churn, doesn't remove it) — it is a cleaner *boundary marker*, not a sync mechanism → gitlink stays a **deferred spike**, not the destination; sync yml→git representation on demand. Not "resync `.gitignore`". |
 | Q1 | Is `fetch` inside the atomic guarantee? | **Treat fetch as mutation.** Plan with non-mutating `ls-remote` (libgit2 `Remote::connect`+`list`); fetch only *after* the whole selection passes Validate; if a remote-tracking-ref advance persists after failure, report it as an explicit member outcome. (Removes F10; honors "failed = nothing changed". Does not force the CLI.) |
 | Q2 | Is `push` atomic by default? | Cross-remote atomicity is impossible. Default = **preflight all** (remote exists, refspec resolves, optional dry-run) **then push**; real partial only under explicit policy, reported `Partial` with per-member identity. |
 | Q3 | Do `snapshot`/`tag` capture the live worktree or the lock? | **Live observed** state (REQ-084 "current state"). Reject dirty/unmaterialized unless an explicit flag records a dirty marker. Never claim `lock_match: Matches` unverified. |
 | Q4 | Must core honor `fetch-only`/`ff-only`/`merge`/`rebase`/`reset`? | **Yes.** `fetch-only` = no branch/worktree mutation; `ff-only` = today's default; `merge`/`rebase`/`reset` = implement or **reject loudly** — never silently downgrade. |
 | Q5 | Does `--force materialize` allow a dirty end state? | No. Force permits *overwriting* a dirty/occupied start, but the member must end **clean at the target commit**, verified in phase C. |
-| Q6 | Recovery metadata — **a schema question, not a path** | Decide: (a) is it needed for v0, or do we **reject partial mutation until recovery is designed**? (b) journal vs recovery-record vs event-log; (c) local-only `.gwz/` vs versioned; (d) what command lists/repairs/clears it; (e) how it interacts with JSON/JSONL output. `GWZDesign` defers persistent op logs, so this is a real model decision — **no ad-hoc `.gwz/recovery/<op>.yml`**. |
+| Q6 ✅ | Recovery metadata — **a schema question, not a path** | **Ratified 2026-06-17 — reject-partial for v0.** No recovery metadata: roll back this op where rollback is possible (local mutations — fresh clones/checkouts/worktrees), report explicit `Partial` with per-member identity where it isn't (`push` — can't un-push). Defers (b)–(e) — journal/record/event-log shape, `.gwz/` vs versioned, repair command, JSON/JSONL surface — until a real workflow needs *resume* over *redo*. `GWZDesign` defers persistent op logs, so **no ad-hoc `.gwz/recovery/<op>.yml`**. |
 
 ### AD1 — the backend primitive contract (makes "contract-proven" enforceable)
 
@@ -105,6 +110,14 @@ prove behavior across normal Git workflows:
 
 Do **not** implement gitlink as "same pattern as `.gitignore`" until that
 projection-mode question is decided.
+
+**Ratified 2026-06-17:** `gwz.yml` is authoritative for membership; the git
+representation is a *projection synced on demand*, not the master. Gitlink's only
+real gain over `.gitignore` is treating a member as one boundary unit in root
+`git status`/`add` — it adds **no** consistency the yml SHA lacks (recorded ≠ live;
+the pinned oid can go stale/unreachable; the pointer only moves on an explicit root
+commit, which merely *relocates* the churn). So gitlink stays a **deferred spike**;
+`.git/info/exclude` is the interim, `gwz.yml` the master.
 
 ## 3. Findings Register
 
@@ -215,7 +228,9 @@ audit fixes or output changes:
 1. **WS0** — commit the FF fix. *(done, `79d23c7`)*
 2. **WS-split-cli** — split `main.rs` now (architecture-independent), under the §5
    acceptance gate. Keeps the degodify moving without waiting on the decisions.
-3. **WS-decide** — AD1 / AD2 / Q1–Q6 (paper). Blocking for everything core-side.
+3. **WS-decide** — AD1 / AD2 / Q6 **ratified 2026-06-17** (architecture gate cleared).
+   Q1–Q5 remain at *recommended* (policy; confirm at their workstreams — non-blocking
+   for WS-api / WS-contract / WS-backend).
 4. **WS-api** — define the semantic backend API incl. root metadata/boundary
    staging.
 5. **WS-contract** — write the real-Git contract tests **RED** against that API.
@@ -252,3 +267,10 @@ backend/boundary architecture was settled — it is now a §2 decision.)
   recast as a schema question; sequencing clarified (RED contract tests → F18 →
   green); `main.rs` split acceptance gate added; stale starting-state / F0 fixed
   (committed at `79d23c7`).
+- **Decision ratification** (2026-06-17): AD1, AD2, Q6 ratified, clearing the §2
+  architecture gate → WS-api / WS-contract / WS-backend (F18) unblocked. AD1 —
+  libgit2 behind a strict boundary, each mutating primitive contract-proven, per-
+  primitive CLI fallback. AD2 — `gwz.yml` authoritative; `.git/info/exclude` interim;
+  gitlink a deferred spike that buys no consistency over the recorded SHA (boundary
+  marker, not sync). Q6 — reject-partial for v0: roll back where possible, explicit
+  `Partial` for `push`, no recovery metadata. Q1–Q5 still at *recommended*.
