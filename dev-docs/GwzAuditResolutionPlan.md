@@ -132,7 +132,7 @@ ratified (`a024907`); `ls_remote` added as the Q1 plan-before-fetch foundation
 | F0 | P0 ✓ | FF incident fixed `79d23c7`; primitive now self-verifies + porcelain-contract-tested (`fast_forward`/`checkout_commit`) `f16f258` | git/gitbackend.rs | WS0 ✓ |
 | F1 | P1 ✓ | `materialize` re-observes head/status post-mutation, records observed state + computed `lock_match` `b5744d2`; `clone_workspace`/`pull_snapshot` inherit via delegation | handle_materialize.rs | WS4 ✓ |
 | F2 | P1 ✓ | `materialize`/`init` roll back this op's **fresh clones** on mid-batch failure, no stale lock `baf912a` (Q6 reject-partial; existing-member re-checkout rollback deferred) | handle_materialize.rs, handle_init_from_sources.rs | WS3 ✓ |
-| F3 | P1 | `snapshot`/`tag` capture **stale lock**, not live worktree (no backend) | workspace_ops:421-437, 465-479 | WS4 |
+| F3 | P1 ✓ | `snapshot`/`tag` now take a `GitBackend` and capture each member's **live observed** head/status (`observed_member_map`); unmaterialized rejected, dirty recorded honestly `60d034f` (+cli `2f7ac72`; Q3 reject-dirty deferred) | handle_materialize.rs | WS4 ✓ |
 | F4 | ~~P1~~ → AD2 | `.gitignore` not resynced on materialize/pull/clone | workspace_ops:504,631,681 | **superseded by AD2** |
 | F5 | P1 | `status` reports `Ok`/`aggregate::Ok` for a **dirty/diverged** member | status:312, 630-643 | WS4 |
 | F6 | P1 | `pull --head` does **not reject dirty post-FF** state before writing the lock | workspace_ops:787 | WS3 |
@@ -282,6 +282,8 @@ backend/boundary architecture was settled — it is now a §2 decision.)
   `86ef63d`); F18 `stage_paths` (`57c68f5`); F0 primitive AD1 contract — `fast_forward`
   + `checkout_commit` self-verify + porcelain contract tests (`f16f258`); `ls_remote`
   Q1 foundation (`d9b1d68`); F7 push preflight (`8ed50cb`); F2 fresh-clone rollback
-  (`baf912a`); F1 materialize observed-state (`b5744d2`). Full suite green (94 lib +
-  16 integration), 0 warnings, clippy clean throughout. Next open P1s: F3, F5, F6, F8,
-  F9.
+  (`baf912a`); F1 materialize observed-state (`b5744d2`); F3 snapshot/tag observe live state
+  (`60d034f` + cli `2f7ac72`). Full suite green (95 lib +
+  16 integration), 0 warnings, clippy clean throughout. Next open P1s: F5 (status reports `Ok` for dirty/diverged
+  — needs a dirty-surfacing decision; there is no `MemberStatus::Dirty`), F6 (`pull
+  --head` reject dirty post-FF), F8 (sync-mode policy), F9 (CLI structured error path).
