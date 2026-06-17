@@ -151,6 +151,15 @@ pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
             })
         }
 
+        fn merge_upstream(
+            &self,
+            _path: &Path,
+            _branch: &str,
+            _upstream_ref: &str,
+        ) -> ModelResult<crate::git::GitIntegrateResult> {
+            Ok(crate::git::GitIntegrateResult::clean(TEST_COMMIT.to_owned()))
+        }
+
         fn checkout_commit(
             &self,
             _path: &Path,

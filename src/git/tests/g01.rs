@@ -414,6 +414,90 @@ use super::*;
     }
 
     #[test]
+    pub(crate) fn merge_upstream_matches_porcelain_merge_on_clean_diverge() {
+        // main@D and feature@C diverge from A touching DIFFERENT files → clean 3-way merge.
+        let temp = TempDir::new("merge-clean");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        let a = commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        run_git(&base, &["branch", "feature"]);
+        run_git(&base, &["checkout", "feature"]);
+        commit_file(&base, "feat.txt", "feature\n", "C", &[a_oid]).unwrap();
+        run_git(&base, &["checkout", "main"]);
+        commit_file(&base, "main.txt", "main\n", "D", &[a_oid]).unwrap();
+
+        let prim = temp.path().join("prim");
+        let porc = temp.path().join("porc");
+        copy_repo(&base, &prim);
+        copy_repo(&base, &porc);
+
+        let result = backend
+            .merge_upstream(&prim, "main", "refs/heads/feature")
+            .unwrap();
+        assert!(result.is_clean());
+        let merge_commit = result.commit.clone().unwrap();
+
+        run_git(&porc, &["merge", "--no-edit", "feature"]);
+
+        // Commit OIDs differ (signature/time), but the merged TREE must match porcelain,
+        // the worktree is clean, and HEAD is a two-parent merge commit over feature.
+        assert_eq!(
+            rev_parse(&prim, "HEAD^{tree}"),
+            rev_parse(&porc, "HEAD^{tree}")
+        );
+        assert!(status_porcelain(&prim).trim().is_empty());
+        assert_eq!(rev_parse(&prim, "HEAD"), merge_commit);
+        assert_eq!(
+            rev_parse(&prim, "HEAD^2"),
+            rev_parse(&prim, "refs/heads/feature")
+        );
+        assert_eq!(
+            fs::read_to_string(prim.join("feat.txt")).unwrap(),
+            "feature\n"
+        );
+        assert_eq!(fs::read_to_string(prim.join("main.txt")).unwrap(), "main\n");
+    }
+
+    #[test]
+    pub(crate) fn merge_upstream_leaves_conflict_in_place_like_porcelain() {
+        // main@D and feature@C both rewrite f.txt → a real merge conflict.
+        let temp = TempDir::new("merge-conflict");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        let a = commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        run_git(&base, &["branch", "feature"]);
+        run_git(&base, &["checkout", "feature"]);
+        commit_file(&base, "f.txt", "feature\n", "C", &[a_oid]).unwrap();
+        run_git(&base, &["checkout", "main"]);
+        let d = commit_file(&base, "f.txt", "main\n", "D", &[a_oid]).unwrap();
+
+        let prim = temp.path().join("prim");
+        let porc = temp.path().join("porc");
+        copy_repo(&base, &prim);
+        copy_repo(&base, &porc);
+
+        let result = backend
+            .merge_upstream(&prim, "main", "refs/heads/feature")
+            .unwrap();
+        // A conflict is reported, not errored: the path is named, HEAD has not moved.
+        assert!(!result.is_clean());
+        assert_eq!(result.conflicts, vec!["f.txt".to_owned()]);
+        assert!(result.commit.is_none());
+        assert_eq!(rev_parse(&prim, "HEAD"), d);
+        // Faithful to porcelain: worktree is left mid-merge and `git merge --continue`-able.
+        assert!(prim.join(".git/MERGE_HEAD").exists());
+        assert!(!run_git_ok(&porc, &["merge", "--no-edit", "feature"]));
+        assert_eq!(
+            status_porcelain(&prim).trim(),
+            status_porcelain(&porc).trim()
+        );
+    }
+
+    #[test]
     pub(crate) fn checkout_branch_matches_porcelain_and_refuses_diverged_reset() {
         let temp = TempDir::new("checkout-branch");
         let backend = Git2Backend::new();

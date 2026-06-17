@@ -30,6 +30,17 @@ pub trait GitBackend {
         branch: &str,
         upstream_ref: &str,
     ) -> ModelResult<GitUpdateResult>;
+    /// Integrate `upstream_ref` into `branch` by **merge** (porcelain `git merge`):
+    /// fast-forward when the branch is strictly behind, else record a two-parent merge
+    /// commit. On conflicts, leave the worktree mid-merge — `MERGE_HEAD` recorded so
+    /// `git merge --continue` works — and return the conflicted paths instead of erroring;
+    /// a conflict is an expected, developer-resolved outcome, not a failure. Self-verifies.
+    fn merge_upstream(
+        &self,
+        path: &Path,
+        branch: &str,
+        upstream_ref: &str,
+    ) -> ModelResult<GitIntegrateResult>;
     fn checkout_commit(&self, path: &Path, commit: &str) -> ModelResult<GitUpdateResult>;
     /// Put HEAD on `branch` at `commit` — create the branch if missing, checkout if it
     /// is already there. Per AD3(c)'s orphan-safety rule, REFUSE (`DivergedMember`) if
@@ -114,6 +125,30 @@ pub struct GitRemoteRef {
 pub struct GitUpdateResult {
     pub updated: bool,
     pub commit: Option<String>,
+}
+
+/// Outcome of a merge/rebase integration. A conflict is reported, not errored:
+/// `conflicts` names the paths and `commit` is `None`, with the worktree left
+/// mid-integration for the developer to resolve — exactly as porcelain git leaves it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitIntegrateResult {
+    /// New HEAD commit when the integration completed cleanly; `None` on conflict.
+    pub commit: Option<String>,
+    /// Conflicted paths; empty iff the integration completed cleanly.
+    pub conflicts: Vec<String>,
+}
+
+impl GitIntegrateResult {
+    pub(crate) fn clean(commit: String) -> Self {
+        Self {
+            commit: Some(commit),
+            conflicts: Vec::new(),
+        }
+    }
+
+    pub fn is_clean(&self) -> bool {
+        self.conflicts.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -291,6 +326,84 @@ impl GitBackend for Git2Backend {
             updated: true,
             commit: Some(target.to_string()),
         })
+    }
+
+    fn merge_upstream(
+        &self,
+        path: &Path,
+        branch: &str,
+        upstream_ref: &str,
+    ) -> ModelResult<GitIntegrateResult> {
+        let repo = open_repo(path)?;
+        let target = repo.revparse_single(upstream_ref).map_err(git_error)?.id();
+        let annotated = repo.find_annotated_commit(target).map_err(git_error)?;
+        let (analysis, _) = repo.merge_analysis(&[&annotated]).map_err(git_error)?;
+        if analysis.is_up_to_date() {
+            return Ok(GitIntegrateResult::clean(target.to_string()));
+        }
+        if analysis.is_fast_forward() {
+            // `git merge` fast-forwards by default when the branch is strictly behind.
+            let ff = self.fast_forward(path, branch, upstream_ref)?;
+            return Ok(GitIntegrateResult {
+                commit: ff.commit,
+                conflicts: Vec::new(),
+            });
+        }
+
+        // True three-way merge: git2 stages the result into the index + worktree.
+        repo.merge(&[&annotated], None, None).map_err(git_error)?;
+        let mut index = repo.index().map_err(git_error)?;
+        if index.has_conflicts() {
+            // Faithful to porcelain: leave the conflict in the worktree and record
+            // MERGE_HEAD so the developer can resolve and `git merge --continue`.
+            std::fs::write(repo.path().join("MERGE_HEAD"), format!("{target}\n"))
+                .map_err(|err| ModelError::new(ErrorCode::GitCommandFailed, err.to_string()))?;
+            let conflicts = conflict_paths(&index)?;
+            // AD1 self-verify: the conflict state actually persisted on disk.
+            if conflicts.is_empty()
+                || !open_repo(path)?.index().map_err(git_error)?.has_conflicts()
+            {
+                return Err(ModelError::new(
+                    ErrorCode::GitCommandFailed,
+                    "merge reported conflicts but none persisted in the index",
+                ));
+            }
+            return Ok(GitIntegrateResult {
+                commit: None,
+                conflicts,
+            });
+        }
+
+        // Clean merge: write the merged tree and record the two-parent merge commit.
+        let tree_oid = index.write_tree().map_err(git_error)?;
+        let tree = repo.find_tree(tree_oid).map_err(git_error)?;
+        let signature = merge_signature(&repo)?;
+        let head_commit = repo
+            .head()
+            .map_err(git_error)?
+            .peel_to_commit()
+            .map_err(git_error)?;
+        let upstream_commit = repo.find_commit(target).map_err(git_error)?;
+        let merge_oid = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                &format!("Merge {upstream_ref} into {branch}"),
+                &tree,
+                &[&head_commit, &upstream_commit],
+            )
+            .map_err(git_error)?;
+        repo.cleanup_state().map_err(git_error)?;
+        // AD1 self-verify: HEAD advanced to the merge commit with no residual conflicts.
+        let observed = self.head(path)?;
+        if observed.commit.as_deref() != Some(merge_oid.to_string().as_str()) {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "post-merge HEAD is not the merge commit",
+            ));
+        }
+        Ok(GitIntegrateResult::clean(merge_oid.to_string()))
     }
 
     fn checkout_commit(&self, path: &Path, commit: &str) -> ModelResult<GitUpdateResult> {
@@ -499,6 +612,32 @@ impl GitBackend for Git2Backend {
 
 pub(crate) fn open_repo(path: &Path) -> ModelResult<git2::Repository> {
     git2::Repository::open(path).map_err(git_error)
+}
+
+/// Conflicted paths in `index`, sorted and de-duplicated. A conflict carries up to
+/// three stages (ancestor/our/their); any one supplies the path.
+pub(crate) fn conflict_paths(index: &git2::Index) -> ModelResult<Vec<String>> {
+    let mut paths = Vec::new();
+    for conflict in index.conflicts().map_err(git_error)? {
+        let conflict = conflict.map_err(git_error)?;
+        if let Some(entry) = conflict.our.or(conflict.their).or(conflict.ancestor)
+            && let Ok(path) = std::str::from_utf8(&entry.path)
+        {
+            paths.push(path.to_owned());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// Author/committer for gwz-created merge commits: the repo's configured identity
+/// when present, else a stable gwz fallback so an unconfigured repo can still merge.
+pub(crate) fn merge_signature(repo: &git2::Repository) -> ModelResult<git2::Signature<'static>> {
+    if let Ok(signature) = repo.signature() {
+        return Ok(signature);
+    }
+    git2::Signature::now("gwz", "gwz@localhost").map_err(git_error)
 }
 
 pub(crate) fn remote_fetch_options(credential_helpers: CredentialHelperPolicy) -> git2::FetchOptions<'static> {
