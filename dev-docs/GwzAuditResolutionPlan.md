@@ -56,9 +56,10 @@ workstreams or on request.
 | --- | --- | --- |
 | AD1 ✅ | Mutating-Git strategy (revisits `GWZGitBackendDecision`) | **Ratified 2026-06-17.** libgit2 stays *behind a strict boundary*, each mutating primitive **contract-proven porcelain-grade** (detail below). Not "porcelain-only CLI" by fiat. |
 | AD2 ✅ | Root/member boundary model | **Ratified 2026-06-17.** `gwz.yml` stays authoritative for membership; `.git/info/exclude` is the interim boundary. **Gitlink buys no consistency over the yml-recorded SHA** (recorded ≠ live; pinned oid goes stale/unreachable; pointer only moves on an explicit root commit — relocates churn, doesn't remove it) — it is a cleaner *boundary marker*, not a sync mechanism → gitlink stays a **deferred spike**, not the destination; sync yml→git representation on demand. Not "resync `.gitignore`". |
+| AD3 ⬜ | Workspace model — enforce vs capture/restore | **Proposed (pending ratification).** gwz is a **developer-driven capture/restore tool, NOT an enforcer**: developers own their member repos and run arbitrary git directly; "out of sync" is the normal resting state, not an error. Two explicit, human-invoked directions — **capture** (worktree→record: `status`/`snapshot`/`tag` observe live state) and **restore** (record→worktree: `materialize`/`pull`); gwz never silently forces the lock onto a tree. Recasts Q3 (capture dirty, don't reject; carry lock state for unmaterialized) and reframes the materialize-detach UX. Detail + sub-questions below. |
 | Q1 | Is `fetch` inside the atomic guarantee? | **Treat fetch as mutation.** Plan with non-mutating `ls-remote` (libgit2 `Remote::connect`+`list`); fetch only *after* the whole selection passes Validate; if a remote-tracking-ref advance persists after failure, report it as an explicit member outcome. (Removes F10; honors "failed = nothing changed". Does not force the CLI.) |
 | Q2 | Is `push` atomic by default? | Cross-remote atomicity is impossible. Default = **preflight all** (remote exists, refspec resolves, optional dry-run) **then push**; real partial only under explicit policy, reported `Partial` with per-member identity. |
-| Q3 | Do `snapshot`/`tag` capture the live worktree or the lock? | **Live observed** state (REQ-084 "current state"). Reject dirty/unmaterialized unless an explicit flag records a dirty marker. Never claim `lock_match: Matches` unverified. |
+| Q3 | Do `snapshot`/`tag` capture the live worktree or the lock? | **Live observed** state (REQ-084 "current state") — done (F3 `60d034f`). **Recast by AD3:** *capture* dirty (record `commit=HEAD` + `dirty`, never reject) and *carry the lock state* for unmaterialized members (don't fail the snapshot). The earlier "reject dirty/unmaterialized" is withdrawn for capture ops. Never claim `lock_match: Matches` unverified. |
 | Q4 | Must core honor `fetch-only`/`ff-only`/`merge`/`rebase`/`reset`? | **Yes.** `fetch-only` = no branch/worktree mutation; `ff-only` = today's default; `merge`/`rebase`/`reset` = implement or **reject loudly** — never silently downgrade. |
 | Q5 | Does `--force materialize` allow a dirty end state? | No. Force permits *overwriting* a dirty/occupied start, but the member must end **clean at the target commit**, verified in phase C. |
 | Q6 ✅ | Recovery metadata — **a schema question, not a path** | **Ratified 2026-06-17 — reject-partial for v0.** No recovery metadata: roll back this op where rollback is possible (local mutations — fresh clones/checkouts/worktrees), report explicit `Partial` with per-member identity where it isn't (`push` — can't un-push). Defers (b)–(e) — journal/record/event-log shape, `.gwz/` vs versioned, repair command, JSON/JSONL surface — until a real workflow needs *resume* over *redo*. `GWZDesign` defers persistent op logs, so **no ad-hoc `.gwz/recovery/<op>.yml`**. |
@@ -118,6 +119,39 @@ real gain over `.gitignore` is treating a member as one boundary unit in root
 the pinned oid can go stale/unreachable; the pointer only moves on an explicit root
 commit, which merely *relocates* the churn). So gitlink stays a **deferred spike**;
 `.git/info/exclude` is the interim, `gwz.yml` the master.
+
+### AD3 — workspace model: developer-driven capture/restore (proposed)
+
+gwz is **not an enforcer**. Developers own their member repos and run arbitrary git
+(branch, commit, rebase, checkout) directly; a member drifting from the lock is the
+*normal resting state*, not an error. gwz exposes two explicit, human-invoked
+directions and never silently reconciles one onto the other:
+
+- **Capture** (worktree → record): `status` reports drift; `snapshot`/`tag` freeze the
+  current *observed* multi-repo state as a named, restorable point. (F3 `60d034f` made
+  these observe live committed state — commit/branch/detached/dirty.)
+- **Restore** (record → worktree): `materialize`/`pull` rebuild worktrees from a saved
+  point — on explicit request only.
+
+Sub-questions to ratify:
+- **(a) Dirty/uncommitted — capture, never reject.** Record `commit=HEAD` + `dirty`;
+  note that uncommitted changes are not captured (git can't address a non-commit), so
+  restore won't reproduce them. Withdraws Q3's "reject dirty." *(snapshot already does
+  not reject dirty — this just ratifies it + adds the note.)*
+- **(b) Unmaterialized in snapshot — carry the lock, don't fail.** Capture present
+  members; for an absent member, carry its last lock state so the snapshot stays
+  complete/restorable. **Reverses the unmaterialized rejection F3 added**
+  (`observed_member_map`) — the one concrete snapshot code change AD3 implies.
+- **(c) `materialize` restore UX.** Restore the *branch* when the saved state was on
+  one; detach only when it genuinely was — instead of today's always-detach
+  (`checkout_commit` → `set_head_detached`).
+- **(d) A first-class capture op?** `snapshot`/`tag` write *named* artifacts and leave
+  the lock untouched; only `materialize`/`pull` (which mutate the worktree) move the
+  lock. Decide whether to add a pure `gwz capture`/`adopt` (worktree → lock, no
+  mutation) so "I diverged, record it now" is one command, not snapshot-then-restore.
+
+AD3 is **upstream of** F5 (status dirty surfacing) and the Q3/Q4/Q5 worktree policies —
+ratify it before those. No code yet; the only near-term change it forces is (b).
 
 ## 3. Findings Register
 
