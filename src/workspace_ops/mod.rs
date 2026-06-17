@@ -2226,22 +2226,11 @@ fn replace_managed_gitignore_block(existing: &str, managed: &str) -> String {
 }
 
 fn stage_workspace_git_metadata(root: &Path) -> ModelResult<()> {
-    let repo = git2::Repository::open(root).map_err(git_command_error)?;
-    let mut index = repo.index().map_err(git_command_error)?;
-    index
-        .add_all([WORKSPACE_DIR], git2::IndexAddOption::DEFAULT, None)
-        .map_err(git_command_error)?;
+    let mut pathspecs = vec![WORKSPACE_DIR];
     if root.join(".gitignore").is_file() {
-        index
-            .add_path(Path::new(".gitignore"))
-            .map_err(git_command_error)?;
+        pathspecs.push(".gitignore");
     }
-    index.write().map_err(git_command_error)?;
-    Ok(())
-}
-
-fn git_command_error(error: git2::Error) -> ModelError {
-    ModelError::new(ErrorCode::GitCommandFailed, error.message())
+    Git2Backend::new().stage_paths(root, &pathspecs).map(|_| ())
 }
 
 fn invalid(message: impl Into<String>) -> ModelError {
@@ -2383,6 +2372,14 @@ mod tests {
     impl GitBackend for TrackingBackend {
         fn is_repository(&self, _path: &Path) -> ModelResult<bool> {
             Ok(true)
+        }
+
+        fn stage_paths(
+            &self,
+            _path: &Path,
+            _pathspecs: &[&str],
+        ) -> ModelResult<crate::git::GitStageResult> {
+            Ok(crate::git::GitStageResult { staged: 0 })
         }
 
         fn create_repo(&self, path: &Path) -> ModelResult<crate::git::GitCreateResult> {

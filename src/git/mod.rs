@@ -32,6 +32,11 @@ pub trait GitBackend {
     fn push(&self, path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult>;
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>>;
     fn is_ancestor(&self, path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool>;
+    /// Stage `pathspecs` into the index — `git add` semantics: add new/modified
+    /// files, remove deleted ones, honor `.gitignore`. Self-verifies the index
+    /// persisted with the requested files staged before returning success.
+    /// Content parity with porcelain `git add` is proven by contract test.
+    fn stage_paths(&self, path: &Path, pathspecs: &[&str]) -> ModelResult<GitStageResult>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,6 +101,13 @@ pub struct GitRemoteResult {
 pub struct GitPushResult {
     pub remote: String,
     pub refspec: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitStageResult {
+    /// Top-level *file* pathspecs confirmed present in the index by the self-verify
+    /// pass. Directory pathspecs are staged but not counted here.
+    pub staged: usize,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -321,6 +333,44 @@ impl GitBackend for Git2Backend {
             remote: remote.to_owned(),
             refspec: refspec.to_owned(),
         })
+    }
+
+    fn stage_paths(&self, path: &Path, pathspecs: &[&str]) -> ModelResult<GitStageResult> {
+        let repo = open_repo(path)?;
+        let mut index = repo.index().map_err(git_error)?;
+        index
+            .add_all(
+                pathspecs.iter().copied(),
+                git2::IndexAddOption::DEFAULT,
+                None,
+            )
+            .map_err(git_error)?;
+        index.write().map_err(git_error)?;
+
+        // AD1 self-verify: re-open the repo so the index is read fresh from disk,
+        // and confirm every requested *file* persisted into the index. Directory
+        // pathspecs are covered by the fresh read; full content parity with
+        // porcelain `git add` is proven by the contract test, not asserted here.
+        let verify = open_repo(path)?.index().map_err(git_error)?;
+        if verify.has_conflicts() {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "index has conflicts after staging",
+            ));
+        }
+        let mut staged = 0usize;
+        for spec in pathspecs {
+            if path.join(spec).is_file() {
+                if verify.get_path(Path::new(spec), 0).is_none() {
+                    return Err(ModelError::new(
+                        ErrorCode::GitCommandFailed,
+                        format!("staged path missing from index after write: {spec}"),
+                    ));
+                }
+                staged += 1;
+            }
+        }
+        Ok(GitStageResult { staged })
     }
 
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>> {
@@ -672,6 +722,81 @@ mod tests {
         assert!(backend.is_repository(&repo_path).unwrap());
         assert!(!backend.is_repository(&temp.path().join("missing")).unwrap());
         assert!(!git2::Repository::open(&repo_path).unwrap().is_bare());
+    }
+
+    #[test]
+    fn stage_paths_matches_porcelain_git_add() {
+        // Seed two identical repos; stage one via the primitive and one via
+        // porcelain `git add`. The resulting index must be byte-identical —
+        // pathspec scoping, recursive add, and `.gitignore` honoring all agree.
+        let temp = TempDir::new("stage-parity");
+        let prim = temp.path().join("prim");
+        let porc = temp.path().join("porc");
+        seed_stage_repo(&prim);
+        seed_stage_repo(&porc);
+
+        let result = Git2Backend::new()
+            .stage_paths(&prim, &["tracked", ".gitignore"])
+            .expect("primitive stage");
+        // Only ".gitignore" is a top-level file; "tracked" is a directory.
+        assert_eq!(result.staged, 1);
+
+        run_git(&porc, &["add", "tracked", ".gitignore"]);
+
+        assert_eq!(
+            ls_files_stage(&prim),
+            ls_files_stage(&porc),
+            "primitive index must match `git add` porcelain (mode+oid+path)"
+        );
+        // Sanity: the gitignored, out-of-pathspec files are staged by neither.
+        assert!(!ls_files_stage(&prim).contains("ignored/"));
+        assert!(!ls_files_stage(&prim).contains("loose.txt"));
+    }
+
+    #[test]
+    fn stage_paths_errors_on_non_repository() {
+        let temp = TempDir::new("stage-nonrepo");
+        let err = Git2Backend::new()
+            .stage_paths(temp.path(), &[".gitignore"])
+            .expect_err("staging a non-repository must fail");
+        assert_eq!(err.code, ErrorCode::GitCommandFailed);
+    }
+
+    fn seed_stage_repo(root: &Path) {
+        fs::create_dir_all(root.join("tracked")).unwrap();
+        fs::write(root.join("tracked").join("a.txt"), "a\n").unwrap();
+        fs::create_dir_all(root.join("ignored")).unwrap();
+        fs::write(root.join("ignored").join("b.txt"), "b\n").unwrap();
+        fs::write(root.join(".gitignore"), "/ignored/\n").unwrap();
+        fs::write(root.join("loose.txt"), "loose\n").unwrap();
+        Git2Backend::new().create_repo(root).unwrap();
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=GWZ",
+                "-c",
+                "user.email=gwz@example.invalid",
+            ])
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn ls_files_stage(root: &Path) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["ls-files", "--stage"])
+            .output()
+            .expect("spawn git ls-files");
+        assert!(output.status.success(), "git ls-files failed");
+        String::from_utf8(output.stdout).expect("ls-files utf8")
     }
 
     #[test]
