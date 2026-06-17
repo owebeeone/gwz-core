@@ -56,7 +56,7 @@ workstreams or on request.
 | --- | --- | --- |
 | AD1 ✅ | Mutating-Git strategy (revisits `GWZGitBackendDecision`) | **Ratified 2026-06-17.** libgit2 stays *behind a strict boundary*, each mutating primitive **contract-proven porcelain-grade** (detail below). Not "porcelain-only CLI" by fiat. |
 | AD2 ✅ | Root/member boundary model | **Ratified 2026-06-17.** `gwz.yml` stays authoritative for membership; `.git/info/exclude` is the interim boundary. **Gitlink buys no consistency over the yml-recorded SHA** (recorded ≠ live; pinned oid goes stale/unreachable; pointer only moves on an explicit root commit — relocates churn, doesn't remove it) — it is a cleaner *boundary marker*, not a sync mechanism → gitlink stays a **deferred spike**, not the destination; sync yml→git representation on demand. Not "resync `.gitignore`". |
-| AD3 ✅ | Workspace model — enforce vs capture/restore | **Ratified 2026-06-18** (capture built on it). gwz is a **developer-driven capture/restore tool, NOT an enforcer**: developers own their member repos and run arbitrary git directly; "out of sync" is the normal resting state, not an error. Two explicit, human-invoked directions — **capture** (worktree→record: `status`/`snapshot`/`tag`/`capture` observe live state) and **restore** (record→worktree: `materialize`/`pull`); gwz never silently forces the lock onto a tree. Recasts Q3. **Done:** (a) capture-dirty, (b) carry-lock-for-unmaterialized, (d) `gwz capture` verb (`14985fd`+`ffeee75`). **Open:** (c) materialize restore-onto-branch vs always-detach. Detail below. |
+| AD3 ✅ | Workspace model — enforce vs capture/restore | **Ratified 2026-06-18** (capture built on it). gwz is a **developer-driven capture/restore tool, NOT an enforcer**: developers own their member repos and run arbitrary git directly; "out of sync" is the normal resting state, not an error. Two explicit, human-invoked directions — **capture** (worktree→record: `status`/`snapshot`/`tag`/`capture` observe live state) and **restore** (record→worktree: `materialize`/`pull`); gwz never silently forces the lock onto a tree. Recasts Q3. **All sub-questions resolved:** (a) capture-dirty, (b) carry-lock-for-unmaterialized, (c) materialize restores onto the saved branch / never silently resets one (`5674092`+`2d3c68a`), (d) `gwz capture` verb (`14985fd`+`ffeee75`). Detail below. |
 | Q1 | Is `fetch` inside the atomic guarantee? | **Treat fetch as mutation.** Plan with non-mutating `ls-remote` (libgit2 `Remote::connect`+`list`); fetch only *after* the whole selection passes Validate; if a remote-tracking-ref advance persists after failure, report it as an explicit member outcome. (Removes F10; honors "failed = nothing changed". Does not force the CLI.) |
 | Q2 | Is `push` atomic by default? | Cross-remote atomicity is impossible. Default = **preflight all** (remote exists, refspec resolves, optional dry-run) **then push**; real partial only under explicit policy, reported `Partial` with per-member identity. |
 | Q3 | Do `snapshot`/`tag` capture the live worktree or the lock? | **Live observed** state (REQ-084 "current state") — done (F3 `60d034f`). **Recast by AD3:** *capture* dirty (record `commit=HEAD` + `dirty`, never reject) and *carry the lock state* for unmaterialized members (don't fail the snapshot). The earlier "reject dirty/unmaterialized" is withdrawn for capture ops. Never claim `lock_match: Matches` unverified. |
@@ -142,9 +142,12 @@ Sub-questions to ratify:
   members; for an absent member, carry its last lock state so the snapshot stays
   complete/restorable. **Reverses the unmaterialized rejection F3 added**
   (`observed_member_map`) — the one concrete snapshot code change AD3 implies.
-- **(c) `materialize` restore UX.** Restore the *branch* when the saved state was on
-  one; detach only when it genuinely was — instead of today's always-detach
-  (`checkout_commit` → `set_head_detached`).
+- **(c) `materialize` restore UX — done (`5674092`+`2d3c68a`).** Restores onto the
+  saved branch when safe (creatable, or already at the target); **never silently resets
+  a branch** — when the branch has diverged it detaches at the target instead, preserving
+  the developer's commits. New self-verifying `checkout_branch` primitive (refuses a
+  diverged reset, porcelain-contract-tested) + materialize's catch-`DivergedMember`→detach
+  fallback.
 - **(d) A first-class capture op?** `snapshot`/`tag` write *named* artifacts and leave
   the lock untouched; only `materialize`/`pull` (which mutate the worktree) move the
   lock. Decide whether to add a pure `gwz capture`/`adopt` (worktree → lock, no
