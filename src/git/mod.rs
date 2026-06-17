@@ -239,6 +239,7 @@ impl GitBackend for Git2Backend {
             .set_target(target, "gwz fast-forward")
             .map_err(git_error)?;
         repo.set_head(&local_ref_name).map_err(git_error)?;
+        verify_checkout_state(path, target)?;
         Ok(GitUpdateResult {
             updated: true,
             commit: Some(target.to_string()),
@@ -254,6 +255,7 @@ impl GitBackend for Git2Backend {
         repo.checkout_tree(&object, Some(&mut checkout))
             .map_err(git_error)?;
         repo.set_head_detached(oid).map_err(git_error)?;
+        verify_checkout_state(path, oid)?;
         Ok(GitUpdateResult {
             updated: true,
             commit: Some(oid.to_string()),
@@ -626,6 +628,44 @@ fn original_path(entry: &git2::StatusEntry<'_>) -> Option<String> {
         .and_then(|delta| delta.old_file().path())
         .and_then(|path| path.to_str())
         .map(ToOwned::to_owned)
+}
+
+/// AD1 self-verify for ref/worktree-advancing primitives: re-open the repo and
+/// confirm HEAD now resolves to `expected` and the tracked worktree matches it
+/// (no staged or unstaged drift). Catches the F0 class of bug — a ref advanced
+/// without the worktree following, or vice versa — before the primitive reports
+/// success. Untracked files are ignored.
+fn verify_checkout_state(path: &Path, expected: git2::Oid) -> ModelResult<()> {
+    let repo = open_repo(path)?;
+    let head_oid = repo
+        .head()
+        .and_then(|head| head.peel_to_commit())
+        .map_err(git_error)?
+        .id();
+    if head_oid != expected {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            format!("post-update HEAD {head_oid} does not match target {expected}"),
+        ));
+    }
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(false);
+    let drifted = repo
+        .statuses(Some(&mut opts))
+        .map_err(git_error)?
+        .iter()
+        .any(|entry| {
+            entry
+                .status()
+                .intersects(staged_statuses() | unstaged_statuses())
+        });
+    if drifted {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "post-update worktree does not match the target tree",
+        ));
+    }
+    Ok(())
 }
 
 fn git_error(error: git2::Error) -> ModelError {
@@ -1007,6 +1047,133 @@ mod tests {
     }
 
     #[test]
+    fn fast_forward_matches_porcelain_merge_ff_only_and_self_verifies() {
+        // main@A behind feature@B (A is an ancestor of B): a clean fast-forward.
+        let temp = TempDir::new("ff-parity");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        let a = commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        run_git(&base, &["branch", "feature"]);
+        run_git(&base, &["checkout", "feature"]);
+        let b = commit_file(&base, "f.txt", "b\n", "B", &[a_oid]).unwrap();
+        run_git(&base, &["checkout", "main"]);
+
+        let prim = temp.path().join("prim");
+        let porc = temp.path().join("porc");
+        copy_repo(&base, &prim);
+        copy_repo(&base, &porc);
+
+        let result = backend
+            .fast_forward(&prim, "main", "refs/heads/feature")
+            .unwrap();
+        assert!(result.updated);
+        assert_eq!(result.commit.as_deref(), Some(b.as_str()));
+
+        run_git(&porc, &["merge", "--ff-only", "feature"]);
+
+        // Byte-identical end state vs porcelain: same HEAD, same tree, clean worktree.
+        assert_eq!(rev_parse(&prim, "HEAD"), rev_parse(&porc, "HEAD"));
+        assert_eq!(rev_parse(&prim, "HEAD"), b);
+        assert_eq!(
+            rev_parse(&prim, "HEAD^{tree}"),
+            rev_parse(&porc, "HEAD^{tree}")
+        );
+        assert!(status_porcelain(&prim).trim().is_empty());
+        assert_eq!(fs::read_to_string(prim.join("f.txt")).unwrap(), "b\n");
+    }
+
+    #[test]
+    fn fast_forward_rejects_divergent_history_without_moving_branch() {
+        // main@D and feature@C both descend from A — not fast-forwardable.
+        let temp = TempDir::new("ff-diverge");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        let a = commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        run_git(&base, &["branch", "feature"]);
+        run_git(&base, &["checkout", "feature"]);
+        commit_file(&base, "f.txt", "c\n", "C", &[a_oid]).unwrap();
+        run_git(&base, &["checkout", "main"]);
+        let d = commit_file(&base, "f.txt", "d\n", "D", &[a_oid]).unwrap();
+
+        let err = backend
+            .fast_forward(&base, "main", "refs/heads/feature")
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::DivergedMember);
+        // Porcelain agrees it is not fast-forwardable.
+        assert!(!run_git_ok(&base, &["merge", "--ff-only", "feature"]));
+        // Failed = nothing changed: main is still at D.
+        assert_eq!(rev_parse(&base, "HEAD"), d);
+    }
+
+    #[test]
+    fn checkout_commit_matches_porcelain_and_self_verifies() {
+        // Detach onto an older commit A while B is current.
+        let temp = TempDir::new("checkout-parity");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        let a = commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        commit_file(&base, "f.txt", "b\n", "B", &[a_oid]).unwrap();
+
+        let prim = temp.path().join("prim");
+        let porc = temp.path().join("porc");
+        copy_repo(&base, &prim);
+        copy_repo(&base, &porc);
+
+        let result = backend.checkout_commit(&prim, &a).unwrap();
+        assert_eq!(result.commit.as_deref(), Some(a.as_str()));
+
+        run_git(&porc, &["checkout", &a]);
+
+        assert_eq!(rev_parse(&prim, "HEAD"), rev_parse(&porc, "HEAD"));
+        assert_eq!(rev_parse(&prim, "HEAD"), a);
+        assert_eq!(
+            rev_parse(&prim, "HEAD^{tree}"),
+            rev_parse(&porc, "HEAD^{tree}")
+        );
+        assert!(status_porcelain(&prim).trim().is_empty());
+        assert_eq!(fs::read_to_string(prim.join("f.txt")).unwrap(), "a\n");
+        assert!(backend.head(&prim).unwrap().is_detached);
+    }
+
+    #[test]
+    fn checkout_commit_rejects_unknown_commit_without_moving_head() {
+        let temp = TempDir::new("checkout-missing");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let before = rev_parse(&base, "HEAD");
+
+        let bogus = "0".repeat(40);
+        let err = backend.checkout_commit(&base, &bogus).unwrap_err();
+        assert_eq!(err.code, ErrorCode::GitCommandFailed);
+        assert_eq!(rev_parse(&base, "HEAD"), before);
+    }
+
+    #[test]
+    fn verify_checkout_state_accepts_match_and_rejects_mismatch() {
+        // Direct test of the AD1 self-verify: HEAD is at B.
+        let temp = TempDir::new("verify-state");
+        let backend = Git2Backend::new();
+        let repo = temp.path().join("repo");
+        backend.create_repo(&repo).unwrap();
+        let a = commit_file(&repo, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        let b = commit_file(&repo, "f.txt", "b\n", "B", &[a_oid]).unwrap();
+        let b_oid = git2::Oid::from_str(&b).unwrap();
+
+        assert!(verify_checkout_state(&repo, b_oid).is_ok());
+        let err = verify_checkout_state(&repo, a_oid).unwrap_err();
+        assert_eq!(err.code, ErrorCode::GitCommandFailed);
+    }
+
+    #[test]
     fn reports_commit_ancestry_without_moving_head() {
         let temp = TempDir::new("ancestry");
         let backend = Git2Backend::new();
@@ -1064,6 +1231,52 @@ mod tests {
     fn init_bare_main(path: &Path) {
         let repo = git2::Repository::init_bare(path).unwrap();
         repo.set_head("refs/heads/main").unwrap();
+    }
+
+    fn copy_repo(src: &Path, dst: &Path) {
+        let status = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(src)
+            .arg(dst)
+            .status()
+            .expect("spawn cp");
+        assert!(status.success(), "cp -R failed");
+    }
+
+    fn rev_parse(repo: &Path, rev: &str) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", rev])
+            .output()
+            .expect("spawn git rev-parse");
+        assert!(output.status.success(), "git rev-parse {rev} failed");
+        String::from_utf8(output.stdout)
+            .expect("rev-parse utf8")
+            .trim()
+            .to_owned()
+    }
+
+    fn status_porcelain(repo: &Path) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["status", "--porcelain"])
+            .output()
+            .expect("spawn git status");
+        assert!(output.status.success(), "git status failed");
+        String::from_utf8(output.stdout).expect("status utf8")
+    }
+
+    fn run_git_ok(root: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .args(["-c", "user.name=GWZ", "-c", "user.email=gwz@example.invalid"])
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .expect("spawn git")
+            .success()
     }
 
     struct TempDir {
