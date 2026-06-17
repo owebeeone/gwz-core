@@ -52,6 +52,16 @@ pub trait GitBackend {
         branch: &str,
         upstream_ref: &str,
     ) -> ModelResult<GitIntegrateResult>;
+    /// Snap `branch` to `upstream_ref` by **hard reset** (porcelain `git reset --hard`):
+    /// discard local commits AND uncommitted changes, moving the branch onto upstream.
+    /// Destructive and conflict-free; the caller gates it on `policy.destructive`.
+    /// Self-verifies the branch (not a detached HEAD) is at the upstream commit, clean.
+    fn reset_hard(
+        &self,
+        path: &Path,
+        branch: &str,
+        upstream_ref: &str,
+    ) -> ModelResult<GitUpdateResult>;
     fn checkout_commit(&self, path: &Path, commit: &str) -> ModelResult<GitUpdateResult>;
     /// Put HEAD on `branch` at `commit` — create the branch if missing, checkout if it
     /// is already there. Per AD3(c)'s orphan-safety rule, REFUSE (`DivergedMember`) if
@@ -481,6 +491,32 @@ impl GitBackend for Git2Backend {
             ));
         }
         Ok(GitIntegrateResult::clean(new_head))
+    }
+
+    fn reset_hard(
+        &self,
+        path: &Path,
+        branch: &str,
+        upstream_ref: &str,
+    ) -> ModelResult<GitUpdateResult> {
+        let repo = open_repo(path)?;
+        let target = repo.revparse_single(upstream_ref).map_err(git_error)?.id();
+        let target_object = repo.find_object(target, None).map_err(git_error)?;
+        repo.reset(&target_object, git2::ResetType::Hard, None)
+            .map_err(git_error)?;
+        verify_checkout_state(path, target)?;
+        // AD1 self-verify: the branch (not a detached HEAD) now points at upstream.
+        let observed = self.head(path)?;
+        if observed.is_detached || observed.branch.as_deref() != Some(branch) {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("post-reset HEAD is not on branch '{branch}'"),
+            ));
+        }
+        Ok(GitUpdateResult {
+            updated: true,
+            commit: Some(target.to_string()),
+        })
     }
 
     fn checkout_commit(&self, path: &Path, commit: &str) -> ModelResult<GitUpdateResult> {

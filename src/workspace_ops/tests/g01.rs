@@ -169,6 +169,18 @@ pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
             Ok(crate::git::GitIntegrateResult::clean(TEST_COMMIT.to_owned()))
         }
 
+        fn reset_hard(
+            &self,
+            _path: &Path,
+            _branch: &str,
+            _upstream_ref: &str,
+        ) -> ModelResult<crate::git::GitUpdateResult> {
+            Ok(crate::git::GitUpdateResult {
+                updated: true,
+                commit: Some(TEST_COMMIT.to_owned()),
+            })
+        }
+
         fn checkout_commit(
             &self,
             _path: &Path,

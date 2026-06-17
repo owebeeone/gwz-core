@@ -571,6 +571,52 @@ use super::*;
     }
 
     #[test]
+    pub(crate) fn reset_hard_matches_porcelain_and_discards_local() {
+        // main@D diverged from feature@C; reset --hard snaps main onto C, discarding D
+        // AND any uncommitted changes.
+        let temp = TempDir::new("reset-hard");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        let a = commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        run_git(&base, &["branch", "feature"]);
+        run_git(&base, &["checkout", "feature"]);
+        let c = commit_file(&base, "f.txt", "feature\n", "C", &[a_oid]).unwrap();
+        run_git(&base, &["checkout", "main"]);
+        commit_file(&base, "f.txt", "main\n", "D", &[a_oid]).unwrap();
+
+        let prim = temp.path().join("prim");
+        let porc = temp.path().join("porc");
+        copy_repo(&base, &prim);
+        copy_repo(&base, &porc);
+        // Dirty the primary worktree: reset --hard must discard this too.
+        fs::write(prim.join("f.txt"), "uncommitted\n").unwrap();
+        assert!(backend.status(&prim).unwrap().is_dirty);
+
+        let result = backend
+            .reset_hard(&prim, "main", "refs/heads/feature")
+            .unwrap();
+        assert!(result.updated);
+        assert_eq!(result.commit.as_deref(), Some(c.as_str()));
+
+        run_git(&porc, &["reset", "--hard", "feature"]);
+
+        // Byte-identical end state vs porcelain: same HEAD at feature, same tree, clean.
+        assert_eq!(rev_parse(&prim, "HEAD"), rev_parse(&porc, "HEAD"));
+        assert_eq!(rev_parse(&prim, "HEAD"), c);
+        assert_eq!(
+            rev_parse(&prim, "HEAD^{tree}"),
+            rev_parse(&porc, "HEAD^{tree}")
+        );
+        assert!(status_porcelain(&prim).trim().is_empty());
+        assert_eq!(fs::read_to_string(prim.join("f.txt")).unwrap(), "feature\n");
+        let head = backend.head(&prim).unwrap();
+        assert!(!head.is_detached);
+        assert_eq!(head.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
     pub(crate) fn checkout_branch_matches_porcelain_and_refuses_diverged_reset() {
         let temp = TempDir::new("checkout-branch");
         let backend = Git2Backend::new();
