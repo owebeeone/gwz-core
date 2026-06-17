@@ -429,6 +429,34 @@ use super::*;
         );
     }
 
+    #[test]
+    pub(crate) fn materialize_records_observed_detached_state_not_planned() {
+        let temp = TempDir::new("materialize-observe");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let fixture = RemoteFixture::new("observe-source");
+        let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
+        write_materialize_fixture(temp.path(), fixture.remote_url(), &commit);
+
+        let response = handle_materialize(
+            &backend,
+            temp.path(),
+            materialize_lock_request(false),
+            "op_materialize",
+            &NullSink,
+        )
+        .unwrap();
+
+        // F1: materialize checks out a commit -> detached HEAD. The recorded state
+        // must reflect the OBSERVED detachment, not the planned branch (the lock
+        // fixture says branch=main, detached=false).
+        let member = response.response.members.single();
+        let state = member.state.as_ref().expect("member state");
+        assert_eq!(state.detached, Some(true));
+        assert!(state.branch.is_none());
+        assert_eq!(state.commit.as_deref(), Some(commit.as_str()));
+    }
+
     pub(crate) fn materialize_lock_request(dry_run: bool) -> crate::MaterializeRequest {
         crate::MaterializeRequest {
             meta: crate::RequestMeta {

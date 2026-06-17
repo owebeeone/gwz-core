@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::artifact::{
-    self, CreatedByArtifact, LockArtifact,
-    ManifestArtifact, ResolvedMemberArtifact,
+    self, CreatedByArtifact, LockArtifact, ManifestArtifact, ManifestMember,
+    ResolvedMemberArtifact,
 };
 use crate::git::{GitBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
@@ -188,33 +188,42 @@ where
                 .and_then(|policy| policy.max_connections_per_host),
         ),
         |plan| plan.clone_url.as_deref().and_then(git_host),
-        |plan| -> ModelResult<crate::MemberResponse> {
+        |plan| -> ModelResult<(String, ResolvedMemberArtifact, crate::MemberResponse)> {
+            let member_root = root.join(&plan.state.path);
             emitter.member_started(&plan.member_id, &plan.state.path);
             if let Some(url) = plan.clone_url.as_deref() {
-                backend.clone_repo_with_progress(
-                    url,
-                    &root.join(&plan.state.path),
-                    &|progress| {
-                        emitter.member_progress(&plan.member_id, &plan.state.path, progress)
-                    },
-                )?;
+                backend.clone_repo_with_progress(url, &member_root, &|progress| {
+                    emitter.member_progress(&plan.member_id, &plan.state.path, progress)
+                })?;
             }
             if let Some(commit) = &plan.state.commit {
-                backend.checkout_commit(&root.join(&plan.state.path), commit)?;
+                backend.checkout_commit(&member_root, commit)?;
             }
             emitter.member_finished(&plan.member_id, &plan.state.path);
-            Ok(materialized_response(
-                &manifest,
-                &plan.member_id,
-                &plan.state,
-            ))
+            // F1: record the OBSERVED post-mutation state (re-read head/status),
+            // not the planned target — materialize detaches HEAD at the commit, so
+            // the planned branch/detached flags would misdescribe the worktree.
+            let member = manifest
+                .members
+                .iter()
+                .find(|member| member.id == plan.member_id)
+                .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
+            let head = backend.head(&member_root)?;
+            let status = backend.status(&member_root)?;
+            let observed = resolved_member(member, &head, &status);
+            let response = materialized_response(member, &plan.state, &observed);
+            Ok((plan.member_id.clone(), observed, response))
         },
     );
     let mut responses = Vec::with_capacity(outcomes.len());
+    let mut observed_states: Vec<(String, ResolvedMemberArtifact)> = Vec::new();
     let mut first_error = None;
     for outcome in outcomes {
         match outcome {
-            Ok(response) => responses.push(response),
+            Ok((member_id, observed, response)) => {
+                observed_states.push((member_id, observed));
+                responses.push(response);
+            }
             Err(error) => {
                 if first_error.is_none() {
                     first_error = Some(error);
@@ -235,11 +244,10 @@ where
     }
 
     if rewrite_lock {
+        // F1: write the lock from the observed post-mutation state, not the plan.
         let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
-        for member_id in &selected {
-            if let Some(state) = target_lock.members.get(member_id) {
-                lock.members.insert(member_id.clone(), state.clone());
-            }
+        for (member_id, observed) in &observed_states {
+            lock.members.insert(member_id.clone(), observed.clone());
         }
         lock.created_at = now_marker();
         artifact::write_lock(&root, &lock)?;
@@ -470,24 +478,27 @@ pub(crate) fn materialize_target_members(
 }
 
 pub(crate) fn materialized_response(
-    manifest: &ManifestArtifact,
-    member_id: &str,
-    state: &ResolvedMemberArtifact,
+    member: &ManifestMember,
+    planned: &ResolvedMemberArtifact,
+    observed: &ResolvedMemberArtifact,
 ) -> crate::MemberResponse {
-    let member = manifest
-        .members
-        .iter()
-        .find(|member| member.id == member_id);
+    // F1: lock_match is computed from the observed commit vs the planned target,
+    // never claimed unverified.
+    let lock_match = if observed.commit == planned.commit {
+        crate::LockMatch::Matches
+    } else {
+        crate::LockMatch::Differs
+    };
     crate::MemberResponse {
-        member_id: member_id.to_owned(),
-        member_path: state.path.clone(),
+        member_id: member.id.clone(),
+        member_path: observed.path.clone(),
         source_kind: crate::SourceKind::Git,
         status: crate::MemberStatus::Ok,
         error: None,
         planned: None,
-        state: member.map(|member| protocol_state(member, state)),
+        state: Some(protocol_state(member, observed)),
         git_status: None,
-        lock_match: Some(crate::LockMatch::Matches),
+        lock_match: Some(lock_match),
     }
 }
 
