@@ -498,6 +498,79 @@ use super::*;
     }
 
     #[test]
+    pub(crate) fn rebase_onto_matches_porcelain_rebase_on_clean_diverge() {
+        // main@D and feature@C diverge from A touching DIFFERENT files → clean replay.
+        let temp = TempDir::new("rebase-clean");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        let a = commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        run_git(&base, &["branch", "feature"]);
+        run_git(&base, &["checkout", "feature"]);
+        let c = commit_file(&base, "feat.txt", "feature\n", "C", &[a_oid]).unwrap();
+        run_git(&base, &["checkout", "main"]);
+        commit_file(&base, "main.txt", "main\n", "D", &[a_oid]).unwrap();
+
+        let prim = temp.path().join("prim");
+        let porc = temp.path().join("porc");
+        copy_repo(&base, &prim);
+        copy_repo(&base, &porc);
+
+        let result = backend
+            .rebase_onto(&prim, "main", "refs/heads/feature")
+            .unwrap();
+        assert!(result.is_clean());
+
+        run_git(&porc, &["rebase", "feature"]);
+
+        // Linear history replayed onto feature: same tree as porcelain, clean worktree,
+        // HEAD reattached to main with the feature tip as its single parent.
+        assert_eq!(
+            rev_parse(&prim, "HEAD^{tree}"),
+            rev_parse(&porc, "HEAD^{tree}")
+        );
+        assert!(status_porcelain(&prim).trim().is_empty());
+        assert_eq!(rev_parse(&prim, "HEAD^"), c);
+        assert_eq!(rev_parse(&prim, "HEAD"), result.commit.unwrap());
+        let head = backend.head(&prim).unwrap();
+        assert!(!head.is_detached);
+        assert_eq!(head.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    pub(crate) fn rebase_onto_leaves_conflict_in_place_like_porcelain() {
+        // main@D and feature@C both rewrite f.txt → the replay conflicts.
+        let temp = TempDir::new("rebase-conflict");
+        let backend = Git2Backend::new();
+        let base = temp.path().join("base");
+        backend.create_repo(&base).unwrap();
+        let a = commit_file(&base, "f.txt", "a\n", "A", &[]).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        run_git(&base, &["branch", "feature"]);
+        run_git(&base, &["checkout", "feature"]);
+        commit_file(&base, "f.txt", "feature\n", "C", &[a_oid]).unwrap();
+        run_git(&base, &["checkout", "main"]);
+        commit_file(&base, "f.txt", "main\n", "D", &[a_oid]).unwrap();
+
+        let prim = temp.path().join("prim");
+        let porc = temp.path().join("porc");
+        copy_repo(&base, &prim);
+        copy_repo(&base, &porc);
+
+        let result = backend
+            .rebase_onto(&prim, "main", "refs/heads/feature")
+            .unwrap();
+        assert!(!result.is_clean());
+        assert_eq!(result.conflicts, vec!["f.txt".to_owned()]);
+        assert!(result.commit.is_none());
+        // Faithful to porcelain: the rebase is left in progress, `git rebase --continue`-able.
+        assert!(prim.join(".git/rebase-merge").exists());
+        assert!(!run_git_ok(&porc, &["rebase", "feature"]));
+        assert!(porc.join(".git/rebase-merge").exists());
+    }
+
+    #[test]
     pub(crate) fn checkout_branch_matches_porcelain_and_refuses_diverged_reset() {
         let temp = TempDir::new("checkout-branch");
         let backend = Git2Backend::new();

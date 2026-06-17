@@ -41,6 +41,17 @@ pub trait GitBackend {
         branch: &str,
         upstream_ref: &str,
     ) -> ModelResult<GitIntegrateResult>;
+    /// Integrate `upstream_ref` into `branch` by **rebase** (porcelain `git rebase`):
+    /// replay the branch's commits onto the upstream tip. Fast-forwards when strictly
+    /// behind. On conflict, leave `.git/rebase-merge/` in place (do NOT abort) so the
+    /// developer can resolve and `git rebase --continue`, and return the conflicted
+    /// paths instead of erroring. Self-verifies HEAD is reattached and based on upstream.
+    fn rebase_onto(
+        &self,
+        path: &Path,
+        branch: &str,
+        upstream_ref: &str,
+    ) -> ModelResult<GitIntegrateResult>;
     fn checkout_commit(&self, path: &Path, commit: &str) -> ModelResult<GitUpdateResult>;
     /// Put HEAD on `branch` at `commit` — create the branch if missing, checkout if it
     /// is already there. Per AD3(c)'s orphan-safety rule, REFUSE (`DivergedMember`) if
@@ -404,6 +415,72 @@ impl GitBackend for Git2Backend {
             ));
         }
         Ok(GitIntegrateResult::clean(merge_oid.to_string()))
+    }
+
+    fn rebase_onto(
+        &self,
+        path: &Path,
+        branch: &str,
+        upstream_ref: &str,
+    ) -> ModelResult<GitIntegrateResult> {
+        let repo = open_repo(path)?;
+        let upstream_oid = repo.revparse_single(upstream_ref).map_err(git_error)?.id();
+        let upstream_annotated = repo.find_annotated_commit(upstream_oid).map_err(git_error)?;
+        let (analysis, _) = repo.merge_analysis(&[&upstream_annotated]).map_err(git_error)?;
+        if analysis.is_up_to_date() {
+            return Ok(GitIntegrateResult::clean(upstream_oid.to_string()));
+        }
+        if analysis.is_fast_forward() {
+            // Nothing to replay: `git rebase` of a strictly-behind branch fast-forwards.
+            let ff = self.fast_forward(path, branch, upstream_ref)?;
+            return Ok(GitIntegrateResult {
+                commit: ff.commit,
+                conflicts: Vec::new(),
+            });
+        }
+
+        let signature = merge_signature(&repo)?;
+        let mut rebase = repo
+            .rebase(None, Some(&upstream_annotated), None, None)
+            .map_err(git_error)?;
+        // Replay each commit; git2 patches it into the index + worktree on `next()`. The
+        // operation handle is dropped within the loop condition so the body can re-borrow.
+        while rebase.next().transpose().map_err(git_error)?.is_some() {
+            let index = repo.index().map_err(git_error)?;
+            if index.has_conflicts() {
+                // Faithful to porcelain: leave the rebase in progress for the developer
+                // to resolve and `git rebase --continue`. Dropping `rebase` frees the
+                // in-memory handle but leaves `.git/rebase-merge/` on disk.
+                return Ok(GitIntegrateResult {
+                    commit: None,
+                    conflicts: conflict_paths(&index)?,
+                });
+            }
+            rebase.commit(None, &signature, None).map_err(git_error)?;
+        }
+        rebase.finish(Some(&signature)).map_err(git_error)?;
+
+        // AD1 self-verify: HEAD reattached to the branch and now descends from upstream.
+        let observed = self.head(path)?;
+        let Some(new_head) = observed.commit.clone() else {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "post-rebase HEAD is unborn",
+            ));
+        };
+        if observed.is_detached || observed.branch.as_deref() != Some(branch) {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("post-rebase HEAD is not on branch '{branch}'"),
+            ));
+        }
+        if !self.is_ancestor(path, &upstream_oid.to_string(), &new_head)? {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "post-rebase HEAD is not based on upstream",
+            ));
+        }
+        Ok(GitIntegrateResult::clean(new_head))
     }
 
     fn checkout_commit(&self, path: &Path, commit: &str) -> ModelResult<GitUpdateResult> {
