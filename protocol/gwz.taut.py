@@ -37,6 +37,10 @@ SCHEMA = schema(
         method("tag", role="in",
                params=Params(request=Ref.TagRequest),
                out=Ref.TagResponse),
+        # Capture live observed member state into the lock (no worktree mutation).
+        method("capture", role="in",
+               params=Params(request=Ref.CaptureRequest),
+               out=Ref.CaptureResponse),
         # Fetch and fast-forward to upstream heads.
         method("pull_head", role="in",
                params=Params(request=Ref.PullHeadRequest),
@@ -71,7 +75,8 @@ SCHEMA = schema(
          tag=7,
          pull_head=8,
          pull_snapshot=9,
-         push=10),
+         push=10,
+         capture=11),
 
     # Source backing a workspace member.
     SourceKind=Enum(
@@ -654,6 +659,10 @@ SCHEMA = schema(
         meta=F(1, Ref.RequestMeta),
         tag_name=F(2, STR)),
 
+    # Capture live observed member state into the lock (no worktree mutation).
+    CaptureRequest=Msg(
+        meta=F(1, Ref.RequestMeta)),
+
     # Fetch and fast-forward selected members to their upstream heads.
     PullHeadRequest=Msg(
         meta=F(1, Ref.RequestMeta)),
@@ -696,6 +705,9 @@ SCHEMA = schema(
         response=F(1, Ref.ResponseEnvelope)),
     # Response wrapper for tag.
     TagResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope)),
+    # Response wrapper for capture.
+    CaptureResponse=Msg(
         response=F(1, Ref.ResponseEnvelope)),
     # Response wrapper for pull_head.
     PullHeadResponse=Msg(

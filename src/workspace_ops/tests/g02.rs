@@ -351,6 +351,54 @@ use super::*;
     }
 
     #[test]
+    pub(crate) fn capture_adopts_observed_state_into_lock_without_mutating() {
+        let temp = TempDir::new("capture");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let fixture = RemoteFixture::new("capture-source");
+        let first = fixture.commit_and_push("README.md", "one", "initial", &backend);
+        write_materialize_fixture(temp.path(), fixture.remote_url(), &first);
+        backend
+            .clone_repo(fixture.remote_url(), &temp.path().join("repos/app"))
+            .unwrap();
+        // Developer advances the member past the lock with a local commit.
+        let first_oid = git2::Oid::from_str(&first).unwrap();
+        let second = commit_file(
+            &temp.path().join("repos/app"),
+            "README.md",
+            "two",
+            "second",
+            &[first_oid],
+        )
+        .unwrap();
+        assert_eq!(
+            read_lock(temp.path()).unwrap().members["mem_app"].commit,
+            Some(first)
+        );
+
+        let response = handle_capture(
+            &backend,
+            temp.path(),
+            crate::CaptureRequest {
+                meta: request_meta_with_actor_selection("agent://tester", &["mem_app"]),
+            },
+            "op_capture",
+        )
+        .unwrap();
+
+        // The lock now records the OBSERVED commit; the worktree is untouched.
+        assert_eq!(
+            read_lock(temp.path()).unwrap().members["mem_app"].commit,
+            Some(second.clone())
+        );
+        assert_eq!(
+            backend.head(&temp.path().join("repos/app")).unwrap().commit,
+            Some(second)
+        );
+        assert_eq!(response.response.members.single().member_id, "mem_app");
+    }
+
+    #[test]
     pub(crate) fn duplicate_and_invalid_gwz_tags_fail_cleanly() {
         let temp = TempDir::new("tag-errors");
         let backend = Git2Backend::new();

@@ -31,7 +31,7 @@ where
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
     let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
-    let members = observed_member_map(backend, &root, &manifest, &selected)?;
+    let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
     artifact::write_snapshot(
         &root,
         &artifact::SnapshotArtifact {
@@ -79,7 +79,7 @@ where
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
     let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
-    let members = observed_member_map(backend, &root, &manifest, &selected)?;
+    let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
     let tag = artifact::TagArtifact {
         schema: artifact::TAG_SCHEMA.to_owned(),
         workspace_id: manifest.workspace.id.clone(),
@@ -92,6 +92,40 @@ where
     artifact::write_tag(&root, &tag).map_err(tag_error)?;
 
     Ok(crate::TagResponse {
+        response: response_envelope(
+            context,
+            crate::AggregateStatus::Ok,
+            locked_member_responses(&manifest, &members),
+        ),
+    })
+}
+
+/// Capture the live observed member state into the **lock** — no worktree mutation
+/// (AD3 capture direction: "record where I am now"). Each materialized member's
+/// observed head/status is written; unmaterialized members carry their lock state.
+pub fn handle_capture<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::CaptureRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::CaptureResponse>
+where
+    B: GitBackend,
+{
+    let context = OperationRequest::Capture(request.clone()).context(operation_id.into())?;
+    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let manifest = artifact::read_manifest(&root)?;
+    assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
+    let lock = artifact::read_lock(&root)?;
+    let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
+    let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
+    let mut next = read_lock_or_empty(&root, &manifest.workspace.id)?;
+    for (member_id, state) in &members {
+        next.members.insert(member_id.clone(), state.clone());
+    }
+    next.created_at = now_marker();
+    artifact::write_lock(&root, &next)?;
+    Ok(crate::CaptureResponse {
         response: response_envelope(
             context,
             crate::AggregateStatus::Ok,
@@ -384,11 +418,13 @@ pub(crate) fn observed_member_map<B: GitBackend>(
     backend: &B,
     root: &Path,
     manifest: &ManifestArtifact,
+    lock: &LockArtifact,
     selected: &[String],
 ) -> ModelResult<BTreeMap<String, ResolvedMemberArtifact>> {
-    // F3: capture each member's LIVE observed state (head/status), not the stale
-    // lock. Unmaterialized members cannot be observed, so they are rejected; dirty
-    // state is recorded honestly (rejecting dirty is the Q3 policy, deferred).
+    // F3 + AD3: capture each member's LIVE observed state (head/status). A member that
+    // isn't materialized can't be observed, so carry its existing lock state (AD3 b) —
+    // the capture/snapshot stays complete and restorable rather than failing. Dirty
+    // state is recorded honestly, never rejected (AD3 a).
     let mut members = BTreeMap::new();
     for member_id in selected {
         let member = manifest
@@ -397,15 +433,18 @@ pub(crate) fn observed_member_map<B: GitBackend>(
             .find(|member| &member.id == member_id)
             .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
         let member_root = root.join(&member.path);
-        if !(member_root.exists() && backend.is_repository(&member_root)?) {
+        if member_root.exists() && backend.is_repository(&member_root)? {
+            let head = backend.head(&member_root)?;
+            let status = backend.status(&member_root)?;
+            members.insert(member_id.clone(), resolved_member(member, &head, &status));
+        } else if let Some(state) = lock.members.get(member_id) {
+            members.insert(member_id.clone(), state.clone());
+        } else {
             return Err(ModelError::new(
                 ErrorCode::MemberNotFound,
-                format!("member '{member_id}' is not materialized"),
+                format!("member '{member_id}' is not materialized and has no lock state"),
             ));
         }
-        let head = backend.head(&member_root)?;
-        let status = backend.status(&member_root)?;
-        members.insert(member_id.clone(), resolved_member(member, &head, &status));
     }
     Ok(members)
 }

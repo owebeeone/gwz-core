@@ -15,6 +15,7 @@ pub enum ActionKind {
     PullHead,
     PullSnapshot,
     Push,
+    Capture,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -29,6 +30,7 @@ impl ActionKind {
         Self::PullHead => 8,
         Self::PullSnapshot => 9,
         Self::Push => 10,
+        Self::Capture => 11,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::CreateWorkspace,
@@ -42,6 +44,7 @@ impl ActionKind {
         8 => Self::PullHead,
         9 => Self::PullSnapshot,
         10 => Self::Push,
+        11 => Self::Capture,
         _ => panic!("bad ActionKind wire value {}", v),
     } }
 }
@@ -1665,6 +1668,23 @@ impl TagRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct CaptureRequest {
+    pub meta: RequestMeta,
+}
+impl CaptureRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            meta: RequestMeta::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct PullHeadRequest {
     pub meta: RequestMeta,
 }
@@ -1851,6 +1871,23 @@ pub struct TagResponse {
     pub response: ResponseEnvelope,
 }
 impl TagResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            response: ResponseEnvelope::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CaptureResponse {
+    pub response: ResponseEnvelope,
+}
+impl CaptureResponse {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.response.to_cbor()),
