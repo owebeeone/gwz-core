@@ -20,6 +20,10 @@ pub trait GitBackend {
         self.clone_repo(url, path)
     }
     fn fetch(&self, path: &Path, remote: &str) -> ModelResult<GitFetchResult>;
+    /// List the refs a remote advertises WITHOUT fetching objects (porcelain
+    /// `git ls-remote`): connect, read the advertised refs, disconnect. Non-mutating
+    /// — used to plan a selection before any fetch (Q1).
+    fn ls_remote(&self, path: &Path, remote: &str) -> ModelResult<Vec<GitRemoteRef>>;
     fn fast_forward(
         &self,
         path: &Path,
@@ -86,6 +90,14 @@ pub struct GitCloneResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitFetchResult {
     pub remote: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitRemoteRef {
+    /// Full ref name as advertised by the remote (e.g. `refs/heads/main`, `HEAD`).
+    pub name: String,
+    /// Object id the ref points at, as a hex string.
+    pub target: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -204,6 +216,29 @@ impl GitBackend for Git2Backend {
         Ok(GitFetchResult {
             remote: remote.to_owned(),
         })
+    }
+
+    fn ls_remote(&self, path: &Path, remote: &str) -> ModelResult<Vec<GitRemoteRef>> {
+        let repo = open_repo(path)?;
+        let mut remote_handle = find_remote(&repo, remote)?;
+        let connection = remote_handle
+            .connect_auth(
+                git2::Direction::Fetch,
+                Some(remote_callbacks(self.credential_helpers)),
+                None,
+            )
+            .map_err(git_error)?;
+        let refs = connection
+            .list()
+            .map_err(git_error)?
+            .iter()
+            .map(|head| GitRemoteRef {
+                name: head.name().to_owned(),
+                target: head.oid().to_string(),
+            })
+            .collect::<Vec<_>>();
+        // `connection` disconnects on drop.
+        Ok(refs)
     }
 
     fn fast_forward(

@@ -418,6 +418,98 @@ use super::*;
         repo.set_head("refs/heads/main").unwrap();
     }
 
+    #[test]
+    pub(crate) fn ls_remote_lists_advertised_refs_matching_porcelain() {
+        let temp = TempDir::new("ls-remote");
+        let backend = Git2Backend::new();
+        let source = temp.path().join("source");
+        let bare = temp.path().join("remote.git");
+        backend.create_repo(&source).unwrap();
+        init_bare_main(&bare);
+        backend
+            .add_remote(&source, "origin", bare.to_str().unwrap())
+            .unwrap();
+        let first = commit_file(&source, "README.md", "one", "initial", &[]).unwrap();
+        backend
+            .push(&source, "origin", "refs/heads/main:refs/heads/main")
+            .unwrap();
+        run_git(&source, &["tag", "v1"]);
+        backend
+            .push(&source, "origin", "refs/tags/v1:refs/tags/v1")
+            .unwrap();
+
+        // Non-mutating: capture local refs, call ls_remote, confirm unchanged.
+        let refs_before = all_local_refs(&source);
+        let refs = backend.ls_remote(&source, "origin").unwrap();
+        assert_eq!(
+            all_local_refs(&source),
+            refs_before,
+            "ls_remote must not mutate local refs"
+        );
+
+        let mut got = refs
+            .iter()
+            .map(|r| format!("{} {}", r.target, r.name))
+            .collect::<Vec<_>>();
+        got.sort();
+        // Same advertised ref set as porcelain `git ls-remote` (oid + name).
+        assert_eq!(got, ls_remote_porcelain(&source, "origin"));
+        // Sanity: main resolves to the pushed commit.
+        assert!(
+            refs.iter()
+                .any(|r| r.name == "refs/heads/main" && r.target == first)
+        );
+    }
+
+    #[test]
+    pub(crate) fn ls_remote_rejects_missing_remote() {
+        let temp = TempDir::new("ls-remote-missing");
+        let backend = Git2Backend::new();
+        let source = temp.path().join("source");
+        backend.create_repo(&source).unwrap();
+        let err = backend.ls_remote(&source, "origin").unwrap_err();
+        assert_eq!(err.code, ErrorCode::MissingRemote);
+    }
+
+    pub(crate) fn ls_remote_porcelain(repo: &Path, remote: &str) -> Vec<String> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["ls-remote", remote])
+            .output()
+            .expect("spawn git ls-remote");
+        assert!(output.status.success(), "git ls-remote failed");
+        let mut lines = String::from_utf8(output.stdout)
+            .expect("ls-remote utf8")
+            .lines()
+            .map(|line| {
+                let mut parts = line.split('\t');
+                let oid = parts.next().unwrap_or_default();
+                let name = parts.next().unwrap_or_default();
+                format!("{oid} {name}")
+            })
+            .collect::<Vec<_>>();
+        lines.sort();
+        lines
+    }
+
+    pub(crate) fn all_local_refs(repo: &Path) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["for-each-ref", "--format=%(objectname) %(refname)"])
+            .output()
+            .expect("spawn git for-each-ref");
+        assert!(output.status.success(), "git for-each-ref failed");
+        let mut lines = String::from_utf8(output.stdout)
+            .expect("for-each-ref utf8")
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        lines.sort();
+        lines.join("\n")
+    }
+
     pub(crate) fn copy_repo(src: &Path, dst: &Path) {
         let status = std::process::Command::new("cp")
             .arg("-R")

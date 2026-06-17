@@ -131,6 +131,14 @@ pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
             })
         }
 
+        fn ls_remote(
+            &self,
+            _path: &Path,
+            _remote: &str,
+        ) -> ModelResult<Vec<crate::git::GitRemoteRef>> {
+            Ok(Vec::new())
+        }
+
         fn fast_forward(
             &self,
             _path: &Path,
