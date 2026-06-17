@@ -153,6 +153,50 @@ Sub-questions to ratify:
 AD3 is **upstream of** F5 (status dirty surfacing) and the Q3/Q4/Q5 worktree policies —
 ratify it before those. No code yet; the only near-term change it forces is (b).
 
+### `gwz capture` — proposed verb (AD3 sub-question d)
+
+**Intent.** The everyday *capture* verb: observe the current worktrees and write the
+**lock** from them, mutating nothing. "I diverged on purpose — rebased / switched
+branches / committed — record that as the workspace's current state." Resolves the
+`status` "out of sync" without a restore.
+
+**Semantics.**
+- Read the manifest (membership; `gwz.yml` authoritative per AD2).
+- For each selected member, observe `head` + `status` → `resolved_member` — the same
+  observe path F3 gave `snapshot`.
+- Write the **lock** from the observed states (merge per selected member; unselected
+  members keep their lock entry). **No worktree mutation** — read-only on the trees.
+- Per AD3(a): record dirty members (`commit=HEAD` + `dirty`), never reject; **warn**
+  that uncommitted changes aren't captured and won't restore.
+- Per AD3(b): for an unmaterialized selected member, carry its existing lock entry,
+  don't fail.
+
+**It is `snapshot` retargeted from a named artifact to the lock** — same observe
+machinery, only the write target differs. The verb set then reads cleanly:
+
+| verb | direction | target |
+| --- | --- | --- |
+| `status` | read | — (reports worktree-vs-lock drift) |
+| **`capture`** (new) | **capture** | the **lock** (current pointer) |
+| `snapshot` / `tag` | capture | a **named** restorable point |
+| `materialize` / `pull` | restore | worktree, from lock/snapshot/tag |
+
+**Open choices:**
+1. **Name** — `capture` vs `adopt` / `record` / `relock`. `snapshot` already means a
+   *named* capture, so a distinct verb for the *lock* capture avoids overloading
+   "capture"; `adopt` ("adopt current reality as the record") reads well too.
+2. **New op vs snapshot-mode** — either a first-class `CaptureRequest` /
+   `ActionKind::Capture` (clean intent, +`taut`/protocol surface) or a
+   `snapshot --to-lock` flag (reuses `SnapshotRequest`, less surface). Lean: a
+   first-class verb — moving the current pointer vs saving a named point is a genuinely
+   different intent, and the surface mirrors snapshot.
+3. **Safe + idempotent** — two captures in a row = same lock; pure capture can't orphan
+   anything (no worktree change), so it's the safe counterpart to restore (the orphan
+   risk lives entirely on the restore side — AD3(c)).
+
+**Cost.** Small: reuse `observed_member_map` + `write_lock`; +one request type and CLI
+verb. The `taut` protocol addition is the only non-trivial bit.
+
 ## 3. Findings Register
 
 **Resolved 2026-06-17:** F0 (incident + full AD1 primitive contract `f16f258`), F18
