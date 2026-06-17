@@ -430,11 +430,11 @@ use super::*;
     }
 
     #[test]
-    pub(crate) fn materialize_records_observed_detached_state_not_planned() {
-        let temp = TempDir::new("materialize-observe");
+    pub(crate) fn materialize_restores_onto_saved_branch_not_detached() {
+        let temp = TempDir::new("materialize-branch");
         let backend = Git2Backend::new();
         handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
-        let fixture = RemoteFixture::new("observe-source");
+        let fixture = RemoteFixture::new("branch-source");
         let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
         write_materialize_fixture(temp.path(), fixture.remote_url(), &commit);
 
@@ -447,14 +447,54 @@ use super::*;
         )
         .unwrap();
 
-        // F1: materialize checks out a commit -> detached HEAD. The recorded state
-        // must reflect the OBSERVED detachment, not the planned branch (the lock
-        // fixture says branch=main, detached=false).
+        // AD3(c): the lock fixture records branch=main; materialize restores ONTO the
+        // branch (not detached) and records that observed state — F1's re-observe.
         let member = response.response.members.single();
         let state = member.state.as_ref().expect("member state");
-        assert_eq!(state.detached, Some(true));
-        assert!(state.branch.is_none());
+        assert_eq!(state.detached, Some(false));
+        assert_eq!(state.branch.as_deref(), Some("main"));
         assert_eq!(state.commit.as_deref(), Some(commit.as_str()));
+        // The member HEAD is genuinely on `main`, not detached.
+        let head = backend.head(&temp.path().join("repos/app")).unwrap();
+        assert!(!head.is_detached);
+        assert_eq!(head.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    pub(crate) fn materialize_detaches_a_diverged_member_preserving_its_branch() {
+        let temp = TempDir::new("materialize-diverged");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let fixture = RemoteFixture::new("diverged-source");
+        let first = fixture.commit_and_push("README.md", "one", "initial", &backend);
+        write_materialize_fixture(temp.path(), fixture.remote_url(), &first);
+        backend
+            .clone_repo(fixture.remote_url(), &temp.path().join("repos/app"))
+            .unwrap();
+        // Developer advances main past the lock commit.
+        let first_oid = git2::Oid::from_str(&first).unwrap();
+        let app = temp.path().join("repos/app");
+        let second = commit_file(&app, "README.md", "two", "second", &[first_oid]).unwrap();
+
+        handle_materialize(
+            &backend,
+            temp.path(),
+            materialize_lock_request(false),
+            "op_materialize",
+            &NullSink,
+        )
+        .unwrap();
+
+        // AD3(c) orphan-safety: materialize reaches the lock commit by DETACHING —
+        // it must NOT reset main (that would orphan `second`).
+        let head = backend.head(&app).unwrap();
+        assert!(head.is_detached);
+        assert_eq!(head.commit.as_deref(), Some(first.as_str()));
+        // main is preserved at the developer's commit.
+        assert_eq!(
+            backend.read_ref(&app, "refs/heads/main").unwrap().as_deref(),
+            Some(second.as_str())
+        );
     }
 
     pub(crate) fn materialize_lock_request(dry_run: bool) -> crate::MaterializeRequest {

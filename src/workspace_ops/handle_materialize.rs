@@ -239,7 +239,26 @@ where
                 })?;
             }
             if let Some(commit) = &plan.state.commit {
-                backend.checkout_commit(&member_root, commit)?;
+                // AD3(c): restore onto the saved branch when there was one; detach only
+                // when the saved state was genuinely detached. checkout_branch refuses
+                // to silently reset a branch that has diverged.
+                match &plan.state.branch {
+                    Some(branch) if plan.state.detached != Some(true) => {
+                        // AD3(c): restore onto the saved branch when safe (creatable or
+                        // already at the target). If the branch has diverged, DETACH at
+                        // the target instead of resetting it — never orphan its work.
+                        match backend.checkout_branch(&member_root, branch, commit) {
+                            Ok(_) => {}
+                            Err(error) if error.code == ErrorCode::DivergedMember => {
+                                backend.checkout_commit(&member_root, commit)?;
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    _ => {
+                        backend.checkout_commit(&member_root, commit)?;
+                    }
+                }
             }
             emitter.member_finished(&plan.member_id, &plan.state.path);
             // F1: record the OBSERVED post-mutation state (re-read head/status),
