@@ -278,6 +278,47 @@ mod tests {
     }
 
     #[test]
+    fn partial_outcome_and_member_error_identity_survive_to_the_result() {
+        let context = sample_context(false);
+        let report = ExecutionReport {
+            members: vec![
+                MemberExecution {
+                    member_id: Some(MemberId::parse_str("mem_01").unwrap()),
+                    member_path: "repos/ok".to_owned(),
+                    source_kind: SourceKind::Git,
+                    status: MemberExecutionStatus::Ok,
+                    error: None,
+                },
+                MemberExecution {
+                    member_id: Some(MemberId::parse_str("mem_02").unwrap()),
+                    member_path: "repos/bad".to_owned(),
+                    source_kind: SourceKind::Git,
+                    status: MemberExecutionStatus::Failed,
+                    error: Some(OperationError::new(
+                        crate::model::ErrorCode::GitCommandFailed,
+                        "boom",
+                    )),
+                },
+            ],
+            errors: Vec::new(),
+        };
+
+        let result = ResponseBuilder::result(&context, &report, TimestampMs(10), TimestampMs(20));
+
+        // F15: an applied + failed mix is Partial, not a blanket Failed.
+        assert_eq!(result.aggregate_status, crate::AggregateStatus::Partial);
+        // F15: the failed member's error keeps its identity instead of dropping it.
+        let failed = result
+            .members
+            .iter()
+            .find(|member| member.member_id == "mem_02")
+            .expect("failed member present");
+        let error = failed.error.as_ref().expect("member error present");
+        assert_eq!(error.member_id.as_deref(), Some("mem_02"));
+        assert_eq!(error.member_path.as_deref(), Some("repos/bad"));
+    }
+
+    #[test]
     fn dispatch_context_preserves_status_request_meta() {
         let request = crate::StatusRequest {
             meta: crate::RequestMeta {
