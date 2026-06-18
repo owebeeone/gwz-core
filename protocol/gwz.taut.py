@@ -94,7 +94,8 @@ SCHEMA = schema(
          rejected=3,
          partial=4,
          failed=5,
-         dirty=6),
+         dirty=6,
+         conflicted=7),
 
     # Per-member result status.
     MemberStatus=Enum(
@@ -103,7 +104,8 @@ SCHEMA = schema(
          noop=2,
          skipped=3,
          rejected=4,
-         failed=5),
+         failed=5,
+         conflicted=6),
 
     # Explicit materialization target kind.
     MaterializeTargetKind=Enum(
@@ -150,7 +152,10 @@ SCHEMA = schema(
          write_lock=8,
          write_snapshot=9,
          write_tag=10,
-         push=11),
+         push=11,
+         merge=12,
+         rebase=13,
+         reset=14),
 
     # Current member state compared to the lock.
     LockMatch=Enum(

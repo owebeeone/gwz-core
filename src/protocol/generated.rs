@@ -84,6 +84,7 @@ pub enum AggregateStatus {
     Partial,
     Failed,
     Dirty,
+    Conflicted,
 }
 impl AggregateStatus {
     pub fn wire(self) -> i64 { match self {
@@ -94,6 +95,7 @@ impl AggregateStatus {
         Self::Partial => 4,
         Self::Failed => 5,
         Self::Dirty => 6,
+        Self::Conflicted => 7,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::Accepted,
@@ -103,6 +105,7 @@ impl AggregateStatus {
         4 => Self::Partial,
         5 => Self::Failed,
         6 => Self::Dirty,
+        7 => Self::Conflicted,
         _ => panic!("bad AggregateStatus wire value {}", v),
     } }
 }
@@ -115,6 +118,7 @@ pub enum MemberStatus {
     Skipped,
     Rejected,
     Failed,
+    Conflicted,
 }
 impl MemberStatus {
     pub fn wire(self) -> i64 { match self {
@@ -124,6 +128,7 @@ impl MemberStatus {
         Self::Skipped => 3,
         Self::Rejected => 4,
         Self::Failed => 5,
+        Self::Conflicted => 6,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::Planned,
@@ -132,6 +137,7 @@ impl MemberStatus {
         3 => Self::Skipped,
         4 => Self::Rejected,
         5 => Self::Failed,
+        6 => Self::Conflicted,
         _ => panic!("bad MemberStatus wire value {}", v),
     } }
 }
@@ -256,6 +262,9 @@ pub enum PlannedAction {
     WriteSnapshot,
     WriteTag,
     Push,
+    Merge,
+    Rebase,
+    Reset,
 }
 impl PlannedAction {
     pub fn wire(self) -> i64 { match self {
@@ -271,6 +280,9 @@ impl PlannedAction {
         Self::WriteSnapshot => 9,
         Self::WriteTag => 10,
         Self::Push => 11,
+        Self::Merge => 12,
+        Self::Rebase => 13,
+        Self::Reset => 14,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::Noop,
@@ -285,6 +297,9 @@ impl PlannedAction {
         9 => Self::WriteSnapshot,
         10 => Self::WriteTag,
         11 => Self::Push,
+        12 => Self::Merge,
+        13 => Self::Rebase,
+        14 => Self::Reset,
         _ => panic!("bad PlannedAction wire value {}", v),
     } }
 }

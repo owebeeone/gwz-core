@@ -39,6 +39,9 @@ pub enum PlannedAction {
     WriteSnapshot,
     WriteTag,
     Push,
+    Merge,
+    Rebase,
+    Reset,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -492,6 +495,9 @@ impl From<PlannedAction> for crate::PlannedAction {
             PlannedAction::WriteSnapshot => Self::WriteSnapshot,
             PlannedAction::WriteTag => Self::WriteTag,
             PlannedAction::Push => Self::Push,
+            PlannedAction::Merge => Self::Merge,
+            PlannedAction::Rebase => Self::Rebase,
+            PlannedAction::Reset => Self::Reset,
         }
     }
 }
