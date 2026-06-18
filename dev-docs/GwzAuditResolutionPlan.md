@@ -227,13 +227,13 @@ ratified (`a024907`); `ls_remote` added as the Q1 plan-before-fetch foundation
 | F8 | P1 ✓ | **all sync styles implemented** (S1–S6 `97319ee`..`98318da`): planner now routes `policy.sync` — fetch-only / ff-only / merge / rebase / reset — instead of always FF. Decision (Gianni): gwz is a faithful multi-repo fan-out of git, NOT an enforcer; refusing merge/rebase/reset is the hand-holding AD3 rejects. Backend primitives `merge_upstream`/`rebase_onto`/`reset_hard` (porcelain-parity, clean+conflict, self-verifying); conflicts surface as `MemberStatus::Conflicted`/`AggregateStatus::Conflicted` (exit 1), worktree left `--continue`-able; reset gated on `policy.destructive`; fetch-only allows dirty. | gitbackend.rs, pull_head_member_preflight.rs | WS6 ✓ |
 | F9 | P1 ✓ | top-level CLI errors render envelope-consistent JSON under `--json`/`--jsonl` (`CliError` carries the gwz-core code); human/porcelain unchanged on stderr `e4a43ce` (gwz-cli) | gwz-cli clirequest/globalargs | WS7 ✓ |
 | F10 | ~~P2~~ → Q1 | `pull --head` fetches during preflight, advancing remote-tracking refs | workspace_ops:1710 | **superseded by Q1** |
-| F11 | P2 | `lock_match` ignores branch/detached/upstream; `Matches` for a dirty member | status:556 | WS4 |
-| F12 | P2 | `write_atomic` not crash-durable (no fsync) + fixed `{name}.tmp` race | artifact:335-343, 381-387 | WS8 |
-| F13 | P2 | `snapshot` lacks the duplicate-ID guard `tag` has | workspace_ops:414-446 vs 458 | WS8 |
-| F14 | P2 | manifest→lock→gitignore writes **not semantically atomic** | workspace_ops:134,141,227,403-406 | WS8 |
-| F15 | P2 | Generic runtime `aggregate_status` has **no `Partial`**; top-level errors drop `member_id`/`member_path` | operation:768,834 | WS5 |
-| F16 | P2 | Human `status --no-files` can **hide dirty** state | cli:1063,1238; status:326 | WS7 |
-| F17 | P2 | `status` models renames but rename detection not enabled/tested | git/mod.rs:253 | WS9 |
+| F11 | P2 ✓ | `lock_match` now means provably-equal-to-lock: clean worktree at the locked commit, branch, AND attachment; any divergence (dirty included) → `Differs` `0467aa7` | member_not_materialized.rs | WS4 ✓ |
+| F12 | P2 ✓ | `write_atomic` fsyncs the temp before rename (+ best-effort dir fsync) and uses a unique per-process temp name (no fixed-`.tmp` race); cleans up on error `e1413a6` | artifact/mod.rs | WS8 ✓ |
+| F13 | P2 ✓ | `snapshot` rejects a duplicate id up front (the guard `tag` had) → `InvalidRequest` `2050cb4` | handle_materialize.rs | WS8 ✓ |
+| F14 | P2 ✓ | manifest+lock written through one seam `write_manifest_and_lock` — stage both durably, publish lock-last (crash ⇒ at worst a stale, rebuildable lock); all 4 call sites converted `e4389eb`. True cross-file atomicity (journal) deferred — recoverable window only. | artifact/mod.rs | WS8 ✓ |
+| F15 | P2 ✓ | runtime `aggregate_status` gains `Partial` (applied+failed mix); `OperationError` carries member identity, propagated + filled from the execution `5dc8fd5` | aggregate_status.rs | WS5 ✓ |
+| F16 | P2 ✓ | human `status --no-files` surfaces a per-member/root dirty **count** summary (counts are first-class, independent of the file list) `05497b1` | append_branch_summary.rs (cli) | WS7 ✓ |
+| F17 | P2 ✓ | rename detection enabled in `StatusOptions`; fixed the modeling directionality (path=new, original_path=old) `66bb124` | gitbackend.rs | WS9 ✓ |
 | F18 | P1 ✓ | `stage_workspace_git_metadata` moved behind `GitBackend::stage_paths` (self-verifying, porcelain-contract-tested); production `workspace_ops` no longer names `git2` `57c68f5` | git/gitbackend.rs | WS-backend ✓ |
 
 ## 4. Remediation Workstreams
@@ -376,4 +376,10 @@ backend/boundary architecture was settled — it is now a §2 decision.)
   decision flipped from "reject merge/rebase/reset" to **implement every sync style** — gwz is a faithful
   multi-repo fan-out of git, not an enforcer (refusing developer operations is the hand-holding AD3 rejects).
   Conflicts are an expected outcome (`Conflicted` status, `--continue`-able), not a failure. F5/F9 done.
-  AD3 ratified + fully implemented (capture/restore, `gwz capture`, branch-restore). All P2s (F11–F17) remain.
+  AD3 ratified + fully implemented (capture/restore, `gwz capture`, branch-restore).
+  **All P2s (F11–F17) are now done too** (`0467aa7`,`e1413a6`,`2050cb4`,`e4389eb`,`5dc8fd5`,`05497b1`,`66bb124`;
+  111 lib tests, 0 warnings, clippy clean). **Every audit finding F0–F18 is resolved.** What remains is
+  optional follow-up, not findings: **Q1** (`ls_remote` is built but unwired — pull still fetches during
+  preflight; wiring it = plan-before-fetch so a rejected batch leaves no ref advance), F14's true-atomicity
+  journal (deferred; current window is recoverable), and the small deferred sub-items (Q3 reject-dirty,
+  F2 existing-member re-checkout rollback, AD2 gitlink spike).
