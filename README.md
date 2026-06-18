@@ -79,6 +79,12 @@ cargo test
 cargo fmt --check
 ```
 
+## Release
+
+`gwz-core` is a Rust library crate. It does not publish binary installer assets.
+Create a GitHub Release from a version tag to run the release verification
+workflow, then point binary crates such as `gwz` at that Git revision or tag.
+
 When `protocol/gwz.taut.py` changes, regenerate through the taut workflow and
 run `cargo test`; do not hand-edit generated protocol output.
 

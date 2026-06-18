@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-only"
 rust-version = "1.95"
+repository = "https://github.com/owebeeone/gwz-core"
 
 [lib]
 path = "src/lib.rs"

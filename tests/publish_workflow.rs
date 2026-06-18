@@ -1,28 +1,30 @@
-const PUBLISH_WORKFLOW: &str = include_str!("../.github/workflows/publish.yml");
+const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
 
 #[test]
-fn publish_workflow_tests_linux_and_windows() {
-    assert!(PUBLISH_WORKFLOW.contains("ubuntu-latest"));
-    assert!(PUBLISH_WORKFLOW.contains("windows-latest"));
+fn release_workflow_tests_linux_and_windows() {
+    assert!(RELEASE_WORKFLOW.contains("ubuntu-22.04"));
+    assert!(RELEASE_WORKFLOW.contains("windows-2022"));
 }
 
 #[test]
-fn publish_workflow_runs_full_rust_verification() {
-    assert!(PUBLISH_WORKFLOW.contains("cargo fmt --check"));
-    assert!(PUBLISH_WORKFLOW.contains("cargo test --locked"));
-    assert!(PUBLISH_WORKFLOW.contains("cargo clippy --all-targets -- -D warnings"));
+fn release_workflow_runs_full_rust_verification() {
+    assert!(RELEASE_WORKFLOW.contains("cargo fmt --check"));
+    assert!(RELEASE_WORKFLOW.contains("cargo test --locked"));
+    assert!(RELEASE_WORKFLOW.contains("cargo clippy --all-targets -- -D warnings"));
 }
 
 #[test]
-fn publish_workflow_installs_release_taut_proto_for_protocol_tests() {
-    assert!(PUBLISH_WORKFLOW.contains("actions/setup-python"));
-    assert!(PUBLISH_WORKFLOW.contains("TAUT_PYTHON: python"));
-    assert!(PUBLISH_WORKFLOW.contains("python -m pip install --upgrade pip taut-proto"));
+fn release_workflow_installs_release_taut_proto_for_protocol_tests() {
+    assert!(RELEASE_WORKFLOW.contains("actions/setup-python"));
+    assert!(RELEASE_WORKFLOW.contains("TAUT_PYTHON: python"));
+    assert!(RELEASE_WORKFLOW.contains("python -m pip install --upgrade pip taut-proto"));
 }
 
 #[test]
-fn publish_workflow_allows_manual_and_tagged_runs() {
-    assert!(PUBLISH_WORKFLOW.contains("workflow_dispatch"));
-    assert!(PUBLISH_WORKFLOW.contains("tags:"));
-    assert!(PUBLISH_WORKFLOW.contains("v*"));
+fn release_workflow_only_runs_for_explicit_releases() {
+    assert!(RELEASE_WORKFLOW.contains("release:"));
+    assert!(RELEASE_WORKFLOW.contains("types: [published]"));
+    assert!(RELEASE_WORKFLOW.contains("workflow_dispatch"));
+    assert!(!RELEASE_WORKFLOW.contains("pull_request:"));
+    assert!(!RELEASE_WORKFLOW.contains("branches:"));
 }
