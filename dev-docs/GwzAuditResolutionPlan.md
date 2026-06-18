@@ -226,7 +226,7 @@ ratified (`a024907`); `ls_remote` added as the Q1 plan-before-fetch foundation
 | F7 | P1 ✓ | `push` **preflights all members** (remote/refspec/materialization) before pushing any; rejects the batch if any invalid, no remote advanced `8ed50cb` (Q2) | push_member.rs | WS3 ✓ |
 | F8 | P1 ✓ | **all sync styles implemented** (S1–S6 `97319ee`..`98318da`): planner now routes `policy.sync` — fetch-only / ff-only / merge / rebase / reset — instead of always FF. Decision (Gianni): gwz is a faithful multi-repo fan-out of git, NOT an enforcer; refusing merge/rebase/reset is the hand-holding AD3 rejects. Backend primitives `merge_upstream`/`rebase_onto`/`reset_hard` (porcelain-parity, clean+conflict, self-verifying); conflicts surface as `MemberStatus::Conflicted`/`AggregateStatus::Conflicted` (exit 1), worktree left `--continue`-able; reset gated on `policy.destructive`; fetch-only allows dirty. | gitbackend.rs, pull_head_member_preflight.rs | WS6 ✓ |
 | F9 | P1 ✓ | top-level CLI errors render envelope-consistent JSON under `--json`/`--jsonl` (`CliError` carries the gwz-core code); human/porcelain unchanged on stderr `e4a43ce` (gwz-cli) | gwz-cli clirequest/globalargs | WS7 ✓ |
-| F10 | ~~P2~~ → Q1 | `pull --head` fetches during preflight, advancing remote-tracking refs | workspace_ops:1710 | **superseded by Q1** |
+| F10 | ✓ via Q1 | `pull --head` fetched during preflight, advancing remote-tracking refs → **fixed**: non-mutating `ls_remote` validate-then-barrier before any fetch `2611b13` | pull_head_member_preflight.rs | **Q1 wired** |
 | F11 | P2 ✓ | `lock_match` now means provably-equal-to-lock: clean worktree at the locked commit, branch, AND attachment; any divergence (dirty included) → `Differs` `0467aa7` | member_not_materialized.rs | WS4 ✓ |
 | F12 | P2 ✓ | `write_atomic` fsyncs the temp before rename (+ best-effort dir fsync) and uses a unique per-process temp name (no fixed-`.tmp` race); cleans up on error `e1413a6` | artifact/mod.rs | WS8 ✓ |
 | F13 | P2 ✓ | `snapshot` rejects a duplicate id up front (the guard `tag` had) → `InvalidRequest` `2050cb4` | handle_materialize.rs | WS8 ✓ |
@@ -378,8 +378,12 @@ backend/boundary architecture was settled — it is now a §2 decision.)
   Conflicts are an expected outcome (`Conflicted` status, `--continue`-able), not a failure. F5/F9 done.
   AD3 ratified + fully implemented (capture/restore, `gwz capture`, branch-restore).
   **All P2s (F11–F17) are now done too** (`0467aa7`,`e1413a6`,`2050cb4`,`e4389eb`,`5dc8fd5`,`05497b1`,`66bb124`;
-  111 lib tests, 0 warnings, clippy clean). **Every audit finding F0–F18 is resolved.** What remains is
-  optional follow-up, not findings: **Q1** (`ls_remote` is built but unwired — pull still fetches during
-  preflight; wiring it = plan-before-fetch so a rejected batch leaves no ref advance), F14's true-atomicity
-  journal (deferred; current window is recoverable), and the small deferred sub-items (Q3 reject-dirty,
-  F2 existing-member re-checkout rollback, AD2 gitlink spike).
+  clippy clean). **Every audit finding F0–F18 is resolved, and Q1 is now wired** (`2611b13`): pull runs a
+  non-mutating `ls_remote` validation pass over the whole selection and barriers before any fetch, so a batch
+  rejected for an unreachable / missing-branch / dirty / unmaterialized member advances no remote-tracking refs
+  (g06 proves a dirty-blocked batch leaves a clean sibling's `origin/main` untouched). Acknowledged residual:
+  divergence needs the fetched objects, so a diverged-member rejection in the fetch pass may still fetch.
+  What remains is optional: the up-to-date-skip optimization (use the `ls_remote` tip to skip a member's fetch
+  when already current; also stop dry-run from fetching), F14's true-atomicity journal (current window is
+  recoverable), and the small deferred sub-items (Q3 reject-dirty, F2 existing-member re-checkout rollback,
+  AD2 gitlink spike). 112 lib tests, 0 warnings, clippy clean.
