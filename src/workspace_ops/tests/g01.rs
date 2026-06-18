@@ -392,6 +392,82 @@ pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     }
 
     #[test]
+    pub(crate) fn pull_head_merge_conflict_surfaces_conflicted_status() {
+        // `--sync merge` on a member that diverged from its remote on the same file:
+        // the merge conflicts, and that must surface as Conflicted end-to-end.
+        let temp = TempDir::new("pull-merge-conflict");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let fixture = RemoteFixture::new("pull-merge-conflict-source");
+        let a = fixture.commit_and_push("README.md", "base\n", "A", &backend);
+        let repos_app = temp.path().join("repos/app");
+        backend.clone_repo(fixture.remote_url(), &repos_app).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        let b = commit_file(&repos_app, "README.md", "local\n", "B", &[a_oid]).unwrap();
+        fixture.commit_and_push("README.md", "remote\n", "C", &backend);
+        write_pull_fixture(
+            temp.path(),
+            vec![("mem_app", "repos/app", fixture.remote_url(), &b)],
+        );
+
+        let response = handle_pull_head(
+            &backend,
+            temp.path(),
+            pull_head_request_with_sync(crate::SyncBehavior::Merge),
+            "op_pull",
+        )
+        .unwrap();
+
+        let member = response.response.members.single();
+        assert_eq!(member.status, crate::MemberStatus::Conflicted);
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Conflicted
+        );
+        // HEAD did not move; the conflict is left `git merge --continue`-able.
+        assert_eq!(backend.head(&repos_app).unwrap().commit, Some(b));
+        assert!(repos_app.join(".git/MERGE_HEAD").exists());
+    }
+
+    #[test]
+    pub(crate) fn pull_head_reset_discards_local_divergence() {
+        // `--sync reset` on a member with a divergent local commit: throw the local work
+        // away and snap onto the remote. Clean worktree ⇒ no destructive flag needed.
+        let temp = TempDir::new("pull-reset");
+        let backend = Git2Backend::new();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let fixture = RemoteFixture::new("pull-reset-source");
+        let a = fixture.commit_and_push("README.md", "base\n", "A", &backend);
+        let repos_app = temp.path().join("repos/app");
+        backend.clone_repo(fixture.remote_url(), &repos_app).unwrap();
+        let a_oid = git2::Oid::from_str(&a).unwrap();
+        let b = commit_file(&repos_app, "README.md", "local\n", "B", &[a_oid]).unwrap();
+        let c = fixture.commit_and_push("README.md", "remote\n", "C", &backend);
+        write_pull_fixture(
+            temp.path(),
+            vec![("mem_app", "repos/app", fixture.remote_url(), &b)],
+        );
+
+        let response = handle_pull_head(
+            &backend,
+            temp.path(),
+            pull_head_request_with_sync(crate::SyncBehavior::Reset),
+            "op_pull",
+        )
+        .unwrap();
+
+        let member = response.response.members.single();
+        assert_eq!(member.status, crate::MemberStatus::Ok);
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Ok
+        );
+        // Local B is discarded; the member sits exactly on the remote commit C.
+        assert_eq!(backend.head(&repos_app).unwrap().commit, Some(c));
+        assert_ne!(backend.head(&repos_app).unwrap().commit, Some(b));
+    }
+
+    #[test]
     pub(crate) fn pull_head_fetches_selected_members_in_parallel() {
         let temp = TempDir::new("pull-parallel");
         handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
@@ -472,6 +548,20 @@ pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     pub(crate) fn pull_head_request() -> crate::PullHeadRequest {
         crate::PullHeadRequest {
             meta: request_meta_with_workspace(),
+        }
+    }
+
+    pub(crate) fn pull_head_request_with_sync(
+        sync: crate::SyncBehavior,
+    ) -> crate::PullHeadRequest {
+        crate::PullHeadRequest {
+            meta: crate::RequestMeta {
+                policy: Some(crate::OperationPolicy {
+                    sync: Some(sync),
+                    ..Default::default()
+                }),
+                ..request_meta_with_workspace()
+            },
         }
     }
 

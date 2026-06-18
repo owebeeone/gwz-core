@@ -80,15 +80,13 @@ where
     )?;
     let mut responses = Vec::with_capacity(plans.len());
     for plan in plans {
-        if let PullHeadAction::FastForward { remote_ref } = &plan.action {
-            backend.fast_forward(&root.join(&plan.state.path), &plan.branch, remote_ref)?;
-        }
+        let member_root = root.join(&plan.state.path);
+        let conflicts = apply_pull_action(backend, &member_root, &plan)?;
         let member = manifest
             .members
             .iter()
             .find(|member| member.id == plan.member_id)
             .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
-        let member_root = root.join(&plan.state.path);
         let state = if backend.is_repository(&member_root)? {
             let head = backend.head(&member_root)?;
             let status = backend.status(&member_root)?;
@@ -97,7 +95,7 @@ where
             plan.state.clone()
         };
         lock.members.insert(plan.member_id.clone(), state.clone());
-        responses.push(pull_result_response(member, &state, &plan.action));
+        responses.push(pull_result_response(member, &state, &plan.action, &conflicts));
     }
     lock.created_at = now_marker();
     artifact::write_lock(&root, &lock)?;
@@ -109,11 +107,17 @@ where
 }
 
 pub(crate) const NO_FETCH_REMOTE_PULL_MESSAGE: &str = "no fetch remote configured; skipping pull";
+pub(crate) const FETCH_ONLY_PULL_MESSAGE: &str = "fetched; not integrated (fetch-only)";
 
 pub(crate) enum PullHeadAction {
     Noop,
     SkipNoFetchRemote,
+    /// Fetched but deliberately not integrated (`--sync fetch-only`).
+    FetchOnly,
     FastForward { remote_ref: String },
+    Merge { remote_ref: String },
+    Rebase { remote_ref: String },
+    Reset { remote_ref: String },
 }
 
 impl PullHeadAction {
@@ -124,7 +128,12 @@ impl PullHeadAction {
     pub(crate) fn planned_message(&self) -> Option<String> {
         match self {
             Self::SkipNoFetchRemote => Some(NO_FETCH_REMOTE_PULL_MESSAGE.to_owned()),
-            Self::Noop | Self::FastForward { .. } => None,
+            Self::FetchOnly => Some(FETCH_ONLY_PULL_MESSAGE.to_owned()),
+            Self::Noop
+            | Self::FastForward { .. }
+            | Self::Merge { .. }
+            | Self::Rebase { .. }
+            | Self::Reset { .. } => None,
         }
     }
 }
@@ -146,7 +155,11 @@ impl PullHeadPlan {
                 PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => {
                     crate::MemberStatus::Noop
                 }
-                PullHeadAction::FastForward { .. } => crate::MemberStatus::Planned,
+                PullHeadAction::FetchOnly
+                | PullHeadAction::FastForward { .. }
+                | PullHeadAction::Merge { .. }
+                | PullHeadAction::Rebase { .. }
+                | PullHeadAction::Reset { .. } => crate::MemberStatus::Planned,
             },
             error: None,
             planned: Some(crate::PlannedChange {
@@ -154,7 +167,11 @@ impl PullHeadPlan {
                     PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => {
                         crate::PlannedAction::Noop
                     }
+                    PullHeadAction::FetchOnly => crate::PlannedAction::Fetch,
                     PullHeadAction::FastForward { .. } => crate::PlannedAction::FastForward,
+                    PullHeadAction::Merge { .. } => crate::PlannedAction::Merge,
+                    PullHeadAction::Rebase { .. } => crate::PlannedAction::Rebase,
+                    PullHeadAction::Reset { .. } => crate::PlannedAction::Reset,
                 },
                 from_ref: self.state.commit.clone(),
                 to_ref: None,
@@ -258,12 +275,34 @@ where
             format!("member '{member_id}' is not materialized"),
         ));
     }
+    let sync = policy
+        .and_then(|policy| policy.sync)
+        .unwrap_or(crate::SyncBehavior::FfOnly);
     let status = backend.status(&member_root)?;
     if status.is_dirty {
-        return Err(ModelError::new(
-            ErrorCode::DirtyMember,
-            format!("member '{member_id}' has uncommitted changes"),
-        ));
+        // fetch-only never touches the worktree, so a dirty member is fine. reset is
+        // destructive and gated on the destructive policy. Everything that integrates
+        // (ff/merge/rebase) refuses, matching porcelain git's "local changes" guard.
+        match sync {
+            crate::SyncBehavior::FetchOnly => {}
+            crate::SyncBehavior::Reset
+                if policy.and_then(|policy| policy.destructive)
+                    == Some(crate::DestructiveBehavior::Allow) => {}
+            crate::SyncBehavior::Reset => {
+                return Err(ModelError::new(
+                    ErrorCode::DirtyMember,
+                    format!(
+                        "member '{member_id}' has uncommitted changes; reset would discard them"
+                    ),
+                ));
+            }
+            _ => {
+                return Err(ModelError::new(
+                    ErrorCode::DirtyMember,
+                    format!("member '{member_id}' has uncommitted changes"),
+                ));
+            }
+        }
     }
     let Some(remote) = pull_fetch_remote_name(member, policy) else {
         if let Some(emitter) = emitter {
@@ -290,13 +329,39 @@ where
     };
     let action = if local_commit == remote_commit {
         PullHeadAction::Noop
-    } else if backend.is_ancestor(&member_root, &local_commit, &remote_commit)? {
-        PullHeadAction::FastForward { remote_ref }
     } else {
-        return Err(ModelError::new(
-            ErrorCode::DivergedMember,
-            format!("member '{member_id}' has diverged from remote"),
-        ));
+        // Strictly behind ⇒ a fast-forward is always available, and the integration
+        // modes take it too (git merge/rebase fast-forward by default). Diverged ⇒
+        // the chosen sync mode decides; fetch-only never integrates either way.
+        let behind = backend.is_ancestor(&member_root, &local_commit, &remote_commit)?;
+        match sync {
+            crate::SyncBehavior::FetchOnly => PullHeadAction::FetchOnly,
+            crate::SyncBehavior::FfOnly | crate::SyncBehavior::DriverSelected => {
+                if behind {
+                    PullHeadAction::FastForward { remote_ref }
+                } else {
+                    return Err(ModelError::new(
+                        ErrorCode::DivergedMember,
+                        format!("member '{member_id}' has diverged from remote"),
+                    ));
+                }
+            }
+            crate::SyncBehavior::Merge => {
+                if behind {
+                    PullHeadAction::FastForward { remote_ref }
+                } else {
+                    PullHeadAction::Merge { remote_ref }
+                }
+            }
+            crate::SyncBehavior::Rebase => {
+                if behind {
+                    PullHeadAction::FastForward { remote_ref }
+                } else {
+                    PullHeadAction::Rebase { remote_ref }
+                }
+            }
+            crate::SyncBehavior::Reset => PullHeadAction::Reset { remote_ref },
+        }
     };
     if let Some(emitter) = emitter {
         emitter.member_finished(&member.id, &state.path);
@@ -337,31 +402,83 @@ pub(crate) fn pull_remote_host(
         .and_then(|candidate| git_host(&candidate.url))
 }
 
+/// Execute a planned pull action against the materialized member, returning any
+/// conflicted paths (empty when clean or non-integrating). Merge/rebase conflicts are
+/// RETURNED, not errored — the worktree is left `--continue`-able for the developer.
+pub(crate) fn apply_pull_action<B>(
+    backend: &B,
+    member_root: &Path,
+    plan: &PullHeadPlan,
+) -> ModelResult<Vec<String>>
+where
+    B: GitBackend,
+{
+    match &plan.action {
+        PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote | PullHeadAction::FetchOnly => {
+            Ok(Vec::new())
+        }
+        PullHeadAction::FastForward { remote_ref } => {
+            backend.fast_forward(member_root, &plan.branch, remote_ref)?;
+            Ok(Vec::new())
+        }
+        PullHeadAction::Merge { remote_ref } => Ok(backend
+            .merge_upstream(member_root, &plan.branch, remote_ref)?
+            .conflicts),
+        PullHeadAction::Rebase { remote_ref } => Ok(backend
+            .rebase_onto(member_root, &plan.branch, remote_ref)?
+            .conflicts),
+        PullHeadAction::Reset { remote_ref } => {
+            backend.reset_hard(member_root, &plan.branch, remote_ref)?;
+            Ok(Vec::new())
+        }
+    }
+}
+
 pub(crate) fn pull_result_response(
     member: &ManifestMember,
     state: &ResolvedMemberArtifact,
     action: &PullHeadAction,
+    conflicts: &[String],
 ) -> crate::MemberResponse {
+    let status = if conflicts.is_empty() {
+        match action {
+            PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => crate::MemberStatus::Noop,
+            PullHeadAction::FetchOnly
+            | PullHeadAction::FastForward { .. }
+            | PullHeadAction::Merge { .. }
+            | PullHeadAction::Rebase { .. }
+            | PullHeadAction::Reset { .. } => crate::MemberStatus::Ok,
+        }
+    } else {
+        crate::MemberStatus::Conflicted
+    };
+    let message = if conflicts.is_empty() {
+        action.planned_message()
+    } else {
+        Some(format!(
+            "integration left {} conflicted path(s); resolve and continue: {}",
+            conflicts.len(),
+            conflicts.join(", ")
+        ))
+    };
     crate::MemberResponse {
         member_id: member.id.clone(),
         member_path: state.path.clone(),
         source_kind: crate::SourceKind::Git,
-        status: match action {
-            PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => crate::MemberStatus::Noop,
-            PullHeadAction::FastForward { .. } => crate::MemberStatus::Ok,
-        },
+        status,
         error: None,
-        planned: action
-            .planned_message()
-            .map(|message| crate::PlannedChange {
-                action: crate::PlannedAction::Noop,
-                from_ref: state.commit.clone(),
-                to_ref: None,
-                message: Some(message),
-            }),
+        planned: message.map(|message| crate::PlannedChange {
+            action: crate::PlannedAction::Noop,
+            from_ref: state.commit.clone(),
+            to_ref: None,
+            message: Some(message),
+        }),
         state: Some(protocol_state(member, state)),
         git_status: None,
-        lock_match: Some(crate::LockMatch::Matches),
+        // A conflicted worktree no longer matches the lock; don't claim it does.
+        lock_match: conflicts
+            .is_empty()
+            .then_some(crate::LockMatch::Matches),
     }
 }
 
@@ -375,6 +492,11 @@ pub(crate) fn pull_aggregate_status(plans: &[PullHeadPlan]) -> crate::AggregateS
 
 pub(crate) fn pull_response_aggregate(responses: &[crate::MemberResponse]) -> crate::AggregateStatus {
     if responses
+        .iter()
+        .any(|response| response.status == crate::MemberStatus::Conflicted)
+    {
+        crate::AggregateStatus::Conflicted
+    } else if responses
         .iter()
         .all(|response| response.status == crate::MemberStatus::Noop)
     {
