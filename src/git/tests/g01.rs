@@ -163,6 +163,31 @@ use super::*;
     }
 
     #[test]
+    pub(crate) fn status_detects_a_staged_rename_with_original_path() {
+        // F17: rename detection must be ON — a `git mv` should report one `R` entry with
+        // the original path, not an unrelated delete + add.
+        let temp = TempDir::new("status-rename");
+        let backend = Git2Backend::new();
+        let repo = temp.path().join("repo");
+        backend.create_repo(&repo).unwrap();
+        commit_file(&repo, "old.txt", "stable contents\n", "seed", &[]).unwrap();
+
+        run_git(&repo, &["mv", "old.txt", "new.txt"]);
+
+        let status = backend.status(&repo).unwrap();
+        assert!(status.is_dirty);
+        let rename = status
+            .files
+            .iter()
+            .find(|file| file.path == "new.txt")
+            .expect("renamed file present in status");
+        assert_eq!(rename.index_status, "R");
+        assert_eq!(rename.original_path.as_deref(), Some("old.txt"));
+        // The old path is not reported as a separate deletion.
+        assert!(status.files.iter().all(|file| file.path != "old.txt"));
+    }
+
+    #[test]
     pub(crate) fn clones_local_repo_and_rejects_non_empty_targets_before_mutation() {
         let temp = TempDir::new("clone");
         let backend = Git2Backend::new();

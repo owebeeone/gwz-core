@@ -588,7 +588,12 @@ impl GitBackend for Git2Backend {
     fn status(&self, path: &Path) -> ModelResult<GitStatus> {
         let repo = open_repo(path)?;
         let mut opts = git2::StatusOptions::new();
-        opts.include_untracked(true).recurse_untracked_dirs(true);
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            // F17: detect renames so a `git mv` reports `R` + original_path (the status
+            // model already carries `original_path`) instead of an unrelated delete+add.
+            .renames_head_to_index(true)
+            .renames_index_to_workdir(true);
         let statuses = repo.statuses(Some(&mut opts)).map_err(git_error)?;
         let mut out = GitStatus::default();
         for entry in statuses.iter() {
@@ -817,27 +822,31 @@ pub(crate) fn remote_credential(
 
 pub(crate) fn git_file_status(entry: &git2::StatusEntry<'_>) -> Option<GitFileStatus> {
     let status = entry.status();
-    let path = entry.path().ok()?.to_owned();
+    // git2 reports a rename entry under the OLD path; model it the way `git status` does —
+    // current path = the new path, `original_path` = where it came from.
+    let (path, original_path) = match rename_delta(entry, status) {
+        Some((old, new)) => (new, Some(old)),
+        None => (entry.path().ok()?.to_owned(), None),
+    };
     Some(GitFileStatus {
         path,
         index_status: index_status_char(status).to_owned(),
         worktree_status: worktree_status_char(status).to_owned(),
-        original_path: original_path(entry),
+        original_path,
     })
 }
 
-pub(crate) fn original_path(entry: &git2::StatusEntry<'_>) -> Option<String> {
-    if !entry
-        .status()
-        .intersects(git2::Status::INDEX_RENAMED | git2::Status::WT_RENAMED)
-    {
+/// `(old_path, new_path)` when `entry` is a rename (staged or unstaged), else `None`.
+pub(crate) fn rename_delta(
+    entry: &git2::StatusEntry<'_>,
+    status: git2::Status,
+) -> Option<(String, String)> {
+    if !status.intersects(git2::Status::INDEX_RENAMED | git2::Status::WT_RENAMED) {
         return None;
     }
-    entry
-        .head_to_index()
-        .or_else(|| entry.index_to_workdir())
-        .and_then(|delta| delta.old_file().path())
-        .and_then(|path| path.to_str())
-        .map(ToOwned::to_owned)
+    let delta = entry.head_to_index().or_else(|| entry.index_to_workdir())?;
+    let old = delta.old_file().path()?.to_str()?.to_owned();
+    let new = delta.new_file().path()?.to_str()?.to_owned();
+    Some((old, new))
 }
 
