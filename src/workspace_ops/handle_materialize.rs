@@ -323,8 +323,8 @@ where
         artifact::write_lock(&root, &lock)?;
     }
 
-    // §4.3: project the now-materialized members as gitlinks in the root index. Read the
-    // authoritative on-disk lock (rewritten above, or the existing one for a lock target).
+    // Refresh the workspace boundary (member + tmp excludes) from the authoritative
+    // on-disk lock (rewritten above, or the existing one for a lock target).
     let lock = artifact::read_lock(&root)?;
     sync_workspace_boundary(backend, &root, &lock)?;
 

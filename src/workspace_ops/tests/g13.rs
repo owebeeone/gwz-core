@@ -74,8 +74,8 @@ fn commit_fans_out_to_members_then_commits_root_last() {
     assert_ne!(before, after);
     assert_eq!(read_lock(temp.path()).unwrap().members["mem_remote"].commit, after);
 
-    // The root was committed last, absorbing the gwz-internal updates (C4): HEAD has a
-    // commit and the working tree is clean — gitlink for `remote` + gwz.conf all committed.
+    // The root was committed last (the lock update): HEAD has a commit and the working
+    // tree is clean — gwz.conf committed and the member hidden via .git/info/exclude.
     assert!(backend.head(temp.path()).unwrap().commit.is_some());
     assert!(
         !backend.status(temp.path()).unwrap().is_dirty,

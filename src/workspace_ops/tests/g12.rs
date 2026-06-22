@@ -1,51 +1,76 @@
+use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
+
+use crate::artifact::{LockArtifact, ResolvedMemberArtifact};
 
 use super::*;
 
-// §5.1 / G3 / G4: `ensure_gitignore_tmp` only appends the static `/gwz.conf/.tmp/`
-// line when absent — it never strips or rewrites existing content.
+// The workspace boundary is a managed block in .git/info/exclude: members + the tmp dir,
+// regenerated from the lock on every run, preserving any user lines. Members are hidden,
+// not tracked (no gitlinks, no .gitignore).
 
-#[test]
-fn ensure_gitignore_tmp_appends_when_absent() {
-    let temp = TempDir::new("gitignore-tmp-absent");
-    ensure_gitignore_tmp(temp.path()).unwrap();
-    let ignore = fs::read_to_string(temp.path().join(".gitignore")).unwrap();
-    assert!(ignore.contains("/gwz.conf/.tmp/"));
+fn lock_with_members(paths: &[&str]) -> LockArtifact {
+    let mut members = BTreeMap::new();
+    for (i, path) in paths.iter().enumerate() {
+        members.insert(
+            format!("mem_{i}"),
+            ResolvedMemberArtifact {
+                path: (*path).to_owned(),
+                ..Default::default()
+            },
+        );
+    }
+    LockArtifact {
+        schema: "gwz.lock/v0".to_owned(),
+        workspace_id: "ws_test".to_owned(),
+        manifest_schema: "gwz.workspace/v0".to_owned(),
+        created_at: "t".to_owned(),
+        members,
+    }
+}
+
+fn read_exclude(root: &Path) -> String {
+    fs::read_to_string(root.join(".git/info/exclude")).unwrap()
 }
 
 #[test]
-fn ensure_gitignore_tmp_is_idempotent() {
-    let temp = TempDir::new("gitignore-tmp-idem");
-    ensure_gitignore_tmp(temp.path()).unwrap();
-    let once = fs::read_to_string(temp.path().join(".gitignore")).unwrap();
-    ensure_gitignore_tmp(temp.path()).unwrap();
-    let twice = fs::read_to_string(temp.path().join(".gitignore")).unwrap();
-    assert_eq!(once, twice, "second call must not change the file");
-    assert_eq!(
-        twice.matches("/gwz.conf/.tmp/").count(),
-        1,
-        "no duplicate tmp entry"
-    );
+fn exclude_lists_tmp_and_member_paths() {
+    let temp = TempDir::new("exclude-members");
+    ensure_workspace_exclude(temp.path(), &lock_with_members(&["gwz-cli", "gwz-core"])).unwrap();
+    let exclude = read_exclude(temp.path());
+    assert!(exclude.contains("/gwz.conf/.tmp/"));
+    assert!(exclude.contains("/gwz-cli/"));
+    assert!(exclude.contains("/gwz-core/"));
+    assert!(exclude.contains("# BEGIN GWZ managed member repositories"));
 }
 
 #[test]
-fn ensure_gitignore_tmp_preserves_user_lines_and_appends() {
-    let temp = TempDir::new("gitignore-tmp-user");
-    fs::write(temp.path().join(".gitignore"), "/build/\n").unwrap();
-    ensure_gitignore_tmp(temp.path()).unwrap();
-    let after = fs::read_to_string(temp.path().join(".gitignore")).unwrap();
-    assert!(after.starts_with("/build/\n"), "user line preserved: {after:?}");
-    assert!(after.contains("/gwz.conf/.tmp/"));
+fn exclude_is_idempotent() {
+    let temp = TempDir::new("exclude-idem");
+    let lock = lock_with_members(&["gwz-cli"]);
+    ensure_workspace_exclude(temp.path(), &lock).unwrap();
+    let once = read_exclude(temp.path());
+    ensure_workspace_exclude(temp.path(), &lock).unwrap();
+    assert_eq!(once, read_exclude(temp.path()), "second run must not change the file");
 }
 
 #[test]
-fn ensure_gitignore_tmp_leaves_legacy_block_untouched() {
-    // Migration (G3): a pre-existing legacy managed block is left exactly as-is. The
-    // old writer always included the tmp line, so this is a pure no-op — never stripped.
-    let temp = TempDir::new("gitignore-tmp-legacy");
-    let legacy = "# BEGIN GWZ managed member repositories\n/gwz.conf/.tmp/\n/remote/\n# END GWZ managed member repositories\n";
-    fs::write(temp.path().join(".gitignore"), legacy).unwrap();
-    ensure_gitignore_tmp(temp.path()).unwrap();
-    let after = fs::read_to_string(temp.path().join(".gitignore")).unwrap();
-    assert_eq!(after, legacy, "legacy block left exactly as-is, never stripped");
+fn exclude_preserves_user_lines_and_reconciles_members() {
+    let temp = TempDir::new("exclude-reconcile");
+    let info = temp.path().join(".git/info");
+    fs::create_dir_all(&info).unwrap();
+    fs::write(info.join("exclude"), "# user line\n/scratch/\n").unwrap();
+
+    ensure_workspace_exclude(temp.path(), &lock_with_members(&["a", "b"])).unwrap();
+    let after = read_exclude(temp.path());
+    assert!(after.contains("/scratch/"), "user lines preserved");
+    assert!(after.contains("/a/") && after.contains("/b/"));
+
+    // Drop a member → its entry is reconciled away; user lines stay.
+    ensure_workspace_exclude(temp.path(), &lock_with_members(&["a"])).unwrap();
+    let after = read_exclude(temp.path());
+    assert!(after.contains("/a/"));
+    assert!(!after.contains("/b/"), "removed member dropped from the block");
+    assert!(after.contains("/scratch/"), "user lines still preserved");
 }

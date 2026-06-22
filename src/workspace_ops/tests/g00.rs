@@ -72,18 +72,13 @@ use super::*;
         assert!(temp.path().join("gwz.conf/gwz.yml").is_file());
         assert!(temp.path().join("gwz.conf/gwz.lock.yml").is_file());
         assert!(!temp.path().join("workspace").exists());
-        let ignore = fs::read_to_string(temp.path().join(".gitignore")).unwrap();
-        // G3/G4: only the static tmp-ignore line — no member block is ever written.
-        assert!(ignore.contains("/gwz.conf/.tmp/"));
-        assert!(!ignore.contains("/remote/"));
+        // Members + tmp are hidden via local .git/info/exclude; gwz writes no .gitignore.
+        let exclude = fs::read_to_string(temp.path().join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains("/gwz.conf/.tmp/"));
+        assert!(exclude.contains("/remote/"));
+        assert!(!temp.path().join(".gitignore").exists());
         let root_status = backend.status(temp.path()).unwrap();
-        assert_eq!(root_status.untracked, 0);
-        assert!(
-            root_status
-                .files
-                .iter()
-                .any(|file| { file.path == ".gitignore" && file.index_status == "A" })
-        );
+        assert_eq!(root_status.untracked, 0, "the member is excluded, not untracked");
         assert!(
             root_status
                 .files

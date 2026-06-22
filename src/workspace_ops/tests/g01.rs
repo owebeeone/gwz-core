@@ -110,17 +110,6 @@ pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
             Ok(crate::git::GitStageResult { staged: 0 })
         }
 
-        fn sync_gitlinks(
-            &self,
-            _root: &Path,
-            desired: &[(&str, &str)],
-        ) -> ModelResult<crate::git::GitGitlinkResult> {
-            Ok(crate::git::GitGitlinkResult {
-                written: desired.len(),
-                removed: 0,
-            })
-        }
-
         fn commit(
             &self,
             _path: &Path,

@@ -479,22 +479,24 @@ rather than becoming public API behavior.
 ## Root/Member Boundary
 
 Member repositories are nested git repos at `root/<member.path>`. The root repo
-treats each member as a single opaque unit (never recursing into its files) by
-projecting every materialized member as a **gitlink** — a `160000` index entry
-pointing at the member commit recorded in `gwz.lock.yml`.
+treats each member as opaque — it never tracks or recurses into member files — by
+**hiding** every member from the root via a gwz-managed block in the root repo's
+local `.git/info/exclude`, alongside `/gwz.conf/.tmp/`.
 
-`gwz.yml` is authoritative for membership, the lock is the source of the oid, and
-the gitlink is an **index-only projection synced on demand**: refreshed from the
-lock after every lock write (`sync_workspace_boundary`), never committed implicitly.
-`.gitignore` is no longer used to hide members — gwz only ensures one static
-`/gwz.conf/.tmp/` line and never edits existing entries. The sole path that commits
-the projection into root history is the `gwz commit` verb, which refreshes gitlinks
-from the lock and commits members before the root so pinned oids are never stale.
+`gwz.yml` is authoritative for membership and `gwz.lock.yml` is the authoritative
+record of each member's commit; members are *not* tracked in the root (no gitlinks,
+no committed member entries). The exclude block is **local and never committed** —
+`sync_workspace_boundary` regenerates it from the lock on every lock-writing op
+(reconciling added/removed members, preserving any user lines), so a fresh clone
+re-derives it on the next gwz run; we don't persist it. gwz writes no `.gitignore`
+at all (a user's own `.gitignore` is left untouched).
 
-The `sync_gitlinks` backend primitive (AD1, self-verifying) reconciles the root
-index's gitlink entries to the desired set. See `GWZGitlinkPlan.md` for the full
-design and behavior matrix; this supersedes the AD2 "gitlink deferred" disposition
-in `history/GwzAuditResolutionPlan.md`.
+The only path that records workspace composition in root history is the `gwz commit`
+verb: it commits members first, re-locks from their new HEADs, then commits the root
+(`gwz.conf`) last — so the committed lock reflects the post-commit member state. This
+lands back on the original AD2 disposition (the lock SHA, not a gitlink, is the
+record); the earlier gitlink boundary was implemented then reverted — see
+`GWZGitlinkPlan.md` for that historical design.
 
 ## Operation Flow
 

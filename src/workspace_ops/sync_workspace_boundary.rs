@@ -8,61 +8,76 @@ use crate::workspace::WORKSPACE_DIR;
 
 use super::*;
 
-/// Sync the git representation of the workspace to the lock (GWZGitlinkPlan §4.2):
-/// ensure the static tmp-ignore line, project each materialized member as a gitlink in
-/// the root index, and stage the workspace metadata. Goes through the passed backend so
-/// a fake no-ops it in unit tests. Best-effort after the lock (G6) — the index is a
-/// rebuildable projection of the lock, so a crash here is repaired by the next op.
+const EXCLUDE_BEGIN: &str = "# BEGIN GWZ managed member repositories";
+const EXCLUDE_END: &str = "# END GWZ managed member repositories";
+
+/// Refresh the workspace git boundary and stage the workspace metadata. gwz hides member
+/// repos and its tmp dir from the ROOT repo via a managed block in `.git/info/exclude` —
+/// local, never committed, regenerated on every run (we don't persist it). Members are
+/// therefore untracked; `gwz.yml` / `gwz.lock.yml` is the authoritative record of member
+/// state. (Supersedes the gitlink boundary.)
 pub(crate) fn sync_workspace_boundary<B: GitBackend>(
     backend: &B,
     root: &Path,
     lock: &LockArtifact,
 ) -> ModelResult<()> {
-    ensure_gitignore_tmp(root)?;
-    let desired = desired_gitlinks(lock);
-    let refs: Vec<(&str, &str)> = desired
-        .iter()
-        .map(|(path, commit)| (path.as_str(), commit.as_str()))
-        .collect();
-    backend.sync_gitlinks(root, &refs)?;
+    ensure_workspace_exclude(root, lock)?;
     stage_workspace_git_metadata(backend, root)
 }
 
-/// The `(member path, commit oid)` pairs to project as gitlinks: every lock member that
-/// is materialized with a recorded commit. Unmaterialized / carry-lock / unborn members
-/// (no on-disk repo or no oid) get no gitlink — the reconcile drops any stale entry.
-pub(crate) fn desired_gitlinks(lock: &LockArtifact) -> Vec<(String, String)> {
-    lock.members
-        .values()
-        .filter(|member| member.materialized == Some(true))
-        .filter_map(|member| {
-            member
-                .commit
-                .as_ref()
-                .map(|commit| (member.path.clone(), commit.clone()))
-        })
-        .collect()
-}
+/// Regenerate gwz's managed block in `<root>/.git/info/exclude` so the root repo ignores
+/// `/{WORKSPACE_DIR}/.tmp/` and every member path. Idempotent, preserves any non-gwz
+/// lines, and is purely local (never committed) — rebuilt from the lock on each run.
+pub(crate) fn ensure_workspace_exclude(root: &Path, lock: &LockArtifact) -> ModelResult<()> {
+    let mut paths: Vec<&str> = lock.members.values().map(|m| m.path.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
 
-/// Ensure `.gitignore` contains the static `/gwz.conf/.tmp/` line (G3/G4): append it if
-/// absent, otherwise no-op. Never strips or rewrites existing content — old entries
-/// (including a legacy managed block) are left exactly as they are.
-pub(crate) fn ensure_gitignore_tmp(root: &Path) -> ModelResult<()> {
-    let entry = format!("/{WORKSPACE_DIR}/.tmp/");
-    let path = root.join(".gitignore");
-    let existing = match fs::read_to_string(&path) {
+    let mut lines = vec![EXCLUDE_BEGIN.to_owned(), format!("/{WORKSPACE_DIR}/.tmp/")];
+    lines.extend(paths.into_iter().map(|path| format!("/{path}/")));
+    lines.push(EXCLUDE_END.to_owned());
+    let block = lines.join("\n");
+
+    let exclude_path = root.join(".git").join("info").join("exclude");
+    if let Some(parent) = exclude_path.parent() {
+        fs::create_dir_all(parent).map_err(io_error)?;
+    }
+    let existing = match fs::read_to_string(&exclude_path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(io_error(error)),
     };
-    if existing.lines().any(|line| line.trim() == entry) {
-        return Ok(());
+    let updated = replace_managed_block(&existing, &block);
+    if updated != existing {
+        fs::write(&exclude_path, updated).map_err(io_error)?;
     }
-    let mut updated = existing;
-    if !updated.is_empty() && !updated.ends_with('\n') {
-        updated.push('\n');
+    Ok(())
+}
+
+/// Surgically replace gwz's `BEGIN..END` block within `existing`, preserving everything
+/// else (including a user's own exclude lines); appends the block if not yet present.
+fn replace_managed_block(existing: &str, block: &str) -> String {
+    if let Some(begin) = existing.find(EXCLUDE_BEGIN)
+        && let Some(relative_end) = existing[begin..].find(EXCLUDE_END)
+    {
+        let end = begin + relative_end + EXCLUDE_END.len();
+        let after_end = if existing[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
+        let mut out = String::with_capacity(existing.len() + block.len());
+        out.push_str(&existing[..begin]);
+        out.push_str(block);
+        out.push('\n');
+        out.push_str(&existing[after_end..]);
+        return out;
     }
-    updated.push_str(&entry);
-    updated.push('\n');
-    fs::write(&path, updated).map_err(io_error)
+    if existing.trim().is_empty() {
+        format!("{block}\n")
+    } else if existing.ends_with('\n') {
+        format!("{existing}{block}\n")
+    } else {
+        format!("{existing}\n{block}\n")
+    }
 }

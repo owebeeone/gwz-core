@@ -1,24 +1,27 @@
 # GWZ Gitlink Boundary Plan
 
-Status: **ratified 2026-06-22** (Gianni — §2 G1–G6 + §6 C1–C5 as written).
-Implementing per §8 sequencing.
-Owner decision: Gianni (overrides the AD2 "deferred spike" disposition — see §1).
+> **SUPERSEDED 2026-06-23.** The gitlink boundary specified below was implemented
+> (WS1–WS6) and then **reverted** at the owner's direction in favor of hiding members
+> via the root repo's local `.git/info/exclude` (members + `/gwz.conf/.tmp/`,
+> regenerated from the lock on every run, never committed). Members are no longer
+> tracked as `160000` gitlinks, and gwz writes no `.gitignore`; `gwz.yml` /
+> `gwz.lock.yml` is the authoritative record — which lands back on the original AD2
+> disposition. The **`gwz commit` verb (§6) shipped and remains current**, minus the
+> gitlink-sync step: the root commit now records the lock, not gitlinks. See
+> `GWZDesign.md` → "Root/Member Boundary" for the live boundary. The remainder of this
+> document is retained as the historical design record of the gitlink approach.
 
-Supersedes / overrides:
-- `history/GwzAuditResolutionPlan.md` §2 **AD2** — which parked gitlink as a
-  *deferred spike* and named `.git/info/exclude` the interim. That deferral is
-  **withdrawn**: the index-only gitlink projection below *is* the boundary model.
-- Finding **F4** (`.gitignore` not resynced on materialize/pull/clone) — closed by
-  this plan rather than by patching the `.gitignore` path.
-- The dynamic `.gitignore` member-block *writer* in
-  `src/workspace_ops/replace_managed_gitignore_block.rs` — gwz stops *writing* member
-  entries (gitlinks replace them; see §4.4). A static tmp-ignore line is *ensured*;
-  any pre-existing `.gitignore` content (incl. a legacy managed block) is left exactly
-  as-is — gwz never strips or rewrites it.
+---
 
-`GWZDesign.md` stays authoritative for the overall design; this plan is the active
-checkpoint for the boundary change + the `gwz commit` verb (per the AGENTS.md scope
-rule).
+Status: ~~ratified 2026-06-22~~ — boundary mechanism reverted (see banner). The
+`gwz commit` verb (§6) remains the live spec. Owner decision: Gianni.
+
+Original framing (historical):
+- Overrode `history/GwzAuditResolutionPlan.md` §2 **AD2** — which parked gitlink as a
+  *deferred spike* and named `.git/info/exclude` the interim. (The revert restores that
+  interim as the final boundary.)
+- Closed Finding **F4** (`.gitignore` not resynced) and removed the dynamic `.gitignore`
+  member-block writer; the exclude block now plays the resynced-on-every-run role.
 
 ## 1. Decision And Rationale
 

@@ -8,11 +8,11 @@ use crate::operation::OperationRequest;
 use super::*;
 
 /// Fan out `git commit` across selected members and the root (root last) — the multi-repo
-/// commit verb (GWZGitlinkPlan §6). Members with staged changes (or, with `all`, tracked
-/// modifications too) are committed; a member with nothing to commit is skipped (never an
-/// empty commit). The member commits' effect on gwz's own state — new lock HEADs plus the
-/// refreshed gitlinks — is then committed into the root, last, so the root snapshot pins
-/// fresh oids (C4). Nothing commit-able anywhere is a success no-op (C5).
+/// commit verb. Members with staged changes (or, with `all`, tracked modifications too)
+/// are committed; a member with nothing to commit is skipped (never an empty commit). The
+/// member commits update gwz's lock (new member HEADs); that lock update is then committed
+/// into the root last, so the root records the post-commit composition. Members are hidden
+/// via `.git/info/exclude`, not tracked. Nothing commit-able anywhere is a success no-op.
 pub fn handle_commit<B>(
     backend: &B,
     start: &Path,
@@ -82,8 +82,8 @@ where
     next.created_at = now_marker();
     artifact::write_lock(&root, &next)?;
 
-    // Project gitlinks from the new lock + stage gwz.conf, then commit the root LAST so the
-    // gwz-internal updates the member commits caused land in one root commit (C4).
+    // Refresh the boundary excludes + stage gwz.conf, then commit the root LAST so the
+    // lock update (the post-commit member HEADs) lands in one root commit.
     sync_workspace_boundary(backend, &root, &next)?;
     if backend.is_repository(&root)? && backend.status(&root)?.staged > 0 {
         backend.commit(&root, &request.message, false)?;
