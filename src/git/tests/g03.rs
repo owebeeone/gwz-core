@@ -14,6 +14,7 @@ use super::*;
             Some("git"),
             git2::CredentialType::SSH_KEY,
             CredentialHelperPolicy::Disabled,
+            &mut 0u32,
         )
         .unwrap();
         assert!(ssh.has_username());
@@ -23,6 +24,7 @@ use super::*;
             None,
             git2::CredentialType::USERNAME,
             CredentialHelperPolicy::Disabled,
+            &mut 0u32,
         )
         .unwrap();
         assert!(username.has_username());
@@ -32,6 +34,7 @@ use super::*;
             None,
             git2::CredentialType::DEFAULT,
             CredentialHelperPolicy::Disabled,
+            &mut 0u32,
         )
         .unwrap();
     }

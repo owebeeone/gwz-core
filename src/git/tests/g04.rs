@@ -14,6 +14,7 @@ use super::*;
             None,
             git2::CredentialType::USER_PASS_PLAINTEXT,
             CredentialHelperPolicy::Disabled,
+            &mut 0u32,
         );
         let err = match result {
             Ok(_) => panic!("expected disabled credential helpers to reject plaintext auth"),
