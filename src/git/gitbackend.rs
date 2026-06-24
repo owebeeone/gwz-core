@@ -91,6 +91,24 @@ pub trait GitBackend {
     /// Returns the new commit oid. Self-verifies HEAD advanced to a new commit before
     /// returning. The caller must ensure there is something to commit (no empty commits).
     fn commit(&self, path: &Path, message: &str, all: bool) -> ModelResult<GitCommitResult>;
+    /// Create tag `name` at the current HEAD via the `git` CLI (AD1 per-primitive CLI
+    /// fallback — so hooks, signing, and tagger config are honored). Annotated when
+    /// `message` is set; signed when `signed` (signing requires a message + GPG config).
+    /// Self-verifies the tag exists, returning its peeled target commit oid.
+    fn tag_create(
+        &self,
+        path: &Path,
+        name: &str,
+        message: Option<&str>,
+        signed: bool,
+    ) -> ModelResult<GitTagResult>;
+    /// All tag names in the repo, sorted.
+    fn tag_list(&self, path: &Path) -> ModelResult<Vec<String>>;
+    /// Delete tag `name`. Self-verifies it no longer exists before returning.
+    fn tag_delete(&self, path: &Path, name: &str) -> ModelResult<()>;
+
+    /// Fetch tags from a remote into local refs (force-updating local copies).
+    fn tag_fetch(&self, path: &Path, remote: &str) -> ModelResult<GitFetchResult>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,6 +220,14 @@ pub struct GitCommitResult {
     pub commit: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitTagResult {
+    /// The tag name created.
+    pub name: String,
+    /// The commit oid the tag points at (peeled through annotated tags).
+    pub commit: String,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GitStatus {
     pub is_dirty: bool,
@@ -289,6 +315,23 @@ impl GitBackend for Git2Backend {
                 &refspecs,
                 Some(&mut remote_fetch_options(self.credential_helpers)),
                 Some("gwz fetch"),
+            )
+            .map_err(git_error)?;
+        Ok(GitFetchResult {
+            remote: remote.to_owned(),
+        })
+    }
+
+    fn tag_fetch(&self, path: &Path, remote: &str) -> ModelResult<GitFetchResult> {
+        let repo = open_repo(path)?;
+        let mut remote_handle = find_remote(&repo, remote)?;
+        // Fetch every tag, force-updating local copies.
+        let refspec = "+refs/tags/*:refs/tags/*";
+        remote_handle
+            .fetch(
+                &[refspec],
+                Some(&mut remote_fetch_options(self.credential_helpers)),
+                Some("gwz tag fetch"),
             )
             .map_err(git_error)?;
         Ok(GitFetchResult {
@@ -745,6 +788,92 @@ impl GitBackend for Git2Backend {
             ));
         }
         Ok(GitCommitResult { commit: after })
+    }
+
+    fn tag_create(
+        &self,
+        path: &Path,
+        name: &str,
+        message: Option<&str>,
+        signed: bool,
+    ) -> ModelResult<GitTagResult> {
+        // AD1 CLI fallback: `git tag` so hooks / signing / tagger config are honored.
+        let mut command = std::process::Command::new("git");
+        command.arg("-C").arg(path).arg("tag");
+        if signed {
+            command.arg("-s");
+        } else if message.is_some() {
+            command.arg("-a");
+        }
+        if let Some(message) = message {
+            command.arg("-m").arg(message);
+        }
+        command.arg(name);
+        let output = command.output().map_err(|err| {
+            ModelError::new(ErrorCode::GitCommandFailed, format!("failed to run git tag: {err}"))
+        })?;
+        if !output.status.success() {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("git tag failed: {}", String::from_utf8_lossy(&output.stderr).trim()),
+            ));
+        }
+        // AD1 self-verify: the tag exists (read fresh) and resolves to a commit.
+        if !self.tag_list(path)?.iter().any(|tag| tag == name) {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("tag '{name}' missing after creation"),
+            ));
+        }
+        let commit = self
+            .read_ref(path, &format!("refs/tags/{name}^{{commit}}"))?
+            .ok_or_else(|| {
+                ModelError::new(ErrorCode::GitCommandFailed, format!("tag '{name}' did not resolve"))
+            })?;
+        Ok(GitTagResult {
+            name: name.to_owned(),
+            commit,
+        })
+    }
+
+    fn tag_list(&self, path: &Path) -> ModelResult<Vec<String>> {
+        let repo = open_repo(path)?;
+        let names = repo.tag_names(None).map_err(git_error)?;
+        let mut tags = Vec::new();
+        for entry in names.iter() {
+            if let Some(name) = entry.map_err(git_error)? {
+                tags.push(name.to_owned());
+            }
+        }
+        tags.sort();
+        Ok(tags)
+    }
+
+    fn tag_delete(&self, path: &Path, name: &str) -> ModelResult<()> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("tag")
+            .arg("-d")
+            .arg(name)
+            .output()
+            .map_err(|err| {
+                ModelError::new(ErrorCode::GitCommandFailed, format!("failed to run git tag -d: {err}"))
+            })?;
+        if !output.status.success() {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("git tag -d failed: {}", String::from_utf8_lossy(&output.stderr).trim()),
+            ));
+        }
+        // AD1 self-verify: the tag is gone.
+        if self.tag_list(path)?.iter().any(|tag| tag == name) {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("tag '{name}' still present after delete"),
+            ));
+        }
+        Ok(())
     }
 
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>> {

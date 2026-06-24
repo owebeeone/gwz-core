@@ -88,6 +88,14 @@ SCHEMA = schema(
          commit=12,
          stage=13),
 
+    # Operation kind for the `gwz tag` verb.
+    TagOp=Enum(
+         create=0,
+         list=1,
+         fetch=2,
+         push=3,
+         delete=4),
+
     # Source backing a workspace member.
     SourceKind=Enum(
          git=0,
@@ -670,10 +678,20 @@ SCHEMA = schema(
         meta=F(1, Ref.RequestMeta),
         snapshot_id=F(2, STR)),
 
-    # Write a named GWZ tag for the selected members.
+    # Manage git tags (`refs/tags/gwztag/<name>`) across the selected members.
     TagRequest=Msg(
         meta=F(1, Ref.RequestMeta),
-        tag_name=F(2, STR)),
+        op=F(2, Ref.TagOp),
+        # Tag name (omit for list / fetch-all).
+        name=F(3, STR, optional=True),
+        # Annotation message — annotated tag when set.
+        message=F(4, STR, optional=True),
+        # Create a signed tag.
+        signed=F(5, BOOL, optional=True),
+        # Remote override for fetch / push / list-remote.
+        remote=F(6, STR, optional=True),
+        # Operate on all tags (push --all, list remote).
+        all=F(7, BOOL, optional=True)),
 
     # Capture live observed member state into the lock (no worktree mutation).
     CaptureRequest=Msg(
@@ -737,9 +755,16 @@ SCHEMA = schema(
     # Response wrapper for snapshot.
     SnapshotResponse=Msg(
         response=F(1, Ref.ResponseEnvelope)),
-    # Response wrapper for tag.
+    # A tag entry returned by tag list operations.
+    TagInfo=Msg(
+        # Tag name without the gwztag/ namespace prefix.
+        name=F(1, STR),
+        # Number of member repos carrying this tag.
+        members=F(2, INT)),
+    # Response wrapper for tag — `tags` is populated for list operations.
     TagResponse=Msg(
-        response=F(1, Ref.ResponseEnvelope)),
+        response=F(1, Ref.ResponseEnvelope),
+        tags=F(2, List(Ref.TagInfo), optional=True)),
     # Response wrapper for capture.
     CaptureResponse=Msg(
         response=F(1, Ref.ResponseEnvelope)),

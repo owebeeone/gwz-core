@@ -4,7 +4,7 @@
     
     
 
-    use crate::artifact::{read_lock, read_manifest, read_snapshot, read_tag};
+    use crate::artifact::{read_lock, read_manifest, read_snapshot};
     use crate::git::{Git2Backend, GitBackend};
     use crate::model::ErrorCode;
     use crate::operation::NullSink;
@@ -269,7 +269,7 @@ use super::*;
     }
 
     #[test]
-    pub(crate) fn snapshot_and_tag_write_selected_member_records_with_attribution() {
+    pub(crate) fn snapshot_write_selected_member_records_with_attribution() {
         let temp = TempDir::new("snapshot-tag");
         let backend = Git2Backend::new();
         handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
@@ -292,29 +292,15 @@ use super::*;
             "op_snapshot",
         )
         .unwrap();
-        let tag_response = handle_tag(
-            &backend,
-            temp.path(),
-            crate::TagRequest {
-                meta: request_meta_with_actor_selection("agent://tester", &["mem_app"]),
-                tag_name: "release-one".to_owned(),
-            },
-            "op_tag",
-        )
-        .unwrap();
 
         assert_eq!(
             snapshot_response.response.members.single().member_id,
             "mem_app"
         );
-        assert_eq!(tag_response.response.members.single().member_id, "mem_app");
         let snapshot = read_snapshot(temp.path(), "snap_one").unwrap();
         assert_eq!(snapshot.created_by.actor_id, "agent://tester");
         assert_eq!(snapshot.selected_members, vec!["mem_app"]);
         assert!(snapshot.members.contains_key("mem_app"));
-        let tag = read_tag(temp.path(), "release-one").unwrap();
-        assert_eq!(tag.created_by.actor_id, "agent://tester");
-        assert!(tag.members.contains_key("mem_app"));
         assert_eq!(read_lock(temp.path()).unwrap(), lock_before);
     }
 
@@ -421,43 +407,23 @@ use super::*;
     }
 
     #[test]
-    pub(crate) fn duplicate_and_invalid_gwz_tags_fail_cleanly() {
+    pub(crate) fn creating_a_duplicate_git_tag_is_idempotent() {
         let temp = TempDir::new("tag-errors");
         let backend = Git2Backend::new();
-        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
-        handle_create_repo(
-            &backend,
-            temp.path(),
-            create_repo_request("repos/app", None, None),
-            "op_repo",
-        )
-        .unwrap();
+        let _fixture = init_one_member_workspace(temp.path(), &backend, "tag-errors-source");
         let request = crate::TagRequest {
-            meta: request_meta_with_actor_selection("agent://tester", &["mem_app"]),
-            tag_name: "release-one".to_owned(),
+            meta: request_meta(),
+            op: crate::TagOp::Create,
+            name: Some("release-one".to_owned()),
+            message: None,
+            signed: None,
+            remote: None,
+            all: None,
         };
         handle_tag(&backend, temp.path(), request.clone(), "op_tag").unwrap();
-
-        assert_eq!(
-            handle_tag(&backend, temp.path(), request, "op_tag")
-                .unwrap_err()
-                .code,
-            ErrorCode::TagInvalid
-        );
-        assert_eq!(
-            handle_tag(
-                &backend,
-                temp.path(),
-                crate::TagRequest {
-                    meta: request_meta_with_actor_selection("agent://tester", &["mem_app"]),
-                    tag_name: "bad/name".to_owned(),
-                },
-                "op_tag",
-            )
-            .unwrap_err()
-            .code,
-            ErrorCode::TagInvalid
-        );
+        // A second create is an idempotent no-op (members already carrying the tag are skipped),
+        // not an error — the duplicate guard lives in the handler, ahead of the primitive.
+        handle_tag(&backend, temp.path(), request, "op_tag").unwrap();
     }
 
     #[test]

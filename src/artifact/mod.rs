@@ -11,10 +11,8 @@ use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 pub const WORKSPACE_SCHEMA: &str = "gwz.workspace/v0";
 pub const LOCK_SCHEMA: &str = "gwz.lock/v0";
 pub const SNAPSHOT_SCHEMA: &str = "gwz.snapshot/v0";
-pub const TAG_SCHEMA: &str = "gwz.tag/v0";
 pub const LOCK_PATH: &str = "gwz.conf/gwz.lock.yml";
 pub const SNAPSHOT_DIR: &str = "gwz.conf/snapshots";
-pub const TAG_DIR: &str = "gwz.conf/tags";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ManifestArtifact {
@@ -240,42 +238,6 @@ impl SnapshotArtifact {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct TagArtifact {
-    pub schema: String,
-    pub workspace_id: String,
-    pub tag: String,
-    pub created_at: String,
-    pub created_by: CreatedByArtifact,
-    pub selected_members: Vec<String>,
-    pub members: BTreeMap<String, ResolvedMemberArtifact>,
-}
-
-impl TagArtifact {
-    pub fn from_yaml(text: &str) -> ModelResult<Self> {
-        let artifact: Self = parse_yaml(text)?;
-        artifact.validate()?;
-        Ok(artifact)
-    }
-
-    pub fn to_yaml(&self) -> ModelResult<String> {
-        self.validate()?;
-        emit_yaml(self)
-    }
-
-    pub fn validate(&self) -> ModelResult<()> {
-        require_schema(&self.schema, TAG_SCHEMA)?;
-        parse_id("workspace_id", "ws_", &self.workspace_id)?;
-        require_slug("tag", &self.tag)?;
-        validate_member_record(
-            &self.created_at,
-            &self.created_by,
-            &self.selected_members,
-            &self.members,
-        )
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CreatedByArtifact {
     pub actor_id: String,
 }
@@ -324,22 +286,9 @@ pub fn write_snapshot(root: &Path, artifact: &SnapshotArtifact) -> ModelResult<(
     )
 }
 
-pub fn read_tag(root: &Path, tag: &str) -> ModelResult<TagArtifact> {
-    TagArtifact::from_yaml(&read_to_string(tag_path(root, tag))?)
-}
-
-pub fn write_tag(root: &Path, artifact: &TagArtifact) -> ModelResult<()> {
-    write_atomic(&tag_path(root, &artifact.tag), artifact.to_yaml()?)
-}
-
 /// All snapshots in the workspace, sorted by file name. A missing dir is an empty list.
 pub fn list_snapshots(root: &Path) -> ModelResult<Vec<SnapshotArtifact>> {
     list_artifacts(root.join(SNAPSHOT_DIR), SnapshotArtifact::from_yaml)
-}
-
-/// All tags in the workspace, sorted by file name. A missing dir is an empty list.
-pub fn list_tags(root: &Path) -> ModelResult<Vec<TagArtifact>> {
-    list_artifacts(root.join(TAG_DIR), TagArtifact::from_yaml)
 }
 
 /// Read + parse every `*.yaml` in `dir`, path-sorted. A missing dir yields an empty list.
@@ -450,10 +399,6 @@ fn read_to_string(path: PathBuf) -> ModelResult<String> {
 
 pub(crate) fn snapshot_path(root: &Path, snapshot_id: &str) -> PathBuf {
     root.join(SNAPSHOT_DIR).join(format!("{snapshot_id}.yaml"))
-}
-
-fn tag_path(root: &Path, tag: &str) -> PathBuf {
-    root.join(TAG_DIR).join(format!("{tag}.yaml"))
 }
 
 fn temp_path(path: &Path) -> ModelResult<PathBuf> {
@@ -597,8 +542,6 @@ mod tests {
 
     const SNAPSHOT_GOLDEN: &str = "schema: gwz.snapshot/v0\nworkspace_id: ws_01\nsnapshot_id: snap_demo\ncreated_at: 2026-06-15T00:00:00Z\ncreated_by:\n  actor_id: agent_01\nselected_members:\n- mem_01\nmembers:\n  mem_01:\n    path: repos/example\n    source_kind: git\n    commit: abc123\n";
 
-    const TAG_GOLDEN: &str = "schema: gwz.tag/v0\nworkspace_id: ws_01\ntag: demo\ncreated_at: 2026-06-15T00:00:00Z\ncreated_by:\n  actor_id: agent_01\nselected_members:\n- mem_01\nmembers:\n  mem_01:\n    path: repos/example\n    source_kind: git\n    commit: abc123\n";
-
     #[test]
     fn manifest_round_trips_and_matches_golden_yaml() {
         let manifest = sample_manifest();
@@ -611,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn lock_snapshot_and_tag_round_trip_and_match_golden_yaml() {
+    fn lock_and_snapshot_round_trip_and_match_golden_yaml() {
         assert_eq!(sample_lock().to_yaml().unwrap(), LOCK_GOLDEN);
         assert_eq!(LockArtifact::from_yaml(LOCK_GOLDEN).unwrap(), sample_lock());
 
@@ -620,9 +563,6 @@ mod tests {
             SnapshotArtifact::from_yaml(SNAPSHOT_GOLDEN).unwrap(),
             sample_snapshot()
         );
-
-        assert_eq!(sample_tag().to_yaml().unwrap(), TAG_GOLDEN);
-        assert_eq!(TagArtifact::from_yaml(TAG_GOLDEN).unwrap(), sample_tag());
     }
 
     #[test]
@@ -630,7 +570,6 @@ mod tests {
         let manifest = MANIFEST_GOLDEN.replace("gwz.workspace/v0", "gwz.workspace/v1");
         let lock = LOCK_GOLDEN.replacen("gwz.lock/v0", "gwz.lock/v1", 1);
         let snapshot = SNAPSHOT_GOLDEN.replace("gwz.snapshot/v0", "gwz.snapshot/v1");
-        let tag = TAG_GOLDEN.replace("gwz.tag/v0", "gwz.tag/v1");
 
         assert_eq!(
             ManifestArtifact::from_yaml(&manifest).unwrap_err().code,
@@ -642,10 +581,6 @@ mod tests {
         );
         assert_eq!(
             SnapshotArtifact::from_yaml(&snapshot).unwrap_err().code,
-            ErrorCode::SchemaUnsupported
-        );
-        assert_eq!(
-            TagArtifact::from_yaml(&tag).unwrap_err().code,
             ErrorCode::SchemaUnsupported
         );
     }
@@ -669,7 +604,6 @@ mod tests {
         write_manifest(temp.path(), &sample_manifest()).unwrap();
         write_lock(temp.path(), &sample_lock()).unwrap();
         write_snapshot(temp.path(), &sample_snapshot()).unwrap();
-        write_tag(temp.path(), &sample_tag()).unwrap();
 
         assert_eq!(read_manifest(temp.path()).unwrap(), sample_manifest());
         assert_eq!(read_lock(temp.path()).unwrap(), sample_lock());
@@ -677,32 +611,28 @@ mod tests {
             read_snapshot(temp.path(), "snap_demo").unwrap(),
             sample_snapshot()
         );
-        assert_eq!(read_tag(temp.path(), "demo").unwrap(), sample_tag());
 
-        // Tags and snapshots share the .yaml suffix.
         assert!(temp.path().join("gwz.conf/snapshots/snap_demo.yaml").is_file());
-        assert!(temp.path().join("gwz.conf/tags/demo.yaml").is_file());
     }
 
     #[test]
-    fn list_tags_and_snapshots_reads_sorted_entries() {
+    fn list_snapshots_reads_sorted_entries() {
         let temp = TempDir::new("artifact-list");
         // No dir yet → empty, not an error.
-        assert!(list_tags(temp.path()).unwrap().is_empty());
         assert!(list_snapshots(temp.path()).unwrap().is_empty());
 
-        write_tag(temp.path(), &sample_tag()).unwrap(); // "demo"
-        let mut alpha = sample_tag();
-        alpha.tag = "alpha".to_owned();
-        write_tag(temp.path(), &alpha).unwrap();
-        let tags = list_tags(temp.path()).unwrap();
+        write_snapshot(temp.path(), &sample_snapshot()).unwrap(); // "snap_demo"
+        let mut alpha = sample_snapshot();
+        alpha.snapshot_id = "snap_alpha".to_owned();
+        write_snapshot(temp.path(), &alpha).unwrap();
+        let snapshots = list_snapshots(temp.path()).unwrap();
         assert_eq!(
-            tags.iter().map(|tag| tag.tag.as_str()).collect::<Vec<_>>(),
-            vec!["alpha", "demo"]
+            snapshots
+                .iter()
+                .map(|snapshot| snapshot.snapshot_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["snap_alpha", "snap_demo"]
         );
-
-        write_snapshot(temp.path(), &sample_snapshot()).unwrap();
-        assert_eq!(list_snapshots(temp.path()).unwrap().len(), 1);
     }
 
     #[test]
@@ -758,20 +688,6 @@ mod tests {
             schema: SNAPSHOT_SCHEMA.to_owned(),
             workspace_id: "ws_01".to_owned(),
             snapshot_id: "snap_demo".to_owned(),
-            created_at: "2026-06-15T00:00:00Z".to_owned(),
-            created_by: CreatedByArtifact {
-                actor_id: "agent_01".to_owned(),
-            },
-            selected_members: vec!["mem_01".to_owned()],
-            members: [("mem_01".to_owned(), sample_short_member())].into(),
-        }
-    }
-
-    fn sample_tag() -> TagArtifact {
-        TagArtifact {
-            schema: TAG_SCHEMA.to_owned(),
-            workspace_id: "ws_01".to_owned(),
-            tag: "demo".to_owned(),
             created_at: "2026-06-15T00:00:00Z".to_owned(),
             created_by: CreatedByArtifact {
                 actor_id: "agent_01".to_owned(),

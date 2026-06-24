@@ -1,7 +1,18 @@
 # GWZ Tag Redesign — `gwz tag` = full git-tag management; `gwz snapshot` = workspace state (Plan)
 
-Status: **proposed** (2026-06-23) — direction approved (Gianni). Confirm §2 before Phase 2.
+Status: **implemented** (2026-06-24) — P1–P4 landed: local primitives + protocol, op-dispatch
+handler, `materialize --tag` re-mean, remote push/fetch/list/delete, full CLI, and the old
+`TagArtifact` removed. `gwz tag` operates on real `refs/tags/*` (an earlier `gwztag/` namespace
+was dropped so it mirrors `git tag` and surfaces the repos' existing tags).
 Owner: Gianni. `GWZDesign.md` stays authoritative; companion to `GWZAddPlan.md`.
+
+**As-built deltas from the spec below** (kept for history; the code is the source of truth):
+- Push-all is spelled `gwz tag --push` (no name), not `--push --all`; a `<name>` pushes just that
+  tag. The `TagRequest.all` protocol field is unused/reserved (the CLI never sets it).
+- `gwz tag --fetch` fetches **all** tags from the remote (no per-name fetch).
+- `create` is idempotent (members already carrying the tag are skipped) and a signed tag (`-s`)
+  requires a message (`-m`). The action flags `--list/--delete/--push/--fetch` are mutually
+  exclusive. `materialize --tag` restores only the members that carry the tag (others skipped).
 
 ## 1. Goal & shape
 

@@ -276,8 +276,9 @@ Design rules:
 - `remotes` is a deterministic list of remote specs, not a YAML map. Readers
   must reject duplicate remote names.
 - `desired.git_tag`, when present, means a Git tag/ref in the member
-  repository. GWZ workspace tags are separate artifacts under `workspace/tags/`
-  and are never stored as member desired refs.
+  repository. `gwz tag` writes real Git tags (`refs/tags/*`, see GWZ Tag Shape);
+  workspace *composition* is recorded separately by
+  `gwz snapshot` and is never stored as member desired refs.
 
 ## Path Validation
 
@@ -394,29 +395,27 @@ Snapshots are GWZ-owned records. They are not Git tags.
 
 ## GWZ Tag Shape
 
-GWZ tags are workspace-scoped, versioned GWZ artifacts.
+`gwz tag` is the multi-repo `git tag` — it fans **real Git tags** out across the
+selected member repositories (and the workspace root), mirroring how `gwz commit`
+fans out `git commit`. There is no GWZ tag artifact; a tag lives in each member's
+`refs/tags/*`.
 
-They are not Git tags. A GWZ tag records the resolved member refs for one
-workspace tag name without writing `refs/tags/*` inside member repositories.
+A tag `v1` is just `refs/tags/v1` in each member — the same ref `git tag v1`
+would create — so `gwz tag` lists, creates, and deletes the repos' real tags.
+Listing reports how many members carry each tag.
 
-```yaml
-schema: gwz.tag/v0
-workspace_id: ws_01JZ...
-tag: demo
-created_at: "2026-06-15T00:00:00Z"
-created_by:
-  actor_id: agent_01JZ...
-selected_members:
-  - mem_01JZ...
-members:
-  mem_01JZ...:
-    path: repos/example
-    source_kind: git
-    commit: abc123...
-```
+The toolkit is the whole set:
 
-The same tag name may exist in different workspaces without colliding, even if
-those workspaces share one or more member repositories.
+- **create** — lightweight, annotated (`-m`), or signed (`-s`)
+- **list** — local (default) or remote (`--remote <name>`)
+- **delete** — local, or on a remote (`--delete --remote <name>`)
+- **push** — a named tag or every tag (`--push [<name>]`)
+- **fetch** — tags from a remote (`--fetch`)
+
+Remote operations (push/fetch, and list/delete against a `--remote`) act on the
+members only — the workspace root is local-only. Workspace *composition* is a
+separate concept recorded by `gwz snapshot` (above), which is GWZ-owned and is
+**not** a Git tag.
 
 GWZ tag files are intended to be versioned with the workspace metadata.
 
@@ -1407,18 +1406,22 @@ Flow:
 Inputs:
 
 - workspace root
-- tag name
+- operation: create / list / delete / push / fetch
+- optional tag name, message (`-m`), signed (`-s`), remote (`--remote`)
 - optional selection
 
 Flow:
 
-- validate tag name in the workspace tag namespace
 - resolve selection
-- read current member refs
-- write `workspace/tags/<tag-name>.yml` atomically
-- return aggregate result and per-member results
+- **create / list / delete** fan out across the selected members + the workspace
+  root, operating on `refs/tags/<name>` (skipping unborn repos)
+- **push / fetch**, and **list / delete against a `--remote`**, fan out across the
+  members only (the root is local-only), reusing the push / fetch / ls-remote
+  primitives and the shared credential plumbing
+- return the aggregate result; list ops return the tag set with per-tag member counts
 
-GWZ tag creation does not create Git tags in member repositories.
+`gwz tag` creates **real** Git tags in member repositories — it is the multi-repo
+`git tag`, not a GWZ artifact.
 
 ### Push
 

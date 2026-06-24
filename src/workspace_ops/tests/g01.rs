@@ -121,6 +121,33 @@ pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
             })
         }
 
+        fn tag_create(
+            &self,
+            _path: &Path,
+            name: &str,
+            _message: Option<&str>,
+            _signed: bool,
+        ) -> ModelResult<crate::git::GitTagResult> {
+            Ok(crate::git::GitTagResult {
+                name: name.to_owned(),
+                commit: TEST_COMMIT.to_owned(),
+            })
+        }
+
+        fn tag_list(&self, _path: &Path) -> ModelResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn tag_delete(&self, _path: &Path, _name: &str) -> ModelResult<()> {
+            Ok(())
+        }
+
+        fn tag_fetch(&self, _path: &Path, remote: &str) -> ModelResult<crate::git::GitFetchResult> {
+            Ok(crate::git::GitFetchResult {
+                remote: remote.to_owned(),
+            })
+        }
+
         fn create_repo(&self, path: &Path) -> ModelResult<crate::git::GitCreateResult> {
             Ok(crate::git::GitCreateResult {
                 path: path.to_path_buf(),

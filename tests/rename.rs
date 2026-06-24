@@ -8,11 +8,10 @@ fn public_workspace_names_use_project_token() {
     assert_eq!(gwz_core::workspace::WORKSPACE_MANIFEST, "gwz.conf/gwz.yml");
     assert_eq!(gwz_core::workspace::RUNTIME_DIR, ".gwz");
     assert_eq!(gwz_core::artifact::LOCK_PATH, "gwz.conf/gwz.lock.yml");
-    assert_eq!(gwz_core::artifact::TAG_DIR, "gwz.conf/tags");
+    assert_eq!(gwz_core::artifact::SNAPSHOT_DIR, "gwz.conf/snapshots");
     assert_eq!(gwz_core::artifact::WORKSPACE_SCHEMA, "gwz.workspace/v0");
     assert_eq!(gwz_core::artifact::LOCK_SCHEMA, "gwz.lock/v0");
     assert_eq!(gwz_core::artifact::SNAPSHOT_SCHEMA, "gwz.snapshot/v0");
-    assert_eq!(gwz_core::artifact::TAG_SCHEMA, "gwz.tag/v0");
 }
 
 #[test]

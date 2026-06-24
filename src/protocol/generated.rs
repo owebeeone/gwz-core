@@ -56,6 +56,32 @@ impl ActionKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum TagOp {
+    #[default] Create,
+    List,
+    Fetch,
+    Push,
+    Delete,
+}
+impl TagOp {
+    pub fn wire(self) -> i64 { match self {
+        Self::Create => 0,
+        Self::List => 1,
+        Self::Fetch => 2,
+        Self::Push => 3,
+        Self::Delete => 4,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::Create,
+        1 => Self::List,
+        2 => Self::Fetch,
+        3 => Self::Push,
+        4 => Self::Delete,
+        _ => panic!("bad TagOp wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum SourceKind {
     #[default] Git,
     Archive,
@@ -1674,19 +1700,34 @@ impl SnapshotRequest {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct TagRequest {
     pub meta: RequestMeta,
-    pub tag_name: String,
+    pub op: TagOp,
+    pub name: Option<String>,
+    pub message: Option<String>,
+    pub signed: Option<bool>,
+    pub remote: Option<String>,
+    pub all: Option<bool>,
 }
 impl TagRequest {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.meta.to_cbor()),
-            (2, Cbor::Text(self.tag_name.clone())),
+            (2, Cbor::Int(self.op.wire())),
+            (3, match &self.name { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, match &self.signed { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (6, match &self.remote { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (7, match &self.all { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Self {
         Self {
             meta: RequestMeta::from_cbor(c.get(1)),
-            tag_name: c.get(2).text(),
+            op: TagOp::from_wire(c.get(2).int()),
+            name: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
+            message: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
+            signed: { let v = c.get(5); if v.is_null() { None } else { Some(v.boolean()) } },
+            remote: { let v = c.get(6); if v.is_null() { None } else { Some(v.text()) } },
+            all: { let v = c.get(7); if v.is_null() { None } else { Some(v.boolean()) } },
         }
     }
 }
@@ -1940,18 +1981,41 @@ impl SnapshotResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct TagInfo {
+    pub name: String,
+    pub members: i64,
+}
+impl TagInfo {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.name.clone())),
+            (2, Cbor::Int(self.members)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            name: c.get(1).text(),
+            members: c.get(2).int(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TagResponse {
     pub response: ResponseEnvelope,
+    pub tags: Option<Vec<TagInfo>>,
 }
 impl TagResponse {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.response.to_cbor()),
+            (2, match &self.tags { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Self {
         Self {
             response: ResponseEnvelope::from_cbor(c.get(1)),
+            tags: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| TagInfo::from_cbor(x)).collect()) } },
         }
     }
 }

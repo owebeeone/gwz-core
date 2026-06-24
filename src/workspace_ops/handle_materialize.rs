@@ -62,52 +62,6 @@ where
     })
 }
 
-pub fn handle_tag<B>(
-    backend: &B,
-    start: &Path,
-    request: crate::TagRequest,
-    operation_id: impl Into<String>,
-) -> ModelResult<crate::TagResponse>
-where
-    B: GitBackend,
-{
-    let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
-    let tag_path = root
-        .join(artifact::TAG_DIR)
-        .join(format!("{}.yaml", request.tag_name));
-    if tag_path.exists() {
-        return Err(ModelError::new(
-            ErrorCode::TagInvalid,
-            "GWZ tag already exists",
-        ));
-    }
-
-    let manifest = artifact::read_manifest(&root)?;
-    assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let lock = artifact::read_lock(&root)?;
-    let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
-    let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
-    let tag = artifact::TagArtifact {
-        schema: artifact::TAG_SCHEMA.to_owned(),
-        workspace_id: manifest.workspace.id.clone(),
-        tag: request.tag_name,
-        created_at: now_marker(),
-        created_by: created_by(&context),
-        selected_members: selected.clone(),
-        members: members.clone(),
-    };
-    artifact::write_tag(&root, &tag).map_err(tag_error)?;
-
-    Ok(crate::TagResponse {
-        response: response_envelope(
-            context,
-            crate::AggregateStatus::Ok,
-            locked_member_responses(&manifest, &members),
-        ),
-    })
-}
-
 /// Capture the live observed member state into the **lock** — no worktree mutation
 /// (AD3 capture direction: "record where I am now"). Each materialized member's
 /// observed head/status is written; unmaterialized members carry their lock state.
@@ -150,13 +104,6 @@ pub fn load_snapshot_target(
     Ok(artifact::read_snapshot(root, snapshot_id)?.members)
 }
 
-pub fn load_tag_target(
-    root: &Path,
-    tag_name: &str,
-) -> ModelResult<BTreeMap<String, ResolvedMemberArtifact>> {
-    Ok(artifact::read_tag(root, tag_name)?.members)
-}
-
 pub fn handle_materialize<B>(
     backend: &B,
     start: &Path,
@@ -171,7 +118,8 @@ where
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let (target_members, rewrite_lock) = materialize_target_members(&root, &request.target)?;
+    let (target_members, rewrite_lock) =
+        materialize_target_members(backend, &root, &manifest, &request.target)?;
     let target_lock = LockArtifact {
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id: manifest.workspace.id.clone(),
@@ -179,8 +127,14 @@ where
         created_at: now_marker(),
         members: target_members,
     };
-    let selected =
-        resolve_locked_selection(&manifest, &target_lock, request.meta.selection.as_ref())?;
+    // A tag covers only the members that carry it. With the default (None) selection, restrict to
+    // exactly the tagged subset (the lock we just built) rather than the full manifest — otherwise
+    // resolve_locked_selection errors LockNotFound on members that lack the tag. An explicit
+    // selection still validates against the tagged set (a selected-but-untagged member errors).
+    let selected = match (&request.target.kind, request.meta.selection.as_ref()) {
+        (crate::MaterializeTargetKind::Tag, None) => target_lock.members.keys().cloned().collect(),
+        _ => resolve_locked_selection(&manifest, &target_lock, request.meta.selection.as_ref())?,
+    };
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let destructive_allowed = request
         .meta
@@ -519,8 +473,10 @@ pub(crate) fn created_by(context: &crate::operation::OperationContext) -> Create
     }
 }
 
-pub(crate) fn materialize_target_members(
+pub(crate) fn materialize_target_members<B: GitBackend>(
+    backend: &B,
     root: &Path,
+    manifest: &ManifestArtifact,
     target: &crate::MaterializeTarget,
 ) -> ModelResult<(BTreeMap<String, ResolvedMemberArtifact>, bool)> {
     match target.kind {
@@ -548,18 +504,37 @@ pub(crate) fn materialize_target_members(
             Ok((load_snapshot_target(root, name)?, true))
         }
         crate::MaterializeTargetKind::Tag => {
+            // Re-meaned (GWZTagPlan): materialize each member to the commit its git tag
+            // `refs/tags/<name>` points at. Members lacking the tag are skipped.
             let name = target
                 .name
                 .as_ref()
                 .ok_or_else(|| invalid("tag target requires a name"))?;
-            if !root
-                .join(artifact::TAG_DIR)
-                .join(format!("{name}.yaml"))
-                .exists()
-            {
-                return Err(ModelError::new(ErrorCode::TagNotFound, "tag not found"));
+            let tag_ref = format!("refs/tags/{name}^{{commit}}");
+            let mut targets = BTreeMap::new();
+            for member in &manifest.members {
+                let member_root = root.join(&member.path);
+                if !backend.is_repository(&member_root)? {
+                    continue;
+                }
+                if let Some(commit) = backend.read_ref(&member_root, &tag_ref)? {
+                    targets.insert(
+                        member.id.clone(),
+                        ResolvedMemberArtifact {
+                            path: member.path.clone(),
+                            commit: Some(commit),
+                            ..Default::default()
+                        },
+                    );
+                }
             }
-            Ok((load_tag_target(root, name)?, true))
+            if targets.is_empty() {
+                return Err(ModelError::new(
+                    ErrorCode::TagNotFound,
+                    format!("tag '{name}' not found in any member"),
+                ));
+            }
+            Ok((targets, true))
         }
         crate::MaterializeTargetKind::Commit | crate::MaterializeTargetKind::Head => {
             Err(ModelError::new(

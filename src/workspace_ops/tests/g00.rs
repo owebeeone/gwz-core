@@ -334,7 +334,7 @@ use super::*;
     }
 
     #[test]
-    pub(crate) fn materialize_snapshot_and_tag_rewrite_lock_after_success() {
+    pub(crate) fn materialize_snapshot_rewrites_lock_after_success() {
         let temp = TempDir::new("materialize-snapshot-tag");
         let backend = Git2Backend::new();
         let fixture = materialize_snapshot_fixture(temp.path(), &backend);
@@ -352,19 +352,6 @@ use super::*;
             Some(fixture.first.clone())
         );
 
-        write_materialize_fixture(temp.path(), fixture.remote_url(), &fixture.second);
-        handle_materialize(
-            &backend,
-            temp.path(),
-            materialize_named_request(crate::MaterializeTargetKind::Tag, "tag_first"),
-            "op_materialize",
-            &NullSink,
-        )
-        .unwrap();
-        assert_eq!(
-            read_lock(temp.path()).unwrap().members["mem_app"].commit,
-            Some(fixture.first)
-        );
     }
 
     pub(crate) fn commit_workspace_root(root: &Path) {
@@ -523,15 +510,8 @@ use super::*;
     }
 
     pub(crate) struct SnapshotFixture {
-        pub(crate) remote: String,
         pub(crate) first: String,
         pub(crate) second: String,
-    }
-
-    impl SnapshotFixture {
-        pub(crate) fn remote_url(&self) -> &str {
-            &self.remote
-        }
     }
 
     pub(crate) fn materialize_snapshot_fixture(root: &Path, backend: &Git2Backend) -> SnapshotFixture {
@@ -558,27 +538,11 @@ use super::*;
                     actor_id: "agent://tester".to_owned(),
                 },
                 selected_members: vec!["mem_app".to_owned()],
-                members: snapshot_members.clone(),
-            },
-        )
-        .unwrap();
-        crate::artifact::write_tag(
-            root,
-            &crate::artifact::TagArtifact {
-                schema: crate::artifact::TAG_SCHEMA.to_owned(),
-                workspace_id: "ws_ops".to_owned(),
-                tag: "tag_first".to_owned(),
-                created_at: "2026-06-15T00:00:00Z".to_owned(),
-                created_by: crate::artifact::CreatedByArtifact {
-                    actor_id: "agent://tester".to_owned(),
-                },
-                selected_members: vec!["mem_app".to_owned()],
                 members: snapshot_members,
             },
         )
         .unwrap();
         SnapshotFixture {
-            remote: fixture.remote_url().to_owned(),
             first,
             second,
         }
