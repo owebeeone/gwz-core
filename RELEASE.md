@@ -6,9 +6,12 @@ split to manage. **Release tags are cut directly off `main`.**
 
 ## Process
 
-1. Land all changes on `main`; ensure green (`cargo test`, `cargo clippy`, and — if the
-   protocol changed — regenerate and check the corpus; see `dev-docs/GWZGitlinkPlan.md`
-   notes / the taut workflow).
+1. Land all changes on `main`; ensure green (`cargo test`, `cargo clippy`). If the protocol
+   schema (`protocol/gwz.taut.py`) changed, regenerate first with `python protocol/regen.py`
+   — it provisions a `uv` venv on the released PyPI `taut-proto` and rewrites
+   `src/protocol/generated.rs`, `src/cbor.rs`, and `protocol/corpus/`; `python protocol/regen.py
+   --check` verifies the committed output is current without writing. Never hand-edit generated
+   protocol output.
 2. Bump `version` in `Cargo.toml` (semver; an additive protocol/API change is a minor bump).
 3. Commit, then tag that commit: `git tag vX.Y.Z` (tags are **off `main`**).
 4. Push `main` and the tag.
