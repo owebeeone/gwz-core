@@ -357,7 +357,8 @@ fn stage_durably(path: &Path, contents: &str) -> ModelResult<PathBuf> {
 /// Publish a staged temp to `path` (atomic rename) and best-effort fsync the directory so
 /// the rename entry itself survives a crash.
 fn publish_staged(tmp_path: &Path, path: &Path) -> ModelResult<()> {
-    if let Err(err) = fs::rename(tmp_path, path).map_err(io_error) {
+    if let Err(err) = publish_staged_with_windows_replace_fallback(tmp_path, path).map_err(io_error)
+    {
         let _ = fs::remove_file(tmp_path);
         return Err(err);
     }
@@ -367,6 +368,24 @@ fn publish_staged(tmp_path: &Path, path: &Path) -> ModelResult<()> {
         let _ = dir.sync_all();
     }
     Ok(())
+}
+
+fn publish_staged_with_windows_replace_fallback(
+    tmp_path: &Path,
+    path: &Path,
+) -> std::io::Result<()> {
+    match fs::rename(tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if cfg!(windows)
+                && error.kind() == std::io::ErrorKind::PermissionDenied
+                && path.exists() =>
+        {
+            fs::remove_file(path)?;
+            fs::rename(tmp_path, path)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_yaml<T>(text: &str) -> ModelResult<T>
