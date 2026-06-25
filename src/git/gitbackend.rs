@@ -276,7 +276,7 @@ pub struct GitBranchCreateResult {
     pub created: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GitStashPushOptions {
     pub include_untracked: bool,
     pub include_ignored: bool,
@@ -302,16 +302,6 @@ impl GitStashPushOptions {
             include_untracked: true,
             include_ignored: true,
             ..Self::default()
-        }
-    }
-}
-
-impl Default for GitStashPushOptions {
-    fn default() -> Self {
-        Self {
-            include_untracked: false,
-            include_ignored: false,
-            preserve_index: false,
         }
     }
 }

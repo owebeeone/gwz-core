@@ -530,19 +530,19 @@ fn append_orphan_warnings<B: GitBackend>(
             continue;
         }
         for native in backend.stash_list(&member_root)? {
-            if let Some(stash_id) = native_gwz_stash_id(&native.message) {
-                if !known_bundle_ids.contains(&stash_id) {
-                    orphan_warnings.push((
-                        stash_id.clone(),
-                        StashWarning {
+            if let Some(stash_id) = native_gwz_stash_id(&native.message)
+                && !known_bundle_ids.contains(&stash_id)
+            {
+                orphan_warnings.push((
+                    stash_id.clone(),
+                    StashWarning {
                         code: "orphan_native_stash".to_owned(),
                         message: format!(
                             "native GWZ stash '{stash_id}' has no local bundle metadata"
                         ),
                         member_id: Some(member.id.clone()),
-                        },
-                    ));
-                }
+                    },
+                ));
             }
         }
     }
@@ -787,11 +787,6 @@ fn aggregate_from_members(responses: &[crate::MemberResponse]) -> crate::Aggrega
         } else {
             crate::AggregateStatus::Failed
         }
-    } else if responses
-        .iter()
-        .all(|response| response.status == crate::MemberStatus::Noop)
-    {
-        crate::AggregateStatus::Ok
     } else {
         crate::AggregateStatus::Ok
     }

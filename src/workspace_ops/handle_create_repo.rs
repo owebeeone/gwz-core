@@ -266,7 +266,7 @@ where
                 responses.push(plan.response.clone());
                 plans.push((index, plan));
             }
-            Err(response) => responses.push(response),
+            Err(response) => responses.push(*response),
         }
     }
 
@@ -311,13 +311,13 @@ fn repo_sync_plan_member<B>(
     root: &Path,
     member: &ManifestMember,
     dry_run: bool,
-) -> Result<RepoSyncPlan, crate::MemberResponse>
+) -> Result<RepoSyncPlan, Box<crate::MemberResponse>>
 where
     B: GitBackend,
 {
     let source_kind = artifact_source_kind_to_protocol(member.source_kind);
     if member.source_kind != ArtifactSourceKind::Git {
-        return Err(repo_sync_member_error(
+        return Err(Box::new(repo_sync_member_error(
             member,
             source_kind,
             ModelError::new(
@@ -325,38 +325,53 @@ where
                 "repo sync supports git members only",
             ),
             crate::MemberStatus::Rejected,
-        ));
+        )));
     }
 
     let member_root = root.join(&member.path);
     match backend.is_repository(&member_root) {
         Ok(true) => {}
         Ok(false) => {
-            return Err(repo_sync_member_error(
+            return Err(Box::new(repo_sync_member_error(
                 member,
                 source_kind,
                 ModelError::new(ErrorCode::MemberNotFound, "member is not materialized"),
                 crate::MemberStatus::Rejected,
-            ));
+            )));
         }
         Err(error) => {
-            return Err(repo_sync_member_error(
+            return Err(Box::new(repo_sync_member_error(
                 member,
                 source_kind,
                 error,
                 crate::MemberStatus::Failed,
-            ));
+            )));
         }
     }
 
     let head = backend.head(&member_root).map_err(|error| {
-        repo_sync_member_error(member, source_kind, error, crate::MemberStatus::Failed)
+        Box::new(repo_sync_member_error(
+            member,
+            source_kind,
+            error,
+            crate::MemberStatus::Failed,
+        ))
     })?;
     let status = backend.status(&member_root).map_err(|error| {
-        repo_sync_member_error(member, source_kind, error, crate::MemberStatus::Failed)
+        Box::new(repo_sync_member_error(
+            member,
+            source_kind,
+            error,
+            crate::MemberStatus::Failed,
+        ))
     })?;
     let git_remotes = backend.remotes(&member_root).map_err(|error| {
-        repo_sync_member_error(member, source_kind, error, crate::MemberStatus::Failed)
+        Box::new(repo_sync_member_error(
+            member,
+            source_kind,
+            error,
+            crate::MemberStatus::Failed,
+        ))
     })?;
 
     let mut next = member.clone();
