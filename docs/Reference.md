@@ -83,11 +83,16 @@ functions are the simpler entrypoints for direct embedding and tests.
 | `CreateRepoRequest` | `workspace_ops::handle_create_repo` | Initialize a new local Git repository and add it to the workspace. |
 | `MaterializeRequest` | `workspace_ops::handle_materialize` | Move selected members to an explicit lock, snapshot, tag, or commit target. |
 | `StatusRequest` | `status::handle_status` | Report selected member Git state, lock match state, and optional combined status projections. |
-| `SnapshotRequest` | `workspace_ops::handle_snapshot` | Write a named snapshot of the current selected member states. |
-| `TagRequest` | `workspace_ops::handle_tag` | Write a named GWZ tag for the selected member states. |
-| `PullHeadRequest` | `workspace_ops::handle_pull_head` | Fetch and fast-forward selected members to their configured upstream heads. |
+| `LsRequest` | `workspace_ops::handle_ls` | List members from manifest plus lock without calling Git. |
+| `SnapshotRequest` | `workspace_ops::handle_snapshot` | Write a named snapshot of selected member states. |
+| `TagRequest` | `workspace_ops::handle_tag` | Manage real Git tags across selected members, and the root for local operations. |
+| `CaptureRequest` | `workspace_ops::handle_capture` | Capture observed selected member state into the lock without worktree mutation. |
+| `CommitRequest` | `workspace_ops::handle_commit` | Commit selected members, refresh the lock, then commit root metadata last. |
+| `StageRequest` | `workspace_ops::handle_stage` | Route pathspecs to owning member/root repositories and stage them. |
+| `PullHeadRequest` | `workspace_ops::handle_pull_head` | Fetch and integrate selected members to configured upstream heads. |
 | `PullSnapshotRequest` | `workspace_ops::handle_pull_snapshot` | Materialize selected members to a named snapshot. |
 | `PushRequest` | `workspace_ops::handle_push` | Push selected members to a remote/refspec, using request policy where supported. |
+| `ExecRequest` | none | CLI-local `forall` support data; `gwz-core` does not execute commands. |
 
 ## Common Request Fields
 
@@ -110,6 +115,18 @@ Responses then carry planned member actions instead of final state.
 This allows an external driver or agent to say who requested the operation and
 which author/committer identity should be used for Git objects.
 
+## Artifacts And Tags
+
+Durable workspace artifacts live under `gwz.conf/`:
+
+- `gwz.conf/gwz.yml` for the manifest;
+- `gwz.conf/gwz.lock.yml` for the lock;
+- `gwz.conf/snapshots/<snapshot-id>.yaml` for snapshots.
+
+Tags are not GWZ artifacts in v0.3.0. `TagRequest` manages real Git refs named
+`refs/tags/<name>`. `MaterializeTargetKind::Tag` checks out members that carry
+the named Git tag and skips untagged members by default.
+
 ## Direct vs CLI Use
 
 Use `gwz-core` directly when embedding workspace behavior in an agent, UI, test
@@ -117,3 +134,18 @@ harness, or another local service.
 
 Use `gwz-cli` when you want command behavior, argument parsing, terminal/JSON
 rendering, and the user workflow for init, status, snapshot, tag, pull, and push.
+
+## Further Reading
+
+- [Embedding](Embedding.md)
+- [OperationModel](OperationModel.md)
+- [RustApi](RustApi.md)
+- [WorkspaceArtifacts](WorkspaceArtifacts.md)
+- [GitBackend](GitBackend.md)
+- [MemberListing](MemberListing.md)
+- [TagManagement](TagManagement.md)
+- [Protocol](Protocol.md)
+- [MessageCatalog](MessageCatalog.md)
+- [ErrorCatalog](ErrorCatalog.md)
+- [EventCatalog](EventCatalog.md)
+- [Regeneration](Regeneration.md)

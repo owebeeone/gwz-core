@@ -282,6 +282,7 @@ fn taut_command_forces_utf8_for_generated_source_files() {
 
     assert_command_env(&command, "PYTHONUTF8", "1");
     assert_command_env(&command, "PYTHONIOENCODING", "utf-8");
+    assert_command_env(&command, "SETUPTOOLS_SCM_PRETEND_VERSION", "0.6.0");
 }
 
 fn attribution() -> OperationAttribution {
@@ -333,6 +334,7 @@ fn taut_command_for_python(root: &Path, python: &str) -> Command {
         .current_dir(root)
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
+        .env("SETUPTOOLS_SCM_PRETEND_VERSION", "0.6.0")
         .env("PYTHONPATH", taut_src)
         .args(["-m", "taut.cli"]);
     command

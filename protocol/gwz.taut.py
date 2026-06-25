@@ -739,7 +739,7 @@ SCHEMA = schema(
         meta=F(1, Ref.RequestMeta),
         snapshot_id=F(2, STR)),
 
-    # Manage git tags (`refs/tags/gwztag/<name>`) across the selected members.
+    # Manage git tags (`refs/tags/<name>`) across the selected members.
     TagRequest=Msg(
         meta=F(1, Ref.RequestMeta),
         op=F(2, Ref.TagOp),
@@ -818,7 +818,7 @@ SCHEMA = schema(
         response=F(1, Ref.ResponseEnvelope)),
     # A tag entry returned by tag list operations.
     TagInfo=Msg(
-        # Tag name without the gwztag/ namespace prefix.
+        # Tag name without the refs/tags/ prefix.
         name=F(1, STR),
         # Number of member repos carrying this tag.
         members=F(2, INT)),

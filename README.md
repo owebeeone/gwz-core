@@ -19,8 +19,8 @@ to know the artifact layout or reimplement cross-repo policy.
 
 - **Typed protocol:** callers build generated request structs and receive typed
   responses, member results, errors, and operation metadata.
-- **Workspace artifacts:** manifest, lock, snapshots, and GWZ tags are read and
-  written through one library boundary.
+- **Workspace artifacts:** manifest, lock, and snapshots are read and written
+  through one library boundary. Tags are real Git refs managed through Git.
 - **Git backend boundary:** Git behavior is isolated behind `GitBackend`; the
   default backend supports local, SSH, and HTTPS Git repositories.
 - **Agent-friendly surface:** every operation can carry request metadata,
@@ -66,10 +66,14 @@ fn create_member_repo() -> gwz_core::model::ModelResult<()> {
 
 ## Documentation
 
-- [docs/Reference.md](docs/Reference.md) describes the request/response model,
-  request types, and direct library usage.
-- `protocol/gwz.taut.py` is the protocol contract used to generate Rust types.
-- `dev-docs/` contains design history and implementation plans.
+- [docs/README.md](docs/README.md) is the core documentation index.
+- [docs/Reference.md](docs/Reference.md) is a compact practical reference for
+  embedding.
+- [docs/MessageCatalog.md](docs/MessageCatalog.md) is generated from
+  `protocol/gwz.taut.py` and lists service methods, enums, messages, field
+  tags, and request/response mapping.
+- `dev-docs/` contains design history and implementation plans. Older history
+  may mention removed tag artifacts; v0.3.0 tags are real Git refs.
 
 ## Development
 
