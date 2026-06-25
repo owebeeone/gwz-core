@@ -16,6 +16,7 @@ mod stage_workspace_git_metadata;
 mod sync_workspace_boundary;
 #[cfg(test)]
 mod tests;
+mod workspace_bootstrap;
 
 pub use handle_branch::*;
 pub use handle_commit::*;
@@ -33,3 +34,4 @@ pub use push_member::*;
 pub(crate) use stage_routing::*;
 pub(crate) use stage_workspace_git_metadata::*;
 pub(crate) use sync_workspace_boundary::*;
+pub use workspace_bootstrap::*;

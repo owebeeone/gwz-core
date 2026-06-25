@@ -8,8 +8,9 @@ split to manage. **Release tags are cut directly off `main`.**
 
 `scripts/release.py` automates the cut on `main` for a given tag `vX.Y.Z`:
 
-1. Gate the tree: `python protocol/regen.py --check`, `cargo test --locked`, `cargo clippy`
-   (same bar as CI).
+1. Gate the tree: `python protocol/regen.py --check`, `cargo fmt --check`,
+   `cargo test --locked`, `cargo clippy` (same bar as CI). If rustfmt fails,
+   run `cargo fmt` and commit the formatting changes.
 2. Bump `version` in `Cargo.toml`, commit `chore(release): gwz-core X.Y.Z`.
 3. Tag that commit `vX.Y.Z` (lightweight; never moves an existing tag).
 
@@ -45,8 +46,8 @@ Typical sequence when both crates need a release:
 
 If you prefer not to use the script, the steps are the same:
 
-1. Land all changes on `main`; ensure green (`cargo test`, `cargo clippy`). Regenerate
-   protocol output when the schema changed (see above).
+1. Land all changes on `main`; ensure green (`cargo fmt --check`, `cargo test`,
+   `cargo clippy`). Regenerate protocol output when the schema changed (see above).
 2. Bump `version` in `Cargo.toml` (semver; an additive protocol/API change is a minor bump).
 3. Commit, then tag that commit: `git tag vX.Y.Z` (tags are **off `main`**).
 4. Push `main` and the tag.

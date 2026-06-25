@@ -9,6 +9,7 @@ fn release_workflow_tests_linux_and_windows() {
 #[test]
 fn release_workflow_runs_full_rust_verification() {
     assert!(RELEASE_WORKFLOW.contains("cargo fmt --check"));
+    assert!(RELEASE_WORKFLOW.contains("Run 'cargo fmt' from the gwz-core repo root"));
     assert!(RELEASE_WORKFLOW.contains("cargo test --locked"));
     assert!(RELEASE_WORKFLOW.contains("cargo clippy --all-targets -- -D warnings"));
 }

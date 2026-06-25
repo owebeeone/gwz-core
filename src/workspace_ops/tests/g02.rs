@@ -23,9 +23,19 @@ pub(crate) fn create_workspace_writes_empty_manifest_and_lock() {
     assert!(backend.is_repository(temp.path()).unwrap());
     assert!(temp.path().join("gwz.conf/gwz.yml").is_file());
     assert!(temp.path().join("gwz.conf/gwz.lock.yml").is_file());
+    assert_eq!(
+        fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap(),
+        managed_agents_gwz_contents()
+    );
     assert!(!temp.path().join("workspace").exists());
     let root_status = backend.status(temp.path()).unwrap();
     assert_eq!(root_status.untracked, 0);
+    assert!(
+        root_status
+            .files
+            .iter()
+            .any(|file| { file.path == AGENTS_GWZ_PATH && file.index_status == "A" })
+    );
     assert!(
         root_status
             .files
@@ -40,6 +50,117 @@ pub(crate) fn create_workspace_writes_empty_manifest_and_lock() {
     );
     assert_eq!(read_manifest(temp.path()).unwrap().members.len(), 0);
     assert_eq!(read_lock(temp.path()).unwrap().members.len(), 0);
+}
+
+#[test]
+pub(crate) fn update_workspace_bootstrap_rewrites_trusted_managed_file() {
+    let temp = TempDir::new("bootstrap-update");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    fs::write(
+        temp.path().join(AGENTS_GWZ_PATH),
+        managed_agents_gwz_contents_for_body("# Old GWZ Bootstrap\n"),
+    )
+    .unwrap();
+
+    let response = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_workspace(),
+        "op_bootstrap",
+    )
+    .unwrap();
+
+    assert_eq!(response.meta.aggregate_status, crate::AggregateStatus::Ok);
+    assert_eq!(
+        response.meta.message.as_deref(),
+        Some("updated AGENTS_GWZ.md")
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap(),
+        managed_agents_gwz_contents()
+    );
+}
+
+#[test]
+pub(crate) fn update_workspace_bootstrap_noops_when_current() {
+    let temp = TempDir::new("bootstrap-noop");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+
+    let response = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_workspace(),
+        "op_bootstrap",
+    )
+    .unwrap();
+
+    assert_eq!(response.meta.aggregate_status, crate::AggregateStatus::Noop);
+    assert_eq!(
+        response.meta.message.as_deref(),
+        Some("AGENTS_GWZ.md already current")
+    );
+}
+
+#[test]
+pub(crate) fn update_workspace_bootstrap_rejects_untrusted_file_without_force() {
+    let temp = TempDir::new("bootstrap-reject");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    fs::write(temp.path().join(AGENTS_GWZ_PATH), "# Local agent notes\n").unwrap();
+
+    let err = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_workspace(),
+        "op_bootstrap",
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(
+        fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap(),
+        "# Local agent notes\n"
+    );
+}
+
+#[test]
+pub(crate) fn update_workspace_bootstrap_force_overwrites_untrusted_file() {
+    let temp = TempDir::new("bootstrap-force");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    fs::write(temp.path().join(AGENTS_GWZ_PATH), "# Local agent notes\n").unwrap();
+
+    let response = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_force(),
+        "op_bootstrap",
+    )
+    .unwrap();
+
+    assert_eq!(response.meta.aggregate_status, crate::AggregateStatus::Ok);
+    assert_eq!(
+        fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap(),
+        managed_agents_gwz_contents()
+    );
+}
+
+#[test]
+pub(crate) fn create_workspace_rejects_untrusted_bootstrap_file_without_force() {
+    let temp = TempDir::new("bootstrap-create-reject");
+    fs::write(temp.path().join(AGENTS_GWZ_PATH), "# Local agent notes\n").unwrap();
+
+    let err =
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert!(!temp.path().join("gwz.conf/gwz.yml").exists());
+    assert_eq!(
+        fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap(),
+        "# Local agent notes\n"
+    );
 }
 
 #[test]
@@ -633,6 +754,16 @@ pub(crate) fn request_meta_with_workspace() -> crate::RequestMeta {
             workspace_id: Some("ws_ops".to_owned()),
         }),
         ..request_meta()
+    }
+}
+
+pub(crate) fn request_meta_with_force() -> crate::RequestMeta {
+    crate::RequestMeta {
+        policy: Some(crate::OperationPolicy {
+            destructive: Some(crate::DestructiveBehavior::Allow),
+            ..Default::default()
+        }),
+        ..request_meta_with_workspace()
     }
 }
 

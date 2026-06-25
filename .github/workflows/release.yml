@@ -61,7 +61,14 @@ jobs:
         run: python -m pip install --upgrade pip taut-proto
       - name: Format
         if: runner.os == 'Linux'
-        run: cargo fmt --check
+        shell: bash
+        run: |
+          if ! cargo fmt --check; then
+            echo "::error title=rustfmt check failed::Run 'cargo fmt' from the gwz-core repo root, then commit the formatting changes."
+            echo "Suggested fix:"
+            echo "  cargo fmt"
+            exit 1
+          fi
       - name: Test
         run: cargo test --locked
       - name: Clippy

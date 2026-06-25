@@ -67,6 +67,10 @@ pub(crate) fn init_from_sources_can_create_workspace_clone_local_urls_and_write_
     assert!(backend.is_repository(temp.path()).unwrap());
     assert!(temp.path().join("gwz.conf/gwz.yml").is_file());
     assert!(temp.path().join("gwz.conf/gwz.lock.yml").is_file());
+    assert_eq!(
+        fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap(),
+        managed_agents_gwz_contents()
+    );
     assert!(!temp.path().join("workspace").exists());
     // Members + tmp are hidden via local .git/info/exclude; gwz writes no .gitignore.
     let exclude = fs::read_to_string(temp.path().join(".git/info/exclude")).unwrap();

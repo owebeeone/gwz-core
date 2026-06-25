@@ -24,12 +24,14 @@ pub fn handle_create_workspace(
         OperationRequest::CreateWorkspace(request.clone()).context(operation_id.into())?;
     let root = PathBuf::from(&request.workspace_root);
     preflight_create_workspace(&root)?;
+    preflight_workspace_bootstrap_files(&root, force_bootstrap_overwrite(&request.meta))?;
     let workspace_id = request
         .workspace_id
         .clone()
         .unwrap_or_else(|| "ws_default".to_owned());
     crate::model::WorkspaceId::parse_str(&workspace_id)?;
     ensure_workspace_git_repo(&root)?;
+    let backend = Git2Backend::new();
 
     let manifest = ManifestArtifact {
         schema: artifact::WORKSPACE_SCHEMA.to_owned(),
@@ -46,7 +48,13 @@ pub fn handle_create_workspace(
         members: BTreeMap::new(),
     };
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-    sync_workspace_boundary(&Git2Backend::new(), &root, &lock)?;
+    sync_workspace_boundary(&backend, &root, &lock)?;
+    ensure_workspace_bootstrap_files(
+        &backend,
+        &root,
+        false,
+        force_bootstrap_overwrite(&request.meta),
+    )?;
 
     Ok(crate::CreateWorkspaceResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),

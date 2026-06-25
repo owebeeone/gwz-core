@@ -13,4 +13,5 @@ path = "src/lib.rs"
 git2 = { version = "0.21", features = ["https", "ssh"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+sha2 = "0.10"
 url = "2"

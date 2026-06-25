@@ -37,6 +37,7 @@ where
         return Err(invalid("init from sources requires at least one source"));
     }
     assert_init_target_is_head(request.target.as_ref())?;
+    let force_bootstrap = force_bootstrap_overwrite(&request.meta);
 
     if root.join(WORKSPACE_MANIFEST).exists() {
         let manifest = artifact::read_manifest(&root)?;
@@ -59,6 +60,7 @@ where
     }
 
     preflight_create_workspace(&root)?;
+    preflight_workspace_bootstrap_files(&root, force_bootstrap)?;
     let workspace_id = request
         .workspace_id
         .clone()
@@ -198,6 +200,7 @@ where
     lock.created_at = now_marker();
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
     sync_workspace_boundary(backend, &root, &lock)?;
+    ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;
     emitter.operation_finished();
 
     Ok(crate::InitFromSourcesResponse {
