@@ -268,6 +268,7 @@ fn create_with_message_stores_the_annotation() {
     let backend = Git2Backend::new();
     let _fixture = init_one_member_workspace(temp.path(), &backend, "tag-annot-source");
     let member_root = temp.path().join("remote");
+    set_identity(&member_root);
     let request = crate::TagRequest {
         meta: request_meta(),
         op: crate::TagOp::Create,
