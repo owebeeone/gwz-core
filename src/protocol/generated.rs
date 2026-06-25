@@ -23,6 +23,7 @@ pub enum ActionKind {
     RepoSync,
     Stash,
     Branch,
+    CloneWorkspace,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -45,6 +46,7 @@ impl ActionKind {
         Self::RepoSync => 16,
         Self::Stash => 17,
         Self::Branch => 18,
+        Self::CloneWorkspace => 19,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::CreateWorkspace,
@@ -66,6 +68,7 @@ impl ActionKind {
         16 => Self::RepoSync,
         17 => Self::Stash,
         18 => Self::Branch,
+        19 => Self::CloneWorkspace,
         _ => panic!("bad ActionKind wire value {}", v),
     } }
 }
@@ -2074,6 +2077,29 @@ impl InitFromSourcesRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct CloneWorkspaceRequest {
+    pub meta: RequestMeta,
+    pub url: String,
+    pub target: String,
+}
+impl CloneWorkspaceRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+            (2, Cbor::Text(self.url.clone())),
+            (3, Cbor::Text(self.target.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            meta: RequestMeta::from_cbor(c.get(1)),
+            url: c.get(2).text(),
+            target: c.get(3).text(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct AddExistingRepoRequest {
     pub meta: RequestMeta,
     pub repository_path: String,
@@ -2614,6 +2640,23 @@ pub struct InitFromSourcesResponse {
     pub response: ResponseEnvelope,
 }
 impl InitFromSourcesResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            response: ResponseEnvelope::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CloneWorkspaceResponse {
+    pub response: ResponseEnvelope,
+}
+impl CloneWorkspaceResponse {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.response.to_cbor()),

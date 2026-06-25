@@ -126,39 +126,8 @@ where
     if request.target.kind == crate::MaterializeTargetKind::Branch {
         return handle_materialize_branch(backend, root, manifest, request, context);
     }
-    let (target_members, rewrite_lock) =
-        materialize_target_members(backend, &root, &manifest, &request.target)?;
-    let target_lock = LockArtifact {
-        schema: artifact::LOCK_SCHEMA.to_owned(),
-        workspace_id: manifest.workspace.id.clone(),
-        manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-        created_at: now_marker(),
-        members: target_members,
-    };
-    // A tag covers only the members that carry it. With the default (None) selection, restrict to
-    // exactly the tagged subset (the lock we just built) rather than the full manifest — otherwise
-    // resolve_locked_selection errors LockNotFound on members that lack the tag. An explicit
-    // selection still validates against the tagged set (a selected-but-untagged member errors).
-    let selected = match (&request.target.kind, request.meta.selection.as_ref()) {
-        (crate::MaterializeTargetKind::Tag, None) => target_lock.members.keys().cloned().collect(),
-        _ => resolve_locked_selection(&manifest, &target_lock, request.meta.selection.as_ref())?,
-    };
+    let (plans, rewrite_lock) = prepare_materialize_execution(backend, &root, &manifest, &request)?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let destructive_allowed = request
-        .meta
-        .policy
-        .as_ref()
-        .and_then(|policy| policy.destructive)
-        == Some(crate::DestructiveBehavior::Allow);
-
-    let plans = materialize_preflight(
-        backend,
-        &root,
-        &manifest,
-        &target_lock,
-        &selected,
-        destructive_allowed,
-    )?;
     if dry_run {
         return Ok(crate::MaterializeResponse {
             response: response_envelope(
@@ -177,6 +146,76 @@ where
         .unwrap_or(0);
     let emitter = EventEmitter::new(&context, events, progress_interval);
     emitter.operation_started();
+    let response = apply_materialize_plans(
+        backend,
+        &root,
+        &manifest,
+        plans,
+        rewrite_lock,
+        request.meta.policy.as_ref(),
+        context,
+        &emitter,
+    );
+    emitter.operation_finished();
+    response
+}
+
+fn prepare_materialize_execution<B>(
+    backend: &B,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    request: &crate::MaterializeRequest,
+) -> ModelResult<(Vec<MaterializePlan>, bool)>
+where
+    B: GitBackend,
+{
+    let (target_members, rewrite_lock) =
+        materialize_target_members(backend, root, manifest, &request.target)?;
+    let target_lock = LockArtifact {
+        schema: artifact::LOCK_SCHEMA.to_owned(),
+        workspace_id: manifest.workspace.id.clone(),
+        manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
+        created_at: now_marker(),
+        members: target_members,
+    };
+    // A tag covers only the members that carry it. With the default (None) selection, restrict to
+    // exactly the tagged subset (the lock we just built) rather than the full manifest — otherwise
+    // resolve_locked_selection errors LockNotFound on members that lack the tag. An explicit
+    // selection still validates against the tagged set (a selected-but-untagged member errors).
+    let selected = match (&request.target.kind, request.meta.selection.as_ref()) {
+        (crate::MaterializeTargetKind::Tag, None) => target_lock.members.keys().cloned().collect(),
+        _ => resolve_locked_selection(manifest, &target_lock, request.meta.selection.as_ref())?,
+    };
+    let destructive_allowed = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.destructive)
+        == Some(crate::DestructiveBehavior::Allow);
+    let plans = materialize_preflight(
+        backend,
+        root,
+        manifest,
+        &target_lock,
+        &selected,
+        destructive_allowed,
+    )?;
+    Ok((plans, rewrite_lock))
+}
+
+fn apply_materialize_plans<B>(
+    backend: &B,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    plans: Vec<MaterializePlan>,
+    rewrite_lock: bool,
+    policy: Option<&crate::OperationPolicy>,
+    context: crate::operation::OperationContext,
+    emitter: &EventEmitter<'_>,
+) -> ModelResult<crate::MaterializeResponse>
+where
+    B: GitBackend + Sync,
+{
     // F2: the fresh clones this op will create — rolled back on any mid-batch
     // failure (Q6 reject-partial) so no orphan repos are left behind.
     let fresh_clone_paths: Vec<_> = plans
@@ -186,20 +225,8 @@ where
         .collect();
     let outcomes = par_map_per_host(
         plans,
-        resolve_jobs(
-            request
-                .meta
-                .policy
-                .as_ref()
-                .and_then(|policy| policy.concurrency),
-        ),
-        resolve_per_host(
-            request
-                .meta
-                .policy
-                .as_ref()
-                .and_then(|policy| policy.max_connections_per_host),
-        ),
+        resolve_jobs(policy.and_then(|policy| policy.concurrency)),
+        resolve_per_host(policy.and_then(|policy| policy.max_connections_per_host)),
         |plan| plan.clone_url.as_deref().and_then(git_host),
         |plan| -> ModelResult<(String, ResolvedMemberArtifact, crate::MemberResponse)> {
             let member_root = root.join(&plan.state.path);
@@ -263,7 +290,6 @@ where
             }
         }
     }
-    emitter.operation_finished();
 
     if let Some(error) = first_error {
         // F2/Q6 reject-partial: a member failed mid-batch. Roll back this op's
@@ -361,8 +387,112 @@ where
 /// `gwz materialize --lock`: it clones the workspace root (the git repository
 /// that owns `gwz.conf/`), verifies it is a GWZ workspace, then materializes
 /// every member to the committed lock — cloning missing member repositories and
-/// checking out their locked commits. The recorded operation is a lock
-/// materialization; no new wire request type is introduced.
+/// checking out their locked commits.
+pub fn handle_clone_workspace_request<B>(
+    backend: &B,
+    request: crate::CloneWorkspaceRequest,
+    operation_id: impl Into<String>,
+    events: &dyn EventSink,
+) -> ModelResult<crate::CloneWorkspaceResponse>
+where
+    B: GitBackend + Sync,
+{
+    let context = OperationRequest::CloneWorkspace(request.clone()).context(operation_id.into())?;
+    if request.meta.dry_run.unwrap_or(false) {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "--dry-run is not supported for clone",
+        ));
+    }
+    let target_path = PathBuf::from(&request.target);
+    // Refuse to clone over an existing workspace rather than corrupt it.
+    if target_path.join(WORKSPACE_MANIFEST).exists() {
+        return Err(ModelError::new(
+            ErrorCode::WorkspaceAlreadyExists,
+            "clone target already contains a GWZ workspace",
+        ));
+    }
+    let progress_interval = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.progress_min_interval_ms)
+        .unwrap_or(0);
+    let emitter = EventEmitter::new(&context, events, progress_interval);
+    emitter.operation_started();
+    let response = clone_workspace_with_emitter(backend, request, target_path, context, &emitter);
+    emitter.operation_finished();
+    response
+}
+
+fn clone_workspace_with_emitter<B>(
+    backend: &B,
+    request: crate::CloneWorkspaceRequest,
+    target_path: PathBuf,
+    context: crate::operation::OperationContext,
+    emitter: &EventEmitter<'_>,
+) -> ModelResult<crate::CloneWorkspaceResponse>
+where
+    B: GitBackend + Sync,
+{
+    let target_display = target_path.to_string_lossy().into_owned();
+    // Emit the root repository clone as a member-like lifecycle so consumers can render
+    // the full one-shot clone operation without a separate event schema.
+    emitter.member_started("workspace_root", &target_display);
+    backend.clone_repo_with_progress(&request.url, &target_path, &|progress| {
+        emitter.member_progress("workspace_root", &target_display, progress)
+    })?;
+    emitter.member_finished("workspace_root", &target_display);
+
+    // Verify the cloned repository really is a GWZ workspace before mutating it.
+    if !target_path.join(WORKSPACE_MANIFEST).is_file() {
+        return Err(ModelError::new(
+            ErrorCode::WorkspaceNotFound,
+            format!("cloned repository is not a GWZ workspace: {WORKSPACE_MANIFEST} missing"),
+        ));
+    }
+
+    // Complete the clone: materialize members to the committed lock using the same
+    // emitter so event sequence numbers remain monotonic for subscribers.
+    let workspace_id = request
+        .meta
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.workspace_id.clone());
+    let materialize = crate::MaterializeRequest {
+        meta: crate::RequestMeta {
+            workspace: Some(crate::WorkspaceRef {
+                root: Some(target_display),
+                workspace_id,
+            }),
+            ..request.meta
+        },
+        target: crate::MaterializeTarget {
+            kind: crate::MaterializeTargetKind::Lock,
+            name: None,
+            commit: None,
+        },
+    };
+    let manifest = artifact::read_manifest(&target_path)?;
+    assert_workspace_id(&manifest, materialize.meta.workspace.as_ref())?;
+    let (plans, rewrite_lock) =
+        prepare_materialize_execution(backend, &target_path, &manifest, &materialize)?;
+    let response = apply_materialize_plans(
+        backend,
+        &target_path,
+        &manifest,
+        plans,
+        rewrite_lock,
+        materialize.meta.policy.as_ref(),
+        context,
+        emitter,
+    )?;
+    Ok(crate::CloneWorkspaceResponse {
+        response: response.response,
+    })
+}
+
+/// Compatibility wrapper for the Rust CLI command path.
 pub fn handle_clone_workspace<B>(
     backend: &B,
     meta: crate::RequestMeta,
@@ -374,43 +504,19 @@ pub fn handle_clone_workspace<B>(
 where
     B: GitBackend + Sync,
 {
-    let target_path = PathBuf::from(target);
-    // Refuse to clone over an existing workspace rather than corrupt it.
-    if target_path.join(WORKSPACE_MANIFEST).exists() {
-        return Err(ModelError::new(
-            ErrorCode::WorkspaceAlreadyExists,
-            "clone target already contains a GWZ workspace",
-        ));
-    }
-    // Clone the workspace root repository — the step the CLI cannot perform.
-    backend.clone_repo(url, &target_path)?;
-    // Verify the cloned repository really is a GWZ workspace before mutating it.
-    if !target_path.join(WORKSPACE_MANIFEST).is_file() {
-        return Err(ModelError::new(
-            ErrorCode::WorkspaceNotFound,
-            format!("cloned repository is not a GWZ workspace: {WORKSPACE_MANIFEST} missing"),
-        ));
-    }
-    // Complete the clone: materialize members to the committed lock.
-    let workspace_id = meta
-        .workspace
-        .as_ref()
-        .and_then(|workspace| workspace.workspace_id.clone());
-    let materialize = crate::MaterializeRequest {
-        meta: crate::RequestMeta {
-            workspace: Some(crate::WorkspaceRef {
-                root: Some(target_path.to_string_lossy().into_owned()),
-                workspace_id,
-            }),
-            ..meta
+    handle_clone_workspace_request(
+        backend,
+        crate::CloneWorkspaceRequest {
+            meta,
+            url: url.to_owned(),
+            target: target.to_owned(),
         },
-        target: crate::MaterializeTarget {
-            kind: crate::MaterializeTargetKind::Lock,
-            name: None,
-            commit: None,
-        },
-    };
-    handle_materialize(backend, &target_path, materialize, operation_id, events)
+        operation_id,
+        events,
+    )
+    .map(|response| crate::MaterializeResponse {
+        response: response.response,
+    })
 }
 
 pub fn handle_pull_snapshot<B>(

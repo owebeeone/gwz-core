@@ -13,6 +13,10 @@ SCHEMA = schema(
         method("init_from_sources", role="in",
                params=Params(request=Ref.InitFromSourcesRequest),
                out=Ref.InitFromSourcesResponse),
+        # Clone a workspace root repository and materialize its locked members.
+        method("clone_workspace", role="in",
+               params=Params(request=Ref.CloneWorkspaceRequest),
+               out=Ref.CloneWorkspaceResponse),
         # Register an existing local Git repository.
         method("add_existing_repo", role="in",
                params=Params(request=Ref.AddExistingRepoRequest),
@@ -107,7 +111,8 @@ SCHEMA = schema(
          forall=15,
          repo_sync=16,
          stash=17,
-         branch=18),
+         branch=18,
+         clone_workspace=19),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -805,6 +810,14 @@ SCHEMA = schema(
         # Optional workspace id for create or existing-workspace verification.
         workspace_id=F(5, STR, optional=True)),
 
+    # Clone a workspace root Git repository and materialize locked members.
+    CloneWorkspaceRequest=Msg(
+        meta=F(1, Ref.RequestMeta),
+        # Git URL of the workspace root repository.
+        url=F(2, STR),
+        # Target directory for the cloned workspace.
+        target=F(3, STR)),
+
     # Add an already-cloned Git repository to the workspace manifest and lock.
     AddExistingRepoRequest=Msg(
         meta=F(1, Ref.RequestMeta),
@@ -992,6 +1005,9 @@ SCHEMA = schema(
         response=F(1, Ref.ResponseEnvelope)),
     # Response wrapper for init_from_sources.
     InitFromSourcesResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope)),
+    # Response wrapper for clone_workspace.
+    CloneWorkspaceResponse=Msg(
         response=F(1, Ref.ResponseEnvelope)),
     # Response wrapper for add_existing_repo.
     AddExistingRepoResponse=Msg(

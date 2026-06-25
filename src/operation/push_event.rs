@@ -29,6 +29,7 @@ pub enum ActionKind {
     RepoSync,
     Stash,
     Branch,
+    CloneWorkspace,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,6 +104,7 @@ pub enum OperationRequest {
     Ls(crate::LsRequest),
     Stash(crate::StashRequest),
     Branch(crate::BranchRequest),
+    CloneWorkspace(crate::CloneWorkspaceRequest),
 }
 
 impl OperationRequest {
@@ -126,6 +128,7 @@ impl OperationRequest {
             Self::Ls(request) => (ActionKind::Ls, &request.meta),
             Self::Stash(request) => (ActionKind::Stash, &request.meta),
             Self::Branch(request) => (ActionKind::Branch, &request.meta),
+            Self::CloneWorkspace(request) => (ActionKind::CloneWorkspace, &request.meta),
         };
         OperationContext::from_meta(operation_id.into(), action, meta)
     }
@@ -527,6 +530,7 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::RepoSync => Self::RepoSync,
             ActionKind::Stash => Self::Stash,
             ActionKind::Branch => Self::Branch,
+            ActionKind::CloneWorkspace => Self::CloneWorkspace,
         }
     }
 }

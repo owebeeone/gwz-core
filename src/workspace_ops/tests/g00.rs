@@ -232,16 +232,21 @@ pub(crate) fn clone_workspace_clones_root_and_materializes_missing_members() {
 
     // Clone the workspace from its root URL into a fresh target.
     let target = temp.path().join("clone");
+    let events = CollectingSink::default();
     let response = handle_clone_workspace(
         &backend,
         request_meta(),
         source_ws.to_str().unwrap(),
         target.to_str().unwrap(),
         "op_clone",
-        &NullSink,
+        &events,
     )
     .unwrap();
 
+    assert_eq!(
+        response.response.meta.action,
+        crate::ActionKind::CloneWorkspace
+    );
     assert_eq!(
         response.response.meta.aggregate_status,
         crate::AggregateStatus::Ok
@@ -256,6 +261,31 @@ pub(crate) fn clone_workspace_clones_root_and_materializes_missing_members() {
         backend.head(&target.join("repos/app")).unwrap().commit,
         Some(commit)
     );
+
+    let collected = events.take();
+    assert_eq!(
+        collected.first().map(|event| event.kind),
+        Some(crate::EventKind::OperationStarted)
+    );
+    assert_eq!(
+        collected.last().map(|event| event.kind),
+        Some(crate::EventKind::OperationFinished)
+    );
+    assert_eq!(
+        collected
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        (0..collected.len() as i64).collect::<Vec<_>>()
+    );
+    assert!(collected.iter().any(|event| {
+        event.kind == crate::EventKind::MemberStarted
+            && event.member_path.as_deref() == target.to_str()
+    }));
+    assert!(collected.iter().any(|event| {
+        event.kind == crate::EventKind::MemberStarted
+            && event.member_path.as_deref() == Some("repos/app")
+    }));
 }
 
 #[test]
