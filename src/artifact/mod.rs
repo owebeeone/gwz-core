@@ -376,13 +376,14 @@ fn publish_staged_with_windows_replace_fallback(
 ) -> std::io::Result<()> {
     match fs::rename(tmp_path, path) {
         Ok(()) => Ok(()),
-        Err(error)
-            if cfg!(windows)
-                && error.kind() == std::io::ErrorKind::PermissionDenied
-                && path.exists() =>
-        {
-            fs::remove_file(path)?;
-            fs::rename(tmp_path, path)
+        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
+            match fs::remove_file(path) {
+                Ok(()) => fs::rename(tmp_path, path),
+                Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::rename(tmp_path, path)
+                }
+                Err(remove_error) => Err(remove_error),
+            }
         }
         Err(error) => Err(error),
     }
