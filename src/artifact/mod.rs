@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -341,11 +342,12 @@ fn stage_durably(path: &Path, contents: &str) -> ModelResult<PathBuf> {
     }
     let tmp_path = temp_path(path)?;
     let write = || -> ModelResult<()> {
-        fs::write(&tmp_path, contents).map_err(io_error)?;
-        // F12: fsync the bytes to disk before the rename publishes them.
-        fs::File::open(&tmp_path)
-            .and_then(|file| file.sync_all())
-            .map_err(io_error)
+        // F12: fsync the bytes to disk before the rename publishes them. Sync the SAME
+        // writable handle we wrote through — do NOT reopen read-only, because Windows
+        // rejects FlushFileBuffers on a read-only handle with ERROR_ACCESS_DENIED.
+        let mut file = fs::File::create(&tmp_path).map_err(io_error)?;
+        file.write_all(contents.as_bytes()).map_err(io_error)?;
+        file.sync_all().map_err(io_error)
     };
     if let Err(err) = write() {
         let _ = fs::remove_file(&tmp_path);
