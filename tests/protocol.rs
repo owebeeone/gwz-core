@@ -5,14 +5,15 @@ use std::process::Command;
 use gwz_core::{
     ActionKind, AggregateStatus, BranchActionResult, BranchOp, BranchRepoSummary, BranchRequest,
     BranchResponse, EventKind, GitBranchDifference, GitBranchGroup, GitFileChange,
-    GitMemberBranchStatus, GitObjectIdentity, GwzError, GwzErrorCode, MaterializeRequest,
-    MaterializeTarget, MaterializeTargetKind, MemberResponse, MemberStatus, OperationActor,
-    OperationAttribution, OperationEvent, RepoSyncRequest, RepoSyncResponse, RequestMeta,
-    ResponseEnvelope, ResponseMeta, Severity, SnapshotRequest, SnapshotSource, SnapshotSourceKind,
-    SourceKind, StashBundle, StashBundleMember, StashDirtySummary, StashDrift, StashErrorDetail,
-    StashOp, StashParticipation, StashPushLifecycle, StashRequest, StashResponse,
-    StashRestoreState, StashWarning, StatusMode, StatusPathStyle, StatusRequest, StatusResponse,
-    WorkspaceGitStatus, WorkspaceRootFileChange, WorkspaceRootGitStatus, decode, encode,
+    GitMemberBranchStatus, GitObjectIdentity, GwzError, GwzErrorCode, ListSnapshotsResponse,
+    MaterializeRequest, MaterializeTarget, MaterializeTargetKind, MemberResponse, MemberStatus,
+    OperationActor, OperationAttribution, OperationEvent, RepoSyncRequest, RepoSyncResponse,
+    RequestMeta, ResponseEnvelope, ResponseMeta, Severity, SnapshotInfo, SnapshotRequest,
+    SnapshotSource, SnapshotSourceKind, SourceKind, StashBundle, StashBundleMember,
+    StashDirtySummary, StashDrift, StashErrorDetail, StashOp, StashParticipation,
+    StashPushLifecycle, StashRequest, StashResponse, StashRestoreState, StashWarning, StatusMode,
+    StatusPathStyle, StatusRequest, StatusResponse, WorkspaceGitStatus, WorkspaceRootFileChange,
+    WorkspaceRootGitStatus, decode, encode,
 };
 
 fn round_trip<T>(
@@ -336,6 +337,28 @@ fn snapshot_sources_round_trip() {
 }
 
 #[test]
+fn list_snapshots_response_round_trips() {
+    let response = ListSnapshotsResponse {
+        response: response_envelope("req-list-snapshots", ActionKind::ListSnapshots),
+        snapshots: Some(vec![SnapshotInfo {
+            name: "snap-one".to_owned(),
+            created_at: "2026-06-28T00:00:00Z".to_owned(),
+            created_by: "tester".to_owned(),
+            members: 2,
+        }]),
+    };
+
+    assert_eq!(
+        round_trip(
+            &response,
+            ListSnapshotsResponse::to_cbor,
+            ListSnapshotsResponse::from_cbor
+        ),
+        response
+    );
+}
+
+#[test]
 fn status_response_round_trips_combined_workspace_status() {
     let response = StatusResponse {
         response: ResponseEnvelope {
@@ -503,6 +526,7 @@ fn error_code_wire_values_are_pinned() {
 fn branch_protocol_wire_values_are_pinned() {
     assert_eq!(ActionKind::Stash.wire(), 17);
     assert_eq!(ActionKind::Branch.wire(), 18);
+    assert_eq!(ActionKind::ListSnapshots.wire(), 20);
     assert_eq!(MaterializeTargetKind::Lock.wire(), 0);
     assert_eq!(MaterializeTargetKind::Commit.wire(), 4);
     assert_eq!(MaterializeTargetKind::Branch.wire(), 5);

@@ -30,6 +30,7 @@ pub enum ActionKind {
     Stash,
     Branch,
     CloneWorkspace,
+    ListSnapshots,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,6 +95,7 @@ pub enum OperationRequest {
     Materialize(crate::MaterializeRequest),
     Status(crate::StatusRequest),
     Snapshot(crate::SnapshotRequest),
+    ListSnapshots(crate::ListSnapshotsRequest),
     Tag(crate::TagRequest),
     PullHead(crate::PullHeadRequest),
     PullSnapshot(crate::PullSnapshotRequest),
@@ -118,6 +120,7 @@ impl OperationRequest {
             Self::Materialize(request) => (ActionKind::Materialize, &request.meta),
             Self::Status(request) => (ActionKind::Status, &request.meta),
             Self::Snapshot(request) => (ActionKind::Snapshot, &request.meta),
+            Self::ListSnapshots(request) => (ActionKind::ListSnapshots, &request.meta),
             Self::Tag(request) => (ActionKind::Tag, &request.meta),
             Self::PullHead(request) => (ActionKind::PullHead, &request.meta),
             Self::PullSnapshot(request) => (ActionKind::PullSnapshot, &request.meta),
@@ -535,6 +538,7 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::Stash => Self::Stash,
             ActionKind::Branch => Self::Branch,
             ActionKind::CloneWorkspace => Self::CloneWorkspace,
+            ActionKind::ListSnapshots => Self::ListSnapshots,
         }
     }
 }

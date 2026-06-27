@@ -45,6 +45,10 @@ SCHEMA = schema(
         method("snapshot", role="in",
                params=Params(request=Ref.SnapshotRequest),
                out=Ref.SnapshotResponse),
+        # List workspace snapshots through the canonical core API.
+        method("list_snapshots", role="in",
+               params=Params(request=Ref.ListSnapshotsRequest),
+               out=Ref.ListSnapshotsResponse),
         # Capture selected member state by GWZ tag name.
         method("tag", role="in",
                params=Params(request=Ref.TagRequest),
@@ -112,7 +116,8 @@ SCHEMA = schema(
          repo_sync=16,
          stash=17,
          branch=18,
-         clone_workspace=19),
+         clone_workspace=19,
+         list_snapshots=20),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -935,6 +940,10 @@ SCHEMA = schema(
         snapshot_id=F(2, STR),
         source=F(3, Ref.SnapshotSource, optional=True)),
 
+    # List named snapshots for the workspace.
+    ListSnapshotsRequest=Msg(
+        meta=F(1, Ref.RequestMeta)),
+
     # Manage git tags (`refs/tags/<name>`) across the selected members.
     TagRequest=Msg(
         meta=F(1, Ref.RequestMeta),
@@ -1046,6 +1055,18 @@ SCHEMA = schema(
     # Response wrapper for snapshot.
     SnapshotResponse=Msg(
         response=F(1, Ref.ResponseEnvelope)),
+    # A snapshot entry returned by list_snapshots.
+    SnapshotInfo=Msg(
+        # Snapshot name without the artifact path/extension.
+        name=F(1, STR),
+        created_at=F(2, STR),
+        created_by=F(3, STR),
+        # Number of member states captured in this snapshot.
+        members=F(4, INT)),
+    # Response wrapper for list_snapshots.
+    ListSnapshotsResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope),
+        snapshots=F(2, List(Ref.SnapshotInfo), optional=True)),
     # A tag entry returned by tag list operations.
     TagInfo=Msg(
         # Tag name without the refs/tags/ prefix.

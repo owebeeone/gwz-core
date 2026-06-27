@@ -24,6 +24,7 @@ pub enum ActionKind {
     Stash,
     Branch,
     CloneWorkspace,
+    ListSnapshots,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -47,6 +48,7 @@ impl ActionKind {
         Self::Stash => 17,
         Self::Branch => 18,
         Self::CloneWorkspace => 19,
+        Self::ListSnapshots => 20,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::CreateWorkspace,
@@ -69,6 +71,7 @@ impl ActionKind {
         17 => Self::Stash,
         18 => Self::Branch,
         19 => Self::CloneWorkspace,
+        20 => Self::ListSnapshots,
         _ => panic!("bad ActionKind wire value {}", v),
     } }
 }
@@ -2426,6 +2429,23 @@ impl SnapshotRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct ListSnapshotsRequest {
+    pub meta: RequestMeta,
+}
+impl ListSnapshotsRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            meta: RequestMeta::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TagRequest {
     pub meta: RequestMeta,
     pub op: TagOp,
@@ -2805,6 +2825,52 @@ impl SnapshotResponse {
     pub fn from_cbor(c: &Cbor) -> Self {
         Self {
             response: ResponseEnvelope::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SnapshotInfo {
+    pub name: String,
+    pub created_at: String,
+    pub created_by: String,
+    pub members: i64,
+}
+impl SnapshotInfo {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.name.clone())),
+            (2, Cbor::Text(self.created_at.clone())),
+            (3, Cbor::Text(self.created_by.clone())),
+            (4, Cbor::Int(self.members)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            name: c.get(1).text(),
+            created_at: c.get(2).text(),
+            created_by: c.get(3).text(),
+            members: c.get(4).int(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ListSnapshotsResponse {
+    pub response: ResponseEnvelope,
+    pub snapshots: Option<Vec<SnapshotInfo>>,
+}
+impl ListSnapshotsResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+            (2, match &self.snapshots { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            response: ResponseEnvelope::from_cbor(c.get(1)),
+            snapshots: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| SnapshotInfo::from_cbor(x)).collect()) } },
         }
     }
 }
