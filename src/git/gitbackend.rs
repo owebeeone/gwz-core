@@ -195,6 +195,14 @@ pub trait GitBackend {
     /// persisted with the requested files staged before returning success.
     /// Content parity with porcelain `git add` is proven by contract test.
     fn stage_paths(&self, path: &Path, pathspecs: &[&str]) -> ModelResult<GitStageResult>;
+    /// Stage resolved paths while unrelated conflicts remain in the index.
+    fn stage_paths_allowing_other_conflicts(
+        &self,
+        path: &Path,
+        pathspecs: &[&str],
+    ) -> ModelResult<GitStageResult> {
+        self.stage_paths(path, pathspecs)
+    }
     /// Commit staged changes (or, with `all`, stage tracked modifications first —
     /// `git commit -a`) via the `git` CLI, so hooks, signing, and committer config are
     /// honored (AD1 per-primitive CLI fallback — libgit2's commit bypasses all of them).
@@ -1118,6 +1126,50 @@ impl GitBackend for Git2Backend {
                     ));
                 }
                 staged += 1;
+            }
+        }
+        Ok(GitStageResult { staged })
+    }
+
+    fn stage_paths_allowing_other_conflicts(
+        &self,
+        path: &Path,
+        pathspecs: &[&str],
+    ) -> ModelResult<GitStageResult> {
+        let repo = open_repo(path)?;
+        let mut index = repo.index().map_err(git_error)?;
+        let mut staged = 0usize;
+        for spec in pathspecs {
+            let relative = Path::new(spec);
+            match index.conflict_remove(relative) {
+                Ok(()) => {}
+                Err(err) if err.code() == git2::ErrorCode::NotFound => {}
+                Err(err) => return Err(git_error(err)),
+            }
+            if path.join(relative).exists() {
+                index.add_path(relative).map_err(git_error)?;
+                staged += 1;
+            } else {
+                match index.remove_path(relative) {
+                    Ok(()) => staged += 1,
+                    Err(err) if err.code() == git2::ErrorCode::NotFound => {}
+                    Err(err) => return Err(git_error(err)),
+                }
+            }
+        }
+        index.write().map_err(git_error)?;
+
+        let verify = open_repo(path)?.index().map_err(git_error)?;
+        for spec in pathspecs {
+            match verify.conflict_get(Path::new(spec)) {
+                Ok(_) => {
+                    return Err(ModelError::new(
+                        ErrorCode::GitCommandFailed,
+                        format!("staged path still has conflicts after write: {spec}"),
+                    ));
+                }
+                Err(err) if err.code() == git2::ErrorCode::NotFound => {}
+                Err(err) => return Err(git_error(err)),
             }
         }
         Ok(GitStageResult { staged })

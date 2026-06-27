@@ -299,8 +299,10 @@ fn resolve_repairable_root_conflicts<B>(
 where
     B: GitBackend,
 {
-    let repairable = conflicts.iter().all(|path| path == artifact::LOCK_PATH);
-    if !repairable {
+    let supported = conflicts
+        .iter()
+        .all(|path| path == artifact::LOCK_PATH || path == ".gitignore");
+    if !supported {
         return Err(ModelError::new(
             ErrorCode::GitCommandFailed,
             format!(
@@ -310,9 +312,54 @@ where
         ));
     }
 
-    rewrite_root_lock_from_live_members(backend, root, fallback_lock)?;
+    if conflicts.iter().any(|path| path == artifact::LOCK_PATH) {
+        rewrite_root_lock_from_live_members_allowing_other_conflicts(backend, root, fallback_lock)?;
+    }
+    let remaining = conflicts
+        .iter()
+        .filter(|path| path.as_str() != artifact::LOCK_PATH)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !remaining.is_empty() {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            format!(
+                "workspace root merge left user-resolved conflicted paths: {}",
+                remaining.join(", ")
+            ),
+        ));
+    }
+
     backend.commit_merge_resolution(root, &format!("Merge {remote_ref} into {branch}"))?;
     Ok(())
+}
+
+fn rewrite_root_lock_from_live_members_allowing_other_conflicts<B>(
+    backend: &B,
+    root: &Path,
+    fallback_lock: &LockArtifact,
+) -> ModelResult<LockArtifact>
+where
+    B: GitBackend,
+{
+    let manifest = artifact::read_manifest(root)?;
+    let selected = manifest
+        .members
+        .iter()
+        .map(|member| member.id.clone())
+        .collect::<Vec<_>>();
+    let lock_fallback = artifact::read_lock(root).unwrap_or_else(|_| fallback_lock.clone());
+    let members = observed_member_map(backend, root, &manifest, &lock_fallback, &selected)?;
+    let lock = LockArtifact {
+        schema: artifact::LOCK_SCHEMA.to_owned(),
+        workspace_id: manifest.workspace.id.clone(),
+        manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
+        created_at: now_marker(),
+        members,
+    };
+    artifact::write_lock(root, &lock)?;
+    backend.stage_paths_allowing_other_conflicts(root, &[artifact::LOCK_PATH])?;
+    Ok(lock)
 }
 
 fn rewrite_root_lock_from_live_members<B>(
