@@ -171,6 +171,25 @@ pub trait GitBackend {
     fn push(&self, path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult>;
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>>;
     fn is_ancestor(&self, path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool>;
+    /// Return the best merge base for two commits, when one exists.
+    fn merge_base(&self, _path: &Path, _left: &str, _right: &str) -> ModelResult<Option<String>> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "merge_base is not implemented by this GitBackend",
+        ))
+    }
+    /// List paths whose tree entries differ between two commits.
+    fn changed_paths_between(
+        &self,
+        _path: &Path,
+        _old_commit: &str,
+        _new_commit: &str,
+    ) -> ModelResult<Vec<String>> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "changed_paths_between is not implemented by this GitBackend",
+        ))
+    }
     /// Stage `pathspecs` into the index — `git add` semantics: add new/modified
     /// files, remove deleted ones, honor `.gitignore`. Self-verifies the index
     /// persisted with the requested files staged before returning success.
@@ -182,6 +201,12 @@ pub trait GitBackend {
     /// Returns the new commit oid. Self-verifies HEAD advanced to a new commit before
     /// returning. The caller must ensure there is something to commit (no empty commits).
     fn commit(&self, path: &Path, message: &str, all: bool) -> ModelResult<GitCommitResult>;
+    /// Commit an in-progress merge after the caller has resolved and staged conflicts.
+    /// The default fallback uses porcelain `git commit`; Git2Backend overrides this so
+    /// gwz-created merge resolutions also work without user git identity config.
+    fn commit_merge_resolution(&self, path: &Path, message: &str) -> ModelResult<GitCommitResult> {
+        self.commit(path, message, false)
+    }
     /// Create tag `name` at the current HEAD via the `git` CLI (AD1 per-primitive CLI
     /// fallback — so hooks, signing, and tagger config are honored). Annotated when
     /// `message` is set; signed when `signed` (signing requires a message + GPG config).
@@ -1136,6 +1161,72 @@ impl GitBackend for Git2Backend {
         Ok(GitCommitResult { commit: after })
     }
 
+    fn commit_merge_resolution(&self, path: &Path, message: &str) -> ModelResult<GitCommitResult> {
+        let repo = open_repo(path)?;
+        let mut index = repo.index().map_err(git_error)?;
+        if index.has_conflicts() {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "cannot commit merge resolution while index has conflicts",
+            ));
+        }
+        let merge_head =
+            std::fs::read_to_string(repo.path().join("MERGE_HEAD")).map_err(|err| {
+                ModelError::new(
+                    ErrorCode::GitCommandFailed,
+                    format!("failed to read MERGE_HEAD: {err}"),
+                )
+            })?;
+        let merge_oids = merge_head
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| git2::Oid::from_str(line.trim()).map_err(git_error))
+            .collect::<ModelResult<Vec<_>>>()?;
+        if merge_oids.is_empty() {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "MERGE_HEAD is empty",
+            ));
+        }
+
+        let head_commit = repo
+            .head()
+            .map_err(git_error)?
+            .peel_to_commit()
+            .map_err(git_error)?;
+        let merge_commits = merge_oids
+            .iter()
+            .map(|oid| repo.find_commit(*oid).map_err(git_error))
+            .collect::<ModelResult<Vec<_>>>()?;
+        let tree_oid = index.write_tree().map_err(git_error)?;
+        let tree = repo.find_tree(tree_oid).map_err(git_error)?;
+        let signature = merge_signature(&repo)?;
+        let mut parents = Vec::with_capacity(1 + merge_commits.len());
+        parents.push(&head_commit);
+        parents.extend(merge_commits.iter());
+        let oid = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &parents,
+            )
+            .map_err(git_error)?;
+        repo.cleanup_state().map_err(git_error)?;
+        let observed = self.head(path)?;
+        if observed.commit.as_deref() != Some(oid.to_string().as_str()) {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "post-merge-resolution HEAD is not the merge commit",
+            ));
+        }
+        Ok(GitCommitResult {
+            commit: oid.to_string(),
+        })
+    }
+
     fn tag_create(
         &self,
         path: &Path,
@@ -1259,6 +1350,48 @@ impl GitBackend for Git2Backend {
         let descendant = git2::Oid::from_str(descendant).map_err(git_error)?;
         repo.graph_descendant_of(descendant, ancestor)
             .map_err(git_error)
+    }
+
+    fn merge_base(&self, path: &Path, left: &str, right: &str) -> ModelResult<Option<String>> {
+        let repo = open_repo(path)?;
+        let left = git2::Oid::from_str(left).map_err(git_error)?;
+        let right = git2::Oid::from_str(right).map_err(git_error)?;
+        match repo.merge_base(left, right) {
+            Ok(oid) => Ok(Some(oid.to_string())),
+            Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(err) => Err(git_error(err)),
+        }
+    }
+
+    fn changed_paths_between(
+        &self,
+        path: &Path,
+        old_commit: &str,
+        new_commit: &str,
+    ) -> ModelResult<Vec<String>> {
+        let repo = open_repo(path)?;
+        let old = repo
+            .find_commit(git2::Oid::from_str(old_commit).map_err(git_error)?)
+            .map_err(git_error)?;
+        let new = repo
+            .find_commit(git2::Oid::from_str(new_commit).map_err(git_error)?)
+            .map_err(git_error)?;
+        let old_tree = old.tree().map_err(git_error)?;
+        let new_tree = new.tree().map_err(git_error)?;
+        let diff = repo
+            .diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)
+            .map_err(git_error)?;
+        let mut paths = Vec::new();
+        for delta in diff.deltas() {
+            for file in [delta.old_file(), delta.new_file()] {
+                if let Some(path) = file.path() {
+                    paths.push(path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
     }
 }
 

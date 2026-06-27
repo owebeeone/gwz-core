@@ -36,11 +36,17 @@ where
 {
     let context = OperationRequest::PullHead(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let dry_run = request.meta.dry_run.unwrap_or(false);
+    let root_changed = if dry_run {
+        false
+    } else {
+        pull_workspace_root(backend, &root, request.meta.policy.as_ref())?
+    };
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let mut lock = artifact::read_lock(&root)?;
     let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
-    if request.meta.dry_run.unwrap_or(false) {
+    if dry_run {
         let plans = pull_head_preflight(
             backend,
             &root,
@@ -106,8 +112,235 @@ where
     emitter.operation_finished();
 
     Ok(crate::PullHeadResponse {
-        response: response_envelope(context, pull_response_aggregate(&responses), responses),
+        response: response_envelope(
+            context,
+            pull_response_aggregate(&responses, root_changed),
+            responses,
+        ),
     })
+}
+
+fn pull_workspace_root<B>(
+    backend: &B,
+    root: &Path,
+    policy: Option<&crate::OperationPolicy>,
+) -> ModelResult<bool>
+where
+    B: GitBackend,
+{
+    if !backend.is_repository(root)? {
+        return Ok(false);
+    }
+    let Some(remote) = pull_root_remote_name(backend, root, policy)? else {
+        return Ok(false);
+    };
+    let head = backend.head(root)?;
+    if head.is_detached {
+        return Err(ModelError::new(
+            ErrorCode::BranchDetachedHead,
+            "workspace root is detached; root pull requires an attached branch",
+        ));
+    }
+    let branch = head.branch.clone().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::BranchUnbornHead,
+            "workspace root has no current branch",
+        )
+    })?;
+    let local_commit = head.commit.clone().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::BranchUnbornHead,
+            "workspace root has an unborn HEAD",
+        )
+    })?;
+    let sync = policy
+        .and_then(|policy| policy.sync)
+        .unwrap_or(crate::SyncBehavior::FfOnly);
+    let status = backend.status(root)?;
+    pull_dirty_guard(sync, &status, policy, "workspace root")?;
+
+    let manifest_before = artifact::read_manifest(root)?;
+    let fallback_lock = read_lock_or_empty(root, &manifest_before.workspace.id)?;
+
+    backend.fetch(root, &remote)?;
+    let remote_ref = format!("refs/remotes/{remote}/{branch}");
+    let remote_commit = backend
+        .read_ref(root, &remote_ref)?
+        .ok_or_else(|| ModelError::new(ErrorCode::MissingRemote, "root remote branch not found"))?;
+    if local_commit == remote_commit {
+        return Ok(false);
+    }
+    let behind = backend.is_ancestor(root, &local_commit, &remote_commit)?;
+    match sync {
+        crate::SyncBehavior::FetchOnly => Ok(false),
+        crate::SyncBehavior::FfOnly | crate::SyncBehavior::DriverSelected => {
+            if !behind {
+                if root_remote_changes_are_auto_repairable(
+                    backend,
+                    root,
+                    &local_commit,
+                    &remote_commit,
+                )? {
+                    let result = backend.merge_upstream(root, &branch, &remote_ref)?;
+                    if result.conflicts.is_empty() {
+                        rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
+                        return Ok(true);
+                    }
+                    resolve_repairable_root_conflicts(
+                        backend,
+                        root,
+                        &branch,
+                        &remote_ref,
+                        &fallback_lock,
+                        &result.conflicts,
+                    )?;
+                    return Ok(true);
+                } else {
+                    return Err(ModelError::new(
+                        ErrorCode::DivergedMember,
+                        "workspace root has diverged from remote; rerun with --sync merge, rebase, or reset",
+                    ));
+                }
+            }
+            backend.fast_forward(root, &branch, &remote_ref)?;
+            rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
+            Ok(true)
+        }
+        crate::SyncBehavior::Merge => {
+            if behind {
+                backend.fast_forward(root, &branch, &remote_ref)?;
+                rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
+                return Ok(true);
+            }
+            let result = backend.merge_upstream(root, &branch, &remote_ref)?;
+            if result.conflicts.is_empty() {
+                rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
+                return Ok(true);
+            }
+            resolve_repairable_root_conflicts(
+                backend,
+                root,
+                &branch,
+                &remote_ref,
+                &fallback_lock,
+                &result.conflicts,
+            )?;
+            Ok(true)
+        }
+        crate::SyncBehavior::Rebase => {
+            if behind {
+                backend.fast_forward(root, &branch, &remote_ref)?;
+            } else {
+                let result = backend.rebase_onto(root, &branch, &remote_ref)?;
+                if !result.conflicts.is_empty() {
+                    return Err(ModelError::new(
+                        ErrorCode::GitCommandFailed,
+                        format!(
+                            "workspace root rebase left conflicted paths: {}",
+                            result.conflicts.join(", ")
+                        ),
+                    ));
+                }
+            }
+            rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
+            Ok(true)
+        }
+        crate::SyncBehavior::Reset => {
+            backend.reset_hard(root, &branch, &remote_ref)?;
+            rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
+            Ok(true)
+        }
+    }
+}
+
+fn root_remote_changes_are_auto_repairable<B>(
+    backend: &B,
+    root: &Path,
+    local_commit: &str,
+    remote_commit: &str,
+) -> ModelResult<bool>
+where
+    B: GitBackend,
+{
+    let Some(base) = backend.merge_base(root, local_commit, remote_commit)? else {
+        return Ok(false);
+    };
+    let remote_paths = backend.changed_paths_between(root, &base, remote_commit)?;
+    Ok(!remote_paths.is_empty() && remote_paths.iter().all(|path| path == artifact::LOCK_PATH))
+}
+
+fn pull_root_remote_name<B>(
+    backend: &B,
+    root: &Path,
+    policy: Option<&crate::OperationPolicy>,
+) -> ModelResult<Option<String>>
+where
+    B: GitBackend,
+{
+    if let Some(remote) = policy.and_then(|policy| policy.remote.clone()) {
+        return Ok(Some(remote));
+    }
+    let remotes = backend.remotes(root)?;
+    Ok(remotes
+        .iter()
+        .find(|remote| remote.name == "origin")
+        .or_else(|| remotes.first())
+        .map(|remote| remote.name.clone()))
+}
+
+fn resolve_repairable_root_conflicts<B>(
+    backend: &B,
+    root: &Path,
+    branch: &str,
+    remote_ref: &str,
+    fallback_lock: &LockArtifact,
+    conflicts: &[String],
+) -> ModelResult<()>
+where
+    B: GitBackend,
+{
+    let repairable = conflicts.iter().all(|path| path == artifact::LOCK_PATH);
+    if !repairable {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            format!(
+                "workspace root merge left non-GWZ conflicted paths: {}",
+                conflicts.join(", ")
+            ),
+        ));
+    }
+
+    rewrite_root_lock_from_live_members(backend, root, fallback_lock)?;
+    backend.commit_merge_resolution(root, &format!("Merge {remote_ref} into {branch}"))?;
+    Ok(())
+}
+
+fn rewrite_root_lock_from_live_members<B>(
+    backend: &B,
+    root: &Path,
+    fallback_lock: &LockArtifact,
+) -> ModelResult<LockArtifact>
+where
+    B: GitBackend,
+{
+    let manifest = artifact::read_manifest(root)?;
+    let selected = manifest
+        .members
+        .iter()
+        .map(|member| member.id.clone())
+        .collect::<Vec<_>>();
+    let lock_fallback = artifact::read_lock(root).unwrap_or_else(|_| fallback_lock.clone());
+    let members = observed_member_map(backend, root, &manifest, &lock_fallback, &selected)?;
+    let lock = LockArtifact {
+        schema: artifact::LOCK_SCHEMA.to_owned(),
+        workspace_id: manifest.workspace.id.clone(),
+        manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
+        created_at: now_marker(),
+        members,
+    };
+    artifact::write_lock(root, &lock)?;
+    sync_workspace_boundary(backend, root, &lock)?;
+    Ok(lock)
 }
 
 pub(crate) const NO_FETCH_REMOTE_PULL_MESSAGE: &str = "no fetch remote configured; skipping pull";
@@ -604,6 +837,7 @@ pub(crate) fn pull_aggregate_status(plans: &[PullHeadPlan]) -> crate::AggregateS
 
 pub(crate) fn pull_response_aggregate(
     responses: &[crate::MemberResponse],
+    root_changed: bool,
 ) -> crate::AggregateStatus {
     if responses
         .iter()
@@ -614,7 +848,11 @@ pub(crate) fn pull_response_aggregate(
         .iter()
         .all(|response| response.status == crate::MemberStatus::Noop)
     {
-        crate::AggregateStatus::Noop
+        if root_changed {
+            crate::AggregateStatus::Ok
+        } else {
+            crate::AggregateStatus::Noop
+        }
     } else {
         crate::AggregateStatus::Ok
     }
