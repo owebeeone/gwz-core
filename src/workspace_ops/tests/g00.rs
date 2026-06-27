@@ -319,7 +319,7 @@ pub(crate) fn materialize_lock_blocks_dirty_member_by_default() {
 }
 
 #[test]
-pub(crate) fn materialize_lock_moves_clean_member_and_dry_run_does_not_mutate() {
+pub(crate) fn materialize_lock_keeps_tracking_member_on_head_and_dry_run_does_not_mutate() {
     let temp = TempDir::new("materialize-clean");
     let backend = Git2Backend::new();
     handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
@@ -352,7 +352,7 @@ pub(crate) fn materialize_lock_moves_clean_member_and_dry_run_does_not_mutate() 
     );
     assert_eq!(
         backend.head(&temp.path().join("repos/app")).unwrap().commit,
-        Some(second)
+        Some(second.clone())
     );
 
     handle_materialize(
@@ -363,10 +363,12 @@ pub(crate) fn materialize_lock_moves_clean_member_and_dry_run_does_not_mutate() 
         &NullSink,
     )
     .unwrap();
-    assert_eq!(
-        backend.head(&temp.path().join("repos/app")).unwrap().commit,
-        Some(first)
-    );
+    // detached:false → the member tracks `main`: it stays attached on the branch at the
+    // upstream head (`second`), NOT detached at the lagging lock pin (`first`).
+    let head = backend.head(&temp.path().join("repos/app")).unwrap();
+    assert!(!head.is_detached, "a tracking member stays attached to its branch");
+    assert_eq!(head.branch.as_deref(), Some("main"));
+    assert_eq!(head.commit, Some(second));
 }
 
 #[test]
@@ -417,14 +419,13 @@ pub(crate) fn materialize_rolls_back_fresh_clones_on_mid_batch_failure() {
     handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
     let fixture = RemoteFixture::new("rollback-source");
     let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
-    let bad_oid = "0".repeat(40);
-    // app clones + checks out cleanly; lib clones then fails to check out a
-    // commit that does not exist -> a mid-batch failure.
+    // app clones cleanly; lib's remote does not exist, so its clone fails -> a
+    // mid-batch failure that must also roll back app's fresh clone.
     write_pull_fixture(
         temp.path(),
         vec![
             ("mem_app", "repos/app", fixture.remote_url(), &commit),
-            ("mem_lib", "repos/lib", fixture.remote_url(), &bad_oid),
+            ("mem_lib", "repos/lib", "/gwz-nonexistent-remote.git", &commit),
         ],
     );
 
@@ -477,6 +478,45 @@ pub(crate) fn materialize_restores_onto_saved_branch_not_detached() {
     let head = backend.head(&temp.path().join("repos/app")).unwrap();
     assert!(!head.is_detached);
     assert_eq!(head.branch.as_deref(), Some("main"));
+}
+
+#[test]
+pub(crate) fn materialize_attaches_at_branch_head_when_lock_pin_lags_upstream() {
+    // A detached:false member tracks `main`. The committed lock pins an OLDER commit than
+    // the current upstream head (a stale lock). Materializing the lock target (what `clone`
+    // does) must ATTACH `main` at the upstream head — not detach at the stale pin.
+    let temp = TempDir::new("materialize-track-head");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let fixture = RemoteFixture::new("track-source");
+    let first = fixture.commit_and_push("README.md", "one", "initial", &backend);
+    // The lock is captured at `first`...
+    write_materialize_fixture(temp.path(), fixture.remote_url(), &first);
+    // ...then upstream main advances to `second` (pushed to the remote, not local).
+    let second = fixture.commit_and_push("README.md", "two", "second", &backend);
+
+    handle_materialize(
+        &backend,
+        temp.path(),
+        materialize_lock_request(false),
+        "op_materialize",
+        &NullSink,
+    )
+    .unwrap();
+
+    // The fresh clone lands ON `main` at the upstream head, attached — not detached at `first`.
+    let app = temp.path().join("repos/app");
+    let head = backend.head(&app).unwrap();
+    assert!(
+        !head.is_detached,
+        "a detached:false member must attach to its branch, not detach at the stale pin"
+    );
+    assert_eq!(head.branch.as_deref(), Some("main"));
+    assert_eq!(
+        head.commit.as_deref(),
+        Some(second.as_str()),
+        "attached at the upstream head, not the lagging lock pin"
+    );
 }
 
 #[test]

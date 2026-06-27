@@ -146,12 +146,15 @@ where
         .unwrap_or(0);
     let emitter = EventEmitter::new(&context, events, progress_interval);
     emitter.operation_started();
+    // Lock target tracks branch heads for detached:false members; snapshot/tag/head pin.
+    let follow_branch_head = request.target.kind == crate::MaterializeTargetKind::Lock;
     let response = apply_materialize_plans(
         backend,
         &root,
         &manifest,
         plans,
         rewrite_lock,
+        follow_branch_head,
         request.meta.policy.as_ref(),
         context,
         &emitter,
@@ -209,6 +212,9 @@ fn apply_materialize_plans<B>(
     manifest: &ManifestArtifact,
     plans: Vec<MaterializePlan>,
     rewrite_lock: bool,
+    // True for the lock target (and clone): detached:false members follow their branch
+    // head. False for snapshot/tag: pin the recorded commit so the capture is reproducible.
+    follow_branch_head: bool,
     policy: Option<&crate::OperationPolicy>,
     context: crate::operation::OperationContext,
     emitter: &EventEmitter<'_>,
@@ -236,37 +242,65 @@ where
                     emitter.member_progress(&plan.member_id, &plan.state.path, progress)
                 })?;
             }
-            if let Some(commit) = &plan.state.commit {
-                // AD3(c): restore onto the saved branch when there was one; detach only
-                // when the saved state was genuinely detached. checkout_branch refuses
-                // to silently reset a branch that has diverged.
-                match &plan.state.branch {
-                    Some(branch) if plan.state.detached != Some(true) => {
-                        // AD3(c): restore onto the saved branch when safe (creatable or
-                        // already at the target). If the branch has diverged, DETACH at
-                        // the target instead of resetting it — never orphan its work.
-                        match backend.checkout_branch(&member_root, branch, commit) {
-                            Ok(_) => {}
-                            Err(error) if error.code == ErrorCode::DivergedMember => {
-                                backend.checkout_commit(&member_root, commit)?;
-                            }
-                            Err(error) => return Err(error),
-                        }
-                    }
-                    _ => {
-                        backend.checkout_commit(&member_root, commit)?;
-                    }
-                }
-            }
-            emitter.member_finished(&plan.member_id, &plan.state.path);
-            // F1: record the OBSERVED post-mutation state (re-read head/status),
-            // not the planned target — materialize detaches HEAD at the commit, so
-            // the planned branch/detached flags would misdescribe the worktree.
+            // Look up the manifest member first: its fetch remote drives the
+            // tracking-branch checkout below, and its identity labels the observed
+            // state recorded afterward.
             let member = manifest
                 .members
                 .iter()
                 .find(|member| member.id == plan.member_id)
                 .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
+            match &plan.state.branch {
+                Some(branch) if plan.state.detached != Some(true) => {
+                    // AD3(c): the member tracks `branch` (detached:false). Pick the checkout
+                    // target by intent:
+                    //   - follow_branch_head (lock / clone): attach at the branch's UPSTREAM
+                    //     HEAD — the live tip. The lock `commit` is an observation that may
+                    //     lag the branch (a stale lock), so honoring it would detach; honoring
+                    //     the branch is what makes `clone` land on the branch like git does.
+                    //   - else (snapshot / tag): pin the recorded `commit` exactly so the
+                    //     captured point stays reproducible.
+                    // Fall back to the lock commit when no upstream ref resolves (e.g. a
+                    // local-only branch with no remote).
+                    let target = if follow_branch_head {
+                        let fetch_remote = member
+                            .remotes
+                            .iter()
+                            .find(|remote| remote.fetch)
+                            .map(|remote| remote.name.as_str())
+                            .unwrap_or("origin");
+                        match backend.read_ref(&member_root, &format!("{fetch_remote}/{branch}"))? {
+                            Some(head) => Some(head),
+                            None => plan.state.commit.clone(),
+                        }
+                    } else {
+                        plan.state.commit.clone()
+                    };
+                    if let Some(target) = target {
+                        // AD3(c) orphan-safety: attach the branch at the target when safe
+                        // (creatable or already there). If the LOCAL branch has diverged —
+                        // unpushed work not at the target — DETACH at the target rather than
+                        // reset it, never orphaning that work.
+                        match backend.checkout_branch(&member_root, branch, &target) {
+                            Ok(_) => {}
+                            Err(error) if error.code == ErrorCode::DivergedMember => {
+                                backend.checkout_commit(&member_root, &target)?;
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                }
+                // detached:true or no branch → pinned: reproduce the exact lock commit.
+                _ => {
+                    if let Some(commit) = &plan.state.commit {
+                        backend.checkout_commit(&member_root, commit)?;
+                    }
+                }
+            }
+            emitter.member_finished(&plan.member_id, &plan.state.path);
+            // F1: record the OBSERVED post-mutation state (re-read head/status), not the
+            // planned target — the worktree may attach to the branch head or detach, so the
+            // planned branch/detached flags would misdescribe it.
             let head = backend.head(&member_root)?;
             let status = backend.status(&member_root)?;
             let observed = resolved_member(member, &head, &status);
@@ -477,12 +511,14 @@ where
     assert_workspace_id(&manifest, materialize.meta.workspace.as_ref())?;
     let (plans, rewrite_lock) =
         prepare_materialize_execution(backend, &target_path, &manifest, &materialize)?;
+    // Clone materializes the lock target: detached:false members land on their branch head.
     let response = apply_materialize_plans(
         backend,
         &target_path,
         &manifest,
         plans,
         rewrite_lock,
+        true,
         materialize.meta.policy.as_ref(),
         context,
         emitter,
