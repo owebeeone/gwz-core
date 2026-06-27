@@ -46,7 +46,7 @@ where
     }
 
     // Commit members first; skip any with nothing to commit (never an empty commit).
-    let mut committed_any = false;
+    let mut committed_member = false;
     for member_id in &selected {
         let member = manifest
             .members
@@ -62,38 +62,58 @@ where
         };
         if has_changes {
             backend.commit(&member_root, &request.message, all)?;
-            committed_any = true;
+            committed_member = true;
+        }
+    }
+
+    if committed_member {
+        // Observe → re-lock from the post-commit member HEADs (the capture machinery).
+        let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
+        let mut next = read_lock_or_empty(&root, &manifest.workspace.id)?;
+        for (member_id, state) in &members {
+            next.members.insert(member_id.clone(), state.clone());
+        }
+        next.created_at = now_marker();
+        artifact::write_lock(&root, &next)?;
+
+        // Refresh the boundary excludes + stage gwz.conf so the lock update (the
+        // post-commit member HEADs) lands in the root commit.
+        sync_workspace_boundary(backend, &root, &next)?;
+    }
+
+    // Commit the root last. This covers both the lock update from member commits
+    // and ordinary root-only staged changes.
+    let mut committed_root = false;
+    if backend.is_repository(&root)? {
+        let root_status = backend.status(&root)?;
+        let has_root_changes = if all {
+            root_status.staged > 0 || root_status.unstaged > 0
+        } else {
+            root_status.staged > 0
+        };
+        if has_root_changes {
+            backend.commit(&root, &request.message, all)?;
+            committed_root = true;
         }
     }
 
     // C5: nothing was commit-able anywhere — success, no mutation.
-    if !committed_any {
+    if !committed_member && !committed_root {
         return Ok(crate::CommitResponse {
             response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
         });
-    }
-
-    // Observe → re-lock from the post-commit member HEADs (the capture machinery).
-    let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
-    let mut next = read_lock_or_empty(&root, &manifest.workspace.id)?;
-    for (member_id, state) in &members {
-        next.members.insert(member_id.clone(), state.clone());
-    }
-    next.created_at = now_marker();
-    artifact::write_lock(&root, &next)?;
-
-    // Refresh the boundary excludes + stage gwz.conf, then commit the root LAST so the
-    // lock update (the post-commit member HEADs) lands in one root commit.
-    sync_workspace_boundary(backend, &root, &next)?;
-    if backend.is_repository(&root)? && backend.status(&root)?.staged > 0 {
-        backend.commit(&root, &request.message, false)?;
     }
 
     Ok(crate::CommitResponse {
         response: response_envelope(
             context,
             crate::AggregateStatus::Ok,
-            locked_member_responses(&manifest, &members),
+            if committed_member {
+                let next = artifact::read_lock(&root)?;
+                locked_member_responses(&manifest, &next.members)
+            } else {
+                Vec::new()
+            },
         ),
     })
 }

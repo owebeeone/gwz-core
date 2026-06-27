@@ -91,13 +91,71 @@ fn commit_fans_out_to_members_then_commits_root_last() {
 }
 
 #[test]
+fn commit_commits_root_only_staged_changes() {
+    let temp = TempDir::new("commit-root-only");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "commit-root-only-source");
+    set_identity(temp.path());
+
+    fs::create_dir_all(temp.path().join("dev-docs")).unwrap();
+    fs::write(
+        temp.path().join("dev-docs/ContractManifest.md"),
+        "# Contract Manifest\n",
+    )
+    .unwrap();
+    backend
+        .stage_paths(temp.path(), &["dev-docs/ContractManifest.md"])
+        .unwrap();
+    let before = backend.head(temp.path()).unwrap().commit;
+
+    let response = handle_commit(
+        &backend,
+        temp.path(),
+        commit_request(),
+        "op_commit_root_only",
+    )
+    .unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert!(
+        response.response.members.is_empty(),
+        "root-only commit should not report member commits"
+    );
+
+    let after = backend.head(temp.path()).unwrap().commit;
+    assert_ne!(before, after, "root HEAD advanced");
+    assert!(
+        !backend.status(temp.path()).unwrap().is_dirty,
+        "root is clean after root-only commit"
+    );
+
+    let repo = git2::Repository::open(temp.path()).unwrap();
+    assert!(
+        repo.revparse_single("HEAD:dev-docs/ContractManifest.md")
+            .is_ok(),
+        "root-only staged file was committed"
+    );
+}
+
+#[test]
 fn commit_with_nothing_to_commit_is_a_success_noop() {
     let temp = TempDir::new("commit-noop");
     let backend = Git2Backend::new();
     let _fixture = init_one_member_workspace(temp.path(), &backend, "commit-noop-source");
     set_identity(temp.path());
 
-    // No changes anywhere → success, nothing committed; the root HEAD stays unborn.
+    // First commit the workspace metadata staged by init so the root is clean.
+    handle_commit(&backend, temp.path(), commit_request(), "op_commit_initial").unwrap();
+    let before = backend.head(temp.path()).unwrap().commit;
+    assert!(before.is_some(), "initial root metadata was committed");
+    assert!(
+        !backend.status(temp.path()).unwrap().is_dirty,
+        "root is clean before noop commit"
+    );
+
+    // No changes anywhere → success, nothing committed; the root HEAD stays put.
     let response =
         handle_commit(&backend, temp.path(), commit_request(), "op_commit_noop").unwrap();
     assert_eq!(
@@ -107,7 +165,7 @@ fn commit_with_nothing_to_commit_is_a_success_noop() {
     assert!(response.response.members.is_empty(), "no members committed");
     assert_eq!(
         backend.head(temp.path()).unwrap().commit,
-        None,
-        "root not committed"
+        before,
+        "root not committed again"
     );
 }
