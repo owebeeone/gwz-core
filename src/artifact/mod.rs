@@ -359,7 +359,8 @@ fn stage_durably(path: &Path, contents: &str) -> ModelResult<PathBuf> {
 /// Publish a staged temp to `path` (atomic rename) and best-effort fsync the directory so
 /// the rename entry itself survives a crash.
 fn publish_staged(tmp_path: &Path, path: &Path) -> ModelResult<()> {
-    if let Err(err) = fs::rename(tmp_path, path).map_err(io_error) {
+    if let Err(err) = publish_staged_with_windows_replace_fallback(tmp_path, path).map_err(io_error)
+    {
         let _ = fs::remove_file(tmp_path);
         return Err(err);
     }
@@ -369,6 +370,43 @@ fn publish_staged(tmp_path: &Path, path: &Path) -> ModelResult<()> {
         let _ = dir.sync_all();
     }
     Ok(())
+}
+
+fn publish_staged_with_windows_replace_fallback(
+    tmp_path: &Path,
+    path: &Path,
+) -> std::io::Result<()> {
+    publish_staged_with_ops(
+        tmp_path,
+        path,
+        |src, dest| fs::rename(src, dest),
+        |target| fs::remove_file(target),
+    )
+}
+
+fn publish_staged_with_ops<Rename, Remove>(
+    tmp_path: &Path,
+    path: &Path,
+    mut rename: Rename,
+    mut remove: Remove,
+) -> std::io::Result<()>
+where
+    Rename: FnMut(&Path, &Path) -> std::io::Result<()>,
+    Remove: FnMut(&Path) -> std::io::Result<()>,
+{
+    match rename(tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
+            match remove(path) {
+                Ok(()) => rename(tmp_path, path),
+                Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => {
+                    rename(tmp_path, path)
+                }
+                Err(remove_error) => Err(remove_error),
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_yaml<T>(text: &str) -> ModelResult<T>
@@ -530,6 +568,7 @@ fn io_error(err: io::Error) -> ModelError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -772,6 +811,113 @@ mod tests {
             leftovers.is_empty(),
             "temp files left behind: {leftovers:?}"
         );
+    }
+
+    #[test]
+    fn publish_staged_retry_logic_matches_platform_behavior() {
+        let rename_calls = Cell::new(0);
+        let remove_calls = Cell::new(0);
+
+        let result = publish_staged_with_ops(
+            Path::new("tmp"),
+            Path::new("dest"),
+            |_, _| {
+                rename_calls.set(rename_calls.get() + 1);
+                match rename_calls.get() {
+                    1 => Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "denied",
+                    )),
+                    2 => Ok(()),
+                    _ => unreachable!("rename called too many times"),
+                }
+            },
+            |_| {
+                remove_calls.set(remove_calls.get() + 1);
+                Ok(())
+            },
+        );
+
+        if cfg!(windows) {
+            assert!(result.is_ok());
+            assert_eq!(rename_calls.get(), 2);
+            assert_eq!(remove_calls.get(), 1);
+        } else {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(rename_calls.get(), 1);
+            assert_eq!(remove_calls.get(), 0);
+        }
+    }
+
+    #[test]
+    fn publish_staged_retry_handles_not_found_race_on_remove() {
+        let rename_calls = Cell::new(0);
+        let remove_calls = Cell::new(0);
+
+        let result = publish_staged_with_ops(
+            Path::new("tmp"),
+            Path::new("dest"),
+            |_, _| {
+                rename_calls.set(rename_calls.get() + 1);
+                match rename_calls.get() {
+                    1 => Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "denied",
+                    )),
+                    2 => Ok(()),
+                    _ => unreachable!("rename called too many times"),
+                }
+            },
+            |_| {
+                remove_calls.set(remove_calls.get() + 1);
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"))
+            },
+        );
+
+        if cfg!(windows) {
+            assert!(result.is_ok());
+            assert_eq!(rename_calls.get(), 2);
+            assert_eq!(remove_calls.get(), 1);
+        } else {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(rename_calls.get(), 1);
+            assert_eq!(remove_calls.get(), 0);
+        }
+    }
+
+    #[test]
+    fn publish_staged_propagates_non_permission_errors_without_remove() {
+        let rename_calls = Cell::new(0);
+        let remove_calls = Cell::new(0);
+
+        let result = publish_staged_with_ops(
+            Path::new("tmp"),
+            Path::new("dest"),
+            |_, _| {
+                rename_calls.set(rename_calls.get() + 1);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "exists",
+                ))
+            },
+            |_| {
+                remove_calls.set(remove_calls.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(rename_calls.get(), 1);
+        assert_eq!(remove_calls.get(), 0);
     }
 
     struct TempDir {
