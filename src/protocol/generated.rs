@@ -25,6 +25,7 @@ pub enum ActionKind {
     Branch,
     CloneWorkspace,
     ListSnapshots,
+    Diff,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -49,6 +50,7 @@ impl ActionKind {
         Self::Branch => 18,
         Self::CloneWorkspace => 19,
         Self::ListSnapshots => 20,
+        Self::Diff => 21,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::CreateWorkspace,
@@ -72,6 +74,7 @@ impl ActionKind {
         18 => Self::Branch,
         19 => Self::CloneWorkspace,
         20 => Self::ListSnapshots,
+        21 => Self::Diff,
         _ => panic!("bad ActionKind wire value {}", v),
     } }
 }
@@ -833,6 +836,234 @@ impl GwzErrorCode {
         34 => Self::StashIncomplete,
         35 => Self::StashConflict,
         _ => panic!("bad GwzErrorCode wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffComparisonKind {
+    #[default] WorktreeVsIndex,
+    IndexVsTree,
+    WorktreeVsTree,
+    TreeVsTree,
+}
+impl DiffComparisonKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::WorktreeVsIndex => 0,
+        Self::IndexVsTree => 1,
+        Self::WorktreeVsTree => 2,
+        Self::TreeVsTree => 3,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::WorktreeVsIndex,
+        1 => Self::IndexVsTree,
+        2 => Self::WorktreeVsTree,
+        3 => Self::TreeVsTree,
+        _ => panic!("bad DiffComparisonKind wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffOutputFormat {
+    #[default] Patch,
+    Raw,
+    NameOnly,
+    NameStatus,
+    Stat,
+    Numstat,
+    Shortstat,
+    Summary,
+    PatchWithRaw,
+    PatchWithStat,
+    NoPatch,
+}
+impl DiffOutputFormat {
+    pub fn wire(self) -> i64 { match self {
+        Self::Patch => 0,
+        Self::Raw => 1,
+        Self::NameOnly => 2,
+        Self::NameStatus => 3,
+        Self::Stat => 4,
+        Self::Numstat => 5,
+        Self::Shortstat => 6,
+        Self::Summary => 7,
+        Self::PatchWithRaw => 8,
+        Self::PatchWithStat => 9,
+        Self::NoPatch => 10,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::Patch,
+        1 => Self::Raw,
+        2 => Self::NameOnly,
+        3 => Self::NameStatus,
+        4 => Self::Stat,
+        5 => Self::Numstat,
+        6 => Self::Shortstat,
+        7 => Self::Summary,
+        8 => Self::PatchWithRaw,
+        9 => Self::PatchWithStat,
+        10 => Self::NoPatch,
+        _ => panic!("bad DiffOutputFormat wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffManifestMode {
+    #[default] Full,
+    AnyDifference,
+}
+impl DiffManifestMode {
+    pub fn wire(self) -> i64 { match self {
+        Self::Full => 0,
+        Self::AnyDifference => 1,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::Full,
+        1 => Self::AnyDifference,
+        _ => panic!("bad DiffManifestMode wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffAlgorithm {
+    #[default] Default,
+    Myers,
+    Minimal,
+    Patience,
+}
+impl DiffAlgorithm {
+    pub fn wire(self) -> i64 { match self {
+        Self::Default => 0,
+        Self::Myers => 1,
+        Self::Minimal => 2,
+        Self::Patience => 3,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::Default,
+        1 => Self::Myers,
+        2 => Self::Minimal,
+        3 => Self::Patience,
+        _ => panic!("bad DiffAlgorithm wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffWhitespaceMode {
+    #[default] Default,
+    IgnoreAll,
+    IgnoreChange,
+    IgnoreEol,
+    IgnoreBlankLines,
+}
+impl DiffWhitespaceMode {
+    pub fn wire(self) -> i64 { match self {
+        Self::Default => 0,
+        Self::IgnoreAll => 1,
+        Self::IgnoreChange => 2,
+        Self::IgnoreEol => 3,
+        Self::IgnoreBlankLines => 4,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::Default,
+        1 => Self::IgnoreAll,
+        2 => Self::IgnoreChange,
+        3 => Self::IgnoreEol,
+        4 => Self::IgnoreBlankLines,
+        _ => panic!("bad DiffWhitespaceMode wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffStatus {
+    #[default] Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Unmerged,
+}
+impl DiffStatus {
+    pub fn wire(self) -> i64 { match self {
+        Self::Added => 0,
+        Self::Modified => 1,
+        Self::Deleted => 2,
+        Self::Renamed => 3,
+        Self::Copied => 4,
+        Self::TypeChanged => 5,
+        Self::Unmerged => 6,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::Added,
+        1 => Self::Modified,
+        2 => Self::Deleted,
+        3 => Self::Renamed,
+        4 => Self::Copied,
+        5 => Self::TypeChanged,
+        6 => Self::Unmerged,
+        _ => panic!("bad DiffStatus wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffChunkEncoding {
+    #[default] Utf8,
+    Bytes,
+}
+impl DiffChunkEncoding {
+    pub fn wire(self) -> i64 { match self {
+        Self::Utf8 => 0,
+        Self::Bytes => 1,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::Utf8,
+        1 => Self::Bytes,
+        _ => panic!("bad DiffChunkEncoding wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffOutputRecordKind {
+    #[default] PatchBytes,
+    FileStarted,
+    FileFinished,
+    StaleFile,
+    Diagnostic,
+}
+impl DiffOutputRecordKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::PatchBytes => 0,
+        Self::FileStarted => 1,
+        Self::FileFinished => 2,
+        Self::StaleFile => 3,
+        Self::Diagnostic => 4,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::PatchBytes,
+        1 => Self::FileStarted,
+        2 => Self::FileFinished,
+        3 => Self::StaleFile,
+        4 => Self::Diagnostic,
+        _ => panic!("bad DiffOutputRecordKind wire value {}", v),
+    } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum DiffTargetExclusionReason {
+    #[default] SnapshotMissing,
+    SnapshotMissingCommit,
+    RootNotInSnapshot,
+}
+impl DiffTargetExclusionReason {
+    pub fn wire(self) -> i64 { match self {
+        Self::SnapshotMissing => 0,
+        Self::SnapshotMissingCommit => 1,
+        Self::RootNotInSnapshot => 2,
+    } }
+    pub fn from_wire(v: i64) -> Self { match v {
+        0 => Self::SnapshotMissing,
+        1 => Self::SnapshotMissingCommit,
+        2 => Self::RootNotInSnapshot,
+        _ => panic!("bad DiffTargetExclusionReason wire value {}", v),
     } }
 }
 
@@ -3053,6 +3284,447 @@ impl BranchResponse {
         Self {
             response: ResponseEnvelope::from_cbor(c.get(1)),
             repos: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| BranchRepoSummary::from_cbor(x)).collect()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffComparison {
+    pub kind: DiffComparisonKind,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub merge_base: Option<bool>,
+}
+impl DiffComparison {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, match &self.left { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, match &self.right { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.merge_base { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            kind: DiffComparisonKind::from_wire(c.get(1).int()),
+            left: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
+            right: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
+            merge_base: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffOptions {
+    pub output_format: Option<DiffOutputFormat>,
+    pub context_lines: Option<i64>,
+    pub interhunk_lines: Option<i64>,
+    pub algorithm: Option<DiffAlgorithm>,
+    pub whitespace: Option<DiffWhitespaceMode>,
+    pub find_renames: Option<bool>,
+    pub find_copies: Option<bool>,
+    pub rename_threshold: Option<i64>,
+    pub rename_limit: Option<i64>,
+    pub binary: Option<bool>,
+    pub text: Option<bool>,
+    pub full_index: Option<bool>,
+    pub abbrev: Option<i64>,
+    pub reverse: Option<bool>,
+    pub null_terminated: Option<bool>,
+    pub src_prefix: Option<String>,
+    pub dst_prefix: Option<String>,
+    pub no_prefix: Option<bool>,
+    pub line_prefix: Option<String>,
+    pub ignore_submodules: Option<String>,
+    pub diff_filter: Option<String>,
+    pub manifest_mode: Option<DiffManifestMode>,
+    pub echo_manifest_entries: Option<bool>,
+}
+impl DiffOptions {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, match &self.output_format { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (2, match &self.context_lines { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (3, match &self.interhunk_lines { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (4, match &self.algorithm { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (5, match &self.whitespace { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (6, match &self.find_renames { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (7, match &self.find_copies { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (8, match &self.rename_threshold { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (9, match &self.rename_limit { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (10, match &self.binary { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (11, match &self.text { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (12, match &self.full_index { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (13, match &self.abbrev { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (14, match &self.reverse { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (15, match &self.null_terminated { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (16, match &self.src_prefix { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (17, match &self.dst_prefix { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (18, match &self.no_prefix { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (19, match &self.line_prefix { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (20, match &self.ignore_submodules { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (21, match &self.diff_filter { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (22, match &self.manifest_mode { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (23, match &self.echo_manifest_entries { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            output_format: { let v = c.get(1); if v.is_null() { None } else { Some(DiffOutputFormat::from_wire(v.int())) } },
+            context_lines: { let v = c.get(2); if v.is_null() { None } else { Some(v.int()) } },
+            interhunk_lines: { let v = c.get(3); if v.is_null() { None } else { Some(v.int()) } },
+            algorithm: { let v = c.get(4); if v.is_null() { None } else { Some(DiffAlgorithm::from_wire(v.int())) } },
+            whitespace: { let v = c.get(5); if v.is_null() { None } else { Some(DiffWhitespaceMode::from_wire(v.int())) } },
+            find_renames: { let v = c.get(6); if v.is_null() { None } else { Some(v.boolean()) } },
+            find_copies: { let v = c.get(7); if v.is_null() { None } else { Some(v.boolean()) } },
+            rename_threshold: { let v = c.get(8); if v.is_null() { None } else { Some(v.int()) } },
+            rename_limit: { let v = c.get(9); if v.is_null() { None } else { Some(v.int()) } },
+            binary: { let v = c.get(10); if v.is_null() { None } else { Some(v.boolean()) } },
+            text: { let v = c.get(11); if v.is_null() { None } else { Some(v.boolean()) } },
+            full_index: { let v = c.get(12); if v.is_null() { None } else { Some(v.boolean()) } },
+            abbrev: { let v = c.get(13); if v.is_null() { None } else { Some(v.int()) } },
+            reverse: { let v = c.get(14); if v.is_null() { None } else { Some(v.boolean()) } },
+            null_terminated: { let v = c.get(15); if v.is_null() { None } else { Some(v.boolean()) } },
+            src_prefix: { let v = c.get(16); if v.is_null() { None } else { Some(v.text()) } },
+            dst_prefix: { let v = c.get(17); if v.is_null() { None } else { Some(v.text()) } },
+            no_prefix: { let v = c.get(18); if v.is_null() { None } else { Some(v.boolean()) } },
+            line_prefix: { let v = c.get(19); if v.is_null() { None } else { Some(v.text()) } },
+            ignore_submodules: { let v = c.get(20); if v.is_null() { None } else { Some(v.text()) } },
+            diff_filter: { let v = c.get(21); if v.is_null() { None } else { Some(v.text()) } },
+            manifest_mode: { let v = c.get(22); if v.is_null() { None } else { Some(DiffManifestMode::from_wire(v.int())) } },
+            echo_manifest_entries: { let v = c.get(23); if v.is_null() { None } else { Some(v.boolean()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffRequest {
+    pub meta: RequestMeta,
+    pub workspace_cwd: Option<String>,
+    pub operands: Vec<String>,
+    pub explicit_pathspecs: Vec<String>,
+    pub options: Option<DiffOptions>,
+    pub cached: Option<bool>,
+    pub merge_base: Option<bool>,
+}
+impl DiffRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+            (2, match &self.workspace_cwd { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, Cbor::Array(self.operands.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (4, Cbor::Array(self.explicit_pathspecs.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (5, match &self.options { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (6, match &self.cached { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (7, match &self.merge_base { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            meta: RequestMeta::from_cbor(c.get(1)),
+            workspace_cwd: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
+            operands: c.get(3).array().iter().map(|x| x.text()).collect(),
+            explicit_pathspecs: c.get(4).array().iter().map(|x| x.text()).collect(),
+            options: { let v = c.get(5); if v.is_null() { None } else { Some(DiffOptions::from_cbor(v)) } },
+            cached: { let v = c.get(6); if v.is_null() { None } else { Some(v.boolean()) } },
+            merge_base: { let v = c.get(7); if v.is_null() { None } else { Some(v.boolean()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffRepoScope {
+    pub root: Option<bool>,
+    pub member_id: Option<String>,
+    pub member_path: Option<String>,
+    pub source_kind: Option<SourceKind>,
+}
+impl DiffRepoScope {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, match &self.root { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (2, match &self.member_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, match &self.member_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.source_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            root: { let v = c.get(1); if v.is_null() { None } else { Some(v.boolean()) } },
+            member_id: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
+            member_path: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
+            source_kind: { let v = c.get(4); if v.is_null() { None } else { Some(SourceKind::from_wire(v.int())) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffExcludedTarget {
+    pub scope: DiffRepoScope,
+    pub reason: DiffTargetExclusionReason,
+    pub snapshot_id: Option<String>,
+    pub message: Option<String>,
+}
+impl DiffExcludedTarget {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.scope.to_cbor()),
+            (2, Cbor::Int(self.reason.wire())),
+            (3, match &self.snapshot_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            scope: DiffRepoScope::from_cbor(c.get(1)),
+            reason: DiffTargetExclusionReason::from_wire(c.get(2).int()),
+            snapshot_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
+            message: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffParsedTarget {
+    pub target_id: String,
+    pub scope: DiffRepoScope,
+    pub comparison: DiffComparison,
+    pub pathspecs: Vec<String>,
+    pub left_oid: Option<String>,
+    pub right_oid: Option<String>,
+    pub merge_base_oid: Option<String>,
+    pub left_snapshot_id: Option<String>,
+    pub right_snapshot_id: Option<String>,
+}
+impl DiffParsedTarget {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.target_id.clone())),
+            (2, self.scope.to_cbor()),
+            (3, self.comparison.to_cbor()),
+            (4, Cbor::Array(self.pathspecs.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (5, match &self.left_oid { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.right_oid { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (7, match &self.merge_base_oid { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (8, match &self.left_snapshot_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (9, match &self.right_snapshot_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            target_id: c.get(1).text(),
+            scope: DiffRepoScope::from_cbor(c.get(2)),
+            comparison: DiffComparison::from_cbor(c.get(3)),
+            pathspecs: c.get(4).array().iter().map(|x| x.text()).collect(),
+            left_oid: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
+            right_oid: { let v = c.get(6); if v.is_null() { None } else { Some(v.text()) } },
+            merge_base_oid: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
+            left_snapshot_id: { let v = c.get(8); if v.is_null() { None } else { Some(v.text()) } },
+            right_snapshot_id: { let v = c.get(9); if v.is_null() { None } else { Some(v.text()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffFileEntry {
+    pub file_id: String,
+    pub scope: DiffRepoScope,
+    pub status: DiffStatus,
+    pub old_path: Option<String>,
+    pub new_path: Option<String>,
+    pub old_mode: Option<i64>,
+    pub new_mode: Option<i64>,
+    pub similarity: Option<i64>,
+    pub insertions: Option<i64>,
+    pub deletions: Option<i64>,
+    pub is_binary: Option<bool>,
+}
+impl DiffFileEntry {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.file_id.clone())),
+            (2, self.scope.to_cbor()),
+            (3, Cbor::Int(self.status.wire())),
+            (4, match &self.old_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, match &self.new_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.old_mode { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (7, match &self.new_mode { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (8, match &self.similarity { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (9, match &self.insertions { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (10, match &self.deletions { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (11, match &self.is_binary { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            file_id: c.get(1).text(),
+            scope: DiffRepoScope::from_cbor(c.get(2)),
+            status: DiffStatus::from_wire(c.get(3).int()),
+            old_path: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
+            new_path: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
+            old_mode: { let v = c.get(6); if v.is_null() { None } else { Some(v.int()) } },
+            new_mode: { let v = c.get(7); if v.is_null() { None } else { Some(v.int()) } },
+            similarity: { let v = c.get(8); if v.is_null() { None } else { Some(v.int()) } },
+            insertions: { let v = c.get(9); if v.is_null() { None } else { Some(v.int()) } },
+            deletions: { let v = c.get(10); if v.is_null() { None } else { Some(v.int()) } },
+            is_binary: { let v = c.get(11); if v.is_null() { None } else { Some(v.boolean()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffRepoSummary {
+    pub scope: DiffRepoScope,
+    pub has_differences: bool,
+    pub files_changed: i64,
+    pub insertions: i64,
+    pub deletions: i64,
+    pub files_manifested: i64,
+}
+impl DiffRepoSummary {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.scope.to_cbor()),
+            (2, Cbor::Bool(self.has_differences)),
+            (3, Cbor::Int(self.files_changed)),
+            (4, Cbor::Int(self.insertions)),
+            (5, Cbor::Int(self.deletions)),
+            (6, Cbor::Int(self.files_manifested)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            scope: DiffRepoScope::from_cbor(c.get(1)),
+            has_differences: c.get(2).boolean(),
+            files_changed: c.get(3).int(),
+            insertions: c.get(4).int(),
+            deletions: c.get(5).int(),
+            files_manifested: c.get(6).int(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffSummary {
+    pub has_differences: bool,
+    pub repos_examined: i64,
+    pub repos_with_differences: i64,
+    pub files_changed: i64,
+    pub insertions: i64,
+    pub deletions: i64,
+    pub repo_summaries: Vec<DiffRepoSummary>,
+}
+impl DiffSummary {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Bool(self.has_differences)),
+            (2, Cbor::Int(self.repos_examined)),
+            (3, Cbor::Int(self.repos_with_differences)),
+            (4, Cbor::Int(self.files_changed)),
+            (5, Cbor::Int(self.insertions)),
+            (6, Cbor::Int(self.deletions)),
+            (7, Cbor::Array(self.repo_summaries.iter().map(|x| x.to_cbor()).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            has_differences: c.get(1).boolean(),
+            repos_examined: c.get(2).int(),
+            repos_with_differences: c.get(3).int(),
+            files_changed: c.get(4).int(),
+            insertions: c.get(5).int(),
+            deletions: c.get(6).int(),
+            repo_summaries: c.get(7).array().iter().map(|x| DiffRepoSummary::from_cbor(x)).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffOutputLogRef {
+    pub log_id: String,
+    pub format: DiffOutputFormat,
+    pub encoding: Option<DiffChunkEncoding>,
+}
+impl DiffOutputLogRef {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.log_id.clone())),
+            (2, Cbor::Int(self.format.wire())),
+            (3, match &self.encoding { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            log_id: c.get(1).text(),
+            format: DiffOutputFormat::from_wire(c.get(2).int()),
+            encoding: { let v = c.get(3); if v.is_null() { None } else { Some(DiffChunkEncoding::from_wire(v.int())) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffManifestResponse {
+    pub response: ResponseEnvelope,
+    pub files: Vec<DiffFileEntry>,
+    pub summary: Option<DiffSummary>,
+    pub targets: Vec<DiffParsedTarget>,
+    pub output: Option<DiffOutputLogRef>,
+    pub excluded_targets: Vec<DiffExcludedTarget>,
+}
+impl DiffManifestResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+            (2, Cbor::Array(self.files.iter().map(|x| x.to_cbor()).collect())),
+            (3, match &self.summary { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (4, Cbor::Array(self.targets.iter().map(|x| x.to_cbor()).collect())),
+            (5, match &self.output { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (6, Cbor::Array(self.excluded_targets.iter().map(|x| x.to_cbor()).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            response: ResponseEnvelope::from_cbor(c.get(1)),
+            files: c.get(2).array().iter().map(|x| DiffFileEntry::from_cbor(x)).collect(),
+            summary: { let v = c.get(3); if v.is_null() { None } else { Some(DiffSummary::from_cbor(v)) } },
+            targets: c.get(4).array().iter().map(|x| DiffParsedTarget::from_cbor(x)).collect(),
+            output: { let v = c.get(5); if v.is_null() { None } else { Some(DiffOutputLogRef::from_cbor(v)) } },
+            excluded_targets: c.get(6).array().iter().map(|x| DiffExcludedTarget::from_cbor(x)).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DiffOutputRecord {
+    pub kind: DiffOutputRecordKind,
+    pub scope: Option<DiffRepoScope>,
+    pub file_id: Option<String>,
+    pub entry: Option<DiffFileEntry>,
+    pub data: Option<Vec<u8>>,
+    pub stale: Option<bool>,
+    pub diagnostic: Option<String>,
+}
+impl DiffOutputRecord {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, match &self.scope { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (3, match &self.file_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.entry { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (5, match &self.data { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
+            (6, match &self.stale { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (7, match &self.diagnostic { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            kind: DiffOutputRecordKind::from_wire(c.get(1).int()),
+            scope: { let v = c.get(2); if v.is_null() { None } else { Some(DiffRepoScope::from_cbor(v)) } },
+            file_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
+            entry: { let v = c.get(4); if v.is_null() { None } else { Some(DiffFileEntry::from_cbor(v)) } },
+            data: { let v = c.get(5); if v.is_null() { None } else { Some(v.bytes()) } },
+            stale: { let v = c.get(6); if v.is_null() { None } else { Some(v.boolean()) } },
+            diagnostic: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
         }
     }
 }

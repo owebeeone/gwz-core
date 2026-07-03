@@ -92,7 +92,24 @@ SCHEMA = schema(
         # Read the final operation result by operation id.
         method("operation.result", role="out",
                params=Params(operation_id=STR),
-               out=Ref.OperationResult)),
+               out=Ref.OperationResult),
+        # Plan the workspace diff: resolve targets/operands/pathspecs per repo and
+        # return a changed-file manifest, aggregate + per-repo summary, scoped
+        # operand classification (DiffParsedTarget), intentionally excluded
+        # targets, and — unless the requested mode has no byte output — a
+        # DiffOutputLogRef handle to the diff.output log.
+        method("diff", role="in",
+               params=Params(request=Ref.DiffRequest),
+               out=Ref.DiffManifestResponse),
+        # Read exact diff output records. shape="log": the append type is
+        # DiffOutputRecord, delivered as the payload of the generic taut-shape
+        # LogRecord. log_id comes from DiffManifestResponse.output.log_id.
+        # Cursor/tail/EOF/close/backpressure/retention are the shape_log contract
+        # — NOT fields here; params is only the log_id handle, mirroring the
+        # events.subscribe shape="log" precedent above (operation_id only).
+        method("diff.output", role="out", shape="log",
+               params=Params(log_id=STR),
+               out=Ref.DiffOutputRecord)),
 
     # ---- enums ------------------------------------------------------------
     # Operation action inferred from request type.
@@ -117,7 +134,8 @@ SCHEMA = schema(
          stash=17,
          branch=18,
          clone_workspace=19,
-         list_snapshots=20),
+         list_snapshots=20,
+         diff=21),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -354,6 +372,108 @@ SCHEMA = schema(
          stash_not_found=33,
          stash_incomplete=34,
          stash_conflict=35),
+
+    # ---- diff enums -------------------------------------------------------
+    # Which two sides libgit2 compares, resolved per target repo from operands
+    # and the cached/merge_base request flags.
+    DiffComparisonKind=Enum(
+         # git diff: index -> worktree (diff_index_to_workdir).
+         worktree_vs_index=0,
+         # git diff --cached [<commit>]: tree -> index (diff_tree_to_index).
+         index_vs_tree=1,
+         # git diff <commit>: tree -> worktree, index data for staged deletes
+         # (diff_tree_to_workdir_with_index).
+         worktree_vs_tree=2,
+         # git diff <a> <b> / <a>..<b> / <a>...<b>: tree -> tree
+         # (diff_tree_to_tree).
+         tree_vs_tree=3),
+
+    # Requested rendering of the diff. Metadata-only forms are answered from the
+    # manifest with no diff.output read (name_only..summary, no_patch); byte
+    # forms are read from diff.output. Histogram is deliberately absent (the
+    # git2 0.21 wrapper has no setter); requesting it is unsupported_operation.
+    DiffOutputFormat=Enum(
+         patch=0,
+         raw=1,
+         name_only=2,
+         name_status=3,
+         stat=4,
+         numstat=5,
+         shortstat=6,
+         summary=7,
+         patch_with_raw=8,
+         patch_with_stat=9,
+         # Manifest/summary only; used by --quiet and JSON metadata modes.
+         no_patch=10),
+
+    # How much manifest work core does. full builds the whole file list + stats;
+    # any_difference backs --quiet: stop at the first delta, skip similarity,
+    # omit files, return only enough summary for the exit-code decision.
+    DiffManifestMode=Enum(
+         full=0,
+         any_difference=1),
+
+    # Diff algorithm. NO histogram in v0 (unsupported by the wrapper). Requesting
+    # an unsupported algorithm is a typed unsupported_operation error, not a
+    # silent downgrade.
+    DiffAlgorithm=Enum(
+         default=0,
+         myers=1,
+         minimal=2,
+         patience=3),
+
+    # Whitespace handling, mapped to libgit2 ignore_whitespace* /
+    # ignore_blank_lines.
+    DiffWhitespaceMode=Enum(
+         default=0,
+         ignore_all=1,
+         ignore_change=2,
+         ignore_eol=3,
+         ignore_blank_lines=4),
+
+    # Per-file change classification. copied is reserved for a later copy
+    # project; v0 never emits it (find_copies=true is rejected) but the value is
+    # defined so the enum need not change when copy support lands.
+    DiffStatus=Enum(
+         added=0,
+         modified=1,
+         deleted=2,
+         renamed=3,
+         copied=4,
+         type_changed=5,
+         unmerged=6),
+
+    # Byte encoding advertised on the output log. utf8 for text-only outputs;
+    # bytes for patch/binary. JSON/JSONL transports base64-expand BYTES, which is
+    # a transport concern, not a schema field.
+    DiffChunkEncoding=Enum(
+         utf8=0,
+         bytes=1),
+
+    # The DiffOutputRecord discriminator. patch_bytes carries data; the boundary
+    # kinds (file_started/file_finished) are ALWAYS emitted, in every output
+    # format, so machine consumers can frame per-file output without parsing patch
+    # text; stale_file marks a worktree race; diagnostic carries a non-fatal
+    # message.
+    DiffOutputRecordKind=Enum(
+         patch_bytes=0,
+         file_started=1,
+         file_finished=2,
+         stale_file=3,
+         diagnostic=4),
+
+    # Why a candidate target was excluded before diff execution (snapshot
+    # narrowing). Reported in DiffManifestResponse.excluded_targets so a member
+    # added after a snapshot was captured is explained rather than silently
+    # dropped.
+    DiffTargetExclusionReason=Enum(
+         # Snapshot operand does not contain this member (commonly: member added
+         # after the snapshot was captured).
+         snapshot_missing=0,
+         # Snapshot contains this member but records no Git commit for it.
+         snapshot_missing_commit=1,
+         # v0 snapshots do not record a workspace-root commit.
+         root_not_in_snapshot=2),
 
 
     # ---- common request/response values ----------------------------------
@@ -1103,4 +1223,212 @@ SCHEMA = schema(
     BranchResponse=Msg(
         response=F(1, Ref.ResponseEnvelope),
         repos=F(2, List(Ref.BranchRepoSummary), optional=True)),
+
+    # ---- diff request messages --------------------------------------------
+    # One resolved comparison for one target repo: kind + resolved endpoints.
+    # left/right are the raw revision tokens as classified for THIS repo; the
+    # resolved object ids live on DiffParsedTarget. merge_base covers both
+    # --merge-base and the A...B form after per-repo operand resolution.
+    DiffComparison=Msg(
+        kind=F(1, Ref.DiffComparisonKind),
+        # Left/old-side revision token, interpreted inside each target repo.
+        left=F(2, STR, optional=True),
+        # Right/new-side revision token, interpreted inside each target repo.
+        right=F(3, STR, optional=True),
+        # Use merge-base(left, HEAD-or-right) as the old side. Set for
+        # --merge-base and for A...B after core lowers the range per repo.
+        merge_base=F(4, BOOL, optional=True)),
+
+    # git2 diff option knobs. All optional; absent = libgit2/GWZ default. These
+    # affect which bytes core emits, so every client must agree on them (they are
+    # protocol, not client-local). Pager/color/exit-code are deliberately NOT
+    # here (core stays headless).
+    DiffOptions=Msg(
+        output_format=F(1, Ref.DiffOutputFormat, optional=True),
+        context_lines=F(2, INT, optional=True),
+        interhunk_lines=F(3, INT, optional=True),
+        algorithm=F(4, Ref.DiffAlgorithm, optional=True),
+        whitespace=F(5, Ref.DiffWhitespaceMode, optional=True),
+        find_renames=F(6, BOOL, optional=True),
+        # Deferred. v0 REJECTS this with unsupported_operation until a copy
+        # project can reproduce copy source sets and render copy headers.
+        find_copies=F(7, BOOL, optional=True),
+        rename_threshold=F(8, INT, optional=True),
+        rename_limit=F(9, INT, optional=True),
+        binary=F(10, BOOL, optional=True),
+        text=F(11, BOOL, optional=True),
+        full_index=F(12, BOOL, optional=True),
+        abbrev=F(13, INT, optional=True),
+        reverse=F(14, BOOL, optional=True),
+        # -z / NUL-terminated name output. Byte fidelity is a diff.output/log
+        # concern; this flag only selects the format.
+        null_terminated=F(15, BOOL, optional=True),
+        src_prefix=F(16, STR, optional=True),
+        dst_prefix=F(17, STR, optional=True),
+        no_prefix=F(18, BOOL, optional=True),
+        line_prefix=F(19, STR, optional=True),
+        ignore_submodules=F(20, STR, optional=True),
+        diff_filter=F(21, STR, optional=True),
+        # full vs any_difference (--quiet). Absent = full.
+        manifest_mode=F(22, Ref.DiffManifestMode, optional=True),
+        # Opt-in echo of each changed file's manifest entry on the matching
+        # DiffOutputRecord (DiffOutputRecord.entry). Absent/false = correlate by
+        # scope+file_id only; true = core populates entry so a streaming consumer
+        # need not hold the whole manifest. Default off to avoid duplicating
+        # manifest bytes on the wire.
+        echo_manifest_entries=F(23, BOOL, optional=True)),
+
+    # The diff planning request. Parsed comparison flags are FIRST-CLASS fields
+    # (cached, merge_base); raw ambiguous operands stay in operands for per-repo
+    # core classification; explicit pathspecs after `--` stay separate.
+    DiffRequest=Msg(
+        meta=F(1, Ref.RequestMeta),
+        # Workspace-relative logical cwd: "", "gwz-core", "gwz-core/src".
+        # Relative path operands resolve against this, NOT a client abspath.
+        workspace_cwd=F(2, STR, optional=True),
+        # Positional tokens before `--`. Core classifies rev-vs-path per target
+        # repo. A token of the form +<snapshot_id> is a GWZ snapshot operand,
+        # resolved by core, never passed to Git.
+        operands=F(3, List(STR)),
+        # Pathspecs after `--`; resolved relative to workspace_cwd. A leading
+        # `+` here is a literal path, never a snapshot operand.
+        explicit_pathspecs=F(4, List(STR)),
+        options=F(5, Ref.DiffOptions, optional=True),
+        # --cached / --staged. Selects index-vs-tree forms. First-class, not an
+        # operand tunnel.
+        cached=F(6, BOOL, optional=True),
+        # --merge-base. First-class. The A...B syntax is still parsed from
+        # operands and lowered to DiffComparison.merge_base per repo.
+        merge_base=F(7, BOOL, optional=True)),
+
+    # ---- diff manifest / summary / output messages ------------------------
+    # Which repo an entry/target/record belongs to. root xor (member_id +
+    # member_path). source_kind reuses the existing SourceKind enum.
+    DiffRepoScope=Msg(
+        # True for the workspace root repository.
+        root=F(1, BOOL, optional=True),
+        member_id=F(2, STR, optional=True),
+        member_path=F(3, STR, optional=True),
+        source_kind=F(4, Ref.SourceKind, optional=True)),
+
+    # A candidate target intentionally excluded before diff execution, with the
+    # reason and (for snapshot narrowing) the snapshot id that caused it.
+    # Required so a member absent from a referenced snapshot is explained, not
+    # dropped.
+    DiffExcludedTarget=Msg(
+        scope=F(1, Ref.DiffRepoScope),
+        reason=F(2, Ref.DiffTargetExclusionReason),
+        # Snapshot operand that caused the exclusion, without the leading `+`.
+        snapshot_id=F(3, STR, optional=True),
+        message=F(4, STR, optional=True)),
+
+    # A scope-addressable, reusable per-repo classification of the request. The
+    # output renderer reuses this by scope/target_id WITHOUT reclassifying raw
+    # operands. Resolved oids are populated where a side has one; worktree sides
+    # omit an oid. Snapshot-derived sides preserve their snapshot ids.
+    DiffParsedTarget=Msg(
+        # Stable within the manifest; scoped to exactly one root/member repo.
+        target_id=F(1, STR),
+        scope=F(2, Ref.DiffRepoScope),
+        # Resolved by core per repository from operands, cached/merge_base, and
+        # pathspecs.
+        comparison=F(3, Ref.DiffComparison),
+        # Repo-relative pathspecs after workspace routing (member prefix
+        # stripped).
+        pathspecs=F(4, List(STR)),
+        # Resolved object ids where available. Worktree sides may omit an oid.
+        left_oid=F(5, STR, optional=True),
+        right_oid=F(6, STR, optional=True),
+        merge_base_oid=F(7, STR, optional=True),
+        # Present when a side came from a GWZ snapshot operand such as +start.
+        left_snapshot_id=F(8, STR, optional=True),
+        right_snapshot_id=F(9, STR, optional=True)),
+
+    # One changed file, workspace-relative. file_id is opaque (never parsed as a
+    # path); scope/status/old_path/new_path are the structured identity. Rename
+    # entries carry BOTH paths + similarity and must not degrade to add/delete.
+    DiffFileEntry=Msg(
+        file_id=F(1, STR),
+        scope=F(2, Ref.DiffRepoScope),
+        status=F(3, Ref.DiffStatus),
+        # Workspace-relative. new_path == old_path except for rename/copy.
+        old_path=F(4, STR, optional=True),
+        new_path=F(5, STR, optional=True),
+        old_mode=F(6, INT, optional=True),
+        new_mode=F(7, INT, optional=True),
+        # 0..100 similarity for rename/copy entries.
+        similarity=F(8, INT, optional=True),
+        insertions=F(9, INT, optional=True),
+        deletions=F(10, INT, optional=True),
+        is_binary=F(11, BOOL, optional=True)),
+
+    # Per-repo rollup. files_changed counts changes before GWZ root/member
+    # filtering where libgit2 reports it cheaply; files_manifested counts entries
+    # actually surfaced after pathspec/selection/root-exclusion filtering.
+    DiffRepoSummary=Msg(
+        scope=F(1, Ref.DiffRepoScope),
+        has_differences=F(2, BOOL),
+        files_changed=F(3, INT),
+        insertions=F(4, INT),
+        deletions=F(5, INT),
+        files_manifested=F(6, INT)),
+
+    # Workspace aggregate. has_differences drives the client --exit-code/--quiet
+    # decision; it is a client contract, not the core aggregate_status.
+    DiffSummary=Msg(
+        has_differences=F(1, BOOL),
+        repos_examined=F(2, INT),
+        repos_with_differences=F(3, INT),
+        files_changed=F(4, INT),
+        insertions=F(5, INT),
+        deletions=F(6, INT),
+        repo_summaries=F(7, List(Ref.DiffRepoSummary))),
+
+    # The opaque handle + advertised shape of the byte output log. log_id is the
+    # taut-shape log handle: holding it is the authority to read diff.output.
+    # format/encoding tell the client what the bytes are. NO cursor/close/max_*
+    # fields — those are the shape_log LogReadRequest surface.
+    DiffOutputLogRef=Msg(
+        log_id=F(1, STR),
+        format=F(2, Ref.DiffOutputFormat),
+        encoding=F(3, Ref.DiffChunkEncoding, optional=True)),
+
+    # The `diff` response. Metadata + manifest + scoped targets + excluded
+    # targets + an optional output-log ref (omitted for no-byte modes). Reuses
+    # the existing ResponseEnvelope (meta/members/errors).
+    DiffManifestResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope),
+        files=F(2, List(Ref.DiffFileEntry)),
+        summary=F(3, Ref.DiffSummary, optional=True),
+        # Scope-addressable per-repo operand classification resolved by core.
+        targets=F(4, List(Ref.DiffParsedTarget)),
+        # Omitted when the requested mode has no patch/byte output.
+        output=F(5, Ref.DiffOutputLogRef, optional=True),
+        # Candidates intentionally excluded before diff execution (snapshot
+        # narrowing). Absent-from-snapshot members appear here.
+        excluded_targets=F(6, List(Ref.DiffExcludedTarget))),
+
+    # The append/out type of the diff.output log: the payload of the generic
+    # taut-shape LogRecord. Patch bytes ride `data` (BYTES, NUL-safe).
+    # Boundary/stale/diagnostic kinds let machine consumers frame per-file output
+    # without parsing patch text. Correlation is scope+file_id(+entry); file_id
+    # is NEVER parsed as a path. There is NO cursor/EOF/close field here — the
+    # log engine owns all of that.
+    DiffOutputRecord=Msg(
+        kind=F(1, Ref.DiffOutputRecordKind),
+        # Structured correlation for file-scoped records (file_started/
+        # file_finished/patch_bytes/stale_file).
+        scope=F(2, Ref.DiffRepoScope, optional=True),
+        file_id=F(3, STR, optional=True),
+        # Echo of the manifest entry so a streaming consumer need not hold the
+        # whole manifest to interpret a record. Populated only when the request
+        # sets DiffOptions.echo_manifest_entries; absent by default (correlate by
+        # scope+file_id).
+        entry=F(4, Ref.DiffFileEntry, optional=True),
+        # patch_bytes payload. Exact bytes, including NULs and binary hunks.
+        data=F(5, BYTES, optional=True),
+        # True on a stale_file record: the planned entry could not be rendered
+        # because the worktree changed before output materialization.
+        stale=F(6, BOOL, optional=True),
+        diagnostic=F(7, STR, optional=True)),
 )
