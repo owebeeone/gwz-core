@@ -33,8 +33,10 @@ impl Sandbox {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("gwz-classify-{tag}-{}-{unique}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "gwz-classify-{tag}-{}-{unique}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).unwrap();
         Sandbox { root }
     }
@@ -62,9 +64,8 @@ fn manifest() -> ManifestArtifact {
 /// against `sandbox` (root == cwd).
 fn run(sandbox: &Sandbox, operands: &[&str], revs: &[&str]) -> ModelResult<ClassifiedOperands> {
     let rev_set: BTreeSet<String> = revs.iter().map(|s| (*s).to_owned()).collect();
-    let resolve = move |_repos: &[PathBuf], token: &str| -> ModelResult<bool> {
-        Ok(rev_set.contains(token))
-    };
+    let resolve =
+        move |_repos: &[PathBuf], token: &str| -> ModelResult<bool> { Ok(rev_set.contains(token)) };
     let ctx = RevContext {
         repos: vec![sandbox.root.clone()],
         cwd: sandbox.root.clone(),
@@ -189,10 +190,15 @@ fn revision_after_a_pathspec_errors() {
 
 #[test]
 fn workspace_escape_is_not_a_path() {
-    // An operand that escapes the workspace can never be a pathspec; with no rev
-    // match it falls through to the unknown-revision-or-path error.
+    // An absolute operand outside the workspace can never be a pathspec (the same
+    // escape rule route_pathspec applies); with no rev match it falls through to
+    // the unknown-revision-or-path error. (A `..`-prefixed token is rev-range
+    // syntax and handled by `range_operand_is_never_a_path`, not here.)
     let sb = Sandbox::new("escape");
-    let err = run(&sb, &["../outside"], &[]).unwrap_err();
+    let outside = std::env::temp_dir().join("gwz-classify-escape-outside-marker");
+    fs::write(&outside, b"").unwrap();
+    let err = run(&sb, &[&outside.to_string_lossy()], &[]).unwrap_err();
+    let _ = fs::remove_file(&outside);
     assert_eq!(err.code, ErrorCode::InvalidRequest);
     assert!(
         err.message.contains("unknown revision or path"),

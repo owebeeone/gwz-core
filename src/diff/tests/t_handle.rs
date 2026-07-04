@@ -331,6 +331,17 @@ fn is_repository_backend_helper_available() {
 
 // ── D5 bare-operand classification (git's rev/path split) ────────────────────
 
+/// Unwrap the error from a `handle_diff` result (`DiffOutcome` is not `Debug`,
+/// so `unwrap_err` cannot be used directly).
+fn expect_err(
+    result: crate::model::ModelResult<crate::diff::DiffOutcome>,
+) -> crate::model::ModelError {
+    match result {
+        Ok(_) => panic!("expected an error, got Ok"),
+        Err(err) => err,
+    }
+}
+
 /// The workspace-relative new_path of every file entry, sorted.
 fn changed_paths(outcome: &crate::diff::DiffOutcome) -> Vec<String> {
     let mut paths: Vec<String> = outcome
@@ -380,23 +391,27 @@ fn bare_member_subdir_operand_routes_as_pathspec() {
     let member = ws.add_member("mem_a", "crate-a");
     Workspace::write(ws.root(), "root.txt", b"r1\n");
     Workspace::commit(ws.root(), "root init");
-    Workspace::write(&member, "a.txt", b"a1\n");
+    Workspace::write(&member, "src/a.txt", b"a1\n");
     Workspace::commit(&member, "a init");
-    // Dirty both root and member; the operand `crate-a` must scope to the member.
+    // Dirty both root and the member subdir; the operand `crate-a/src` must scope
+    // to the member and only surface files under `src/`.
     Workspace::write(ws.root(), "root.txt", b"r2\n");
-    Workspace::write(&member, "a.txt", b"a2\n");
+    Workspace::write(&member, "src/a.txt", b"a2\n");
 
     let registry = DiffLogRegistry::new();
     let outcome = handle_diff(
         ws.root(),
-        ws.request_operands(&["crate-a"], &[], ""),
+        ws.request_operands(&["crate-a/src"], &[], ""),
         "op_1",
         &registry,
     )
     .unwrap();
 
     // Only the member file surfaces; root.txt is out of the pathspec's scope.
-    assert_eq!(changed_paths(&outcome), vec!["crate-a/a.txt".to_owned()]);
+    assert_eq!(
+        changed_paths(&outcome),
+        vec!["crate-a/src/a.txt".to_owned()]
+    );
 }
 
 #[test]
@@ -429,13 +444,12 @@ fn nonexistent_operand_reports_improved_message() {
     Workspace::commit(ws.root(), "init");
 
     let registry = DiffLogRegistry::new();
-    let err = handle_diff(
+    let err = expect_err(handle_diff(
         ws.root(),
         ws.request_operands(&["does-not-exist"], &[], ""),
         "op_1",
         &registry,
-    )
-    .unwrap_err();
+    ));
     assert!(
         err.message.contains("unknown revision or path"),
         "{}",
@@ -456,13 +470,12 @@ fn ambiguous_operand_branch_named_like_file_errors() {
     super::workspace_fixture::run_git(ws.root(), &["branch", "ambig"]);
 
     let registry = DiffLogRegistry::new();
-    let err = handle_diff(
+    let err = expect_err(handle_diff(
         ws.root(),
         ws.request_operands(&["ambig"], &[], ""),
         "op_1",
         &registry,
-    )
-    .unwrap_err();
+    ));
     assert!(err.message.contains("ambiguous"), "{}", err.message);
     assert!(err.message.contains("--"), "{}", err.message);
 }

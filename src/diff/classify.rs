@@ -187,7 +187,7 @@ fn unknown_rev_or_path(operand: &str) -> ModelError {
 /// skipped, not fatal — a bare operand should still classify off the repos that
 /// do open. Used by the handler; tests inject their own resolver.
 pub fn default_rev_resolver(repos: &[PathBuf], token: &str) -> ModelResult<bool> {
-    use crate::git::{GitBackend, Git2Backend};
+    use crate::git::{Git2Backend, GitBackend};
     let backend = Git2Backend::new();
     for repo in repos {
         if !backend.is_repository(repo).unwrap_or(false) {
@@ -204,7 +204,7 @@ pub fn default_rev_resolver(repos: &[PathBuf], token: &str) -> ModelResult<bool>
 /// active, materialized Git member (the default `plan_diff` candidate set). The
 /// materialization check is the same filesystem probe the plan uses.
 pub fn candidate_repos(root: &Path, manifest: &ManifestArtifact) -> Vec<PathBuf> {
-    use crate::git::{GitBackend, Git2Backend};
+    use crate::git::{Git2Backend, GitBackend};
     let backend = Git2Backend::new();
     let mut repos = vec![root.to_path_buf()];
     for member in &manifest.members {
