@@ -190,6 +190,42 @@ pub trait GitBackend {
             "changed_paths_between is not implemented by this GitBackend",
         ))
     }
+    /// Diff a **single** repository (the workspace root or one materialized
+    /// member) into a repo-scoped changed-file manifest. This is the D1 Git
+    /// backend primitive: it resolves the requested comparison to libgit2 tree
+    /// sides, runs the matching libgit2 diff, applies rename detection, and
+    /// reports per-file status/mode/binary/similarity/line-stats with
+    /// repo-relative paths. Workspace projection (scopes, member-prefix
+    /// rewriting, root/member ordering, `gwz.conf` exclusion) is the D2 planner's
+    /// job, not this primitive's. Paths in `comparison`/`options` are already
+    /// repo-relative. See [`crate::diff::diff_repo`].
+    fn diff_manifest(
+        &self,
+        _path: &Path,
+        _comparison: &crate::diff::RepoDiffComparison,
+        _options: &crate::diff::RepoDiffOptions,
+    ) -> ModelResult<crate::diff::RepoDiffManifest> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "diff_manifest is not implemented by this GitBackend",
+        ))
+    }
+    /// Resolve a per-repo comparison from raw revision tokens to concrete
+    /// libgit2 tree sides (peeling refs/commits to trees, `HEAD`/unborn-HEAD to a
+    /// tree or the empty tree, and a `A...B` merge-base old side). Snapshot
+    /// operand resolution and candidate selection are D2; this handles only the
+    /// per-repo revision → oid step of the primitive. See
+    /// [`crate::diff::resolve_comparison`].
+    fn resolve_comparison(
+        &self,
+        _path: &Path,
+        _spec: &crate::diff::ComparisonSpec,
+    ) -> ModelResult<crate::diff::RepoDiffComparison> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "resolve_comparison is not implemented by this GitBackend",
+        ))
+    }
     /// Stage `pathspecs` into the index — `git add` semantics: add new/modified
     /// files, remove deleted ones, honor `.gitignore`. Self-verifies the index
     /// persisted with the requested files staged before returning success.
@@ -1444,6 +1480,25 @@ impl GitBackend for Git2Backend {
         paths.sort();
         paths.dedup();
         Ok(paths)
+    }
+
+    fn diff_manifest(
+        &self,
+        path: &Path,
+        comparison: &crate::diff::RepoDiffComparison,
+        options: &crate::diff::RepoDiffOptions,
+    ) -> ModelResult<crate::diff::RepoDiffManifest> {
+        let repo = open_repo(path)?;
+        crate::diff::diff_repo(&repo, comparison, options)
+    }
+
+    fn resolve_comparison(
+        &self,
+        path: &Path,
+        spec: &crate::diff::ComparisonSpec,
+    ) -> ModelResult<crate::diff::RepoDiffComparison> {
+        let repo = open_repo(path)?;
+        crate::diff::resolve_comparison(&repo, spec)
     }
 }
 

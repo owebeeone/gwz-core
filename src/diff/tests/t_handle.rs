@@ -1,0 +1,330 @@
+//! D3 acceptance tests for `handle_diff` (plan → manifest → producer → log).
+//!
+//! Each test drives the real handler over an on-disk workspace and reads the
+//! `diff.output` log back through the real [`DiffLogRegistry`], so the manifest,
+//! the output ordering, the per-file records, and the workspace-relative bytes
+//! are all checked against actual libgit2 output — not a mock.
+
+use crate::diff::{DiffLogRegistry, LogReadRequest, LogReadState, decode_record, handle_diff};
+use crate::git::{Git2Backend, GitBackend};
+use crate::protocol::generated::{
+    DiffManifestMode, DiffOptions, DiffOutputFormat, DiffOutputRecordKind, DiffStatus,
+};
+
+use super::workspace_fixture::Workspace;
+
+/// Drain the whole output log into its decoded records, following the cursor to
+/// EOF. Reads in small batches so cursor resume is exercised on the happy path.
+fn drain_all(registry: &DiffLogRegistry, log_id: &str) -> Vec<crate::DiffOutputRecord> {
+    let mut records = Vec::new();
+    let mut cursor = None;
+    loop {
+        let resp = registry
+            .read(
+                log_id,
+                &LogReadRequest {
+                    stream_id: "s1".to_owned(),
+                    cursor,
+                    max_records: Some(2),
+                    max_bytes: None,
+                    timeout_ms: Some(0),
+                },
+            )
+            .unwrap();
+        for r in &resp.records {
+            records.push(decode_record(&r.payload));
+        }
+        cursor = Some(resp.next_cursor);
+        match resp.state {
+            LogReadState::Data => continue,
+            LogReadState::Eof => break,
+            other => panic!("unexpected drain state {other:?}"),
+        }
+    }
+    records
+}
+
+fn patch_text(records: &[crate::DiffOutputRecord]) -> String {
+    let mut bytes = Vec::new();
+    for r in records {
+        if matches!(r.kind, DiffOutputRecordKind::PatchBytes) {
+            bytes.extend_from_slice(r.data.as_deref().unwrap_or(&[]));
+        }
+    }
+    String::from_utf8(bytes).expect("patch utf8")
+}
+
+#[test]
+fn manifest_order_is_root_first_then_members() {
+    let ws = Workspace::new("order");
+    let member_a = ws.add_member("mem_a", "crate-a");
+    let member_b = ws.add_member("mem_b", "crate-b");
+
+    // Seed and commit all three repos, then dirty each in the worktree.
+    Workspace::write(ws.root(), "root.txt", b"root v1\n");
+    Workspace::write(&member_a, "a.txt", b"a v1\n");
+    Workspace::write(&member_b, "b.txt", b"b v1\n");
+    Workspace::commit(ws.root(), "root init");
+    Workspace::commit(&member_a, "a init");
+    Workspace::commit(&member_b, "b init");
+    Workspace::write(ws.root(), "root.txt", b"root v2\n");
+    Workspace::write(&member_a, "a.txt", b"a v2\n");
+    Workspace::write(&member_b, "b.txt", b"b v2\n");
+
+    let registry = DiffLogRegistry::new();
+    let outcome = handle_diff(
+        ws.root(),
+        ws.request(DiffOptions::default()),
+        "op_1",
+        &registry,
+    )
+    .unwrap();
+
+    // Manifest file order: root first, then members in manifest order.
+    let scopes: Vec<Option<bool>> = outcome
+        .response
+        .files
+        .iter()
+        .map(|f| f.scope.root)
+        .collect();
+    assert_eq!(outcome.response.files.len(), 3);
+    assert_eq!(scopes[0], Some(true), "root entry first");
+    assert_eq!(
+        outcome.response.files[1].scope.member_id.as_deref(),
+        Some("mem_a")
+    );
+    assert_eq!(
+        outcome.response.files[2].scope.member_id.as_deref(),
+        Some("mem_b")
+    );
+
+    // The output log records file-scoped runs in the same root-first order.
+    let log_id = outcome.response.output.as_ref().unwrap().log_id.clone();
+    let records = drain_all(&registry, &log_id);
+    let started: Vec<String> = records
+        .iter()
+        .filter(|r| matches!(r.kind, DiffOutputRecordKind::FileStarted))
+        .map(|r| r.file_id.clone().unwrap())
+        .collect();
+    assert_eq!(started, vec!["@root#0", "mem_a#0", "mem_b#0"]);
+}
+
+#[test]
+fn per_file_metadata_records_bracket_patch_bytes() {
+    let ws = Workspace::new("perfile");
+    Workspace::write(ws.root(), "a.txt", b"one\n");
+    Workspace::commit(ws.root(), "init");
+    Workspace::write(ws.root(), "a.txt", b"two\n");
+
+    let registry = DiffLogRegistry::new();
+    let outcome = handle_diff(
+        ws.root(),
+        ws.request(DiffOptions::default()),
+        "op_1",
+        &registry,
+    )
+    .unwrap();
+    let log_id = outcome.response.output.as_ref().unwrap().log_id.clone();
+    let records = drain_all(&registry, &log_id);
+
+    let kinds: Vec<DiffOutputRecordKind> = records.iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            DiffOutputRecordKind::FileStarted,
+            DiffOutputRecordKind::PatchBytes,
+            DiffOutputRecordKind::FileFinished,
+        ]
+    );
+    // Every record correlates by scope + file_id without parsing the patch text.
+    for r in &records {
+        assert_eq!(r.file_id.as_deref(), Some("@root#0"));
+        assert_eq!(r.scope.as_ref().unwrap().root, Some(true));
+        assert!(r.entry.is_none(), "echo off by default");
+    }
+}
+
+#[test]
+fn member_patch_bytes_are_workspace_relative() {
+    let ws = Workspace::new("wsrel");
+    let member = ws.add_member("mem_a", "crate-a");
+    Workspace::write(&member, "src/lib.rs", b"fn a() {}\n");
+    Workspace::commit(&member, "init");
+    Workspace::write(&member, "src/lib.rs", b"fn a() { 1 }\n");
+
+    let registry = DiffLogRegistry::new();
+    let outcome = handle_diff(
+        ws.root(),
+        ws.request(DiffOptions::default()),
+        "op_1",
+        &registry,
+    )
+    .unwrap();
+    let log_id = outcome.response.output.as_ref().unwrap().log_id.clone();
+    let text = patch_text(&drain_all(&registry, &log_id));
+
+    assert!(
+        text.contains("diff --git a/crate-a/src/lib.rs b/crate-a/src/lib.rs"),
+        "member-prefixed diff header, got:\n{text}"
+    );
+    assert!(text.contains("--- a/crate-a/src/lib.rs"), "got:\n{text}");
+    assert!(text.contains("+++ b/crate-a/src/lib.rs"), "got:\n{text}");
+
+    // The manifest path is workspace-relative too.
+    assert_eq!(
+        outcome.response.files[0].new_path.as_deref(),
+        Some("crate-a/src/lib.rs")
+    );
+}
+
+#[test]
+fn rename_headers_survive_end_to_end() {
+    let ws = Workspace::new("rename");
+    let member = ws.add_member("mem_a", "crate-a");
+    let body = "line1\nline2\nline3\nline4\nline5\n";
+    Workspace::write(&member, "old_name.txt", body.as_bytes());
+    Workspace::commit(&member, "init");
+    // Rename and STAGE it so it is a tracked index-side rename that `--cached`
+    // (index-vs-tree) detects; plain worktree-vs-index would treat the new name
+    // as untracked and never pair it, matching git.
+    Workspace::remove(&member, "old_name.txt");
+    Workspace::write(&member, "new_name.txt", body.as_bytes());
+    super::workspace_fixture::run_git(&member, &["add", "-A"]);
+
+    let registry = DiffLogRegistry::new();
+    let mut request = ws.request(DiffOptions {
+        find_renames: Some(true),
+        output_format: Some(DiffOutputFormat::Patch),
+        ..Default::default()
+    });
+    request.cached = Some(true);
+    let outcome = handle_diff(ws.root(), request, "op_1", &registry).unwrap();
+
+    // Manifest keeps it a rename with both workspace-relative paths.
+    let entry = &outcome.response.files[0];
+    assert_eq!(entry.status, DiffStatus::Renamed);
+    assert_eq!(entry.old_path.as_deref(), Some("crate-a/old_name.txt"));
+    assert_eq!(entry.new_path.as_deref(), Some("crate-a/new_name.txt"));
+
+    // The patch carries member-prefixed rename headers, not add/delete.
+    let log_id = outcome.response.output.as_ref().unwrap().log_id.clone();
+    let text = patch_text(&drain_all(&registry, &log_id));
+    assert!(
+        text.contains("rename from crate-a/old_name.txt"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("rename to crate-a/new_name.txt"),
+        "got:\n{text}"
+    );
+    assert!(
+        !text.contains("/dev/null"),
+        "must not degrade to add/delete"
+    );
+}
+
+#[test]
+fn metadata_only_format_omits_output_log() {
+    let ws = Workspace::new("nameonly");
+    Workspace::write(ws.root(), "a.txt", b"one\n");
+    Workspace::commit(ws.root(), "init");
+    Workspace::write(ws.root(), "a.txt", b"two\n");
+
+    let registry = DiffLogRegistry::new();
+    let options = DiffOptions {
+        output_format: Some(DiffOutputFormat::NameStatus),
+        ..Default::default()
+    };
+    let outcome = handle_diff(ws.root(), ws.request(options), "op_1", &registry).unwrap();
+
+    // Manifest is populated; no output log ref (client answers name-status from it).
+    assert!(outcome.response.output.is_none());
+    assert!(outcome.log_id.is_none());
+    assert_eq!(outcome.response.files.len(), 1);
+    assert_eq!(outcome.response.summary.as_ref().unwrap().files_changed, 1);
+}
+
+#[test]
+fn quiet_any_difference_short_circuits_without_files_or_log() {
+    let ws = Workspace::new("quiet");
+    Workspace::write(ws.root(), "a.txt", b"one\n");
+    Workspace::commit(ws.root(), "init");
+    Workspace::write(ws.root(), "a.txt", b"two\n");
+
+    let registry = DiffLogRegistry::new();
+    let options = DiffOptions {
+        manifest_mode: Some(DiffManifestMode::AnyDifference),
+        ..Default::default()
+    };
+    let outcome = handle_diff(ws.root(), ws.request(options), "op_1", &registry).unwrap();
+
+    assert!(outcome.response.output.is_none());
+    assert!(
+        outcome.response.files.is_empty(),
+        "files omitted in --quiet"
+    );
+    let summary = outcome.response.summary.as_ref().unwrap();
+    assert!(summary.has_differences, "exit-code signal is set");
+}
+
+#[test]
+fn quiet_reports_no_difference_when_clean() {
+    let ws = Workspace::new("quiet-clean");
+    Workspace::write(ws.root(), "a.txt", b"one\n");
+    Workspace::commit(ws.root(), "init");
+    // No worktree edits: clean.
+
+    let registry = DiffLogRegistry::new();
+    let options = DiffOptions {
+        manifest_mode: Some(DiffManifestMode::AnyDifference),
+        ..Default::default()
+    };
+    let outcome = handle_diff(ws.root(), ws.request(options), "op_1", &registry).unwrap();
+    assert!(!outcome.response.summary.as_ref().unwrap().has_differences);
+}
+
+#[test]
+fn root_diff_excludes_member_directories() {
+    let ws = Workspace::new("rootexcl");
+    let member = ws.add_member("mem_a", "crate-a");
+    // Commit the root without the member content, then materialize + dirty the
+    // member. The member dir is untracked at the root; even so, exercise that a
+    // staged member path would be filtered. Here we simply assert the root diff
+    // never surfaces the member path.
+    Workspace::write(ws.root(), "root.txt", b"r1\n");
+    Workspace::commit(ws.root(), "root init");
+    Workspace::write(&member, "a.txt", b"a1\n");
+    Workspace::commit(&member, "a init");
+    Workspace::write(ws.root(), "root.txt", b"r2\n");
+    Workspace::write(&member, "a.txt", b"a2\n");
+
+    let registry = DiffLogRegistry::new();
+    let outcome = handle_diff(
+        ws.root(),
+        ws.request(DiffOptions::default()),
+        "op_1",
+        &registry,
+    )
+    .unwrap();
+
+    // No root-scoped file entry names anything under crate-a/.
+    for f in &outcome.response.files {
+        if f.scope.root == Some(true) {
+            let p = f.new_path.as_deref().unwrap_or("");
+            assert!(
+                !p.starts_with("crate-a/"),
+                "root diff leaked member path {p}"
+            );
+        }
+    }
+}
+
+#[test]
+fn is_repository_backend_helper_available() {
+    // Guard that the materialization oracle's building block exists and behaves.
+    let ws = Workspace::new("isrepo");
+    assert!(
+        Git2Backend::new().is_repository(ws.root()).unwrap(),
+        "workspace root is a git repo"
+    );
+}

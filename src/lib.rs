@@ -6,6 +6,7 @@
 pub mod cbor;
 
 pub mod artifact;
+pub mod diff;
 pub mod git;
 pub mod model;
 pub mod operation;
