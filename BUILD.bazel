@@ -13,6 +13,9 @@ rust_library(
     # include_str!/generated data + non-rs files the crate reads at compile time
     compile_data = glob(["**/*"], exclude = ["**/*.rs", "BUILD.bazel", "Cargo.toml"], allow_empty = True),
     aliases = aliases(),
+    # taut-shape is included here automatically: it is a path dependency in the
+    # unified Cargo workspace, so crate_universe splices it and exposes it as
+    # @crates//:taut-shape, which all_crate_deps() picks up like any other dep.
     deps = all_crate_deps(normal = True),
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],

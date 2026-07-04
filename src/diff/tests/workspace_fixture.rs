@@ -119,6 +119,22 @@ impl Workspace {
             ..Default::default()
         }
     }
+
+    /// A `DiffRequest` with raw operands, explicit (`--`) pathspecs, and a
+    /// workspace-relative logical cwd — for exercising operand classification.
+    pub(crate) fn request_operands(
+        &self,
+        operands: &[&str],
+        explicit_pathspecs: &[&str],
+        workspace_cwd: &str,
+    ) -> DiffRequest {
+        DiffRequest {
+            operands: operands.iter().map(|s| (*s).to_owned()).collect(),
+            explicit_pathspecs: explicit_pathspecs.iter().map(|s| (*s).to_owned()).collect(),
+            workspace_cwd: Some(workspace_cwd.to_owned()),
+            ..self.request(DiffOptions::default())
+        }
+    }
 }
 
 pub(crate) fn init_repo(root: &Path) {

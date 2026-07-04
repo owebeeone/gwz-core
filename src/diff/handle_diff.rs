@@ -75,8 +75,23 @@ pub fn handle_diff(
     let options = request.options.clone().unwrap_or_default();
     reject_unsupported_options(options.find_copies, options.algorithm)?;
 
+    // Bare-operand disambiguation (D5): with no `--`, each positional operand is a
+    // revision or a pathspec, decided per git's rule (see `super::classify`). The
+    // revision half feeds `parse_comparison`; the pathspec half is prepended to
+    // the explicit `--` pathspecs below.
+    let cwd_rel = request.workspace_cwd.clone().unwrap_or_default();
+    let classified = {
+        let ctx = super::RevContext {
+            repos: super::candidate_repos(&root, &manifest),
+            cwd: root.join(&cwd_rel),
+            workspace_root: root.clone(),
+            resolve: &super::default_rev_resolver,
+        };
+        super::classify_operands(&request.operands, &manifest, &ctx)?
+    };
+
     let comparison = parse_comparison(
-        &request.operands,
+        &classified.revisions,
         request.cached.unwrap_or(false),
         request.merge_base.unwrap_or(false),
     )?;
@@ -84,8 +99,11 @@ pub fn handle_diff(
     // Snapshots referenced by the comparison, read once for planning.
     let snapshots = read_referenced_snapshots(&root, &comparison_snapshot_ids(&comparison))?;
 
-    let cwd_rel = request.workspace_cwd.clone().unwrap_or_default();
-    let pathspecs = request.explicit_pathspecs.clone();
+    // Pathspecs derived from bare operands precede the explicit (`--`) ones, so a
+    // routing that intersects them keeps operand-order intent (git resolves both
+    // against the cwd identically).
+    let mut pathspecs = classified.pathspecs.clone();
+    pathspecs.extend(request.explicit_pathspecs.iter().cloned());
     let oracle = FsMaterializationOracle { root: root.clone() };
     let plan = plan_diff(
         &manifest,

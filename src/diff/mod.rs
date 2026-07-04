@@ -8,6 +8,7 @@
 //! repo-relative paths — and maps onto the generated `Diff*` messages at the D2
 //! projection boundary.
 
+mod classify;
 mod git_diff;
 mod handle_diff;
 mod log_service;
@@ -20,6 +21,9 @@ pub mod render;
 #[cfg(test)]
 mod tests;
 
+pub use classify::{
+    ClassifiedOperands, RevContext, candidate_repos, classify_operands, default_rev_resolver,
+};
 pub(crate) use git_diff::build_repo_diff;
 pub use git_diff::{ComparisonSpec, diff_repo, reject_unsupported_options, resolve_comparison};
 pub use handle_diff::{DiffOutcome, handle_diff};

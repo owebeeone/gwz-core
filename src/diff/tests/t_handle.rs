@@ -328,3 +328,161 @@ fn is_repository_backend_helper_available() {
         "workspace root is a git repo"
     );
 }
+
+// ── D5 bare-operand classification (git's rev/path split) ────────────────────
+
+/// The workspace-relative new_path of every file entry, sorted.
+fn changed_paths(outcome: &crate::diff::DiffOutcome) -> Vec<String> {
+    let mut paths: Vec<String> = outcome
+        .response
+        .files
+        .iter()
+        .filter_map(|f| f.new_path.clone().or_else(|| f.old_path.clone()))
+        .collect();
+    paths.sort();
+    paths
+}
+
+#[test]
+fn bare_file_operand_equals_dashdash_file_form() {
+    // The user's exact repro: `gwz diff <file>` (no `--`) must behave like
+    // `gwz diff -- <file>`, not fail as an unknown revspec.
+    let ws = Workspace::new("bare-file");
+    Workspace::write(ws.root(), "a.txt", b"a1\n");
+    Workspace::write(ws.root(), "b.txt", b"b1\n");
+    Workspace::commit(ws.root(), "init");
+    Workspace::write(ws.root(), "a.txt", b"a2\n");
+    Workspace::write(ws.root(), "b.txt", b"b2\n");
+
+    let registry = DiffLogRegistry::new();
+    let bare = handle_diff(
+        ws.root(),
+        ws.request_operands(&["a.txt"], &[], ""),
+        "op_bare",
+        &registry,
+    )
+    .unwrap();
+    let dashdash = handle_diff(
+        ws.root(),
+        ws.request_operands(&[], &["a.txt"], ""),
+        "op_dd",
+        &registry,
+    )
+    .unwrap();
+
+    assert_eq!(changed_paths(&bare), vec!["a.txt".to_owned()]);
+    assert_eq!(changed_paths(&bare), changed_paths(&dashdash));
+}
+
+#[test]
+fn bare_member_subdir_operand_routes_as_pathspec() {
+    let ws = Workspace::new("bare-member");
+    let member = ws.add_member("mem_a", "crate-a");
+    Workspace::write(ws.root(), "root.txt", b"r1\n");
+    Workspace::commit(ws.root(), "root init");
+    Workspace::write(&member, "a.txt", b"a1\n");
+    Workspace::commit(&member, "a init");
+    // Dirty both root and member; the operand `crate-a` must scope to the member.
+    Workspace::write(ws.root(), "root.txt", b"r2\n");
+    Workspace::write(&member, "a.txt", b"a2\n");
+
+    let registry = DiffLogRegistry::new();
+    let outcome = handle_diff(
+        ws.root(),
+        ws.request_operands(&["crate-a"], &[], ""),
+        "op_1",
+        &registry,
+    )
+    .unwrap();
+
+    // Only the member file surfaces; root.txt is out of the pathspec's scope.
+    assert_eq!(changed_paths(&outcome), vec!["crate-a/a.txt".to_owned()]);
+}
+
+#[test]
+fn mixed_head_and_file_operand_works() {
+    // `gwz diff HEAD a.txt` — a revision then a bare file, no `--`.
+    let ws = Workspace::new("mixed");
+    Workspace::write(ws.root(), "a.txt", b"a1\n");
+    Workspace::write(ws.root(), "b.txt", b"b1\n");
+    Workspace::commit(ws.root(), "init");
+    Workspace::write(ws.root(), "a.txt", b"a2\n");
+    Workspace::write(ws.root(), "b.txt", b"b2\n");
+
+    let registry = DiffLogRegistry::new();
+    let outcome = handle_diff(
+        ws.root(),
+        ws.request_operands(&["HEAD", "a.txt"], &[], ""),
+        "op_1",
+        &registry,
+    )
+    .unwrap();
+
+    // HEAD is the old side; the pathspec limits the diff to a.txt.
+    assert_eq!(changed_paths(&outcome), vec!["a.txt".to_owned()]);
+}
+
+#[test]
+fn nonexistent_operand_reports_improved_message() {
+    let ws = Workspace::new("nonexistent");
+    Workspace::write(ws.root(), "a.txt", b"a1\n");
+    Workspace::commit(ws.root(), "init");
+
+    let registry = DiffLogRegistry::new();
+    let err = handle_diff(
+        ws.root(),
+        ws.request_operands(&["does-not-exist"], &[], ""),
+        "op_1",
+        &registry,
+    )
+    .unwrap_err();
+    assert!(
+        err.message.contains("unknown revision or path"),
+        "{}",
+        err.message
+    );
+    assert!(err.message.contains("--"), "{}", err.message);
+}
+
+#[test]
+fn ambiguous_operand_branch_named_like_file_errors() {
+    // A branch named exactly like an existing file → git's ambiguous error.
+    let ws = Workspace::new("ambiguous");
+    Workspace::write(ws.root(), "a.txt", b"a1\n");
+    Workspace::commit(ws.root(), "init");
+    Workspace::write(ws.root(), "ambig", b"file\n");
+    // Create a branch literally named `ambig` at HEAD; the worktree file `ambig`
+    // now collides.
+    super::workspace_fixture::run_git(ws.root(), &["branch", "ambig"]);
+
+    let registry = DiffLogRegistry::new();
+    let err = handle_diff(
+        ws.root(),
+        ws.request_operands(&["ambig"], &[], ""),
+        "op_1",
+        &registry,
+    )
+    .unwrap_err();
+    assert!(err.message.contains("ambiguous"), "{}", err.message);
+    assert!(err.message.contains("--"), "{}", err.message);
+}
+
+#[test]
+fn dashdash_operands_before_are_revs_only() {
+    // With `--` present, an operand before it is never stat-checked as a path:
+    // `HEAD` before `--` is a revision, and the file after `--` is the pathspec.
+    let ws = Workspace::new("dashdash");
+    Workspace::write(ws.root(), "a.txt", b"a1\n");
+    Workspace::commit(ws.root(), "init");
+    Workspace::write(ws.root(), "a.txt", b"a2\n");
+
+    let registry = DiffLogRegistry::new();
+    let outcome = handle_diff(
+        ws.root(),
+        ws.request_operands(&["HEAD"], &["a.txt"], ""),
+        "op_1",
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(changed_paths(&outcome), vec!["a.txt".to_owned()]);
+}

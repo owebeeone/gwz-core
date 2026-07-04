@@ -120,6 +120,15 @@ pub fn parse_comparison(
     }
 }
 
+/// True when an operand is rev-only syntax that can never be a pathspec: a range
+/// (`A..B` / `A...B`) or a `+snapshot` reference. Used by operand classification
+/// (`super::classify`) to short-circuit these tokens as revisions without a
+/// filesystem stat — git treats `..`/`...` as rev syntax and `+snap` is our
+/// snapshot sigil.
+pub(crate) fn is_never_path_operand(token: &str) -> bool {
+    token.starts_with('+') || split_range(token).is_some()
+}
+
 /// Split `A..B` / `A...B` into (left, right, three_dot). Endpoints may be empty
 /// (`..B`, `A..`), which the caller defaults to `HEAD`. `...` is detected before
 /// `..`. Returns `None` when the token is not a range.
