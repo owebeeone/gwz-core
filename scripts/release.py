@@ -122,21 +122,57 @@ def parent_cargo_workspace_root(start: Path) -> Path | None:
 def make_standalone_worktree(label: str) -> Path:
     """Checkout HEAD in /tmp so cargo does not join a parent gwz-dev workspace."""
     git(["worktree", "prune"], check=False)
-    path = Path(tempfile.gettempdir()) / f"gwz-core-{label}-{os.getpid()}"
-    if path.exists():
-        fail(f"standalone worktree path already exists: {path}")
+    base = Path(tempfile.gettempdir()) / f"gwz-core-{label}-{os.getpid()}"
+    path = base / "gwz-core"
+    if base.exists():
+        fail(f"standalone worktree path already exists: {base}")
+    base.mkdir(parents=True)
     head = git(["rev-parse", "HEAD"], capture=True).stdout.strip()
     git(["worktree", "add", "--detach", path, head])
+    add_path_dependency_worktrees(base)
     log(f"standalone cargo worktree -> {path}")
     return path
 
 
+def add_path_dependency_worktrees(base: Path):
+    """Mirror sibling path dependencies needed by Cargo.toml in the temp parent."""
+    dependencies = [
+        ("taut-shape-rs", REPO.parent / "taut-shape-rs"),
+    ]
+    for name, source in dependencies:
+        if not source.is_dir():
+            fail(f"path dependency checkout missing: {source}")
+        run(["git", "-C", source, "worktree", "prune"], check=False)
+        head = run(["git", "-C", source, "rev-parse", "HEAD"], capture=True).stdout.strip()
+        target = base / name
+        run(["git", "-C", source, "worktree", "add", "--detach", target, head])
+        log(f"path dependency worktree {name} -> {target}")
+
+
 def remove_standalone_worktree(path: Path):
+    base = path.parent
+    dependency_worktrees = [
+        (REPO.parent / "taut-shape-rs", base / "taut-shape-rs"),
+    ]
     result = git(["worktree", "remove", "--force", path], capture=True, check=False)
     if result.returncode != 0:
         log(f"WARNING: `git worktree remove` failed for {path}: {result.stderr.strip()}")
         shutil.rmtree(path, ignore_errors=True)
     git(["worktree", "prune"], check=False)
+    for source, target in dependency_worktrees:
+        if not target.exists():
+            continue
+        result = run(
+            ["git", "-C", source, "worktree", "remove", "--force", target],
+            capture=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            log(f"WARNING: `git worktree remove` failed for {target}: {result.stderr.strip()}")
+            shutil.rmtree(target, ignore_errors=True)
+        run(["git", "-C", source, "worktree", "prune"], check=False)
+    if base.exists():
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def sync_manifests_to_worktree(worktree: Path):
@@ -224,6 +260,11 @@ def assert_lock_current(*, cargo_root: Path):
     )
     if result.returncode == 0:
         return
+    stderr = result.stderr or ""
+    if "lock file" not in stderr and "Cargo.lock" not in stderr:
+        if stderr:
+            print(stderr, file=sys.stderr)
+        fail("`cargo metadata --locked` failed before release gates")
     fail(
         "Cargo.lock is out of sync with Cargo.toml.\n"
         "  Fix: from a standalone gwz-core checkout (outside the gwz-dev workspace), run\n"
