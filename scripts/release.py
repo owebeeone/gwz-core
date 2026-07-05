@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 # scripts/release.py -> the gwz-core repo root is one level up.
@@ -129,48 +130,17 @@ def make_standalone_worktree(label: str) -> Path:
     base.mkdir(parents=True)
     head = git(["rev-parse", "HEAD"], capture=True).stdout.strip()
     git(["worktree", "add", "--detach", path, head])
-    add_path_dependency_worktrees(base)
     log(f"standalone cargo worktree -> {path}")
     return path
 
 
-def add_path_dependency_worktrees(base: Path):
-    """Mirror sibling path dependencies needed by Cargo.toml in the temp parent."""
-    dependencies = [
-        ("taut-shape-rs", REPO.parent / "taut-shape-rs"),
-    ]
-    for name, source in dependencies:
-        if not source.is_dir():
-            fail(f"path dependency checkout missing: {source}")
-        run(["git", "-C", source, "worktree", "prune"], check=False)
-        head = run(["git", "-C", source, "rev-parse", "HEAD"], capture=True).stdout.strip()
-        target = base / name
-        run(["git", "-C", source, "worktree", "add", "--detach", target, head])
-        log(f"path dependency worktree {name} -> {target}")
-
-
 def remove_standalone_worktree(path: Path):
     base = path.parent
-    dependency_worktrees = [
-        (REPO.parent / "taut-shape-rs", base / "taut-shape-rs"),
-    ]
     result = git(["worktree", "remove", "--force", path], capture=True, check=False)
     if result.returncode != 0:
         log(f"WARNING: `git worktree remove` failed for {path}: {result.stderr.strip()}")
         shutil.rmtree(path, ignore_errors=True)
     git(["worktree", "prune"], check=False)
-    for source, target in dependency_worktrees:
-        if not target.exists():
-            continue
-        result = run(
-            ["git", "-C", source, "worktree", "remove", "--force", target],
-            capture=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            log(f"WARNING: `git worktree remove` failed for {target}: {result.stderr.strip()}")
-            shutil.rmtree(target, ignore_errors=True)
-        run(["git", "-C", source, "worktree", "prune"], check=False)
     if base.exists():
         shutil.rmtree(base, ignore_errors=True)
 
@@ -218,6 +188,44 @@ def working_tree_clean():
         fail(
             "working tree is not clean -- commit or stash changes first:\n"
             + status.rstrip()
+        )
+
+
+def assert_no_external_path_dependencies():
+    """A released gwz-core tag must be buildable when Cargo fetches only this repo."""
+    manifest = REPO / "Cargo.toml"
+    data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    repo_root = REPO.resolve()
+    violations: list[str] = []
+
+    def scan(table: object, context: str = ""):
+        if not isinstance(table, dict):
+            return
+        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+            deps = table.get(section)
+            if not isinstance(deps, dict):
+                continue
+            for name, spec in deps.items():
+                if not isinstance(spec, dict) or "path" not in spec:
+                    continue
+                raw_path = str(spec["path"])
+                dep_path = (REPO / raw_path).resolve()
+                try:
+                    dep_path.relative_to(repo_root)
+                except ValueError:
+                    violations.append(f"{context}{section}.{name} -> {raw_path}")
+
+        targets = table.get("target")
+        if isinstance(targets, dict):
+            for target_name, target_table in targets.items():
+                scan(target_table, f'target."{target_name}".')
+
+    scan(data)
+    if violations:
+        fail(
+            "release manifest has path dependencies outside the gwz-core repo, "
+            "which breaks downstream Git dependencies:\n  "
+            + "\n  ".join(violations)
         )
 
 
@@ -388,6 +396,7 @@ def main():
 
     warn_if_behind_upstream(args.branch)
     working_tree_clean()
+    assert_no_external_path_dependencies()
 
     head = git(["rev-parse", "HEAD"], capture=True).stdout.strip()
     existing = git(

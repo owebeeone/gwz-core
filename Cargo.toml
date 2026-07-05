@@ -11,7 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 git2 = { version = "0.21", features = ["https", "ssh"] }
-taut-shape = { path = "../taut-shape-rs/crates/taut-shape" }
+taut-shape = { git = "https://github.com/owebeeone/taut-shape-rs", rev = "7fd171b737f25cb6c356845eb68164d35326ffb0", package = "taut-shape" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 sha2 = "0.10"

@@ -505,6 +505,7 @@ dependencies = [
 [[package]]
 name = "taut-shape"
 version = "0.0.0"
+source = "git+https://github.com/owebeeone/taut-shape-rs?rev=7fd171b737f25cb6c356845eb68164d35326ffb0#7fd171b737f25cb6c356845eb68164d35326ffb0"
 
 [[package]]
 name = "tinystr"
