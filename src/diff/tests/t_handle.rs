@@ -10,6 +10,7 @@ use crate::git::{Git2Backend, GitBackend};
 use crate::protocol::generated::{
     DiffManifestMode, DiffOptions, DiffOutputFormat, DiffOutputRecordKind, DiffStatus,
 };
+use std::process::Command;
 
 use super::workspace_fixture::Workspace;
 
@@ -52,6 +53,27 @@ fn patch_text(records: &[crate::DiffOutputRecord]) -> String {
         }
     }
     String::from_utf8(bytes).expect("patch utf8")
+}
+
+fn git_stdout(root: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("spawn git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("git stdout utf8")
+}
+
+fn git_tree_oid(root: &std::path::Path, rev: &str) -> String {
+    git_stdout(root, &["rev-parse", &format!("{rev}^{{tree}}")])
+        .trim()
+        .to_owned()
 }
 
 #[test]
@@ -178,6 +200,62 @@ fn member_patch_bytes_are_workspace_relative() {
 }
 
 #[test]
+fn raw_bytes_are_raw_records_not_patch() {
+    let ws = Workspace::new("raw-root");
+    Workspace::write(ws.root(), "a.txt", b"one\n");
+    Workspace::commit(ws.root(), "init");
+    Workspace::write(ws.root(), "a.txt", b"two\n");
+
+    let registry = DiffLogRegistry::new();
+    let options = DiffOptions {
+        output_format: Some(DiffOutputFormat::Raw),
+        ..Default::default()
+    };
+    let outcome = handle_diff(ws.root(), ws.request(options), "op_1", &registry).unwrap();
+
+    assert_eq!(
+        outcome.response.output.as_ref().unwrap().format,
+        DiffOutputFormat::Raw
+    );
+    let log_id = outcome.response.output.as_ref().unwrap().log_id.clone();
+    let text = patch_text(&drain_all(&registry, &log_id));
+    assert!(
+        text.starts_with(":100644 100644 "),
+        "expected raw record, got:\n{text}"
+    );
+    assert!(text.contains(" M\ta.txt"), "got:\n{text}");
+    assert!(!text.contains("diff --git"), "got:\n{text}");
+    assert!(!text.contains("@@"), "got:\n{text}");
+}
+
+#[test]
+fn member_raw_bytes_are_workspace_relative() {
+    let ws = Workspace::new("raw-member");
+    let member = ws.add_member("mem_a", "crate-a");
+    Workspace::write(&member, "src/lib.rs", b"fn a() {}\n");
+    Workspace::commit(&member, "init");
+    Workspace::write(&member, "src/lib.rs", b"fn a() { 1 }\n");
+
+    let registry = DiffLogRegistry::new();
+    let options = DiffOptions {
+        output_format: Some(DiffOutputFormat::Raw),
+        ..Default::default()
+    };
+    let outcome = handle_diff(ws.root(), ws.request(options), "op_1", &registry).unwrap();
+    let log_id = outcome.response.output.as_ref().unwrap().log_id.clone();
+    let text = patch_text(&drain_all(&registry, &log_id));
+
+    assert!(
+        text.contains(" M\tcrate-a/src/lib.rs"),
+        "member raw path must be workspace-relative, got:\n{text}"
+    );
+    assert!(
+        !text.contains(" M\tsrc/lib.rs"),
+        "member raw path leaked repo-relative form:\n{text}"
+    );
+}
+
+#[test]
 fn rename_headers_survive_end_to_end() {
     let ws = Workspace::new("rename");
     let member = ws.add_member("mem_a", "crate-a");
@@ -281,6 +359,82 @@ fn quiet_reports_no_difference_when_clean() {
     };
     let outcome = handle_diff(ws.root(), ws.request(options), "op_1", &registry).unwrap();
     assert!(!outcome.response.summary.as_ref().unwrap().has_differences);
+}
+
+#[test]
+fn parsed_targets_include_tree_oids() {
+    let ws = Workspace::new("target-oids");
+    Workspace::write(ws.root(), "a.txt", b"a1\n");
+    Workspace::commit(ws.root(), "c1");
+    Workspace::write(ws.root(), "a.txt", b"a2\n");
+    Workspace::commit(ws.root(), "c2");
+
+    let registry = DiffLogRegistry::new();
+    let mut request = ws.request_operands(&["HEAD~1", "HEAD"], &[], "");
+    request.options = Some(DiffOptions {
+        output_format: Some(DiffOutputFormat::NoPatch),
+        ..Default::default()
+    });
+    let outcome = handle_diff(ws.root(), request, "op_1", &registry).unwrap();
+
+    let target = outcome
+        .response
+        .targets
+        .iter()
+        .find(|t| t.target_id == "@root")
+        .expect("root parsed target");
+    assert_eq!(
+        target.left_oid.as_deref(),
+        Some(git_tree_oid(ws.root(), "HEAD~1").as_str())
+    );
+    assert_eq!(
+        target.right_oid.as_deref(),
+        Some(git_tree_oid(ws.root(), "HEAD").as_str())
+    );
+    assert_eq!(target.merge_base_oid, None);
+}
+
+#[test]
+fn parsed_targets_preserve_merge_base_oid() {
+    let ws = Workspace::new("target-merge-base");
+    Workspace::write(ws.root(), "base.txt", b"base\n");
+    Workspace::commit(ws.root(), "base");
+    super::workspace_fixture::run_git(ws.root(), &["checkout", "-b", "topic"]);
+    Workspace::write(ws.root(), "topic.txt", b"topic\n");
+    Workspace::commit(ws.root(), "topic work");
+    super::workspace_fixture::run_git(ws.root(), &["checkout", "main"]);
+    Workspace::write(ws.root(), "main.txt", b"main\n");
+    Workspace::commit(ws.root(), "main work");
+
+    let registry = DiffLogRegistry::new();
+    let mut request = ws.request_operands(&["main...topic"], &[], "");
+    request.options = Some(DiffOptions {
+        output_format: Some(DiffOutputFormat::NoPatch),
+        ..Default::default()
+    });
+    let outcome = handle_diff(ws.root(), request, "op_1", &registry).unwrap();
+    let base_commit = git_stdout(ws.root(), &["merge-base", "main", "topic"])
+        .trim()
+        .to_owned();
+
+    let target = outcome
+        .response
+        .targets
+        .iter()
+        .find(|t| t.target_id == "@root")
+        .expect("root parsed target");
+    assert_eq!(
+        target.left_oid.as_deref(),
+        Some(git_tree_oid(ws.root(), "main").as_str())
+    );
+    assert_eq!(
+        target.right_oid.as_deref(),
+        Some(git_tree_oid(ws.root(), "topic").as_str())
+    );
+    assert_eq!(
+        target.merge_base_oid.as_deref(),
+        Some(git_tree_oid(ws.root(), &base_commit).as_str())
+    );
 }
 
 #[test]
@@ -408,6 +562,40 @@ fn bare_member_subdir_operand_routes_as_pathspec() {
     .unwrap();
 
     // Only the member file surfaces; root.txt is out of the pathspec's scope.
+    assert_eq!(
+        changed_paths(&outcome),
+        vec!["crate-a/src/a.txt".to_owned()]
+    );
+}
+
+#[test]
+fn bare_operand_from_member_subdir_stats_against_physical_cwd() {
+    // Regression: `gwz diff a.txt` invoked from *inside* a member subdir. The
+    // physical `start` dir (not the workspace root) is the base a bare path
+    // operand stats against — `handle_diff` derives the logical cwd from `start`
+    // vs the resolved root, so `a.txt` resolves to `crate-a/src/a.txt` and
+    // classifies as a pathspec. Before the cwd fix this stat'd against the root
+    // (`<root>/a.txt`, absent) and misfired as "unknown revision or path".
+    let ws = Workspace::new("subdir-cwd");
+    let member = ws.add_member("mem_a", "crate-a");
+    Workspace::write(ws.root(), "root.txt", b"r1\n");
+    Workspace::commit(ws.root(), "root init");
+    Workspace::write(&member, "src/a.txt", b"a1\n");
+    Workspace::commit(&member, "a init");
+    Workspace::write(&member, "src/a.txt", b"a2\n");
+
+    let subdir = member.join("src");
+    let registry = DiffLogRegistry::new();
+    // `start` is the deep physical cwd; `workspace_cwd` is left empty on the
+    // request to prove the handler recomputes it from `start`, not the client hint.
+    let outcome = handle_diff(
+        &subdir,
+        ws.request_operands(&["a.txt"], &[], ""),
+        "op_1",
+        &registry,
+    )
+    .unwrap();
+
     assert_eq!(
         changed_paths(&outcome),
         vec!["crate-a/src/a.txt".to_owned()]

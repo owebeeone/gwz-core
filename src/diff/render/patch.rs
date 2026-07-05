@@ -70,6 +70,46 @@ pub fn render_entry(
     Ok(out)
 }
 
+/// Render `git diff --raw`-style bytes for one manifest entry, with raw path
+/// fields rewritten to workspace-relative paths.
+pub fn render_raw_entry(
+    repo: &Repository,
+    comparison: &RepoDiffComparison,
+    options: &RepoDiffOptions,
+    entry: &RepoDiffEntry,
+    render: &RenderOptions,
+) -> ModelResult<Vec<u8>> {
+    let mut narrowed = options.clone();
+    narrowed.pathspecs = entry_pathspecs(entry);
+
+    let diff = crate::diff::build_repo_diff(
+        repo,
+        comparison,
+        &narrowed,
+        |_opts: &mut Git2DiffOptions| {},
+    )?;
+
+    let member = render.scope.member_prefix().to_owned();
+    let line_prefix = render.line_prefix.clone();
+    let null_terminated = render.null_terminated;
+    let mut out: Vec<u8> = Vec::new();
+    diff.print(DiffFormat::Raw, |_delta, _hunk, line| {
+        for physical in split_inclusive_nl(line.content()) {
+            emit_raw_line(
+                &mut out,
+                physical,
+                &member,
+                line_prefix.as_deref(),
+                null_terminated,
+            );
+        }
+        true
+    })
+    .map_err(git_error)?;
+
+    Ok(out)
+}
+
 /// The repo-relative pathspecs that narrow the diff to one entry: both sides for
 /// a rename (so the pair is detectable), else whichever side is present.
 fn entry_pathspecs(entry: &RepoDiffEntry) -> Vec<String> {
@@ -145,6 +185,78 @@ fn emit_header_line(out: &mut Vec<u8>, physical: &[u8], member: &str) {
         }
     }
     out.extend_from_slice(physical);
+}
+
+/// Rewrite one `DiffFormat::Raw` record. libgit2 emits raw records as
+/// `:<meta>\t<path>[\t<path>]\n`; `git diff -z --raw` swaps those separators for
+/// NULs, which we do here because libgit2 exposes no raw `-z` switch.
+fn emit_raw_line(
+    out: &mut Vec<u8>,
+    physical: &[u8],
+    member: &str,
+    line_prefix: Option<&str>,
+    null_terminated: bool,
+) {
+    let (body, had_newline) = strip_trailing_lf(physical);
+    let Some((header, paths)) = split_once_byte(body, b'\t') else {
+        if let Some(prefix) = line_prefix {
+            out.extend_from_slice(prefix.as_bytes());
+        }
+        out.extend_from_slice(body);
+        if null_terminated {
+            out.push(b'\0');
+        } else if had_newline {
+            out.push(b'\n');
+        }
+        return;
+    };
+
+    if let Some(prefix) = line_prefix {
+        out.extend_from_slice(prefix.as_bytes());
+    }
+    out.extend_from_slice(header);
+    if null_terminated {
+        out.push(b'\0');
+        for path in paths.split(|b| *b == b'\t') {
+            emit_workspace_raw_path(out, path, member);
+            out.push(b'\0');
+        }
+    } else {
+        out.push(b'\t');
+        let mut first = true;
+        for path in paths.split(|b| *b == b'\t') {
+            if !first {
+                out.push(b'\t');
+            }
+            first = false;
+            emit_workspace_raw_path(out, path, member);
+        }
+        if had_newline {
+            out.push(b'\n');
+        }
+    }
+}
+
+fn emit_workspace_raw_path(out: &mut Vec<u8>, path: &[u8], member: &str) {
+    if member.is_empty() || path.is_empty() {
+        out.extend_from_slice(path);
+    } else {
+        out.extend_from_slice(member.as_bytes());
+        out.push(b'/');
+        out.extend_from_slice(path);
+    }
+}
+
+fn strip_trailing_lf(bytes: &[u8]) -> (&[u8], bool) {
+    match bytes.strip_suffix(b"\n") {
+        Some(stripped) => (stripped, true),
+        None => (bytes, false),
+    }
+}
+
+fn split_once_byte(bytes: &[u8], needle: u8) -> Option<(&[u8], &[u8])> {
+    let idx = bytes.iter().position(|b| *b == needle)?;
+    Some((&bytes[..idx], &bytes[idx + 1..]))
 }
 
 /// Split bytes into physical lines, keeping the trailing `\n` on each (the last

@@ -32,11 +32,11 @@
 
 use git2::Repository;
 
-use crate::diff::render::{RenderOptions, render_entry};
+use crate::diff::render::{RenderOptions, render_entry, render_raw_entry};
 use crate::diff::{RepoDiffComparison, RepoDiffEntry, RepoDiffOptions, diff_repo};
 use crate::model::ModelResult;
 use crate::protocol::generated::{
-    DiffFileEntry, DiffOutputRecord, DiffOutputRecordKind, DiffRepoScope,
+    DiffFileEntry, DiffOutputFormat, DiffOutputRecord, DiffOutputRecordKind, DiffRepoScope,
 };
 
 use super::log_service::DiffLog;
@@ -69,6 +69,7 @@ pub struct ProducerEntry {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProducerOptions {
     pub echo_manifest_entries: bool,
+    pub format: DiffOutputFormat,
 }
 
 /// Render every target into `log`, in order, then seal. A render error closes the
@@ -140,13 +141,22 @@ fn render_one(
             diagnostic: Some(stale),
         });
     } else {
-        let bytes = render_entry(
-            &target.repo,
-            &target.comparison,
-            &target.options,
-            &pe.entry,
-            &target.render,
-        )?;
+        let bytes = match opts.format {
+            DiffOutputFormat::Raw => render_raw_entry(
+                &target.repo,
+                &target.comparison,
+                &target.options,
+                &pe.entry,
+                &target.render,
+            )?,
+            _ => render_entry(
+                &target.repo,
+                &target.comparison,
+                &target.options,
+                &pe.entry,
+                &target.render,
+            )?,
+        };
         records.push(DiffOutputRecord {
             kind: DiffOutputRecordKind::PatchBytes,
             scope: Some(scope.clone()),

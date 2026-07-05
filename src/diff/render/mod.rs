@@ -66,5 +66,5 @@ mod tests;
 
 pub use names::{render_name_only, render_name_status, render_numstat};
 pub use options::{PrefixPolicy, RenderEntry, RenderOptions, ScopeRender};
-pub use patch::render_entry;
+pub use patch::{render_entry, render_raw_entry};
 pub use summary::{render_shortstat, render_stat, render_summary};

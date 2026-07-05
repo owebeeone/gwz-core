@@ -7,7 +7,7 @@ use crate::diff::{
     reject_unsupported_options,
 };
 use crate::model::ErrorCode;
-use crate::protocol::generated::DiffAlgorithm;
+use crate::protocol::generated::{DiffAlgorithm, DiffOptions, DiffOutputFormat};
 
 #[test]
 fn two_tree_range_matches_git() {
@@ -139,8 +139,11 @@ fn pathspec_narrows_the_manifest() {
 
 #[test]
 fn find_copies_is_rejected() {
-    let err = reject_unsupported_options(Some(true), None)
-        .expect_err("find_copies=true must be rejected in v0");
+    let err = reject_unsupported_options(&DiffOptions {
+        find_copies: Some(true),
+        ..Default::default()
+    })
+    .expect_err("find_copies=true must be rejected in v0");
     assert_eq!(err.code, ErrorCode::UnsupportedOperation);
     assert!(
         err.message.contains("find_copies"),
@@ -149,6 +152,77 @@ fn find_copies_is_rejected() {
     );
 
     // A supported algorithm is accepted.
-    assert!(reject_unsupported_options(None, Some(DiffAlgorithm::Patience)).is_ok());
-    assert!(reject_unsupported_options(Some(false), None).is_ok());
+    assert!(
+        reject_unsupported_options(&DiffOptions {
+            algorithm: Some(DiffAlgorithm::Patience),
+            ..Default::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        reject_unsupported_options(&DiffOptions {
+            find_copies: Some(false),
+            ..Default::default()
+        })
+        .is_ok()
+    );
+}
+
+#[test]
+fn unsupported_wire_options_are_rejected() {
+    let cases = [
+        (
+            "diff_filter",
+            DiffOptions {
+                diff_filter: Some("M".to_owned()),
+                ..Default::default()
+            },
+        ),
+        (
+            "ignore_submodules",
+            DiffOptions {
+                ignore_submodules: Some("all".to_owned()),
+                ..Default::default()
+            },
+        ),
+        (
+            "full_index",
+            DiffOptions {
+                full_index: Some(true),
+                ..Default::default()
+            },
+        ),
+        (
+            "abbrev",
+            DiffOptions {
+                abbrev: Some(12),
+                ..Default::default()
+            },
+        ),
+        (
+            "output_format",
+            DiffOptions {
+                output_format: Some(DiffOutputFormat::PatchWithRaw),
+                ..Default::default()
+            },
+        ),
+    ];
+
+    for (name, options) in cases {
+        let err = reject_unsupported_options(&options)
+            .expect_err(&format!("{name} must be rejected in v0"));
+        assert_eq!(err.code, ErrorCode::UnsupportedOperation, "{name}");
+        assert!(
+            err.message.contains(name),
+            "rejection must name {name}: {}",
+            err.message
+        );
+    }
+
+    let err = reject_unsupported_options(&DiffOptions {
+        abbrev: Some(-1),
+        ..Default::default()
+    })
+    .expect_err("negative abbrev must be invalid");
+    assert_eq!(err.code, ErrorCode::InvalidRequest);
 }

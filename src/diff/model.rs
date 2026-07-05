@@ -39,6 +39,15 @@ pub struct RepoDiffComparison {
     /// New-side tree oid (hex) for the tree-vs-tree case. `None` = empty tree.
     /// Ignored when the new side is the index or worktree.
     pub new_tree: Option<String>,
+    /// Resolved oid for the request's left endpoint when that endpoint is a Git
+    /// object. Worktree/index sides omit it.
+    pub left_oid: Option<String>,
+    /// Resolved oid for the request's right endpoint when that endpoint is a Git
+    /// object. Worktree/index sides omit it.
+    pub right_oid: Option<String>,
+    /// Resolved merge-base oid when `--merge-base` / `A...B` changed the old
+    /// diff side. The diff itself still uses [`Self::old_tree`] as its old side.
+    pub merge_base_oid: Option<String>,
 }
 
 /// The repo-scoped comparison kind. 1:1 with the wire [`DiffComparisonKind`];

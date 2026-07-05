@@ -13,6 +13,7 @@ use git2::{
 
 use crate::git::git_error;
 use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::protocol::generated::{DiffOptions, DiffOutputFormat};
 
 use super::model::{
     RepoDiffAlgorithm, RepoDiffComparison, RepoDiffComparisonKind, RepoDiffEntry, RepoDiffManifest,
@@ -53,25 +54,34 @@ pub fn resolve_comparison(
             kind: RepoDiffComparisonKind::WorktreeVsIndex,
             old_tree: None,
             new_tree: None,
+            left_oid: None,
+            right_oid: None,
+            merge_base_oid: None,
         }),
         RepoDiffComparisonKind::IndexVsTree => {
             // `--cached [<commit>]`: old side is <commit> or HEAD; unborn HEAD is
             // the empty tree.
-            let old_tree = resolve_old_tree_side(repo, spec, /*allow_unborn_empty=*/ true)?;
+            let old_side = resolve_old_tree_side(repo, spec, /*allow_unborn_empty=*/ true)?;
             Ok(RepoDiffComparison {
                 kind: RepoDiffComparisonKind::IndexVsTree,
-                old_tree,
+                old_tree: old_side.diff_old_tree,
                 new_tree: None,
+                left_oid: old_side.left_oid,
+                right_oid: None,
+                merge_base_oid: old_side.merge_base_oid,
             })
         }
         RepoDiffComparisonKind::WorktreeVsTree => {
             // `git diff <commit>`: the old side must resolve; an unborn repo has
             // no commit to name and is a member-scoped error.
-            let old_tree = resolve_old_tree_side(repo, spec, /*allow_unborn_empty=*/ false)?;
+            let old_side = resolve_old_tree_side(repo, spec, /*allow_unborn_empty=*/ false)?;
             Ok(RepoDiffComparison {
                 kind: RepoDiffComparisonKind::WorktreeVsTree,
-                old_tree,
+                old_tree: old_side.diff_old_tree,
                 new_tree: None,
+                left_oid: old_side.left_oid,
+                right_oid: None,
+                merge_base_oid: old_side.merge_base_oid,
             })
         }
         RepoDiffComparisonKind::TreeVsTree => {
@@ -79,19 +89,28 @@ pub fn resolve_comparison(
             let right = spec.right.as_deref().unwrap_or("HEAD");
             let left_tree = resolve_tree_oid(repo, left)?;
             let right_tree = resolve_tree_oid(repo, right)?;
-            let old_tree = if spec.merge_base {
+            let (old_tree, left_oid, merge_base_oid) = if spec.merge_base {
                 let base = merge_base_tree(repo, left, right)?;
-                Some(base)
+                (Some(base.clone()), Some(left_tree), Some(base))
             } else {
-                Some(left_tree)
+                (Some(left_tree.clone()), Some(left_tree), None)
             };
             Ok(RepoDiffComparison {
                 kind: RepoDiffComparisonKind::TreeVsTree,
                 old_tree,
-                new_tree: Some(right_tree),
+                new_tree: Some(right_tree.clone()),
+                left_oid,
+                right_oid: Some(right_tree),
+                merge_base_oid,
             })
         }
     }
+}
+
+struct ResolvedOldSide {
+    diff_old_tree: Option<String>,
+    left_oid: Option<String>,
+    merge_base_oid: Option<String>,
 }
 
 /// Resolve the old-side tree for `--cached`/`<commit>` forms. When
@@ -101,21 +120,37 @@ fn resolve_old_tree_side(
     repo: &Repository,
     spec: &ComparisonSpec,
     allow_unborn_empty: bool,
-) -> ModelResult<Option<String>> {
+) -> ModelResult<ResolvedOldSide> {
     match &spec.left {
         Some(token) => {
             if spec.merge_base {
                 // `--cached --merge-base <commit>`: old side is
                 // merge-base(<commit>, HEAD).
-                Ok(Some(merge_base_tree(repo, token, "HEAD")?))
+                let left_oid = resolve_tree_oid(repo, token)?;
+                let merge_base_oid = merge_base_tree(repo, token, "HEAD")?;
+                Ok(ResolvedOldSide {
+                    diff_old_tree: Some(merge_base_oid.clone()),
+                    left_oid: Some(left_oid),
+                    merge_base_oid: Some(merge_base_oid),
+                })
             } else {
-                Ok(Some(resolve_tree_oid(repo, token)?))
+                let left_oid = resolve_tree_oid(repo, token)?;
+                Ok(ResolvedOldSide {
+                    diff_old_tree: Some(left_oid.clone()),
+                    left_oid: Some(left_oid),
+                    merge_base_oid: None,
+                })
             }
         }
         None => match repo.head() {
             Ok(head) => {
                 let commit = head.peel_to_commit().map_err(git_error)?;
-                Ok(Some(commit.tree().map_err(git_error)?.id().to_string()))
+                let left_oid = commit.tree().map_err(git_error)?.id().to_string();
+                Ok(ResolvedOldSide {
+                    diff_old_tree: Some(left_oid.clone()),
+                    left_oid: Some(left_oid),
+                    merge_base_oid: None,
+                })
             }
             Err(err)
                 if allow_unborn_empty
@@ -125,7 +160,11 @@ fn resolve_old_tree_side(
                     ) =>
             {
                 // Unborn HEAD under --cached: compare the empty tree to the index.
-                Ok(None)
+                Ok(ResolvedOldSide {
+                    diff_old_tree: None,
+                    left_oid: None,
+                    merge_base_oid: None,
+                })
             }
             Err(err)
                 if matches!(
@@ -441,23 +480,66 @@ fn path_to_string(path: &std::path::Path) -> String {
 }
 
 /// Reject option combinations the v0 backend cannot honor, per the D0 error
-/// taxonomy: `find_copies=true` and any unsupported diff algorithm reuse
-/// [`ErrorCode::UnsupportedOperation`] with the offending option named in the
-/// message. Call this at request-planning time before building
-/// [`RepoDiffOptions`].
-pub fn reject_unsupported_options(
-    find_copies: Option<bool>,
-    algorithm: Option<crate::protocol::generated::DiffAlgorithm>,
-) -> ModelResult<()> {
-    if find_copies == Some(true) {
+/// taxonomy. Unsupported fields use [`ErrorCode::UnsupportedOperation`] with the
+/// offending option named in the message; malformed values use
+/// [`ErrorCode::InvalidRequest`]. Call this at request-planning time before
+/// building [`RepoDiffOptions`].
+pub fn reject_unsupported_options(options: &DiffOptions) -> ModelResult<()> {
+    if options.find_copies == Some(true) {
         return Err(ModelError::new(
             ErrorCode::UnsupportedOperation,
             "unsupported diff option 'find_copies': copy detection is not implemented in v0",
         ));
     }
+    if options.diff_filter.is_some() {
+        return Err(unsupported(
+            "diff_filter",
+            "status filtering is not implemented in v0",
+        ));
+    }
+    if options.ignore_submodules.is_some() {
+        return Err(unsupported(
+            "ignore_submodules",
+            "submodule ignore modes are not implemented in v0",
+        ));
+    }
+    if options.full_index == Some(true) {
+        return Err(unsupported(
+            "full_index",
+            "full object-id rendering is not implemented in v0",
+        ));
+    }
+    if let Some(abbrev) = options.abbrev {
+        if abbrev < 0 {
+            return Err(ModelError::new(
+                ErrorCode::InvalidRequest,
+                "invalid diff option 'abbrev': value must be non-negative",
+            ));
+        }
+        return Err(unsupported(
+            "abbrev",
+            "custom object-id abbreviation is not implemented in v0",
+        ));
+    }
+    if matches!(
+        options.output_format,
+        Some(DiffOutputFormat::PatchWithRaw | DiffOutputFormat::PatchWithStat)
+    ) {
+        return Err(unsupported(
+            "output_format",
+            "patch-with-raw and patch-with-stat byte composition is not implemented in v0",
+        ));
+    }
     // All wire DiffAlgorithm values map to a supported git2 setter; histogram is
     // absent from the enum entirely. This guard remains a forward-compatible
     // hook for any future unsupported algorithm value.
-    let _ = algorithm;
+    let _ = options.algorithm;
     Ok(())
+}
+
+fn unsupported(option: &str, reason: &str) -> ModelError {
+    ModelError::new(
+        ErrorCode::UnsupportedOperation,
+        format!("unsupported diff option '{option}': {reason}"),
+    )
 }

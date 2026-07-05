@@ -73,13 +73,21 @@ pub fn handle_diff(
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
 
     let options = request.options.clone().unwrap_or_default();
-    reject_unsupported_options(options.find_copies, options.algorithm)?;
+    reject_unsupported_options(&options)?;
 
     // Bare-operand disambiguation (D5): with no `--`, each positional operand is a
     // revision or a pathspec, decided per git's rule (see `super::classify`). The
     // revision half feeds `parse_comparison`; the pathspec half is prepended to
     // the explicit `--` pathspecs below.
-    let cwd_rel = request.workspace_cwd.clone().unwrap_or_default();
+    // The workspace-relative logical cwd (AD10). The client sends one in
+    // `workspace_cwd`, but it is computed against the raw invocation cwd (which,
+    // without `--root`, is *not* the discovered workspace root) — so a bare path
+    // operand entered from a member subdir would stat against the wrong base.
+    // Recompute it here against the *resolved* `root` and the physical `start`
+    // dir, which is authoritative; fall back to the client value only when `start`
+    // cannot be expressed under `root`.
+    let cwd_rel = resolved_cwd_rel(start, &root)
+        .unwrap_or_else(|| request.workspace_cwd.clone().unwrap_or_default());
     let classified = {
         let ctx = super::RevContext {
             repos: super::candidate_repos(&root, &manifest),
@@ -131,6 +139,7 @@ pub fn handle_diff(
             manifest_mode,
         )?);
     }
+    let parsed_targets = resolved_parsed_targets(&plan, &repo_results);
 
     // --quiet / any_difference: short-circuit once any repo differs. No file
     // list, summary-only, no output log.
@@ -141,7 +150,7 @@ pub fn handle_diff(
                 response: envelope(&request),
                 files: Vec::new(),
                 summary: Some(any_difference_summary(&repo_results, has_diff)),
-                targets: plan.parsed_targets(),
+                targets: parsed_targets,
                 output: None,
                 excluded_targets: plan.excluded_targets(),
             },
@@ -169,7 +178,7 @@ pub fn handle_diff(
                 response: envelope(&request),
                 files,
                 summary: Some(summary),
-                targets: plan.parsed_targets(),
+                targets: parsed_targets,
                 output: None,
                 excluded_targets: plan.excluded_targets(),
             },
@@ -182,6 +191,7 @@ pub fn handle_diff(
     let producer_targets = build_producer_targets(&root, &plan, &repo_results, &options, &files)?;
     let producer_opts = ProducerOptions {
         echo_manifest_entries: options.echo_manifest_entries.unwrap_or(false),
+        format,
     };
     run_producer(&log, producer_targets, producer_opts)?;
 
@@ -196,12 +206,29 @@ pub fn handle_diff(
             response: envelope(&request),
             files,
             summary: Some(summary),
-            targets: plan.parsed_targets(),
+            targets: parsed_targets,
             output: Some(output_ref),
             excluded_targets: plan.excluded_targets(),
         },
         log_id: Some(log_id),
     })
+}
+
+/// The physical invocation dir (`start`) expressed relative to the resolved
+/// workspace `root`, as a forward-slash, workspace-relative path (`""` at the
+/// root, `gwz-py`, `gwz-py/native/src`, …). This is the authoritative logical cwd
+/// for operand/pathspec routing (AD10): unlike the client-supplied
+/// `workspace_cwd`, it is computed against the *discovered* root, so it is correct
+/// even when the CLI was invoked from a member subdir without `--root`.
+///
+/// Both paths are canonicalized first so symlinks and `..` compare correctly.
+/// Returns `None` when `start` is not under `root` (the caller then falls back to
+/// the client value), so an out-of-tree invocation degrades rather than misroutes.
+fn resolved_cwd_rel(start: &Path, root: &Path) -> Option<String> {
+    let start_abs = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    let root_abs = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let rel = start_abs.strip_prefix(&root_abs).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
 }
 
 /// One planned target after resolution + diff: the repo path, its resolved
@@ -307,6 +334,19 @@ fn build_producer_targets(
     }
     let _ = (root, plan);
     Ok(targets)
+}
+
+fn resolved_parsed_targets(
+    plan: &DiffPlan,
+    repo_results: &[RepoResult],
+) -> Vec<crate::protocol::generated::DiffParsedTarget> {
+    let mut targets = plan.parsed_targets();
+    for (target, result) in targets.iter_mut().zip(repo_results) {
+        target.left_oid = result.comparison.left_oid.clone();
+        target.right_oid = result.comparison.right_oid.clone();
+        target.merge_base_oid = result.comparison.merge_base_oid.clone();
+    }
+    targets
 }
 
 // ── projection helpers ──────────────────────────────────────────────────────
