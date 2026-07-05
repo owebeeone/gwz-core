@@ -2733,6 +2733,7 @@ pub struct CommitRequest {
     pub meta: RequestMeta,
     pub message: String,
     pub all: Option<bool>,
+    pub commit_marker: Option<bool>,
 }
 impl CommitRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -2740,6 +2741,7 @@ impl CommitRequest {
             (1, self.meta.to_cbor()),
             (2, Cbor::Text(self.message.clone())),
             (3, match &self.all { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (4, match &self.commit_marker { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Self {
@@ -2747,6 +2749,7 @@ impl CommitRequest {
             meta: RequestMeta::from_cbor(c.get(1)),
             message: c.get(2).text(),
             all: { let v = c.get(3); if v.is_null() { None } else { Some(v.boolean()) } },
+            commit_marker: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
         }
     }
 }

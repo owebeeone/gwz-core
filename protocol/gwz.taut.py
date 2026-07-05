@@ -1089,7 +1089,9 @@ SCHEMA = schema(
         # Commit message applied to every committed repo.
         message=F(2, STR),
         # Stage tracked modifications first (git commit -a).
-        all=F(3, BOOL, optional=True)),
+        all=F(3, BOOL, optional=True),
+        # Create/persist GWZ commit marker metadata. Omitted means core default.
+        commit_marker=F(4, BOOL, optional=True)),
 
     # Stage pathspecs across the owning member/root repos (multi-repo git add).
     StageRequest=Msg(

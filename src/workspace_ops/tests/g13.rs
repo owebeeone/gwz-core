@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::artifact::read_lock;
+use crate::artifact::{list_markers, read_lock};
 use crate::git::{Git2Backend, GitBackend};
 
 use super::*;
@@ -13,6 +13,19 @@ pub(crate) fn set_identity(repo: &Path) {
     let mut cfg = repo.config().unwrap();
     cfg.set_str("user.name", "GWZ Test").unwrap();
     cfg.set_str("user.email", "gwz@example.invalid").unwrap();
+}
+
+fn head_message(repo: &Path) -> String {
+    let repo = git2::Repository::open(repo).unwrap();
+    let commit = repo.head().unwrap().peel_to_commit().unwrap();
+    commit.message().unwrap().to_owned()
+}
+
+fn trailer_value(message: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}: ");
+    message
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix).map(ToOwned::to_owned))
 }
 
 pub(crate) fn init_one_member_workspace(
@@ -50,6 +63,7 @@ fn commit_request() -> crate::CommitRequest {
         meta: request_meta(),
         message: "do the work".to_owned(),
         all: None,
+        commit_marker: None,
     }
 }
 
@@ -87,6 +101,44 @@ fn commit_fans_out_to_members_then_commits_root_last() {
     assert!(
         !backend.status(temp.path()).unwrap().is_dirty,
         "root is clean after commit"
+    );
+
+    let member_message = head_message(&member_root);
+    let root_message = head_message(temp.path());
+    let root_marker_id = trailer_value(&root_message, "GWZ-Commit-ID").unwrap();
+    assert_eq!(
+        trailer_value(&member_message, "GWZ-Commit-ID").as_deref(),
+        Some(root_marker_id.as_str())
+    );
+    assert_eq!(
+        trailer_value(&root_message, "GWZ-Workspace-ID").as_deref(),
+        Some("ws_ops")
+    );
+
+    let markers = list_markers(temp.path()).unwrap();
+    assert_eq!(markers.len(), 1);
+    assert_eq!(markers[0].gwz_commit_id, root_marker_id);
+    assert_eq!(markers[0].members["mem_remote"].commit, after);
+    assert!(
+        markers[0]
+            .committed_targets
+            .iter()
+            .any(|target| target == "mem_remote")
+    );
+    assert!(
+        markers[0]
+            .committed_targets
+            .iter()
+            .any(|target| target == "@root")
+    );
+    let repo = git2::Repository::open(temp.path()).unwrap();
+    assert!(
+        repo.revparse_single(&format!(
+            "HEAD:gwz.conf/markers/{}.yaml",
+            markers[0].gwz_commit_id
+        ))
+        .is_ok(),
+        "marker artifact was committed in the root"
     );
 }
 
@@ -137,6 +189,11 @@ fn commit_commits_root_only_staged_changes() {
             .is_ok(),
         "root-only staged file was committed"
     );
+    assert_eq!(list_markers(temp.path()).unwrap().len(), 1);
+    assert!(
+        head_message(temp.path()).contains("GWZ-Commit-ID:"),
+        "root-only marker commit has trailers"
+    );
 }
 
 #[test]
@@ -149,6 +206,7 @@ fn commit_with_nothing_to_commit_is_a_success_noop() {
     // First commit the workspace metadata staged by init so the root is clean.
     handle_commit(&backend, temp.path(), commit_request(), "op_commit_initial").unwrap();
     let before = backend.head(temp.path()).unwrap().commit;
+    let marker_count = list_markers(temp.path()).unwrap().len();
     assert!(before.is_some(), "initial root metadata was committed");
     assert!(
         !backend.status(temp.path()).unwrap().is_dirty,
@@ -168,4 +226,35 @@ fn commit_with_nothing_to_commit_is_a_success_noop() {
         before,
         "root not committed again"
     );
+    assert_eq!(
+        list_markers(temp.path()).unwrap().len(),
+        marker_count,
+        "noop does not create another marker"
+    );
+}
+
+#[test]
+fn commit_marker_can_be_disabled() {
+    let temp = TempDir::new("commit-marker-disabled");
+    let backend = Git2Backend::new();
+    let _fixture =
+        init_one_member_workspace(temp.path(), &backend, "commit-marker-disabled-source");
+
+    let member_root = temp.path().join("remote");
+    set_identity(&member_root);
+    set_identity(temp.path());
+    fs::write(member_root.join("work.txt"), "data\n").unwrap();
+    backend.stage_paths(&member_root, &["work.txt"]).unwrap();
+
+    let mut request = commit_request();
+    request.commit_marker = Some(false);
+    let response = handle_commit(&backend, temp.path(), request, "op_commit_no_marker").unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+
+    assert!(list_markers(temp.path()).unwrap().is_empty());
+    assert!(!head_message(&member_root).contains("GWZ-Commit-ID:"));
+    assert!(!head_message(temp.path()).contains("GWZ-Commit-ID:"));
 }

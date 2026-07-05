@@ -12,8 +12,10 @@ use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 pub const WORKSPACE_SCHEMA: &str = "gwz.workspace/v0";
 pub const LOCK_SCHEMA: &str = "gwz.lock/v0";
 pub const SNAPSHOT_SCHEMA: &str = "gwz.snapshot/v0";
+pub const MARKER_SCHEMA: &str = "gwz.marker/v0";
 pub const LOCK_PATH: &str = "gwz.conf/gwz.lock.yml";
 pub const SNAPSHOT_DIR: &str = "gwz.conf/snapshots";
+pub const MARKER_DIR: &str = "gwz.conf/markers";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ManifestArtifact {
@@ -239,6 +241,70 @@ impl SnapshotArtifact {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MarkerArtifact {
+    pub schema: String,
+    pub gwz_commit_id: String,
+    pub workspace_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_url_hash: Option<String>,
+    pub created_at: String,
+    pub created_by: CreatedByArtifact,
+    pub root: MarkerRootArtifact,
+    pub selected_targets: Vec<String>,
+    pub committed_targets: Vec<String>,
+    pub members: BTreeMap<String, ResolvedMemberArtifact>,
+}
+
+impl MarkerArtifact {
+    pub fn from_yaml(text: &str) -> ModelResult<Self> {
+        let artifact: Self = parse_yaml(text)?;
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    pub fn to_yaml(&self) -> ModelResult<String> {
+        self.validate()?;
+        emit_yaml(self)
+    }
+
+    pub fn validate(&self) -> ModelResult<()> {
+        require_schema(&self.schema, MARKER_SCHEMA)?;
+        require_uuid_v7("gwz_commit_id", &self.gwz_commit_id)?;
+        parse_id("workspace_id", "ws_", &self.workspace_id)?;
+        if let Some(hash) = &self.origin_url_hash {
+            validate_origin_url_hash(hash)?;
+        }
+        self.root.validate()?;
+        for target in &self.selected_targets {
+            validate_target_ref("selected target", target)?;
+        }
+        for target in &self.committed_targets {
+            validate_target_ref("committed target", target)?;
+        }
+        validate_member_record(&self.created_at, &self.created_by, &[], &self.members)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MarkerRootArtifact {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+impl MarkerRootArtifact {
+    fn validate(&self) -> ModelResult<()> {
+        if self.path != "." {
+            return Err(invalid("marker root.path must be ."));
+        }
+        validate_optional_text("root.before_commit", &self.before_commit)?;
+        validate_optional_text("root.branch", &self.branch)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CreatedByArtifact {
     pub actor_id: String,
 }
@@ -290,6 +356,22 @@ pub fn write_snapshot(root: &Path, artifact: &SnapshotArtifact) -> ModelResult<(
 /// All snapshots in the workspace, sorted by file name. A missing dir is an empty list.
 pub fn list_snapshots(root: &Path) -> ModelResult<Vec<SnapshotArtifact>> {
     list_artifacts(root.join(SNAPSHOT_DIR), SnapshotArtifact::from_yaml)
+}
+
+pub fn read_marker(root: &Path, gwz_commit_id: &str) -> ModelResult<MarkerArtifact> {
+    MarkerArtifact::from_yaml(&read_to_string(marker_path(root, gwz_commit_id))?)
+}
+
+pub fn write_marker(root: &Path, artifact: &MarkerArtifact) -> ModelResult<()> {
+    write_atomic(
+        &marker_path(root, &artifact.gwz_commit_id),
+        artifact.to_yaml()?,
+    )
+}
+
+/// All commit markers in the workspace, sorted by file name. A missing dir is an empty list.
+pub fn list_markers(root: &Path) -> ModelResult<Vec<MarkerArtifact>> {
+    list_artifacts(root.join(MARKER_DIR), MarkerArtifact::from_yaml)
 }
 
 /// Read + parse every `*.yaml` in `dir`, path-sorted. A missing dir yields an empty list.
@@ -403,6 +485,10 @@ pub(crate) fn snapshot_path(root: &Path, snapshot_id: &str) -> PathBuf {
     root.join(SNAPSHOT_DIR).join(format!("{snapshot_id}.yaml"))
 }
 
+pub fn marker_path(root: &Path, gwz_commit_id: &str) -> PathBuf {
+    root.join(MARKER_DIR).join(format!("{gwz_commit_id}.yaml"))
+}
+
 fn temp_path(path: &Path) -> ModelResult<PathBuf> {
     let file_name = path
         .file_name()
@@ -454,6 +540,51 @@ fn validate_member_record(
         member.validate(false)?;
     }
     Ok(())
+}
+
+fn validate_target_ref(field: &str, value: &str) -> ModelResult<()> {
+    if value == "@root" || value == "@default" {
+        return Ok(());
+    }
+    if value.starts_with('@') {
+        return require_non_empty(field, value);
+    }
+    parse_id(field, "mem_", value)
+}
+
+fn require_uuid_v7(field: &str, value: &str) -> ModelResult<()> {
+    let bytes = value.as_bytes();
+    let valid = bytes.len() == 36
+        && bytes[8] == b'-'
+        && bytes[13] == b'-'
+        && bytes[14] == b'7'
+        && bytes[18] == b'-'
+        && bytes[23] == b'-'
+        && bytes.iter().enumerate().all(|(idx, byte)| {
+            [8, 13, 18, 23].contains(&idx) || byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(format!("{field} must be a canonical UUIDv7")))
+    }
+}
+
+fn validate_origin_url_hash(value: &str) -> ModelResult<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(invalid("origin_url_hash must start with sha256:"));
+    };
+    let valid = hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(
+            "origin_url_hash must be sha256:<64 lowercase hex chars>",
+        ))
+    }
 }
 
 fn reject_duplicate_remote_names(remotes: &[RemoteArtifact]) -> ModelResult<()> {
@@ -568,10 +699,22 @@ mod tests {
     }
 
     #[test]
+    fn marker_round_trips() {
+        let marker = sample_marker();
+        let yaml = marker.to_yaml().unwrap();
+
+        assert_eq!(MarkerArtifact::from_yaml(&yaml).unwrap(), marker);
+    }
+
+    #[test]
     fn unsupported_major_schema_versions_fail_with_typed_error() {
         let manifest = MANIFEST_GOLDEN.replace("gwz.workspace/v0", "gwz.workspace/v1");
         let lock = LOCK_GOLDEN.replacen("gwz.lock/v0", "gwz.lock/v1", 1);
         let snapshot = SNAPSHOT_GOLDEN.replace("gwz.snapshot/v0", "gwz.snapshot/v1");
+        let marker = sample_marker()
+            .to_yaml()
+            .unwrap()
+            .replace("gwz.marker/v0", "gwz.marker/v1");
 
         assert_eq!(
             ManifestArtifact::from_yaml(&manifest).unwrap_err().code,
@@ -583,6 +726,10 @@ mod tests {
         );
         assert_eq!(
             SnapshotArtifact::from_yaml(&snapshot).unwrap_err().code,
+            ErrorCode::SchemaUnsupported
+        );
+        assert_eq!(
+            MarkerArtifact::from_yaml(&marker).unwrap_err().code,
             ErrorCode::SchemaUnsupported
         );
     }
@@ -606,6 +753,7 @@ mod tests {
         write_manifest(temp.path(), &sample_manifest()).unwrap();
         write_lock(temp.path(), &sample_lock()).unwrap();
         write_snapshot(temp.path(), &sample_snapshot()).unwrap();
+        write_marker(temp.path(), &sample_marker()).unwrap();
 
         assert_eq!(read_manifest(temp.path()).unwrap(), sample_manifest());
         assert_eq!(read_lock(temp.path()).unwrap(), sample_lock());
@@ -613,10 +761,19 @@ mod tests {
             read_snapshot(temp.path(), "snap_demo").unwrap(),
             sample_snapshot()
         );
+        assert_eq!(
+            read_marker(temp.path(), &sample_marker().gwz_commit_id).unwrap(),
+            sample_marker()
+        );
 
         assert!(
             temp.path()
                 .join("gwz.conf/snapshots/snap_demo.yaml")
+                .is_file()
+        );
+        assert!(
+            temp.path()
+                .join("gwz.conf/markers/01987b0c-2f75-7c4a-9a32-8fd22f7d7c91.yaml")
                 .is_file()
         );
     }
@@ -638,6 +795,30 @@ mod tests {
                 .map(|snapshot| snapshot.snapshot_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["snap_alpha", "snap_demo"]
+        );
+    }
+
+    #[test]
+    fn list_markers_reads_sorted_entries() {
+        let temp = TempDir::new("marker-list");
+        // No dir yet -> empty, not an error.
+        assert!(list_markers(temp.path()).unwrap().is_empty());
+
+        let marker = sample_marker();
+        write_marker(temp.path(), &marker).unwrap();
+        let mut alpha = marker.clone();
+        alpha.gwz_commit_id = "01987b0c-2f75-7c4a-9a32-8fd22f7d7c92".to_owned();
+        write_marker(temp.path(), &alpha).unwrap();
+        let markers = list_markers(temp.path()).unwrap();
+        assert_eq!(
+            markers
+                .iter()
+                .map(|marker| marker.gwz_commit_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "01987b0c-2f75-7c4a-9a32-8fd22f7d7c91",
+                "01987b0c-2f75-7c4a-9a32-8fd22f7d7c92"
+            ]
         );
     }
 
@@ -699,6 +880,27 @@ mod tests {
                 actor_id: "agent_01".to_owned(),
             },
             selected_members: vec!["mem_01".to_owned()],
+            members: [("mem_01".to_owned(), sample_short_member())].into(),
+        }
+    }
+
+    fn sample_marker() -> MarkerArtifact {
+        MarkerArtifact {
+            schema: MARKER_SCHEMA.to_owned(),
+            gwz_commit_id: "01987b0c-2f75-7c4a-9a32-8fd22f7d7c91".to_owned(),
+            workspace_id: "ws_01".to_owned(),
+            origin_url_hash: Some(format!("sha256:{}", "0".repeat(64))),
+            created_at: "2026-06-15T00:00:00Z".to_owned(),
+            created_by: CreatedByArtifact {
+                actor_id: "agent_01".to_owned(),
+            },
+            root: MarkerRootArtifact {
+                path: ".".to_owned(),
+                before_commit: Some("abc123".to_owned()),
+                branch: Some("main".to_owned()),
+            },
+            selected_targets: vec!["@root".to_owned(), "mem_01".to_owned()],
+            committed_targets: vec!["mem_01".to_owned(), "@root".to_owned()],
             members: [("mem_01".to_owned(), sample_short_member())].into(),
         }
     }
