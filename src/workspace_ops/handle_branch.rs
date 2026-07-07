@@ -213,7 +213,6 @@ fn create_branch<B: GitBackend>(
         for (member_id, observed) in &observed_states {
             next.members.insert(member_id.clone(), observed.clone());
         }
-        next.created_at = now_marker();
         artifact::write_lock(root, &next)?;
         sync_workspace_boundary(backend, root, &next)?;
     }
@@ -372,7 +371,6 @@ fn merge_branch<B: GitBackend>(
         for (member_id, observed) in &observed_states {
             next.members.insert(member_id.clone(), observed.clone());
         }
-        next.created_at = now_marker();
         if let Err(error) = artifact::write_lock(root, &next) {
             return Ok(partial_response(context, summaries, &error));
         }

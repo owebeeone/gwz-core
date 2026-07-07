@@ -64,7 +64,6 @@ fn write_workspace(temp: &std::path::Path, members: Vec<ManifestMember>, materia
             schema: artifact::LOCK_SCHEMA.to_owned(),
             workspace_id: "ws_ops".to_owned(),
             manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-            created_at: "t".to_owned(),
             members: lock_members,
         },
     )

@@ -138,7 +138,6 @@ mod tests {
             schema: "gwz.lock/v0".to_owned(),
             workspace_id: "ws".to_owned(),
             manifest_schema: "gwz.workspace/v0".to_owned(),
-            created_at: "t".to_owned(),
             members,
         }
     }

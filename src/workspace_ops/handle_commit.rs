@@ -164,7 +164,6 @@ where
         for (member_id, state) in &members {
             next.members.insert(member_id.clone(), state.clone());
         }
-        next.created_at = now_marker();
         artifact::write_lock(&root, &next)?;
         lock_for_boundary = next;
     }

@@ -91,7 +91,6 @@ where
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id,
         manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-        created_at: now_marker(),
         members: BTreeMap::new(),
     };
     let progress_interval = request
@@ -198,7 +197,6 @@ where
         emitter.operation_finished();
         return Err(error);
     }
-    lock.created_at = now_marker();
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
     sync_workspace_boundary(backend, &root, &lock)?;
     ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;

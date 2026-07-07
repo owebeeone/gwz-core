@@ -90,7 +90,6 @@ where
     for (member_id, state) in &members {
         next.members.insert(member_id.clone(), state.clone());
     }
-    next.created_at = now_marker();
     artifact::write_lock(&root, &next)?;
     sync_workspace_boundary(backend, &root, &next)?;
     Ok(crate::CaptureResponse {
@@ -180,7 +179,6 @@ where
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id: manifest.workspace.id.clone(),
         manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-        created_at: now_marker(),
         members: target_members,
     };
     // A tag covers only the members that carry it. With the default (None) selection, restrict to
@@ -352,7 +350,6 @@ where
         for (member_id, observed) in &observed_states {
             lock.members.insert(member_id.clone(), observed.clone());
         }
-        lock.created_at = now_marker();
         artifact::write_lock(root, &lock)?;
     }
 
@@ -417,7 +414,6 @@ where
     for (member_id, observed) in &observed_states {
         next.members.insert(member_id.clone(), observed.clone());
     }
-    next.created_at = now_marker();
     artifact::write_lock(&root, &next)?;
     sync_workspace_boundary(backend, &root, &next)?;
 

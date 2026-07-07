@@ -44,7 +44,6 @@ pub fn handle_create_workspace(
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id,
         manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-        created_at: now_marker(),
         members: BTreeMap::new(),
     };
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
@@ -132,7 +131,6 @@ where
     let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
     let locked = resolved_member(&manifest_member, &head, &status);
     lock.members.insert(member_id.clone(), locked.clone());
-    lock.created_at = now_marker();
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
     sync_workspace_boundary(backend, &root, &lock)?;
 
@@ -217,7 +215,6 @@ where
     let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
     let locked = resolved_member(&manifest_member, &head, &status);
     lock.members.insert(member_id.clone(), locked.clone());
-    lock.created_at = now_marker();
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
     sync_workspace_boundary(backend, &root, &lock)?;
 
@@ -644,7 +641,6 @@ pub(crate) fn read_lock_or_empty(root: &Path, workspace_id: &str) -> ModelResult
             schema: artifact::LOCK_SCHEMA.to_owned(),
             workspace_id: workspace_id.to_owned(),
             manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-            created_at: now_marker(),
             members: BTreeMap::new(),
         })
     }

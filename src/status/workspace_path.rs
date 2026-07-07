@@ -346,7 +346,6 @@ mod tests {
             schema: crate::artifact::LOCK_SCHEMA.to_owned(),
             workspace_id: "ws_status".to_owned(),
             manifest_schema: crate::artifact::WORKSPACE_SCHEMA.to_owned(),
-            created_at: "2026-06-15T00:00:00Z".to_owned(),
             members: BTreeMap::from([(
                 member_id.to_owned(),
                 ResolvedMemberArtifact {

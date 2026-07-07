@@ -134,7 +134,6 @@ where
             &conflicts,
         ));
     }
-    lock.created_at = now_marker();
     artifact::write_lock(&root, &lock)?;
     sync_workspace_boundary(backend, &root, &lock)?;
     emitter.operation_finished();
@@ -382,7 +381,6 @@ where
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id: manifest.workspace.id.clone(),
         manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-        created_at: now_marker(),
         members,
     };
     artifact::write_lock(root, &lock)?;
@@ -410,7 +408,6 @@ where
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id: manifest.workspace.id.clone(),
         manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-        created_at: now_marker(),
         members,
     };
     artifact::write_lock(root, &lock)?;

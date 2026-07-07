@@ -137,7 +137,6 @@ pub struct LockArtifact {
     pub schema: String,
     pub workspace_id: String,
     pub manifest_schema: String,
-    pub created_at: String,
     pub members: BTreeMap<String, ResolvedMemberArtifact>,
 }
 
@@ -157,7 +156,6 @@ impl LockArtifact {
         require_schema(&self.schema, LOCK_SCHEMA)?;
         require_schema(&self.manifest_schema, WORKSPACE_SCHEMA)?;
         parse_id("workspace_id", "ws_", &self.workspace_id)?;
-        require_non_empty("created_at", &self.created_at)?;
         for (member_id, member) in &self.members {
             parse_id("member id", "mem_", member_id)?;
             member.validate(true)?;
@@ -671,7 +669,7 @@ mod tests {
 
     const MANIFEST_GOLDEN: &str = "schema: gwz.workspace/v0\nworkspace:\n  id: ws_01\nmembers:\n- id: mem_01\n  path: repos/example\n  type: git\n  source_id: src_01\n  active: true\n  desired:\n    branch: main\n  remotes:\n  - name: origin\n    url: git@example.invalid:example.git\n    fetch: true\n    push: true\n";
 
-    const LOCK_GOLDEN: &str = "schema: gwz.lock/v0\nworkspace_id: ws_01\nmanifest_schema: gwz.workspace/v0\ncreated_at: 2026-06-15T00:00:00Z\nmembers:\n  mem_01:\n    path: repos/example\n    source_id: src_01\n    source_kind: git\n    commit: abc123\n    branch: main\n    detached: false\n    upstream: origin/main\n    dirty: false\n    materialized: true\n";
+    const LOCK_GOLDEN: &str = "schema: gwz.lock/v0\nworkspace_id: ws_01\nmanifest_schema: gwz.workspace/v0\nmembers:\n  mem_01:\n    path: repos/example\n    source_id: src_01\n    source_kind: git\n    commit: abc123\n    branch: main\n    detached: false\n    upstream: origin/main\n    dirty: false\n    materialized: true\n";
 
     const SNAPSHOT_GOLDEN: &str = "schema: gwz.snapshot/v0\nworkspace_id: ws_01\nsnapshot_id: snap_demo\ncreated_at: 2026-06-15T00:00:00Z\ncreated_by:\n  actor_id: agent_01\nselected_members:\n- mem_01\nmembers:\n  mem_01:\n    path: repos/example\n    source_kind: git\n    commit: abc123\n";
 
@@ -865,7 +863,6 @@ mod tests {
             schema: LOCK_SCHEMA.to_owned(),
             workspace_id: "ws_01".to_owned(),
             manifest_schema: WORKSPACE_SCHEMA.to_owned(),
-            created_at: "2026-06-15T00:00:00Z".to_owned(),
             members: [("mem_01".to_owned(), sample_resolved_member())].into(),
         }
     }
