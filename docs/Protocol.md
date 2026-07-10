@@ -22,12 +22,30 @@ push/list/apply/pop/drop coordinated bundle behavior.
 
 ## Transport
 
-`gwz-core` does not define a network transport. A caller can use the generated
-types in-process, or serialize them with the generated CBOR runtime exposed as
-`gwz_core::Cbor`, `gwz_core::encode`, and `gwz_core::decode`.
+The message boundary is intentionally transport-neutral. A caller can use the
+generated types in-process, or place a bridge between the client and a
+`gwz-core` host. The host can run in another process or on another machine as
+long as it has access to the workspace being operated on.
+
+Generated messages have deterministic CBOR encoding through
+`gwz_core::Cbor`, `gwz_core::encode`, and `gwz_core::decode`. Taut's IR-driven
+JSON codec provides a language-neutral JSON representation of the same
+messages. A JSON bridge can therefore accept a service method plus its request
+message, dispatch it to core, and return response, event, and operation-result
+messages without parsing CLI output or reproducing command behavior.
+
+Use the Taut schema-driven JSON rules rather than ad hoc object serialization;
+enum values, integers, byte fields, optional values, and future unknown fields
+must retain their protocol meaning.
+
+`gwz-core` does not itself define an HTTP endpoint, daemon, authentication
+scheme, or deployment topology. The embedding application owns those choices.
+This separation is deliberate: core defines workspace semantics and messages,
+while the transport defines how a remote or local client reaches them.
 
 Transport bridges should preserve:
 
+- service and method names;
 - request and response message names;
 - `RequestMeta.request_id`;
 - `ResponseMeta.operation_id`;

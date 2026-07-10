@@ -1,12 +1,21 @@
 # Embedding gwz-core
 
 `gwz-core` is useful when a tool needs the GWZ engine without invoking the CLI:
-an agent, desktop UI, test harness, local service, or command wrapper can build
-typed requests and call the same handlers the CLI uses.
+an agent, desktop UI, test harness, local service, remote workspace host, or
+command wrapper can build typed requests and call the same operations the CLI
+uses.
 
 The library does not parse command-line flags, render terminal output, execute
-`forall` child processes, or own a network transport. It accepts generated taut
-request structs and returns generated response structs.
+`forall` child processes, or mandate a network transport. It accepts generated
+Taut request messages and returns generated response messages. An embedding can
+call handlers directly or expose the `GwzCore` service through a local or
+remote adapter using deterministic CBOR or Taut's schema-driven JSON
+representation.
+
+This keeps the client and workspace engine separable: the client does not need
+filesystem access, Git policy, or a Rust link when a service host owns those
+responsibilities. See [Protocol](Protocol.md) for the message and transport
+contract.
 
 ## Basic Pattern
 

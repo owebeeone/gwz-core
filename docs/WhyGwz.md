@@ -29,6 +29,38 @@ GWZ gives the workspace itself a small, tracked root repository. Its
 needed to reproduce the workspace. Commands then operate through that shared
 model instead of through unrelated loops of shell commands.
 
+## How GWZ Differs From Repository Fan-out Tools
+
+GWZ is in the same broad problem space as tools such as `vcstool`, Google's
+`repo`, West, and Git submodules, but it makes a different architectural
+choice.
+
+For example, [`vcstool`](https://github.com/dirk-thomas/vcstool) deliberately
+keeps no state beyond the working copies it discovers on disk. It recursively
+finds repositories, invokes their native VCS clients, and can import or export
+a YAML description of repository paths, URLs, and versions. That is a useful,
+lightweight model when the main requirement is to obtain a set of repositories
+or run a VCS command across them.
+
+GWZ treats the workspace as a durable, versioned object:
+
+- a root Git repository owns the reviewed manifest, lock, and snapshots;
+- member ids and source ids provide stable identity beyond a directory scan;
+- membership has a lifecycle, including explicit detach and attach, rather
+  than being inferred only from which repositories are currently on disk;
+- operations share typed selection, policy, dry-run, attribution, event,
+  error, and per-member result contracts;
+- workspace composition changes can be committed alongside the changes that
+  depend on them;
+- the execution engine is an embeddable message service, not only a command
+  that fans native VCS arguments out to local directories.
+
+The choice is not “GWZ does everything and the other tools do nothing.” If a
+portable repository list and batch VCS invocation are the whole requirement, a
+smaller fan-out tool may be the better fit. GWZ is aimed at workspaces whose
+composition, coordinated operations, automation contract, and recoverability
+are part of the product's development state.
+
 ## What GWZ Adds
 
 ### Reproducible composition
@@ -51,12 +83,33 @@ existing checkout, temporarily detaching a designation, and attaching that
 historical designation again. Repository identity and workspace membership do
 not have to be inferred from directory names or remote URLs.
 
-### A stable engine for more than one interface
+### A message-driven engine for local, embedded, and remote clients
 
-`gwz-core` implements the workspace model, Git operations, typed requests,
-responses, errors, dry-run policy, and operation events. The primary Rust
-`gwz` CLI and the Python bindings and `gwz-py` CLI exercise the same core
-semantics, while other tools and agents can embed the library directly.
+GWZ was designed from scratch so the execution engine is not fused to a
+particular CLI or even to the client process. `gwz-core` contains the bulk of
+the workspace behavior: artifact handling, Git operations, selection, policy,
+locking, typed errors, dry-run planning, per-member results, and operation
+events.
+
+The public operation surface is described as a Taut `GwzCore` service. Clients
+send named request messages and receive named response messages rather than
+asking core to parse command-line arguments. The Rust `gwz` CLI, the Python
+bindings and `gwz-py` CLI, agents, UIs, and services can therefore use the same
+operation model.
+
+That message boundary also allows the client and `gwz-core` to run separately.
+An adapter can host core beside the workspace and expose it to a client in
+another process or on another machine. Messages have deterministic CBOR
+encoding and a schema-driven JSON representation, so a client can drive the
+service with JSON without linking Rust or reproducing the workspace logic.
+Long-running operations expose event messages and later result lookup instead
+of requiring a terminal session to remain the control plane.
+
+`gwz-core` intentionally does not mandate an HTTP, RPC, queue, or daemon
+implementation. It supplies the service and message contracts; an embedding
+application chooses the transport, authentication, authorization, and process
+topology. “Remote-capable” is therefore an architectural property, not a claim
+that the core crate itself starts a network server.
 
 ## What GWZ Does Not Replace
 
@@ -78,6 +131,10 @@ GWZ is a good fit when:
 - changes regularly span repository boundaries;
 - CI, developer tools, UIs, or agents need typed workspace operations rather
   than project-specific shell orchestration;
+- the client should run separately from the machine or service that owns the
+  workspace checkout;
+- a non-Rust client needs a schema-driven JSON or CBOR contract instead of a
+  shell-command protocol;
 - repository membership changes should retain history and be reviewable.
 
 For a single repository with no coordinated external members, ordinary Git is
@@ -91,4 +148,3 @@ usually enough.
   [GWZ CLI documentation](https://github.com/owebeeone/gwz-cli/tree/main/docs).
 - To embed the engine, continue with [Embedding](Embedding.md) and
   [OperationModel](OperationModel.md).
-
