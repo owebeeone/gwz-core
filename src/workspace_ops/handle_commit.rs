@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::artifact::{self, ManifestArtifact, ResolvedMemberArtifact};
 use crate::git::{GitBackend, GitHeadState};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::OperationRequest;
+use crate::operation::{OperationRequest, WorkspaceMutatorLock};
 
 use super::*;
 
@@ -29,6 +29,7 @@ where
 {
     let context = OperationRequest::Commit(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let _guard = WorkspaceMutatorLock::acquire(&root)?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
@@ -194,11 +195,11 @@ where
         )?;
         // Refresh the boundary excludes + stage gwz.conf so the lock update and marker
         // land in the root commit.
-        sync_workspace_boundary(backend, &root, &lock_for_boundary)?;
+        sync_workspace_boundary(backend, &root, &manifest, &lock_for_boundary)?;
     } else if committed_member {
         // Refresh the boundary excludes + stage gwz.conf so the lock update (the
         // post-commit member HEADs) lands in the root commit when the root is selected.
-        sync_workspace_boundary(backend, &root, &lock_for_boundary)?;
+        sync_workspace_boundary(backend, &root, &manifest, &lock_for_boundary)?;
     }
 
     // Commit the root last. This covers both the lock update from member commits

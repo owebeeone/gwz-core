@@ -183,15 +183,31 @@ pub(crate) fn find_member_by_path<'a>(
     manifest: &'a ManifestArtifact,
     path: &str,
 ) -> ModelResult<&'a ManifestMember> {
-    let mut matches = manifest.members.iter().filter(|member| member.path == path);
-    let member = matches
-        .next()
-        .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member path not found"))?;
-    if matches.next().is_some() {
-        return Err(invalid("member path selection is ambiguous"));
+    let mut active_matches = manifest
+        .members
+        .iter()
+        .filter(|member| member.active && member.path == path);
+    if let Some(member) = active_matches.next() {
+        if active_matches.next().is_some() {
+            return Err(invalid("active member path selection is ambiguous"));
+        }
+        return Ok(member);
     }
-    require_active(member)?;
-    Ok(member)
+
+    if manifest
+        .members
+        .iter()
+        .any(|member| !member.active && member.path == path)
+    {
+        return Err(ModelError::new(
+            ErrorCode::MemberInactive,
+            "selected member path has only inactive designations",
+        ));
+    }
+    Err(ModelError::new(
+        ErrorCode::MemberNotFound,
+        "member path not found",
+    ))
 }
 
 pub(crate) fn require_active(member: &ManifestMember) -> ModelResult<()> {
@@ -423,6 +439,35 @@ mod tests {
                 RootSelectionPolicy::Allow,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn path_selection_prefers_active_replacement_at_historical_path() {
+        let mut manifest = manifest();
+        manifest
+            .members
+            .push(member("mem_old_v2", "repos/old", true));
+
+        assert_eq!(
+            find_member_by_path(&manifest, "repos/old").unwrap().id,
+            "mem_old_v2"
+        );
+    }
+
+    #[test]
+    fn historical_only_path_and_id_are_member_inactive() {
+        let manifest = manifest();
+
+        assert_eq!(
+            find_member_by_path(&manifest, "repos/old")
+                .unwrap_err()
+                .code,
+            ErrorCode::MemberInactive
+        );
+        assert_eq!(
+            find_member_by_id(&manifest, "mem_old").unwrap_err().code,
+            ErrorCode::MemberInactive
         );
     }
 }

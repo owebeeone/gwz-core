@@ -8,7 +8,8 @@ use crate::artifact::{
 use crate::git::{GitBackend, GitHeadState, git_host};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::{
-    EventEmitter, EventSink, OperationRequest, par_map_per_host, resolve_jobs, resolve_per_host,
+    EventEmitter, EventSink, OperationRequest, WorkspaceMutatorLock, par_map_per_host,
+    resolve_jobs, resolve_per_host,
 };
 use crate::workspace::{
     MemberPath, WORKSPACE_MANIFEST, preflight_create_workspace, validate_member_path_set,
@@ -87,6 +88,7 @@ where
     }
 
     ensure_workspace_git_repo(&root)?;
+    let _guard = WorkspaceMutatorLock::acquire(&root)?;
     let mut lock = LockArtifact {
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id,
@@ -198,7 +200,7 @@ where
         return Err(error);
     }
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-    sync_workspace_boundary(backend, &root, &lock)?;
+    sync_workspace_boundary(backend, &root, &manifest, &lock)?;
     ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;
     emitter.operation_finished();
 
@@ -269,12 +271,7 @@ pub(crate) fn init_source_plans(
         .iter()
         .map(|member| member.id.clone())
         .collect::<BTreeSet<_>>();
-    let mut source_ids = manifest
-        .members
-        .iter()
-        .map(|member| member.source_id.clone())
-        .collect::<BTreeSet<_>>();
-    for member in &manifest.members {
+    for member in manifest.members.iter().filter(|member| member.active) {
         paths.push(MemberPath::parse(&member.path)?);
     }
 
@@ -305,12 +302,6 @@ pub(crate) fn init_source_plans(
             return Err(ModelError::new(
                 ErrorCode::InvalidRequest,
                 "member id is already registered",
-            ));
-        }
-        if !source_ids.insert(plan.source_id.clone()) {
-            return Err(ModelError::new(
-                ErrorCode::InvalidRequest,
-                "source id is already registered",
             ));
         }
     }

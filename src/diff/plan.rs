@@ -507,7 +507,12 @@ fn intersect_pathspecs(
     targets: Vec<PlannedTarget>,
     oracle: &dyn MaterializationOracle,
 ) -> ModelResult<Vec<PlannedTarget>> {
-    let member_paths: Vec<String> = manifest.members.iter().map(|m| m.path.clone()).collect();
+    let member_paths: Vec<String> = manifest
+        .members
+        .iter()
+        .filter(|member| member.active)
+        .map(|member| member.path.clone())
+        .collect();
     // Route against a synthetic workspace root so the escape check is
     // workspace-relative (AD10), not client-absolute. A non-`/` sentinel is
     // required: `..` above the workspace top must escape *out* of the sentinel so
@@ -599,7 +604,7 @@ fn validate_explicit_member_pathspec(
     let member = manifest
         .members
         .iter()
-        .find(|m| m.path == member_path)
+        .find(|member| member.active && member.path == member_path)
         .ok_or_else(|| {
             ModelError::new(
                 ErrorCode::MemberNotFound,

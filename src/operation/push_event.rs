@@ -31,6 +31,9 @@ pub enum ActionKind {
     Branch,
     CloneWorkspace,
     ListSnapshots,
+    CloneRepoMember,
+    DetachRepoMember,
+    AttachRepoMember,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +53,8 @@ pub enum PlannedAction {
     Merge,
     Rebase,
     Reset,
+    DetachMember,
+    AttachMember,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,6 +112,9 @@ pub enum OperationRequest {
     Stash(crate::StashRequest),
     Branch(crate::BranchRequest),
     CloneWorkspace(crate::CloneWorkspaceRequest),
+    CloneRepoMember(crate::CloneRepoMemberRequest),
+    DetachRepoMember(crate::DetachRepoMemberRequest),
+    AttachRepoMember(crate::AttachRepoMemberRequest),
 }
 
 impl OperationRequest {
@@ -132,6 +140,9 @@ impl OperationRequest {
             Self::Stash(request) => (ActionKind::Stash, &request.meta),
             Self::Branch(request) => (ActionKind::Branch, &request.meta),
             Self::CloneWorkspace(request) => (ActionKind::CloneWorkspace, &request.meta),
+            Self::CloneRepoMember(request) => (ActionKind::CloneRepoMember, &request.meta),
+            Self::DetachRepoMember(request) => (ActionKind::DetachRepoMember, &request.meta),
+            Self::AttachRepoMember(request) => (ActionKind::AttachRepoMember, &request.meta),
         };
         OperationContext::from_meta(operation_id.into(), action, meta)
     }
@@ -539,6 +550,9 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::Branch => Self::Branch,
             ActionKind::CloneWorkspace => Self::CloneWorkspace,
             ActionKind::ListSnapshots => Self::ListSnapshots,
+            ActionKind::CloneRepoMember => Self::CloneRepoMember,
+            ActionKind::DetachRepoMember => Self::DetachRepoMember,
+            ActionKind::AttachRepoMember => Self::AttachRepoMember,
         }
     }
 }
@@ -561,6 +575,8 @@ impl From<PlannedAction> for crate::PlannedAction {
             PlannedAction::Merge => Self::Merge,
             PlannedAction::Rebase => Self::Rebase,
             PlannedAction::Reset => Self::Reset,
+            PlannedAction::DetachMember => Self::DetachMember,
+            PlannedAction::AttachMember => Self::AttachMember,
         }
     }
 }

@@ -26,6 +26,9 @@ pub enum ActionKind {
     CloneWorkspace,
     ListSnapshots,
     Diff,
+    CloneRepoMember,
+    DetachRepoMember,
+    AttachRepoMember,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -51,6 +54,9 @@ impl ActionKind {
         Self::CloneWorkspace => 19,
         Self::ListSnapshots => 20,
         Self::Diff => 21,
+        Self::CloneRepoMember => 22,
+        Self::DetachRepoMember => 23,
+        Self::AttachRepoMember => 24,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::CreateWorkspace,
@@ -75,6 +81,9 @@ impl ActionKind {
         19 => Self::CloneWorkspace,
         20 => Self::ListSnapshots,
         21 => Self::Diff,
+        22 => Self::CloneRepoMember,
+        23 => Self::DetachRepoMember,
+        24 => Self::AttachRepoMember,
         _ => panic!("bad ActionKind wire value {}", v),
     } }
 }
@@ -537,6 +546,8 @@ pub enum PlannedAction {
     Merge,
     Rebase,
     Reset,
+    DetachMember,
+    AttachMember,
 }
 impl PlannedAction {
     pub fn wire(self) -> i64 { match self {
@@ -555,6 +566,8 @@ impl PlannedAction {
         Self::Merge => 12,
         Self::Rebase => 13,
         Self::Reset => 14,
+        Self::DetachMember => 15,
+        Self::AttachMember => 16,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::Noop,
@@ -572,6 +585,8 @@ impl PlannedAction {
         12 => Self::Merge,
         13 => Self::Rebase,
         14 => Self::Reset,
+        15 => Self::DetachMember,
+        16 => Self::AttachMember,
         _ => panic!("bad PlannedAction wire value {}", v),
     } }
 }
@@ -758,6 +773,7 @@ pub enum GwzErrorCode {
     StashNotFound,
     StashIncomplete,
     StashConflict,
+    SourceIdentityMismatch,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -797,6 +813,7 @@ impl GwzErrorCode {
         Self::StashNotFound => 33,
         Self::StashIncomplete => 34,
         Self::StashConflict => 35,
+        Self::SourceIdentityMismatch => 36,
     } }
     pub fn from_wire(v: i64) -> Self { match v {
         0 => Self::Ok,
@@ -835,6 +852,7 @@ impl GwzErrorCode {
         33 => Self::StashNotFound,
         34 => Self::StashIncomplete,
         35 => Self::StashConflict,
+        36 => Self::SourceIdentityMismatch,
         _ => panic!("bad GwzErrorCode wire value {}", v),
     } }
 }
@@ -2441,6 +2459,66 @@ impl RepoSyncRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct CloneRepoMemberRequest {
+    pub meta: RequestMeta,
+    pub source: SourceUrl,
+    pub member_id: Option<String>,
+    pub source_id: Option<String>,
+}
+impl CloneRepoMemberRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+            (2, self.source.to_cbor()),
+            (3, match &self.member_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.source_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            meta: RequestMeta::from_cbor(c.get(1)),
+            source: SourceUrl::from_cbor(c.get(2)),
+            member_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
+            source_id: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DetachRepoMemberRequest {
+    pub meta: RequestMeta,
+}
+impl DetachRepoMemberRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            meta: RequestMeta::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct AttachRepoMemberRequest {
+    pub meta: RequestMeta,
+}
+impl AttachRepoMemberRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            meta: RequestMeta::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct MaterializeRequest {
     pub meta: RequestMeta,
     pub target: MaterializeTarget,
@@ -2997,6 +3075,57 @@ pub struct RepoSyncResponse {
     pub response: ResponseEnvelope,
 }
 impl RepoSyncResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            response: ResponseEnvelope::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CloneRepoMemberResponse {
+    pub response: ResponseEnvelope,
+}
+impl CloneRepoMemberResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            response: ResponseEnvelope::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DetachRepoMemberResponse {
+    pub response: ResponseEnvelope,
+}
+impl DetachRepoMemberResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Self {
+        Self {
+            response: ResponseEnvelope::from_cbor(c.get(1)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct AttachRepoMemberResponse {
+    pub response: ResponseEnvelope,
+}
+impl AttachRepoMemberResponse {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.response.to_cbor()),

@@ -6,8 +6,8 @@ use crate::artifact::{
 use crate::git::{GitBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, NullSink, OperationRequest, par_map_per_host, resolve_jobs,
-    resolve_per_host,
+    EventEmitter, EventSink, NullSink, OperationRequest, WorkspaceMutatorLock, par_map_per_host,
+    resolve_jobs, resolve_per_host,
 };
 
 use super::*;
@@ -37,6 +37,11 @@ where
     let context = OperationRequest::PullHead(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
+    let _guard = if dry_run {
+        None
+    } else {
+        Some(WorkspaceMutatorLock::acquire(&root)?)
+    };
     let manifest_for_selection = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest_for_selection, request.meta.workspace.as_ref())?;
     let selected_for_root = resolve_targets(
@@ -135,7 +140,7 @@ where
         ));
     }
     artifact::write_lock(&root, &lock)?;
-    sync_workspace_boundary(backend, &root, &lock)?;
+    sync_workspace_boundary(backend, &root, &manifest, &lock)?;
     emitter.operation_finished();
 
     Ok(crate::PullHeadResponse {
@@ -373,6 +378,7 @@ where
     let selected = manifest
         .members
         .iter()
+        .filter(|member| member.active)
         .map(|member| member.id.clone())
         .collect::<Vec<_>>();
     let lock_fallback = artifact::read_lock(root).unwrap_or_else(|_| fallback_lock.clone());
@@ -400,6 +406,7 @@ where
     let selected = manifest
         .members
         .iter()
+        .filter(|member| member.active)
         .map(|member| member.id.clone())
         .collect::<Vec<_>>();
     let lock_fallback = artifact::read_lock(root).unwrap_or_else(|_| fallback_lock.clone());
@@ -411,7 +418,7 @@ where
         members,
     };
     artifact::write_lock(root, &lock)?;
-    sync_workspace_boundary(backend, root, &lock)?;
+    sync_workspace_boundary(backend, root, &manifest, &lock)?;
     Ok(lock)
 }
 

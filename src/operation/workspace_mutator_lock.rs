@@ -13,6 +13,16 @@ pub struct WorkspaceMutatorLock {
 }
 
 impl WorkspaceMutatorLock {
+    /// Acquire the workspace mutation lock or return the standard busy error.
+    pub fn acquire(root: &Path) -> ModelResult<Self> {
+        Self::try_acquire(root)?.ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::UnsupportedOperation,
+                "workspace mutator lock is already held",
+            )
+        })
+    }
+
     /// Try to acquire the workspace-wide mutation lock.
     ///
     /// The lock is an OS advisory exclusive lock on `.gwz/locks/workspace-mutator.lock`.

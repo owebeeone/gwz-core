@@ -41,6 +41,7 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::StashNotFound => Self::StashNotFound,
             model::ErrorCode::StashIncomplete => Self::StashIncomplete,
             model::ErrorCode::StashConflict => Self::StashConflict,
+            model::ErrorCode::SourceIdentityMismatch => Self::SourceIdentityMismatch,
         }
     }
 }

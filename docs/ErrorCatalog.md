@@ -41,6 +41,7 @@
 | `stash_not_found` | Requested stash bundle is missing, or no eligible latest bundle exists. | Run `gwz stash list` or provide an existing `stash_id`. |
 | `stash_incomplete` | Local bundle metadata and native Git stash payloads no longer match, or a partial restore needs explicit selection. | Inspect `gwz stash list --expanded`; recover/drop native stashes manually if needed. |
 | `stash_conflict` | Native stash restore reported a conflict. | Resolve the affected member repository and retry or clean up the stash explicitly. |
+| `source_identity_mismatch` | A repository being attached or assigned an existing source identity does not contain every commit required by historical snapshot/marker evidence. | Fetch the missing history into the repository, verify it is the intended source, and retry. |
 
 Errors can appear as a returned `ModelError`, an operation-level `GwzError` in
 `ResponseEnvelope.errors`, or a member-scoped `MemberResponse.error`.

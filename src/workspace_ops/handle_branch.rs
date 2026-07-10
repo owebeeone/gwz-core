@@ -18,6 +18,11 @@ where
 {
     let context = OperationRequest::Branch(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let _guard = if request.op == crate::BranchOp::List || request.meta.dry_run.unwrap_or(false) {
+        None
+    } else {
+        Some(WorkspaceMutatorLock::acquire(&root)?)
+    };
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
@@ -27,7 +32,7 @@ where
     match request.op {
         crate::BranchOp::List => list_branches(backend, context, &repos),
         crate::BranchOp::Create => create_branch(backend, &root, request, context, &repos),
-        crate::BranchOp::Delete => delete_branch(backend, &root, request, context, &repos),
+        crate::BranchOp::Delete => delete_branch(backend, request, context, &repos),
         crate::BranchOp::Merge => merge_branch(backend, &root, request, context, &repos),
     }
 }
@@ -155,13 +160,6 @@ fn create_branch<B: GitBackend>(
         ));
     }
 
-    let _guard = WorkspaceMutatorLock::try_acquire(root)?.ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::UnsupportedOperation,
-            "workspace mutator lock is already held",
-        )
-    })?;
-
     let mut created_by_this_op: Vec<PathBuf> = Vec::new();
     let mut summaries = Vec::with_capacity(plans.len());
     let mut observed_states = Vec::new();
@@ -214,7 +212,7 @@ fn create_branch<B: GitBackend>(
             next.members.insert(member_id.clone(), observed.clone());
         }
         artifact::write_lock(root, &next)?;
-        sync_workspace_boundary(backend, root, &next)?;
+        sync_workspace_boundary(backend, root, &manifest, &next)?;
     }
 
     Ok(branch_response(
@@ -227,7 +225,6 @@ fn create_branch<B: GitBackend>(
 
 fn delete_branch<B: GitBackend>(
     backend: &B,
-    root: &Path,
     request: crate::BranchRequest,
     context: OperationContext,
     repos: &[BranchRepo],
@@ -254,13 +251,6 @@ fn delete_branch<B: GitBackend>(
             Vec::new(),
         ));
     }
-
-    let _guard = WorkspaceMutatorLock::try_acquire(root)?.ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::UnsupportedOperation,
-            "workspace mutator lock is already held",
-        )
-    })?;
 
     let mut summaries = Vec::with_capacity(repos.len());
     for repo in repos {
@@ -308,13 +298,6 @@ fn merge_branch<B: GitBackend>(
             Vec::new(),
         ));
     }
-
-    let _guard = WorkspaceMutatorLock::try_acquire(root)?.ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::UnsupportedOperation,
-            "workspace mutator lock is already held",
-        )
-    })?;
 
     let mut summaries = Vec::with_capacity(plans.len());
     let mut observed_states = Vec::new();
@@ -374,7 +357,7 @@ fn merge_branch<B: GitBackend>(
         if let Err(error) = artifact::write_lock(root, &next) {
             return Ok(partial_response(context, summaries, &error));
         }
-        if let Err(error) = sync_workspace_boundary(backend, root, &next) {
+        if let Err(error) = sync_workspace_boundary(backend, root, &manifest, &next) {
             return Ok(partial_response(context, summaries, &error));
         }
     }

@@ -234,6 +234,57 @@ pub(crate) fn create_repo_writes_manifest_lock_and_empty_git_repo() {
 }
 
 #[test]
+fn manifest_writers_refuse_contention_before_read_modify_write() {
+    let temp = TempDir::new("manifest-writer-lock");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let existing = temp.path().join("repos/existing");
+    backend.create_repo(&existing).unwrap();
+    let before_manifest = read_manifest(temp.path()).unwrap();
+    let before_lock = read_lock(temp.path()).unwrap();
+    let _held = crate::operation::WorkspaceMutatorLock::acquire(temp.path()).unwrap();
+
+    let create_error = handle_create_repo(
+        &backend,
+        temp.path(),
+        create_repo_request("repos/new", None, None),
+        "op_create_contended",
+    )
+    .unwrap_err();
+    assert_eq!(create_error.code, ErrorCode::UnsupportedOperation);
+    assert!(!temp.path().join("repos/new").exists());
+
+    let add_error = handle_add_existing_repo(
+        &backend,
+        temp.path(),
+        crate::AddExistingRepoRequest {
+            meta: request_meta_with_workspace(),
+            repository_path: existing.to_string_lossy().into_owned(),
+            member_path: None,
+            member_id: None,
+            source_id: None,
+        },
+        "op_add_contended",
+    )
+    .unwrap_err();
+    assert_eq!(add_error.code, ErrorCode::UnsupportedOperation);
+
+    let sync_error = handle_repo_sync(
+        &backend,
+        temp.path(),
+        crate::RepoSyncRequest {
+            meta: request_meta_with_workspace(),
+        },
+        "op_sync_contended",
+    )
+    .unwrap_err();
+    assert_eq!(sync_error.code, ErrorCode::UnsupportedOperation);
+
+    assert_eq!(read_manifest(temp.path()).unwrap(), before_manifest);
+    assert_eq!(read_lock(temp.path()).unwrap(), before_lock);
+}
+
+#[test]
 pub(crate) fn add_existing_repo_records_current_git_state_and_remotes_without_reclone() {
     let temp = TempDir::new("add-existing");
     let backend = Git2Backend::new();

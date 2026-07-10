@@ -9,7 +9,7 @@ use crate::artifact::{
 };
 use crate::git::{Git2Backend, GitBackend, GitHeadState, GitRemote, GitStatus};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
-use crate::operation::OperationRequest;
+use crate::operation::{OperationRequest, WorkspaceMutatorLock};
 use crate::workspace::{
     MemberPath, discover_workspace_root, preflight_create_workspace, validate_member_path_set,
 };
@@ -32,6 +32,7 @@ pub fn handle_create_workspace(
     crate::model::WorkspaceId::parse_str(&workspace_id)?;
     ensure_workspace_git_repo(&root)?;
     let backend = Git2Backend::new();
+    let _guard = WorkspaceMutatorLock::acquire(&root)?;
 
     let manifest = ManifestArtifact {
         schema: artifact::WORKSPACE_SCHEMA.to_owned(),
@@ -47,7 +48,7 @@ pub fn handle_create_workspace(
         members: BTreeMap::new(),
     };
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-    sync_workspace_boundary(&backend, &root, &lock)?;
+    sync_workspace_boundary(&backend, &root, &manifest, &lock)?;
     ensure_workspace_bootstrap_files(
         &backend,
         &root,
@@ -82,24 +83,84 @@ where
     }
 
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let dry_run = request.meta.dry_run.unwrap_or(false);
+    let _guard = if dry_run {
+        None
+    } else {
+        Some(WorkspaceMutatorLock::acquire(&root)?)
+    };
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let member_path = MemberPath::parse(&request.member_path)?;
-    reject_existing_member_path(&manifest, &member_path)?;
+    reject_existing_active_member_path_overlap(&manifest, &member_path)?;
+    if request.member_id.is_none()
+        && manifest
+            .members
+            .iter()
+            .any(|member| !member.active && member.path == member_path.as_str())
+    {
+        return Err(invalid(
+            "member path has inactive history; pass a new --member-id or use gwz repo attach <id>",
+        ));
+    }
     let member_abs_path = root.join(member_path.as_str());
     ensure_member_target_available(&member_abs_path)?;
 
     let slug = path_slug(member_path.as_str())?;
-    let member_id = request.member_id.unwrap_or_else(|| format!("mem_{slug}"));
-    let source_id = request.source_id.unwrap_or_else(|| format!("src_{slug}"));
+    let member_id = request
+        .member_id
+        .clone()
+        .unwrap_or_else(|| format!("mem_{slug}"));
     MemberId::parse_str(&member_id)?;
+    let source_id = request
+        .source_id
+        .clone()
+        .unwrap_or_else(|| default_source_id(&member_id));
     SourceId::parse_str(&source_id)?;
     reject_duplicate_member_id(&manifest, &member_id)?;
+    let reused_source_members = members_with_source_id(&manifest, &source_id);
+    if request.source_id.is_none() && !reused_source_members.is_empty() {
+        return Err(invalid(format!(
+            "source id {source_id} already exists; pass --source-id {source_id} to confirm reuse"
+        )));
+    }
 
-    backend.create_repo(&member_abs_path)?;
-    let head = backend.head(&member_abs_path)?;
-    let status = backend.status(&member_abs_path)?;
-    let remotes = backend.remotes(&member_abs_path)?;
+    if dry_run {
+        return Ok(crate::CreateRepoResponse {
+            response: response_envelope(
+                context,
+                crate::AggregateStatus::Accepted,
+                vec![planned_member(
+                    &member_id,
+                    member_path.as_str(),
+                    crate::PlannedAction::InitRepo,
+                    "create and register a Git repository".to_owned(),
+                )],
+            ),
+        });
+    }
+
+    let inspected = (|| {
+        backend.create_repo(&member_abs_path)?;
+        let head = backend.head(&member_abs_path)?;
+        let status = backend.status(&member_abs_path)?;
+        let remotes = backend.remotes(&member_abs_path)?;
+        let (verified, warning) = verify_source_identity_reuse(
+            backend,
+            &root,
+            &member_abs_path,
+            &source_id,
+            &reused_source_members,
+        )?;
+        Ok::<_, ModelError>((head, status, remotes, verified, warning))
+    })();
+    let (head, status, remotes, verified_commits, warning) = match inspected {
+        Ok(inspected) => inspected,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&member_abs_path);
+            return Err(error);
+        }
+    };
 
     let manifest_member = ManifestMember {
         id: member_id.clone(),
@@ -111,47 +172,51 @@ where
             local_only: Some(true),
             ..Default::default()
         }),
-        remotes: remotes
-            .iter()
-            .map(|remote| RemoteArtifact {
-                name: remote.name.clone(),
-                url: remote.url.clone().unwrap_or_default(),
-                fetch: true,
-                push: true,
-            })
-            .collect(),
+        remotes: observed_remotes(&remotes),
     };
     manifest.members.push(manifest_member.clone());
-    let paths = manifest
-        .members
-        .iter()
-        .map(|member| MemberPath::parse(&member.path))
-        .collect::<ModelResult<Vec<_>>>()?;
-    validate_member_path_set(&paths)?;
-    let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
     let locked = resolved_member(&manifest_member, &head, &status);
-    lock.members.insert(member_id.clone(), locked.clone());
-    artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-    sync_workspace_boundary(backend, &root, &lock)?;
+    let lock = (|| {
+        manifest.validate()?;
+        let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+        lock.members.insert(member_id.clone(), locked.clone());
+        Ok::<_, ModelError>(lock)
+    })();
+    let lock = match lock {
+        Ok(lock) => lock,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&member_abs_path);
+            return Err(error);
+        }
+    };
+    if let Err(error) = artifact::write_manifest_and_lock(&root, &manifest, &lock) {
+        let published = artifact::read_manifest(&root)
+            .map(|current| current.members.iter().any(|item| item.id == member_id))
+            .unwrap_or(false);
+        if !published {
+            let _ = fs::remove_dir_all(&member_abs_path);
+        }
+        return Err(error);
+    }
+    sync_workspace_boundary(backend, &root, &manifest, &lock)?;
 
-    Ok(crate::CreateRepoResponse {
-        response: response_envelope(
-            context,
-            crate::AggregateStatus::Ok,
-            vec![crate::MemberResponse {
-                member_id,
-                member_path: manifest_member.path.clone(),
-                source_kind: crate::SourceKind::Git,
-                status: crate::MemberStatus::Ok,
-                error: None,
-                planned: None,
-                state: Some(protocol_state(&manifest_member, &locked)),
-                git_status: None,
-                target_kind: Some(crate::TargetKind::Member),
-                lock_match: Some(crate::LockMatch::Matches),
-            }],
-        ),
-    })
+    let mut response = response_envelope(
+        context,
+        crate::AggregateStatus::Ok,
+        vec![ok_member(
+            &manifest_member,
+            &locked,
+            crate::MemberStatus::Ok,
+        )],
+    );
+    response.meta.message = warning.or_else(|| {
+        (!reused_source_members.is_empty()).then(|| {
+            format!(
+                "created {member_id}; verified {verified_commits} historical commit(s) for source identity {source_id}"
+            )
+        })
+    });
+    Ok(crate::CreateRepoResponse { response })
 }
 
 pub fn handle_add_existing_repo<B>(
@@ -166,6 +231,12 @@ where
     let context =
         OperationRequest::AddExistingRepo(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let dry_run = request.meta.dry_run.unwrap_or(false);
+    let _guard = if dry_run {
+        None
+    } else {
+        Some(WorkspaceMutatorLock::acquire(&root)?)
+    };
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let repo_path = resolve_input_path(start, &request.repository_path);
@@ -177,17 +248,134 @@ where
     }
 
     let member_path = existing_repo_member_path(&root, &repo_path, request.member_path.as_ref())?;
-    reject_existing_member_path(&manifest, &member_path)?;
+    reject_existing_active_member_path_overlap(&manifest, &member_path)?;
+
+    if let Some(requested_id) = request.member_id.as_ref()
+        && let Some(existing) = manifest
+            .members
+            .iter()
+            .find(|member| member.id == *requested_id)
+    {
+        let guidance = if existing.active {
+            "member id is already active"
+        } else {
+            "member id already exists; use gwz repo attach <id> to reactivate it"
+        };
+        return Err(invalid(guidance));
+    }
+
+    if request.member_id.is_none() {
+        let candidates = manifest
+            .members
+            .iter()
+            .filter(|member| !member.active && member.path == member_path.as_str())
+            .map(|member| member.id.clone())
+            .collect::<Vec<_>>();
+        if !candidates.is_empty() {
+            let evidence = historical_member_commits(&root, &candidates)?;
+            let mut matches = Vec::new();
+            let mut mismatch_details = Vec::new();
+            for candidate in &candidates {
+                let candidate_evidence = evidence.get(candidate).map(Vec::as_slice).unwrap_or(&[]);
+                if candidate_evidence.is_empty() {
+                    mismatch_details.push(format!("{candidate}: no historical commit evidence"));
+                    continue;
+                }
+                match verify_historical_identity(backend, &repo_path, candidate_evidence) {
+                    Ok(count) => matches.push((candidate.clone(), count)),
+                    Err(error) if error.code == ErrorCode::SourceIdentityMismatch => {
+                        mismatch_details.push(format!("{candidate}: {}", error.message));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            if matches.len() == 1 {
+                let (member_id, _) = matches.pop().expect("one verified candidate");
+                let prepared = prepare_attach(backend, &root, &manifest, &member_id)?;
+                if dry_run {
+                    let mut response = response_envelope(
+                        context,
+                        crate::AggregateStatus::Accepted,
+                        vec![planned_member(
+                            &prepared.member.id,
+                            &prepared.member.path,
+                            crate::PlannedAction::AttachMember,
+                            format!(
+                                "reattach after verifying {} historical commit(s)",
+                                prepared.verified_commits
+                            ),
+                        )],
+                    );
+                    response.meta.message = Some(format!(
+                        "would reattach {}; verified {} historical commit(s)",
+                        prepared.member.id, prepared.verified_commits
+                    ));
+                    return Ok(crate::AddExistingRepoResponse { response });
+                }
+                apply_prepared_attach(&mut manifest, &prepared)?;
+                let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+                lock.members
+                    .insert(prepared.member.id.clone(), prepared.locked.clone());
+                artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
+                sync_workspace_boundary(backend, &root, &manifest, &lock)?;
+                let mut response = response_envelope(
+                    context,
+                    crate::AggregateStatus::Ok,
+                    vec![ok_member(
+                        &prepared.member,
+                        &prepared.locked,
+                        crate::MemberStatus::Ok,
+                    )],
+                );
+                response.meta.message = Some(format!(
+                    "reattached {}; verified {} historical commit(s)",
+                    prepared.member.id, prepared.verified_commits
+                ));
+                return Ok(crate::AddExistingRepoResponse { response });
+            }
+            let match_ids = matches
+                .iter()
+                .map(|(member_id, _)| member_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(invalid(format!(
+                "cannot infer an inactive designation for {}; verified matches: [{}]; {}; use gwz repo attach <id> or pass a new --member-id",
+                member_path.as_str(),
+                match_ids,
+                mismatch_details.join("; ")
+            )));
+        }
+    }
+
     let slug = path_slug(member_path.as_str())?;
-    let member_id = request.member_id.unwrap_or_else(|| format!("mem_{slug}"));
-    let source_id = request.source_id.unwrap_or_else(|| format!("src_{slug}"));
+    let member_id = request
+        .member_id
+        .clone()
+        .unwrap_or_else(|| format!("mem_{slug}"));
     MemberId::parse_str(&member_id)?;
+    let source_id = request
+        .source_id
+        .clone()
+        .unwrap_or_else(|| default_source_id(&member_id));
     SourceId::parse_str(&source_id)?;
     reject_duplicate_member_id(&manifest, &member_id)?;
+    let reused_source_members = members_with_source_id(&manifest, &source_id);
+    if request.source_id.is_none() && !reused_source_members.is_empty() {
+        return Err(invalid(format!(
+            "source id {source_id} already exists; pass --source-id {source_id} to confirm reuse"
+        )));
+    }
 
     let head = backend.head(&repo_path)?;
     let status = backend.status(&repo_path)?;
     let remotes = backend.remotes(&repo_path)?;
+    let (verified_commits, warning) = verify_source_identity_reuse(
+        backend,
+        &root,
+        &repo_path,
+        &source_id,
+        &reused_source_members,
+    )?;
     let manifest_member = ManifestMember {
         id: member_id.clone(),
         path: member_path.as_str().to_owned(),
@@ -195,47 +383,49 @@ where
         source_id: source_id.clone(),
         active: true,
         desired: Some(desired_from_head(&head)),
-        remotes: remotes
-            .iter()
-            .map(|remote| RemoteArtifact {
-                name: remote.name.clone(),
-                url: remote.url.clone().unwrap_or_default(),
-                fetch: true,
-                push: true,
-            })
-            .collect(),
+        remotes: observed_remotes(&remotes),
     };
+
+    if dry_run {
+        let mut response = response_envelope(
+            context,
+            crate::AggregateStatus::Accepted,
+            vec![planned_member(
+                &member_id,
+                member_path.as_str(),
+                crate::PlannedAction::AddManifestMember,
+                "register existing Git repository as a new designation".to_owned(),
+            )],
+        );
+        response.meta.message = warning;
+        return Ok(crate::AddExistingRepoResponse { response });
+    }
+
     manifest.members.push(manifest_member.clone());
-    let paths = manifest
-        .members
-        .iter()
-        .map(|member| MemberPath::parse(&member.path))
-        .collect::<ModelResult<Vec<_>>>()?;
-    validate_member_path_set(&paths)?;
+    manifest.validate()?;
     let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
     let locked = resolved_member(&manifest_member, &head, &status);
     lock.members.insert(member_id.clone(), locked.clone());
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-    sync_workspace_boundary(backend, &root, &lock)?;
+    sync_workspace_boundary(backend, &root, &manifest, &lock)?;
 
-    Ok(crate::AddExistingRepoResponse {
-        response: response_envelope(
-            context,
-            crate::AggregateStatus::Ok,
-            vec![crate::MemberResponse {
-                member_id,
-                member_path: manifest_member.path.clone(),
-                source_kind: crate::SourceKind::Git,
-                status: crate::MemberStatus::Ok,
-                error: None,
-                planned: None,
-                state: Some(protocol_state(&manifest_member, &locked)),
-                git_status: None,
-                target_kind: Some(crate::TargetKind::Member),
-                lock_match: Some(crate::LockMatch::Matches),
-            }],
-        ),
-    })
+    let mut response = response_envelope(
+        context,
+        crate::AggregateStatus::Ok,
+        vec![ok_member(
+            &manifest_member,
+            &locked,
+            crate::MemberStatus::Ok,
+        )],
+    );
+    response.meta.message = warning.or_else(|| {
+        (!reused_source_members.is_empty()).then(|| {
+            format!(
+                "added {member_id}; verified {verified_commits} historical commit(s) for source identity {source_id}"
+            )
+        })
+    });
+    Ok(crate::AddExistingRepoResponse { response })
 }
 
 pub fn handle_repo_sync<B>(
@@ -249,10 +439,15 @@ where
 {
     let context = OperationRequest::RepoSync(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let dry_run = request.meta.dry_run.unwrap_or(false);
+    let _guard = if dry_run {
+        None
+    } else {
+        Some(WorkspaceMutatorLock::acquire(&root)?)
+    };
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let selected = resolve_manifest_selection(&manifest, request.meta.selection.as_ref())?;
-    let dry_run = request.meta.dry_run.unwrap_or(false);
 
     let mut plans = Vec::new();
     let mut responses = Vec::new();
@@ -532,22 +727,18 @@ pub(crate) fn assert_workspace_id(
     Ok(())
 }
 
-pub(crate) fn reject_existing_member_path(
+pub(crate) fn reject_existing_active_member_path_overlap(
     manifest: &ManifestArtifact,
     path: &MemberPath,
 ) -> ModelResult<()> {
-    if manifest
+    let mut active_paths = manifest
         .members
         .iter()
-        .any(|member| member.path == path.as_str())
-    {
-        Err(ModelError::new(
-            ErrorCode::PathCollision,
-            "member path is already registered",
-        ))
-    } else {
-        Ok(())
-    }
+        .filter(|member| member.active)
+        .map(|member| MemberPath::parse(&member.path))
+        .collect::<ModelResult<Vec<_>>>()?;
+    active_paths.push(path.clone());
+    validate_member_path_set(&active_paths)
 }
 
 pub(crate) fn reject_duplicate_member_id(
@@ -734,6 +925,24 @@ pub(crate) fn path_slug(path: &str) -> ModelResult<String> {
     } else {
         Ok(slug)
     }
+}
+
+pub(crate) fn default_source_id(member_id: &str) -> String {
+    format!(
+        "src_{}",
+        member_id
+            .strip_prefix("mem_")
+            .expect("validated member id has mem_ prefix")
+    )
+}
+
+pub(crate) fn members_with_source_id(manifest: &ManifestArtifact, source_id: &str) -> Vec<String> {
+    manifest
+        .members
+        .iter()
+        .filter(|member| member.source_id == source_id)
+        .map(|member| member.id.clone())
+        .collect()
 }
 
 pub(crate) fn now_marker() -> String {

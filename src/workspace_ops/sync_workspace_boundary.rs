@@ -1,7 +1,8 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use crate::artifact::LockArtifact;
+use crate::artifact::{LockArtifact, ManifestArtifact};
 use crate::git::GitBackend;
 use crate::model::ModelResult;
 use crate::workspace::{RUNTIME_DIR, WORKSPACE_DIR};
@@ -19,19 +20,33 @@ const EXCLUDE_END: &str = "# END GWZ managed member repositories";
 pub(crate) fn sync_workspace_boundary<B: GitBackend>(
     backend: &B,
     root: &Path,
+    manifest: &ManifestArtifact,
     lock: &LockArtifact,
 ) -> ModelResult<()> {
-    ensure_workspace_exclude(root, lock)?;
+    ensure_workspace_exclude(backend, root, manifest, lock)?;
     stage_workspace_git_metadata(backend, root)
 }
 
 /// Regenerate gwz's managed block in `<root>/.git/info/exclude` so the root repo ignores
 /// `/{RUNTIME_DIR}/`, `/{WORKSPACE_DIR}/.tmp/`, and every member path. Idempotent, preserves any
-/// non-gwz lines, and is purely local (never committed), rebuilt from the lock on each run.
-pub(crate) fn ensure_workspace_exclude(root: &Path, lock: &LockArtifact) -> ModelResult<()> {
-    let mut paths: Vec<&str> = lock.members.values().map(|m| m.path.as_str()).collect();
-    paths.sort_unstable();
-    paths.dedup();
+/// non-gwz lines, and is purely local (never committed). Paths are the union of stale
+/// lock records, active manifest rows, and inactive rows that still have a Git checkout.
+pub(crate) fn ensure_workspace_exclude<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    lock: &LockArtifact,
+) -> ModelResult<()> {
+    let mut paths: BTreeSet<String> = lock
+        .members
+        .values()
+        .map(|member| member.path.clone())
+        .collect();
+    for member in &manifest.members {
+        if member.active || backend.is_repository(&root.join(&member.path))? {
+            paths.insert(member.path.clone());
+        }
+    }
 
     let mut lines = vec![
         EXCLUDE_BEGIN.to_owned(),

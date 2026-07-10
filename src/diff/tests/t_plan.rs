@@ -227,6 +227,59 @@ fn member_pathspec_targets_only_that_member() {
     assert_eq!(plan.targets[0].pathspecs, vec!["src/lib.rs".to_owned()]);
 }
 
+#[test]
+fn inactive_nested_history_does_not_steal_diff_routing_from_active_owner() {
+    let m = ManifestArtifact {
+        schema: WORKSPACE_SCHEMA.to_owned(),
+        workspace: WorkspaceHeader {
+            id: "ws_test".to_owned(),
+        },
+        members: vec![
+            member("mem_active", "repos", true),
+            member("mem_historical", "repos/historical", false),
+        ],
+    };
+    m.validate().unwrap();
+    let pathspecs = vec!["repos/historical/file.rs".to_owned()];
+
+    let plan = plan_diff(&m, None, &plain(), "", &pathspecs, &[], &all_materialized).unwrap();
+
+    assert_eq!(target_ids(&plan), vec!["mem_active"]);
+    assert_eq!(
+        plan.targets[0].pathspecs,
+        vec!["historical/file.rs".to_owned()]
+    );
+}
+
+#[test]
+fn diff_pathspec_uses_active_replacement_at_historical_path() {
+    let m = ManifestArtifact {
+        schema: WORKSPACE_SCHEMA.to_owned(),
+        workspace: WorkspaceHeader {
+            id: "ws_test".to_owned(),
+        },
+        members: vec![
+            member("mem_historical", "repos/app", false),
+            member("mem_active", "repos/app", true),
+        ],
+    };
+    m.validate().unwrap();
+
+    let plan = plan_diff(
+        &m,
+        None,
+        &plain(),
+        "",
+        &["repos/app/file.rs".to_owned()],
+        &[],
+        &all_materialized,
+    )
+    .unwrap();
+
+    assert_eq!(target_ids(&plan), vec!["mem_active"]);
+    assert_eq!(plan.targets[0].pathspecs, vec!["file.rs".to_owned()]);
+}
+
 /// "`gwz diff -- gwz.conf/gwz.yml` targets only root."
 #[test]
 fn root_pathspec_targets_only_root() {
@@ -395,14 +448,15 @@ fn explicit_pathspec_into_unmaterialized_member_errors() {
     assert_eq!(err.code, ErrorCode::MemberNotFound);
 }
 
-/// A pathspec that names an inactive member directly is a typed error.
+/// Inactive history does not own paths; an inactive-only pathspec is root-owned.
 #[test]
-fn explicit_pathspec_into_inactive_member_errors() {
+fn pathspec_under_inactive_history_is_root_owned() {
     let mut m = manifest();
     m.members.push(member("mem_old", "legacy", false));
     let pathspecs = vec!["legacy/a.rs".to_owned()];
-    let err = plan_diff(&m, None, &plain(), "", &pathspecs, &[], &all_materialized).unwrap_err();
-    assert_eq!(err.code, ErrorCode::MemberInactive);
+    let plan = plan_diff(&m, None, &plain(), "", &pathspecs, &[], &all_materialized).unwrap();
+    assert_eq!(target_ids(&plan), vec!["@root"]);
+    assert_eq!(plan.targets[0].pathspecs, vec!["legacy/a.rs".to_owned()]);
 }
 
 /// The wire projection (D1 to_wire bridge pattern) carries scope, comparison,

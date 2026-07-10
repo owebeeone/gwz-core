@@ -20,6 +20,30 @@ pub(crate) fn creates_and_detects_ordinary_non_bare_repositories() {
 }
 
 #[test]
+fn commit_exists_requires_a_local_object_that_peels_to_commit() {
+    let temp = TempDir::new("commit-exists");
+    let backend = Git2Backend::new();
+    let repo_path = temp.path().join("repo");
+    backend.create_repo(&repo_path).unwrap();
+    let commit = commit_file(&repo_path, "tracked.txt", "one", "initial", &[]).unwrap();
+    let repository = git2::Repository::open(&repo_path).unwrap();
+    let tree = repository
+        .find_commit(git2::Oid::from_str(&commit).unwrap())
+        .unwrap()
+        .tree_id()
+        .to_string();
+
+    assert!(backend.commit_exists(&repo_path, &commit).unwrap());
+    assert!(!backend.commit_exists(&repo_path, &tree).unwrap());
+    assert!(
+        !backend
+            .commit_exists(&repo_path, "0000000000000000000000000000000000000000")
+            .unwrap()
+    );
+    assert!(!backend.commit_exists(&repo_path, "not-an-oid").unwrap());
+}
+
+#[test]
 pub(crate) fn stage_paths_matches_porcelain_git_add() {
     // Seed two identical repos; stage one via the primitive and one via
     // porcelain `git add`. The resulting index must be byte-identical —

@@ -209,3 +209,76 @@ fn explicit_pathspec_into_unmaterialized_member_errors() {
     .unwrap_err();
     assert_eq!(err.code, crate::model::ErrorCode::MemberNotFound);
 }
+
+#[test]
+fn inactive_nested_history_does_not_steal_stage_routing_from_active_owner() {
+    let temp = TempDir::new("stage-inactive-routing");
+    let backend = Git2Backend::new();
+    let _fixture =
+        init_one_member_workspace(temp.path(), &backend, "stage-inactive-routing-source");
+    let member_root = temp.path().join("remote");
+    fs::create_dir_all(member_root.join("historical")).unwrap();
+    fs::write(member_root.join("historical/new.txt"), "x\n").unwrap();
+
+    let mut manifest = crate::artifact::read_manifest(temp.path()).unwrap();
+    manifest.members.push(crate::artifact::ManifestMember {
+        id: "mem_historical".to_owned(),
+        path: "remote/historical".to_owned(),
+        source_kind: crate::artifact::ArtifactSourceKind::Git,
+        source_id: "src_historical".to_owned(),
+        active: false,
+        desired: None,
+        remotes: Vec::new(),
+    });
+    crate::artifact::write_manifest(temp.path(), &manifest).unwrap();
+
+    handle_stage(
+        &backend,
+        temp.path(),
+        stage_request(temp.path(), &["remote/historical/new.txt"], false),
+        "op_stage",
+    )
+    .unwrap();
+
+    assert!(staged(&backend, &member_root, "historical/new.txt"));
+}
+
+#[test]
+fn root_stage_refresh_protects_detached_checkout_from_gitlink_staging() {
+    let temp = TempDir::new("stage-detached-boundary");
+    let backend = Git2Backend::new();
+    let _fixture =
+        init_one_member_workspace(temp.path(), &backend, "stage-detached-boundary-source");
+
+    let mut manifest = crate::artifact::read_manifest(temp.path()).unwrap();
+    let member_id = manifest.members[0].id.clone();
+    manifest.members[0].active = false;
+    crate::artifact::write_manifest(temp.path(), &manifest).unwrap();
+    let mut lock = crate::artifact::read_lock(temp.path()).unwrap();
+    lock.members.remove(&member_id);
+    crate::artifact::write_lock(temp.path(), &lock).unwrap();
+    // Simulate stale/missing local projection: handle_stage must rebuild it before root add.
+    fs::write(temp.path().join(".git/info/exclude"), "").unwrap();
+    fs::write(temp.path().join("root.txt"), "root\n").unwrap();
+
+    handle_stage(
+        &backend,
+        temp.path(),
+        stage_request(temp.path(), &["."], false),
+        "op_stage",
+    )
+    .unwrap();
+
+    assert!(staged(&backend, temp.path(), "root.txt"));
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(temp.path())
+        .args(["ls-files", "--stage", "remote"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "detached checkout must not be staged as a root gitlink"
+    );
+}

@@ -81,6 +81,7 @@ where
 {
     let context = OperationRequest::Capture(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let _guard = WorkspaceMutatorLock::acquire(&root)?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
@@ -91,7 +92,7 @@ where
         next.members.insert(member_id.clone(), state.clone());
     }
     artifact::write_lock(&root, &next)?;
-    sync_workspace_boundary(backend, &root, &next)?;
+    sync_workspace_boundary(backend, &root, &manifest, &next)?;
     Ok(crate::CaptureResponse {
         response: response_envelope(
             context,
@@ -120,6 +121,11 @@ where
 {
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let _guard = if request.meta.dry_run.unwrap_or(false) {
+        None
+    } else {
+        Some(WorkspaceMutatorLock::acquire(&root)?)
+    };
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     if request.target.kind == crate::MaterializeTargetKind::Branch {
@@ -356,7 +362,7 @@ where
     // Refresh the workspace boundary (member + tmp excludes) from the authoritative
     // on-disk lock (rewritten above, or the existing one for a lock target).
     let lock = artifact::read_lock(root)?;
-    sync_workspace_boundary(backend, root, &lock)?;
+    sync_workspace_boundary(backend, root, manifest, &lock)?;
 
     Ok(crate::MaterializeResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, responses),
@@ -386,13 +392,6 @@ where
             response: response_envelope(context, crate::AggregateStatus::Accepted, plans),
         });
     }
-    let _guard = WorkspaceMutatorLock::try_acquire(&root)?.ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::UnsupportedOperation,
-            "workspace mutator lock is already held",
-        )
-    })?;
-
     let mut observed_states = Vec::with_capacity(selected.len());
     let mut responses = Vec::with_capacity(selected.len());
     for member_id in &selected {
@@ -415,7 +414,7 @@ where
         next.members.insert(member_id.clone(), observed.clone());
     }
     artifact::write_lock(&root, &next)?;
-    sync_workspace_boundary(backend, &root, &next)?;
+    sync_workspace_boundary(backend, &root, &manifest, &next)?;
 
     Ok(crate::MaterializeResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, responses),
@@ -919,7 +918,7 @@ pub(crate) fn materialize_target_members<B: GitBackend>(
                 .ok_or_else(|| invalid("tag target requires a name"))?;
             let tag_ref = format!("refs/tags/{name}^{{commit}}");
             let mut targets = BTreeMap::new();
-            for member in &manifest.members {
+            for member in manifest.members.iter().filter(|member| member.active) {
                 let member_root = root.join(&member.path);
                 if !backend.is_repository(&member_root)? {
                     continue;

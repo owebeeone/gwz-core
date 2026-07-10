@@ -6,6 +6,15 @@ use super::*;
 
 pub trait GitBackend {
     fn is_repository(&self, path: &Path) -> ModelResult<bool>;
+    /// Return whether `oid` exists locally and resolves to a commit object.
+    /// This never fetches and returns `false` for malformed, missing, or
+    /// non-commit object ids.
+    fn commit_exists(&self, _path: &Path, _oid: &str) -> ModelResult<bool> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "commit_exists is not implemented by this GitBackend",
+        ))
+    }
     fn create_repo(&self, path: &Path) -> ModelResult<GitCreateResult>;
     fn clone_repo(&self, url: &str, path: &Path) -> ModelResult<GitCloneResult>;
     /// Clone, forwarding libgit2 transfer progress to `progress`. The default
@@ -541,6 +550,19 @@ impl GitBackend for Git2Backend {
             Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(false),
             Err(err) => Err(git_error(err)),
         }
+    }
+
+    fn commit_exists(&self, path: &Path, oid: &str) -> ModelResult<bool> {
+        let Ok(oid) = git2::Oid::from_str(oid) else {
+            return Ok(false);
+        };
+        let repo = open_repo(path)?;
+        let object = match repo.find_object(oid, None) {
+            Ok(object) => object,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
+            Err(error) => return Err(git_error(error)),
+        };
+        Ok(object.peel_to_commit().is_ok())
     }
 
     fn create_repo(&self, path: &Path) -> ModelResult<GitCreateResult> {

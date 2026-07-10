@@ -3,17 +3,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gwz_core::{
-    ActionKind, AggregateStatus, BranchActionResult, BranchOp, BranchRepoSummary, BranchRequest,
-    BranchResponse, EventKind, GitBranchDifference, GitBranchGroup, GitFileChange,
+    ActionKind, AggregateStatus, AttachRepoMemberRequest, AttachRepoMemberResponse,
+    BranchActionResult, BranchOp, BranchRepoSummary, BranchRequest, BranchResponse,
+    CloneRepoMemberRequest, CloneRepoMemberResponse, DetachRepoMemberRequest,
+    DetachRepoMemberResponse, EventKind, GitBranchDifference, GitBranchGroup, GitFileChange,
     GitMemberBranchStatus, GitObjectIdentity, GwzError, GwzErrorCode, ListSnapshotsResponse,
     MaterializeRequest, MaterializeTarget, MaterializeTargetKind, MemberResponse, MemberStatus,
-    OperationActor, OperationAttribution, OperationEvent, RepoSyncRequest, RepoSyncResponse,
-    RequestMeta, ResponseEnvelope, ResponseMeta, Severity, SnapshotInfo, SnapshotRequest,
-    SnapshotSource, SnapshotSourceKind, SourceKind, StashBundle, StashBundleMember,
-    StashDirtySummary, StashDrift, StashErrorDetail, StashOp, StashParticipation,
-    StashPushLifecycle, StashRequest, StashResponse, StashRestoreState, StashWarning, StatusMode,
-    StatusPathStyle, StatusRequest, StatusResponse, WorkspaceGitStatus, WorkspaceRootFileChange,
-    WorkspaceRootGitStatus, decode, encode,
+    OperationActor, OperationAttribution, OperationEvent, PlannedAction, RepoSyncRequest,
+    RepoSyncResponse, RequestMeta, ResponseEnvelope, ResponseMeta, Severity, SnapshotInfo,
+    SnapshotRequest, SnapshotSource, SnapshotSourceKind, SourceKind, SourceUrl, StashBundle,
+    StashBundleMember, StashDirtySummary, StashDrift, StashErrorDetail, StashOp,
+    StashParticipation, StashPushLifecycle, StashRequest, StashResponse, StashRestoreState,
+    StashWarning, StatusMode, StatusPathStyle, StatusRequest, StatusResponse, WorkspaceGitStatus,
+    WorkspaceRootFileChange, WorkspaceRootGitStatus, decode, encode,
 };
 
 fn round_trip<T>(
@@ -83,6 +85,89 @@ fn repo_sync_request_and_response_round_trip() {
             RepoSyncResponse::from_cbor
         ),
         response
+    );
+}
+
+#[test]
+fn repo_member_lifecycle_requests_and_responses_round_trip() {
+    let clone_request = CloneRepoMemberRequest {
+        meta: request_meta("req-repo-clone"),
+        source: SourceUrl {
+            url: "ssh://git.example.test/team/shared.git".to_owned(),
+            path: Some("libs/shared".to_owned()),
+            remote_name: Some("upstream".to_owned()),
+            branch: Some("main".to_owned()),
+        },
+        member_id: Some("mem_shared".to_owned()),
+        source_id: Some("src_shared".to_owned()),
+    };
+    assert_eq!(
+        round_trip(
+            &clone_request,
+            CloneRepoMemberRequest::to_cbor,
+            CloneRepoMemberRequest::from_cbor,
+        ),
+        clone_request
+    );
+
+    let detach_request = DetachRepoMemberRequest {
+        meta: request_meta("req-repo-detach"),
+    };
+    assert_eq!(
+        round_trip(
+            &detach_request,
+            DetachRepoMemberRequest::to_cbor,
+            DetachRepoMemberRequest::from_cbor,
+        ),
+        detach_request
+    );
+
+    let attach_request = AttachRepoMemberRequest {
+        meta: request_meta("req-repo-attach"),
+    };
+    assert_eq!(
+        round_trip(
+            &attach_request,
+            AttachRepoMemberRequest::to_cbor,
+            AttachRepoMemberRequest::from_cbor,
+        ),
+        attach_request
+    );
+
+    let clone_response = CloneRepoMemberResponse {
+        response: response_envelope("req-repo-clone", ActionKind::CloneRepoMember),
+    };
+    assert_eq!(
+        round_trip(
+            &clone_response,
+            CloneRepoMemberResponse::to_cbor,
+            CloneRepoMemberResponse::from_cbor,
+        ),
+        clone_response
+    );
+
+    let detach_response = DetachRepoMemberResponse {
+        response: response_envelope("req-repo-detach", ActionKind::DetachRepoMember),
+    };
+    assert_eq!(
+        round_trip(
+            &detach_response,
+            DetachRepoMemberResponse::to_cbor,
+            DetachRepoMemberResponse::from_cbor,
+        ),
+        detach_response
+    );
+
+    let attach_response = AttachRepoMemberResponse {
+        response: response_envelope("req-repo-attach", ActionKind::AttachRepoMember),
+    };
+    assert_eq!(
+        round_trip(
+            &attach_response,
+            AttachRepoMemberResponse::to_cbor,
+            AttachRepoMemberResponse::from_cbor,
+        ),
+        attach_response
     );
 }
 
@@ -520,6 +605,16 @@ fn error_code_wire_values_are_pinned() {
     assert_eq!(GwzErrorCode::StashNotFound.wire(), 33);
     assert_eq!(GwzErrorCode::StashIncomplete.wire(), 34);
     assert_eq!(GwzErrorCode::StashConflict.wire(), 35);
+    assert_eq!(GwzErrorCode::SourceIdentityMismatch.wire(), 36);
+}
+
+#[test]
+fn repo_member_lifecycle_wire_values_are_pinned() {
+    assert_eq!(ActionKind::CloneRepoMember.wire(), 22);
+    assert_eq!(ActionKind::DetachRepoMember.wire(), 23);
+    assert_eq!(ActionKind::AttachRepoMember.wire(), 24);
+    assert_eq!(PlannedAction::DetachMember.wire(), 15);
+    assert_eq!(PlannedAction::AttachMember.wire(), 16);
 }
 
 #[test]

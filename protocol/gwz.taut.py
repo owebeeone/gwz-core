@@ -29,6 +29,18 @@ SCHEMA = schema(
         method("repo_sync", role="in",
                params=Params(request=Ref.RepoSyncRequest),
                out=Ref.RepoSyncResponse),
+        # Clone and register one repository as a workspace member.
+        method("clone_repo_member", role="in",
+               params=Params(request=Ref.CloneRepoMemberRequest),
+               out=Ref.CloneRepoMemberResponse),
+        # Soft-remove one active member from the current workspace composition.
+        method("detach_repo_member", role="in",
+               params=Params(request=Ref.DetachRepoMemberRequest),
+               out=Ref.DetachRepoMemberResponse),
+        # Reactivate one historical member designation.
+        method("attach_repo_member", role="in",
+               params=Params(request=Ref.AttachRepoMemberRequest),
+               out=Ref.AttachRepoMemberResponse),
         # Move members to a lock/snapshot/tag/commit target.
         method("materialize", role="in",
                params=Params(request=Ref.MaterializeRequest),
@@ -135,7 +147,10 @@ SCHEMA = schema(
          branch=18,
          clone_workspace=19,
          list_snapshots=20,
-         diff=21),
+         diff=21,
+         clone_repo_member=22,
+         detach_repo_member=23,
+         attach_repo_member=24),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -288,7 +303,9 @@ SCHEMA = schema(
          push=11,
          merge=12,
          rebase=13,
-         reset=14),
+         reset=14,
+         detach_member=15,
+         attach_member=16),
 
     # Current member state compared to the lock.
     LockMatch=Enum(
@@ -371,7 +388,8 @@ SCHEMA = schema(
          branch_mixed=32,
          stash_not_found=33,
          stash_incomplete=34,
-         stash_conflict=35),
+         stash_conflict=35,
+         source_identity_mismatch=36),
 
     # ---- diff enums -------------------------------------------------------
     # Which two sides libgit2 compares, resolved per target repo from operands
@@ -985,6 +1003,22 @@ SCHEMA = schema(
     RepoSyncRequest=Msg(
         meta=F(1, Ref.RequestMeta)),
 
+    # Clone and register one repository as a workspace member.
+    CloneRepoMemberRequest=Msg(
+        meta=F(1, Ref.RequestMeta),
+        # Canonical clone-source shape: URL plus optional path/remote/branch.
+        source=F(2, Ref.SourceUrl),
+        member_id=F(3, STR, optional=True),
+        source_id=F(4, STR, optional=True)),
+
+    # Detach targeting is carried by RequestMeta.selection.
+    DetachRepoMemberRequest=Msg(
+        meta=F(1, Ref.RequestMeta)),
+
+    # Attach targeting is carried by RequestMeta.selection.
+    AttachRepoMemberRequest=Msg(
+        meta=F(1, Ref.RequestMeta)),
+
     # Move selected members to an explicit target.
     MaterializeRequest=Msg(
         meta=F(1, Ref.RequestMeta),
@@ -1166,6 +1200,12 @@ SCHEMA = schema(
         response=F(1, Ref.ResponseEnvelope)),
 
     RepoSyncResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope)),
+    CloneRepoMemberResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope)),
+    DetachRepoMemberResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope)),
+    AttachRepoMemberResponse=Msg(
         response=F(1, Ref.ResponseEnvelope)),
     # Response wrapper for materialize.
     MaterializeResponse=Msg(

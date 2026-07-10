@@ -44,6 +44,7 @@ pub enum ErrorCode {
     StashNotFound,
     StashIncomplete,
     StashConflict,
+    SourceIdentityMismatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

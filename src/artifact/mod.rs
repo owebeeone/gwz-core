@@ -40,12 +40,18 @@ impl ManifestArtifact {
         require_schema(&self.schema, WORKSPACE_SCHEMA)?;
         parse_id("workspace.id", "ws_", &self.workspace.id)?;
 
-        let mut paths = Vec::with_capacity(self.members.len());
+        let mut member_ids = BTreeSet::new();
+        let mut active_paths = Vec::with_capacity(self.members.len());
         for member in &self.members {
             member.validate()?;
-            paths.push(MemberPath::parse(&member.path)?);
+            if !member_ids.insert(member.id.as_str()) {
+                return Err(invalid(format!("duplicate member id '{}'", member.id)));
+            }
+            if member.active {
+                active_paths.push(MemberPath::parse(&member.path)?);
+            }
         }
-        crate::workspace::validate_member_path_set(&paths)
+        crate::workspace::validate_member_path_set(&active_paths)
     }
 }
 
@@ -376,8 +382,10 @@ pub fn list_markers(root: &Path) -> ModelResult<Vec<MarkerArtifact>> {
 fn list_artifacts<T>(dir: PathBuf, parse: impl Fn(&str) -> ModelResult<T>) -> ModelResult<Vec<T>> {
     let mut paths: Vec<PathBuf> = match fs::read_dir(&dir) {
         Ok(read) => read
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io_error)?
+            .into_iter()
             .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("yaml"))
             .collect(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -743,6 +751,49 @@ mod tests {
             ManifestArtifact::from_yaml(&yaml).unwrap_err().code,
             ErrorCode::InvalidRequest
         );
+    }
+
+    #[test]
+    fn manifest_rejects_duplicate_member_ids_across_active_and_inactive_rows() {
+        let mut manifest = sample_manifest();
+        let mut historical = manifest.members[0].clone();
+        historical.path = "repos/historical".to_owned();
+        historical.active = false;
+        manifest.members.push(historical);
+
+        let error = manifest.validate().unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("duplicate member id 'mem_01'"));
+    }
+
+    #[test]
+    fn manifest_allows_shared_source_ids_and_inactive_path_overlap() {
+        let mut manifest = sample_manifest();
+        let mut replacement = manifest.members[0].clone();
+        replacement.id = "mem_02".to_owned();
+        replacement.source_id = manifest.members[0].source_id.clone();
+        manifest.members[0].active = false;
+        manifest.members.push(replacement);
+
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_overlap_between_active_rows_only() {
+        let mut manifest = sample_manifest();
+        let mut nested = manifest.members[0].clone();
+        nested.id = "mem_02".to_owned();
+        nested.path = "repos/example/tools".to_owned();
+        nested.source_id = "src_02".to_owned();
+        manifest.members.push(nested);
+
+        assert_eq!(
+            manifest.validate().unwrap_err().code,
+            ErrorCode::PathCollision
+        );
+
+        manifest.members[1].active = false;
+        manifest.validate().unwrap();
     }
 
     #[test]

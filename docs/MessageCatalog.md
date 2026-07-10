@@ -16,13 +16,18 @@ API and from workspace artifact YAML schemas.
 | --- | --- | --- | --- | --- | --- |
 | GwzCore | create_workspace | in | unary | request: CreateWorkspaceRequest | value: CreateWorkspaceResponse |
 | GwzCore | init_from_sources | in | unary | request: InitFromSourcesRequest | value: InitFromSourcesResponse |
+| GwzCore | clone_workspace | in | unary | request: CloneWorkspaceRequest | value: CloneWorkspaceResponse |
 | GwzCore | add_existing_repo | in | unary | request: AddExistingRepoRequest | value: AddExistingRepoResponse |
 | GwzCore | create_repo | in | unary | request: CreateRepoRequest | value: CreateRepoResponse |
 | GwzCore | repo_sync | in | unary | request: RepoSyncRequest | value: RepoSyncResponse |
+| GwzCore | clone_repo_member | in | unary | request: CloneRepoMemberRequest | value: CloneRepoMemberResponse |
+| GwzCore | detach_repo_member | in | unary | request: DetachRepoMemberRequest | value: DetachRepoMemberResponse |
+| GwzCore | attach_repo_member | in | unary | request: AttachRepoMemberRequest | value: AttachRepoMemberResponse |
 | GwzCore | materialize | in | unary | request: MaterializeRequest | value: MaterializeResponse |
 | GwzCore | status | in | unary | request: StatusRequest | value: StatusResponse |
 | GwzCore | ls | in | unary | request: LsRequest | value: LsResponse |
 | GwzCore | snapshot | in | unary | request: SnapshotRequest | value: SnapshotResponse |
+| GwzCore | list_snapshots | in | unary | request: ListSnapshotsRequest | value: ListSnapshotsResponse |
 | GwzCore | tag | in | unary | request: TagRequest | value: TagResponse |
 | GwzCore | capture | in | unary | request: CaptureRequest | value: CaptureResponse |
 | GwzCore | commit | in | unary | request: CommitRequest | value: CommitResponse |
@@ -34,6 +39,8 @@ API and from workspace artifact YAML schemas.
 | GwzCore | branch | in | unary | request: BranchRequest | value: BranchResponse |
 | GwzCore | events.subscribe | out | log | operation_id: str | append: OperationEvent |
 | GwzCore | operation.result | out | unary | operation_id: str | value: OperationResult |
+| GwzCore | diff | in | unary | request: DiffRequest | value: DiffManifestResponse |
+| GwzCore | diff.output | out | log | log_id: str | append: DiffOutputRecord |
 
 ## CLI-Local Protocol Values
 
@@ -50,6 +57,9 @@ has no service method and no handler that executes commands.
 | AddExistingRepoRequest | AddExistingRepoResponse | workspace_ops::handle_add_existing_repo | add | core service |
 | CreateRepoRequest | CreateRepoResponse | workspace_ops::handle_create_repo | repo/create | core service |
 | RepoSyncRequest | RepoSyncResponse | workspace_ops::handle_repo_sync | repo/sync | core service |
+| CloneRepoMemberRequest | CloneRepoMemberResponse | workspace_ops::handle_clone_repo_member | repo/clone | core service |
+| DetachRepoMemberRequest | DetachRepoMemberResponse | workspace_ops::handle_detach_repo_member | repo/detach | core service |
+| AttachRepoMemberRequest | AttachRepoMemberResponse | workspace_ops::handle_attach_repo_member | repo/attach | core service |
 | MaterializeRequest | MaterializeResponse | workspace_ops::handle_materialize | materialize/clone | core service |
 | StatusRequest | StatusResponse | status::handle_status | status | core service |
 | LsRequest | LsResponse | workspace_ops::handle_ls | ls | core service |
@@ -90,6 +100,12 @@ has no service method and no handler that executes commands.
 | repo_sync | 16 |
 | stash | 17 |
 | branch | 18 |
+| clone_workspace | 19 |
+| list_snapshots | 20 |
+| diff | 21 |
+| clone_repo_member | 22 |
+| detach_repo_member | 23 |
+| attach_repo_member | 24 |
 
 ### TagOp
 
@@ -179,6 +195,13 @@ has no service method and no handler that executes commands.
 | package | 2 |
 | local | 3 |
 | generated | 4 |
+
+### TargetKind
+
+| Member | Wire |
+| --- | --- |
+| root | 0 |
+| member | 1 |
 
 ### AggregateStatus
 
@@ -274,6 +297,8 @@ has no service method and no handler that executes commands.
 | merge | 12 |
 | rebase | 13 |
 | reset | 14 |
+| detach_member | 15 |
+| attach_member | 16 |
 
 ### LockMatch
 
@@ -371,6 +396,95 @@ has no service method and no handler that executes commands.
 | stash_not_found | 33 |
 | stash_incomplete | 34 |
 | stash_conflict | 35 |
+| source_identity_mismatch | 36 |
+
+### DiffComparisonKind
+
+| Member | Wire |
+| --- | --- |
+| worktree_vs_index | 0 |
+| index_vs_tree | 1 |
+| worktree_vs_tree | 2 |
+| tree_vs_tree | 3 |
+
+### DiffOutputFormat
+
+| Member | Wire |
+| --- | --- |
+| patch | 0 |
+| raw | 1 |
+| name_only | 2 |
+| name_status | 3 |
+| stat | 4 |
+| numstat | 5 |
+| shortstat | 6 |
+| summary | 7 |
+| patch_with_raw | 8 |
+| patch_with_stat | 9 |
+| no_patch | 10 |
+
+### DiffManifestMode
+
+| Member | Wire |
+| --- | --- |
+| full | 0 |
+| any_difference | 1 |
+
+### DiffAlgorithm
+
+| Member | Wire |
+| --- | --- |
+| default | 0 |
+| myers | 1 |
+| minimal | 2 |
+| patience | 3 |
+
+### DiffWhitespaceMode
+
+| Member | Wire |
+| --- | --- |
+| default | 0 |
+| ignore_all | 1 |
+| ignore_change | 2 |
+| ignore_eol | 3 |
+| ignore_blank_lines | 4 |
+
+### DiffStatus
+
+| Member | Wire |
+| --- | --- |
+| added | 0 |
+| modified | 1 |
+| deleted | 2 |
+| renamed | 3 |
+| copied | 4 |
+| type_changed | 5 |
+| unmerged | 6 |
+
+### DiffChunkEncoding
+
+| Member | Wire |
+| --- | --- |
+| utf8 | 0 |
+| bytes | 1 |
+
+### DiffOutputRecordKind
+
+| Member | Wire |
+| --- | --- |
+| patch_bytes | 0 |
+| file_started | 1 |
+| file_finished | 2 |
+| stale_file | 3 |
+| diagnostic | 4 |
+
+### DiffTargetExclusionReason
+
+| Member | Wire |
+| --- | --- |
+| snapshot_missing | 0 |
+| snapshot_missing_commit | 1 |
+| root_not_in_snapshot | 2 |
 
 ## Messages
 
@@ -415,6 +529,8 @@ has no service method and no handler that executes commands.
 | all | 1 | bool | yes | no | - |
 | member_ids | 2 | List<str> | no | no | - |
 | paths | 3 | List<str> | no | no | - |
+| targets | 4 | List<str> | no | no | - |
+| exclude_targets | 5 | List<str> | no | no | - |
 
 ### OperationPolicy
 
@@ -462,6 +578,7 @@ has no service method and no handler that executes commands.
 | member_id | 3 | str | yes | no | - |
 | member_path | 4 | str | yes | no | - |
 | detail | 5 | str | yes | no | - |
+| target_kind | 6 | TargetKind | yes | no | - |
 
 ### RemoteSpec
 
@@ -748,6 +865,7 @@ has no service method and no handler that executes commands.
 | state | 7 | ResolvedMemberState | yes | no | - |
 | git_status | 8 | GitStatus | yes | no | - |
 | lock_match | 9 | LockMatch | yes | no | - |
+| target_kind | 10 | TargetKind | yes | no | - |
 
 ### ResponseEnvelope
 
@@ -774,6 +892,7 @@ has no service method and no handler that executes commands.
 | error | 11 | GwzError | yes | no | - |
 | attribution | 12 | OperationAttribution | yes | no | - |
 | progress | 13 | GitTransferProgress | yes | no | - |
+| target_kind | 14 | TargetKind | yes | no | - |
 
 ### OperationResult
 
@@ -807,6 +926,14 @@ has no service method and no handler that executes commands.
 | target | 4 | MaterializeTarget | yes | no | - |
 | workspace_id | 5 | str | yes | no | - |
 
+### CloneWorkspaceRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+| url | 2 | str | no | no | - |
+| target | 3 | str | no | no | - |
+
 ### AddExistingRepoRequest
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -828,6 +955,27 @@ has no service method and no handler that executes commands.
 | source_id | 5 | str | yes | no | - |
 
 ### RepoSyncRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+
+### CloneRepoMemberRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+| source | 2 | SourceUrl | no | no | - |
+| member_id | 3 | str | yes | no | - |
+| source_id | 4 | str | yes | no | - |
+
+### DetachRepoMemberRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+
+### AttachRepoMemberRequest
 
 | Field | Tag | Type | Optional | Transient | Merge |
 | --- | --- | --- | --- | --- | --- |
@@ -865,6 +1013,7 @@ has no service method and no handler that executes commands.
 | path | 2 | str | no | no | - |
 | abspath | 3 | str | no | no | - |
 | materialized | 4 | bool | no | no | - |
+| target_kind | 5 | TargetKind | yes | no | - |
 
 ### LsResponse
 
@@ -908,6 +1057,12 @@ has no service method and no handler that executes commands.
 | snapshot_id | 2 | str | no | no | - |
 | source | 3 | SnapshotSource | yes | no | - |
 
+### ListSnapshotsRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+
 ### TagRequest
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -933,6 +1088,7 @@ has no service method and no handler that executes commands.
 | meta | 1 | RequestMeta | no | no | - |
 | message | 2 | str | no | no | - |
 | all | 3 | bool | yes | no | - |
+| commit_marker | 4 | bool | yes | no | - |
 
 ### StageRequest
 
@@ -999,6 +1155,12 @@ has no service method and no handler that executes commands.
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
 
+### CloneWorkspaceResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+
 ### AddExistingRepoResponse
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -1012,6 +1174,24 @@ has no service method and no handler that executes commands.
 | response | 1 | ResponseEnvelope | no | no | - |
 
 ### RepoSyncResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+
+### CloneRepoMemberResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+
+### DetachRepoMemberResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+
+### AttachRepoMemberResponse
 
 | Field | Tag | Type | Optional | Transient | Merge |
 | --- | --- | --- | --- | --- | --- |
@@ -1035,6 +1215,22 @@ has no service method and no handler that executes commands.
 | Field | Tag | Type | Optional | Transient | Merge |
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
+
+### SnapshotInfo
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| name | 1 | str | no | no | - |
+| created_at | 2 | str | no | no | - |
+| created_by | 3 | str | no | no | - |
+| members | 4 | int | no | no | - |
+
+### ListSnapshotsResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+| snapshots | 2 | List<SnapshotInfo> | yes | no | - |
 
 ### TagInfo
 
@@ -1099,6 +1295,157 @@ has no service method and no handler that executes commands.
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
 | repos | 2 | List<BranchRepoSummary> | yes | no | - |
+
+### DiffComparison
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | DiffComparisonKind | no | no | - |
+| left | 2 | str | yes | no | - |
+| right | 3 | str | yes | no | - |
+| merge_base | 4 | bool | yes | no | - |
+
+### DiffOptions
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| output_format | 1 | DiffOutputFormat | yes | no | - |
+| context_lines | 2 | int | yes | no | - |
+| interhunk_lines | 3 | int | yes | no | - |
+| algorithm | 4 | DiffAlgorithm | yes | no | - |
+| whitespace | 5 | DiffWhitespaceMode | yes | no | - |
+| find_renames | 6 | bool | yes | no | - |
+| find_copies | 7 | bool | yes | no | - |
+| rename_threshold | 8 | int | yes | no | - |
+| rename_limit | 9 | int | yes | no | - |
+| binary | 10 | bool | yes | no | - |
+| text | 11 | bool | yes | no | - |
+| full_index | 12 | bool | yes | no | - |
+| abbrev | 13 | int | yes | no | - |
+| reverse | 14 | bool | yes | no | - |
+| null_terminated | 15 | bool | yes | no | - |
+| src_prefix | 16 | str | yes | no | - |
+| dst_prefix | 17 | str | yes | no | - |
+| no_prefix | 18 | bool | yes | no | - |
+| line_prefix | 19 | str | yes | no | - |
+| ignore_submodules | 20 | str | yes | no | - |
+| diff_filter | 21 | str | yes | no | - |
+| manifest_mode | 22 | DiffManifestMode | yes | no | - |
+| echo_manifest_entries | 23 | bool | yes | no | - |
+
+### DiffRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+| workspace_cwd | 2 | str | yes | no | - |
+| operands | 3 | List<str> | no | no | - |
+| explicit_pathspecs | 4 | List<str> | no | no | - |
+| options | 5 | DiffOptions | yes | no | - |
+| cached | 6 | bool | yes | no | - |
+| merge_base | 7 | bool | yes | no | - |
+
+### DiffRepoScope
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| root | 1 | bool | yes | no | - |
+| member_id | 2 | str | yes | no | - |
+| member_path | 3 | str | yes | no | - |
+| source_kind | 4 | SourceKind | yes | no | - |
+
+### DiffExcludedTarget
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| scope | 1 | DiffRepoScope | no | no | - |
+| reason | 2 | DiffTargetExclusionReason | no | no | - |
+| snapshot_id | 3 | str | yes | no | - |
+| message | 4 | str | yes | no | - |
+
+### DiffParsedTarget
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| target_id | 1 | str | no | no | - |
+| scope | 2 | DiffRepoScope | no | no | - |
+| comparison | 3 | DiffComparison | no | no | - |
+| pathspecs | 4 | List<str> | no | no | - |
+| left_oid | 5 | str | yes | no | - |
+| right_oid | 6 | str | yes | no | - |
+| merge_base_oid | 7 | str | yes | no | - |
+| left_snapshot_id | 8 | str | yes | no | - |
+| right_snapshot_id | 9 | str | yes | no | - |
+
+### DiffFileEntry
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| file_id | 1 | str | no | no | - |
+| scope | 2 | DiffRepoScope | no | no | - |
+| status | 3 | DiffStatus | no | no | - |
+| old_path | 4 | str | yes | no | - |
+| new_path | 5 | str | yes | no | - |
+| old_mode | 6 | int | yes | no | - |
+| new_mode | 7 | int | yes | no | - |
+| similarity | 8 | int | yes | no | - |
+| insertions | 9 | int | yes | no | - |
+| deletions | 10 | int | yes | no | - |
+| is_binary | 11 | bool | yes | no | - |
+
+### DiffRepoSummary
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| scope | 1 | DiffRepoScope | no | no | - |
+| has_differences | 2 | bool | no | no | - |
+| files_changed | 3 | int | no | no | - |
+| insertions | 4 | int | no | no | - |
+| deletions | 5 | int | no | no | - |
+| files_manifested | 6 | int | no | no | - |
+
+### DiffSummary
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| has_differences | 1 | bool | no | no | - |
+| repos_examined | 2 | int | no | no | - |
+| repos_with_differences | 3 | int | no | no | - |
+| files_changed | 4 | int | no | no | - |
+| insertions | 5 | int | no | no | - |
+| deletions | 6 | int | no | no | - |
+| repo_summaries | 7 | List<DiffRepoSummary> | no | no | - |
+
+### DiffOutputLogRef
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| log_id | 1 | str | no | no | - |
+| format | 2 | DiffOutputFormat | no | no | - |
+| encoding | 3 | DiffChunkEncoding | yes | no | - |
+
+### DiffManifestResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+| files | 2 | List<DiffFileEntry> | no | no | - |
+| summary | 3 | DiffSummary | yes | no | - |
+| targets | 4 | List<DiffParsedTarget> | no | no | - |
+| output | 5 | DiffOutputLogRef | yes | no | - |
+| excluded_targets | 6 | List<DiffExcludedTarget> | no | no | - |
+
+### DiffOutputRecord
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | DiffOutputRecordKind | no | no | - |
+| scope | 2 | DiffRepoScope | yes | no | - |
+| file_id | 3 | str | yes | no | - |
+| entry | 4 | DiffFileEntry | yes | no | - |
+| data | 5 | bytes | yes | no | - |
+| stale | 6 | bool | yes | no | - |
+| diagnostic | 7 | str | yes | no | - |
 
 ## Evolution Notes
 

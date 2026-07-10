@@ -375,7 +375,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::artifact::{ArtifactSourceKind, LockArtifact};
+    use crate::artifact::{ArtifactSourceKind, LockArtifact, ManifestArtifact, WorkspaceHeader};
     use crate::git::{Git2Backend, GitBackend};
     use crate::model::ErrorCode;
     use crate::workspace_ops::ensure_workspace_exclude;
@@ -603,7 +603,7 @@ mod tests {
         let temp = TempDir::new("stash-root-boundary");
         let backend = Git2Backend::default();
         backend.create_repo(temp.path()).unwrap();
-        ensure_workspace_exclude(temp.path(), &empty_lock()).unwrap();
+        ensure_workspace_exclude(&backend, temp.path(), &empty_manifest(), &empty_lock()).unwrap();
 
         write_bundle(temp.path(), &sample_bundle()).unwrap();
 
@@ -685,6 +685,16 @@ mod tests {
                 },
             )]
             .into(),
+        }
+    }
+
+    fn empty_manifest() -> ManifestArtifact {
+        ManifestArtifact {
+            schema: crate::artifact::WORKSPACE_SCHEMA.to_owned(),
+            workspace: WorkspaceHeader {
+                id: "ws_01".to_owned(),
+            },
+            members: Vec::new(),
         }
     }
 

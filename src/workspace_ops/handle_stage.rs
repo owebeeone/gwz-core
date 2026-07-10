@@ -26,8 +26,11 @@ where
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
 
-    // Every member path defines a repo boundary for routing.
-    let member_paths: Vec<String> = manifest.members.iter().map(|m| m.path.clone()).collect();
+    // Only active designations own operation paths. Historical rows may overlap an
+    // active owner and must not steal pathspec routing from it.
+    let member_paths: Vec<String> = active_members(&manifest)
+        .map(|member| member.path.clone())
+        .collect();
     let all = request.all.unwrap_or(false);
     // An explicit target selection scopes `-A`; bare `-A` stages the root plus every member.
     let narrowed = has_explicit_target_selection(request.meta.selection.as_ref());
@@ -63,6 +66,13 @@ where
             all,
         )?
     };
+
+    // A root stage must see the current physical nested-repository boundary before
+    // Git examines the worktree. Inactive checkouts remain excluded while present.
+    if targets.iter().any(|target| target.member_path.is_none()) {
+        let lock = artifact::read_lock(&root)?;
+        ensure_workspace_exclude(backend, &root, &manifest, &lock)?;
+    }
 
     // Stage each target repo. An unmaterialized repo is an error if a pathspec named it
     // directly, but is skipped if it was only reached by `.` / `-A` fan-out.
