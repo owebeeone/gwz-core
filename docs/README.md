@@ -1,11 +1,13 @@
 # gwz-core Docs
 
-These docs describe `gwz-core` v0.3.0 as an embeddable Rust engine and taut
-protocol contract for GWZ workspaces.
+These docs describe `gwz-core` as an embeddable Rust engine and Taut protocol
+contract for GWZ workspaces.
 
 Use these pages when you are writing a caller, UI, agent, transport bridge, or
-test harness that talks directly to the library. Use `gwz-cli` docs for
-terminal workflows and command-line output.
+test harness that talks directly to the library. For terminal workflows and
+command-line output, use the hosted
+[GWZ Quick Start](https://owebeeone.github.io/gwz-cli/QuickStart/) and
+[user documentation](https://owebeeone.github.io/gwz-cli/).
 
 ## Guide
 
@@ -48,5 +50,5 @@ terminal workflows and command-line output.
 - Workspace artifact schemas: YAML files under `gwz.conf/` plus local runtime
   state such as `.git/info/exclude`.
 
-Tags are real Git refs in v0.3.0. There is no live `gwz.conf/tags` artifact; if
+Tags are real Git refs. There is no live `gwz.conf/tags` artifact; if
 you see that path in older design history, treat it as removed history only.

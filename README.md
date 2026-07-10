@@ -1,35 +1,33 @@
 # gwz-core
 
-`gwz-core` is the embeddable Rust control plane for a GWZ workspace: a local
-workspace made from many repositories, driven by typed requests instead of
-ad-hoc shell glue.
+GWZ coordinates multiple ordinary Git repositories as one reproducible,
+inspectable workspace. `gwz-core` is the embeddable Rust engine that owns most
+of that workspace behavior behind typed Taut service messages.
 
-It gives tools, agents, and UIs one stable place to ask:
+The core was designed from scratch to run in-process or behind a separate
+client boundary. A local adapter can call it directly; a remote adapter can
+carry the same typed operations using deterministic CBOR or schema-driven JSON.
+This crate is transport-neutral and does not itself start a server or daemon.
 
-- What repositories are in this workspace?
-- What Git state are they in?
-- Can this workspace be materialized to a lock, snapshot, tag, head, or commit?
-- What changed, what failed, and which member caused it?
-
-The point is not to replace Git. The point is to make multi-repo workspace
-operations deterministic, inspectable, and scriptable without forcing callers
-to know the artifact layout or reimplement cross-repo policy.
+Use the primary [`gwz` CLI](https://github.com/owebeeone/gwz-cli) for terminal
+workflows and follow the hosted
+[Quick Start](https://owebeeone.github.io/gwz-cli/QuickStart/). Embed this crate
+when a tool, UI, agent, bridge, or service needs workspace operations without
+reimplementing cross-repository policy. Read [Why GWZ](docs/WhyGwz.md) for the
+product model and comparison with lighter repository fan-out tools.
 
 ## Why Embed It
 
-- **Typed protocol:** callers build generated request structs and receive typed
-  responses, member results, errors, and operation metadata.
-- **Workspace artifacts:** manifest, lock, and snapshots are read and written
-  through one library boundary. Tags are real Git refs managed through Git.
+- **Typed message boundary:** generated requests and responses carry member
+  results, structured errors, operation metadata, and streaming events.
+- **Workspace artifacts:** the manifest, lock, snapshots, and markers are read
+  and written through one policy boundary; tags remain real Git refs.
 - **Git backend boundary:** Git behavior is isolated behind `GitBackend`; the
-  default backend supports local, SSH, and HTTPS Git repositories.
-- **Agent-friendly surface:** every operation can carry request metadata,
-  selection, dry-run policy, attribution, and per-member status.
-- **CLI-ready, UI-ready:** `gwz-cli` is the thin command driver; richer tools can
-  call the same request handlers directly.
-
-For command workflows and examples, use `gwz-cli` as the definitive how-to. This
-crate is the reusable engine behind that command.
+  default backend supports local, SSH, and HTTPS repositories.
+- **Local or remote composition:** clients can share the same operation model
+  whether the core is linked into the process or hosted elsewhere.
+- **CLI-ready and UI-ready:** `gwz-cli` is a command driver over these requests;
+  richer clients can use the same handlers directly.
 
 ## Small Shape
 
@@ -66,18 +64,19 @@ fn create_member_repo() -> gwz_core::model::ModelResult<()> {
 
 ## Documentation
 
-- [docs/README.md](docs/README.md) is the core documentation index.
-- [docs/Reference.md](docs/Reference.md) is a compact practical reference for
-  embedding.
-- [docs/MessageCatalog.md](docs/MessageCatalog.md) is generated from
-  `protocol/gwz.taut.py` and lists service methods, enums, messages, field
-  tags, and request/response mapping.
-- `dev-docs/` contains design history and implementation plans. Older history
-  may mention removed tag artifacts; v0.3.0 tags are real Git refs.
+- [Core documentation index](docs/README.md)
+- [Why GWZ](docs/WhyGwz.md)
+- [Embedding](docs/Embedding.md)
+- [Protocol and transports](docs/Protocol.md)
+- [Practical reference](docs/Reference.md)
+- [Generated message catalog](docs/MessageCatalog.md)
+
+The message catalog is generated from `protocol/gwz.taut.py`; do not hand-edit
+generated protocol output.
 
 ## Development
 
-```text
+```sh
 cargo fmt
 cargo test
 cargo fmt --check
@@ -85,12 +84,9 @@ cargo fmt --check
 
 ## Release
 
-`gwz-core` is a Rust library crate. It does not publish binary installer assets.
-Create a GitHub Release from a version tag to run the release verification
-workflow, then point binary crates such as `gwz` at that Git revision or tag.
-
-When `protocol/gwz.taut.py` changes, regenerate through the taut workflow and
-run `cargo test`; do not hand-edit generated protocol output.
+`gwz-core` is a Rust library crate and does not publish binary installers.
+Create a GitHub Release from a version tag to run release verification, then pin
+binary or binding repositories to that revision.
 
 ## License
 

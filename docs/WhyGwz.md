@@ -143,8 +143,8 @@ usually enough.
 ## Where To Start
 
 - To use GWZ from the terminal, follow the
-  [GWZ Quick Start](https://github.com/owebeeone/gwz-cli/blob/main/docs/QuickStart.md).
+  [GWZ Quick Start](https://owebeeone.github.io/gwz-cli/QuickStart/).
 - To understand the command surface, use the
-  [GWZ CLI documentation](https://github.com/owebeeone/gwz-cli/tree/main/docs).
+  [GWZ CLI documentation](https://owebeeone.github.io/gwz-cli/).
 - To embed the engine, continue with [Embedding](Embedding.md) and
   [OperationModel](OperationModel.md).
