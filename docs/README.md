@@ -9,6 +9,8 @@ terminal workflows and command-line output.
 
 ## Guide
 
+- [Why GWZ](WhyGwz.md) - the multi-repository problem GWZ solves, what it
+  adds to Git, and when it is a useful fit.
 - [Embedding](Embedding.md) - how to call `gwz-core` directly.
 - [OperationModel](OperationModel.md) - request metadata, selection, policy,
   dry-run, attribution, aggregate status, partial results, and events.
