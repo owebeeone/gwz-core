@@ -21,9 +21,9 @@ use gwz_core::{
 fn round_trip<T>(
     value: &T,
     to_cbor: impl Fn(&T) -> gwz_core::Cbor,
-    from_cbor: impl Fn(&gwz_core::Cbor) -> T,
+    from_cbor: impl Fn(&gwz_core::Cbor) -> Result<T, gwz_core::cbor::DecodeError>,
 ) -> T {
-    from_cbor(&decode(&encode(&to_cbor(value))))
+    from_cbor(&decode(&encode(&to_cbor(value)))).expect("round-trip decode")
 }
 
 #[test]

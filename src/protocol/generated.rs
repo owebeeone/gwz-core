@@ -1,6 +1,6 @@
 // GENERATED native Rust types + codec — do not edit.
 #![allow(dead_code)]
-use crate::cbor::Cbor;
+use crate::cbor::{Cbor, DecodeError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum ActionKind {
@@ -58,7 +58,7 @@ impl ActionKind {
         Self::DetachRepoMember => 23,
         Self::AttachRepoMember => 24,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::CreateWorkspace,
         1 => Self::InitFromSources,
         2 => Self::AddExistingRepo,
@@ -84,8 +84,8 @@ impl ActionKind {
         22 => Self::CloneRepoMember,
         23 => Self::DetachRepoMember,
         24 => Self::AttachRepoMember,
-        _ => panic!("bad ActionKind wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "ActionKind", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -104,14 +104,14 @@ impl TagOp {
         Self::Push => 3,
         Self::Delete => 4,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Create,
         1 => Self::List,
         2 => Self::Fetch,
         3 => Self::Push,
         4 => Self::Delete,
-        _ => panic!("bad TagOp wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "TagOp", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -130,14 +130,14 @@ impl StashOp {
         Self::Pop => 3,
         Self::Drop => 4,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Push,
         1 => Self::List,
         2 => Self::Apply,
         3 => Self::Pop,
         4 => Self::Drop,
-        _ => panic!("bad StashOp wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "StashOp", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -152,12 +152,12 @@ impl StashParticipation {
         Self::Empty => 1,
         Self::Skipped => 2,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Stashed,
         1 => Self::Empty,
         2 => Self::Skipped,
-        _ => panic!("bad StashParticipation wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "StashParticipation", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -176,14 +176,14 @@ impl StashPushLifecycle {
         Self::Empty => 3,
         Self::Failed => 4,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Unattempted,
         1 => Self::Saving,
         2 => Self::Saved,
         3 => Self::Empty,
         4 => Self::Failed,
-        _ => panic!("bad StashPushLifecycle wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "StashPushLifecycle", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -204,15 +204,15 @@ impl StashRestoreState {
         Self::Noop => 4,
         Self::Missing => 5,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Pending,
         1 => Self::Applied,
         2 => Self::Popped,
         3 => Self::Dropped,
         4 => Self::Noop,
         5 => Self::Missing,
-        _ => panic!("bad StashRestoreState wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "StashRestoreState", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -229,13 +229,13 @@ impl BranchOp {
         Self::Delete => 2,
         Self::Merge => 3,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::List,
         1 => Self::Create,
         2 => Self::Delete,
         3 => Self::Merge,
-        _ => panic!("bad BranchOp wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "BranchOp", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -262,7 +262,7 @@ impl BranchActionResult {
         Self::Merged => 7,
         Self::Conflicted => 8,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Listed,
         1 => Self::Created,
         2 => Self::Exists,
@@ -272,8 +272,8 @@ impl BranchActionResult {
         6 => Self::Skipped,
         7 => Self::Merged,
         8 => Self::Conflicted,
-        _ => panic!("bad BranchActionResult wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "BranchActionResult", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -286,11 +286,11 @@ impl ExecMode {
         Self::Argv => 0,
         Self::Shell => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Argv,
         1 => Self::Shell,
-        _ => panic!("bad ExecMode wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "ExecMode", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -309,14 +309,14 @@ impl SourceKind {
         Self::Local => 3,
         Self::Generated => 4,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Git,
         1 => Self::Archive,
         2 => Self::Package,
         3 => Self::Local,
         4 => Self::Generated,
-        _ => panic!("bad SourceKind wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "SourceKind", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -329,11 +329,11 @@ impl TargetKind {
         Self::Root => 0,
         Self::Member => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Root,
         1 => Self::Member,
-        _ => panic!("bad TargetKind wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "TargetKind", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -358,7 +358,7 @@ impl AggregateStatus {
         Self::Dirty => 6,
         Self::Conflicted => 7,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Accepted,
         1 => Self::Ok,
         2 => Self::Noop,
@@ -367,8 +367,8 @@ impl AggregateStatus {
         5 => Self::Failed,
         6 => Self::Dirty,
         7 => Self::Conflicted,
-        _ => panic!("bad AggregateStatus wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "AggregateStatus", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -391,7 +391,7 @@ impl MemberStatus {
         Self::Failed => 5,
         Self::Conflicted => 6,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Planned,
         1 => Self::Ok,
         2 => Self::Noop,
@@ -399,8 +399,8 @@ impl MemberStatus {
         4 => Self::Rejected,
         5 => Self::Failed,
         6 => Self::Conflicted,
-        _ => panic!("bad MemberStatus wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MemberStatus", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -421,15 +421,15 @@ impl MaterializeTargetKind {
         Self::Commit => 4,
         Self::Branch => 5,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Lock,
         1 => Self::Head,
         2 => Self::Snapshot,
         3 => Self::Tag,
         4 => Self::Commit,
         5 => Self::Branch,
-        _ => panic!("bad MaterializeTargetKind wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MaterializeTargetKind", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -442,11 +442,11 @@ impl SnapshotSourceKind {
         Self::Current => 0,
         Self::Branch => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Current,
         1 => Self::Branch,
-        _ => panic!("bad SnapshotSourceKind wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "SnapshotSourceKind", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -467,15 +467,15 @@ impl SyncBehavior {
         Self::Reset => 4,
         Self::DriverSelected => 5,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::FetchOnly,
         1 => Self::FfOnly,
         2 => Self::Merge,
         3 => Self::Rebase,
         4 => Self::Reset,
         5 => Self::DriverSelected,
-        _ => panic!("bad SyncBehavior wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "SyncBehavior", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -488,11 +488,11 @@ impl PartialBehavior {
         Self::Atomic => 0,
         Self::Partial => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Atomic,
         1 => Self::Partial,
-        _ => panic!("bad PartialBehavior wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "PartialBehavior", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -505,11 +505,11 @@ impl DestructiveBehavior {
         Self::Refuse => 0,
         Self::Allow => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Refuse,
         1 => Self::Allow,
-        _ => panic!("bad DestructiveBehavior wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DestructiveBehavior", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -522,11 +522,11 @@ impl UnsupportedMemberBehavior {
         Self::Fail => 0,
         Self::Skip => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Fail,
         1 => Self::Skip,
-        _ => panic!("bad UnsupportedMemberBehavior wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "UnsupportedMemberBehavior", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -569,7 +569,7 @@ impl PlannedAction {
         Self::DetachMember => 15,
         Self::AttachMember => 16,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Noop,
         1 => Self::Clone,
         2 => Self::Fetch,
@@ -587,8 +587,8 @@ impl PlannedAction {
         14 => Self::Reset,
         15 => Self::DetachMember,
         16 => Self::AttachMember,
-        _ => panic!("bad PlannedAction wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "PlannedAction", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -605,13 +605,13 @@ impl LockMatch {
         Self::Differs => 2,
         Self::Missing => 3,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Unknown,
         1 => Self::Matches,
         2 => Self::Differs,
         3 => Self::Missing,
-        _ => panic!("bad LockMatch wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LockMatch", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -634,7 +634,7 @@ impl GitProgressPhase {
         Self::CheckingOut => 5,
         Self::Writing => 6,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Enumerating,
         1 => Self::Counting,
         2 => Self::Compressing,
@@ -642,8 +642,8 @@ impl GitProgressPhase {
         4 => Self::Resolving,
         5 => Self::CheckingOut,
         6 => Self::Writing,
-        _ => panic!("bad GitProgressPhase wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "GitProgressPhase", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -656,11 +656,11 @@ impl StatusMode {
         Self::Summary => 0,
         Self::Combined => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Summary,
         1 => Self::Combined,
-        _ => panic!("bad StatusMode wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "StatusMode", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -673,11 +673,11 @@ impl StatusPathStyle {
         Self::MemberRelative => 0,
         Self::WorkspaceRelative => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::MemberRelative,
         1 => Self::WorkspaceRelative,
-        _ => panic!("bad StatusPathStyle wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "StatusPathStyle", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -700,7 +700,7 @@ impl EventKind {
         Self::OperationFinished => 5,
         Self::Reset => 6,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::OperationStarted,
         1 => Self::MemberStarted,
         2 => Self::MemberProgress,
@@ -708,8 +708,8 @@ impl EventKind {
         4 => Self::ArtifactWritten,
         5 => Self::OperationFinished,
         6 => Self::Reset,
-        _ => panic!("bad EventKind wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "EventKind", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -726,13 +726,13 @@ impl Severity {
         Self::Warn => 2,
         Self::Error => 3,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Debug,
         1 => Self::Info,
         2 => Self::Warn,
         3 => Self::Error,
-        _ => panic!("bad Severity wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "Severity", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -815,7 +815,7 @@ impl GwzErrorCode {
         Self::StashConflict => 35,
         Self::SourceIdentityMismatch => 36,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
         1 => Self::InvalidRequest,
         2 => Self::WorkspaceNotFound,
@@ -853,8 +853,8 @@ impl GwzErrorCode {
         34 => Self::StashIncomplete,
         35 => Self::StashConflict,
         36 => Self::SourceIdentityMismatch,
-        _ => panic!("bad GwzErrorCode wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -871,13 +871,13 @@ impl DiffComparisonKind {
         Self::WorktreeVsTree => 2,
         Self::TreeVsTree => 3,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::WorktreeVsIndex,
         1 => Self::IndexVsTree,
         2 => Self::WorktreeVsTree,
         3 => Self::TreeVsTree,
-        _ => panic!("bad DiffComparisonKind wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffComparisonKind", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -908,7 +908,7 @@ impl DiffOutputFormat {
         Self::PatchWithStat => 9,
         Self::NoPatch => 10,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Patch,
         1 => Self::Raw,
         2 => Self::NameOnly,
@@ -920,8 +920,8 @@ impl DiffOutputFormat {
         8 => Self::PatchWithRaw,
         9 => Self::PatchWithStat,
         10 => Self::NoPatch,
-        _ => panic!("bad DiffOutputFormat wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffOutputFormat", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -934,11 +934,11 @@ impl DiffManifestMode {
         Self::Full => 0,
         Self::AnyDifference => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Full,
         1 => Self::AnyDifference,
-        _ => panic!("bad DiffManifestMode wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffManifestMode", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -955,13 +955,13 @@ impl DiffAlgorithm {
         Self::Minimal => 2,
         Self::Patience => 3,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Default,
         1 => Self::Myers,
         2 => Self::Minimal,
         3 => Self::Patience,
-        _ => panic!("bad DiffAlgorithm wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffAlgorithm", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -980,14 +980,14 @@ impl DiffWhitespaceMode {
         Self::IgnoreEol => 3,
         Self::IgnoreBlankLines => 4,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Default,
         1 => Self::IgnoreAll,
         2 => Self::IgnoreChange,
         3 => Self::IgnoreEol,
         4 => Self::IgnoreBlankLines,
-        _ => panic!("bad DiffWhitespaceMode wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffWhitespaceMode", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -1010,7 +1010,7 @@ impl DiffStatus {
         Self::TypeChanged => 5,
         Self::Unmerged => 6,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Added,
         1 => Self::Modified,
         2 => Self::Deleted,
@@ -1018,8 +1018,8 @@ impl DiffStatus {
         4 => Self::Copied,
         5 => Self::TypeChanged,
         6 => Self::Unmerged,
-        _ => panic!("bad DiffStatus wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffStatus", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -1032,11 +1032,11 @@ impl DiffChunkEncoding {
         Self::Utf8 => 0,
         Self::Bytes => 1,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Utf8,
         1 => Self::Bytes,
-        _ => panic!("bad DiffChunkEncoding wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffChunkEncoding", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -1055,14 +1055,14 @@ impl DiffOutputRecordKind {
         Self::StaleFile => 3,
         Self::Diagnostic => 4,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::PatchBytes,
         1 => Self::FileStarted,
         2 => Self::FileFinished,
         3 => Self::StaleFile,
         4 => Self::Diagnostic,
-        _ => panic!("bad DiffOutputRecordKind wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffOutputRecordKind", value: v }),
+    }) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -1077,12 +1077,12 @@ impl DiffTargetExclusionReason {
         Self::SnapshotMissingCommit => 1,
         Self::RootNotInSnapshot => 2,
     } }
-    pub fn from_wire(v: i64) -> Self { match v {
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::SnapshotMissing,
         1 => Self::SnapshotMissingCommit,
         2 => Self::RootNotInSnapshot,
-        _ => panic!("bad DiffTargetExclusionReason wire value {}", v),
-    } }
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffTargetExclusionReason", value: v }),
+    }) }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -1097,11 +1097,11 @@ impl WorkspaceRef {
             (2, match &self.workspace_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            root: { let v = c.get(1); if v.is_null() { None } else { Some(v.text()) } },
-            workspace_id: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            root: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            workspace_id: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1121,13 +1121,13 @@ impl OperationActor {
             (4, match &self.authority { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            actor_id: c.get(1).text(),
-            display_name: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            email: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            authority: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            actor_id: c.try_get(1)?.try_text()?,
+            display_name: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            email: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            authority: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1147,13 +1147,13 @@ impl GitObjectIdentity {
             (4, match &self.timezone_offset_minutes { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            name: c.get(1).text(),
-            email: c.get(2).text(),
-            time_ms: { let v = c.get(3); if v.is_null() { None } else { Some(v.int()) } },
-            timezone_offset_minutes: { let v = c.get(4); if v.is_null() { None } else { Some(v.int()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            name: c.try_get(1)?.try_text()?,
+            email: c.try_get(2)?.try_text()?,
+            time_ms: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            timezone_offset_minutes: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+        })
     }
 }
 
@@ -1173,13 +1173,13 @@ impl OperationAttribution {
             (4, match &self.credential_ref { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            actor: { let v = c.get(1); if v.is_null() { None } else { Some(OperationActor::from_cbor(v)) } },
-            git_author: { let v = c.get(2); if v.is_null() { None } else { Some(GitObjectIdentity::from_cbor(v)) } },
-            git_committer: { let v = c.get(3); if v.is_null() { None } else { Some(GitObjectIdentity::from_cbor(v)) } },
-            credential_ref: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            actor: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(OperationActor::from_cbor(v)?) } },
+            git_author: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(GitObjectIdentity::from_cbor(v)?) } },
+            git_committer: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(GitObjectIdentity::from_cbor(v)?) } },
+            credential_ref: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1201,14 +1201,14 @@ impl Selection {
             (5, Cbor::Array(self.exclude_targets.iter().map(|x| Cbor::Text(x.clone())).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            all: { let v = c.get(1); if v.is_null() { None } else { Some(v.boolean()) } },
-            member_ids: c.get(2).array().iter().map(|x| x.text()).collect(),
-            paths: c.get(3).array().iter().map(|x| x.text()).collect(),
-            targets: c.get(4).array().iter().map(|x| x.text()).collect(),
-            exclude_targets: c.get(5).array().iter().map(|x| x.text()).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            all: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            member_ids: c.try_get(2)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            paths: c.try_get(3)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            targets: c.try_get(4)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            exclude_targets: c.try_get(5)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -1236,17 +1236,17 @@ impl OperationPolicy {
             (8, match &self.max_connections_per_host { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            partial: { let v = c.get(1); if v.is_null() { None } else { Some(PartialBehavior::from_wire(v.int())) } },
-            destructive: { let v = c.get(2); if v.is_null() { None } else { Some(DestructiveBehavior::from_wire(v.int())) } },
-            sync: { let v = c.get(3); if v.is_null() { None } else { Some(SyncBehavior::from_wire(v.int())) } },
-            unsupported_member: { let v = c.get(4); if v.is_null() { None } else { Some(UnsupportedMemberBehavior::from_wire(v.int())) } },
-            remote: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-            concurrency: { let v = c.get(6); if v.is_null() { None } else { Some(v.int()) } },
-            progress_min_interval_ms: { let v = c.get(7); if v.is_null() { None } else { Some(v.int()) } },
-            max_connections_per_host: { let v = c.get(8); if v.is_null() { None } else { Some(v.int()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            partial: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(PartialBehavior::from_wire(v.try_int()?)?) } },
+            destructive: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(DestructiveBehavior::from_wire(v.try_int()?)?) } },
+            sync: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(SyncBehavior::from_wire(v.try_int()?)?) } },
+            unsupported_member: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(UnsupportedMemberBehavior::from_wire(v.try_int()?)?) } },
+            remote: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            concurrency: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            progress_min_interval_ms: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            max_connections_per_host: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+        })
     }
 }
 
@@ -1272,16 +1272,16 @@ impl RequestMeta {
             (7, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            request_id: c.get(1).text(),
-            schema_version: c.get(2).text(),
-            workspace: { let v = c.get(3); if v.is_null() { None } else { Some(WorkspaceRef::from_cbor(v)) } },
-            selection: { let v = c.get(4); if v.is_null() { None } else { Some(Selection::from_cbor(v)) } },
-            policy: { let v = c.get(5); if v.is_null() { None } else { Some(OperationPolicy::from_cbor(v)) } },
-            dry_run: { let v = c.get(6); if v.is_null() { None } else { Some(v.boolean()) } },
-            attribution: { let v = c.get(7); if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            request_id: c.try_get(1)?.try_text()?,
+            schema_version: c.try_get(2)?.try_text()?,
+            workspace: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(WorkspaceRef::from_cbor(v)?) } },
+            selection: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(Selection::from_cbor(v)?) } },
+            policy: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(OperationPolicy::from_cbor(v)?) } },
+            dry_run: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            attribution: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
+        })
     }
 }
 
@@ -1307,16 +1307,16 @@ impl ResponseMeta {
             (7, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            request_id: c.get(1).text(),
-            schema_version: c.get(2).text(),
-            action: ActionKind::from_wire(c.get(3).int()),
-            aggregate_status: AggregateStatus::from_wire(c.get(4).int()),
-            operation_id: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-            message: { let v = c.get(6); if v.is_null() { None } else { Some(v.text()) } },
-            attribution: { let v = c.get(7); if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            request_id: c.try_get(1)?.try_text()?,
+            schema_version: c.try_get(2)?.try_text()?,
+            action: ActionKind::from_wire(c.try_get(3)?.try_int()?)?,
+            aggregate_status: AggregateStatus::from_wire(c.try_get(4)?.try_int()?)?,
+            operation_id: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            message: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            attribution: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
+        })
     }
 }
 
@@ -1340,15 +1340,15 @@ impl GwzError {
             (6, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            code: GwzErrorCode::from_wire(c.get(1).int()),
-            message: c.get(2).text(),
-            member_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            member_path: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            detail: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-            target_kind: { let v = c.get(6); if v.is_null() { None } else { Some(TargetKind::from_wire(v.int())) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: GwzErrorCode::from_wire(c.try_get(1)?.try_int()?)?,
+            message: c.try_get(2)?.try_text()?,
+            member_id: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            member_path: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            detail: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            target_kind: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
+        })
     }
 }
 
@@ -1368,13 +1368,13 @@ impl RemoteSpec {
             (4, match &self.push { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            name: c.get(1).text(),
-            url: c.get(2).text(),
-            fetch: { let v = c.get(3); if v.is_null() { None } else { Some(v.boolean()) } },
-            push: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            name: c.try_get(1)?.try_text()?,
+            url: c.try_get(2)?.try_text()?,
+            fetch: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            push: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -1394,13 +1394,13 @@ impl DesiredRef {
             (4, match &self.local_only { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            branch: { let v = c.get(1); if v.is_null() { None } else { Some(v.text()) } },
-            commit: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            git_tag: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            local_only: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            branch: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            commit: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            git_tag: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            local_only: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -1420,13 +1420,13 @@ impl SourceUrl {
             (4, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            url: c.get(1).text(),
-            path: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            remote_name: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            branch: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            url: c.try_get(1)?.try_text()?,
+            path: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            remote_name: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            branch: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1452,16 +1452,16 @@ impl MemberSpec {
             (7, Cbor::Array(self.remotes.iter().map(|x| x.to_cbor()).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            member_id: c.get(1).text(),
-            path: c.get(2).text(),
-            source_id: c.get(3).text(),
-            source_kind: SourceKind::from_wire(c.get(4).int()),
-            active: c.get(5).boolean(),
-            desired: { let v = c.get(6); if v.is_null() { None } else { Some(DesiredRef::from_cbor(v)) } },
-            remotes: c.get(7).array().iter().map(|x| RemoteSpec::from_cbor(x)).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            path: c.try_get(2)?.try_text()?,
+            source_id: c.try_get(3)?.try_text()?,
+            source_kind: SourceKind::from_wire(c.try_get(4)?.try_int()?)?,
+            active: c.try_get(5)?.try_bool()?,
+            desired: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(DesiredRef::from_cbor(v)?) } },
+            remotes: c.try_get(7)?.try_array()?.iter().map(|x| RemoteSpec::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -1479,12 +1479,12 @@ impl MaterializeTarget {
             (3, match &self.commit { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            kind: MaterializeTargetKind::from_wire(c.get(1).int()),
-            name: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            commit: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: MaterializeTargetKind::from_wire(c.try_get(1)?.try_int()?)?,
+            name: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            commit: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1500,11 +1500,11 @@ impl SnapshotSource {
             (2, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            kind: SnapshotSourceKind::from_wire(c.get(1).int()),
-            branch: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: SnapshotSourceKind::from_wire(c.try_get(1)?.try_int()?)?,
+            branch: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1538,20 +1538,20 @@ impl ResolvedMemberState {
             (11, Cbor::Array(self.remotes.iter().map(|x| x.to_cbor()).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            member_id: c.get(1).text(),
-            path: c.get(2).text(),
-            source_id: c.get(3).text(),
-            source_kind: SourceKind::from_wire(c.get(4).int()),
-            commit: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-            branch: { let v = c.get(6); if v.is_null() { None } else { Some(v.text()) } },
-            detached: { let v = c.get(7); if v.is_null() { None } else { Some(v.boolean()) } },
-            upstream: { let v = c.get(8); if v.is_null() { None } else { Some(v.text()) } },
-            dirty: { let v = c.get(9); if v.is_null() { None } else { Some(v.boolean()) } },
-            materialized: c.get(10).boolean(),
-            remotes: c.get(11).array().iter().map(|x| RemoteSpec::from_cbor(x)).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            path: c.try_get(2)?.try_text()?,
+            source_id: c.try_get(3)?.try_text()?,
+            source_kind: SourceKind::from_wire(c.try_get(4)?.try_int()?)?,
+            commit: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            branch: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            detached: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            upstream: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            dirty: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            materialized: c.try_get(10)?.try_bool()?,
+            remotes: c.try_get(11)?.try_array()?.iter().map(|x| RemoteSpec::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -1585,20 +1585,20 @@ impl GitStatus {
             (11, Cbor::Bool(self.dirty)),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            member_id: c.get(1).text(),
-            branch: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            detached: c.get(3).boolean(),
-            head: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            upstream: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-            ahead: { let v = c.get(6); if v.is_null() { None } else { Some(v.int()) } },
-            behind: { let v = c.get(7); if v.is_null() { None } else { Some(v.int()) } },
-            staged: c.get(8).int(),
-            unstaged: c.get(9).int(),
-            untracked: c.get(10).int(),
-            dirty: c.get(11).boolean(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            branch: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            detached: c.try_get(3)?.try_bool()?,
+            head: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            upstream: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            ahead: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            behind: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            staged: c.try_get(8)?.try_int()?,
+            unstaged: c.try_get(9)?.try_int()?,
+            untracked: c.try_get(10)?.try_int()?,
+            dirty: c.try_get(11)?.try_bool()?,
+        })
     }
 }
 
@@ -1624,16 +1624,16 @@ impl GitFileChange {
             (7, match &self.original_repo_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            member_id: c.get(1).text(),
-            member_path: c.get(2).text(),
-            repo_path: c.get(3).text(),
-            workspace_path: c.get(4).text(),
-            index_status: c.get(5).text(),
-            worktree_status: c.get(6).text(),
-            original_repo_path: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            member_path: c.try_get(2)?.try_text()?,
+            repo_path: c.try_get(3)?.try_text()?,
+            workspace_path: c.try_get(4)?.try_text()?,
+            index_status: c.try_get(5)?.try_text()?,
+            worktree_status: c.try_get(6)?.try_text()?,
+            original_repo_path: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1657,15 +1657,15 @@ impl GitTransferProgress {
             (6, match &self.total_deltas { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            phase: GitProgressPhase::from_wire(c.get(1).int()),
-            received_objects: { let v = c.get(2); if v.is_null() { None } else { Some(v.int()) } },
-            total_objects: { let v = c.get(3); if v.is_null() { None } else { Some(v.int()) } },
-            received_bytes: { let v = c.get(4); if v.is_null() { None } else { Some(v.int()) } },
-            indexed_deltas: { let v = c.get(5); if v.is_null() { None } else { Some(v.int()) } },
-            total_deltas: { let v = c.get(6); if v.is_null() { None } else { Some(v.int()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            phase: GitProgressPhase::from_wire(c.try_get(1)?.try_int()?)?,
+            received_objects: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            total_objects: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            received_bytes: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            indexed_deltas: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            total_deltas: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+        })
     }
 }
 
@@ -1693,17 +1693,17 @@ impl WorkspaceRootGitStatus {
             (8, Cbor::Bool(self.unborn)),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            branch: { let v = c.get(1); if v.is_null() { None } else { Some(v.text()) } },
-            detached: c.get(2).boolean(),
-            head: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            staged: c.get(4).int(),
-            unstaged: c.get(5).int(),
-            untracked: c.get(6).int(),
-            dirty: c.get(7).boolean(),
-            unborn: c.get(8).boolean(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            branch: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            detached: c.try_get(2)?.try_bool()?,
+            head: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            staged: c.try_get(4)?.try_int()?,
+            unstaged: c.try_get(5)?.try_int()?,
+            untracked: c.try_get(6)?.try_int()?,
+            dirty: c.try_get(7)?.try_bool()?,
+            unborn: c.try_get(8)?.try_bool()?,
+        })
     }
 }
 
@@ -1725,14 +1725,14 @@ impl WorkspaceRootFileChange {
             (5, match &self.original_repo_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            repo_path: c.get(1).text(),
-            workspace_path: c.get(2).text(),
-            index_status: c.get(3).text(),
-            worktree_status: c.get(4).text(),
-            original_repo_path: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            repo_path: c.try_get(1)?.try_text()?,
+            workspace_path: c.try_get(2)?.try_text()?,
+            index_status: c.try_get(3)?.try_text()?,
+            worktree_status: c.try_get(4)?.try_text()?,
+            original_repo_path: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1764,19 +1764,19 @@ impl GitMemberBranchStatus {
             (10, match &self.behind { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            member_id: c.get(1).text(),
-            member_path: c.get(2).text(),
-            label: c.get(3).text(),
-            branch: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            detached: c.get(5).boolean(),
-            unborn: c.get(6).boolean(),
-            head: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
-            upstream: { let v = c.get(8); if v.is_null() { None } else { Some(v.text()) } },
-            ahead: { let v = c.get(9); if v.is_null() { None } else { Some(v.int()) } },
-            behind: { let v = c.get(10); if v.is_null() { None } else { Some(v.int()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            member_path: c.try_get(2)?.try_text()?,
+            label: c.try_get(3)?.try_text()?,
+            branch: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            detached: c.try_get(5)?.try_bool()?,
+            unborn: c.try_get(6)?.try_bool()?,
+            head: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            upstream: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            ahead: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            behind: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+        })
     }
 }
 
@@ -1794,12 +1794,12 @@ impl GitBranchGroup {
             (3, Cbor::Array(self.member_paths.iter().map(|x| Cbor::Text(x.clone())).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            label: c.get(1).text(),
-            member_ids: c.get(2).array().iter().map(|x| x.text()).collect(),
-            member_paths: c.get(3).array().iter().map(|x| x.text()).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            label: c.try_get(1)?.try_text()?,
+            member_ids: c.try_get(2)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            member_paths: c.try_get(3)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -1821,14 +1821,14 @@ impl GitBranchDifference {
             (5, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            label: c.get(1).text(),
-            majority_label: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            member_ids: c.get(3).array().iter().map(|x| x.text()).collect(),
-            member_paths: c.get(4).array().iter().map(|x| x.text()).collect(),
-            message: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            label: c.try_get(1)?.try_text()?,
+            majority_label: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            member_ids: c.try_get(3)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            member_paths: c.try_get(4)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            message: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1854,16 +1854,16 @@ impl WorkspaceGitStatus {
             (7, Cbor::Array(self.root_file_changes.iter().map(|x| x.to_cbor()).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            clean: c.get(1).boolean(),
-            file_changes: c.get(2).array().iter().map(|x| GitFileChange::from_cbor(x)).collect(),
-            branches: c.get(3).array().iter().map(|x| GitMemberBranchStatus::from_cbor(x)).collect(),
-            branch_groups: c.get(4).array().iter().map(|x| GitBranchGroup::from_cbor(x)).collect(),
-            branch_differences: c.get(5).array().iter().map(|x| GitBranchDifference::from_cbor(x)).collect(),
-            root_status: { let v = c.get(6); if v.is_null() { None } else { Some(WorkspaceRootGitStatus::from_cbor(v)) } },
-            root_file_changes: c.get(7).array().iter().map(|x| WorkspaceRootFileChange::from_cbor(x)).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            clean: c.try_get(1)?.try_bool()?,
+            file_changes: c.try_get(2)?.try_array()?.iter().map(|x| GitFileChange::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            branches: c.try_get(3)?.try_array()?.iter().map(|x| GitMemberBranchStatus::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            branch_groups: c.try_get(4)?.try_array()?.iter().map(|x| GitBranchGroup::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            branch_differences: c.try_get(5)?.try_array()?.iter().map(|x| GitBranchDifference::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            root_status: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(WorkspaceRootGitStatus::from_cbor(v)?) } },
+            root_file_changes: c.try_get(7)?.try_array()?.iter().map(|x| WorkspaceRootFileChange::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -1883,13 +1883,13 @@ impl StashDirtySummary {
             (4, Cbor::Bool(self.ignored)),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            staged: c.get(1).boolean(),
-            unstaged: c.get(2).boolean(),
-            untracked: c.get(3).boolean(),
-            ignored: c.get(4).boolean(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            staged: c.try_get(1)?.try_bool()?,
+            unstaged: c.try_get(2)?.try_bool()?,
+            untracked: c.try_get(3)?.try_bool()?,
+            ignored: c.try_get(4)?.try_bool()?,
+        })
     }
 }
 
@@ -1905,11 +1905,11 @@ impl StashErrorDetail {
             (2, Cbor::Text(self.message.clone())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            code: c.get(1).text(),
-            message: c.get(2).text(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: c.try_get(1)?.try_text()?,
+            message: c.try_get(2)?.try_text()?,
+        })
     }
 }
 
@@ -1927,12 +1927,12 @@ impl StashWarning {
             (3, match &self.member_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            code: c.get(1).text(),
-            message: c.get(2).text(),
-            member_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: c.try_get(1)?.try_text()?,
+            message: c.try_get(2)?.try_text()?,
+            member_id: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -1950,12 +1950,12 @@ impl StashDrift {
             (3, Cbor::Text(self.member_id.clone())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            code: c.get(1).text(),
-            message: c.get(2).text(),
-            member_id: c.get(3).text(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: c.try_get(1)?.try_text()?,
+            message: c.try_get(2)?.try_text()?,
+            member_id: c.try_get(3)?.try_text()?,
+        })
     }
 }
 
@@ -1991,21 +1991,21 @@ impl StashBundleMember {
             (12, match &self.error { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            member_id: c.get(1).text(),
-            path: c.get(2).text(),
-            participation: StashParticipation::from_wire(c.get(3).int()),
-            push_lifecycle: StashPushLifecycle::from_wire(c.get(4).int()),
-            restore_state: StashRestoreState::from_wire(c.get(5).int()),
-            branch_before: { let v = c.get(6); if v.is_null() { None } else { Some(v.text()) } },
-            head_before: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
-            full_stash_message: c.get(8).text(),
-            dirty_summary: StashDirtySummary::from_cbor(c.get(9)),
-            native_stash_object_id: { let v = c.get(10); if v.is_null() { None } else { Some(v.text()) } },
-            native_stash_display_ref: { let v = c.get(11); if v.is_null() { None } else { Some(v.text()) } },
-            error: { let v = c.get(12); if v.is_null() { None } else { Some(StashErrorDetail::from_cbor(v)) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            path: c.try_get(2)?.try_text()?,
+            participation: StashParticipation::from_wire(c.try_get(3)?.try_int()?)?,
+            push_lifecycle: StashPushLifecycle::from_wire(c.try_get(4)?.try_int()?)?,
+            restore_state: StashRestoreState::from_wire(c.try_get(5)?.try_int()?)?,
+            branch_before: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            head_before: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            full_stash_message: c.try_get(8)?.try_text()?,
+            dirty_summary: StashDirtySummary::from_cbor(c.try_get(9)?)?,
+            native_stash_object_id: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            native_stash_display_ref: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            error: { let v = c.try_get(12)?; if v.is_null() { None } else { Some(StashErrorDetail::from_cbor(v)?) } },
+        })
     }
 }
 
@@ -2039,20 +2039,20 @@ impl StashBundle {
             (11, Cbor::Array(self.selected_members.iter().map(|x| Cbor::Text(x.clone())).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            schema: c.get(1).text(),
-            workspace_id: c.get(2).text(),
-            stash_id: c.get(3).text(),
-            created_at: c.get(4).text(),
-            message_suffix: c.get(5).text(),
-            include_untracked: c.get(6).boolean(),
-            include_ignored: c.get(7).boolean(),
-            members: c.get(8).array().iter().map(|x| StashBundleMember::from_cbor(x)).collect(),
-            warnings: c.get(9).array().iter().map(|x| StashWarning::from_cbor(x)).collect(),
-            drift: c.get(10).array().iter().map(|x| StashDrift::from_cbor(x)).collect(),
-            selected_members: c.get(11).array().iter().map(|x| x.text()).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            schema: c.try_get(1)?.try_text()?,
+            workspace_id: c.try_get(2)?.try_text()?,
+            stash_id: c.try_get(3)?.try_text()?,
+            created_at: c.try_get(4)?.try_text()?,
+            message_suffix: c.try_get(5)?.try_text()?,
+            include_untracked: c.try_get(6)?.try_bool()?,
+            include_ignored: c.try_get(7)?.try_bool()?,
+            members: c.try_get(8)?.try_array()?.iter().map(|x| StashBundleMember::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            warnings: c.try_get(9)?.try_array()?.iter().map(|x| StashWarning::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            drift: c.try_get(10)?.try_array()?.iter().map(|x| StashDrift::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            selected_members: c.try_get(11)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -2096,25 +2096,25 @@ impl BranchRepoSummary {
             (16, Cbor::Array(self.conflict_paths.iter().map(|x| Cbor::Text(x.clone())).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            member_id: c.get(1).text(),
-            member_path: c.get(2).text(),
-            source_kind: SourceKind::from_wire(c.get(3).int()),
-            result: BranchActionResult::from_wire(c.get(4).int()),
-            branch: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-            current_branch: { let v = c.get(6); if v.is_null() { None } else { Some(v.text()) } },
-            detached: c.get(7).boolean(),
-            unborn: c.get(8).boolean(),
-            head: { let v = c.get(9); if v.is_null() { None } else { Some(v.text()) } },
-            upstream: { let v = c.get(10); if v.is_null() { None } else { Some(v.text()) } },
-            ahead: { let v = c.get(11); if v.is_null() { None } else { Some(v.int()) } },
-            behind: { let v = c.get(12); if v.is_null() { None } else { Some(v.int()) } },
-            source_ref: { let v = c.get(13); if v.is_null() { None } else { Some(v.text()) } },
-            target_branch: { let v = c.get(14); if v.is_null() { None } else { Some(v.text()) } },
-            resulting_commit: { let v = c.get(15); if v.is_null() { None } else { Some(v.text()) } },
-            conflict_paths: c.get(16).array().iter().map(|x| x.text()).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            member_path: c.try_get(2)?.try_text()?,
+            source_kind: SourceKind::from_wire(c.try_get(3)?.try_int()?)?,
+            result: BranchActionResult::from_wire(c.try_get(4)?.try_int()?)?,
+            branch: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            current_branch: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            detached: c.try_get(7)?.try_bool()?,
+            unborn: c.try_get(8)?.try_bool()?,
+            head: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            upstream: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            ahead: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            behind: { let v = c.try_get(12)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            source_ref: { let v = c.try_get(13)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            target_branch: { let v = c.try_get(14)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            resulting_commit: { let v = c.try_get(15)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            conflict_paths: c.try_get(16)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -2134,13 +2134,13 @@ impl PlannedChange {
             (4, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            action: PlannedAction::from_wire(c.get(1).int()),
-            from_ref: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            to_ref: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            message: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            action: PlannedAction::from_wire(c.try_get(1)?.try_int()?)?,
+            from_ref: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            to_ref: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            message: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -2172,19 +2172,19 @@ impl MemberResponse {
             (10, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            member_id: c.get(1).text(),
-            member_path: c.get(2).text(),
-            source_kind: SourceKind::from_wire(c.get(3).int()),
-            status: MemberStatus::from_wire(c.get(4).int()),
-            error: { let v = c.get(5); if v.is_null() { None } else { Some(GwzError::from_cbor(v)) } },
-            planned: { let v = c.get(6); if v.is_null() { None } else { Some(PlannedChange::from_cbor(v)) } },
-            state: { let v = c.get(7); if v.is_null() { None } else { Some(ResolvedMemberState::from_cbor(v)) } },
-            git_status: { let v = c.get(8); if v.is_null() { None } else { Some(GitStatus::from_cbor(v)) } },
-            lock_match: { let v = c.get(9); if v.is_null() { None } else { Some(LockMatch::from_wire(v.int())) } },
-            target_kind: { let v = c.get(10); if v.is_null() { None } else { Some(TargetKind::from_wire(v.int())) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            member_path: c.try_get(2)?.try_text()?,
+            source_kind: SourceKind::from_wire(c.try_get(3)?.try_int()?)?,
+            status: MemberStatus::from_wire(c.try_get(4)?.try_int()?)?,
+            error: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(GwzError::from_cbor(v)?) } },
+            planned: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(PlannedChange::from_cbor(v)?) } },
+            state: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(ResolvedMemberState::from_cbor(v)?) } },
+            git_status: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(GitStatus::from_cbor(v)?) } },
+            lock_match: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(LockMatch::from_wire(v.try_int()?)?) } },
+            target_kind: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
+        })
     }
 }
 
@@ -2202,12 +2202,12 @@ impl ResponseEnvelope {
             (3, Cbor::Array(self.errors.iter().map(|x| x.to_cbor()).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: ResponseMeta::from_cbor(c.get(1)),
-            members: c.get(2).array().iter().map(|x| MemberResponse::from_cbor(x)).collect(),
-            errors: c.get(3).array().iter().map(|x| GwzError::from_cbor(x)).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: ResponseMeta::from_cbor(c.try_get(1)?)?,
+            members: c.try_get(2)?.try_array()?.iter().map(|x| MemberResponse::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            errors: c.try_get(3)?.try_array()?.iter().map(|x| GwzError::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -2247,23 +2247,23 @@ impl OperationEvent {
             (14, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            operation_id: c.get(1).text(),
-            request_id: c.get(2).text(),
-            sequence: c.get(3).int(),
-            timestamp_ms: c.get(4).int(),
-            kind: EventKind::from_wire(c.get(5).int()),
-            severity: Severity::from_wire(c.get(6).int()),
-            member_id: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
-            member_path: { let v = c.get(8); if v.is_null() { None } else { Some(v.text()) } },
-            message: { let v = c.get(9); if v.is_null() { None } else { Some(v.text()) } },
-            member: { let v = c.get(10); if v.is_null() { None } else { Some(MemberResponse::from_cbor(v)) } },
-            error: { let v = c.get(11); if v.is_null() { None } else { Some(GwzError::from_cbor(v)) } },
-            attribution: { let v = c.get(12); if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)) } },
-            progress: { let v = c.get(13); if v.is_null() { None } else { Some(GitTransferProgress::from_cbor(v)) } },
-            target_kind: { let v = c.get(14); if v.is_null() { None } else { Some(TargetKind::from_wire(v.int())) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            operation_id: c.try_get(1)?.try_text()?,
+            request_id: c.try_get(2)?.try_text()?,
+            sequence: c.try_get(3)?.try_int()?,
+            timestamp_ms: c.try_get(4)?.try_int()?,
+            kind: EventKind::from_wire(c.try_get(5)?.try_int()?)?,
+            severity: Severity::from_wire(c.try_get(6)?.try_int()?)?,
+            member_id: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            member_path: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            message: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            member: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(MemberResponse::from_cbor(v)?) } },
+            error: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(GwzError::from_cbor(v)?) } },
+            attribution: { let v = c.try_get(12)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
+            progress: { let v = c.try_get(13)?; if v.is_null() { None } else { Some(GitTransferProgress::from_cbor(v)?) } },
+            target_kind: { let v = c.try_get(14)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
+        })
     }
 }
 
@@ -2293,18 +2293,18 @@ impl OperationResult {
             (9, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            operation_id: c.get(1).text(),
-            request_id: c.get(2).text(),
-            action: ActionKind::from_wire(c.get(3).int()),
-            aggregate_status: AggregateStatus::from_wire(c.get(4).int()),
-            started_at_ms: c.get(5).int(),
-            finished_at_ms: c.get(6).int(),
-            members: c.get(7).array().iter().map(|x| MemberResponse::from_cbor(x)).collect(),
-            errors: c.get(8).array().iter().map(|x| GwzError::from_cbor(x)).collect(),
-            attribution: { let v = c.get(9); if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            operation_id: c.try_get(1)?.try_text()?,
+            request_id: c.try_get(2)?.try_text()?,
+            action: ActionKind::from_wire(c.try_get(3)?.try_int()?)?,
+            aggregate_status: AggregateStatus::from_wire(c.try_get(4)?.try_int()?)?,
+            started_at_ms: c.try_get(5)?.try_int()?,
+            finished_at_ms: c.try_get(6)?.try_int()?,
+            members: c.try_get(7)?.try_array()?.iter().map(|x| MemberResponse::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            errors: c.try_get(8)?.try_array()?.iter().map(|x| GwzError::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            attribution: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
+        })
     }
 }
 
@@ -2322,12 +2322,12 @@ impl CreateWorkspaceRequest {
             (3, match &self.workspace_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            workspace_root: c.get(2).text(),
-            workspace_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            workspace_root: c.try_get(2)?.try_text()?,
+            workspace_id: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -2349,14 +2349,14 @@ impl InitFromSourcesRequest {
             (5, match &self.workspace_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            workspace_root: c.get(2).text(),
-            sources: c.get(3).array().iter().map(|x| SourceUrl::from_cbor(x)).collect(),
-            target: { let v = c.get(4); if v.is_null() { None } else { Some(MaterializeTarget::from_cbor(v)) } },
-            workspace_id: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            workspace_root: c.try_get(2)?.try_text()?,
+            sources: c.try_get(3)?.try_array()?.iter().map(|x| SourceUrl::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            target: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(MaterializeTarget::from_cbor(v)?) } },
+            workspace_id: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -2374,12 +2374,12 @@ impl CloneWorkspaceRequest {
             (3, Cbor::Text(self.target.clone())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            url: c.get(2).text(),
-            target: c.get(3).text(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            url: c.try_get(2)?.try_text()?,
+            target: c.try_get(3)?.try_text()?,
+        })
     }
 }
 
@@ -2401,14 +2401,14 @@ impl AddExistingRepoRequest {
             (5, match &self.source_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            repository_path: c.get(2).text(),
-            member_path: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            member_id: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            source_id: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            repository_path: c.try_get(2)?.try_text()?,
+            member_path: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            member_id: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            source_id: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -2430,14 +2430,14 @@ impl CreateRepoRequest {
             (5, match &self.source_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            member_path: c.get(2).text(),
-            initial_branch: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            member_id: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            source_id: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            member_path: c.try_get(2)?.try_text()?,
+            initial_branch: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            member_id: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            source_id: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -2451,10 +2451,10 @@ impl RepoSyncRequest {
             (1, self.meta.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -2474,13 +2474,13 @@ impl CloneRepoMemberRequest {
             (4, match &self.source_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            source: SourceUrl::from_cbor(c.get(2)),
-            member_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            source_id: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            source: SourceUrl::from_cbor(c.try_get(2)?)?,
+            member_id: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            source_id: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -2494,10 +2494,10 @@ impl DetachRepoMemberRequest {
             (1, self.meta.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -2511,10 +2511,10 @@ impl AttachRepoMemberRequest {
             (1, self.meta.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -2530,11 +2530,11 @@ impl MaterializeRequest {
             (2, self.target.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            target: MaterializeTarget::from_cbor(c.get(2)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            target: MaterializeTarget::from_cbor(c.try_get(2)?)?,
+        })
     }
 }
 
@@ -2556,14 +2556,14 @@ impl StatusRequest {
             (5, match &self.path_style { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            mode: { let v = c.get(2); if v.is_null() { None } else { Some(StatusMode::from_wire(v.int())) } },
-            include_file_changes: { let v = c.get(3); if v.is_null() { None } else { Some(v.boolean()) } },
-            include_branch_summary: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
-            path_style: { let v = c.get(5); if v.is_null() { None } else { Some(StatusPathStyle::from_wire(v.int())) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            mode: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(StatusMode::from_wire(v.try_int()?)?) } },
+            include_file_changes: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            include_branch_summary: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            path_style: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(StatusPathStyle::from_wire(v.try_int()?)?) } },
+        })
     }
 }
 
@@ -2579,11 +2579,11 @@ impl LsRequest {
             (2, match &self.include_unmaterialized { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            include_unmaterialized: { let v = c.get(2); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            include_unmaterialized: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -2605,14 +2605,14 @@ impl MemberEntry {
             (5, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            id: c.get(1).text(),
-            path: c.get(2).text(),
-            abspath: c.get(3).text(),
-            materialized: c.get(4).boolean(),
-            target_kind: { let v = c.get(5); if v.is_null() { None } else { Some(TargetKind::from_wire(v.int())) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            id: c.try_get(1)?.try_text()?,
+            path: c.try_get(2)?.try_text()?,
+            abspath: c.try_get(3)?.try_text()?,
+            materialized: c.try_get(4)?.try_bool()?,
+            target_kind: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
+        })
     }
 }
 
@@ -2628,11 +2628,11 @@ impl LsResponse {
             (2, match &self.members { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-            members: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| MemberEntry::from_cbor(x)).collect()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            members: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| MemberEntry::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+        })
     }
 }
 
@@ -2654,14 +2654,14 @@ impl ExecResult {
             (5, match &self.spawn_error { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            id: c.get(1).text(),
-            path: c.get(2).text(),
-            exit_code: { let v = c.get(3); if v.is_null() { None } else { Some(v.int()) } },
-            signal: { let v = c.get(4); if v.is_null() { None } else { Some(v.int()) } },
-            spawn_error: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            id: c.try_get(1)?.try_text()?,
+            path: c.try_get(2)?.try_text()?,
+            exit_code: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            signal: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            spawn_error: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -2683,14 +2683,14 @@ impl ExecRequest {
             (5, match &self.continue_on_fail { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            mode: ExecMode::from_wire(c.get(2).int()),
-            command: c.get(3).array().iter().map(|x| x.text()).collect(),
-            members: c.get(4).array().iter().map(|x| MemberEntry::from_cbor(x)).collect(),
-            continue_on_fail: { let v = c.get(5); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            mode: ExecMode::from_wire(c.try_get(2)?.try_int()?)?,
+            command: c.try_get(3)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            members: c.try_get(4)?.try_array()?.iter().map(|x| MemberEntry::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            continue_on_fail: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -2706,11 +2706,11 @@ impl ExecResponse {
             (2, match &self.results { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-            results: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| ExecResult::from_cbor(x)).collect()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            results: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| ExecResult::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+        })
     }
 }
 
@@ -2728,12 +2728,12 @@ impl SnapshotRequest {
             (3, match &self.source { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            snapshot_id: c.get(2).text(),
-            source: { let v = c.get(3); if v.is_null() { None } else { Some(SnapshotSource::from_cbor(v)) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            snapshot_id: c.try_get(2)?.try_text()?,
+            source: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(SnapshotSource::from_cbor(v)?) } },
+        })
     }
 }
 
@@ -2747,10 +2747,10 @@ impl ListSnapshotsRequest {
             (1, self.meta.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -2776,16 +2776,16 @@ impl TagRequest {
             (7, match &self.all { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            op: TagOp::from_wire(c.get(2).int()),
-            name: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            message: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            signed: { let v = c.get(5); if v.is_null() { None } else { Some(v.boolean()) } },
-            remote: { let v = c.get(6); if v.is_null() { None } else { Some(v.text()) } },
-            all: { let v = c.get(7); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            op: TagOp::from_wire(c.try_get(2)?.try_int()?)?,
+            name: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            message: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            signed: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            remote: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            all: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -2799,10 +2799,10 @@ impl CaptureRequest {
             (1, self.meta.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -2822,13 +2822,13 @@ impl CommitRequest {
             (4, match &self.commit_marker { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            message: c.get(2).text(),
-            all: { let v = c.get(3); if v.is_null() { None } else { Some(v.boolean()) } },
-            commit_marker: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            message: c.try_get(2)?.try_text()?,
+            all: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            commit_marker: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -2848,13 +2848,13 @@ impl StageRequest {
             (4, match &self.all { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            cwd: c.get(2).text(),
-            pathspecs: c.get(3).array().iter().map(|x| x.text()).collect(),
-            all: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            cwd: c.try_get(2)?.try_text()?,
+            pathspecs: c.try_get(3)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            all: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -2868,10 +2868,10 @@ impl PullHeadRequest {
             (1, self.meta.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -2887,11 +2887,11 @@ impl PullSnapshotRequest {
             (2, Cbor::Text(self.snapshot_id.clone())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            snapshot_id: c.get(2).text(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            snapshot_id: c.try_get(2)?.try_text()?,
+        })
     }
 }
 
@@ -2909,12 +2909,12 @@ impl PushRequest {
             (3, match &self.refspec { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            remote: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            refspec: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            remote: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            refspec: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -2942,17 +2942,17 @@ impl StashRequest {
             (8, match &self.preserve_index { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            op: StashOp::from_wire(c.get(2).int()),
-            stash_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            message: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            include_untracked: { let v = c.get(5); if v.is_null() { None } else { Some(v.boolean()) } },
-            include_ignored: { let v = c.get(6); if v.is_null() { None } else { Some(v.boolean()) } },
-            expanded: { let v = c.get(7); if v.is_null() { None } else { Some(v.boolean()) } },
-            preserve_index: { let v = c.get(8); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            op: StashOp::from_wire(c.try_get(2)?.try_int()?)?,
+            stash_id: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            message: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            include_untracked: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            include_ignored: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            expanded: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            preserve_index: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -2974,14 +2974,14 @@ impl BranchRequest {
             (5, match &self.switch_after_create { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            op: BranchOp::from_wire(c.get(2).int()),
-            name: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            start_ref: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            switch_after_create: { let v = c.get(5); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            op: BranchOp::from_wire(c.try_get(2)?.try_int()?)?,
+            name: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            start_ref: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            switch_after_create: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -2995,10 +2995,10 @@ impl CreateWorkspaceResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3012,10 +3012,10 @@ impl InitFromSourcesResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3029,10 +3029,10 @@ impl CloneWorkspaceResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3046,10 +3046,10 @@ impl AddExistingRepoResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3063,10 +3063,10 @@ impl CreateRepoResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3080,10 +3080,10 @@ impl RepoSyncResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3097,10 +3097,10 @@ impl CloneRepoMemberResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3114,10 +3114,10 @@ impl DetachRepoMemberResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3131,10 +3131,10 @@ impl AttachRepoMemberResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3148,10 +3148,10 @@ impl MaterializeResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3167,11 +3167,11 @@ impl StatusResponse {
             (2, match &self.workspace_git_status { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-            workspace_git_status: { let v = c.get(2); if v.is_null() { None } else { Some(WorkspaceGitStatus::from_cbor(v)) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            workspace_git_status: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(WorkspaceGitStatus::from_cbor(v)?) } },
+        })
     }
 }
 
@@ -3185,10 +3185,10 @@ impl SnapshotResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3208,13 +3208,13 @@ impl SnapshotInfo {
             (4, Cbor::Int(self.members)),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            name: c.get(1).text(),
-            created_at: c.get(2).text(),
-            created_by: c.get(3).text(),
-            members: c.get(4).int(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            name: c.try_get(1)?.try_text()?,
+            created_at: c.try_get(2)?.try_text()?,
+            created_by: c.try_get(3)?.try_text()?,
+            members: c.try_get(4)?.try_int()?,
+        })
     }
 }
 
@@ -3230,11 +3230,11 @@ impl ListSnapshotsResponse {
             (2, match &self.snapshots { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-            snapshots: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| SnapshotInfo::from_cbor(x)).collect()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            snapshots: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| SnapshotInfo::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+        })
     }
 }
 
@@ -3250,11 +3250,11 @@ impl TagInfo {
             (2, Cbor::Int(self.members)),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            name: c.get(1).text(),
-            members: c.get(2).int(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            name: c.try_get(1)?.try_text()?,
+            members: c.try_get(2)?.try_int()?,
+        })
     }
 }
 
@@ -3270,11 +3270,11 @@ impl TagResponse {
             (2, match &self.tags { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-            tags: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| TagInfo::from_cbor(x)).collect()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            tags: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| TagInfo::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+        })
     }
 }
 
@@ -3288,10 +3288,10 @@ impl CaptureResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3305,10 +3305,10 @@ impl CommitResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3322,10 +3322,10 @@ impl StageResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3339,10 +3339,10 @@ impl PullHeadResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3356,10 +3356,10 @@ impl PullSnapshotResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3373,10 +3373,10 @@ impl PushResponse {
             (1, self.response.to_cbor()),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
     }
 }
 
@@ -3392,11 +3392,11 @@ impl StashResponse {
             (2, match &self.bundles { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-            bundles: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| StashBundle::from_cbor(x)).collect()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            bundles: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| StashBundle::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+        })
     }
 }
 
@@ -3412,11 +3412,11 @@ impl BranchResponse {
             (2, match &self.repos { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-            repos: { let v = c.get(2); if v.is_null() { None } else { Some(v.array().iter().map(|x| BranchRepoSummary::from_cbor(x)).collect()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            repos: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| BranchRepoSummary::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+        })
     }
 }
 
@@ -3436,13 +3436,13 @@ impl DiffComparison {
             (4, match &self.merge_base { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            kind: DiffComparisonKind::from_wire(c.get(1).int()),
-            left: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            right: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            merge_base: { let v = c.get(4); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: DiffComparisonKind::from_wire(c.try_get(1)?.try_int()?)?,
+            left: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            right: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            merge_base: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -3500,32 +3500,32 @@ impl DiffOptions {
             (23, match &self.echo_manifest_entries { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            output_format: { let v = c.get(1); if v.is_null() { None } else { Some(DiffOutputFormat::from_wire(v.int())) } },
-            context_lines: { let v = c.get(2); if v.is_null() { None } else { Some(v.int()) } },
-            interhunk_lines: { let v = c.get(3); if v.is_null() { None } else { Some(v.int()) } },
-            algorithm: { let v = c.get(4); if v.is_null() { None } else { Some(DiffAlgorithm::from_wire(v.int())) } },
-            whitespace: { let v = c.get(5); if v.is_null() { None } else { Some(DiffWhitespaceMode::from_wire(v.int())) } },
-            find_renames: { let v = c.get(6); if v.is_null() { None } else { Some(v.boolean()) } },
-            find_copies: { let v = c.get(7); if v.is_null() { None } else { Some(v.boolean()) } },
-            rename_threshold: { let v = c.get(8); if v.is_null() { None } else { Some(v.int()) } },
-            rename_limit: { let v = c.get(9); if v.is_null() { None } else { Some(v.int()) } },
-            binary: { let v = c.get(10); if v.is_null() { None } else { Some(v.boolean()) } },
-            text: { let v = c.get(11); if v.is_null() { None } else { Some(v.boolean()) } },
-            full_index: { let v = c.get(12); if v.is_null() { None } else { Some(v.boolean()) } },
-            abbrev: { let v = c.get(13); if v.is_null() { None } else { Some(v.int()) } },
-            reverse: { let v = c.get(14); if v.is_null() { None } else { Some(v.boolean()) } },
-            null_terminated: { let v = c.get(15); if v.is_null() { None } else { Some(v.boolean()) } },
-            src_prefix: { let v = c.get(16); if v.is_null() { None } else { Some(v.text()) } },
-            dst_prefix: { let v = c.get(17); if v.is_null() { None } else { Some(v.text()) } },
-            no_prefix: { let v = c.get(18); if v.is_null() { None } else { Some(v.boolean()) } },
-            line_prefix: { let v = c.get(19); if v.is_null() { None } else { Some(v.text()) } },
-            ignore_submodules: { let v = c.get(20); if v.is_null() { None } else { Some(v.text()) } },
-            diff_filter: { let v = c.get(21); if v.is_null() { None } else { Some(v.text()) } },
-            manifest_mode: { let v = c.get(22); if v.is_null() { None } else { Some(DiffManifestMode::from_wire(v.int())) } },
-            echo_manifest_entries: { let v = c.get(23); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            output_format: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(DiffOutputFormat::from_wire(v.try_int()?)?) } },
+            context_lines: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            interhunk_lines: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            algorithm: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(DiffAlgorithm::from_wire(v.try_int()?)?) } },
+            whitespace: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(DiffWhitespaceMode::from_wire(v.try_int()?)?) } },
+            find_renames: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            find_copies: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            rename_threshold: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            rename_limit: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            binary: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            text: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            full_index: { let v = c.try_get(12)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            abbrev: { let v = c.try_get(13)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            reverse: { let v = c.try_get(14)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            null_terminated: { let v = c.try_get(15)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            src_prefix: { let v = c.try_get(16)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            dst_prefix: { let v = c.try_get(17)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            no_prefix: { let v = c.try_get(18)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            line_prefix: { let v = c.try_get(19)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            ignore_submodules: { let v = c.try_get(20)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            diff_filter: { let v = c.try_get(21)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            manifest_mode: { let v = c.try_get(22)?; if v.is_null() { None } else { Some(DiffManifestMode::from_wire(v.try_int()?)?) } },
+            echo_manifest_entries: { let v = c.try_get(23)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -3551,16 +3551,16 @@ impl DiffRequest {
             (7, match &self.merge_base { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            meta: RequestMeta::from_cbor(c.get(1)),
-            workspace_cwd: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            operands: c.get(3).array().iter().map(|x| x.text()).collect(),
-            explicit_pathspecs: c.get(4).array().iter().map(|x| x.text()).collect(),
-            options: { let v = c.get(5); if v.is_null() { None } else { Some(DiffOptions::from_cbor(v)) } },
-            cached: { let v = c.get(6); if v.is_null() { None } else { Some(v.boolean()) } },
-            merge_base: { let v = c.get(7); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            workspace_cwd: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            operands: c.try_get(3)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            explicit_pathspecs: c.try_get(4)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            options: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(DiffOptions::from_cbor(v)?) } },
+            cached: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            merge_base: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -3580,13 +3580,13 @@ impl DiffRepoScope {
             (4, match &self.source_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            root: { let v = c.get(1); if v.is_null() { None } else { Some(v.boolean()) } },
-            member_id: { let v = c.get(2); if v.is_null() { None } else { Some(v.text()) } },
-            member_path: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            source_kind: { let v = c.get(4); if v.is_null() { None } else { Some(SourceKind::from_wire(v.int())) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            root: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            member_id: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            member_path: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            source_kind: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(SourceKind::from_wire(v.try_int()?)?) } },
+        })
     }
 }
 
@@ -3606,13 +3606,13 @@ impl DiffExcludedTarget {
             (4, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            scope: DiffRepoScope::from_cbor(c.get(1)),
-            reason: DiffTargetExclusionReason::from_wire(c.get(2).int()),
-            snapshot_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            message: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            scope: DiffRepoScope::from_cbor(c.try_get(1)?)?,
+            reason: DiffTargetExclusionReason::from_wire(c.try_get(2)?.try_int()?)?,
+            snapshot_id: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            message: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -3642,18 +3642,18 @@ impl DiffParsedTarget {
             (9, match &self.right_snapshot_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            target_id: c.get(1).text(),
-            scope: DiffRepoScope::from_cbor(c.get(2)),
-            comparison: DiffComparison::from_cbor(c.get(3)),
-            pathspecs: c.get(4).array().iter().map(|x| x.text()).collect(),
-            left_oid: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-            right_oid: { let v = c.get(6); if v.is_null() { None } else { Some(v.text()) } },
-            merge_base_oid: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
-            left_snapshot_id: { let v = c.get(8); if v.is_null() { None } else { Some(v.text()) } },
-            right_snapshot_id: { let v = c.get(9); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            target_id: c.try_get(1)?.try_text()?,
+            scope: DiffRepoScope::from_cbor(c.try_get(2)?)?,
+            comparison: DiffComparison::from_cbor(c.try_get(3)?)?,
+            pathspecs: c.try_get(4)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            left_oid: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            right_oid: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            merge_base_oid: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            left_snapshot_id: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            right_snapshot_id: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
 
@@ -3687,20 +3687,20 @@ impl DiffFileEntry {
             (11, match &self.is_binary { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            file_id: c.get(1).text(),
-            scope: DiffRepoScope::from_cbor(c.get(2)),
-            status: DiffStatus::from_wire(c.get(3).int()),
-            old_path: { let v = c.get(4); if v.is_null() { None } else { Some(v.text()) } },
-            new_path: { let v = c.get(5); if v.is_null() { None } else { Some(v.text()) } },
-            old_mode: { let v = c.get(6); if v.is_null() { None } else { Some(v.int()) } },
-            new_mode: { let v = c.get(7); if v.is_null() { None } else { Some(v.int()) } },
-            similarity: { let v = c.get(8); if v.is_null() { None } else { Some(v.int()) } },
-            insertions: { let v = c.get(9); if v.is_null() { None } else { Some(v.int()) } },
-            deletions: { let v = c.get(10); if v.is_null() { None } else { Some(v.int()) } },
-            is_binary: { let v = c.get(11); if v.is_null() { None } else { Some(v.boolean()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            file_id: c.try_get(1)?.try_text()?,
+            scope: DiffRepoScope::from_cbor(c.try_get(2)?)?,
+            status: DiffStatus::from_wire(c.try_get(3)?.try_int()?)?,
+            old_path: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            new_path: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            old_mode: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            new_mode: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            similarity: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            insertions: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            deletions: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            is_binary: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
     }
 }
 
@@ -3724,15 +3724,15 @@ impl DiffRepoSummary {
             (6, Cbor::Int(self.files_manifested)),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            scope: DiffRepoScope::from_cbor(c.get(1)),
-            has_differences: c.get(2).boolean(),
-            files_changed: c.get(3).int(),
-            insertions: c.get(4).int(),
-            deletions: c.get(5).int(),
-            files_manifested: c.get(6).int(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            scope: DiffRepoScope::from_cbor(c.try_get(1)?)?,
+            has_differences: c.try_get(2)?.try_bool()?,
+            files_changed: c.try_get(3)?.try_int()?,
+            insertions: c.try_get(4)?.try_int()?,
+            deletions: c.try_get(5)?.try_int()?,
+            files_manifested: c.try_get(6)?.try_int()?,
+        })
     }
 }
 
@@ -3758,16 +3758,16 @@ impl DiffSummary {
             (7, Cbor::Array(self.repo_summaries.iter().map(|x| x.to_cbor()).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            has_differences: c.get(1).boolean(),
-            repos_examined: c.get(2).int(),
-            repos_with_differences: c.get(3).int(),
-            files_changed: c.get(4).int(),
-            insertions: c.get(5).int(),
-            deletions: c.get(6).int(),
-            repo_summaries: c.get(7).array().iter().map(|x| DiffRepoSummary::from_cbor(x)).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            has_differences: c.try_get(1)?.try_bool()?,
+            repos_examined: c.try_get(2)?.try_int()?,
+            repos_with_differences: c.try_get(3)?.try_int()?,
+            files_changed: c.try_get(4)?.try_int()?,
+            insertions: c.try_get(5)?.try_int()?,
+            deletions: c.try_get(6)?.try_int()?,
+            repo_summaries: c.try_get(7)?.try_array()?.iter().map(|x| DiffRepoSummary::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -3785,12 +3785,12 @@ impl DiffOutputLogRef {
             (3, match &self.encoding { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            log_id: c.get(1).text(),
-            format: DiffOutputFormat::from_wire(c.get(2).int()),
-            encoding: { let v = c.get(3); if v.is_null() { None } else { Some(DiffChunkEncoding::from_wire(v.int())) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            log_id: c.try_get(1)?.try_text()?,
+            format: DiffOutputFormat::from_wire(c.try_get(2)?.try_int()?)?,
+            encoding: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(DiffChunkEncoding::from_wire(v.try_int()?)?) } },
+        })
     }
 }
 
@@ -3814,15 +3814,15 @@ impl DiffManifestResponse {
             (6, Cbor::Array(self.excluded_targets.iter().map(|x| x.to_cbor()).collect())),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            response: ResponseEnvelope::from_cbor(c.get(1)),
-            files: c.get(2).array().iter().map(|x| DiffFileEntry::from_cbor(x)).collect(),
-            summary: { let v = c.get(3); if v.is_null() { None } else { Some(DiffSummary::from_cbor(v)) } },
-            targets: c.get(4).array().iter().map(|x| DiffParsedTarget::from_cbor(x)).collect(),
-            output: { let v = c.get(5); if v.is_null() { None } else { Some(DiffOutputLogRef::from_cbor(v)) } },
-            excluded_targets: c.get(6).array().iter().map(|x| DiffExcludedTarget::from_cbor(x)).collect(),
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            files: c.try_get(2)?.try_array()?.iter().map(|x| DiffFileEntry::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            summary: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(DiffSummary::from_cbor(v)?) } },
+            targets: c.try_get(4)?.try_array()?.iter().map(|x| DiffParsedTarget::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            output: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(DiffOutputLogRef::from_cbor(v)?) } },
+            excluded_targets: c.try_get(6)?.try_array()?.iter().map(|x| DiffExcludedTarget::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
     }
 }
 
@@ -3848,15 +3848,15 @@ impl DiffOutputRecord {
             (7, match &self.diagnostic { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
-    pub fn from_cbor(c: &Cbor) -> Self {
-        Self {
-            kind: DiffOutputRecordKind::from_wire(c.get(1).int()),
-            scope: { let v = c.get(2); if v.is_null() { None } else { Some(DiffRepoScope::from_cbor(v)) } },
-            file_id: { let v = c.get(3); if v.is_null() { None } else { Some(v.text()) } },
-            entry: { let v = c.get(4); if v.is_null() { None } else { Some(DiffFileEntry::from_cbor(v)) } },
-            data: { let v = c.get(5); if v.is_null() { None } else { Some(v.bytes()) } },
-            stale: { let v = c.get(6); if v.is_null() { None } else { Some(v.boolean()) } },
-            diagnostic: { let v = c.get(7); if v.is_null() { None } else { Some(v.text()) } },
-        }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: DiffOutputRecordKind::from_wire(c.try_get(1)?.try_int()?)?,
+            scope: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(DiffRepoScope::from_cbor(v)?) } },
+            file_id: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            entry: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(DiffFileEntry::from_cbor(v)?) } },
+            data: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
+            stale: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            diagnostic: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
     }
 }
