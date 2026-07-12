@@ -569,6 +569,68 @@ fn bare_member_subdir_operand_routes_as_pathspec() {
 }
 
 #[test]
+fn member_root_pathspec_reports_the_dirty_member() {
+    // Regression (GwzDiffPlan §"Pathspec routing"): a pathspec that names a
+    // member *root* — `crate-a`, or `.` from inside it — must diff the whole
+    // member, not silently match nothing. The plan rewrites the member-root
+    // pathspec to the routing primitive's `.`; before the fix it narrowed the
+    // target to the literal pathspec `["."]`, which libgit2's diff matcher
+    // matches against no path, so `gwz diff crate-a` / `gwz diff .` reported no
+    // differences on a dirty member (exit 0). Whole-repo narrowing must be the
+    // empty pathspec list instead.
+    let ws = Workspace::new("member-root-pathspec");
+    let member = ws.add_member("mem_a", "crate-a");
+    Workspace::write(ws.root(), "root.txt", b"r1\n");
+    Workspace::commit(ws.root(), "root init");
+    Workspace::write(&member, "src/lib.rs", b"fn a() {}\n");
+    Workspace::commit(&member, "a init");
+    // Dirty both root and the member (unstaged, tracked). The member-root
+    // pathspec must scope to the member only and still surface its change.
+    Workspace::write(ws.root(), "root.txt", b"r2\n");
+    Workspace::write(&member, "src/lib.rs", b"fn a() { 1 }\n");
+
+    let registry = DiffLogRegistry::new();
+
+    // Pathspec naming the member root exactly (after `--`, from the ws root).
+    let by_name = handle_diff(
+        ws.root(),
+        ws.request_operands(&[], &["crate-a"], ""),
+        "op_name",
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(
+        changed_paths(&by_name),
+        vec!["crate-a/src/lib.rs".to_owned()],
+        "`gwz diff -- crate-a` must report the dirty member file and scope out root"
+    );
+    assert!(
+        by_name.response.summary.as_ref().unwrap().has_differences,
+        "member-root pathspec must report has_differences"
+    );
+
+    // `.` issued from inside the member: the physical `start` is the member
+    // root, so the handler derives logical cwd `crate-a` (it recomputes from
+    // `start`, not the client hint — see `bare_operand_from_member_subdir_*`).
+    let by_dot = handle_diff(
+        &member,
+        ws.request_operands(&[], &["."], ""),
+        "op_dot",
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(
+        changed_paths(&by_dot),
+        vec!["crate-a/src/lib.rs".to_owned()],
+        "`gwz diff -- .` from inside the member must report the dirty file and scope out root"
+    );
+    assert!(
+        by_dot.response.summary.as_ref().unwrap().has_differences,
+        "`.` inside the member must report has_differences"
+    );
+}
+
+#[test]
 fn bare_operand_from_member_subdir_stats_against_physical_cwd() {
     // Regression: `gwz diff a.txt` invoked from *inside* a member subdir. The
     // physical `start` dir (not the workspace root) is the base a bare path

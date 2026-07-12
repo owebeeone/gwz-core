@@ -548,7 +548,8 @@ fn intersect_pathspecs(
                 // A root-territory directory pathspec fans out into the members
                 // it contains (e.g. `.` at the workspace root reaches every
                 // member). Members strictly under the pathspec get whole-repo
-                // scope (`.`).
+                // scope, accumulated here as the routing primitive's `.` and
+                // normalized to the empty whole-repo list by `dedup_sorted`.
                 let rel = lexical_normalize(&join_cwd(&cwd, spec));
                 let rel = rel.strip_prefix(ws_root).unwrap_or(&rel);
                 for member_path in &member_paths {
@@ -632,12 +633,29 @@ fn validate_explicit_member_pathspec(
     Ok(())
 }
 
+/// Sort + dedup a target's repo-relative pathspecs, collapsing a whole-repo
+/// selection to the **empty** list.
+///
+/// The routing primitive spells "the repo root itself" as `.` (see
+/// [`pathspec_str`](crate::workspace_ops::pathspec_str)), produced when a
+/// pathspec names a member root exactly or when a root-territory directory fans
+/// `.` out into contained members. Any set containing `.` — `["."]` alone, or
+/// `.` beside narrower paths like `["src", "."]` — means the whole repo, so it
+/// collapses to whole-repo scope, emitted here as an empty `Vec`. That matches
+/// the [`PlannedTarget::pathspecs`] "empty means the whole repo" contract and
+/// the no-pathspec `gwz diff` path (which sets no pathspec on `DiffOptions`).
+///
+/// It must **not** be emitted as `["."]`: unlike command-line git, libgit2's
+/// diff pathspec matcher treats `.` as a literal entry path that matches no
+/// file, so a `["."]` narrowing would silently produce an empty diff (exit 0)
+/// even when the repo is dirty.
 fn dedup_sorted(mut specs: Vec<String>) -> Vec<String> {
     specs.sort();
     specs.dedup();
-    // A whole-repo `.` alongside specific paths collapses to whole-repo.
+    // A whole-repo `.` (alone or alongside specific paths) collapses to the
+    // whole repo, spelled as the empty pathspec list.
     if specs.iter().any(|s| s == ".") {
-        return vec![".".to_owned()];
+        return Vec::new();
     }
     specs
 }

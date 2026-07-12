@@ -300,10 +300,77 @@ fn dot_at_root_targets_root_and_members() {
     let pathspecs = vec![".".to_owned()];
     let plan = plan_diff(&m, None, &plain(), "", &pathspecs, &[], &all_materialized).unwrap();
     assert_eq!(target_ids(&plan), vec!["@root", "mem_core", "mem_cli"]);
-    // Each repo gets whole-repo scope.
+    // Each repo gets whole-repo scope, spelled as an EMPTY pathspec list — not
+    // `["."]`. libgit2's diff pathspec matcher treats a literal "." as an entry
+    // path that matches no file (unlike command-line git), so `["."]` here
+    // silently produced an empty diff. Empty = whole repo (the documented
+    // `PlannedTarget::pathspecs` contract, and the no-pathspec `gwz diff` path).
     for target in &plan.targets {
-        assert_eq!(target.pathspecs, vec![".".to_owned()]);
+        assert!(
+            target.pathspecs.is_empty(),
+            "whole-repo scope must be empty pathspecs, got {:?}",
+            target.pathspecs
+        );
     }
+}
+
+/// A pathspec naming a member root exactly (`gwz-cli`) keeps only that member,
+/// with whole-repo scope spelled as an EMPTY pathspec list, and drops root.
+/// Regression: routing rewrites the member-root pathspec to the primitive's
+/// `.`, and the plan must normalize that to empty so libgit2 diffs the whole
+/// member rather than matching a literal "." (which matches nothing).
+#[test]
+fn member_root_pathspec_yields_empty_whole_repo_pathspecs() {
+    let m = manifest();
+    let pathspecs = vec!["gwz-cli".to_owned()];
+    let plan = plan_diff(&m, None, &plain(), "", &pathspecs, &[], &all_materialized).unwrap();
+    // Root is dropped (the pathspec is member-owned); only mem_cli is kept.
+    assert_eq!(target_ids(&plan), vec!["mem_cli"]);
+    assert!(
+        plan.targets[0].pathspecs.is_empty(),
+        "member-root pathspec must narrow to whole-repo (empty), got {:?}",
+        plan.targets[0].pathspecs
+    );
+}
+
+/// `.` issued from *inside* a member (logical cwd `gwz-cli`) narrows to that
+/// member with whole-repo scope (empty pathspecs); root is dropped.
+#[test]
+fn dot_inside_member_yields_empty_whole_repo_pathspecs() {
+    let m = manifest();
+    let pathspecs = vec![".".to_owned()];
+    let plan = plan_diff(
+        &m,
+        None,
+        &plain(),
+        "gwz-cli",
+        &pathspecs,
+        &[],
+        &all_materialized,
+    )
+    .unwrap();
+    assert_eq!(target_ids(&plan), vec!["mem_cli"]);
+    assert!(
+        plan.targets[0].pathspecs.is_empty(),
+        "`.` inside a member must narrow to whole-repo (empty), got {:?}",
+        plan.targets[0].pathspecs
+    );
+}
+
+/// Mixed pathspecs for one member — a subdir plus the member root
+/// (`gwz-cli/src` and `gwz-cli`) — collapse to whole-repo scope (empty), since
+/// the member-root spec subsumes the narrower one.
+#[test]
+fn mixed_member_specs_collapse_to_whole_repo() {
+    let m = manifest();
+    let pathspecs = vec!["gwz-cli/src".to_owned(), "gwz-cli".to_owned()];
+    let plan = plan_diff(&m, None, &plain(), "", &pathspecs, &[], &all_materialized).unwrap();
+    assert_eq!(target_ids(&plan), vec!["mem_cli"]);
+    assert!(
+        plan.targets[0].pathspecs.is_empty(),
+        "member-root spec must subsume the subdir spec → empty, got {:?}",
+        plan.targets[0].pathspecs
+    );
 }
 
 /// "Parent-relative pathspecs from subdirectories behave like Git."
