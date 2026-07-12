@@ -1,8 +1,8 @@
 # gwz-core
 
-GWZ coordinates multiple ordinary Git repositories as one reproducible,
-inspectable workspace. `gwz-core` is the embeddable Rust engine that owns most
-of that workspace behavior behind typed Taut service messages.
+GWZ (Git Workspace Zone) coordinates multiple ordinary Git repositories as one
+reproducible, inspectable workspace. `gwz-core` is the embeddable Rust engine
+that owns most of that workspace behavior behind typed Taut service messages.
 
 The core was designed from scratch to run in-process or behind a separate
 client boundary. A local adapter can call it directly; a remote adapter can

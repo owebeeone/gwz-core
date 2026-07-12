@@ -6,8 +6,8 @@ repositories belong together, where each one should be checked out, which
 revisions form a working set, and how to inspect or change that set without
 losing track of partial failures.
 
-GWZ turns that collection into a reproducible workspace while leaving every
-member as an ordinary Git repository.
+GWZ (Git Workspace Zone) turns that collection into a reproducible workspace
+while leaving every member as an ordinary Git repository.
 
 ## The Problem GWZ Solves
 
