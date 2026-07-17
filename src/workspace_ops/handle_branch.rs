@@ -39,7 +39,7 @@ where
         crate::BranchOp::List => list_branches(backend, context, &repos),
         crate::BranchOp::Create => create_branch(backend, &root, request, context, &repos),
         crate::BranchOp::Delete => delete_branch(backend, request, context, &repos),
-        crate::BranchOp::Merge => merge_branch(backend, &root, request, context, &repos),
+        crate::BranchOp::Merge => unreachable!("deprecated above"),
     }
 }
 
@@ -56,15 +56,6 @@ struct CreatePlan {
     repo: BranchRepo,
     start_commit: String,
     existed: bool,
-}
-
-#[derive(Clone)]
-struct MergePlan {
-    repo: BranchRepo,
-    current_branch: String,
-    head_commit: String,
-    source_ref: String,
-    source_commit: String,
 }
 
 fn selected_member_repos<B: GitBackend>(
@@ -279,107 +270,6 @@ fn delete_branch<B: GitBackend>(
     ))
 }
 
-fn merge_branch<B: GitBackend>(
-    backend: &B,
-    root: &Path,
-    request: crate::BranchRequest,
-    context: OperationContext,
-    repos: &[BranchRepo],
-) -> ModelResult<crate::BranchResponse> {
-    let source_ref = request
-        .start_ref
-        .clone()
-        .ok_or_else(|| invalid("a source ref is required"))?;
-    let plans = merge_preflight(backend, repos, &source_ref)?;
-
-    if request.meta.dry_run.unwrap_or(false) {
-        let summaries = plans
-            .iter()
-            .map(|plan| merge_planned_summary(plan, crate::BranchActionResult::Merged))
-            .collect();
-        return Ok(branch_response(
-            context,
-            crate::AggregateStatus::Accepted,
-            summaries,
-            Vec::new(),
-        ));
-    }
-
-    let mut summaries = Vec::with_capacity(plans.len());
-    let mut observed_states = Vec::new();
-    let mut saw_conflict = false;
-    let mut mutated = false;
-    for plan in &plans {
-        let result =
-            match backend.merge_upstream(&plan.repo.path, &plan.current_branch, &plan.source_ref) {
-                Ok(result) => result,
-                Err(error) if mutated => return Ok(partial_response(context, summaries, &error)),
-                Err(error) => return Err(error),
-            };
-        mutated = true;
-
-        if result.is_clean() {
-            let head = match backend.head(&plan.repo.path) {
-                Ok(head) => head,
-                Err(error) => return Ok(partial_response(context, summaries, &error)),
-            };
-            let status = match backend.status(&plan.repo.path) {
-                Ok(status) => status,
-                Err(error) => return Ok(partial_response(context, summaries, &error)),
-            };
-            let observed = resolved_member(&plan.repo.member, &head, &status);
-            observed_states.push((plan.repo.member_id.clone(), observed));
-            summaries.push(merge_result_summary(
-                plan,
-                crate::BranchActionResult::Merged,
-                head.commit.clone(),
-                result.commit,
-                Vec::new(),
-            ));
-        } else {
-            saw_conflict = true;
-            summaries.push(merge_result_summary(
-                plan,
-                crate::BranchActionResult::Conflicted,
-                Some(plan.head_commit.clone()),
-                None,
-                result.conflicts,
-            ));
-        }
-    }
-
-    if !observed_states.is_empty() {
-        let manifest = match artifact::read_manifest(root) {
-            Ok(manifest) => manifest,
-            Err(error) => return Ok(partial_response(context, summaries, &error)),
-        };
-        let mut next = match read_lock_or_empty(root, &manifest.workspace.id) {
-            Ok(lock) => lock,
-            Err(error) => return Ok(partial_response(context, summaries, &error)),
-        };
-        for (member_id, observed) in &observed_states {
-            next.members.insert(member_id.clone(), observed.clone());
-        }
-        if let Err(error) = artifact::write_lock(root, &next) {
-            return Ok(partial_response(context, summaries, &error));
-        }
-        if let Err(error) = sync_workspace_boundary(backend, root, &manifest, &next) {
-            return Ok(partial_response(context, summaries, &error));
-        }
-    }
-
-    Ok(branch_response(
-        context,
-        if saw_conflict {
-            crate::AggregateStatus::Conflicted
-        } else {
-            crate::AggregateStatus::Ok
-        },
-        summaries,
-        Vec::new(),
-    ))
-}
-
 fn create_preflight<B: GitBackend>(
     backend: &B,
     repos: &[BranchRepo],
@@ -458,80 +348,6 @@ fn delete_preflight<B: GitBackend>(
                 ),
             ));
         }
-    }
-    Ok(())
-}
-
-fn merge_preflight<B: GitBackend>(
-    backend: &B,
-    repos: &[BranchRepo],
-    source_ref: &str,
-) -> ModelResult<Vec<MergePlan>> {
-    let mut plans = Vec::with_capacity(repos.len());
-    for repo in repos {
-        let status = backend.status(&repo.path)?;
-        if status.is_dirty {
-            return Err(ModelError::new(
-                ErrorCode::DirtyMember,
-                format!("member '{}' has uncommitted changes", repo.member_id),
-            ));
-        }
-        reject_in_progress_integration(repo)?;
-        let head = backend.head(&repo.path)?;
-        if head.is_detached {
-            return Err(ModelError::new(
-                ErrorCode::InvalidRequest,
-                format!("member '{}' HEAD is detached", repo.member_id),
-            ));
-        }
-        let current_branch = head.branch.clone().ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::InvalidRequest,
-                format!(
-                    "member '{}' HEAD is not attached to a branch",
-                    repo.member_id
-                ),
-            )
-        })?;
-        let head_commit = head.commit.clone().ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::InvalidRequest,
-                format!("member '{}' HEAD is unborn", repo.member_id),
-            )
-        })?;
-        let source_commit = backend.read_ref(&repo.path, source_ref)?.ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::GitCommandFailed,
-                format!(
-                    "source ref '{source_ref}' not found for member '{}'",
-                    repo.member_id
-                ),
-            )
-        })?;
-        plans.push(MergePlan {
-            repo: repo.clone(),
-            current_branch,
-            head_commit,
-            source_ref: source_ref.to_owned(),
-            source_commit,
-        });
-    }
-    Ok(plans)
-}
-
-fn reject_in_progress_integration(repo: &BranchRepo) -> ModelResult<()> {
-    let git_dir = repo.path.join(".git");
-    if git_dir.join("MERGE_HEAD").exists()
-        || git_dir.join("rebase-merge").exists()
-        || git_dir.join("rebase-apply").exists()
-    {
-        return Err(ModelError::new(
-            ErrorCode::InvalidRequest,
-            format!(
-                "member '{}' has an in-progress merge or rebase",
-                repo.member_id
-            ),
-        ));
     }
     Ok(())
 }
@@ -637,57 +453,6 @@ fn dry_run_summary(
         target_branch: None,
         resulting_commit: None,
         conflict_paths: Vec::new(),
-    }
-}
-
-fn merge_planned_summary(
-    plan: &MergePlan,
-    result: crate::BranchActionResult,
-) -> crate::BranchRepoSummary {
-    crate::BranchRepoSummary {
-        member_id: plan.repo.member_id.clone(),
-        member_path: plan.repo.member_path.clone(),
-        source_kind: crate::SourceKind::Git,
-        result,
-        branch: Some(plan.current_branch.clone()),
-        current_branch: Some(plan.current_branch.clone()),
-        detached: false,
-        unborn: false,
-        head: Some(plan.head_commit.clone()),
-        upstream: None,
-        ahead: None,
-        behind: None,
-        source_ref: Some(plan.source_ref.clone()),
-        target_branch: Some(plan.current_branch.clone()),
-        resulting_commit: Some(plan.source_commit.clone()),
-        conflict_paths: Vec::new(),
-    }
-}
-
-fn merge_result_summary(
-    plan: &MergePlan,
-    result: crate::BranchActionResult,
-    head: Option<String>,
-    resulting_commit: Option<String>,
-    conflict_paths: Vec<String>,
-) -> crate::BranchRepoSummary {
-    crate::BranchRepoSummary {
-        member_id: plan.repo.member_id.clone(),
-        member_path: plan.repo.member_path.clone(),
-        source_kind: crate::SourceKind::Git,
-        result,
-        branch: Some(plan.current_branch.clone()),
-        current_branch: Some(plan.current_branch.clone()),
-        detached: false,
-        unborn: false,
-        head,
-        upstream: None,
-        ahead: None,
-        behind: None,
-        source_ref: Some(plan.source_ref.clone()),
-        target_branch: Some(plan.current_branch.clone()),
-        resulting_commit,
-        conflict_paths,
     }
 }
 
