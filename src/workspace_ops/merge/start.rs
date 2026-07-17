@@ -231,11 +231,11 @@ fn summary(row: Row<'_>, source_ref: &str) -> crate::MergeRepoSummary {
         source_commit: plan.source_commit.clone(),
         target_branch: plan.target_branch.clone(),
         before_commit: plan.before_commit.clone(),
-        live_commit: Some(
+        live_commit: (!matches!(row.state, PState::Failed | PState::Unattempted)).then(|| {
             row.oid
                 .clone()
-                .unwrap_or_else(|| plan.before_commit.clone()),
-        ),
+                .unwrap_or_else(|| plan.before_commit.clone())
+        }),
         resulting_commit: row.oid,
         state: row.state,
         predicted: plan.analysis,
@@ -269,7 +269,7 @@ fn merge_response(
         }
     }
     let (state, aggregate) = if context.dry_run {
-        (OpState::Executing, AggregateStatus::Accepted)
+        (OpState::Completed, AggregateStatus::Accepted)
     } else if !errors.is_empty() {
         (OpState::Halted, AggregateStatus::Failed)
     } else if counts.conflicted > 0 {
@@ -295,7 +295,7 @@ fn merge_response(
         )?,
         merge_id: None,
         state,
-        open: false,
+        open: !matches!(state, OpState::Completed | OpState::Aborted),
         participant_counts: counts,
         repos,
         operation_drift: Vec::new(),
@@ -321,7 +321,10 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     #[derive(Default)]
-    struct Fake(RefCell<Vec<String>>);
+    struct Fake {
+        calls: RefCell<Vec<String>>,
+        mutated_before_failure: RefCell<Vec<String>>,
+    }
     impl ExecutionBackend for Fake {
         fn inspect(&self, path: &Path, _: &str, source: &str) -> ModelResult<Inspection> {
             let key = key(path);
@@ -344,8 +347,9 @@ mod tests {
         }
         fn merge(&self, path: &Path, _: &str, source: &str) -> ModelResult<GitIntegrateResult> {
             let key = key(path);
-            self.0.borrow_mut().push(format!("{key}:{source}"));
+            self.calls.borrow_mut().push(format!("{key}:{source}"));
             if key == "fail" {
+                self.mutated_before_failure.borrow_mut().push(key.into());
                 return Err(ModelError::new(ErrorCode::GitCommandFailed, "boom"));
             }
             Ok(if key == "conflict" {
@@ -394,12 +398,20 @@ mod tests {
         let run = execute_plan(&fake, Path::new("."), &plans);
         assert_eq!(run.rows[0].state, PState::Conflicted);
         assert_eq!(run.rows[1].state, PState::Merged);
-        assert_eq!(fake.0.borrow()[1], "next:source-next");
+        assert_eq!(fake.calls.borrow()[1], "next:source-next");
         let repos = run.rows.into_iter().map(|r| summary(r, "x")).collect();
         let response = merge_response(&context(false), repos, run.errors).unwrap();
         assert_eq!(response.state, OpState::AwaitingResolution);
+        assert!(response.open);
         assert_eq!(response.participant_counts.conflicted, 1);
         assert_eq!(response.response.meta.action, crate::ActionKind::Merge);
+        let repos = plans
+            .iter()
+            .map(|plan| summary(Row::new(plan, PState::Planned), "x"))
+            .collect();
+        let response = merge_response(&context(true), repos, Vec::new()).unwrap();
+        assert_eq!(response.state, OpState::Completed);
+        assert!(!response.open);
     }
     #[test]
     fn unexpected_failure_stops_and_marks_later_unattempted() {
@@ -409,7 +421,20 @@ mod tests {
         assert_eq!(run.rows[0].state, PState::Merged);
         assert_eq!(run.rows[1].state, PState::Failed);
         assert_eq!(run.rows[2].state, PState::Unattempted);
-        assert_eq!(*fake.0.borrow(), ["first:source-first", "fail:source-fail"]);
-        assert_eq!(run.errors.len(), 1);
+        assert_eq!(
+            *fake.calls.borrow(),
+            ["first:source-first", "fail:source-fail"]
+        );
+        assert_eq!(*fake.mutated_before_failure.borrow(), ["fail"]);
+        let repos = run
+            .rows
+            .into_iter()
+            .map(|r| summary(r, "x"))
+            .collect::<Vec<_>>();
+        assert_eq!(repos[1].live_commit, None);
+        assert_eq!(repos[2].live_commit, None);
+        let response = merge_response(&context(false), repos, run.errors).unwrap();
+        assert_eq!(response.state, OpState::Halted);
+        assert!(response.open);
     }
 }

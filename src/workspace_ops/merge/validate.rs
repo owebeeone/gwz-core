@@ -18,12 +18,6 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
             if request.message.is_some() {
                 return phase("custom merge messages are reserved for M4");
             }
-            if selects_root(request) {
-                return Err(ModelError::new(
-                    ErrorCode::RootMergeNotYetSupported,
-                    "explicit @root merge participation is reserved for M2c",
-                ));
-            }
         }
         crate::MergeOp::Resume => {
             reject_recovery_fields(request)?;
@@ -105,14 +99,6 @@ fn reject_present(field: &str, present: bool) -> ModelResult<()> {
         return invalid(format!("{field} is not accepted for this merge operation"));
     }
     Ok(())
-}
-
-fn selects_root(request: &crate::MergeRequest) -> bool {
-    request
-        .meta
-        .selection
-        .as_ref()
-        .is_some_and(|selection| selection.targets.iter().any(|target| target == "@root"))
 }
 
 fn invalid<T>(message: impl Into<String>) -> ModelResult<T> {
@@ -205,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_features_and_root_return_specific_typed_errors() {
+    fn reserved_features_return_specific_typed_errors_and_root_defers_to_planning() {
         let mut message = request(crate::MergeOp::Start);
         message.message = Some("custom".to_owned());
         assert_eq!(
@@ -232,10 +218,9 @@ mod tests {
             targets: vec!["@root".to_owned()],
             ..crate::Selection::default()
         });
-        assert_eq!(
-            validate_merge_request(&root).unwrap_err().code,
-            ErrorCode::RootMergeNotYetSupported
-        );
+        assert!(validate_merge_request(&root).is_ok());
+        root.meta.selection.as_mut().unwrap().exclude_targets = vec!["@root".to_owned()];
+        assert!(validate_merge_request(&root).is_ok());
 
         assert!(validate_open_merge_id(None, "merge_1").is_ok());
         assert!(validate_open_merge_id(Some("merge_1"), "merge_1").is_ok());

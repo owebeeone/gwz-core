@@ -413,6 +413,12 @@ mod tests {
                 targets: vec!["@all".into()],
                 ..Default::default()
             },
+            crate::Selection {
+                all: Some(true),
+                targets: vec!["@root".into()],
+                exclude_targets: vec!["@root".into()],
+                ..Default::default()
+            },
         ] {
             assert_eq!(
                 ids(&build(
