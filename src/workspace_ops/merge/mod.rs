@@ -1,6 +1,7 @@
 #![allow(dead_code)] // I0 freezes seams before the feature milestones consume them.
 
 mod model;
+mod plan;
 mod response;
 mod validate;
 
