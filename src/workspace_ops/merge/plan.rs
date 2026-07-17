@@ -103,9 +103,18 @@ fn build_merge_plan<P: PlanningBackend>(
         CommandDefaultTargets::Members,
         RootSelectionPolicy::Allow,
     )?;
-    if targets
-        .iter()
-        .any(|target| matches!(target, SelectedTarget::Root))
+    let explicitly_selected_root = request.meta.selection.as_ref().is_some_and(|selection| {
+        selection
+            .member_ids
+            .iter()
+            .chain(&selection.paths)
+            .chain(&selection.targets)
+            .any(|target| target == "@root")
+    });
+    if explicitly_selected_root
+        && targets
+            .iter()
+            .any(|target| matches!(target, SelectedTarget::Root))
     {
         return Err(ModelError::new(
             ErrorCode::RootMergeNotYetSupported,
@@ -384,21 +393,36 @@ mod tests {
     }
 
     #[test]
-    fn root_selection_returns_the_m2c_phase_error_before_repo_reads() {
+    fn only_explicit_root_returns_the_m2c_phase_error() {
+        let root = crate::Selection {
+            targets: vec!["@root".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build(&Default::default(), &fixture(), &request(Some(root), false))
+                .unwrap_err()
+                .code,
+            ErrorCode::RootMergeNotYetSupported
+        );
         for selection in [
-            crate::Selection {
-                targets: vec!["@root".into()],
-                ..Default::default()
-            },
             crate::Selection {
                 all: Some(true),
                 ..Default::default()
             },
+            crate::Selection {
+                targets: vec!["@all".into()],
+                ..Default::default()
+            },
         ] {
-            let backend = FakeBackend::default();
-            let error = build(&backend, &fixture(), &request(Some(selection), false)).unwrap_err();
-            assert_eq!(error.code, ErrorCode::RootMergeNotYetSupported);
-            assert!(backend.calls.borrow().is_empty());
+            assert_eq!(
+                ids(&build(
+                    &Default::default(),
+                    &fixture(),
+                    &request(Some(selection), false)
+                )
+                .unwrap()),
+                ["mem_z", "mem_a"]
+            );
         }
     }
 

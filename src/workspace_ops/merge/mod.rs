@@ -3,6 +3,7 @@
 mod model;
 mod plan;
 mod response;
+mod start;
 mod validate;
 
 pub(crate) use model::*;
@@ -64,8 +65,7 @@ where
 {
     validate_merge_request(&request)?;
     let context = OperationRequest::Merge(request.clone()).context(operation_id.into())?;
-    let _ = (backend, start);
-    dispatch_merge(request.op, &context)
+    dispatch_merge(backend, start, request, context)
 }
 
 /// Dependency-injected lifecycle seam used by the persistence milestones.
@@ -84,24 +84,27 @@ where
     validate_merge_request(&request)?;
     let context = OperationRequest::Merge(request.clone()).context(operation_id.into())?;
     let _ = (
-        dependencies.backend,
         dependencies.store,
         dependencies.clock,
         dependencies.ids,
         dependencies.events,
-        start,
     );
-    dispatch_merge(request.op, &context)
+    dispatch_merge(dependencies.backend, start, request, context)
 }
 
-fn dispatch_merge(
-    op: crate::MergeOp,
-    _context: &crate::operation::OperationContext,
+fn dispatch_merge<B: GitBackend>(
+    backend: &B,
+    start: &Path,
+    request: crate::MergeRequest,
+    context: crate::operation::OperationContext,
 ) -> ModelResult<crate::MergeResponse> {
-    Err(ModelError::new(
-        ErrorCode::MergePhaseUnsupported,
-        format!("merge operation '{op:?}' is reserved but not implemented at I0"),
-    ))
+    match request.op {
+        crate::MergeOp::Start => start::handle_start(backend, start, &request, context),
+        op => Err(ModelError::new(
+            ErrorCode::MergePhaseUnsupported,
+            format!("merge operation '{op:?}' is reserved but not implemented in M0"),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -121,8 +124,8 @@ mod tests {
                 schema_version: "gwz.v0".to_owned(),
                 ..crate::RequestMeta::default()
             },
-            op: crate::MergeOp::Start,
-            source_ref: Some("feature/x".to_owned()),
+            op: crate::MergeOp::Status,
+            source_ref: None,
             merge_id: None,
             mode: None,
             message: None,
@@ -131,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn handler_validates_before_the_empty_i0_dispatcher() {
+    fn handler_validates_before_dispatch() {
         let backend = crate::git::Git2Backend::new();
         let store = EmptyStore;
         let clock = FixedClock::new(TimestampMs(1));
@@ -144,7 +147,7 @@ mod tests {
             events: &NullSink,
         };
         let mut invalid = request();
-        invalid.source_ref = None;
+        invalid.op = crate::MergeOp::Start;
         let error = handle_merge_with_dependencies(dependencies, Path::new("."), invalid, "op_1")
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::MergeValidationFailed);
