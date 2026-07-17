@@ -29,6 +29,7 @@ pub enum ActionKind {
     CloneRepoMember,
     DetachRepoMember,
     AttachRepoMember,
+    Merge,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -57,6 +58,7 @@ impl ActionKind {
         Self::CloneRepoMember => 22,
         Self::DetachRepoMember => 23,
         Self::AttachRepoMember => 24,
+        Self::Merge => 25,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::CreateWorkspace,
@@ -84,6 +86,7 @@ impl ActionKind {
         22 => Self::CloneRepoMember,
         23 => Self::DetachRepoMember,
         24 => Self::AttachRepoMember,
+        25 => Self::Merge,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "ActionKind", value: v }),
     }) }
 }
@@ -235,6 +238,253 @@ impl BranchOp {
         2 => Self::Delete,
         3 => Self::Merge,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "BranchOp", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeOp {
+    #[default] Start,
+    Resume,
+    Abort,
+    Status,
+    Gc,
+}
+impl MergeOp {
+    pub fn wire(self) -> i64 { match self {
+        Self::Start => 0,
+        Self::Resume => 1,
+        Self::Abort => 2,
+        Self::Status => 3,
+        Self::Gc => 4,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Start,
+        1 => Self::Resume,
+        2 => Self::Abort,
+        3 => Self::Status,
+        4 => Self::Gc,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeOp", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeMode {
+    #[default] Normal,
+    FfOnly,
+    NoFf,
+}
+impl MergeMode {
+    pub fn wire(self) -> i64 { match self {
+        Self::Normal => 0,
+        Self::FfOnly => 1,
+        Self::NoFf => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Normal,
+        1 => Self::FfOnly,
+        2 => Self::NoFf,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeMode", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeAnalysisKind {
+    #[default] UpToDate,
+    FastForward,
+    TrueMerge,
+    Unknown,
+}
+impl MergeAnalysisKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::UpToDate => 0,
+        Self::FastForward => 1,
+        Self::TrueMerge => 2,
+        Self::Unknown => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::UpToDate,
+        1 => Self::FastForward,
+        2 => Self::TrueMerge,
+        3 => Self::Unknown,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeAnalysisKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeParticipantState {
+    #[default] Planned,
+    UpToDate,
+    FastForwarded,
+    Merged,
+    Conflicted,
+    Failed,
+    Unattempted,
+    Continued,
+    Aborted,
+    RolledBack,
+}
+impl MergeParticipantState {
+    pub fn wire(self) -> i64 { match self {
+        Self::Planned => 0,
+        Self::UpToDate => 1,
+        Self::FastForwarded => 2,
+        Self::Merged => 3,
+        Self::Conflicted => 4,
+        Self::Failed => 5,
+        Self::Unattempted => 6,
+        Self::Continued => 7,
+        Self::Aborted => 8,
+        Self::RolledBack => 9,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Planned,
+        1 => Self::UpToDate,
+        2 => Self::FastForwarded,
+        3 => Self::Merged,
+        4 => Self::Conflicted,
+        5 => Self::Failed,
+        6 => Self::Unattempted,
+        7 => Self::Continued,
+        8 => Self::Aborted,
+        9 => Self::RolledBack,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeParticipantState", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeOperationState {
+    #[default] Executing,
+    AwaitingResolution,
+    Halted,
+    Finalizing,
+    Preserving,
+    RollingBack,
+    Completed,
+    Aborted,
+    RecoveryRequired,
+}
+impl MergeOperationState {
+    pub fn wire(self) -> i64 { match self {
+        Self::Executing => 0,
+        Self::AwaitingResolution => 1,
+        Self::Halted => 2,
+        Self::Finalizing => 3,
+        Self::Preserving => 4,
+        Self::RollingBack => 5,
+        Self::Completed => 6,
+        Self::Aborted => 7,
+        Self::RecoveryRequired => 8,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Executing,
+        1 => Self::AwaitingResolution,
+        2 => Self::Halted,
+        3 => Self::Finalizing,
+        4 => Self::Preserving,
+        5 => Self::RollingBack,
+        6 => Self::Completed,
+        7 => Self::Aborted,
+        8 => Self::RecoveryRequired,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeOperationState", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeParticipantDriftKind {
+    #[default] BranchChanged,
+    HeadAdvanced,
+    HeadRewound,
+    TargetRefChanged,
+    WorktreeModified,
+    IndexModified,
+    MergeStateMissing,
+    MergeHeadChanged,
+    NewIntegrationState,
+    RepositoryMissing,
+}
+impl MergeParticipantDriftKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::BranchChanged => 0,
+        Self::HeadAdvanced => 1,
+        Self::HeadRewound => 2,
+        Self::TargetRefChanged => 3,
+        Self::WorktreeModified => 4,
+        Self::IndexModified => 5,
+        Self::MergeStateMissing => 6,
+        Self::MergeHeadChanged => 7,
+        Self::NewIntegrationState => 8,
+        Self::RepositoryMissing => 9,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::BranchChanged,
+        1 => Self::HeadAdvanced,
+        2 => Self::HeadRewound,
+        3 => Self::TargetRefChanged,
+        4 => Self::WorktreeModified,
+        5 => Self::IndexModified,
+        6 => Self::MergeStateMissing,
+        7 => Self::MergeHeadChanged,
+        8 => Self::NewIntegrationState,
+        9 => Self::RepositoryMissing,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeParticipantDriftKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeOperationDriftKind {
+    #[default] BaselineLockChanged,
+    BaselineManifestChanged,
+    RootCandidateMetadataInvalid,
+    RootCandidateStateChanged,
+    RecordUnreadable,
+}
+impl MergeOperationDriftKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::BaselineLockChanged => 0,
+        Self::BaselineManifestChanged => 1,
+        Self::RootCandidateMetadataInvalid => 2,
+        Self::RootCandidateStateChanged => 3,
+        Self::RecordUnreadable => 4,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::BaselineLockChanged,
+        1 => Self::BaselineManifestChanged,
+        2 => Self::RootCandidateMetadataInvalid,
+        3 => Self::RootCandidateStateChanged,
+        4 => Self::RecordUnreadable,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeOperationDriftKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergePublicationStep {
+    #[default] NotStarted,
+    ValidatingResults,
+    PreparingCandidate,
+    CommittingEvidence,
+    PublishingCandidate,
+    VerifyingPublication,
+    Complete,
+}
+impl MergePublicationStep {
+    pub fn wire(self) -> i64 { match self {
+        Self::NotStarted => 0,
+        Self::ValidatingResults => 1,
+        Self::PreparingCandidate => 2,
+        Self::CommittingEvidence => 3,
+        Self::PublishingCandidate => 4,
+        Self::VerifyingPublication => 5,
+        Self::Complete => 6,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::NotStarted,
+        1 => Self::ValidatingResults,
+        2 => Self::PreparingCandidate,
+        3 => Self::CommittingEvidence,
+        4 => Self::PublishingCandidate,
+        5 => Self::VerifyingPublication,
+        6 => Self::Complete,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergePublicationStep", value: v }),
     }) }
 }
 
@@ -689,6 +939,7 @@ pub enum EventKind {
     ArtifactWritten,
     OperationFinished,
     Reset,
+    OperationStateChanged,
 }
 impl EventKind {
     pub fn wire(self) -> i64 { match self {
@@ -699,6 +950,7 @@ impl EventKind {
         Self::ArtifactWritten => 4,
         Self::OperationFinished => 5,
         Self::Reset => 6,
+        Self::OperationStateChanged => 7,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::OperationStarted,
@@ -708,6 +960,7 @@ impl EventKind {
         4 => Self::ArtifactWritten,
         5 => Self::OperationFinished,
         6 => Self::Reset,
+        7 => Self::OperationStateChanged,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "EventKind", value: v }),
     }) }
 }
@@ -774,6 +1027,15 @@ pub enum GwzErrorCode {
     StashIncomplete,
     StashConflict,
     SourceIdentityMismatch,
+    DeprecatedOperation,
+    MergeValidationFailed,
+    MergeIdMismatch,
+    MergeDrift,
+    OpenOperation,
+    MergeRecoveryRequired,
+    MergePhaseUnsupported,
+    RootMergeNotYetSupported,
+    MergeRecordUnreadable,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -814,6 +1076,15 @@ impl GwzErrorCode {
         Self::StashIncomplete => 34,
         Self::StashConflict => 35,
         Self::SourceIdentityMismatch => 36,
+        Self::DeprecatedOperation => 37,
+        Self::MergeValidationFailed => 38,
+        Self::MergeIdMismatch => 39,
+        Self::MergeDrift => 40,
+        Self::OpenOperation => 41,
+        Self::MergeRecoveryRequired => 42,
+        Self::MergePhaseUnsupported => 43,
+        Self::RootMergeNotYetSupported => 44,
+        Self::MergeRecordUnreadable => 45,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -853,6 +1124,15 @@ impl GwzErrorCode {
         34 => Self::StashIncomplete,
         35 => Self::StashConflict,
         36 => Self::SourceIdentityMismatch,
+        37 => Self::DeprecatedOperation,
+        38 => Self::MergeValidationFailed,
+        39 => Self::MergeIdMismatch,
+        40 => Self::MergeDrift,
+        41 => Self::OpenOperation,
+        42 => Self::MergeRecoveryRequired,
+        43 => Self::MergePhaseUnsupported,
+        44 => Self::RootMergeNotYetSupported,
+        45 => Self::MergeRecordUnreadable,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }
@@ -2119,6 +2399,208 @@ impl BranchRepoSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeParticipantCounts {
+    pub total: i64,
+    pub planned: i64,
+    pub up_to_date: i64,
+    pub fast_forwarded: i64,
+    pub merged: i64,
+    pub conflicted: i64,
+    pub failed: i64,
+    pub unattempted: i64,
+    pub continued: i64,
+    pub aborted: i64,
+    pub rolled_back: i64,
+}
+impl MergeParticipantCounts {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.total)),
+            (2, Cbor::Int(self.planned)),
+            (3, Cbor::Int(self.up_to_date)),
+            (4, Cbor::Int(self.fast_forwarded)),
+            (5, Cbor::Int(self.merged)),
+            (6, Cbor::Int(self.conflicted)),
+            (7, Cbor::Int(self.failed)),
+            (8, Cbor::Int(self.unattempted)),
+            (9, Cbor::Int(self.continued)),
+            (10, Cbor::Int(self.aborted)),
+            (11, Cbor::Int(self.rolled_back)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            total: c.try_get(1)?.try_int()?,
+            planned: c.try_get(2)?.try_int()?,
+            up_to_date: c.try_get(3)?.try_int()?,
+            fast_forwarded: c.try_get(4)?.try_int()?,
+            merged: c.try_get(5)?.try_int()?,
+            conflicted: c.try_get(6)?.try_int()?,
+            failed: c.try_get(7)?.try_int()?,
+            unattempted: c.try_get(8)?.try_int()?,
+            continued: c.try_get(9)?.try_int()?,
+            aborted: c.try_get(10)?.try_int()?,
+            rolled_back: c.try_get(11)?.try_int()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeParticipantDrift {
+    pub kind: MergeParticipantDriftKind,
+    pub message: String,
+    pub expected_branch: Option<String>,
+    pub live_branch: Option<String>,
+    pub expected_head: Option<String>,
+    pub live_head: Option<String>,
+    pub expected_merge_head: Option<String>,
+    pub live_merge_head: Option<String>,
+}
+impl MergeParticipantDrift {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, Cbor::Text(self.message.clone())),
+            (3, match &self.expected_branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.live_branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, match &self.expected_head { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.live_head { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (7, match &self.expected_merge_head { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (8, match &self.live_merge_head { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: MergeParticipantDriftKind::from_wire(c.try_get(1)?.try_int()?)?,
+            message: c.try_get(2)?.try_text()?,
+            expected_branch: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            live_branch: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            expected_head: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            live_head: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            expected_merge_head: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            live_merge_head: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeOperationDrift {
+    pub kind: MergeOperationDriftKind,
+    pub message: String,
+}
+impl MergeOperationDrift {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, Cbor::Text(self.message.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: MergeOperationDriftKind::from_wire(c.try_get(1)?.try_int()?)?,
+            message: c.try_get(2)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergePreservation {
+    pub target_id: String,
+    pub path: String,
+    pub backup_ref: Option<String>,
+    pub backup_commit: Option<String>,
+    pub stash_id: Option<String>,
+    pub stash_object_id: Option<String>,
+}
+impl MergePreservation {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.target_id.clone())),
+            (2, Cbor::Text(self.path.clone())),
+            (3, match &self.backup_ref { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.backup_commit { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, match &self.stash_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.stash_object_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            target_id: c.try_get(1)?.try_text()?,
+            path: c.try_get(2)?.try_text()?,
+            backup_ref: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            backup_commit: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            stash_id: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            stash_object_id: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeRepoSummary {
+    pub target_id: String,
+    pub target_kind: TargetKind,
+    pub path: String,
+    pub source_ref: String,
+    pub source_commit: String,
+    pub target_branch: String,
+    pub before_commit: String,
+    pub resulting_commit: Option<String>,
+    pub live_commit: Option<String>,
+    pub state: MergeParticipantState,
+    pub predicted: Option<MergeAnalysisKind>,
+    pub prediction_complete: Option<bool>,
+    pub conflict_paths: Vec<String>,
+    pub continue_eligible: Option<bool>,
+    pub abort_eligible: Option<bool>,
+    pub drift: Vec<MergeParticipantDrift>,
+    pub error: Option<GwzError>,
+}
+impl MergeRepoSummary {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.target_id.clone())),
+            (2, Cbor::Int(self.target_kind.wire())),
+            (3, Cbor::Text(self.path.clone())),
+            (4, Cbor::Text(self.source_ref.clone())),
+            (5, Cbor::Text(self.source_commit.clone())),
+            (6, Cbor::Text(self.target_branch.clone())),
+            (7, Cbor::Text(self.before_commit.clone())),
+            (8, match &self.resulting_commit { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (9, match &self.live_commit { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (10, Cbor::Int(self.state.wire())),
+            (11, match &self.predicted { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (12, match &self.prediction_complete { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (13, Cbor::Array(self.conflict_paths.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (14, match &self.continue_eligible { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (15, match &self.abort_eligible { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (16, Cbor::Array(self.drift.iter().map(|x| x.to_cbor()).collect())),
+            (17, match &self.error { Some(v) => v.to_cbor(), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            target_id: c.try_get(1)?.try_text()?,
+            target_kind: TargetKind::from_wire(c.try_get(2)?.try_int()?)?,
+            path: c.try_get(3)?.try_text()?,
+            source_ref: c.try_get(4)?.try_text()?,
+            source_commit: c.try_get(5)?.try_text()?,
+            target_branch: c.try_get(6)?.try_text()?,
+            before_commit: c.try_get(7)?.try_text()?,
+            resulting_commit: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            live_commit: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            state: MergeParticipantState::from_wire(c.try_get(10)?.try_int()?)?,
+            predicted: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(MergeAnalysisKind::from_wire(v.try_int()?)?) } },
+            prediction_complete: { let v = c.try_get(12)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            conflict_paths: c.try_get(13)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            continue_eligible: { let v = c.try_get(14)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            abort_eligible: { let v = c.try_get(15)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            drift: c.try_get(16)?.try_array()?.iter().map(|x| MergeParticipantDrift::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            error: { let v = c.try_get(17)?; if v.is_null() { None } else { Some(GwzError::from_cbor(v)?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct PlannedChange {
     pub action: PlannedAction,
     pub from_ref: Option<String>,
@@ -2227,6 +2709,7 @@ pub struct OperationEvent {
     pub attribution: Option<OperationAttribution>,
     pub progress: Option<GitTransferProgress>,
     pub target_kind: Option<TargetKind>,
+    pub merge_state: Option<MergeOperationState>,
 }
 impl OperationEvent {
     pub fn to_cbor(&self) -> Cbor {
@@ -2245,6 +2728,7 @@ impl OperationEvent {
             (12, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (13, match &self.progress { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (14, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (15, match &self.merge_state { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2263,6 +2747,7 @@ impl OperationEvent {
             attribution: { let v = c.try_get(12)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
             progress: { let v = c.try_get(13)?; if v.is_null() { None } else { Some(GitTransferProgress::from_cbor(v)?) } },
             target_kind: { let v = c.try_get(14)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
+            merge_state: { let v = c.try_get(15)?; if v.is_null() { None } else { Some(MergeOperationState::from_wire(v.try_int()?)?) } },
         })
     }
 }
@@ -2986,6 +3471,41 @@ impl BranchRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeRequest {
+    pub meta: RequestMeta,
+    pub op: MergeOp,
+    pub source_ref: Option<String>,
+    pub merge_id: Option<String>,
+    pub mode: Option<MergeMode>,
+    pub message: Option<String>,
+    pub preserve: Option<bool>,
+}
+impl MergeRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+            (2, Cbor::Int(self.op.wire())),
+            (3, match &self.source_ref { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.merge_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, match &self.mode { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (6, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (7, match &self.preserve { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            op: MergeOp::from_wire(c.try_get(2)?.try_int()?)?,
+            source_ref: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            merge_id: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            mode: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(MergeMode::from_wire(v.try_int()?)?) } },
+            message: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            preserve: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct CreateWorkspaceResponse {
     pub response: ResponseEnvelope,
 }
@@ -3416,6 +3936,47 @@ impl BranchResponse {
         Ok(Self {
             response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
             repos: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| BranchRepoSummary::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeResponse {
+    pub response: ResponseEnvelope,
+    pub merge_id: Option<String>,
+    pub state: MergeOperationState,
+    pub open: bool,
+    pub participant_counts: MergeParticipantCounts,
+    pub repos: Vec<MergeRepoSummary>,
+    pub operation_drift: Vec<MergeOperationDrift>,
+    pub preservation: Option<Vec<MergePreservation>>,
+    pub publication_step: Option<MergePublicationStep>,
+}
+impl MergeResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+            (2, match &self.merge_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, Cbor::Int(self.state.wire())),
+            (4, Cbor::Bool(self.open)),
+            (5, self.participant_counts.to_cbor()),
+            (6, Cbor::Array(self.repos.iter().map(|x| x.to_cbor()).collect())),
+            (7, Cbor::Array(self.operation_drift.iter().map(|x| x.to_cbor()).collect())),
+            (8, match &self.preservation { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
+            (9, match &self.publication_step { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            merge_id: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            state: MergeOperationState::from_wire(c.try_get(3)?.try_int()?)?,
+            open: c.try_get(4)?.try_bool()?,
+            participant_counts: MergeParticipantCounts::from_cbor(c.try_get(5)?)?,
+            repos: c.try_get(6)?.try_array()?.iter().map(|x| MergeRepoSummary::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            operation_drift: c.try_get(7)?.try_array()?.iter().map(|x| MergeOperationDrift::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            preservation: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| MergePreservation::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+            publication_step: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(MergePublicationStep::from_wire(v.try_int()?)?) } },
         })
     }
 }

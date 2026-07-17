@@ -18,7 +18,7 @@ fn release_workflow_runs_full_rust_verification() {
 fn release_workflow_installs_release_taut_proto_for_protocol_tests() {
     assert!(RELEASE_WORKFLOW.contains("actions/setup-python"));
     assert!(RELEASE_WORKFLOW.contains("TAUT_PYTHON: python"));
-    assert!(RELEASE_WORKFLOW.contains("python -m pip install --upgrade pip taut-proto"));
+    assert!(RELEASE_WORKFLOW.contains("python -m pip install --upgrade pip \"taut-proto==0.8.1\""));
 }
 
 #[test]

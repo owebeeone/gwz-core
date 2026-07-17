@@ -37,6 +37,7 @@ API and from workspace artifact YAML schemas.
 | GwzCore | push | in | unary | request: PushRequest | value: PushResponse |
 | GwzCore | stash | in | unary | request: StashRequest | value: StashResponse |
 | GwzCore | branch | in | unary | request: BranchRequest | value: BranchResponse |
+| GwzCore | merge | in | unary | request: MergeRequest | value: MergeResponse |
 | GwzCore | events.subscribe | out | log | operation_id: str | append: OperationEvent |
 | GwzCore | operation.result | out | unary | operation_id: str | value: OperationResult |
 | GwzCore | diff | in | unary | request: DiffRequest | value: DiffManifestResponse |
@@ -106,6 +107,7 @@ has no service method and no handler that executes commands.
 | clone_repo_member | 22 |
 | detach_repo_member | 23 |
 | attach_repo_member | 24 |
+| merge | 25 |
 
 ### TagOp
 
@@ -164,6 +166,99 @@ has no service method and no handler that executes commands.
 | create | 1 |
 | delete | 2 |
 | merge | 3 |
+
+### MergeOp
+
+| Member | Wire |
+| --- | --- |
+| start | 0 |
+| resume | 1 |
+| abort | 2 |
+| status | 3 |
+| gc | 4 |
+
+### MergeMode
+
+| Member | Wire |
+| --- | --- |
+| normal | 0 |
+| ff_only | 1 |
+| no_ff | 2 |
+
+### MergeAnalysisKind
+
+| Member | Wire |
+| --- | --- |
+| up_to_date | 0 |
+| fast_forward | 1 |
+| true_merge | 2 |
+| unknown | 3 |
+
+### MergeParticipantState
+
+| Member | Wire |
+| --- | --- |
+| planned | 0 |
+| up_to_date | 1 |
+| fast_forwarded | 2 |
+| merged | 3 |
+| conflicted | 4 |
+| failed | 5 |
+| unattempted | 6 |
+| continued | 7 |
+| aborted | 8 |
+| rolled_back | 9 |
+
+### MergeOperationState
+
+| Member | Wire |
+| --- | --- |
+| executing | 0 |
+| awaiting_resolution | 1 |
+| halted | 2 |
+| finalizing | 3 |
+| preserving | 4 |
+| rolling_back | 5 |
+| completed | 6 |
+| aborted | 7 |
+| recovery_required | 8 |
+
+### MergeParticipantDriftKind
+
+| Member | Wire |
+| --- | --- |
+| branch_changed | 0 |
+| head_advanced | 1 |
+| head_rewound | 2 |
+| target_ref_changed | 3 |
+| worktree_modified | 4 |
+| index_modified | 5 |
+| merge_state_missing | 6 |
+| merge_head_changed | 7 |
+| new_integration_state | 8 |
+| repository_missing | 9 |
+
+### MergeOperationDriftKind
+
+| Member | Wire |
+| --- | --- |
+| baseline_lock_changed | 0 |
+| baseline_manifest_changed | 1 |
+| root_candidate_metadata_invalid | 2 |
+| root_candidate_state_changed | 3 |
+| record_unreadable | 4 |
+
+### MergePublicationStep
+
+| Member | Wire |
+| --- | --- |
+| not_started | 0 |
+| validating_results | 1 |
+| preparing_candidate | 2 |
+| committing_evidence | 3 |
+| publishing_candidate | 4 |
+| verifying_publication | 5 |
+| complete | 6 |
 
 ### BranchActionResult
 
@@ -346,6 +441,7 @@ has no service method and no handler that executes commands.
 | artifact_written | 4 |
 | operation_finished | 5 |
 | reset | 6 |
+| operation_state_changed | 7 |
 
 ### Severity
 
@@ -397,6 +493,15 @@ has no service method and no handler that executes commands.
 | stash_incomplete | 34 |
 | stash_conflict | 35 |
 | source_identity_mismatch | 36 |
+| deprecated_operation | 37 |
+| merge_validation_failed | 38 |
+| merge_id_mismatch | 39 |
+| merge_drift | 40 |
+| open_operation | 41 |
+| merge_recovery_required | 42 |
+| merge_phase_unsupported | 43 |
+| root_merge_not_yet_supported | 44 |
+| merge_record_unreadable | 45 |
 
 ### DiffComparisonKind
 
@@ -843,6 +948,75 @@ has no service method and no handler that executes commands.
 | resulting_commit | 15 | str | yes | no | - |
 | conflict_paths | 16 | List<str> | no | no | - |
 
+### MergeParticipantCounts
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| total | 1 | int | no | no | - |
+| planned | 2 | int | no | no | - |
+| up_to_date | 3 | int | no | no | - |
+| fast_forwarded | 4 | int | no | no | - |
+| merged | 5 | int | no | no | - |
+| conflicted | 6 | int | no | no | - |
+| failed | 7 | int | no | no | - |
+| unattempted | 8 | int | no | no | - |
+| continued | 9 | int | no | no | - |
+| aborted | 10 | int | no | no | - |
+| rolled_back | 11 | int | no | no | - |
+
+### MergeParticipantDrift
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | MergeParticipantDriftKind | no | no | - |
+| message | 2 | str | no | no | - |
+| expected_branch | 3 | str | yes | no | - |
+| live_branch | 4 | str | yes | no | - |
+| expected_head | 5 | str | yes | no | - |
+| live_head | 6 | str | yes | no | - |
+| expected_merge_head | 7 | str | yes | no | - |
+| live_merge_head | 8 | str | yes | no | - |
+
+### MergeOperationDrift
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | MergeOperationDriftKind | no | no | - |
+| message | 2 | str | no | no | - |
+
+### MergePreservation
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| target_id | 1 | str | no | no | - |
+| path | 2 | str | no | no | - |
+| backup_ref | 3 | str | yes | no | - |
+| backup_commit | 4 | str | yes | no | - |
+| stash_id | 5 | str | yes | no | - |
+| stash_object_id | 6 | str | yes | no | - |
+
+### MergeRepoSummary
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| target_id | 1 | str | no | no | - |
+| target_kind | 2 | TargetKind | no | no | - |
+| path | 3 | str | no | no | - |
+| source_ref | 4 | str | no | no | - |
+| source_commit | 5 | str | no | no | - |
+| target_branch | 6 | str | no | no | - |
+| before_commit | 7 | str | no | no | - |
+| resulting_commit | 8 | str | yes | no | - |
+| live_commit | 9 | str | yes | no | - |
+| state | 10 | MergeParticipantState | no | no | - |
+| predicted | 11 | MergeAnalysisKind | yes | no | - |
+| prediction_complete | 12 | bool | yes | no | - |
+| conflict_paths | 13 | List<str> | no | no | - |
+| continue_eligible | 14 | bool | yes | no | - |
+| abort_eligible | 15 | bool | yes | no | - |
+| drift | 16 | List<MergeParticipantDrift> | no | no | - |
+| error | 17 | GwzError | yes | no | - |
+
 ### PlannedChange
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -893,6 +1067,7 @@ has no service method and no handler that executes commands.
 | attribution | 12 | OperationAttribution | yes | no | - |
 | progress | 13 | GitTransferProgress | yes | no | - |
 | target_kind | 14 | TargetKind | yes | no | - |
+| merge_state | 15 | MergeOperationState | yes | no | - |
 
 ### OperationResult
 
@@ -1143,6 +1318,18 @@ has no service method and no handler that executes commands.
 | start_ref | 4 | str | yes | no | - |
 | switch_after_create | 5 | bool | yes | no | - |
 
+### MergeRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+| op | 2 | MergeOp | no | no | - |
+| source_ref | 3 | str | yes | no | - |
+| merge_id | 4 | str | yes | no | - |
+| mode | 5 | MergeMode | yes | no | - |
+| message | 6 | str | yes | no | - |
+| preserve | 7 | bool | yes | no | - |
+
 ### CreateWorkspaceResponse
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -1295,6 +1482,20 @@ has no service method and no handler that executes commands.
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
 | repos | 2 | List<BranchRepoSummary> | yes | no | - |
+
+### MergeResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+| merge_id | 2 | str | yes | no | - |
+| state | 3 | MergeOperationState | no | no | - |
+| open | 4 | bool | no | no | - |
+| participant_counts | 5 | MergeParticipantCounts | no | no | - |
+| repos | 6 | List<MergeRepoSummary> | no | no | - |
+| operation_drift | 7 | List<MergeOperationDrift> | no | no | - |
+| preservation | 8 | List<MergePreservation> | yes | no | - |
+| publication_step | 9 | MergePublicationStep | yes | no | - |
 
 ### DiffComparison
 

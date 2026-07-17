@@ -15,7 +15,7 @@ python protocol/regen.py
 ```
 
 `protocol/regen.py` provisions a `uv` virtual environment, installs the released
-`taut-proto` package, and regenerates:
+`taut-proto==0.8.1` interface-checkpoint release, and regenerates:
 
 - `src/protocol/generated.rs`;
 - `src/cbor.rs`;
@@ -30,7 +30,7 @@ Useful options:
 ```text
 python protocol/regen.py --check
 python protocol/regen.py --recreate
-python protocol/regen.py --taut-version 0.6.0
+python protocol/regen.py --taut-version 0.8.1
 python protocol/regen.py --venv protocol/.regen-venv
 ```
 

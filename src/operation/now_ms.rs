@@ -31,6 +31,7 @@ impl RuntimeEventSink {
             attribution: self.context.attribution.as_ref().map(Into::into),
             target_kind,
             progress: None,
+            merge_state: None,
         };
         state.next_sequence += 1;
         state.events.push_back(event);

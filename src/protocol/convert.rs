@@ -42,6 +42,15 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::StashIncomplete => Self::StashIncomplete,
             model::ErrorCode::StashConflict => Self::StashConflict,
             model::ErrorCode::SourceIdentityMismatch => Self::SourceIdentityMismatch,
+            model::ErrorCode::DeprecatedOperation => Self::DeprecatedOperation,
+            model::ErrorCode::MergeValidationFailed => Self::MergeValidationFailed,
+            model::ErrorCode::MergeIdMismatch => Self::MergeIdMismatch,
+            model::ErrorCode::MergeDrift => Self::MergeDrift,
+            model::ErrorCode::OpenOperation => Self::OpenOperation,
+            model::ErrorCode::MergeRecoveryRequired => Self::MergeRecoveryRequired,
+            model::ErrorCode::MergePhaseUnsupported => Self::MergePhaseUnsupported,
+            model::ErrorCode::RootMergeNotYetSupported => Self::RootMergeNotYetSupported,
+            model::ErrorCode::MergeRecordUnreadable => Self::MergeRecordUnreadable,
         }
     }
 }

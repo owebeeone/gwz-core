@@ -45,6 +45,15 @@ pub enum ErrorCode {
     StashIncomplete,
     StashConflict,
     SourceIdentityMismatch,
+    DeprecatedOperation,
+    MergeValidationFailed,
+    MergeIdMismatch,
+    MergeDrift,
+    OpenOperation,
+    MergeRecoveryRequired,
+    MergePhaseUnsupported,
+    RootMergeNotYetSupported,
+    MergeRecordUnreadable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

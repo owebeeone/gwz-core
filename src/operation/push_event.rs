@@ -34,6 +34,7 @@ pub enum ActionKind {
     CloneRepoMember,
     DetachRepoMember,
     AttachRepoMember,
+    Merge,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,6 +116,7 @@ pub enum OperationRequest {
     CloneRepoMember(crate::CloneRepoMemberRequest),
     DetachRepoMember(crate::DetachRepoMemberRequest),
     AttachRepoMember(crate::AttachRepoMemberRequest),
+    Merge(crate::MergeRequest),
 }
 
 impl OperationRequest {
@@ -143,6 +145,7 @@ impl OperationRequest {
             Self::CloneRepoMember(request) => (ActionKind::CloneRepoMember, &request.meta),
             Self::DetachRepoMember(request) => (ActionKind::DetachRepoMember, &request.meta),
             Self::AttachRepoMember(request) => (ActionKind::AttachRepoMember, &request.meta),
+            Self::Merge(request) => (ActionKind::Merge, &request.meta),
         };
         OperationContext::from_meta(operation_id.into(), action, meta)
     }
@@ -342,6 +345,28 @@ impl<'a> EventEmitter<'a> {
         message: Option<String>,
         progress: Option<crate::GitTransferProgress>,
     ) {
+        self.emit_with_merge_state(
+            kind,
+            severity,
+            member_id,
+            member_path,
+            message,
+            progress,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)] // Mirrors the protocol event envelope fields.
+    fn emit_with_merge_state(
+        &self,
+        kind: crate::EventKind,
+        severity: crate::Severity,
+        member_id: Option<String>,
+        member_path: Option<String>,
+        message: Option<String>,
+        progress: Option<crate::GitTransferProgress>,
+        merge_state: Option<crate::MergeOperationState>,
+    ) {
         let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         let target_kind = member_id.as_ref().map(|_| crate::TargetKind::Member);
         self.sink.deliver(crate::OperationEvent {
@@ -359,7 +384,20 @@ impl<'a> EventEmitter<'a> {
             attribution: self.attribution.clone(),
             progress,
             target_kind,
+            merge_state,
         });
+    }
+
+    pub fn operation_state_changed(&self, state: crate::MergeOperationState) {
+        self.emit_with_merge_state(
+            crate::EventKind::OperationStateChanged,
+            crate::Severity::Info,
+            None,
+            None,
+            Some(format!("merge operation state changed to {state:?}")),
+            None,
+            Some(state),
+        );
     }
 
     pub fn operation_started(&self) {
@@ -471,6 +509,7 @@ pub(crate) fn push_event(state: &mut OperationState, context: &OperationContext)
         attribution: context.attribution.as_ref().map(Into::into),
         target_kind: None,
         progress: None,
+        merge_state: None,
     };
     state.next_sequence += 1;
     state.events.push_back(reset);
@@ -553,6 +592,7 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::CloneRepoMember => Self::CloneRepoMember,
             ActionKind::DetachRepoMember => Self::DetachRepoMember,
             ActionKind::AttachRepoMember => Self::AttachRepoMember,
+            ActionKind::Merge => Self::Merge,
         }
     }
 }

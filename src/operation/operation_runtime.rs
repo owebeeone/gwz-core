@@ -197,6 +197,22 @@ mod tests {
     }
 
     #[test]
+    fn merge_state_change_event_carries_structured_state() {
+        let context = sample_context(false);
+        let sink = CollectingSink::default();
+        let emitter = EventEmitter::new(&context, &sink, 0);
+
+        emitter.operation_state_changed(crate::MergeOperationState::Finalizing);
+
+        let events = sink.take();
+        assert_eq!(events[0].kind, crate::EventKind::OperationStateChanged);
+        assert_eq!(
+            events[0].merge_state,
+            Some(crate::MergeOperationState::Finalizing)
+        );
+    }
+
+    #[test]
     fn dry_run_plan_reports_member_plans_without_execution() {
         let context = sample_context(true);
         let plan = OperationPlan {

@@ -29,7 +29,7 @@ Usage:
     python protocol/regen.py                 # provision venv if needed, regenerate + write
     python protocol/regen.py --check         # verify only: no writes; nonzero exit on drift (CI-style gate)
     python protocol/regen.py --recreate      # rebuild the uv venv from scratch
-    python protocol/regen.py --taut-version 0.6.0   # pin taut-proto (default: latest on PyPI)
+    python protocol/regen.py --taut-version 0.8.1   # explicit interface-checkpoint override
     python protocol/regen.py --venv PATH     # override the venv location
 """
 
@@ -55,6 +55,7 @@ GEN_COPIES = [
     # "ext.rs" is emitted by --with-runtime but deliberately not vendored (see module docstring).
 ]
 DEFAULT_VENV = GWZ_CORE / "protocol" / ".regen-venv"
+TAUT_GENERATOR_VERSION = "0.8.1"
 
 
 def fail(msg: str):
@@ -82,7 +83,7 @@ def run(cmd, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run([str(c) for c in cmd], **kwargs)
 
 
-def ensure_venv(venv: Path, taut_version: str | None, recreate: bool) -> None:
+def ensure_venv(venv: Path, taut_version: str, recreate: bool) -> None:
     """Create the uv venv (if needed) and install taut-proto into it."""
     uv = shutil.which("uv")
     if not uv:
@@ -99,11 +100,8 @@ def ensure_venv(venv: Path, taut_version: str | None, recreate: bool) -> None:
         if run([uv, "venv", venv]).returncode != 0:
             fail(f"failed to create uv venv at {venv}")
 
-    spec = f"taut-proto=={taut_version}" if taut_version else "taut-proto"
-    install = [uv, "pip", "install", "--python", venv]
-    if not taut_version:
-        install.append("--upgrade")  # bare runs track the latest release
-    install.append(spec)
+    spec = f"taut-proto=={taut_version}"
+    install = [uv, "pip", "install", "--python", venv, spec]
     if run(install).returncode != 0:
         fail("failed to install taut-proto into the venv")
 
@@ -218,8 +216,8 @@ def main() -> None:
                         help="verify only; write nothing; nonzero exit on drift")
     parser.add_argument("--recreate", action="store_true",
                         help="rebuild the uv venv from scratch")
-    parser.add_argument("--taut-version", default=None,
-                        help="pin taut-proto to this version (default: latest on PyPI)")
+    parser.add_argument("--taut-version", default=TAUT_GENERATOR_VERSION,
+                        help=f"taut-proto interface checkpoint (default: {TAUT_GENERATOR_VERSION})")
     parser.add_argument("--venv", type=Path, default=DEFAULT_VENV,
                         help=f"venv location (default: {DEFAULT_VENV})")
     args = parser.parse_args()

@@ -58,7 +58,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install taut-proto
-        run: python -m pip install --upgrade pip taut-proto
+        run: python -m pip install --upgrade pip "taut-proto==0.8.1"
       - name: Format
         if: runner.os == 'Linux'
         shell: bash

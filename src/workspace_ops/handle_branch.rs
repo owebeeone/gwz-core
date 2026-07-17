@@ -16,6 +16,12 @@ pub fn handle_branch<B>(
 where
     B: GitBackend,
 {
+    if request.op == crate::BranchOp::Merge {
+        return Err(ModelError::new(
+            ErrorCode::DeprecatedOperation,
+            "BranchOp.merge is deprecated; use the first-class merge service method",
+        ));
+    }
     let context = OperationRequest::Branch(request.clone()).context(operation_id.into())?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let _guard = if request.op == crate::BranchOp::List || request.meta.dry_run.unwrap_or(false) {

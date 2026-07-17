@@ -580,12 +580,16 @@ requests that require force unless an explicit force/delete policy is added.
 
 ### REQ-089: Merge Selection
 
-GWZ Core v0 MUST support selection-wide Git merge operations for selected
-members.
+GWZ Core v0 MUST retain the historical selection-wide branch-merge behavior
+only as a compatibility entry point. That syntax MUST lower to the first-class
+merge lifecycle once available; it MUST NOT remain a second merge
+implementation. Direct protocol use of `BranchOp.merge` MUST return a typed
+deprecation error naming the first-class merge method.
 
 Merge operations MUST reject the whole operation before mutation if any selected
 member is dirty, unmaterialized, detached, unborn, missing the source ref, or in
-an existing merge/rebase state, unless explicit partial policy is requested.
+an existing merge/rebase state. Merge MUST reject partial or skip policy until a
+separate explicit policy is specified.
 Content conflicts discovered by Git during merge MUST be reported as conflicted
 member results with conflict paths rather than hidden as generic failure.
 
@@ -626,6 +630,78 @@ record.
 
 Stash mutations and branch mutations MUST be serialized by a workspace-wide
 cross-process mutator lock in addition to per-member mutation serialization.
+
+### REQ-089C: First-Class Merge Protocol
+
+GWZ Core MUST expose a first-class merge request, response, operation action,
+and lifecycle operations for start, resume, abort, status, and garbage
+collection. Rust, Python, human, JSON, and JSONL surfaces MUST lower to and
+report the same core semantics.
+
+### REQ-089D: Merge Selection And Frozen Plan
+
+Merge start with no explicit selection MUST select all active materialized
+members and MUST exclude the workspace root. The root MUST participate only
+when explicitly selected as `@root` and MUST execute after every selected
+member. Core MUST freeze the ordered participant set and each participant's
+source commit, target branch, and before commit before mutation.
+
+### REQ-089E: Merge Evidence Before Mutation
+
+After complete preflight and before the first Git mutation, core MUST atomically
+persist a recoverable operation record containing schema/tool versions,
+baseline manifest and lock digests, frozen targets, and participant plans. It
+MUST atomically record every subsequent participant and operation transition.
+
+### REQ-089F: Merge Lifecycle And Drift
+
+The durable contract MUST distinguish executing, awaiting-resolution, halted,
+finalizing, preserving, rolling-back, completed, aborted, and
+recovery-required operation states, and MUST distinguish every planned,
+successful, conflicted, failed, unattempted, continued, aborted, or rolled-back
+participant outcome. Status and recovery MUST report structured participant
+and operation drift rather than silently adopting live state.
+
+### REQ-089G: Open Merge Composition And Gate
+
+From the durable-lifecycle milestone onward, the accepted workspace lock MUST
+remain at its pre-merge baseline while a merge is open. A single central
+pre-dispatch gate MUST block unrelated mutating or publishing operations while
+allowing the specified read-only and merge-recovery operations. Recovery MUST
+remain discoverable before parsing live root metadata that may be conflicted.
+
+### REQ-089H: Continue And Retry
+
+Merge resume MUST preflight the whole frozen operation before mutation. It MAY
+commit an exactly matching resolved native merge and MAY retry a failed or
+unattempted participant only from its classified unchanged retry point. It MUST
+reject ambiguous mutation, unrelated dirt, missing repositories, or changed
+branches, heads, target refs, or native merge state.
+
+### REQ-089I: Coordinated Abort
+
+Merge abort MUST preflight every required rollback before changing any
+participant, then unwind mutations in reverse order with checked ref updates
+and native merge aborts. Post-merge user work or other drift in any participant
+that must be changed MUST reject the entire default abort without partial
+rollback. Interrupted rollback MUST be resumable from durable participant
+state.
+
+### REQ-089J: Idempotent Merge Finalization
+
+After all participants succeed, core MUST enter finalizing before publication,
+verify recorded results, build candidate composition data without replacing the
+baseline, create mandatory scoped root merge evidence for a changed merge, and
+publish and verify the accepted lock exactly once. Repeated recovery after a
+partial finalization MUST be idempotent.
+
+### REQ-089K: Merge Preservation And Retention
+
+Explicit preserve-abort MUST create and verify all eligible backup refs and
+coordinated stash evidence before rollback and MUST never discard unsupported
+or ambiguous user work. Closed ordinary records MAY be retained by bounded
+policy, but records owning preservation evidence MUST remain until explicit,
+verified cleanup.
 
 ## Message Protocol Requirements
 

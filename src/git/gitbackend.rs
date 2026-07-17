@@ -49,6 +49,77 @@ pub trait GitBackend {
         branch: &str,
         upstream_ref: &str,
     ) -> ModelResult<GitIntegrateResult>;
+    /// Resolve source/target commits and classify the merge without mutation.
+    fn merge_analysis(
+        &self,
+        _path: &Path,
+        _target_branch: &str,
+        _source: &str,
+    ) -> ModelResult<GitMergeAnalysis> {
+        unsupported_backend("merge_analysis")
+    }
+    /// Optional M4 in-memory tree merge; never writes an index or worktree.
+    fn merge_simulate(
+        &self,
+        _path: &Path,
+        _target_commit: &str,
+        _source_commit: &str,
+    ) -> ModelResult<GitMergeSimulation> {
+        unsupported_backend("merge_simulate")
+    }
+    /// Observe native merge metadata, including the exact MERGE_HEAD.
+    fn merge_state(&self, _path: &Path) -> ModelResult<Option<GitNativeMergeState>> {
+        unsupported_backend("merge_state")
+    }
+    /// Abort only the expected native merge and verify restoration to before.
+    fn abort_merge(
+        &self,
+        _path: &Path,
+        _expected_before: &str,
+        _expected_merge_head: &str,
+    ) -> ModelResult<()> {
+        unsupported_backend("abort_merge")
+    }
+    /// Move an attached branch only when its ref still equals expected_current.
+    fn set_branch_target_checked(
+        &self,
+        _path: &Path,
+        _branch: &str,
+        _expected_current: &str,
+        _target: &str,
+    ) -> ModelResult<GitUpdateResult> {
+        unsupported_backend("set_branch_target_checked")
+    }
+    /// Create and verify an exact local preservation ref.
+    fn create_backup_ref(
+        &self,
+        _path: &Path,
+        _name: &str,
+        _target: &str,
+    ) -> ModelResult<GitBackupRefResult> {
+        unsupported_backend("create_backup_ref")
+    }
+    /// Save staged, unstaged, and optionally untracked preservation work.
+    fn stash_for_merge_preservation(
+        &self,
+        _path: &Path,
+        _merge_id: &str,
+        _include_untracked: bool,
+    ) -> ModelResult<GitStashPushResult> {
+        unsupported_backend("stash_for_merge_preservation")
+    }
+    /// Commit only the supplied GWZ-owned candidate files through an isolated
+    /// index and checked root ref update. `expected_head=None` means the root
+    /// ref must be unborn and the first tree contains only candidate files.
+    fn commit_gwz_paths_checked(
+        &self,
+        _root: &Path,
+        _expected_head: Option<&str>,
+        _candidate_files: &[GitCandidateFile],
+        _message: &str,
+    ) -> ModelResult<GitScopedCommitResult> {
+        unsupported_backend("commit_gwz_paths_checked")
+    }
     /// Integrate `upstream_ref` into `branch` by **rebase** (porcelain `git rebase`):
     /// replay the branch's commits onto the upstream tip. Fast-forwards when strictly
     /// behind. On conflict, leave `.git/rebase-merge/` in place (do NOT abort) so the
@@ -280,6 +351,13 @@ pub trait GitBackend {
     fn tag_fetch(&self, path: &Path, remote: &str) -> ModelResult<GitFetchResult>;
 }
 
+fn unsupported_backend<T>(method: &str) -> ModelResult<T> {
+    Err(ModelError::new(
+        ErrorCode::UnsupportedOperation,
+        format!("{method} is not implemented by this GitBackend"),
+    ))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CredentialHelperPolicy {
     Disabled,
@@ -308,6 +386,41 @@ impl Git2Backend {
 impl Default for Git2Backend {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod merge_interface_tests {
+    use super::*;
+
+    #[test]
+    fn i0_merge_primitives_have_typed_unsupported_defaults() {
+        let backend = Git2Backend::new();
+        let error = backend
+            .merge_analysis(Path::new("missing"), "main", "feature/x")
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedOperation);
+        let error = backend
+            .merge_simulate(Path::new("missing"), "before", "source")
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedOperation);
+    }
+
+    #[test]
+    fn status_contract_distinguishes_recovery_relevant_dirt() {
+        let status = GitStatus {
+            staged: 1,
+            unstaged: 2,
+            untracked: 3,
+            ignored: 4,
+            unresolved: 5,
+            ..GitStatus::default()
+        };
+        assert_eq!(
+            (status.staged, status.unstaged, status.untracked),
+            (1, 2, 3)
+        );
+        assert_eq!((status.ignored, status.unresolved), (4, 5));
     }
 }
 
@@ -448,6 +561,62 @@ pub struct GitIntegrateResult {
     pub conflicts: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitMergeAnalysisKind {
+    UpToDate,
+    FastForward,
+    TrueMerge,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitMergeAnalysis {
+    pub target_branch: String,
+    pub target_commit: String,
+    pub source_commit: String,
+    pub kind: GitMergeAnalysisKind,
+    pub commit_identity_required: bool,
+    /// False for a true merge that has not run the optional simulation seam.
+    pub prediction_complete: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitMergeSimulation {
+    Clean,
+    Conflicts(Vec<String>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitNativeMergeState {
+    pub merge_head: String,
+    pub conflict_paths: Vec<String>,
+    pub unresolved_entries: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitBackupRefResult {
+    pub name: String,
+    pub target: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitCandidateFile {
+    pub path: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitCandidateHash {
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitScopedCommitResult {
+    pub commit: String,
+    pub tree: String,
+    pub candidate_hashes: Vec<GitCandidateHash>,
+}
+
 impl GitIntegrateResult {
     pub(crate) fn clean(commit: String) -> Self {
         Self {
@@ -499,6 +668,8 @@ pub struct GitStatus {
     pub staged: usize,
     pub unstaged: usize,
     pub untracked: usize,
+    pub ignored: usize,
+    pub unresolved: usize,
     pub files: Vec<GitFileStatus>,
 }
 
@@ -1093,11 +1264,18 @@ impl GitBackend for Git2Backend {
             if status.contains(git2::Status::WT_NEW) {
                 out.untracked += 1;
             }
+            if status.contains(git2::Status::IGNORED) {
+                out.ignored += 1;
+            }
+            if status.contains(git2::Status::CONFLICTED) {
+                out.unresolved += 1;
+            }
             if let Some(file) = git_file_status(&entry) {
                 out.files.push(file);
             }
         }
-        out.is_dirty = out.staged > 0 || out.unstaged > 0 || out.untracked > 0;
+        out.is_dirty =
+            out.staged > 0 || out.unstaged > 0 || out.untracked > 0 || out.unresolved > 0;
         Ok(out)
     }
 

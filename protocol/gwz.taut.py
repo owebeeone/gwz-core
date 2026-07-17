@@ -97,6 +97,10 @@ SCHEMA = schema(
         method("branch", role="in",
                params=Params(request=Ref.BranchRequest),
                out=Ref.BranchResponse),
+        # Coordinate a recoverable Git merge across the frozen workspace selection.
+        method("merge", role="in",
+               params=Params(request=Ref.MergeRequest),
+               out=Ref.MergeResponse),
         # Stream operation events by operation id.
         method("events.subscribe", role="out", shape="log",
                params=Params(operation_id=STR),
@@ -150,7 +154,8 @@ SCHEMA = schema(
          diff=21,
          clone_repo_member=22,
          detach_repo_member=23,
-         attach_repo_member=24),
+         attach_repo_member=24,
+         merge=25),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -197,6 +202,83 @@ SCHEMA = schema(
          create=1,
          delete=2,
          merge=3),
+
+    # Lifecycle operation for the first-class `gwz merge` service method.
+    MergeOp=Enum(
+         start=0,
+         resume=1,
+         abort=2,
+         status=3,
+         gc=4),
+
+    # Requested integration strategy. Non-normal strategies are reserved until M4.
+    MergeMode=Enum(
+         normal=0,
+         ff_only=1,
+         no_ff=2),
+
+    # Read-only prediction returned by merge analysis and dry-run planning.
+    MergeAnalysisKind=Enum(
+         up_to_date=0,
+         fast_forward=1,
+         true_merge=2,
+         unknown=3),
+
+    # Durable lifecycle for one frozen merge participant.
+    MergeParticipantState=Enum(
+         planned=0,
+         up_to_date=1,
+         fast_forwarded=2,
+         merged=3,
+         conflicted=4,
+         failed=5,
+         unattempted=6,
+         continued=7,
+         aborted=8,
+         rolled_back=9),
+
+    # Durable lifecycle for the coordinated merge operation.
+    MergeOperationState=Enum(
+         executing=0,
+         awaiting_resolution=1,
+         halted=2,
+         finalizing=3,
+         preserving=4,
+         rolling_back=5,
+         completed=6,
+         aborted=7,
+         recovery_required=8),
+
+    # Participant state that differs from the durable merge record.
+    MergeParticipantDriftKind=Enum(
+         branch_changed=0,
+         head_advanced=1,
+         head_rewound=2,
+         target_ref_changed=3,
+         worktree_modified=4,
+         index_modified=5,
+         merge_state_missing=6,
+         merge_head_changed=7,
+         new_integration_state=8,
+         repository_missing=9),
+
+    # Workspace/record state that differs from the durable merge baseline.
+    MergeOperationDriftKind=Enum(
+         baseline_lock_changed=0,
+         baseline_manifest_changed=1,
+         root_candidate_metadata_invalid=2,
+         root_candidate_state_changed=3,
+         record_unreadable=4),
+
+    # Monotonic publication checkpoint while an operation is finalizing.
+    MergePublicationStep=Enum(
+         not_started=0,
+         validating_results=1,
+         preparing_candidate=2,
+         committing_evidence=3,
+         publishing_candidate=4,
+         verifying_publication=5,
+         complete=6),
 
     # Per-repository branch action result. Merge-only values are appended by B5a.
     BranchActionResult=Enum(
@@ -342,7 +424,8 @@ SCHEMA = schema(
          member_finished=3,
          artifact_written=4,
          operation_finished=5,
-         reset=6),
+         reset=6,
+         operation_state_changed=7),
 
     # Event severity.
     Severity=Enum(
@@ -389,7 +472,16 @@ SCHEMA = schema(
          stash_not_found=33,
          stash_incomplete=34,
          stash_conflict=35,
-         source_identity_mismatch=36),
+         source_identity_mismatch=36,
+         deprecated_operation=37,
+         merge_validation_failed=38,
+         merge_id_mismatch=39,
+         merge_drift=40,
+         open_operation=41,
+         merge_recovery_required=42,
+         merge_phase_unsupported=43,
+         root_merge_not_yet_supported=44,
+         merge_record_unreadable=45),
 
     # ---- diff enums -------------------------------------------------------
     # Which two sides libgit2 compares, resolved per target repo from operands
@@ -880,6 +972,66 @@ SCHEMA = schema(
         # Conflict paths relative to the member repository root.
         conflict_paths=F(16, List(STR))),
 
+    # Counts by durable participant lifecycle state.
+    MergeParticipantCounts=Msg(
+        total=F(1, INT),
+        planned=F(2, INT),
+        up_to_date=F(3, INT),
+        fast_forwarded=F(4, INT),
+        merged=F(5, INT),
+        conflicted=F(6, INT),
+        failed=F(7, INT),
+        unattempted=F(8, INT),
+        continued=F(9, INT),
+        aborted=F(10, INT),
+        rolled_back=F(11, INT)),
+
+    # Structured live-state mismatch for one frozen participant.
+    MergeParticipantDrift=Msg(
+        kind=F(1, Ref.MergeParticipantDriftKind),
+        message=F(2, STR),
+        expected_branch=F(3, STR, optional=True),
+        live_branch=F(4, STR, optional=True),
+        expected_head=F(5, STR, optional=True),
+        live_head=F(6, STR, optional=True),
+        expected_merge_head=F(7, STR, optional=True),
+        live_merge_head=F(8, STR, optional=True)),
+
+    # Structured workspace/record mismatch for a coordinated merge.
+    MergeOperationDrift=Msg(
+        kind=F(1, Ref.MergeOperationDriftKind),
+        message=F(2, STR)),
+
+    # Durable evidence created by an explicit preserve-abort attempt.
+    MergePreservation=Msg(
+        target_id=F(1, STR),
+        path=F(2, STR),
+        backup_ref=F(3, STR, optional=True),
+        backup_commit=F(4, STR, optional=True),
+        stash_id=F(5, STR, optional=True),
+        stash_object_id=F(6, STR, optional=True)),
+
+    # Plan, result, and live recovery projection for one merge participant.
+    MergeRepoSummary=Msg(
+        target_id=F(1, STR),
+        target_kind=F(2, Ref.TargetKind),
+        path=F(3, STR),
+        source_ref=F(4, STR),
+        source_commit=F(5, STR),
+        target_branch=F(6, STR),
+        before_commit=F(7, STR),
+        resulting_commit=F(8, STR, optional=True),
+        live_commit=F(9, STR, optional=True),
+        state=F(10, Ref.MergeParticipantState),
+        predicted=F(11, Ref.MergeAnalysisKind, optional=True),
+        # False means a true-merge prediction did not simulate content conflicts.
+        prediction_complete=F(12, BOOL, optional=True),
+        conflict_paths=F(13, List(STR)),
+        continue_eligible=F(14, BOOL, optional=True),
+        abort_eligible=F(15, BOOL, optional=True),
+        drift=F(16, List(Ref.MergeParticipantDrift)),
+        error=F(17, Ref.GwzError, optional=True)),
+
     # Planned member mutation returned by dry-run or accepted responses.
     PlannedChange=Msg(
         action=F(1, Ref.PlannedAction),
@@ -933,7 +1085,9 @@ SCHEMA = schema(
         # Git transfer counters for member_progress events.
         progress=F(13, Ref.GitTransferProgress, optional=True),
         # Concrete target kind for member_id/member_path when present.
-        target_kind=F(14, Ref.TargetKind, optional=True)),
+        target_kind=F(14, Ref.TargetKind, optional=True),
+        # Structured state for operation_state_changed events.
+        merge_state=F(15, Ref.MergeOperationState, optional=True)),
 
     # Final operation record returned by operation.result.
     OperationResult=Msg(
@@ -1182,6 +1336,20 @@ SCHEMA = schema(
         # Switch selected members to the branch after create.
         switch_after_create=F(5, BOOL, optional=True)),
 
+    # Coordinate or inspect a durable workspace merge lifecycle.
+    MergeRequest=Msg(
+        meta=F(1, Ref.RequestMeta),
+        op=F(2, Ref.MergeOp),
+        # Required only for start; independently resolved in every participant.
+        source_ref=F(3, STR, optional=True),
+        # Optional recovery/archived-record guard; forbidden for start.
+        merge_id=F(4, STR, optional=True),
+        mode=F(5, Ref.MergeMode, optional=True),
+        # Reserved until the custom-message delivery phase.
+        message=F(6, STR, optional=True),
+        # Accepted only for abort; true is reserved until preserve-abort lands.
+        preserve=F(7, BOOL, optional=True)),
+
     # ---- action responses -------------------------------------------------
     # Response wrapper for create_workspace.
     CreateWorkspaceResponse=Msg(
@@ -1265,6 +1433,18 @@ SCHEMA = schema(
     BranchResponse=Msg(
         response=F(1, Ref.ResponseEnvelope),
         repos=F(2, List(Ref.BranchRepoSummary), optional=True)),
+    # Response wrapper for every merge lifecycle operation.
+    MergeResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope),
+        merge_id=F(2, STR, optional=True),
+        state=F(3, Ref.MergeOperationState),
+        # Derived convenience projection; state remains authoritative.
+        open=F(4, BOOL),
+        participant_counts=F(5, Ref.MergeParticipantCounts),
+        repos=F(6, List(Ref.MergeRepoSummary)),
+        operation_drift=F(7, List(Ref.MergeOperationDrift)),
+        preservation=F(8, List(Ref.MergePreservation), optional=True),
+        publication_step=F(9, Ref.MergePublicationStep, optional=True)),
 
     # ---- diff request messages --------------------------------------------
     # One resolved comparison for one target repo: kind + resolved endpoints.

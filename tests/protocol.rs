@@ -248,6 +248,84 @@ fn stash_response_round_trips_bundle_projection() {
 }
 
 #[test]
+fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
+    let request = gwz_core::MergeRequest {
+        meta: request_meta("req-merge"),
+        op: gwz_core::MergeOp::Start,
+        source_ref: Some("feature/protocol".to_owned()),
+        merge_id: None,
+        mode: Some(gwz_core::MergeMode::Normal),
+        message: None,
+        preserve: None,
+    };
+    assert_eq!(
+        round_trip(
+            &request,
+            gwz_core::MergeRequest::to_cbor,
+            gwz_core::MergeRequest::from_cbor,
+        ),
+        request
+    );
+
+    let parity_request = gwz_core::MergeRequest {
+        meta: request_meta("req_merge"),
+        source_ref: Some("feature/x".to_owned()),
+        ..request.clone()
+    };
+    let bytes = encode(&parity_request.to_cbor());
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        hex,
+        "a701a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f6"
+    );
+
+    let response = gwz_core::MergeResponse {
+        response: response_envelope("req-merge", ActionKind::Merge),
+        merge_id: Some("merge_0001".to_owned()),
+        state: gwz_core::MergeOperationState::AwaitingResolution,
+        open: true,
+        participant_counts: gwz_core::MergeParticipantCounts {
+            total: 1,
+            conflicted: 1,
+            ..gwz_core::MergeParticipantCounts::default()
+        },
+        repos: vec![gwz_core::MergeRepoSummary {
+            target_id: "mem_core".to_owned(),
+            target_kind: gwz_core::TargetKind::Member,
+            path: "repos/core".to_owned(),
+            source_ref: "feature/protocol".to_owned(),
+            source_commit: "2222222222222222222222222222222222222222".to_owned(),
+            target_branch: "main".to_owned(),
+            before_commit: "1111111111111111111111111111111111111111".to_owned(),
+            resulting_commit: None,
+            live_commit: Some("1111111111111111111111111111111111111111".to_owned()),
+            state: gwz_core::MergeParticipantState::Conflicted,
+            predicted: Some(gwz_core::MergeAnalysisKind::TrueMerge),
+            prediction_complete: Some(false),
+            conflict_paths: vec!["src/lib.rs".to_owned()],
+            continue_eligible: Some(false),
+            abort_eligible: Some(true),
+            drift: Vec::new(),
+            error: None,
+        }],
+        operation_drift: Vec::new(),
+        preservation: Some(Vec::new()),
+        publication_step: None,
+    };
+    assert_eq!(
+        round_trip(
+            &response,
+            gwz_core::MergeResponse::to_cbor,
+            gwz_core::MergeResponse::from_cbor,
+        ),
+        response
+    );
+}
+
+#[test]
 fn branch_requests_round_trip_for_b4a_ops() {
     let requests = vec![
         BranchRequest {
@@ -606,6 +684,28 @@ fn error_code_wire_values_are_pinned() {
     assert_eq!(GwzErrorCode::StashIncomplete.wire(), 34);
     assert_eq!(GwzErrorCode::StashConflict.wire(), 35);
     assert_eq!(GwzErrorCode::SourceIdentityMismatch.wire(), 36);
+    assert_eq!(GwzErrorCode::DeprecatedOperation.wire(), 37);
+    assert_eq!(GwzErrorCode::MergeValidationFailed.wire(), 38);
+    assert_eq!(GwzErrorCode::MergeIdMismatch.wire(), 39);
+    assert_eq!(GwzErrorCode::MergeDrift.wire(), 40);
+    assert_eq!(GwzErrorCode::OpenOperation.wire(), 41);
+    assert_eq!(GwzErrorCode::MergeRecoveryRequired.wire(), 42);
+    assert_eq!(GwzErrorCode::MergePhaseUnsupported.wire(), 43);
+    assert_eq!(GwzErrorCode::RootMergeNotYetSupported.wire(), 44);
+    assert_eq!(GwzErrorCode::MergeRecordUnreadable.wire(), 45);
+}
+
+#[test]
+fn merge_protocol_wire_values_are_pinned() {
+    assert_eq!(ActionKind::Merge.wire(), 25);
+    assert_eq!(gwz_core::MergeOp::Start.wire(), 0);
+    assert_eq!(gwz_core::MergeOp::Resume.wire(), 1);
+    assert_eq!(gwz_core::MergeOp::Abort.wire(), 2);
+    assert_eq!(gwz_core::MergeOp::Status.wire(), 3);
+    assert_eq!(gwz_core::MergeOp::Gc.wire(), 4);
+    assert_eq!(gwz_core::MergeParticipantState::RolledBack.wire(), 9);
+    assert_eq!(gwz_core::MergeOperationState::RecoveryRequired.wire(), 8);
+    assert_eq!(EventKind::OperationStateChanged.wire(), 7);
 }
 
 #[test]
