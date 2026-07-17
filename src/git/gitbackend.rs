@@ -50,6 +50,10 @@ pub trait GitBackend {
         upstream_ref: &str,
     ) -> ModelResult<GitIntegrateResult>;
     /// Resolve source/target commits and classify the merge without mutation.
+    /// Resolution is repository-local, performs no fetch, requires both sides
+    /// to peel to commits, and rejects any native integration already in progress.
+    /// `prediction_complete` is false only for a divergent true merge because
+    /// this primitive deliberately does not modify or simulate the index.
     fn merge_analysis(
         &self,
         _path: &Path,
@@ -394,12 +398,8 @@ mod merge_interface_tests {
     use super::*;
 
     #[test]
-    fn i0_merge_primitives_have_typed_unsupported_defaults() {
+    fn deferred_merge_primitive_has_typed_unsupported_default() {
         let backend = Git2Backend::new();
-        let error = backend
-            .merge_analysis(Path::new("missing"), "main", "feature/x")
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::UnsupportedOperation);
         let error = backend
             .merge_simulate(Path::new("missing"), "before", "source")
             .unwrap_err();
@@ -872,21 +872,41 @@ impl GitBackend for Git2Backend {
         branch: &str,
         upstream_ref: &str,
     ) -> ModelResult<GitIntegrateResult> {
-        let repo = open_repo(path)?;
-        let target = repo.revparse_single(upstream_ref).map_err(git_error)?.id();
-        let annotated = repo.find_annotated_commit(target).map_err(git_error)?;
-        let (analysis, _) = repo.merge_analysis(&[&annotated]).map_err(git_error)?;
-        if analysis.is_up_to_date() {
-            return Ok(GitIntegrateResult::clean(target.to_string()));
+        let status = self.status(path)?;
+        if status.is_dirty {
+            return Err(ModelError::new(
+                ErrorCode::DirtyMember,
+                "merge requires a clean index and worktree",
+            ));
         }
-        if analysis.is_fast_forward() {
-            // `git merge` fast-forwards by default when the branch is strictly behind.
-            let ff = self.fast_forward(path, branch, upstream_ref)?;
+        let plan = self.merge_analysis(path, branch, upstream_ref)?;
+        let observed = self.head(path)?;
+        if observed.branch.as_deref() != Some(branch)
+            || observed.commit.as_deref() != Some(plan.target_commit.as_str())
+        {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!(
+                    "checked-out HEAD does not match target branch '{branch}' at {}",
+                    plan.target_commit
+                ),
+            ));
+        }
+        if plan.kind == GitMergeAnalysisKind::UpToDate {
+            return Ok(GitIntegrateResult::clean(plan.target_commit));
+        }
+        if plan.kind == GitMergeAnalysisKind::FastForward {
+            let ff = self.fast_forward(path, branch, &plan.source_commit)?;
+            verify_merge_result(self, path, branch, &plan.source_commit)?;
             return Ok(GitIntegrateResult {
                 commit: ff.commit,
                 conflicts: Vec::new(),
             });
         }
+
+        let repo = open_repo(path)?;
+        let target = git2::Oid::from_str(&plan.source_commit).map_err(git_error)?;
+        let annotated = repo.find_annotated_commit(target).map_err(git_error)?;
 
         // True three-way merge: git2 stages the result into the index + worktree.
         repo.merge(&[&annotated], None, None).map_err(git_error)?;
@@ -898,11 +918,17 @@ impl GitBackend for Git2Backend {
                 .map_err(|err| ModelError::new(ErrorCode::GitCommandFailed, err.to_string()))?;
             let conflicts = conflict_paths(&index)?;
             // AD1 self-verify: the conflict state actually persisted on disk.
-            if conflicts.is_empty() || !open_repo(path)?.index().map_err(git_error)?.has_conflicts()
+            let state = self.merge_state(path)?;
+            let conflict_head = self.head(path)?;
+            if conflicts.is_empty()
+                || conflict_head.commit.as_deref() != Some(plan.target_commit.as_str())
+                || state.as_ref().is_none_or(|state| {
+                    state.merge_head != target.to_string() || state.conflict_paths != conflicts
+                })
             {
                 return Err(ModelError::new(
                     ErrorCode::GitCommandFailed,
-                    "merge reported conflicts but none persisted in the index",
+                    "merge conflict state did not persist with the expected MERGE_HEAD",
                 ));
             }
             return Ok(GitIntegrateResult {
@@ -931,16 +957,89 @@ impl GitBackend for Git2Backend {
                 &[&head_commit, &upstream_commit],
             )
             .map_err(git_error)?;
-        repo.cleanup_state().map_err(git_error)?;
-        // AD1 self-verify: HEAD advanced to the merge commit with no residual conflicts.
-        let observed = self.head(path)?;
-        if observed.commit.as_deref() != Some(merge_oid.to_string().as_str()) {
+        let committed = repo.find_commit(merge_oid).map_err(git_error)?;
+        if committed.parent_count() != 2
+            || committed.parent_id(0).map_err(git_error)? != head_commit.id()
+            || committed.parent_id(1).map_err(git_error)? != target
+        {
             return Err(ModelError::new(
                 ErrorCode::GitCommandFailed,
-                "post-merge HEAD is not the merge commit",
+                "post-merge commit does not have the expected two parents",
             ));
         }
+        repo.cleanup_state().map_err(git_error)?;
+        verify_merge_result(self, path, branch, &merge_oid.to_string())?;
         Ok(GitIntegrateResult::clean(merge_oid.to_string()))
+    }
+
+    fn merge_analysis(
+        &self,
+        path: &Path,
+        target_branch: &str,
+        source: &str,
+    ) -> ModelResult<GitMergeAnalysis> {
+        let repo = open_repo(path)?;
+        ensure_no_integration_in_progress(&repo)?;
+        let target_commit = repo
+            .find_reference(&branch_ref_name(target_branch))
+            .and_then(|reference| reference.peel_to_commit())
+            .map_err(git_error)?
+            .id();
+        let source_commit = resolve_commit_oid(&repo, source)?;
+        let kind = if target_commit == source_commit
+            || repo
+                .graph_descendant_of(target_commit, source_commit)
+                .map_err(git_error)?
+        {
+            GitMergeAnalysisKind::UpToDate
+        } else if repo
+            .graph_descendant_of(source_commit, target_commit)
+            .map_err(git_error)?
+        {
+            GitMergeAnalysisKind::FastForward
+        } else {
+            match repo.merge_base(target_commit, source_commit) {
+                Ok(_) => {}
+                Err(err) if err.code() == git2::ErrorCode::NotFound => {
+                    return Err(ModelError::new(
+                        ErrorCode::GitCommandFailed,
+                        "target and source do not share a merge base",
+                    ));
+                }
+                Err(err) => return Err(git_error(err)),
+            }
+            GitMergeAnalysisKind::TrueMerge
+        };
+        Ok(GitMergeAnalysis {
+            target_branch: target_branch.to_owned(),
+            target_commit: target_commit.to_string(),
+            source_commit: source_commit.to_string(),
+            kind,
+            commit_identity_required: kind == GitMergeAnalysisKind::TrueMerge,
+            prediction_complete: kind != GitMergeAnalysisKind::TrueMerge,
+        })
+    }
+
+    fn merge_state(&self, path: &Path) -> ModelResult<Option<GitNativeMergeState>> {
+        let repo = open_repo(path)?;
+        if repo.state() != git2::RepositoryState::Merge {
+            return Ok(None);
+        }
+        let merge_head =
+            std::fs::read_to_string(repo.path().join("MERGE_HEAD")).map_err(|err| {
+                ModelError::new(
+                    ErrorCode::GitCommandFailed,
+                    format!("failed to read MERGE_HEAD: {err}"),
+                )
+            })?;
+        let merge_oid = resolve_commit_oid(&repo, merge_head.trim())?;
+        let index = repo.index().map_err(git_error)?;
+        let conflict_paths = conflict_paths(&index)?;
+        Ok(Some(GitNativeMergeState {
+            merge_head: merge_oid.to_string(),
+            unresolved_entries: conflict_paths.len(),
+            conflict_paths,
+        }))
     }
 
     fn rebase_onto(
@@ -1718,6 +1817,38 @@ pub(crate) fn resolve_commit_oid(
         .and_then(|object| object.peel_to_commit())
         .map(|commit| commit.id())
         .map_err(git_error)
+}
+
+pub(crate) fn ensure_no_integration_in_progress(repo: &git2::Repository) -> ModelResult<()> {
+    let state = repo.state();
+    if state != git2::RepositoryState::Clean {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            format!("repository has an integration operation in progress: {state:?}"),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_merge_result(
+    backend: &impl GitBackend,
+    path: &Path,
+    branch: &str,
+    expected_commit: &str,
+) -> ModelResult<()> {
+    let observed = backend.head(path)?;
+    let status = backend.status(path)?;
+    if observed.branch.as_deref() != Some(branch)
+        || observed.commit.as_deref() != Some(expected_commit)
+        || status.is_dirty
+        || backend.merge_state(path)?.is_some()
+    {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "post-merge branch, HEAD, worktree, or native state did not match",
+        ));
+    }
+    Ok(())
 }
 
 /// Create `branch` at `oid` when missing. If it exists, require it already points
