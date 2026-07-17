@@ -26,7 +26,12 @@ pub(super) fn handle_start<B: GitBackend>(
     }
     let _guard = WorkspaceMutatorLock::acquire(&root)?;
     let plan = plan_merge(backend, &root, request)?;
-    let mut execution = execute_plan(backend, &root, &plan.participants);
+    let mut execution = execute_plan(
+        backend,
+        &root,
+        &plan.participants,
+        context.attribution.as_ref(),
+    );
     if !execution.observed.is_empty()
         && let Err(error) = advance_m0_lock(backend, &root, &execution.observed)
     {
@@ -45,7 +50,15 @@ pub(super) fn handle_start<B: GitBackend>(
 type Inspection = (GitStatus, GitHeadState, GitMergeAnalysis);
 trait ExecutionBackend {
     fn inspect(&self, path: &Path, branch: &str, source: &str) -> ModelResult<Inspection>;
-    fn merge(&self, path: &Path, branch: &str, source: &str) -> ModelResult<GitIntegrateResult>;
+    fn merge(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_before: &str,
+        source: &str,
+        message: &str,
+        attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitIntegrateResult>;
 }
 impl<B: GitBackend> ExecutionBackend for B {
     fn inspect(&self, path: &Path, branch: &str, source: &str) -> ModelResult<Inspection> {
@@ -55,8 +68,24 @@ impl<B: GitBackend> ExecutionBackend for B {
             self.merge_analysis(path, branch, source)?,
         ))
     }
-    fn merge(&self, path: &Path, branch: &str, source: &str) -> ModelResult<GitIntegrateResult> {
-        GitBackend::merge_upstream(self, path, branch, source)
+    fn merge(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_before: &str,
+        source: &str,
+        message: &str,
+        attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitIntegrateResult> {
+        GitBackend::merge_upstream_checked(
+            self,
+            path,
+            branch,
+            expected_before,
+            source,
+            message,
+            attribution,
+        )
     }
 }
 struct Execution<'a> {
@@ -91,6 +120,7 @@ fn execute_plan<'a, B: ExecutionBackend>(
     backend: &B,
     root: &Path,
     participants: &'a [MergeParticipantPlan],
+    attribution: Option<&crate::model::OperationAttribution>,
 ) -> Execution<'a> {
     let mut execution = Execution {
         rows: Vec::with_capacity(participants.len()),
@@ -98,7 +128,7 @@ fn execute_plan<'a, B: ExecutionBackend>(
         errors: Vec::new(),
     };
     for (index, participant) in participants.iter().enumerate() {
-        match execute_one(backend, root, participant) {
+        match execute_one(backend, root, participant, attribution) {
             Ok((summary, observed)) => {
                 execution.rows.push(summary);
                 execution.observed.extend(observed);
@@ -125,6 +155,7 @@ fn execute_one<'a, B: ExecutionBackend>(
     backend: &B,
     root: &Path,
     plan: &'a MergeParticipantPlan,
+    attribution: Option<&crate::model::OperationAttribution>,
 ) -> ModelResult<(Row<'a>, Option<Observed>)> {
     let path = root.join(&plan.path);
     let (status, head, analysis) =
@@ -143,7 +174,14 @@ fn execute_one<'a, B: ExecutionBackend>(
             format!("member '{}' changed after merge planning", plan.target_id),
         ));
     }
-    let result = backend.merge(&path, &plan.target_branch, &plan.source_commit)?;
+    let result = backend.merge(
+        &path,
+        &plan.target_branch,
+        &plan.before_commit,
+        &plan.source_commit,
+        &plan.commit_message,
+        attribution,
+    )?;
     if !result.conflicts.is_empty() {
         if kind != GitMergeAnalysisKind::TrueMerge || result.commit.is_some() {
             return Err(invariant(
@@ -345,9 +383,19 @@ mod tests {
                 },
             ))
         }
-        fn merge(&self, path: &Path, _: &str, source: &str) -> ModelResult<GitIntegrateResult> {
+        fn merge(
+            &self,
+            path: &Path,
+            _: &str,
+            expected_before: &str,
+            source: &str,
+            message: &str,
+            _: Option<&crate::model::OperationAttribution>,
+        ) -> ModelResult<GitIntegrateResult> {
             let key = key(path);
-            self.calls.borrow_mut().push(format!("{key}:{source}"));
+            self.calls
+                .borrow_mut()
+                .push(format!("{key}:{expected_before}:{source}:{message}"));
             if key == "fail" {
                 self.mutated_before_failure.borrow_mut().push(key.into());
                 return Err(ModelError::new(ErrorCode::GitCommandFailed, "boom"));
@@ -395,10 +443,10 @@ mod tests {
     fn conflict_continues_with_frozen_oids_and_maps_response() {
         let fake = Fake::default();
         let plans = plans(&["conflict", "next"]);
-        let run = execute_plan(&fake, Path::new("."), &plans);
+        let run = execute_plan(&fake, Path::new("."), &plans, None);
         assert_eq!(run.rows[0].state, PState::Conflicted);
         assert_eq!(run.rows[1].state, PState::Merged);
-        assert_eq!(fake.calls.borrow()[1], "next:source-next");
+        assert_eq!(fake.calls.borrow()[1], "next:before-next:source-next:merge");
         let repos = run.rows.into_iter().map(|r| summary(r, "x")).collect();
         let response = merge_response(&context(false), repos, run.errors).unwrap();
         assert_eq!(response.state, OpState::AwaitingResolution);
@@ -417,13 +465,16 @@ mod tests {
     fn unexpected_failure_stops_and_marks_later_unattempted() {
         let fake = Fake::default();
         let plans = plans(&["first", "fail", "later"]);
-        let run = execute_plan(&fake, Path::new("."), &plans);
+        let run = execute_plan(&fake, Path::new("."), &plans, None);
         assert_eq!(run.rows[0].state, PState::Merged);
         assert_eq!(run.rows[1].state, PState::Failed);
         assert_eq!(run.rows[2].state, PState::Unattempted);
         assert_eq!(
             *fake.calls.borrow(),
-            ["first:source-first", "fail:source-fail"]
+            [
+                "first:before-first:source-first:merge",
+                "fail:before-fail:source-fail:merge"
+            ]
         );
         assert_eq!(*fake.mutated_before_failure.borrow(), ["fail"]);
         let repos = run

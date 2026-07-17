@@ -111,6 +111,55 @@ fn first_class_merge_fast_forwards_and_advances_the_m0_lock() {
 }
 
 #[test]
+fn first_class_true_merge_uses_request_git_identities_and_planned_message() {
+    let temp = TempDir::new("merge-start-identity");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-identity-source");
+    let member = temp.path().join("remote");
+    let (base, _) = feature_commit(&backend, &member, "source.txt", "source\n");
+    commit_file(
+        &member,
+        "local.txt",
+        "local\n",
+        "local",
+        &[git2::Oid::from_str(&base).unwrap()],
+    )
+    .unwrap();
+    let mut request = request(false);
+    request.meta.attribution = Some(crate::OperationAttribution {
+        actor: None,
+        git_author: Some(crate::GitObjectIdentity {
+            name: "Merge Author".to_owned(),
+            email: "author@example.invalid".to_owned(),
+            time_ms: Some(1_700_000_000_000),
+            timezone_offset_minutes: Some(600),
+        }),
+        git_committer: Some(crate::GitObjectIdentity {
+            name: "Merge Committer".to_owned(),
+            email: "committer@example.invalid".to_owned(),
+            time_ms: Some(1_700_000_100_000),
+            timezone_offset_minutes: Some(-300),
+        }),
+        credential_ref: None,
+    });
+
+    let response = handle_merge(&backend, temp.path(), request, "op_merge").unwrap();
+    let oid = git2::Oid::from_str(response.repos[0].resulting_commit.as_deref().unwrap()).unwrap();
+    let repo = git2::Repository::open(&member).unwrap();
+    let commit = repo.find_commit(oid).unwrap();
+
+    assert_eq!(
+        response.repos[0].state,
+        crate::MergeParticipantState::Merged
+    );
+    assert_eq!(commit.message(), Ok("Merge feature/source into main"));
+    assert_eq!(commit.author().name(), Ok("Merge Author"));
+    assert_eq!(commit.author().when().offset_minutes(), 600);
+    assert_eq!(commit.committer().name(), Ok("Merge Committer"));
+    assert_eq!(commit.committer().when().offset_minutes(), -300);
+}
+
+#[test]
 fn first_class_merge_dry_run_does_not_change_head_lock_or_merge_state() {
     let temp = TempDir::new("merge-start-dry");
     let backend = crate::git::Git2Backend::new();
