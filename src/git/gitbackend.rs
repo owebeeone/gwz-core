@@ -49,6 +49,21 @@ pub trait GitBackend {
         branch: &str,
         upstream_ref: &str,
     ) -> ModelResult<GitIntegrateResult>;
+    /// Integrate one exact source commit only while `branch` still points at
+    /// `expected_before`. The implementation holds the branch ref lock across
+    /// revalidation and mutation, uses `message` verbatim for a merge commit,
+    /// and honors request-provided author and committer identities independently.
+    fn merge_upstream_checked(
+        &self,
+        _path: &Path,
+        _branch: &str,
+        _expected_before: &str,
+        _source_commit: &str,
+        _message: &str,
+        _attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitIntegrateResult> {
+        unsupported_backend("merge_upstream_checked")
+    }
     /// Resolve source/target commits and classify the merge without mutation.
     /// Resolution is repository-local, performs no fetch, requires both sides
     /// to peel to commits, and rejects any native integration already in progress.
@@ -880,33 +895,91 @@ impl GitBackend for Git2Backend {
             ));
         }
         let plan = self.merge_analysis(path, branch, upstream_ref)?;
-        let observed = self.head(path)?;
-        if observed.branch.as_deref() != Some(branch)
-            || observed.commit.as_deref() != Some(plan.target_commit.as_str())
-        {
+        self.merge_upstream_checked(
+            path,
+            branch,
+            &plan.target_commit,
+            &plan.source_commit,
+            &format!("Merge {upstream_ref} into {branch}"),
+            None,
+        )
+    }
+
+    fn merge_upstream_checked(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_before: &str,
+        source_commit: &str,
+        message: &str,
+        attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitIntegrateResult> {
+        let expected = git2::Oid::from_str(expected_before).map_err(git_error)?;
+        let source = git2::Oid::from_str(source_commit).map_err(git_error)?;
+        let expected_text = expected.to_string();
+        let source_text = source.to_string();
+        if message.contains('\0') {
             return Err(ModelError::new(
-                ErrorCode::GitCommandFailed,
-                format!(
-                    "checked-out HEAD does not match target branch '{branch}' at {}",
-                    plan.target_commit
-                ),
+                ErrorCode::InvalidRequest,
+                "merge commit message contains a NUL byte",
             ));
-        }
-        if plan.kind == GitMergeAnalysisKind::UpToDate {
-            return Ok(GitIntegrateResult::clean(plan.target_commit));
-        }
-        if plan.kind == GitMergeAnalysisKind::FastForward {
-            let ff = self.fast_forward(path, branch, &plan.source_commit)?;
-            verify_merge_result(self, path, branch, &plan.source_commit)?;
-            return Ok(GitIntegrateResult {
-                commit: ff.commit,
-                conflicts: Vec::new(),
-            });
         }
 
         let repo = open_repo(path)?;
-        let target = git2::Oid::from_str(&plan.source_commit).map_err(git_error)?;
-        let annotated = repo.find_annotated_commit(target).map_err(git_error)?;
+        let local_ref_name = branch_ref_name(branch);
+        let mut transaction = repo.transaction().map_err(git_error)?;
+        transaction.lock_ref(&local_ref_name).map_err(git_error)?;
+
+        ensure_no_integration_in_progress(&repo)?;
+        let status = self.status(path)?;
+        if status.is_dirty {
+            return Err(ModelError::new(
+                ErrorCode::DirtyMember,
+                "merge requires a clean index and worktree",
+            ));
+        }
+        let target = repo
+            .find_reference(&local_ref_name)
+            .and_then(|reference| reference.peel_to_commit())
+            .map_err(git_error)?
+            .id();
+        let observed = repo_head(&repo)?;
+        if target != expected
+            || observed.branch.as_deref() != Some(branch)
+            || observed.commit.as_deref() != Some(expected_text.as_str())
+        {
+            return Err(ModelError::new(
+                ErrorCode::MergeDrift,
+                format!(
+                    "target branch '{branch}' changed before merge mutation; expected {expected_before}"
+                ),
+            ));
+        }
+        let source_object = repo.find_commit(source).map_err(git_error)?;
+        let kind = classify_merge(&repo, expected, source)?;
+
+        if kind == GitMergeAnalysisKind::UpToDate {
+            drop(source_object);
+            drop(transaction);
+            verify_merge_result(self, path, branch, &expected_text)?;
+            return Ok(GitIntegrateResult::clean(expected_text));
+        }
+        if kind == GitMergeAnalysisKind::FastForward {
+            let target_object = repo.find_object(source, None).map_err(git_error)?;
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            checkout.safe();
+            repo.checkout_tree(&target_object, Some(&mut checkout))
+                .map_err(git_error)?;
+            transaction
+                .set_target(&local_ref_name, source, None, "gwz fast-forward")
+                .map_err(git_error)?;
+            transaction.commit().map_err(git_error)?;
+            verify_merge_result(self, path, branch, &source_text)?;
+            return Ok(GitIntegrateResult::clean(source_text));
+        }
+
+        let (author, committer) = merge_signatures(&repo, attribution)?;
+        let annotated = repo.find_annotated_commit(source).map_err(git_error)?;
 
         // True three-way merge: git2 stages the result into the index + worktree.
         repo.merge(&[&annotated], None, None).map_err(git_error)?;
@@ -914,16 +987,16 @@ impl GitBackend for Git2Backend {
         if index.has_conflicts() {
             // Faithful to porcelain: leave the conflict in the worktree and record
             // MERGE_HEAD so the developer can resolve and `git merge --continue`.
-            std::fs::write(repo.path().join("MERGE_HEAD"), format!("{target}\n"))
+            std::fs::write(repo.path().join("MERGE_HEAD"), format!("{source}\n"))
                 .map_err(|err| ModelError::new(ErrorCode::GitCommandFailed, err.to_string()))?;
             let conflicts = conflict_paths(&index)?;
             // AD1 self-verify: the conflict state actually persisted on disk.
             let state = self.merge_state(path)?;
             let conflict_head = self.head(path)?;
             if conflicts.is_empty()
-                || conflict_head.commit.as_deref() != Some(plan.target_commit.as_str())
+                || conflict_head.commit.as_deref() != Some(expected_text.as_str())
                 || state.as_ref().is_none_or(|state| {
-                    state.merge_head != target.to_string() || state.conflict_paths != conflicts
+                    state.merge_head != source.to_string() || state.conflict_paths != conflicts
                 })
             {
                 return Err(ModelError::new(
@@ -940,33 +1013,34 @@ impl GitBackend for Git2Backend {
         // Clean merge: write the merged tree and record the two-parent merge commit.
         let tree_oid = index.write_tree().map_err(git_error)?;
         let tree = repo.find_tree(tree_oid).map_err(git_error)?;
-        let signature = merge_signature(&repo)?;
-        let head_commit = repo
-            .head()
-            .map_err(git_error)?
-            .peel_to_commit()
-            .map_err(git_error)?;
-        let upstream_commit = repo.find_commit(target).map_err(git_error)?;
+        let head_commit = repo.find_commit(expected).map_err(git_error)?;
         let merge_oid = repo
             .commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                &format!("Merge {upstream_ref} into {branch}"),
+                None,
+                &author,
+                &committer,
+                message,
                 &tree,
-                &[&head_commit, &upstream_commit],
+                &[&head_commit, &source_object],
             )
             .map_err(git_error)?;
         let committed = repo.find_commit(merge_oid).map_err(git_error)?;
         if committed.parent_count() != 2
             || committed.parent_id(0).map_err(git_error)? != head_commit.id()
-            || committed.parent_id(1).map_err(git_error)? != target
+            || committed.parent_id(1).map_err(git_error)? != source
+            || committed.message_bytes() != message.as_bytes()
+            || !same_signature(&committed.author(), &author)
+            || !same_signature(&committed.committer(), &committer)
         {
             return Err(ModelError::new(
                 ErrorCode::GitCommandFailed,
-                "post-merge commit does not have the expected two parents",
+                "post-merge commit metadata does not match the checked merge plan",
             ));
         }
+        transaction
+            .set_target(&local_ref_name, merge_oid, Some(&committer), "gwz merge")
+            .map_err(git_error)?;
+        transaction.commit().map_err(git_error)?;
         repo.cleanup_state().map_err(git_error)?;
         verify_merge_result(self, path, branch, &merge_oid.to_string())?;
         Ok(GitIntegrateResult::clean(merge_oid.to_string()))
@@ -986,30 +1060,7 @@ impl GitBackend for Git2Backend {
             .map_err(git_error)?
             .id();
         let source_commit = resolve_commit_oid(&repo, source)?;
-        let kind = if target_commit == source_commit
-            || repo
-                .graph_descendant_of(target_commit, source_commit)
-                .map_err(git_error)?
-        {
-            GitMergeAnalysisKind::UpToDate
-        } else if repo
-            .graph_descendant_of(source_commit, target_commit)
-            .map_err(git_error)?
-        {
-            GitMergeAnalysisKind::FastForward
-        } else {
-            match repo.merge_base(target_commit, source_commit) {
-                Ok(_) => {}
-                Err(err) if err.code() == git2::ErrorCode::NotFound => {
-                    return Err(ModelError::new(
-                        ErrorCode::GitCommandFailed,
-                        "target and source do not share a merge base",
-                    ));
-                }
-                Err(err) => return Err(git_error(err)),
-            }
-            GitMergeAnalysisKind::TrueMerge
-        };
+        let kind = classify_merge(&repo, target_commit, source_commit)?;
         Ok(GitMergeAnalysis {
             target_branch: target_branch.to_owned(),
             target_commit: target_commit.to_string(),
@@ -1830,6 +1881,34 @@ pub(crate) fn ensure_no_integration_in_progress(repo: &git2::Repository) -> Mode
     Ok(())
 }
 
+fn classify_merge(
+    repo: &git2::Repository,
+    target_commit: git2::Oid,
+    source_commit: git2::Oid,
+) -> ModelResult<GitMergeAnalysisKind> {
+    if target_commit == source_commit
+        || repo
+            .graph_descendant_of(target_commit, source_commit)
+            .map_err(git_error)?
+    {
+        return Ok(GitMergeAnalysisKind::UpToDate);
+    }
+    if repo
+        .graph_descendant_of(source_commit, target_commit)
+        .map_err(git_error)?
+    {
+        return Ok(GitMergeAnalysisKind::FastForward);
+    }
+    match repo.merge_base(target_commit, source_commit) {
+        Ok(_) => Ok(GitMergeAnalysisKind::TrueMerge),
+        Err(err) if err.code() == git2::ErrorCode::NotFound => Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "target and source do not share a merge base",
+        )),
+        Err(err) => Err(git_error(err)),
+    }
+}
+
 pub(crate) fn verify_merge_result(
     backend: &impl GitBackend,
     path: &Path,
@@ -2033,6 +2112,63 @@ pub(crate) fn merge_signature(repo: &git2::Repository) -> ModelResult<git2::Sign
         return Ok(signature);
     }
     git2::Signature::now("gwz", "gwz@localhost").map_err(git_error)
+}
+
+fn merge_signatures(
+    repo: &git2::Repository,
+    attribution: Option<&crate::model::OperationAttribution>,
+) -> ModelResult<(git2::Signature<'static>, git2::Signature<'static>)> {
+    if let Some(attribution) = attribution {
+        attribution.validate()?;
+    }
+    let author = match attribution.and_then(|value| value.git_author.as_ref()) {
+        Some(identity) => signature_from_identity(identity)?,
+        None => merge_signature(repo)?,
+    };
+    let committer = match attribution.and_then(|value| value.git_committer.as_ref()) {
+        Some(identity) => signature_from_identity(identity)?,
+        None => merge_signature(repo)?,
+    };
+    Ok((author, committer))
+}
+
+fn signature_from_identity(
+    identity: &crate::model::GitObjectIdentity,
+) -> ModelResult<git2::Signature<'static>> {
+    identity.validate()?;
+    if identity.time_ms.is_none() && identity.timezone_offset_minutes.is_none() {
+        return git2::Signature::now(&identity.name, &identity.email).map_err(git_error);
+    }
+    let seconds = match identity.time_ms {
+        Some(value) => value.0.div_euclid(1_000),
+        None => {
+            let elapsed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| ModelError::new(ErrorCode::InternalError, error.to_string()))?;
+            i64::try_from(elapsed.as_secs()).map_err(|_| {
+                ModelError::new(ErrorCode::InternalError, "system time is out of Git range")
+            })?
+        }
+    };
+    let offset = i32::try_from(identity.timezone_offset_minutes.unwrap_or(0)).map_err(|_| {
+        ModelError::new(
+            ErrorCode::InvalidRequest,
+            "git identity timezone offset is out of range",
+        )
+    })?;
+    git2::Signature::new(
+        &identity.name,
+        &identity.email,
+        &git2::Time::new(seconds, offset),
+    )
+    .map_err(git_error)
+}
+
+fn same_signature(left: &git2::Signature<'_>, right: &git2::Signature<'_>) -> bool {
+    left.name_bytes() == right.name_bytes()
+        && left.email_bytes() == right.email_bytes()
+        && left.when().seconds() == right.when().seconds()
+        && left.when().offset_minutes() == right.when().offset_minutes()
 }
 
 pub(crate) fn remote_fetch_options(

@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use crate::model::ErrorCode;
+use crate::model::{ErrorCode, GitObjectIdentity, OperationAttribution};
+use crate::runtime::clock::TimestampMs;
 
 use super::*;
 
@@ -124,6 +125,155 @@ fn merge_upstream_handles_up_to_date_and_fast_forward_with_exact_results() {
         backend.status(&fast_forward_repo).unwrap(),
         GitStatus::clean()
     );
+}
+
+#[test]
+fn checked_merge_rejects_target_drift_before_mutation() {
+    let temp = TempDir::new("merge-checked-drift");
+    let repo = temp.path().join("repo");
+    let (_, planned_before, source) = seed_divergence(&repo);
+    let planned_oid = git2::Oid::from_str(&planned_before).unwrap();
+    let moved = commit_file(
+        &repo,
+        "drift.txt",
+        "external\n",
+        "external target move",
+        &[planned_oid],
+    )
+    .unwrap();
+    let backend = Git2Backend::new();
+
+    let error = backend
+        .merge_upstream_checked(
+            &repo,
+            "main",
+            &planned_before,
+            &source,
+            "must not be committed",
+            None,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(moved));
+    assert_eq!(backend.status(&repo).unwrap(), GitStatus::clean());
+    assert!(backend.merge_state(&repo).unwrap().is_none());
+    assert!(!repo.join(".git/MERGE_HEAD").exists());
+}
+
+#[test]
+fn checked_true_merge_uses_exact_message_identities_and_parents() {
+    let temp = TempDir::new("merge-checked-metadata");
+    let repo_path = temp.path().join("repo");
+    let (_, before, source) = seed_divergence(&repo_path);
+    let backend = Git2Backend::new();
+    let message = "Merge 'feature' into 'main'\n\nGWZ-Operation-ID: op_test";
+    let author = GitObjectIdentity {
+        name: "Request Author".into(),
+        email: "author@example.invalid".into(),
+        time_ms: Some(TimestampMs(1_700_000_000_000)),
+        timezone_offset_minutes: Some(600),
+    };
+    let committer = GitObjectIdentity {
+        name: "Request Committer".into(),
+        email: "committer@example.invalid".into(),
+        time_ms: Some(TimestampMs(1_700_000_100_000)),
+        timezone_offset_minutes: Some(-300),
+    };
+    let attribution = OperationAttribution {
+        git_author: Some(author),
+        git_committer: Some(committer),
+        ..OperationAttribution::default()
+    };
+
+    let result = backend
+        .merge_upstream_checked(
+            &repo_path,
+            "main",
+            &before,
+            &source,
+            message,
+            Some(&attribution),
+        )
+        .unwrap();
+    let merge_oid = git2::Oid::from_str(result.commit.as_deref().unwrap()).unwrap();
+    let repo = git2::Repository::open(&repo_path).unwrap();
+    let commit = repo.find_commit(merge_oid).unwrap();
+
+    assert_eq!(commit.message(), Ok(message));
+    assert_eq!(commit.parent_count(), 2);
+    assert_eq!(commit.parent_id(0).unwrap().to_string(), before);
+    assert_eq!(commit.parent_id(1).unwrap().to_string(), source);
+    assert_eq!(commit.author().name(), Ok("Request Author"));
+    assert_eq!(commit.author().email(), Ok("author@example.invalid"));
+    assert_eq!(commit.author().when().seconds(), 1_700_000_000);
+    assert_eq!(commit.author().when().offset_minutes(), 600);
+    assert_eq!(commit.committer().name(), Ok("Request Committer"));
+    assert_eq!(commit.committer().email(), Ok("committer@example.invalid"));
+    assert_eq!(commit.committer().when().seconds(), 1_700_000_100);
+    assert_eq!(commit.committer().when().offset_minutes(), -300);
+    assert_eq!(backend.status(&repo_path).unwrap(), GitStatus::clean());
+    assert!(backend.merge_state(&repo_path).unwrap().is_none());
+}
+
+#[test]
+fn checked_true_merge_falls_back_each_identity_independently() {
+    let temp = TempDir::new("merge-checked-identity-fallback");
+    let backend = Git2Backend::new();
+    for (case, author, committer, expected_author, expected_committer) in [
+        (
+            "author-only",
+            Some(GitObjectIdentity::new(
+                "Request Author",
+                "author@example.invalid",
+            )),
+            None,
+            "Request Author",
+            "Repository Identity",
+        ),
+        (
+            "committer-only",
+            None,
+            Some(GitObjectIdentity::new(
+                "Request Committer",
+                "committer@example.invalid",
+            )),
+            "Repository Identity",
+            "Request Committer",
+        ),
+    ] {
+        let repo_path = temp.path().join(case);
+        let (_, before, source) = seed_divergence(&repo_path);
+        {
+            let repo = git2::Repository::open(&repo_path).unwrap();
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "Repository Identity").unwrap();
+            config
+                .set_str("user.email", "repository@example.invalid")
+                .unwrap();
+        }
+        let attribution = OperationAttribution {
+            git_author: author,
+            git_committer: committer,
+            ..OperationAttribution::default()
+        };
+
+        let result = backend
+            .merge_upstream_checked(
+                &repo_path,
+                "main",
+                &before,
+                &source,
+                "checked identity fallback",
+                Some(&attribution),
+            )
+            .unwrap();
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let oid = git2::Oid::from_str(result.commit.as_deref().unwrap()).unwrap();
+        let commit = repo.find_commit(oid).unwrap();
+        assert_eq!(commit.author().name(), Ok(expected_author));
+        assert_eq!(commit.committer().name(), Ok(expected_committer));
+    }
 }
 
 #[test]
