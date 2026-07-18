@@ -369,6 +369,45 @@ mod tests {
     }
 
     #[test]
+    fn merge_context_rejects_invalid_author_and_committer_before_dispatch() {
+        for identity_field in ["author", "committer"] {
+            let invalid = crate::GitObjectIdentity {
+                name: "Alice <work>".to_owned(),
+                email: "alice@example.invalid".to_owned(),
+                time_ms: None,
+                timezone_offset_minutes: None,
+            };
+            let attribution = crate::OperationAttribution {
+                actor: None,
+                git_author: (identity_field == "author").then_some(invalid.clone()),
+                git_committer: (identity_field == "committer").then_some(invalid),
+                credential_ref: None,
+            };
+            let request = crate::MergeRequest {
+                meta: crate::RequestMeta {
+                    request_id: "req-merge".to_owned(),
+                    schema_version: "gwz.v0".to_owned(),
+                    attribution: Some(attribution),
+                    ..Default::default()
+                },
+                op: crate::MergeOp::Start,
+                source_ref: Some("feature/x".to_owned()),
+                merge_id: None,
+                mode: None,
+                message: None,
+                preserve: None,
+            };
+
+            let error = OperationRequest::Merge(request)
+                .context("op_merge")
+                .unwrap_err();
+
+            assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+            assert!(error.message.contains("name"), "{identity_field}: {error}");
+        }
+    }
+
+    #[test]
     fn submit_returns_accepted_before_handler_finishes() {
         let runtime = OperationRuntime::new(8);
         let (release_tx, release_rx) = std::sync::mpsc::channel();

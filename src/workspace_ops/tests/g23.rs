@@ -160,6 +160,57 @@ fn first_class_true_merge_uses_request_git_identities_and_planned_message() {
 }
 
 #[test]
+fn invalid_identity_rejects_mixed_batch_before_fast_forward_mutation() {
+    let temp = TempDir::new("merge-start-invalid-identity");
+    let backend = crate::git::Git2Backend::new();
+    let (_app_fixture, _lib_fixture) = init_two_member_workspace(temp.path(), &backend);
+    let app = temp.path().join("app");
+    let lib = temp.path().join("lib");
+    let (app_before, _) = feature_commit(&backend, &app, "source.txt", "source\n");
+    let (lib_base, _) = feature_commit(&backend, &lib, "source.txt", "source\n");
+    let lib_before = commit_file(
+        &lib,
+        "local.txt",
+        "local\n",
+        "local",
+        &[git2::Oid::from_str(&lib_base).unwrap()],
+    )
+    .unwrap();
+    let lock_before = fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap();
+    let mut request = request(false);
+    request.meta.attribution = Some(crate::OperationAttribution {
+        actor: None,
+        git_author: Some(crate::GitObjectIdentity {
+            name: "Invalid <Author>".to_owned(),
+            email: "author@example.invalid".to_owned(),
+            time_ms: None,
+            timezone_offset_minutes: None,
+        }),
+        git_committer: None,
+        credential_ref: None,
+    });
+
+    let error = handle_merge(&backend, temp.path(), request, "op_merge").unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.message.contains("git_identity.name"));
+    assert_eq!(
+        backend.head(&app).unwrap().commit.as_deref(),
+        Some(app_before.as_str())
+    );
+    assert_eq!(
+        backend.head(&lib).unwrap().commit.as_deref(),
+        Some(lib_before.as_str())
+    );
+    assert_eq!(
+        fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
+        lock_before
+    );
+    assert!(backend.merge_state(&app).unwrap().is_none());
+    assert!(backend.merge_state(&lib).unwrap().is_none());
+}
+
+#[test]
 fn first_class_merge_dry_run_does_not_change_head_lock_or_merge_state() {
     let temp = TempDir::new("merge-start-dry");
     let backend = crate::git::Git2Backend::new();
@@ -187,6 +238,41 @@ fn first_class_merge_dry_run_does_not_change_head_lock_or_merge_state() {
         lock_before
     );
     assert!(backend.merge_state(&member).unwrap().is_none());
+}
+
+#[test]
+fn first_class_merge_rejects_unrelated_history_without_mutation() {
+    let temp = TempDir::new("merge-start-unrelated");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-unrelated-source");
+    let member = temp.path().join("remote");
+    create_orphan_ref(&member, "refs/heads/feature/source", "unrelated source\n");
+    let head = backend.head(&member).unwrap();
+    let target_ref = backend.read_ref(&member, "refs/heads/main").unwrap();
+    let index = fs::read(member.join(".git/index")).unwrap();
+    let worktree = fs::read(member.join("README.md")).unwrap();
+    let status = backend.status(&member).unwrap();
+    let native_state = backend.merge_state(&member).unwrap();
+    let lock = fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap();
+
+    let error = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::GitCommandFailed);
+    assert!(error.message.contains("do not share a merge base"));
+    assert_eq!(backend.head(&member).unwrap(), head);
+    assert_eq!(
+        backend.read_ref(&member, "refs/heads/main").unwrap(),
+        target_ref
+    );
+    assert_eq!(fs::read(member.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(member.join("README.md")).unwrap(), worktree);
+    assert_eq!(backend.status(&member).unwrap(), status);
+    assert_eq!(backend.merge_state(&member).unwrap(), native_state);
+    assert_eq!(
+        fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
+        lock
+    );
+    assert!(!member.join(".git/MERGE_HEAD").exists());
 }
 
 #[test]

@@ -171,12 +171,13 @@ impl From<&model::OperationPolicy> for generated::OperationPolicy {
 
 impl From<&model::ModelError> for generated::GwzError {
     fn from(value: &model::ModelError) -> Self {
+        let has_member_context = value.member_id.is_some() || value.member_path.is_some();
         Self {
             code: value.code.into(),
             message: value.message.clone(),
-            member_id: None,
-            member_path: None,
-            target_kind: None,
+            member_id: value.member_id.clone(),
+            member_path: value.member_path.clone(),
+            target_kind: has_member_context.then_some(generated::TargetKind::Member),
             detail: None,
         }
     }
@@ -245,5 +246,19 @@ mod tests {
         let code: generated::GwzErrorCode = model::ErrorCode::DivergedMember.into();
         assert_eq!(code, generated::GwzErrorCode::DivergedMember);
         assert_eq!(code.wire(), 16);
+    }
+
+    #[test]
+    fn model_error_member_context_converts_to_structured_protocol_fields() {
+        let model_error =
+            model::ModelError::new(model::ErrorCode::GitCommandFailed, "source ref not found")
+                .with_member("mem_lib", "repos/lib");
+
+        let error = generated::GwzError::from(&model_error);
+
+        assert_eq!(error.code, generated::GwzErrorCode::GitCommandFailed);
+        assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
+        assert_eq!(error.member_path.as_deref(), Some("repos/lib"));
+        assert_eq!(error.target_kind, Some(generated::TargetKind::Member));
     }
 }

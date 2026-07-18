@@ -1,5 +1,3 @@
-#![allow(dead_code)] // I0 freezes seams before the feature milestones consume them.
-
 mod model;
 mod plan;
 mod response;
@@ -18,6 +16,7 @@ use crate::runtime::clock::Clock;
 use crate::runtime::ids::IdProvider;
 
 /// Persistence seam frozen at I0. M1 provides the filesystem implementation.
+#[allow(dead_code)] // Remove when M1 wires the durable merge store.
 pub(crate) trait MergeStore {
     fn discover_open(&self, _root: &Path) -> ModelResult<Option<MergeOperationRecord>> {
         unsupported_store("discover_open")
@@ -36,6 +35,7 @@ pub(crate) trait MergeStore {
     }
 }
 
+#[allow(dead_code)] // Used by the M1 store seam once its default methods are live.
 fn unsupported_store<T>(method: &str) -> ModelResult<T> {
     Err(ModelError::new(
         ErrorCode::UnsupportedOperation,
@@ -44,6 +44,7 @@ fn unsupported_store<T>(method: &str) -> ModelResult<T> {
 }
 
 /// All environmental dependencies used by the merge lifecycle are explicit.
+#[allow(dead_code)] // Remove when M1 routes the service through durable dependencies.
 pub(crate) struct MergeDependencies<'a, B, S, C, I> {
     pub backend: &'a B,
     pub store: &'a S,
@@ -69,6 +70,7 @@ where
 }
 
 /// Dependency-injected lifecycle seam used by the persistence milestones.
+#[allow(dead_code)] // Remove when M1 becomes the primary merge dispatch path.
 pub(crate) fn handle_merge_with_dependencies<B, S, C, I>(
     dependencies: MergeDependencies<'_, B, S, C, I>,
     start: &Path,

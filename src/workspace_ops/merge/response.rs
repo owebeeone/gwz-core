@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Frozen durable response mapping; remove when M1 wires records to output.
+
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 

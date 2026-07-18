@@ -19,6 +19,21 @@ fn seed_divergence(path: &Path) -> (String, String, String) {
     (base, target, source)
 }
 
+fn create_orphan_ref(path: &Path, ref_name: &str, content: &str) -> String {
+    let repo = git2::Repository::open(path).unwrap();
+    let blob = repo.blob(content.as_bytes()).unwrap();
+    let mut builder = repo.treebuilder(None).unwrap();
+    builder.insert("unrelated.txt", blob, 0o100644).unwrap();
+    let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+    let signature = git2::Signature::now("GWZ Test", "gwz@example.invalid").unwrap();
+    let oid = repo
+        .commit(None, &signature, &signature, "unrelated", &tree, &[])
+        .unwrap();
+    repo.reference(ref_name, oid, true, "test unrelated history")
+        .unwrap();
+    oid.to_string()
+}
+
 #[test]
 fn merge_analysis_classifies_without_mutating_the_repository() {
     let temp = TempDir::new("merge-analysis");
@@ -158,6 +173,48 @@ fn checked_merge_rejects_target_drift_before_mutation() {
     assert_eq!(backend.head(&repo).unwrap().commit, Some(moved));
     assert_eq!(backend.status(&repo).unwrap(), GitStatus::clean());
     assert!(backend.merge_state(&repo).unwrap().is_none());
+    assert!(!repo.join(".git/MERGE_HEAD").exists());
+}
+
+#[test]
+fn checked_merge_rejects_unrelated_history_without_repository_mutation() {
+    let temp = TempDir::new("merge-checked-unrelated");
+    let repo = temp.path().join("repo");
+    let backend = Git2Backend::new();
+    backend.create_repo(&repo).unwrap();
+    let target = commit_file(&repo, "target.txt", "target\n", "target", &[]).unwrap();
+    let source = create_orphan_ref(&repo, "refs/heads/unrelated", "source\n");
+    let target_ref = backend.read_ref(&repo, "refs/heads/main").unwrap();
+    let index = fs::read(repo.join(".git/index")).unwrap();
+    let worktree = fs::read(repo.join("target.txt")).unwrap();
+    let status = backend.status(&repo).unwrap();
+    let native_state = backend.merge_state(&repo).unwrap();
+
+    let error = backend
+        .merge_upstream_checked(
+            &repo,
+            "main",
+            &target,
+            &source,
+            "must not be committed",
+            None,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::GitCommandFailed);
+    assert!(error.message.contains("do not share a merge base"));
+    assert_eq!(
+        backend.read_ref(&repo, "refs/heads/main").unwrap(),
+        target_ref
+    );
+    assert_eq!(
+        backend.head(&repo).unwrap().commit.as_deref(),
+        Some(target.as_str())
+    );
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(repo.join("target.txt")).unwrap(), worktree);
+    assert_eq!(backend.status(&repo).unwrap(), status);
+    assert_eq!(backend.merge_state(&repo).unwrap(), native_state);
     assert!(!repo.join(".git/MERGE_HEAD").exists());
 }
 

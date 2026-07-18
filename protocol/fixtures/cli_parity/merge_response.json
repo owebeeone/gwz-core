@@ -1,0 +1,161 @@
+{
+  "branch_repos": null,
+  "errors": [],
+  "kind": "response",
+  "members": [],
+  "merge": {
+    "merge_id": "merge-parity-1",
+    "open": true,
+    "operation_drift": [
+      {
+        "kind": "BaselineManifestChanged",
+        "message": "manifest changed after planning"
+      }
+    ],
+    "participant_counts": {
+      "aborted": 1,
+      "conflicted": 1,
+      "continued": 1,
+      "failed": 0,
+      "fast_forwarded": 0,
+      "merged": 0,
+      "planned": 1,
+      "rolled_back": 1,
+      "total": 5,
+      "unattempted": 0,
+      "up_to_date": 0
+    },
+    "preservation": [
+      {
+        "backup_commit": "backup123",
+        "backup_ref": "refs/gwz/preserve/merge-parity-1/mem_docs",
+        "path": "docs",
+        "stash_id": "stash-parity-1",
+        "stash_object_id": "stashobj123",
+        "target_id": "mem_docs"
+      }
+    ],
+    "publication_step": "VerifyingPublication",
+    "repos": [
+      {
+        "abort_eligible": null,
+        "before_commit": "before123",
+        "conflict_paths": [],
+        "continue_eligible": null,
+        "drift": [],
+        "error": null,
+        "live_commit": null,
+        "path": "lib",
+        "predicted": "TrueMerge",
+        "prediction_complete": null,
+        "resulting_commit": null,
+        "source_commit": "source123",
+        "source_ref": "feature/x",
+        "state": "Planned",
+        "target_branch": "main",
+        "target_id": "mem_lib",
+        "target_kind": "Member"
+      },
+      {
+        "abort_eligible": true,
+        "before_commit": "before123",
+        "conflict_paths": [
+          "guide.md"
+        ],
+        "continue_eligible": false,
+        "drift": [
+          {
+            "expected_branch": "main",
+            "expected_head": "before123",
+            "expected_merge_head": "source123",
+            "kind": "HeadAdvanced",
+            "live_branch": "main",
+            "live_head": "live456",
+            "live_merge_head": "source123",
+            "message": "HEAD advanced while merge was open"
+          }
+        ],
+        "error": null,
+        "live_commit": "before123",
+        "path": "docs",
+        "predicted": null,
+        "prediction_complete": false,
+        "resulting_commit": null,
+        "source_commit": "source123",
+        "source_ref": "feature/x",
+        "state": "Conflicted",
+        "target_branch": "main",
+        "target_id": "mem_docs",
+        "target_kind": "Member"
+      },
+      {
+        "abort_eligible": false,
+        "before_commit": "before123",
+        "conflict_paths": [],
+        "continue_eligible": false,
+        "drift": [],
+        "error": null,
+        "live_commit": "continued123",
+        "path": "api",
+        "predicted": null,
+        "prediction_complete": true,
+        "resulting_commit": "continued123",
+        "source_commit": "source123",
+        "source_ref": "feature/x",
+        "state": "Continued",
+        "target_branch": "main",
+        "target_id": "mem_api",
+        "target_kind": "Member"
+      },
+      {
+        "abort_eligible": false,
+        "before_commit": "before123",
+        "conflict_paths": [],
+        "continue_eligible": false,
+        "drift": [],
+        "error": null,
+        "live_commit": "before123",
+        "path": "tools",
+        "predicted": null,
+        "prediction_complete": true,
+        "resulting_commit": "before123",
+        "source_commit": "source123",
+        "source_ref": "feature/x",
+        "state": "Aborted",
+        "target_branch": "main",
+        "target_id": "mem_tools",
+        "target_kind": "Member"
+      },
+      {
+        "abort_eligible": false,
+        "before_commit": "before123",
+        "conflict_paths": [],
+        "continue_eligible": false,
+        "drift": [],
+        "error": null,
+        "live_commit": "before123",
+        "path": "web",
+        "predicted": null,
+        "prediction_complete": true,
+        "resulting_commit": "before123",
+        "source_commit": "source123",
+        "source_ref": "feature/x",
+        "state": "RolledBack",
+        "target_branch": "main",
+        "target_id": "mem_web",
+        "target_kind": "Member"
+      }
+    ],
+    "state": "AwaitingResolution"
+  },
+  "meta": {
+    "action": "Merge",
+    "aggregate_status": "Conflicted",
+    "message": null,
+    "operation_id": "op-parity-1",
+    "request_id": "req-parity-1",
+    "schema_version": "gwz.protocol/v0"
+  },
+  "stash_bundles": null,
+  "workspace_git_status": null
+}

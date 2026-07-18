@@ -357,6 +357,8 @@ fn invariant(plan: &MergeParticipantPlan, message: &str) -> ModelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::Git2Backend;
+    use crate::workspace_ops::tests::{TempDir, commit_file, request_meta, test_member_state};
     use std::cell::RefCell;
     #[derive(Default)]
     struct Fake {
@@ -439,6 +441,119 @@ mod tests {
             attribution: None,
         }
     }
+
+    struct DriftOnInspection {
+        backend: Git2Backend,
+        drift_path: std::path::PathBuf,
+        inspected: RefCell<Vec<String>>,
+    }
+
+    impl ExecutionBackend for DriftOnInspection {
+        fn inspect(&self, path: &Path, branch: &str, source: &str) -> ModelResult<Inspection> {
+            self.inspected.borrow_mut().push(key(path).to_owned());
+            if path == self.drift_path {
+                let before = self.backend.head(path)?.commit.unwrap();
+                commit_file(
+                    path,
+                    "drift.txt",
+                    "branch moved after planning\n",
+                    "external branch move",
+                    &[git2::Oid::from_str(&before).unwrap()],
+                )
+                .unwrap();
+            }
+            ExecutionBackend::inspect(&self.backend, path, branch, source)
+        }
+
+        fn merge(
+            &self,
+            path: &Path,
+            branch: &str,
+            expected_before: &str,
+            source: &str,
+            message: &str,
+            attribution: Option<&crate::model::OperationAttribution>,
+        ) -> ModelResult<GitIntegrateResult> {
+            ExecutionBackend::merge(
+                &self.backend,
+                path,
+                branch,
+                expected_before,
+                source,
+                message,
+                attribution,
+            )
+        }
+    }
+
+    fn real_three_member_plan(
+        root: &Path,
+        backend: &Git2Backend,
+    ) -> (super::super::MergePlan, Vec<String>, Vec<String>) {
+        backend.create_repo(root).unwrap();
+        let mut lock = artifact::LockArtifact {
+            schema: artifact::LOCK_SCHEMA.to_owned(),
+            workspace_id: "ws_ops".to_owned(),
+            manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
+            members: Default::default(),
+        };
+        let mut bases = Vec::new();
+        let mut sources = Vec::new();
+        for path in ["app", "lib", "tool"] {
+            let repo = root.join(path);
+            backend.create_repo(&repo).unwrap();
+            let before = commit_file(&repo, "README.md", "base\n", "base", &[]).unwrap();
+            backend
+                .branch_create(&repo, "feature/source", "HEAD")
+                .unwrap();
+            backend.switch_branch(&repo, "feature/source").unwrap();
+            let source = commit_file(
+                &repo,
+                "source.txt",
+                "source\n",
+                "source",
+                &[git2::Oid::from_str(&before).unwrap()],
+            )
+            .unwrap();
+            backend.switch_branch(&repo, "main").unwrap();
+            let mut state = test_member_state(path, Some(before.clone()), false);
+            state.source_id = Some(format!("src_{path}"));
+            lock.members.insert(format!("mem_{path}"), state);
+            bases.push(before);
+            sources.push(source);
+        }
+        artifact::write_manifest(
+            root,
+            &artifact::ManifestArtifact {
+                schema: artifact::WORKSPACE_SCHEMA.to_owned(),
+                workspace: artifact::WorkspaceHeader {
+                    id: "ws_ops".to_owned(),
+                },
+                members: ["app", "lib", "tool"]
+                    .into_iter()
+                    .map(|path| artifact::ManifestMember {
+                        id: format!("mem_{path}"),
+                        path: path.to_owned(),
+                        source_kind: artifact::ArtifactSourceKind::Git,
+                        source_id: format!("src_{path}"),
+                        active: true,
+                        desired: None,
+                        remotes: Vec::new(),
+                    })
+                    .collect(),
+            },
+        )
+        .unwrap();
+        artifact::write_lock(root, &lock).unwrap();
+        let request = crate::MergeRequest {
+            meta: request_meta(),
+            op: crate::MergeOp::Start,
+            source_ref: Some("feature/source".to_owned()),
+            ..Default::default()
+        };
+        let plan = plan_merge(backend, root, &request).unwrap();
+        (plan, bases, sources)
+    }
     #[test]
     fn conflict_continues_with_frozen_oids_and_maps_response() {
         let fake = Fake::default();
@@ -487,5 +602,84 @@ mod tests {
         let response = merge_response(&context(false), repos, run.errors).unwrap();
         assert_eq!(response.state, OpState::Halted);
         assert!(response.open);
+    }
+
+    #[test]
+    fn real_git_drift_halts_and_advances_only_verified_earlier_lock_outcomes() {
+        let root = TempDir::new("merge-real-halt");
+        let backend = Git2Backend::new();
+        let (plan, bases, sources) = real_three_member_plan(root.path(), &backend);
+        let drifting = DriftOnInspection {
+            backend: backend.clone(),
+            drift_path: root.path().join("lib"),
+            inspected: RefCell::new(Vec::new()),
+        };
+
+        let execution = execute_plan(&drifting, root.path(), &plan.participants, None);
+        assert_eq!(*drifting.inspected.borrow(), ["app", "lib"]);
+        assert_eq!(execution.observed.len(), 1);
+        advance_m0_lock(&backend, root.path(), &execution.observed).unwrap();
+        let repos = execution
+            .rows
+            .into_iter()
+            .map(|row| summary(row, &plan.source_ref))
+            .collect::<Vec<_>>();
+        let response = merge_response(&context(false), repos, execution.errors).unwrap();
+
+        assert_eq!(response.state, OpState::Halted);
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            AggregateStatus::Failed
+        );
+        assert_eq!(response.participant_counts.fast_forwarded, 1);
+        assert_eq!(response.participant_counts.failed, 1);
+        assert_eq!(response.participant_counts.unattempted, 1);
+        let ids = response
+            .repos
+            .iter()
+            .map(|repo| repo.target_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["mem_app", "mem_lib", "mem_tool"]);
+        assert_eq!(response.repos[0].state, PState::FastForwarded);
+        assert_eq!(response.repos[1].state, PState::Failed);
+        assert_eq!(response.repos[2].state, PState::Unattempted);
+        assert_eq!(
+            response.repos[0].live_commit.as_deref(),
+            Some(sources[0].as_str())
+        );
+        assert_eq!(response.repos[1].live_commit, None);
+        assert_eq!(response.repos[2].live_commit, None);
+        let error = response.repos[1].error.as_ref().unwrap();
+        assert_eq!(error.code, ErrorCode::MergeDrift.into());
+        assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
+
+        let live = |path| {
+            backend
+                .head(&root.path().join(path))
+                .unwrap()
+                .commit
+                .unwrap()
+        };
+        let moved_lib = live("lib");
+        assert_ne!(moved_lib, bases[1]);
+        assert_eq!(
+            (live("app"), live("tool")),
+            (sources[0].clone(), bases[2].clone())
+        );
+        let lock = artifact::read_lock(root.path()).unwrap();
+        assert_eq!(
+            ["mem_app", "mem_lib", "mem_tool"].map(|id| lock.members[id].commit.as_deref()),
+            [
+                Some(sources[0].as_str()),
+                Some(bases[1].as_str()),
+                Some(bases[2].as_str())
+            ]
+        );
+        assert!(["app", "lib", "tool"].into_iter().all(|path| {
+            backend
+                .merge_state(&root.path().join(path))
+                .unwrap()
+                .is_none()
+        }));
     }
 }

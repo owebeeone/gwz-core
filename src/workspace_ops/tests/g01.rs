@@ -12,6 +12,18 @@ use super::*;
 
 pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+fn force_push_unrelated_main(fixture: &RemoteFixture, backend: &Git2Backend) -> String {
+    let oid = create_orphan_ref(&fixture.source, "refs/heads/main", "unrelated remote\n");
+    backend
+        .push(
+            &fixture.source,
+            "origin",
+            "+refs/heads/main:refs/heads/main",
+        )
+        .unwrap();
+    oid
+}
+
 #[derive(Clone)]
 pub(crate) struct TrackingBackend {
     pub(crate) fetch: Arc<OverlapTracker>,
@@ -458,6 +470,59 @@ pub(crate) fn pull_head_merge_conflict_surfaces_conflicted_status() {
     // HEAD did not move; the conflict is left `git merge --continue`-able.
     assert_eq!(backend.head(&repos_app).unwrap().commit, Some(b));
     assert!(repos_app.join(".git/MERGE_HEAD").exists());
+}
+
+#[test]
+pub(crate) fn pull_head_merge_rejects_unrelated_history_without_mutation() {
+    let temp = TempDir::new("pull-merge-unrelated");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let fixture = RemoteFixture::new("pull-merge-unrelated-source");
+    let local = fixture.commit_and_push("README.md", "local\n", "local", &backend);
+    let repos_app = temp.path().join("repos/app");
+    backend
+        .clone_repo(fixture.remote_url(), &repos_app)
+        .unwrap();
+    write_pull_fixture(
+        temp.path(),
+        vec![("mem_app", "repos/app", fixture.remote_url(), &local)],
+    );
+    force_push_unrelated_main(&fixture, &backend);
+    let head = backend.head(&repos_app).unwrap();
+    let target_ref = backend.read_ref(&repos_app, "refs/heads/main").unwrap();
+    let index = std::fs::read(repos_app.join(".git/index")).unwrap();
+    let worktree = std::fs::read(repos_app.join("README.md")).unwrap();
+    let status = backend.status(&repos_app).unwrap();
+    let native_state = backend.merge_state(&repos_app).unwrap();
+    let lock = std::fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap();
+
+    let error = handle_pull_head(
+        &backend,
+        temp.path(),
+        pull_head_request_with_sync(crate::SyncBehavior::Merge),
+        "op_pull",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, crate::model::ErrorCode::GitCommandFailed);
+    assert!(error.message.contains("do not share a merge base"));
+    assert_eq!(backend.head(&repos_app).unwrap(), head);
+    assert_eq!(
+        backend.read_ref(&repos_app, "refs/heads/main").unwrap(),
+        target_ref
+    );
+    assert_eq!(std::fs::read(repos_app.join(".git/index")).unwrap(), index);
+    assert_eq!(
+        std::fs::read(repos_app.join("README.md")).unwrap(),
+        worktree
+    );
+    assert_eq!(backend.status(&repos_app).unwrap(), status);
+    assert_eq!(backend.merge_state(&repos_app).unwrap(), native_state);
+    assert_eq!(
+        std::fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
+        lock
+    );
+    assert!(!repos_app.join(".git/MERGE_HEAD").exists());
 }
 
 #[test]

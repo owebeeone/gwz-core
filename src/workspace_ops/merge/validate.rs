@@ -37,6 +37,7 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
     Ok(())
 }
 
+#[allow(dead_code)] // Remove when M1 implements status and open-operation dispatch.
 pub(crate) fn validate_open_merge_id(requested: Option<&str>, open_id: &str) -> ModelResult<()> {
     if requested.is_some_and(|requested| requested != open_id) {
         return Err(ModelError::new(
@@ -61,14 +62,17 @@ fn validate_common_meta(request: &crate::MergeRequest) -> ModelResult<()> {
         if policy.unsupported_member == Some(crate::UnsupportedMemberBehavior::Skip) {
             return invalid("merge does not support skipping selected participants");
         }
-        if policy.sync.is_some()
-            || policy.remote.is_some()
-            || policy.concurrency.is_some()
-            || policy.progress_min_interval_ms.is_some()
-            || policy.max_connections_per_host.is_some()
-        {
-            return invalid("merge request contains an unrelated operation policy field");
-        }
+        reject_policy_field("policy.sync (--sync)", policy.sync.is_some())?;
+        reject_policy_field("policy.remote (--remote)", policy.remote.is_some())?;
+        reject_policy_field("policy.concurrency (--jobs)", policy.concurrency.is_some())?;
+        reject_policy_field(
+            "policy.progress_min_interval_ms (--progress-interval)",
+            policy.progress_min_interval_ms.is_some(),
+        )?;
+        reject_policy_field(
+            "policy.max_connections_per_host (--max-per-host)",
+            policy.max_connections_per_host.is_some(),
+        )?;
     }
     Ok(())
 }
@@ -97,6 +101,13 @@ fn reject_recovery_fields(request: &crate::MergeRequest) -> ModelResult<()> {
 fn reject_present(field: &str, present: bool) -> ModelResult<()> {
     if present {
         return invalid(format!("{field} is not accepted for this merge operation"));
+    }
+    Ok(())
+}
+
+fn reject_policy_field(field: &str, present: bool) -> ModelResult<()> {
+    if present {
+        return invalid(format!("merge does not accept {field}"));
     }
     Ok(())
 }
@@ -230,5 +241,35 @@ mod tests {
                 .code,
             ErrorCode::MergeIdMismatch
         );
+    }
+
+    #[test]
+    fn unrelated_policy_errors_name_the_field_and_cli_option() {
+        let cases = [
+            ("sync", "--sync"),
+            ("remote", "--remote"),
+            ("concurrency", "--jobs"),
+            ("progress_min_interval_ms", "--progress-interval"),
+            ("max_connections_per_host", "--max-per-host"),
+        ];
+
+        for (field, option) in cases {
+            let mut value = request(crate::MergeOp::Start);
+            let mut policy = crate::OperationPolicy::default();
+            match field {
+                "sync" => policy.sync = Some(crate::SyncBehavior::Merge),
+                "remote" => policy.remote = Some("origin".to_owned()),
+                "concurrency" => policy.concurrency = Some(4),
+                "progress_min_interval_ms" => policy.progress_min_interval_ms = Some(250),
+                "max_connections_per_host" => policy.max_connections_per_host = Some(8),
+                _ => unreachable!(),
+            }
+            value.meta.policy = Some(policy);
+
+            let error = validate_merge_request(&value).unwrap_err();
+            assert_eq!(error.code, ErrorCode::MergeValidationFailed, "{field}");
+            assert!(error.message.contains(field), "{field}: {}", error.message);
+            assert!(error.message.contains(option), "{field}: {}", error.message);
+        }
     }
 }

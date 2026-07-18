@@ -173,14 +173,20 @@ fn preflight_member<P: PlanningBackend>(
         ));
     }
     let path = root.join(&member.path);
-    if !path.is_dir() || !backend.is_repository(&path)? {
+    if !path.is_dir()
+        || !backend
+            .is_repository(&path)
+            .map_err(|error| member_backend_error(error, member))?
+    {
         return Err(member_error(
             ErrorCode::MemberNotFound,
             member,
             "is not a materialized Git repository",
         ));
     }
-    let status = backend.status(&path)?;
+    let status = backend
+        .status(&path)
+        .map_err(|error| member_backend_error(error, member))?;
     if status.is_dirty
         || status.staged > 0
         || status.unstaged > 0
@@ -193,14 +199,20 @@ fn preflight_member<P: PlanningBackend>(
             "has index or worktree changes",
         ));
     }
-    if backend.merge_state(&path)?.is_some() {
+    if backend
+        .merge_state(&path)
+        .map_err(|error| member_backend_error(error, member))?
+        .is_some()
+    {
         return Err(member_error(
             ErrorCode::MergeValidationFailed,
             member,
             "has a merge in progress",
         ));
     }
-    let head = backend.head(&path)?;
+    let head = backend
+        .head(&path)
+        .map_err(|error| member_backend_error(error, member))?;
     if head.is_detached || head.branch.is_none() {
         return Err(member_error(
             ErrorCode::BranchDetachedHead,
@@ -212,11 +224,14 @@ fn preflight_member<P: PlanningBackend>(
     let before = head
         .commit
         .ok_or_else(|| member_error(ErrorCode::BranchUnbornHead, member, "HEAD is unborn"))?;
-    let analysis = backend.merge_analysis(&path, &branch, source)?;
+    let analysis = backend
+        .merge_analysis(&path, &branch, source)
+        .map_err(|error| member_backend_error(error, member))?;
     if analysis.target_branch != branch
         || analysis.target_commit != before
         || backend
-            .read_ref(&path, &format!("refs/heads/{branch}"))?
+            .read_ref(&path, &format!("refs/heads/{branch}"))
+            .map_err(|error| member_backend_error(error, member))?
             .as_deref()
             != Some(before.as_str())
     {
@@ -254,7 +269,11 @@ fn file_sha256(path: &Path) -> ModelResult<String> {
 }
 
 fn member_error(code: ErrorCode, member: &ManifestMember, detail: &str) -> ModelError {
-    ModelError::new(code, format!("member '{}' {detail}", member.id))
+    ModelError::new(code, detail).with_member(&member.id, &member.path)
+}
+
+fn member_backend_error(error: ModelError, member: &ManifestMember) -> ModelError {
+    error.with_member(&member.id, &member.path)
 }
 
 #[cfg(test)]
@@ -267,26 +286,60 @@ mod tests {
         calls: std::cell::RefCell<Vec<String>>,
         dirty: Option<&'static str>,
         drift: Option<&'static str>,
+        failure: Option<(FailurePoint, &'static str)>,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FailurePoint {
+        IsRepository,
+        Status,
+        Head,
+        MergeState,
+        MergeAnalysis,
+        ReadRef,
+    }
+
+    impl FakeBackend {
+        fn fail(&self, point: FailurePoint, path: &Path) -> ModelResult<()> {
+            if self.failure == Some((point, key(path))) {
+                let (code, message) = match point {
+                    FailurePoint::MergeState => (
+                        ErrorCode::InvalidRequest,
+                        "repository has an integration operation in progress: RebaseMerge",
+                    ),
+                    FailurePoint::MergeAnalysis => {
+                        (ErrorCode::GitCommandFailed, "revspec 'feature/x' not found")
+                    }
+                    _ => (ErrorCode::IoError, "backend probe failed"),
+                };
+                return Err(ModelError::new(code, message));
+            }
+            Ok(())
+        }
     }
 
     impl PlanningBackend for FakeBackend {
-        fn is_repository(&self, _path: &Path) -> ModelResult<bool> {
+        fn is_repository(&self, path: &Path) -> ModelResult<bool> {
+            self.fail(FailurePoint::IsRepository, path)?;
             Ok(true)
         }
         fn status(&self, path: &Path) -> ModelResult<GitStatus> {
+            self.fail(FailurePoint::Status, path)?;
             Ok(GitStatus {
                 untracked: usize::from(self.dirty == Some(key(path))),
                 ..GitStatus::clean()
             })
         }
         fn head(&self, path: &Path) -> ModelResult<GitHeadState> {
+            self.fail(FailurePoint::Head, path)?;
             Ok(GitHeadState {
                 branch: Some("main".into()),
                 commit: Some(format!("before-{}", key(path))),
                 is_detached: false,
             })
         }
-        fn merge_state(&self, _path: &Path) -> ModelResult<Option<GitNativeMergeState>> {
+        fn merge_state(&self, path: &Path) -> ModelResult<Option<GitNativeMergeState>> {
+            self.fail(FailurePoint::MergeState, path)?;
             if self.dirty == Some("integration") {
                 return Err(ModelError::new(
                     ErrorCode::InvalidRequest,
@@ -296,6 +349,7 @@ mod tests {
             Ok(None)
         }
         fn merge_analysis(&self, path: &Path, _: &str, _: &str) -> ModelResult<GitMergeAnalysis> {
+            self.fail(FailurePoint::MergeAnalysis, path)?;
             self.calls.borrow_mut().push(key(path).to_owned());
             Ok(GitMergeAnalysis {
                 target_branch: "main".into(),
@@ -307,6 +361,7 @@ mod tests {
             })
         }
         fn read_ref(&self, path: &Path, _: &str) -> ModelResult<Option<String>> {
+            self.fail(FailurePoint::ReadRef, path)?;
             Ok(Some(if self.drift == Some(key(path)) {
                 "moved".into()
             } else {
@@ -475,5 +530,66 @@ mod tests {
                 .code,
             ErrorCode::MergeDrift
         );
+    }
+
+    #[test]
+    fn second_member_missing_source_has_member_context_and_preserves_backend_code() {
+        let backend = FakeBackend {
+            failure: Some((FailurePoint::MergeAnalysis, "a")),
+            ..Default::default()
+        };
+
+        let error = build(&backend, &fixture(), &request(None, false)).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::GitCommandFailed);
+        assert_eq!(error.member_id.as_deref(), Some("mem_a"));
+        assert_eq!(error.member_path.as_deref(), Some("a"));
+        assert!(error.message.starts_with("member 'mem_a' at 'a':"));
+        let wire = crate::GwzError::from(&error);
+        assert_eq!(wire.member_id.as_deref(), Some("mem_a"));
+        assert_eq!(wire.member_path.as_deref(), Some("a"));
+        assert_eq!(wire.target_kind, Some(crate::TargetKind::Member));
+    }
+
+    #[test]
+    fn second_member_foreign_integration_state_has_member_context() {
+        let backend = FakeBackend {
+            failure: Some((FailurePoint::MergeState, "a")),
+            ..Default::default()
+        };
+
+        let error = build(&backend, &fixture(), &request(None, false)).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.member_id.as_deref(), Some("mem_a"));
+        assert_eq!(error.member_path.as_deref(), Some("a"));
+        assert!(error.message.contains("RebaseMerge"));
+        assert!(error.message.starts_with("member 'mem_a' at 'a':"));
+    }
+
+    #[test]
+    fn every_fallible_backend_preflight_probe_adds_member_context() {
+        for point in [
+            FailurePoint::IsRepository,
+            FailurePoint::Status,
+            FailurePoint::Head,
+            FailurePoint::MergeState,
+            FailurePoint::MergeAnalysis,
+            FailurePoint::ReadRef,
+        ] {
+            let backend = FakeBackend {
+                failure: Some((point, "a")),
+                ..Default::default()
+            };
+
+            let error = build(&backend, &fixture(), &request(None, false)).unwrap_err();
+
+            assert_eq!(error.member_id.as_deref(), Some("mem_a"), "{point:?}");
+            assert_eq!(error.member_path.as_deref(), Some("a"), "{point:?}");
+            assert!(
+                error.message.starts_with("member 'mem_a' at 'a':"),
+                "{point:?}: {error}"
+            );
+        }
     }
 }

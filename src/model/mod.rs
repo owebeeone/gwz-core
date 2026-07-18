@@ -60,6 +60,8 @@ pub enum ErrorCode {
 pub struct ModelError {
     pub code: ErrorCode,
     pub message: String,
+    pub member_id: Option<String>,
+    pub member_path: Option<String>,
 }
 
 impl ModelError {
@@ -67,7 +69,22 @@ impl ModelError {
         Self {
             code,
             message: message.into(),
+            member_id: None,
+            member_path: None,
         }
+    }
+
+    pub fn with_member(
+        mut self,
+        member_id: impl Into<String>,
+        member_path: impl Into<String>,
+    ) -> Self {
+        let member_id = member_id.into();
+        let member_path = member_path.into();
+        self.message = format!("member '{member_id}' at '{member_path}': {}", self.message);
+        self.member_id = Some(member_id);
+        self.member_path = Some(member_path);
+        self
     }
 }
 
@@ -303,8 +320,8 @@ impl GitObjectIdentity {
     }
 
     pub fn validate(&self) -> ModelResult<()> {
-        require_non_empty("git_identity.name", &self.name)?;
-        require_non_empty("git_identity.email", &self.email)?;
+        validate_git_identity_field("git_identity.name", &self.name)?;
+        validate_git_identity_field("git_identity.email", &self.email)?;
         if let Some(offset) = self.timezone_offset_minutes
             && !(-1_440..=1_440).contains(&offset)
         {
@@ -476,6 +493,34 @@ fn require_non_empty(field: &str, value: &str) -> ModelResult<()> {
     }
 }
 
+fn validate_git_identity_field(field: &str, value: &str) -> ModelResult<()> {
+    require_non_empty(field, value)?;
+    if value
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, '<' | '>'))
+    {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            format!("{field} contains characters Git signatures cannot represent"),
+        ));
+    }
+    if value
+        .trim_matches(is_git_signature_edge_character)
+        .is_empty()
+    {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            format!("{field} does not contain a Git signature value"),
+        ));
+    }
+    Ok(())
+}
+
+fn is_git_signature_edge_character(ch: char) -> bool {
+    // libgit2 trims this set from both edges, then rejects an empty result.
+    ch.is_ascii() && (ch <= ' ' || matches!(ch, ',' | ':' | ';' | '<' | '>' | '"' | '\\' | '\''))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +593,44 @@ mod tests {
         assert_eq!(
             invalid_git.validate().unwrap_err().code,
             ErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn git_identity_rejects_values_git_signatures_cannot_represent() {
+        for (field, value) in [
+            ("name", "Alice <work>"),
+            ("name", "Alice\0Work"),
+            ("name", "Alice\nWork"),
+            ("name", ",;:\"\\'"),
+            ("email", "alice>example.invalid"),
+            ("email", "alice\0@example.invalid"),
+            ("email", "alice\r@example.invalid"),
+        ] {
+            let mut identity = GitObjectIdentity::new("Alice", "alice@example.invalid");
+            match field {
+                "name" => identity.name = value.to_owned(),
+                "email" => identity.email = value.to_owned(),
+                _ => unreachable!(),
+            }
+
+            let error = identity.validate().unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "{field}={value:?}");
+            assert!(error.message.contains(field), "{field}={value:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn model_error_can_carry_member_context_without_changing_its_code() {
+        let error = ModelError::new(ErrorCode::GitCommandFailed, "revspec not found")
+            .with_member("mem_a", "repos/a");
+
+        assert_eq!(error.code, ErrorCode::GitCommandFailed);
+        assert_eq!(error.member_id.as_deref(), Some("mem_a"));
+        assert_eq!(error.member_path.as_deref(), Some("repos/a"));
+        assert_eq!(
+            error.message,
+            "member 'mem_a' at 'repos/a': revspec not found"
         );
     }
 
