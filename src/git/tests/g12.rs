@@ -34,6 +34,23 @@ fn create_orphan_ref(path: &Path, ref_name: &str, content: &str) -> String {
     oid.to_string()
 }
 
+fn seed_conflict(path: &Path) -> (String, String) {
+    let backend = Git2Backend::new();
+    backend.create_repo(path).unwrap();
+    let base = commit_file(path, "conflict.txt", "base\n", "base", &[]).unwrap();
+    let base_oid = git2::Oid::from_str(&base).unwrap();
+    commit_file(path, "stable.txt", "stable\n", "stable", &[base_oid]).unwrap();
+    run_git(path, &["branch", "feature"]);
+    run_git(path, &["checkout", "feature"]);
+    fs::write(path.join("conflict.txt"), "feature\n").unwrap();
+    run_git(path, &["commit", "-am", "feature conflict"]);
+    let source = rev_parse(path, "HEAD");
+    run_git(path, &["checkout", "main"]);
+    fs::write(path.join("conflict.txt"), "main\n").unwrap();
+    run_git(path, &["commit", "-am", "main conflict"]);
+    (rev_parse(path, "HEAD"), source)
+}
+
 #[test]
 fn merge_analysis_classifies_without_mutating_the_repository() {
     let temp = TempDir::new("merge-analysis");
@@ -370,4 +387,99 @@ fn dirty_and_native_merge_state_are_precise_rejection_signals() {
 
     let error = backend.merge_analysis(&repo, "main", &source).unwrap_err();
     assert_eq!(error.code, ErrorCode::GitCommandFailed);
+}
+
+#[test]
+fn checked_native_abort_rejects_drift_and_dirt_then_is_idempotent() {
+    let temp = TempDir::new("merge-checked-abort");
+    let repo = temp.path().join("repo");
+    let (before, source) = seed_conflict(&repo);
+    let backend = Git2Backend::new();
+    backend.merge_upstream(&repo, "main", "feature").unwrap();
+    let error = backend.abort_merge(&repo, &before, &before).unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert!(backend.merge_state(&repo).unwrap().is_some());
+    fs::write(repo.join("stable.txt"), "post-merge work\n").unwrap();
+    let error = backend.abort_merge(&repo, &before, &source).unwrap_err();
+    assert_eq!(error.code, ErrorCode::DirtyMember);
+    run_git(&repo, &["checkout", "--", "stable.txt"]);
+    backend.abort_merge(&repo, &before, &source).unwrap();
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
+    assert!(backend.merge_state(&repo).unwrap().is_none());
+    backend.abort_merge(&repo, &before, &source).unwrap();
+}
+
+#[test]
+fn checked_clean_rollback_rejects_current_oid_and_dirt_then_is_idempotent() {
+    let temp = TempDir::new("merge-checked-rollback");
+    let repo = temp.path().join("repo");
+    let (_, before, source) = seed_divergence(&repo);
+    let backend = Git2Backend::new();
+    let merged = backend
+        .merge_upstream_checked(&repo, "main", &before, &source, "merge", None)
+        .unwrap()
+        .commit
+        .unwrap();
+    fs::write(repo.join("untracked.txt"), "keep\n").unwrap();
+    let error = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::DirtyMember);
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(merged.clone()));
+    fs::remove_file(repo.join("untracked.txt")).unwrap();
+    let error = backend
+        .set_branch_target_checked(&repo, "main", &source, &before)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(merged.clone()));
+
+    backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap();
+    let repeated = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap();
+    assert!(!repeated.updated);
+}
+
+#[test]
+fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
+    let temp = TempDir::new("merge-checked-resolution");
+    let repo = temp.path().join("repo");
+    let (before, source) = seed_conflict(&repo);
+    let backend = Git2Backend::new();
+    backend.merge_upstream(&repo, "main", "feature").unwrap();
+    let reject = |expected_before: &str, expected_head: &str| {
+        backend
+            .commit_merge_resolution_checked(&repo, expected_before, expected_head, "resolved")
+            .unwrap_err()
+            .code
+    };
+    assert_eq!(reject(&source, &source), ErrorCode::MergeDrift);
+    assert_eq!(reject(&before, &before), ErrorCode::MergeDrift);
+    assert_eq!(reject(&before, &source), ErrorCode::DirtyMember);
+
+    fs::write(repo.join("conflict.txt"), "resolved\n").unwrap();
+    run_git(&repo, &["add", "conflict.txt"]);
+    fs::write(repo.join("conflict.txt"), "unstaged\n").unwrap();
+    assert_eq!(reject(&before, &source), ErrorCode::DirtyMember);
+    run_git(&repo, &["checkout", "--", "conflict.txt"]);
+    fs::write(repo.join("stable.txt"), "unrelated\n").unwrap();
+    run_git(&repo, &["add", "stable.txt"]);
+    assert_eq!(reject(&before, &source), ErrorCode::DirtyMember);
+    run_git(&repo, &["checkout", "HEAD", "--", "stable.txt"]);
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
+
+    let result = backend
+        .commit_merge_resolution_checked(&repo, &before, &source, "resolved")
+        .unwrap();
+    let repository = git2::Repository::open(&repo).unwrap();
+    let commit = repository
+        .find_commit(git2::Oid::from_str(&result.commit).unwrap())
+        .unwrap();
+    assert_eq!(commit.parent_count(), 2);
+    assert_eq!(commit.parent_id(0).unwrap().to_string(), before);
+    assert_eq!(commit.parent_id(1).unwrap().to_string(), source);
+    assert_eq!(commit.message(), Ok("resolved"));
+    assert!(backend.merge_state(&repo).unwrap().is_none());
 }

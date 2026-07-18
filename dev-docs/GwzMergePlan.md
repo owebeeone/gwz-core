@@ -1,6 +1,7 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-19). Owner: Gianni.
+Status: **active** (revised 2026-07-19; implementation complete through M2a).
+Owner: Gianni. The next implementation wave is M2b finalization and evidence.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -652,6 +653,8 @@ in parallel.
 
 Owner: lifecycle/store agent. Budget: at most 500 handwritten changed lines.
 
+Status: **complete** (2026-07-19).
+
 Owned files:
 
 - `merge/store.rs`;
@@ -675,6 +678,8 @@ M1-A does not edit `merge/start.rs` or decide execution policy.
 ### M1-B — Status and drift
 
 Owner: status agent. Budget: at most 450 handwritten changed lines.
+
+Status: **complete** (2026-07-19).
 
 Owned files:
 
@@ -700,6 +705,8 @@ classifier later consumed by continue and abort; drivers do not recreate it.
 
 Owner: lead. Budget: at most 500 handwritten changed lines.
 
+Status: **complete** (2026-07-19).
+
 Owned files:
 
 - central merge dispatch and state-transition wiring;
@@ -722,6 +729,8 @@ Work:
 
 Owner: driver/parity agent. Budget: at most 400 handwritten changed lines.
 
+Status: **complete** (2026-07-19).
+
 Owned files:
 
 - merge status parsing/rendering in `gwz-cli/src/` and its tests;
@@ -742,6 +751,8 @@ M1-C1 and M1-C2 are separate ownership rows. Neither agent edits the other's
 files during the wave.
 
 ### M1 integration gate
+
+Status: **complete** (2026-07-19).
 
 Lead verifies:
 
@@ -769,9 +780,16 @@ transition interfaces remain sufficient and that M1-B's observation/drift
 classifier is the only classifier used by both operations. Any correction
 lands once before the agents begin.
 
+Lead-owned interface checkpoint: **complete** (2026-07-19). Recovery-first
+root resolution, checked resolution commits, exact checked rollback, the
+shared status classifier, durable transition helpers, and the finalization
+handoff were frozen before the three M2a implementation lanes ran in parallel.
+
 ### M2a-A — Continue and retry
 
 Owner: continue agent. Budget: at most 500 handwritten changed lines.
+
+Status: **complete** (2026-07-19).
 
 Owned files:
 
@@ -792,6 +810,8 @@ Work:
 ### M2a-B — Abort and resumable rollback
 
 Owner: abort agent. Budget: at most 500 handwritten changed lines.
+
+Status: **complete** (2026-07-19).
 
 Owned files:
 
@@ -814,6 +834,8 @@ Work:
 
 Owner: Git backend agent. Budget: at most 450 handwritten changed lines.
 
+Status: **complete** (2026-07-19).
+
 Owned files:
 
 - merge-state, abort, and checked-ref implementation under `src/git/`;
@@ -829,6 +851,8 @@ Work:
 - support idempotent verification after a prior successful rollback.
 
 ### M2a integration gate
+
+Status: **complete** (2026-07-19).
 
 The lead runs the mixed three-member scenario as a required acceptance test:
 

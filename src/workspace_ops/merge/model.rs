@@ -91,6 +91,7 @@ impl ParticipantState {
         );
         let legal = self == next
             || matches!(self, Self::Planned | Self::Unattempted | Self::Failed) && attempted
+            || matches!((self, next), (Self::Planned, Self::Unattempted))
             || matches!(
                 (self, next),
                 (
@@ -342,6 +343,12 @@ mod tests {
                 .transition(ParticipantState::Continued)
                 .unwrap(),
             ParticipantState::Continued
+        );
+        assert_eq!(
+            ParticipantState::Planned
+                .transition(ParticipantState::Unattempted)
+                .unwrap(),
+            ParticipantState::Unattempted
         );
         assert_eq!(
             ParticipantState::Merged

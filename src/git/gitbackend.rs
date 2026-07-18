@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
@@ -89,6 +90,18 @@ pub trait GitBackend {
     /// Observe native merge metadata, including the exact MERGE_HEAD.
     fn merge_state(&self, _path: &Path) -> ModelResult<Option<GitNativeMergeState>> {
         unsupported_backend("merge_state")
+    }
+    /// Verify the exact recorded native merge and its index/worktree without
+    /// mutating it. `require_resolved` selects continue safety; otherwise the
+    /// check permits expected conflict-path work needed by native abort.
+    fn validate_merge_recovery_state(
+        &self,
+        _path: &Path,
+        _expected_before: &str,
+        _expected_merge_head: &str,
+        _require_resolved: bool,
+    ) -> ModelResult<()> {
+        unsupported_backend("validate_merge_recovery_state")
     }
     /// Abort only the expected native merge and verify restoration to before.
     fn abort_merge(
@@ -349,6 +362,16 @@ pub trait GitBackend {
     /// gwz-created merge resolutions also work without user git identity config.
     fn commit_merge_resolution(&self, path: &Path, message: &str) -> ModelResult<GitCommitResult> {
         self.commit(path, message, false)
+    }
+    /// Commit a resolved merge under a checked parent/ref safety boundary.
+    fn commit_merge_resolution_checked(
+        &self,
+        _path: &Path,
+        _expected_before: &str,
+        _expected_merge_head: &str,
+        _message: &str,
+    ) -> ModelResult<GitCommitResult> {
+        unsupported_backend("commit_merge_resolution_checked")
     }
     /// Create tag `name` at the current HEAD via the `git` CLI (AD1 per-primitive CLI
     /// fallback — so hooks, signing, and tagger config are honored). Annotated when
@@ -1093,6 +1116,114 @@ impl GitBackend for Git2Backend {
         }))
     }
 
+    fn validate_merge_recovery_state(
+        &self,
+        path: &Path,
+        expected_before: &str,
+        expected_merge_head: &str,
+        require_resolved: bool,
+    ) -> ModelResult<()> {
+        let repo = open_repo(path)?;
+        let before = parse_existing_commit(&repo, expected_before)?;
+        let merge_head = parse_existing_commit(&repo, expected_merge_head)?;
+        validate_expected_native_merge(&repo, before, merge_head)?;
+        if require_resolved {
+            validate_resolution_index_and_worktree(self, path, &repo, before, merge_head)
+        } else {
+            validate_abort_index_and_worktree(self, path, &repo, before, merge_head)
+        }
+    }
+
+    fn abort_merge(
+        &self,
+        path: &Path,
+        expected_before: &str,
+        expected_merge_head: &str,
+    ) -> ModelResult<()> {
+        let repo = open_repo(path)?;
+        let before = parse_existing_commit(&repo, expected_before)?;
+        let merge_head = parse_existing_commit(&repo, expected_merge_head)?;
+
+        if repo.state() == git2::RepositoryState::Clean {
+            verify_restored_merge_state(self, path, before)?;
+            return Ok(());
+        }
+        let ref_name = attached_head_ref(&repo)?;
+        let mut transaction = repo.transaction().map_err(git_error)?;
+        transaction.lock_ref(&ref_name).map_err(git_error)?;
+        validate_expected_native_merge(&repo, before, merge_head)?;
+        validate_abort_index_and_worktree(self, path, &repo, before, merge_head)?;
+
+        let target = repo.find_commit(before).map_err(git_error)?;
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout
+            .force()
+            .remove_untracked(false)
+            .remove_ignored(false);
+        repo.checkout_tree(target.as_object(), Some(&mut checkout))
+            .map_err(git_error)?;
+        let target_tree = target.tree().map_err(git_error)?;
+        let mut index = repo.index().map_err(git_error)?;
+        index.read_tree(&target_tree).map_err(git_error)?;
+        index.write().map_err(git_error)?;
+        repo.cleanup_state().map_err(git_error)?;
+        drop(transaction);
+        verify_restored_merge_state(self, path, before)
+    }
+
+    fn set_branch_target_checked(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_current: &str,
+        target: &str,
+    ) -> ModelResult<GitUpdateResult> {
+        let repo = open_repo(path)?;
+        let expected = parse_existing_commit(&repo, expected_current)?;
+        let target = parse_existing_commit(&repo, target)?;
+        let ref_name = branch_ref_name(branch);
+        let mut transaction = repo.transaction().map_err(git_error)?;
+        transaction.lock_ref(&ref_name).map_err(git_error)?;
+
+        ensure_clean_recovery_state(self, path, &repo, branch)?;
+        let current = repo
+            .find_reference(&ref_name)
+            .and_then(|reference| reference.peel_to_commit())
+            .map_err(git_error)?
+            .id();
+        if current == target {
+            drop(transaction);
+            verify_merge_result(self, path, branch, &target.to_string())?;
+            return Ok(GitUpdateResult {
+                updated: false,
+                commit: Some(target.to_string()),
+            });
+        }
+        if current != expected {
+            return Err(ModelError::new(
+                ErrorCode::MergeDrift,
+                format!(
+                    "branch '{branch}' changed before rollback; expected {expected}, observed {current}"
+                ),
+            ));
+        }
+
+        let target_object = repo.find_object(target, None).map_err(git_error)?;
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.safe();
+        repo.checkout_tree(&target_object, Some(&mut checkout))
+            .map_err(git_error)?;
+        transaction
+            .set_target(&ref_name, target, None, "gwz checked merge rollback")
+            .map_err(git_error)?;
+        transaction.commit().map_err(git_error)?;
+        verify_merge_result(self, path, branch, &target.to_string())?;
+        Ok(GitUpdateResult {
+            updated: true,
+            commit: Some(target.to_string()),
+        })
+    }
+
     fn rebase_onto(
         &self,
         path: &Path,
@@ -1665,6 +1796,61 @@ impl GitBackend for Git2Backend {
         })
     }
 
+    fn commit_merge_resolution_checked(
+        &self,
+        path: &Path,
+        expected_before: &str,
+        expected_merge_head: &str,
+        message: &str,
+    ) -> ModelResult<GitCommitResult> {
+        let repo = open_repo(path)?;
+        let before = parse_existing_commit(&repo, expected_before)?;
+        let merge_head = parse_existing_commit(&repo, expected_merge_head)?;
+        let ref_name = attached_head_ref(&repo)?;
+        let mut transaction = repo.transaction().map_err(git_error)?;
+        transaction.lock_ref(&ref_name).map_err(git_error)?;
+        validate_expected_native_merge(&repo, before, merge_head)?;
+        validate_resolution_index_and_worktree(self, path, &repo, before, merge_head)?;
+
+        let mut index = repo.index().map_err(git_error)?;
+        let tree_oid = index.write_tree().map_err(git_error)?;
+        let tree = repo.find_tree(tree_oid).map_err(git_error)?;
+        let before_commit = repo.find_commit(before).map_err(git_error)?;
+        let merge_commit = repo.find_commit(merge_head).map_err(git_error)?;
+        let signature = merge_signature(&repo)?;
+        let oid = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &[&before_commit, &merge_commit],
+            )
+            .map_err(git_error)?;
+        let committed = repo.find_commit(oid).map_err(git_error)?;
+        if committed.parent_count() != 2
+            || committed.parent_id(0).map_err(git_error)? != before
+            || committed.parent_id(1).map_err(git_error)? != merge_head
+            || committed.message_bytes() != message.as_bytes()
+        {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "merge resolution commit does not match its checked parents or message",
+            ));
+        }
+        transaction
+            .set_target(&ref_name, oid, Some(&signature), "gwz merge resolution")
+            .map_err(git_error)?;
+        transaction.commit().map_err(git_error)?;
+        repo.cleanup_state().map_err(git_error)?;
+        let branch = ref_name.trim_start_matches("refs/heads/");
+        verify_merge_result(self, path, branch, &oid.to_string())?;
+        Ok(GitCommitResult {
+            commit: oid.to_string(),
+        })
+    }
+
     fn tag_create(
         &self,
         path: &Path,
@@ -1881,6 +2067,186 @@ pub(crate) fn ensure_no_integration_in_progress(repo: &git2::Repository) -> Mode
     Ok(())
 }
 
+fn parse_existing_commit(repo: &git2::Repository, value: &str) -> ModelResult<git2::Oid> {
+    let oid = git2::Oid::from_str(value).map_err(git_error)?;
+    repo.find_commit(oid).map_err(git_error)?;
+    Ok(oid)
+}
+
+fn recovery_drift(message: impl Into<String>) -> ModelError {
+    ModelError::new(ErrorCode::MergeDrift, message)
+}
+
+fn recovery_dirty(message: impl Into<String>) -> ModelError {
+    ModelError::new(ErrorCode::DirtyMember, message)
+}
+
+fn attached_head_ref(repo: &git2::Repository) -> ModelResult<String> {
+    let head = repo.head().map_err(git_error)?;
+    if !head.is_branch() {
+        return Err(recovery_drift(
+            "merge recovery requires an attached local branch",
+        ));
+    }
+    let name = head.name().map_err(git_error)?;
+    Ok(name.to_owned())
+}
+
+fn validate_expected_native_merge(
+    repo: &git2::Repository,
+    before: git2::Oid,
+    expected_merge_head: git2::Oid,
+) -> ModelResult<()> {
+    if repo.state() != git2::RepositoryState::Merge {
+        return Err(recovery_drift(format!(
+            "expected native merge state, observed {:?}",
+            repo.state()
+        )));
+    }
+    let head = repo.head().map_err(git_error)?;
+    let observed = head.peel_to_commit().map_err(git_error)?.id();
+    if !head.is_branch() || observed != before {
+        return Err(recovery_drift(format!(
+            "merge target changed; expected {before}, observed {observed}"
+        )));
+    }
+    let value = std::fs::read_to_string(repo.path().join("MERGE_HEAD"))
+        .map_err(|error| recovery_drift(format!("failed to read expected MERGE_HEAD: {error}")))?;
+    let mut heads = value.lines().filter(|line| !line.trim().is_empty());
+    let observed_merge_head = heads
+        .next()
+        .and_then(|line| git2::Oid::from_str(line.trim()).ok());
+    if heads.next().is_some() || observed_merge_head != Some(expected_merge_head) {
+        return Err(recovery_drift(format!(
+            "MERGE_HEAD changed; expected {expected_merge_head}"
+        )));
+    }
+    Ok(())
+}
+
+fn expected_conflicts_and_index(
+    repo: &git2::Repository,
+    before: git2::Oid,
+    merge_head: git2::Oid,
+) -> ModelResult<(BTreeSet<Vec<u8>>, git2::Index)> {
+    let before = repo.find_commit(before).map_err(git_error)?;
+    let merge_head = repo.find_commit(merge_head).map_err(git_error)?;
+    let index = repo
+        .merge_commits(&before, &merge_head, None)
+        .map_err(git_error)?;
+    let mut conflicts = BTreeSet::new();
+    for conflict in index.conflicts().map_err(git_error)? {
+        let conflict = conflict.map_err(git_error)?;
+        if let Some(entry) = conflict.our.or(conflict.their).or(conflict.ancestor) {
+            conflicts.insert(entry.path);
+        }
+    }
+    Ok((conflicts, index))
+}
+
+fn comparable_index_entries(
+    index: &git2::Index,
+    excluded: &BTreeSet<Vec<u8>>,
+) -> Vec<(Vec<u8>, u32, git2::Oid, u16)> {
+    index
+        .iter()
+        .filter(|entry| !excluded.contains(&entry.path))
+        .map(|entry| (entry.path, entry.mode, entry.id, (entry.flags >> 12) & 3))
+        .collect()
+}
+
+fn validate_recovery_index(
+    repo: &git2::Repository,
+    before: git2::Oid,
+    merge_head: git2::Oid,
+) -> ModelResult<BTreeSet<Vec<u8>>> {
+    let (conflicts, expected) = expected_conflicts_and_index(repo, before, merge_head)?;
+    let current = repo.index().map_err(git_error)?;
+    if comparable_index_entries(&current, &conflicts)
+        != comparable_index_entries(&expected, &conflicts)
+    {
+        return Err(recovery_dirty(
+            "merge index contains changes outside the expected conflict paths",
+        ));
+    }
+    Ok(conflicts)
+}
+
+fn validate_abort_index_and_worktree(
+    backend: &impl GitBackend,
+    path: &Path,
+    repo: &git2::Repository,
+    before: git2::Oid,
+    merge_head: git2::Oid,
+) -> ModelResult<()> {
+    let conflicts = validate_recovery_index(repo, before, merge_head)?;
+    let status = backend.status(path)?;
+    let unexpected_worktree_change = status
+        .files
+        .iter()
+        .any(|file| file.worktree_status != " " && !conflicts.contains(file.path.as_bytes()));
+    if status.untracked > 0 || unexpected_worktree_change {
+        return Err(recovery_dirty(
+            "merge abort would overwrite work outside the expected conflict paths",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_resolution_index_and_worktree(
+    backend: &impl GitBackend,
+    path: &Path,
+    repo: &git2::Repository,
+    before: git2::Oid,
+    merge_head: git2::Oid,
+) -> ModelResult<()> {
+    validate_recovery_index(repo, before, merge_head)?;
+    let status = backend.status(path)?;
+    if status.unresolved > 0 || status.unstaged > 0 || status.untracked > 0 {
+        return Err(recovery_dirty(
+            "merge resolution must be fully resolved and staged with no unrelated worktree changes",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_clean_recovery_state(
+    backend: &impl GitBackend,
+    path: &Path,
+    repo: &git2::Repository,
+    branch: &str,
+) -> ModelResult<()> {
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err(recovery_drift(format!(
+            "rollback found integration state {:?}",
+            repo.state()
+        )));
+    }
+    let head = repo_head(repo)?;
+    if head.is_detached || head.branch.as_deref() != Some(branch) {
+        return Err(recovery_drift(format!(
+            "rollback target is not the attached branch '{branch}'"
+        )));
+    }
+    if backend.status(path)?.is_dirty {
+        return Err(recovery_dirty(
+            "rollback requires a clean index and worktree",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_restored_merge_state(
+    backend: &impl GitBackend,
+    path: &Path,
+    before: git2::Oid,
+) -> ModelResult<()> {
+    let branch = backend.head(path)?.branch.ok_or_else(|| {
+        recovery_drift("repository is detached after restoring the pre-merge state")
+    })?;
+    verify_merge_result(backend, path, &branch, &before.to_string())
+}
+
 fn classify_merge(
     repo: &git2::Repository,
     target_commit: git2::Oid,
@@ -1920,7 +2286,7 @@ pub(crate) fn verify_merge_result(
     if observed.branch.as_deref() != Some(branch)
         || observed.commit.as_deref() != Some(expected_commit)
         || status.is_dirty
-        || backend.merge_state(path)?.is_some()
+        || open_repo(path)?.state() != git2::RepositoryState::Clean
     {
         return Err(ModelError::new(
             ErrorCode::GitCommandFailed,

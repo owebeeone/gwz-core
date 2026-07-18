@@ -66,6 +66,7 @@ where
             all,
         )?
     };
+    super::merge::enforce_open_merge_stage_targets(&root, &targets)?;
 
     // A root stage must see the current physical nested-repository boundary before
     // Git examines the worktree. Inactive checkouts remain excluded while present.
