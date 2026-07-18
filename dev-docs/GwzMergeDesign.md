@@ -100,6 +100,12 @@ behavior change and requires a release note. M0 retains the legacy partial lock
 advance because freezing the lock without a durable close/recovery lifecycle
 would leave no safe way to advance it later.
 
+That M0 rule also applies when an unexpected backend or host failure halts a
+batch: every earlier outcome that was verified clean is written to the lock,
+the failed participant is reported honestly, and later participants remain
+unattempted. M1 deliberately replaces this behavior with its durable baseline
+lock and recovery lifecycle.
+
 The first-class design supersedes `BranchOp.merge` as the canonical protocol
 surface. `gwz branch --merge <source>` remains temporarily as a deprecated CLI
 compatibility alias which constructs the new `MergeRequest`. It must produce a
@@ -230,6 +236,12 @@ Every selected repository must satisfy all of the following:
 - the target branch ref still points to the observed HEAD;
 - Git identity is available if the planned merge may create a commit;
 - the repository can be locked for the operation.
+
+Every backend failure discovered while preflighting a participant retains its
+typed backend error code and carries that participant's id and path in both the
+human diagnostic and structured error fields. Request-supplied author and
+committer identities are validated for libgit2 representability before
+planning or mutation begins.
 
 The plan records, per participant:
 
@@ -511,6 +523,12 @@ mutation. Unless `-m` overrides it in a later phase, the default is
 Immediate clean merges and resolution commits use that recorded message.
 Author and committer identity come from the member repository at commit time;
 the recorded parent commits, not the person identity, are the merge invariant.
+
+M0 intentionally retains the legacy member message
+`Merge <source-ref> into <target-branch>` without quotes or GWZ trailers. The
+quoted message and `GWZ-Merge-ID`/`GWZ-Operation-ID` trailers begin in M1,
+where the durable operation record can freeze the merge id and exact message
+before mutation.
 
 An all-up-to-date operation, including an explicitly selected up-to-date root,
 is a successful no-op and does not require a new root commit or marker.
@@ -1018,6 +1036,13 @@ Each `MergeRepoSummary` reports at least:
 Append `merge` to the operation-action enum. Do not renumber existing protocol
 enum values. JSON and JSONL responses for `gwz merge` must report action
 `merge`, including when invoked through the deprecated `branch --merge` alias.
+Both drivers serialize the complete current `MergeResponse` shape from M0:
+all participant counts (including reserved `continued`, `aborted`, and
+`rolled_back` counts), `operation_drift`, `preservation`, and
+`publication_step`. Reserved values are empty or null until their delivery
+phase, but their keys are present so M1 can populate them without another
+output-shape change. Rust and Python validate this contract against one shared
+canonical fixture.
 Append `deprecated_operation` to `GwzErrorCode`; direct protocol
 `BranchRequest { op: merge }` returns that code and names the `merge` method in
 its diagnostic, as defined in section 4.
@@ -1121,6 +1146,9 @@ distributed atomicity.
   `deprecated_operation` naming the `merge` method.
 - Add action-correct human, JSON, and JSONL output.
 - Preserve current preflight, conflict, and partial lock-advance behavior.
+- Reject unrelated histories for both first-class merge and the existing
+  `pull --sync merge` path, matching Git porcelain; do not implicitly enable
+  `--allow-unrelated-histories`.
 - On conflict, print only per-member ordinary Git recovery guidance; do not
   advertise status, continue, or coordinated abort before they exist.
 - Reject `--partial` and `--force` with merge-specific typed errors.
