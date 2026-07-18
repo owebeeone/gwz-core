@@ -1,6 +1,15 @@
 {
   "branch_repos": null,
-  "errors": [],
+  "errors": [
+    {
+      "code": "GitCommandFailed",
+      "detail": "source ref was not found in the member repository",
+      "member_id": "mem_worker",
+      "member_path": "worker",
+      "message": "member 'mem_worker' at 'worker': revspec 'feature/x' not found",
+      "target_kind": "Member"
+    }
+  ],
   "kind": "response",
   "members": [],
   "merge": {
@@ -16,12 +25,12 @@
       "aborted": 1,
       "conflicted": 1,
       "continued": 1,
-      "failed": 0,
+      "failed": 1,
       "fast_forwarded": 0,
       "merged": 0,
       "planned": 1,
       "rolled_back": 1,
-      "total": 5,
+      "total": 6,
       "unattempted": 0,
       "up_to_date": 0
     },
@@ -144,13 +153,39 @@
         "target_branch": "main",
         "target_id": "mem_web",
         "target_kind": "Member"
+      },
+      {
+        "abort_eligible": false,
+        "before_commit": "before123",
+        "conflict_paths": [],
+        "continue_eligible": false,
+        "drift": [],
+        "error": {
+          "code": "GitCommandFailed",
+          "detail": "source ref was not found in the member repository",
+          "member_id": "mem_worker",
+          "member_path": "worker",
+          "message": "member 'mem_worker' at 'worker': revspec 'feature/x' not found",
+          "target_kind": "Member"
+        },
+        "live_commit": null,
+        "path": "worker",
+        "predicted": null,
+        "prediction_complete": false,
+        "resulting_commit": null,
+        "source_commit": "source123",
+        "source_ref": "feature/x",
+        "state": "Failed",
+        "target_branch": "main",
+        "target_id": "mem_worker",
+        "target_kind": "Member"
       }
     ],
-    "state": "AwaitingResolution"
+    "state": "Halted"
   },
   "meta": {
     "action": "Merge",
-    "aggregate_status": "Conflicted",
+    "aggregate_status": "Failed",
     "message": null,
     "operation_id": "op-parity-1",
     "request_id": "req-parity-1",
