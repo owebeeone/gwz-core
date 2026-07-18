@@ -1,6 +1,6 @@
 # GWZ Merge Implementation Plan
 
-Status: **proposed** (revised 2026-07-19). Owner: Gianni.
+Status: **active** (revised 2026-07-19). Owner: Gianni.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -157,6 +157,7 @@ Initial budgets are:
 | M0-B2 deterministic start execution | ≤450 lines |
 | M0-C1 Rust CLI and docs | ≤400 lines |
 | M0-C2 Python client/CLI and parity | ≤450 lines |
+| M1-0 lead-owned interface freeze | ≤300 lines |
 | M1-A store and recovery discovery | ≤500 lines |
 | M1-B status and drift | ≤450 lines |
 | M1-C1 transitions, events, and central gate | ≤500 lines |
@@ -434,10 +435,11 @@ flowchart TD
     M0B2 --> G0
     M0C1 --> G0
     M0C2 --> G0
-    G0 --> M1A["M1: record store and recovery discovery"]
-    G0 --> M1B["M1: status and operation drift"]
-    G0 --> M1C1["M1: gate and events"]
-    G0 --> M1C2["M1: driver status"]
+    G0 --> M10["M1-0: lead-owned interface freeze"]
+    M10 --> M1A["M1: record store and recovery discovery"]
+    M10 --> M1B["M1: status and operation drift"]
+    M10 --> M1C1["M1: gate and events"]
+    M10 --> M1C2["M1: driver status"]
     M1A --> G1["M1 integration gate"]
     M1B --> G1
     M1C1 --> G1
@@ -600,6 +602,52 @@ to pass as one coherent delivery gate.
 Goal: create inspectable evidence before mutation, freeze the accepted lock
 during an open merge, and prevent unrelated GWZ mutations.
 
+### M1-0 — Lead-owned interface freeze
+
+Owner: lead. Budget: at most 300 handwritten changed lines.
+
+Status: **complete** (2026-07-19).
+
+This checkpoint lands as one reviewed commit before any M1 specialist starts.
+It is the only M1 task allowed to change the shared record/status contracts.
+
+Owned files:
+
+- `merge/model.rs`, `merge/response.rs`, and the `MergeStore` seam in
+  `merge/mod.rs`;
+- taut/requirements changes needed for status semantics;
+- authoritative merge design and plan delivery/ownership text;
+- Rust/Python interim diagnostics that expose internal milestone names.
+
+Frozen contract:
+
+- persist each participant's exact merge message and typed failure code/detail;
+- keep live status observations separate from the durable record;
+- use one `MergeStatusSnapshot`/participant-observation shape for live commit,
+  conflicts, structured drift, and continue/abort eligibility;
+- initial no-open status returns `MergeOperationState.idle`, `open: false`, no
+  merge id, zero counts, and no participant or drift rows;
+- defer archived-record enumeration and id-qualified archived status to M3;
+- M1-B owns the single participant observation/drift classifier that M2a
+  continue and abort consume after the M1 gate;
+- M1-C1 owns durable integration changes in `merge/start.rs`; M1-A supplies the
+  store implementation and does not edit start execution policy; and
+- user-visible diagnostics describe capabilities without M0/M1/M2/M3/M4 names.
+
+Exit gate:
+
+- durable record round-trip tests preserve message and typed error fields;
+- status snapshot conversion tests populate live commit, drift, and eligibility
+  without changing the record;
+- protocol generation/parity includes the append-only `idle` state;
+- request validation reserves id-qualified status until M3;
+- Rust/Python conflict guidance and typed unsupported errors contain no internal
+  milestone names; and
+- the complete core, driver, generated-artifact, and documentation gates pass.
+
+Only after this checkpoint is committed may M1-A, M1-B, M1-C1, and M1-C2 run
+in parallel.
+
 ### M1-A — Record store and recovery discovery
 
 Owner: lifecycle/store agent. Budget: at most 500 handwritten changed lines.
@@ -615,12 +663,14 @@ Work:
 - serialize the versioned operation record under `.gwz/merge/`;
 - write temporary file, flush, rename, and verify;
 - retain unknown fields across read-modify-write;
-- write the record before the first participant mutation;
-- update after every participant outcome and state transition;
+- provide the atomic store operations used by M1-C1 before the first mutation
+  and after every participant outcome or state transition;
 - discover open state before normal manifest parsing;
 - archive closed records and implement the default last-20 ordinary retention
   policy without deleting preservation owners;
 - return typed `record_unreadable` rather than treating corruption as no merge.
+
+M1-A does not edit `merge/start.rs` or decide execution policy.
 
 ### M1-B — Status and drift
 
@@ -628,7 +678,7 @@ Owner: status agent. Budget: at most 450 handwritten changed lines.
 
 Owned files:
 
-- `merge/status.rs`;
+- `merge/status.rs` and, if split, `merge/observe.rs`;
 - response conversion tests;
 - status-focused filesystem scenarios.
 
@@ -643,7 +693,8 @@ Work:
 - remain strictly read-only.
 
 The agent works against the frozen store read interface. It does not change the
-record schema.
+record schema. Its participant observation/drift classifier is the sole
+classifier later consumed by continue and abort; drivers do not recreate it.
 
 ### M1-C1 — State transitions, events, and central gate
 
@@ -652,12 +703,15 @@ Owner: lead. Budget: at most 500 handwritten changed lines.
 Owned files:
 
 - central merge dispatch and state-transition wiring;
+- durable record integration changes in `merge/start.rs` only;
 - affected files under `gwz-core/src/operation/`;
 - central gate table implementation and its core tests.
 
 Work:
 
 - enforce legal operation-state transitions;
+- create and persist the frozen record before start's first Git mutation and
+  persist every participant result through M1-A's store interface;
 - emit state-transition events only after durable record updates;
 - add the single pre-dispatch open-operation allowlist;
 - implement every command row from the design, including remote tag forms and
@@ -711,8 +765,9 @@ Goal: safely finish or unwind a member-only coordinated merge, including mixed
 up-to-date, successful, conflicted, failed, and unattempted states.
 
 Before parallel work starts, the lead confirms the retry, rollback, and state
-transition interfaces remain sufficient. Any correction lands once before the
-agents begin.
+transition interfaces remain sufficient and that M1-B's observation/drift
+classifier is the only classifier used by both operations. Any correction
+lands once before the agents begin.
 
 ### M2a-A — Continue and retry
 
@@ -1020,7 +1075,7 @@ Owned files:
 
 Work:
 
-- implement id-qualified archived status if still deferred;
+- implement archived-record enumeration and id-qualified archived status;
 - enforce default retention for unowned ordinary records;
 - refuse GC of the open operation;
 - remove verified archived records and private refs together;
@@ -1227,6 +1282,7 @@ marked as release gates authorize a public merge release.
 | --- | --- | --- |
 | I0 | Requirements, taut protocol, lifecycle model, backend seams, and handler compile; generated parity passes. | Internal foundation only. |
 | M0 | First-class start/dry-run and deprecated alias work in both drivers with current conflict behavior honestly documented. | Internal checkpoint; not releasable. |
+| M1-0 | Durable message/error fields, status snapshot, idle response, shared ownership, and capability-based diagnostics are frozen and green. | Lead-owned interface checkpoint; required before parallel M1 work. |
 | M1 | Evidence precedes mutation; open state survives restart; status/drift/gate work; accepted lock remains baseline. | Internal checkpoint; status is not released without close paths. |
 | M2a | Member-only continue/retry and coordinated abort pass mixed-state, drift, and interrupted-recovery tests. | Internal checkpoint; finalization is still required. |
 | M2b | Successful merge finalizes exactly once with scoped evidence and resumable `finalizing`. | **First public member-merge release gate:** start, dry-run, status, continue, and safe coordinated abort. |

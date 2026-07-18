@@ -362,6 +362,7 @@ pub enum MergeOperationState {
     Completed,
     Aborted,
     RecoveryRequired,
+    Idle,
 }
 impl MergeOperationState {
     pub fn wire(self) -> i64 { match self {
@@ -374,6 +375,7 @@ impl MergeOperationState {
         Self::Completed => 6,
         Self::Aborted => 7,
         Self::RecoveryRequired => 8,
+        Self::Idle => 9,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Executing,
@@ -385,6 +387,7 @@ impl MergeOperationState {
         6 => Self::Completed,
         7 => Self::Aborted,
         8 => Self::RecoveryRequired,
+        9 => Self::Idle,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeOperationState", value: v }),
     }) }
 }

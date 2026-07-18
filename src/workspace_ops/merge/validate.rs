@@ -13,10 +13,10 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
                 request.mode,
                 Some(crate::MergeMode::FfOnly | crate::MergeMode::NoFf)
             ) {
-                return phase("the requested merge mode is reserved for M4");
+                return phase("non-default merge modes are not available");
             }
             if request.message.is_some() {
-                return phase("custom merge messages are reserved for M4");
+                return phase("custom merge messages are not available");
             }
         }
         crate::MergeOp::Resume => {
@@ -27,10 +27,16 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
             reject_present("mode", request.mode.is_some())?;
             reject_present("message", request.message.is_some())?;
             if request.preserve == Some(true) {
-                return phase("preserve-abort is reserved for M3");
+                return phase("preserve-abort is not available");
             }
         }
-        crate::MergeOp::Status | crate::MergeOp::Gc => {
+        crate::MergeOp::Status => {
+            reject_recovery_fields(request)?;
+            if request.merge_id.is_some() {
+                return phase("status by merge id is not available");
+            }
+        }
+        crate::MergeOp::Gc => {
             reject_recovery_fields(request)?;
         }
     }
@@ -205,24 +211,27 @@ mod tests {
     fn reserved_features_return_specific_typed_errors_and_root_defers_to_planning() {
         let mut message = request(crate::MergeOp::Start);
         message.message = Some("custom".to_owned());
-        assert_eq!(
-            validate_merge_request(&message).unwrap_err().code,
-            ErrorCode::MergePhaseUnsupported
-        );
+        let error = validate_merge_request(&message).unwrap_err();
+        assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
+        assert_eq!(error.message, "custom merge messages are not available");
 
         let mut mode = request(crate::MergeOp::Start);
         mode.mode = Some(crate::MergeMode::FfOnly);
-        assert_eq!(
-            validate_merge_request(&mode).unwrap_err().code,
-            ErrorCode::MergePhaseUnsupported
-        );
+        let error = validate_merge_request(&mode).unwrap_err();
+        assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
+        assert_eq!(error.message, "non-default merge modes are not available");
 
         let mut preserve = request(crate::MergeOp::Abort);
         preserve.preserve = Some(true);
-        assert_eq!(
-            validate_merge_request(&preserve).unwrap_err().code,
-            ErrorCode::MergePhaseUnsupported
-        );
+        let error = validate_merge_request(&preserve).unwrap_err();
+        assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
+        assert_eq!(error.message, "preserve-abort is not available");
+
+        let mut archived_status = request(crate::MergeOp::Status);
+        archived_status.merge_id = Some("merge_1".to_owned());
+        let error = validate_merge_request(&archived_status).unwrap_err();
+        assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
+        assert_eq!(error.message, "status by merge id is not available");
 
         let mut root = request(crate::MergeOp::Start);
         root.meta.selection = Some(crate::Selection {

@@ -222,6 +222,7 @@ has no service method and no handler that executes commands.
 | completed | 6 |
 | aborted | 7 |
 | recovery_required | 8 |
+| idle | 9 |
 
 ### MergeParticipantDriftKind
 

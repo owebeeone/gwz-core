@@ -118,7 +118,7 @@ fn build_merge_plan<P: PlanningBackend>(
     {
         return Err(ModelError::new(
             ErrorCode::RootMergeNotYetSupported,
-            "explicit @root merge participation is reserved for M2c",
+            "explicit @root merge participation is not yet available",
         ));
     }
     let selected: BTreeSet<&str> = targets

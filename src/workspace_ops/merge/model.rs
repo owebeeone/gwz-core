@@ -178,6 +178,7 @@ pub(crate) struct MergeParticipantRecord {
     pub target_branch: String,
     pub before_commit: String,
     pub source_commit: String,
+    pub commit_message: String,
     pub state: ParticipantState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resulting_commit: Option<String>,
@@ -197,8 +198,10 @@ pub(crate) struct MergeParticipantRecord {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct MergeRecordError {
-    pub code: String,
+    pub code: ErrorCode,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -238,7 +241,7 @@ impl PublicationStep {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ParticipantDrift {
     pub kind: ParticipantDriftKind,
     pub message: String,
@@ -281,16 +284,37 @@ pub(crate) enum OperationDriftKind {
     RecordUnreadable,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub(crate) struct RetryEligibility {
     pub eligible: bool,
     pub blockers: Vec<ParticipantDriftKind>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub(crate) struct RollbackEligibility {
     pub eligible: bool,
     pub blockers: Vec<ParticipantDriftKind>,
+}
+
+/// One read-only live observation for a recorded participant. Status computes
+/// this without modifying the durable operation record; continue and abort
+/// consume the same drift and eligibility classification after the M1 gate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MergeParticipantObservation {
+    pub live_commit: Option<String>,
+    pub conflict_paths: Vec<String>,
+    pub drift: Vec<ParticipantDrift>,
+    pub continue_eligibility: RetryEligibility,
+    pub abort_eligibility: RollbackEligibility,
+}
+
+/// Complete read-only status input. Participant observations are keyed by the
+/// durable target ids and must cover every id in `record.selected_targets`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MergeStatusSnapshot {
+    pub record: MergeOperationRecord,
+    pub participants: BTreeMap<String, MergeParticipantObservation>,
+    pub operation_drift: Vec<OperationDrift>,
 }
 
 #[cfg(test)]
@@ -366,11 +390,32 @@ future_record: retained
             target_branch: "main".to_owned(),
             before_commit: "111".to_owned(),
             source_commit: "222".to_owned(),
+            commit_message: "Merge 'feature/x' into 'main'".to_owned(),
             state: ParticipantState::Conflicted,
             resulting_commit: None,
             expected_merge_head: Some("222".to_owned()),
             conflict_paths: vec!["src/lib.rs".to_owned()],
             error: None,
+            preservation: Vec::new(),
+            drift: Vec::new(),
+            extensions: BTreeMap::new(),
+        };
+        let failed = MergeParticipantRecord {
+            path: "repos/lib".to_owned(),
+            target_kind: MergeTargetKind::Member,
+            target_branch: "main".to_owned(),
+            before_commit: "333".to_owned(),
+            source_commit: "444".to_owned(),
+            commit_message: "Merge 'feature/x' into 'main'".to_owned(),
+            state: ParticipantState::Failed,
+            resulting_commit: None,
+            expected_merge_head: None,
+            conflict_paths: Vec::new(),
+            error: Some(MergeRecordError {
+                code: ErrorCode::GitCommandFailed,
+                message: "revspec 'feature/x' not found".to_owned(),
+                detail: Some("source ref was not found".to_owned()),
+            }),
             preservation: Vec::new(),
             drift: Vec::new(),
             extensions: BTreeMap::new(),
@@ -391,8 +436,11 @@ future_record: retained
                 root_head: None,
                 extensions: BTreeMap::new(),
             },
-            selected_targets: vec!["mem_core".to_owned()],
-            participants: BTreeMap::from([("mem_core".to_owned(), participant)]),
+            selected_targets: vec!["mem_core".to_owned(), "mem_lib".to_owned()],
+            participants: BTreeMap::from([
+                ("mem_core".to_owned(), participant),
+                ("mem_lib".to_owned(), failed),
+            ]),
             publication: None,
             operation_drift: Vec::new(),
             extensions: BTreeMap::new(),
@@ -408,9 +456,94 @@ future_record: retained
 
         let response = record.to_response(&context).unwrap();
         assert_eq!(response.response.meta.action, crate::ActionKind::Merge);
-        assert_eq!(response.participant_counts.total, 1);
+        assert_eq!(response.participant_counts.total, 2);
         assert_eq!(response.participant_counts.conflicted, 1);
+        assert_eq!(response.participant_counts.failed, 1);
         assert_eq!(response.repos[0].target_id, "mem_core");
+        assert_eq!(
+            response.repos[1].error.as_ref().unwrap().code,
+            crate::GwzErrorCode::GitCommandFailed
+        );
+        assert_eq!(
+            response.repos[1].error.as_ref().unwrap().detail.as_deref(),
+            Some("source ref was not found")
+        );
         assert!(response.open);
+
+        let rewritten = serde_yaml::to_string(&record).unwrap();
+        assert!(rewritten.contains("commit_message: Merge 'feature/x' into 'main'"));
+        assert!(rewritten.contains("code: git_command_failed"));
+        assert_eq!(
+            serde_yaml::from_str::<MergeOperationRecord>(&rewritten).unwrap(),
+            record
+        );
+
+        let snapshot = MergeStatusSnapshot {
+            record,
+            participants: BTreeMap::from([
+                (
+                    "mem_core".to_owned(),
+                    MergeParticipantObservation {
+                        live_commit: Some("111".to_owned()),
+                        conflict_paths: vec!["src/lib.rs".to_owned()],
+                        drift: Vec::new(),
+                        continue_eligibility: RetryEligibility {
+                            eligible: true,
+                            blockers: Vec::new(),
+                        },
+                        abort_eligibility: RollbackEligibility {
+                            eligible: true,
+                            blockers: Vec::new(),
+                        },
+                    },
+                ),
+                (
+                    "mem_lib".to_owned(),
+                    MergeParticipantObservation {
+                        live_commit: Some("333".to_owned()),
+                        conflict_paths: Vec::new(),
+                        drift: Vec::new(),
+                        continue_eligibility: RetryEligibility {
+                            eligible: true,
+                            blockers: Vec::new(),
+                        },
+                        abort_eligibility: RollbackEligibility {
+                            eligible: true,
+                            blockers: Vec::new(),
+                        },
+                    },
+                ),
+            ]),
+            operation_drift: vec![OperationDrift {
+                kind: OperationDriftKind::BaselineManifestChanged,
+                message: "manifest changed".to_owned(),
+            }],
+        };
+        let durable_record = snapshot.record.clone();
+        let status = snapshot.to_response(&context).unwrap();
+        assert_eq!(snapshot.record, durable_record);
+        assert_eq!(status.repos[0].live_commit.as_deref(), Some("111"));
+        assert_eq!(status.repos[0].continue_eligible, Some(true));
+        assert_eq!(status.repos[0].abort_eligible, Some(true));
+        assert_eq!(status.operation_drift.len(), 1);
+
+        let idle = super::super::response::idle_status_response(&context).unwrap();
+        assert_eq!(idle.state, crate::MergeOperationState::Idle);
+        assert_eq!(
+            idle.response.meta.aggregate_status,
+            crate::AggregateStatus::Noop
+        );
+        assert!(idle.merge_id.is_none());
+        assert!(!idle.open);
+        assert_eq!(idle.participant_counts.total, 0);
+        assert!(idle.repos.is_empty());
+        assert!(idle.operation_drift.is_empty());
+
+        let mut incomplete = snapshot;
+        incomplete.participants.remove("mem_lib");
+        assert_eq!(
+            incomplete.to_response(&context).unwrap_err().code,
+            ErrorCode::InternalError
+        );
     }
 }

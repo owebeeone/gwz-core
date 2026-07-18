@@ -247,7 +247,9 @@ SCHEMA = schema(
          rolling_back=5,
          completed=6,
          aborted=7,
-         recovery_required=8),
+         recovery_required=8,
+         # Read-only status result when no coordinated merge is open.
+         idle=9),
 
     # Participant state that differs from the durable merge record.
     MergeParticipantDriftKind=Enum(

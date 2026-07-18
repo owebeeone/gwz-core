@@ -705,6 +705,7 @@ fn merge_protocol_wire_values_are_pinned() {
     assert_eq!(gwz_core::MergeOp::Gc.wire(), 4);
     assert_eq!(gwz_core::MergeParticipantState::RolledBack.wire(), 9);
     assert_eq!(gwz_core::MergeOperationState::RecoveryRequired.wire(), 8);
+    assert_eq!(gwz_core::MergeOperationState::Idle.wire(), 9);
     assert_eq!(EventKind::OperationStateChanged.wire(), 7);
 }
 

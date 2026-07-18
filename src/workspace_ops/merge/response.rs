@@ -5,6 +5,29 @@ use crate::operation::OperationContext;
 
 use super::model::*;
 
+/// Stable no-open result for `gwz merge --status`.
+pub(crate) fn idle_status_response(
+    context: &OperationContext,
+) -> ModelResult<crate::MergeResponse> {
+    Ok(crate::MergeResponse {
+        response: crate::operation::response_envelope_for(
+            &context_meta(context),
+            crate::operation::ActionKind::Merge,
+            context.operation_id.clone(),
+            crate::AggregateStatus::Noop,
+            Vec::new(),
+        )?,
+        merge_id: None,
+        state: crate::MergeOperationState::Idle,
+        open: false,
+        participant_counts: crate::MergeParticipantCounts::default(),
+        repos: Vec::new(),
+        operation_drift: Vec::new(),
+        preservation: None,
+        publication_step: None,
+    })
+}
+
 impl MergeOperationRecord {
     pub(crate) fn to_response(
         &self,
@@ -53,6 +76,33 @@ impl MergeOperationRecord {
             preservation: (!preservation.is_empty()).then_some(preservation),
             publication_step: self.publication.as_ref().map(|value| value.step.into()),
         })
+    }
+}
+
+impl MergeStatusSnapshot {
+    pub(crate) fn to_response(
+        &self,
+        context: &OperationContext,
+    ) -> ModelResult<crate::MergeResponse> {
+        let mut response = self.record.to_response(context)?;
+        for repo in &mut response.repos {
+            let observation = self.participants.get(&repo.target_id).ok_or_else(|| {
+                ModelError::new(
+                    ErrorCode::InternalError,
+                    format!(
+                        "merge status snapshot is missing participant '{}'",
+                        repo.target_id
+                    ),
+                )
+            })?;
+            repo.live_commit.clone_from(&observation.live_commit);
+            repo.conflict_paths.clone_from(&observation.conflict_paths);
+            repo.continue_eligible = Some(observation.continue_eligibility.eligible);
+            repo.abort_eligible = Some(observation.abort_eligibility.eligible);
+            repo.drift = observation.drift.iter().map(Into::into).collect();
+        }
+        response.operation_drift = self.operation_drift.iter().map(Into::into).collect();
+        Ok(response)
     }
 }
 
@@ -110,11 +160,11 @@ impl MergeParticipantRecord {
             abort_eligible: None,
             drift: self.drift.iter().map(Into::into).collect(),
             error: self.error.as_ref().map(|error| crate::GwzError {
-                code: crate::GwzErrorCode::InternalError,
+                code: error.code.into(),
                 message: error.message.clone(),
                 member_id: Some(target_id.to_owned()),
                 member_path: Some(self.path.clone()),
-                detail: Some(error.code.clone()),
+                detail: error.detail.clone(),
                 target_kind: Some(self.target_kind.into()),
             }),
         }

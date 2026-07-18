@@ -2,11 +2,14 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+
 use crate::runtime::clock::TimestampMs;
 
 pub type ModelResult<T> = Result<T, ModelError>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     Ok,
     InvalidRequest,

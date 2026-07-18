@@ -16,6 +16,8 @@ use crate::runtime::clock::Clock;
 use crate::runtime::ids::IdProvider;
 
 /// Persistence seam frozen at I0. M1 provides the filesystem implementation.
+/// Initial status discovers only the open record; archived enumeration and
+/// id-qualified archived status deliberately remain outside this M1 seam.
 #[allow(dead_code)] // Remove when M1 wires the durable merge store.
 pub(crate) trait MergeStore {
     fn discover_open(&self, _root: &Path) -> ModelResult<Option<MergeOperationRecord>> {
@@ -104,7 +106,7 @@ fn dispatch_merge<B: GitBackend>(
         crate::MergeOp::Start => start::handle_start(backend, start, &request, context),
         op => Err(ModelError::new(
             ErrorCode::MergePhaseUnsupported,
-            format!("merge operation '{op:?}' is reserved but not implemented in M0"),
+            format!("merge operation '{op:?}' is not available"),
         )),
     }
 }
@@ -165,6 +167,7 @@ mod tests {
         let error = handle_merge_with_dependencies(dependencies, Path::new("."), request(), "op_2")
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
+        assert!(!error.message.contains("M0"));
     }
 
     #[test]

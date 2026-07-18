@@ -650,8 +650,10 @@ source commit, target branch, and before commit before mutation.
 
 After complete preflight and before the first Git mutation, core MUST atomically
 persist a recoverable operation record containing schema/tool versions,
-baseline manifest and lock digests, frozen targets, and participant plans. It
-MUST atomically record every subsequent participant and operation transition.
+baseline manifest and lock digests, frozen targets, participant plans, and the
+exact per-participant merge message required by restart-safe continue. Stored
+participant failures MUST retain their typed error code and detail. Core MUST
+atomically record every subsequent participant and operation transition.
 
 ### REQ-089F: Merge Lifecycle And Drift
 
@@ -661,6 +663,10 @@ recovery-required operation states, and MUST distinguish every planned,
 successful, conflicted, failed, unattempted, continued, aborted, or rolled-back
 participant outcome. Status and recovery MUST report structured participant
 and operation drift rather than silently adopting live state.
+Status MUST derive live commit, conflict, drift, and continue/abort eligibility
+from a read-only observation snapshot rather than writing observations into the
+durable record. With no open operation, status MUST return a successful idle
+response rather than fabricate a completed operation or report an error.
 
 ### REQ-089G: Open Merge Composition And Gate
 

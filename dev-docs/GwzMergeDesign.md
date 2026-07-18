@@ -92,13 +92,15 @@ The current `BranchOp.merge` implementation already provides a useful base:
 - clean member results refresh the workspace lock, including when another
   selected member conflicts.
 
-That last behavior means today's conflicted batch advances the recorded
-composition for its clean members. The durable lifecycle deliberately changes
-this: once M1 lands, an open merge keeps the lock at the complete pre-merge
-baseline until finalization. This is a user-visible and JSON-consumer-visible
-behavior change and requires a release note. M0 retains the legacy partial lock
+That last behavior means the interim start-only implementation advances the
+recorded composition for its clean members. The durable lifecycle deliberately
+changes this: once M1 lands, an open merge keeps the lock at the complete
+pre-merge baseline until finalization. M0 retains the legacy partial lock
 advance because freezing the lock without a durable close/recovery lifecycle
-would leave no safe way to advance it later.
+would leave no safe way to advance it later. M0 and M1 are internal delivery
+checkpoints, so first-release user and machine-output documentation describes
+only the durable baseline-lock behavior delivered with the complete member
+lifecycle.
 
 That M0 rule also applies when an unexpected backend or host failure halts a
 batch: every earlier outcome that was verified clean is written to the lock,
@@ -309,27 +311,35 @@ selected_targets:
 participants:
   mem_app:
     path: app
+    target_kind: member
     target_branch: main
     before_commit: aaa111
     source_commit: aaa999
+    commit_message: "Merge 'feature/refactor' into 'main'"
     state: planned
   mem_lib:
     path: lib
+    target_kind: member
     target_branch: main
     before_commit: bbb111
     source_commit: bbb999
+    commit_message: "Merge 'feature/refactor' into 'main'"
     state: planned
   mem_docs:
     path: docs
+    target_kind: member
     target_branch: release
     before_commit: ccc111
     source_commit: ccc999
+    commit_message: "Merge 'feature/refactor' into 'release'"
     state: planned
   '@root':
     path: .
+    target_kind: root
     target_branch: main
     before_commit: ddd111
     source_commit: ddd999
+    commit_message: "Merge 'feature/refactor' into 'main'"
     state: planned
 ```
 
@@ -380,11 +390,14 @@ The operation states have the following meanings:
 - `recovery_required`: an ambiguous or invariant-breaking state prevents safe
   automatic continue or abort and requires the reported manual recovery.
 
-For changed participants the record stores the resulting commit when known.
-For a conflicted participant it stores the expected `MERGE_HEAD`, conflict
-paths, and the unchanged target HEAD. For a failed participant it stores
-structured error detail. When root participates, its record also distinguishes
-the Git merge result commit from the later root composition-evidence commit.
+Every participant stores the exact merge message frozen before mutation so a
+restart-safe continue cannot reconstruct different commit bytes. For changed
+participants the record stores the resulting commit when known. For a
+conflicted participant it stores the expected `MERGE_HEAD`, conflict paths,
+and the unchanged target HEAD. For a failed participant it stores the typed
+error code, message, and optional detail. When root participates, its record
+also distinguishes the Git merge result commit from the later root
+composition-evidence commit.
 
 The record is written atomically before execution and atomically updated after
 each participant outcome. This makes a process crash inspectable and makes
@@ -608,9 +621,11 @@ coordinated operation.
 ## 12. `gwz merge --status`
 
 Status reads the open record and compares it with every live participant. With
-no open operation, it reports retained archived records and preservation
-evidence; a later id-qualified status form can expand one archived operation.
-Status does not mutate Git or GWZ artifacts.
+no open operation, initial status returns a successful `idle` response with no
+merge id, participants, or drift; it does not fabricate a completed operation.
+Archived-record enumeration, id-qualified archived status, and retained
+preservation evidence arrive with the preservation/GC increment in M3. Status
+does not mutate Git or GWZ artifacts.
 
 Status also reports operation-level drift independently from participant drift.
 This allows a caller to see why the next continue or abort would reject even
@@ -951,8 +966,8 @@ do not yet exist:
 docs  feature/refactor -> release  conflicted   guide.md
 
 Resolve or abort this member with ordinary Git commands in docs/.
-Other members may already have changed; M0 has no coordinated continue or
-rollback. The workspace lock reflects clean member outcomes.
+Other members may already have changed; coordinated continue and rollback are
+not yet available. The workspace lock reflects clean member outcomes.
 ```
 
 ## 16. Protocol
@@ -1136,6 +1151,11 @@ distributed atomicity.
 
 ## 19. Delivery phases
 
+These are internal implementation checkpoints, not independent release
+promises. M0, M1, and the continue/abort implementation checkpoint remain
+unreleased until the complete member lifecycle, including finalization, passes
+the first public release gate defined in `GwzMergePlan.md`.
+
 ### Phase M0: first-class start surface
 
 - Add `MergeRequest` and `MergeResponse`.
@@ -1160,8 +1180,8 @@ distributed atomicity.
 - Add the complete operation-state enum, structured operation-level drift, and
   state-transition events; M2 uses `finalizing` for publication recovery.
 - Keep the workspace lock at its last complete baseline while merge is open.
-- Treat that lock freeze as an explicit change from M0/current behavior,
-  release-note it, and update human/JSON consumer documentation together.
+- Replace the interim M0 lock behavior before the first public merge release
+  and update human/JSON consumer documentation together.
 - Add `gwz merge --status`.
 - Add the centralized open-operation gate and complete command allowlist.
 - Archive closed records with the retention rules in section 8.
