@@ -1,19 +1,24 @@
 # GWZ Merge Implementation Plan
 
-Status: **proposed** (2026-07-16). Owner: Gianni.
+Status: **proposed** (revised 2026-07-19). Owner: Gianni.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
 `GwzMergePlan-ReviewF5.md`. The design is the behavioral authority for merge.
 `GWZDesign.md` remains authoritative for the overall workspace model, and
-`GWZRequirements.md` remains the baseline for required behavior.
+`GWZRequirements.md` remains the baseline for required behavior. This plan owns
+implementation sequencing and public release boundaries.
 
 Plan-review disposition: F2, F3, and F5 are accepted. F1 and F4 were based on
 an older design revision: the current design already specifies explicit
 workspace-root participation, `MergeOp.gc`, its validation matrix, and
 `OperationStateChanged`. Root participation therefore remains in M2c. This
 revision also records the protocol-level fate of `BranchOp.merge`, adds a fresh
-native Python build gate, and budgets/splits implementation tasks.
+native Python build gate, and budgets/splits implementation tasks. The release
+boundary is later than the implementation checkpoints: M0, M1, and M2a are not
+independently releasable. The first public member-merge release occurs only
+after M2b supplies durable status, continue, coordinated abort, and recoverable
+finalization alongside start and dry-run.
 
 The plan is deliberately organized for a lead agent plus parallel specialist
 agents. Parallel work begins only after shared interfaces compile and are
@@ -49,6 +54,23 @@ The implementation must provide:
 
 Advanced strategies and sources remain in M4 and are not allowed to delay the
 recoverable normal-merge lifecycle.
+
+### 1.1 Release boundaries
+
+Implementation waves exist to keep work reviewable and parallelizable; they
+are not promises that the intermediate behavior is suitable for users.
+
+- M0, M1, and M2a are internal integration checkpoints only.
+- The first public member-merge release is gated after M2b and includes start,
+  dry-run, `--status`, `--continue`, coordinated `--abort`, and finalization.
+- Ordinary abort is non-destructive: post-merge drift rejects the entire abort
+  rather than discarding user work.
+- Explicit `@root` participation follows only after M2c passes its recovery
+  gate. It may be included in the next release train with M3.
+- Preserve-abort, retention, and cleanup form the next lifecycle release
+  increment after the first member-merge release.
+- Strategy and source expansions in M4 ship independently after the normal
+  recoverable lifecycle is established.
 
 ## 2. Execution model
 
@@ -181,6 +203,8 @@ Additional constraints:
   the assigned task and intentionally changed.
 - No later milestone is pulled into an earlier one merely because an interface
   reserves it.
+- Passing a wave gate does not authorize a release. Only the release gates
+  identified in this plan do.
 - Requirements and design are updated before implementing behavior outside the
   current accepted contract.
 
@@ -429,14 +453,14 @@ flowchart TD
     M2M --> M2F["M2b: finalization state machine"]
     M2G --> M2F
     M2F --> M2D["M2b: driver completion"]
-    M2D --> G2B["M2b publication gate"]
+    M2D --> G2B["M2b integration / first public member-merge release gate"]
     G2B --> M2R["M2c: explicit root participation"]
     M2R --> G2C["M2 complete gate"]
     G2C --> M3A["M3: preservation backend"]
     G2C --> M3B["M3: preserve-abort"]
     G2C --> M3C1["M3: retention and GC"]
     G2C --> M3C2["M3: driver surfaces"]
-    M3A --> G3["M3 integration gate"]
+    M3A --> G3["M3 integration / next lifecycle release gate"]
     M3B --> G3
     M3C1 --> G3
     M3C2 --> G3
@@ -524,7 +548,9 @@ Work:
 - map deprecated Rust CLI `branch --merge` to `MergeRequest(start)`;
 - render source-to-target plans and every result;
 - emit action `merge` for human, JSON, and JSONL paths;
-- print only the honest M0 ordinary-Git conflict guidance from the design;
+- print only the honest interim ordinary-Git conflict guidance from the design;
+- keep user-facing documentation capability-based and free of internal
+  milestone names;
 - reject unavailable lifecycle flags and reserved policies with typed results.
 
 ### M0-C2 — Python surface and parity
@@ -559,11 +585,15 @@ Lead tasks:
   `deprecated_operation` response;
 - resolve only integration issues, not silently change frozen contracts;
 - add cross-layer start/dry-run scenarios;
-- confirm the legacy partial-lock behavior is documented and tested;
+- confirm the interim partial-lock behavior is tested and recorded in internal
+  implementation notes rather than published release documentation;
 - run the core, Rust CLI, Python, protocol, and documentation gates.
 
-M0 is releasable on its own. It must not advertise status, coordinated
-continue, or coordinated abort.
+M0 is an internal integration checkpoint and must not be published as a merge
+release. It proves start and dry-run behavior while the durable lifecycle is
+still absent. Status, coordinated continue, and coordinated abort remain hidden
+and must not be advertised. The first public release requires M1, M2a, and M2b
+to pass as one coherent delivery gate.
 
 ## 8. Wave M1 — durable open lifecycle
 
@@ -646,9 +676,13 @@ Owned files:
 
 Work:
 
-- expose `gwz merge --status` in Rust and Python;
+- implement `gwz merge --status` in Rust and Python for integration testing;
 - render participant drift, operation drift, lifecycle state, and recovery
-  commands in human and machine output.
+  eligibility in human and machine output;
+- keep status unreleased until continue and abort are implemented and the M2b
+  release gate passes;
+- do not print unavailable `--continue` or `--abort` instructions during this
+  internal checkpoint.
 
 M1-C1 and M1-C2 are separate ownership rows. Neither agent edits the other's
 files during the wave.
@@ -665,8 +699,11 @@ Lead verifies:
 - read-only commands remain available;
 - crash and unreadable-record tests fail closed.
 
-The M0-to-M1 lock behavior change receives a release note and simultaneous
-human/JSON documentation update.
+M1 is not a release boundary: it can describe an open merge but cannot yet
+close one through GWZ. The lock change from the internal M0 implementation is
+covered by tests and unreleased documentation updates. First-release user and
+machine-output documentation describes only the durable baseline-lock behavior,
+not the discarded interim M0 behavior.
 
 ## 9. Wave M2a — continue, retry, and coordinated abort
 
@@ -754,6 +791,10 @@ The gate proves:
 - an interrupted rollback resumes without repeating unsafe mutations;
 - unexpected failed/unattempted states follow their recorded retry rules.
 
+M2a remains an internal checkpoint. Continue and abort are not released until
+M2b proves that successful completion and interrupted finalization publish one
+coherent workspace composition.
+
 ## 10. Wave M2b — finalization and evidence
 
 Goal: publish one coherent workspace composition after successful participant
@@ -820,7 +861,7 @@ Owner: driver/parity agent. Budget: at most 400 handwritten changed lines.
 Work:
 
 - render `finalizing` and the current publication step;
-- expose continue and abort in Rust/Python CLIs and clients;
+- unhide status and expose continue and abort in Rust/Python CLIs and clients;
 - render wrong-id and drift rejections consistently;
 - add JSON/JSONL fields and event parity checks;
 - update command docs and recovery examples.
@@ -838,6 +879,31 @@ Required fault points include:
 
 At each point, status must explain the state, continue must resume
 idempotently, and abort must account for any recorded evidence commit.
+
+### First public member-merge release gate
+
+M2b is the first point at which the default member-only merge lifecycle may be
+released. The lead verifies all M0, M1, M2a, and M2b gates together and proves:
+
+- Rust and Python expose start, dry-run, status, continue, and coordinated
+  abort with matching human, JSON, and JSONL behavior;
+- a durable record exists before the first participant mutation and survives a
+  process restart;
+- status is strictly read-only and reports recorded versus live state, drift,
+  and continue/abort eligibility for every participant;
+- every open operation has a supported GWZ path to completion or safe abort;
+- ordinary abort preflights the entire rollback and rejects without mutation
+  when any affected participant contains post-merge drift;
+- successful continue/finalization publishes and archives exactly once across
+  every tested interruption point;
+- unavailable preserve, strategy, and custom-message forms remain hidden and
+  return typed unsupported errors when submitted directly;
+- explicit `@root` remains unadvertised and returns its typed unsupported error
+  until M2c passes; and
+- public documentation describes capabilities and limitations without exposing
+  internal milestone names.
+
+There is no public release candidate at M0, M1, or M2a.
 
 ## 11. Wave M2c — explicit workspace-root participation
 
@@ -902,7 +968,9 @@ Work:
 
 The lead runs the complete design matrix for member-only, root-only, and mixed
 selection. Explicit root support is not released until conflict recovery works
-without a valid live manifest.
+without a valid live manifest. M2c may ship as a follow-up to the first
+member-only release or in the same release train as M3; it does not retroactively
+make the M0 or M1 checkpoints releasable.
 
 ## 12. Wave M3 — preservation, retention, and GC
 
@@ -975,6 +1043,11 @@ Run preservation failure injection before and after each artifact creation.
 No rollback may begin until every required artifact is verified. Successful
 preserve-abort must report enough information to recover work without the
 operation record.
+
+M3 is the planned next lifecycle release increment after the first public
+member-merge release. It ships `--abort --preserve`, retention, and explicit
+cleanup only after this gate is green. If explicit-root work is bundled into
+the same release train, the M2c gate must also be green.
 
 ## 13. Wave M4 — controlled expansion
 
@@ -1086,8 +1159,8 @@ The explicit `maturin develop` remains in the documented gate even after
 duplicate build only when the runner proves it has rebuilt the same current
 source revision during that invocation.
 
-Run clippy and the repository's Bazel/Razel targets before declaring a
-milestone releasable when those toolchains are available:
+Run clippy and the repository's Bazel/Razel targets before declaring any
+integration or release gate green when those toolchains are available:
 
 ```text
 cd <workspace-root>
@@ -1147,16 +1220,19 @@ These are design decisions, not local implementation details.
 
 ## 18. Milestone definitions of done
 
-| Milestone | Definition of done |
-| --- | --- |
-| I0 | Requirements, taut protocol, lifecycle model, backend seams, and handler compile; generated parity passes. |
-| M0 | First-class start/dry-run and deprecated alias work in both drivers with current conflict behavior honestly documented. |
-| M1 | Evidence precedes mutation; open state survives restart; status/drift/gate work; accepted lock remains baseline. |
-| M2a | Member-only continue/retry and coordinated abort pass mixed-state, drift, and interrupted-recovery tests. |
-| M2b | Successful merge finalizes exactly once with scoped evidence and resumable `finalizing`. |
-| M2c | Explicit root works through start, conflict, continue, finalization, drift, and abort without relying on valid live metadata. |
-| M3 | Preserve-abort, evidence retention, archived status, and GC are safe, explicit, and recoverable. |
-| M4 | Each optional strategy/source ships independently without weakening the established lifecycle. |
+Milestone completion controls implementation sequencing. Only rows explicitly
+marked as release gates authorize a public merge release.
+
+| Milestone | Definition of done | Delivery significance |
+| --- | --- | --- |
+| I0 | Requirements, taut protocol, lifecycle model, backend seams, and handler compile; generated parity passes. | Internal foundation only. |
+| M0 | First-class start/dry-run and deprecated alias work in both drivers with current conflict behavior honestly documented. | Internal checkpoint; not releasable. |
+| M1 | Evidence precedes mutation; open state survives restart; status/drift/gate work; accepted lock remains baseline. | Internal checkpoint; status is not released without close paths. |
+| M2a | Member-only continue/retry and coordinated abort pass mixed-state, drift, and interrupted-recovery tests. | Internal checkpoint; finalization is still required. |
+| M2b | Successful merge finalizes exactly once with scoped evidence and resumable `finalizing`. | **First public member-merge release gate:** start, dry-run, status, continue, and safe coordinated abort. |
+| M2c | Explicit root works through start, conflict, continue, finalization, drift, and abort without relying on valid live metadata. | Follow-up explicit-root release gate; may be bundled with M3. |
+| M3 | Preserve-abort, evidence retention, archived status, and GC are safe, explicit, and recoverable. | **Next lifecycle release gate:** preservation, retention, and cleanup. |
+| M4 | Each optional strategy/source ships independently without weakening the established lifecycle. | Later independent feature releases. |
 
 ## 19. Recommended first implementation run
 
