@@ -224,6 +224,20 @@ SCHEMA = schema(
          true_merge=2,
          unknown=3),
 
+    # Exact mutating action journaled before Git is invoked.
+    MergePendingActionKind=Enum(
+         verify_up_to_date=0,
+         fast_forward=1,
+         true_merge=2,
+         resolve_conflict=3),
+
+    # Read-only reconciliation of a durable pending action against live Git.
+    MergePendingActionState=Enum(
+         not_started=0,
+         expected_conflict=1,
+         completed_exactly=2,
+         ambiguous=3),
+
     # Durable lifecycle for one frozen merge participant.
     MergeParticipantState=Enum(
          planned=0,
@@ -262,7 +276,11 @@ SCHEMA = schema(
          merge_state_missing=6,
          merge_head_changed=7,
          new_integration_state=8,
-         repository_missing=9),
+         repository_missing=9,
+         head_diverged=10,
+         object_missing=11,
+         foreign_integration_state=12,
+         pending_action_ambiguous=13),
 
     # Workspace/record state that differs from the durable merge baseline.
     MergeOperationDriftKind=Enum(
@@ -1013,6 +1031,13 @@ SCHEMA = schema(
         stash_id=F(5, STR, optional=True),
         stash_object_id=F(6, STR, optional=True)),
 
+    # Status projection for an action journaled before a Git mutation whose
+    # durable participant outcome has not yet been published.
+    MergePendingActionSummary=Msg(
+        kind=F(1, Ref.MergePendingActionKind),
+        state=F(2, Ref.MergePendingActionState),
+        message=F(3, STR, optional=True)),
+
     # Plan, result, and live recovery projection for one merge participant.
     MergeRepoSummary=Msg(
         target_id=F(1, STR),
@@ -1032,7 +1057,8 @@ SCHEMA = schema(
         continue_eligible=F(14, BOOL, optional=True),
         abort_eligible=F(15, BOOL, optional=True),
         drift=F(16, List(Ref.MergeParticipantDrift)),
-        error=F(17, Ref.GwzError, optional=True)),
+        error=F(17, Ref.GwzError, optional=True),
+        pending_action=F(18, Ref.MergePendingActionSummary, optional=True)),
 
     # Planned member mutation returned by dry-run or accepted responses.
     PlannedChange=Msg(
@@ -1089,7 +1115,11 @@ SCHEMA = schema(
         # Concrete target kind for member_id/member_path when present.
         target_kind=F(14, Ref.TargetKind, optional=True),
         # Structured state for operation_state_changed events.
-        merge_state=F(15, Ref.MergeOperationState, optional=True)),
+        merge_state=F(15, Ref.MergeOperationState, optional=True),
+        # Merge-specific durable participant outcome for member_finished.
+        merge_member=F(16, Ref.MergeRepoSummary, optional=True),
+        # Workspace-relative durable artifact path for artifact_written.
+        artifact_path=F(17, STR, optional=True)),
 
     # Final operation record returned by operation.result.
     OperationResult=Msg(

@@ -596,8 +596,11 @@ member results with conflict paths rather than hidden as generic failure.
 V0 merge MUST merge into the current attached branch of each selected member.
 Merge into an explicitly named different target branch MAY be added after v0.
 
-Merge operations that create Git commits MUST use request-provided Git identity
-when present, subject to driver policy.
+Merge operations that create Git commits MUST use the author and committer
+identity supplied by the request that creates the commit when present, subject
+to driver policy. Immediate merges, resumed retries, and conflict-resolution
+commits MUST apply that rule consistently; otherwise identity is resolved from
+the target repository.
 
 ### REQ-089A: Compare To Snapshot
 
@@ -654,6 +657,11 @@ baseline manifest and lock digests, frozen targets, participant plans, and the
 exact per-participant merge message required by restart-safe continue. Stored
 participant failures MUST retain their typed error code and detail. Core MUST
 atomically record every subsequent participant and operation transition.
+Before each participant Git action that may move a ref, create a commit, or
+enter native integration state, core MUST durably record exact action intent.
+After interruption it MUST classify the action as not started, exactly
+conflicted, exactly completed, or ambiguous before retrying, adopting, or
+rolling it back.
 
 ### REQ-089F: Merge Lifecycle And Drift
 
@@ -667,14 +675,23 @@ Status MUST derive live commit, conflict, drift, and continue/abort eligibility
 from a read-only observation snapshot rather than writing observations into the
 durable record. With no open operation, status MUST return a successful idle
 response rather than fabricate a completed operation or report an error.
+The snapshot MUST distinguish clean state, the expected native merge, every
+other observable Git integration/sequencer state, advanced, rewound and
+diverged heads, and missing recorded objects. `recovery-required` MUST remain
+open but MUST permit a fresh guarded continue or abort after the reported
+manual correction makes the operation exactly classifiable.
 
 ### REQ-089G: Open Merge Composition And Gate
 
 From the durable-lifecycle milestone onward, the accepted workspace lock MUST
 remain at its pre-merge baseline while a merge is open. A single central
 pre-dispatch gate MUST block unrelated mutating or publishing operations while
-allowing the specified read-only and merge-recovery operations. Recovery MUST
-remain discoverable before parsing live root metadata that may be conflicted.
+allowing the specified read-only and merge-recovery operations. The
+authoritative gate MUST use the request's effective workspace, MUST be enforced
+by public core mutation entry points under the workspace mutator lock, and MUST
+not be bypassable by a driver or direct handler caller. Recovery MUST remain
+discoverable before parsing live root metadata that may be conflicted, without
+crossing a nearer nested workspace boundary.
 
 ### REQ-089H: Continue And Retry
 
@@ -683,6 +700,13 @@ commit an exactly matching resolved native merge and MAY retry a failed or
 unattempted participant only from its classified unchanged retry point. It MUST
 reject ambiguous mutation, unrelated dirt, missing repositories, or changed
 branches, heads, target refs, or native merge state.
+An exactly completed recorded pending action MAY be adopted only when its
+branch, ref, parents, source, message, repository state, index, and worktree
+match the durable intent. Ambiguous mutation MUST remain recovery-required.
+Status MUST expose the pending action kind and its exact reconciliation class.
+An ambiguous action MUST also carry member-scoped
+`pending_action_ambiguous` drift and MUST make both mutation eligibility flags
+false.
 
 ### REQ-089I: Coordinated Abort
 
@@ -691,7 +715,10 @@ participant, then unwind mutations in reverse order with checked ref updates
 and native merge aborts. Post-merge user work or other drift in any participant
 that must be changed MUST reject the entire default abort without partial
 rollback. Interrupted rollback MUST be resumable from durable participant
-state.
+state. A conflicted participant already restored exactly to its recorded before
+state MUST be an idempotent no-op. A participant already durably rolled back
+MUST NOT block remaining rollback solely because later unrelated worktree or
+index work exists in that participant when GWZ will not mutate it.
 
 ### REQ-089J: Idempotent Merge Finalization
 

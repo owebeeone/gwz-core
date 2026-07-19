@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::artifact::{self, ManifestArtifact, ManifestMember};
 use crate::git::{GitBackend, GitBranch};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{OperationContext, OperationRequest, WorkspaceMutatorLock};
+use crate::operation::{OpenMergeCommand, OperationContext, OperationRequest};
 
 use super::*;
 
@@ -23,11 +23,18 @@ where
         ));
     }
     let context = OperationRequest::Branch(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
-    let _guard = if request.op == crate::BranchOp::List || request.meta.dry_run.unwrap_or(false) {
-        None
+    let (_guard, root) = if request.op == crate::BranchOp::List {
+        (
+            None,
+            resolve_workspace_root(start, request.meta.workspace.as_ref())?,
+        )
     } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
+        guarded_workspace_root(
+            start,
+            request.meta.workspace.as_ref(),
+            OpenMergeCommand::BranchMutate,
+            request.meta.dry_run.unwrap_or(false),
+        )?
     };
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;

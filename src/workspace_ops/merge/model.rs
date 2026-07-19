@@ -76,6 +76,10 @@ impl OperationState {
                     Self::Completed | Self::Preserving | Self::RollingBack | Self::RecoveryRequired
                 ) | (Self::Preserving, Self::RollingBack | Self::RecoveryRequired)
                     | (Self::RollingBack, Self::Aborted | Self::RecoveryRequired)
+                    | (
+                        Self::RecoveryRequired,
+                        Self::Executing | Self::RollingBack | Self::Preserving
+                    )
             );
         legal
             .then_some(next)
@@ -189,12 +193,39 @@ pub(crate) struct MergeParticipantRecord {
     pub conflict_paths: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<MergeRecordError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_action: Option<PendingMergeAction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preservation: Vec<PreservationEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drift: Vec<ParticipantDrift>,
     #[serde(default, flatten)]
     pub extensions: BTreeMap<String, Value>,
+}
+
+/// Durable intent written before an individual participant Git action.
+///
+/// Presence means the action may not have started, may have completed without
+/// its outcome row, or may have stopped in an ambiguous intermediate state.
+/// Recovery must reconcile the live repository against these exact inputs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PendingMergeAction {
+    pub kind: PendingMergeActionKind,
+    pub target_branch: String,
+    pub before_commit: String,
+    pub source_commit: String,
+    pub commit_message: String,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PendingMergeActionKind {
+    VerifyUpToDate,
+    FastForward,
+    TrueMerge,
+    ResolveConflict,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -260,12 +291,16 @@ pub(crate) enum ParticipantDriftKind {
     BranchChanged,
     HeadAdvanced,
     HeadRewound,
+    HeadDiverged,
+    ObjectMissing,
     TargetRefChanged,
     WorktreeModified,
     IndexModified,
     MergeStateMissing,
     MergeHeadChanged,
     NewIntegrationState,
+    ForeignIntegrationState,
+    PendingActionAmbiguous,
     RepositoryMissing,
 }
 
@@ -297,6 +332,23 @@ pub(crate) struct RollbackEligibility {
     pub blockers: Vec<ParticipantDriftKind>,
 }
 
+/// Read-only status projection of a durable action that has not yet been
+/// paired with a durable participant outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingActionObservation {
+    pub kind: PendingMergeActionKind,
+    pub state: PendingActionObservationState,
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PendingActionObservationState {
+    NotStarted,
+    ExpectedConflict,
+    CompletedExactly,
+    Ambiguous,
+}
+
 /// One read-only live observation for a recorded participant. Status computes
 /// this without modifying the durable operation record; continue and abort
 /// consume the same drift and eligibility classification after the M1 gate.
@@ -307,6 +359,7 @@ pub(crate) struct MergeParticipantObservation {
     pub drift: Vec<ParticipantDrift>,
     pub continue_eligibility: RetryEligibility,
     pub abort_eligibility: RollbackEligibility,
+    pub pending_action: Option<PendingActionObservation>,
 }
 
 /// Complete read-only status input. Participant observations are keyed by the
@@ -337,6 +390,18 @@ mod tests {
                 .unwrap_err()
                 .code,
             ErrorCode::MergeRecoveryRequired
+        );
+        assert_eq!(
+            OperationState::RecoveryRequired
+                .transition(OperationState::Executing)
+                .unwrap(),
+            OperationState::Executing
+        );
+        assert_eq!(
+            OperationState::RecoveryRequired
+                .transition(OperationState::RollingBack)
+                .unwrap(),
+            OperationState::RollingBack
         );
         assert_eq!(
             ParticipantState::Conflicted
@@ -390,6 +455,25 @@ future_record: retained
     }
 
     #[test]
+    fn pending_action_round_trip_freezes_exact_action_inputs() {
+        let action = PendingMergeAction {
+            kind: PendingMergeActionKind::TrueMerge,
+            target_branch: "main".to_owned(),
+            before_commit: "111".to_owned(),
+            source_commit: "222".to_owned(),
+            commit_message: "Merge 'feature/x' into 'main'".to_owned(),
+            extensions: BTreeMap::from([(
+                "future_action".to_owned(),
+                serde_yaml::Value::String("retained".to_owned()),
+            )]),
+        };
+        let encoded = serde_yaml::to_string(&action).unwrap();
+        let decoded: PendingMergeAction = serde_yaml::from_str(&encoded).unwrap();
+        assert_eq!(decoded, action);
+        assert!(encoded.contains("future_action: retained"));
+    }
+
+    #[test]
     fn record_conversion_preserves_frozen_order_and_counts() {
         let participant = MergeParticipantRecord {
             path: "repos/core".to_owned(),
@@ -403,6 +487,7 @@ future_record: retained
             expected_merge_head: Some("222".to_owned()),
             conflict_paths: vec!["src/lib.rs".to_owned()],
             error: None,
+            pending_action: None,
             preservation: Vec::new(),
             drift: Vec::new(),
             extensions: BTreeMap::new(),
@@ -423,6 +508,7 @@ future_record: retained
                 message: "revspec 'feature/x' not found".to_owned(),
                 detail: Some("source ref was not found".to_owned()),
             }),
+            pending_action: None,
             preservation: Vec::new(),
             drift: Vec::new(),
             extensions: BTreeMap::new(),
@@ -502,6 +588,7 @@ future_record: retained
                             eligible: true,
                             blockers: Vec::new(),
                         },
+                        pending_action: None,
                     },
                 ),
                 (
@@ -518,6 +605,7 @@ future_record: retained
                             eligible: true,
                             blockers: Vec::new(),
                         },
+                        pending_action: None,
                     },
                 ),
             ]),

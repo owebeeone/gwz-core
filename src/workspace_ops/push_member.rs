@@ -4,8 +4,8 @@ use crate::artifact::{self, ArtifactSourceKind, ManifestArtifact, ManifestMember
 use crate::git::{GitBackend, GitHeadState, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, NullSink, OperationRequest, par_map_per_host, resolve_jobs,
-    resolve_per_host,
+    EventEmitter, EventSink, NullSink, OpenMergeCommand, OperationRequest, par_map_per_host,
+    resolve_jobs, resolve_per_host,
 };
 
 use super::*;
@@ -33,7 +33,12 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::Push(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::Push,
+        request.meta.dry_run.unwrap_or(false),
+    )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let selected = resolve_targets(

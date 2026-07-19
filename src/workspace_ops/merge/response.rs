@@ -85,6 +85,11 @@ impl MergeStatusSnapshot {
         context: &OperationContext,
     ) -> ModelResult<crate::MergeResponse> {
         let mut response = self.record.to_response(context)?;
+        // A snapshot is built from a record discovered in `.gwz/merge`, so it
+        // remains open to the workspace gate even when its terminal lifecycle
+        // state means only archive completion remains. The archived response
+        // returned after close continues to project `open = false`.
+        response.open = true;
         for repo in &mut response.repos {
             let observation = self.participants.get(&repo.target_id).ok_or_else(|| {
                 ModelError::new(
@@ -100,6 +105,7 @@ impl MergeStatusSnapshot {
             repo.continue_eligible = Some(observation.continue_eligibility.eligible);
             repo.abort_eligible = Some(observation.abort_eligibility.eligible);
             repo.drift = observation.drift.iter().map(Into::into).collect();
+            repo.pending_action = observation.pending_action.as_ref().map(Into::into);
         }
         response.operation_drift = self.operation_drift.iter().map(Into::into).collect();
         Ok(response)
@@ -141,7 +147,7 @@ fn increment_count(counts: &mut crate::MergeParticipantCounts, state: Participan
 }
 
 impl MergeParticipantRecord {
-    fn to_protocol(&self, target_id: &str, source_ref: &str) -> crate::MergeRepoSummary {
+    pub(crate) fn to_protocol(&self, target_id: &str, source_ref: &str) -> crate::MergeRepoSummary {
         crate::MergeRepoSummary {
             target_id: target_id.to_owned(),
             target_kind: self.target_kind.into(),
@@ -167,6 +173,35 @@ impl MergeParticipantRecord {
                 detail: error.detail.clone(),
                 target_kind: Some(self.target_kind.into()),
             }),
+            pending_action: None,
+        }
+    }
+}
+
+impl From<&PendingActionObservation> for crate::MergePendingActionSummary {
+    fn from(value: &PendingActionObservation) -> Self {
+        let kind = match value.kind {
+            PendingMergeActionKind::VerifyUpToDate => crate::MergePendingActionKind::VerifyUpToDate,
+            PendingMergeActionKind::FastForward => crate::MergePendingActionKind::FastForward,
+            PendingMergeActionKind::TrueMerge => crate::MergePendingActionKind::TrueMerge,
+            PendingMergeActionKind::ResolveConflict => {
+                crate::MergePendingActionKind::ResolveConflict
+            }
+        };
+        let state = match value.state {
+            PendingActionObservationState::NotStarted => crate::MergePendingActionState::NotStarted,
+            PendingActionObservationState::ExpectedConflict => {
+                crate::MergePendingActionState::ExpectedConflict
+            }
+            PendingActionObservationState::CompletedExactly => {
+                crate::MergePendingActionState::CompletedExactly
+            }
+            PendingActionObservationState::Ambiguous => crate::MergePendingActionState::Ambiguous,
+        };
+        Self {
+            kind,
+            state,
+            message: value.message.clone(),
         }
     }
 }
@@ -233,6 +268,8 @@ impl From<&ParticipantDrift> for crate::MergeParticipantDrift {
             ParticipantDriftKind::BranchChanged => crate::MergeParticipantDriftKind::BranchChanged,
             ParticipantDriftKind::HeadAdvanced => crate::MergeParticipantDriftKind::HeadAdvanced,
             ParticipantDriftKind::HeadRewound => crate::MergeParticipantDriftKind::HeadRewound,
+            ParticipantDriftKind::HeadDiverged => crate::MergeParticipantDriftKind::HeadDiverged,
+            ParticipantDriftKind::ObjectMissing => crate::MergeParticipantDriftKind::ObjectMissing,
             ParticipantDriftKind::TargetRefChanged => {
                 crate::MergeParticipantDriftKind::TargetRefChanged
             }
@@ -248,6 +285,12 @@ impl From<&ParticipantDrift> for crate::MergeParticipantDrift {
             }
             ParticipantDriftKind::NewIntegrationState => {
                 crate::MergeParticipantDriftKind::NewIntegrationState
+            }
+            ParticipantDriftKind::ForeignIntegrationState => {
+                crate::MergeParticipantDriftKind::ForeignIntegrationState
+            }
+            ParticipantDriftKind::PendingActionAmbiguous => {
+                crate::MergeParticipantDriftKind::PendingActionAmbiguous
             }
             ParticipantDriftKind::RepositoryMissing => {
                 crate::MergeParticipantDriftKind::RepositoryMissing
@@ -289,5 +332,36 @@ impl From<&OperationDrift> for crate::MergeOperationDrift {
             kind,
             message: value.message.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operation::{ActionKind, OperationContext};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn terminal_record_is_open_only_while_discovered_in_open_storage() {
+        let record: MergeOperationRecord = serde_yaml::from_str(
+            r#"{schema: gwz.merge-operation/v0, record_schema_version: 0, writer_version: test, workspace_id: ws_test, merge_id: merge_1, operation_id: op_start, state: aborted, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [], participants: {}}"#,
+        )
+        .unwrap();
+        let context = OperationContext {
+            operation_id: "op_status".to_owned(),
+            request_id: "req".to_owned(),
+            schema_version: "gwz.v0".to_owned(),
+            action: ActionKind::Merge,
+            dry_run: false,
+            attribution: None,
+        };
+
+        assert!(!record.to_response(&context).unwrap().open);
+        let snapshot = MergeStatusSnapshot {
+            record,
+            participants: BTreeMap::new(),
+            operation_drift: Vec::new(),
+        };
+        assert!(snapshot.to_response(&context).unwrap().open);
     }
 }

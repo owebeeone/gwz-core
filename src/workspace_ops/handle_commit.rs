@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::artifact::{self, ManifestArtifact, ResolvedMemberArtifact};
 use crate::git::{GitBackend, GitHeadState};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{OperationRequest, WorkspaceMutatorLock};
+use crate::operation::{OpenMergeCommand, OperationRequest};
 
 use super::*;
 
@@ -28,8 +28,12 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Commit(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
-    let _guard = WorkspaceMutatorLock::acquire(&root)?;
+    let _guard = acquire_workspace_mutation_guard(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::Commit,
+    )?;
+    let root = _guard.root().to_path_buf();
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;

@@ -367,6 +367,32 @@ impl<'a> EventEmitter<'a> {
         progress: Option<crate::GitTransferProgress>,
         merge_state: Option<crate::MergeOperationState>,
     ) {
+        self.emit_with_payload(
+            kind,
+            severity,
+            member_id,
+            member_path,
+            message,
+            progress,
+            merge_state,
+            None,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)] // Mirrors the protocol event envelope fields.
+    fn emit_with_payload(
+        &self,
+        kind: crate::EventKind,
+        severity: crate::Severity,
+        member_id: Option<String>,
+        member_path: Option<String>,
+        message: Option<String>,
+        progress: Option<crate::GitTransferProgress>,
+        merge_state: Option<crate::MergeOperationState>,
+        merge_member: Option<crate::MergeRepoSummary>,
+        artifact_path: Option<String>,
+    ) {
         let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         let target_kind = member_id.as_ref().map(|_| crate::TargetKind::Member);
         self.sink.deliver(crate::OperationEvent {
@@ -385,6 +411,8 @@ impl<'a> EventEmitter<'a> {
             progress,
             target_kind,
             merge_state,
+            merge_member,
+            artifact_path,
         });
     }
 
@@ -480,6 +508,35 @@ impl<'a> EventEmitter<'a> {
             None,
         );
     }
+
+    pub fn merge_member_finished(&self, member: crate::MergeRepoSummary) {
+        self.emit_with_payload(
+            crate::EventKind::MemberFinished,
+            crate::Severity::Info,
+            Some(member.target_id.clone()),
+            Some(member.path.clone()),
+            None,
+            None,
+            None,
+            Some(member),
+            None,
+        );
+    }
+
+    pub fn artifact_written(&self, artifact_path: impl Into<String>) {
+        let artifact_path = artifact_path.into();
+        self.emit_with_payload(
+            crate::EventKind::ArtifactWritten,
+            crate::Severity::Info,
+            None,
+            None,
+            Some(format!("artifact written: {artifact_path}")),
+            None,
+            None,
+            None,
+            Some(artifact_path),
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -510,6 +567,8 @@ pub(crate) fn push_event(state: &mut OperationState, context: &OperationContext)
         target_kind: None,
         progress: None,
         merge_state: None,
+        merge_member: None,
+        artifact_path: None,
     };
     state.next_sequence += 1;
     state.events.push_back(reset);

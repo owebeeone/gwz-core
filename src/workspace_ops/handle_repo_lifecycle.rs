@@ -8,7 +8,7 @@ use crate::artifact::{
 };
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
-use crate::operation::{EventEmitter, EventSink, OperationRequest, WorkspaceMutatorLock};
+use crate::operation::{EventEmitter, EventSink, OpenMergeCommand, OperationRequest};
 use crate::workspace::MemberPath;
 
 use super::*;
@@ -45,13 +45,13 @@ where
 {
     let context =
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let _guard = if dry_run {
-        None
-    } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
-    };
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::RepoMutate,
+        dry_run,
+    )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let plan = single_source_plan(&manifest, &request)?;
@@ -182,13 +182,13 @@ where
     let context =
         OperationRequest::DetachRepoMember(request.clone()).context(operation_id.into())?;
     let selector = validate_single_detach_selector(request.meta.selection.as_ref())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let _guard = if dry_run {
-        None
-    } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
-    };
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::RepoMutate,
+        dry_run,
+    )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let index = resolve_detach_member_index(&manifest, &selector)?;
@@ -252,13 +252,13 @@ where
     let context =
         OperationRequest::AttachRepoMember(request.clone()).context(operation_id.into())?;
     let member_id = validate_single_attach_selector(request.meta.selection.as_ref())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let _guard = if dry_run {
-        None
-    } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
-    };
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::RepoMutate,
+        dry_run,
+    )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let index = manifest

@@ -6,7 +6,7 @@ use crate::artifact::{
 use crate::git::{GitBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, NullSink, OperationRequest, WorkspaceMutatorLock, par_map_per_host,
+    EventEmitter, EventSink, NullSink, OpenMergeCommand, OperationRequest, par_map_per_host,
     resolve_jobs, resolve_per_host,
 };
 
@@ -35,13 +35,13 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::PullHead(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let _guard = if dry_run {
-        None
-    } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
-    };
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::Pull,
+        dry_run,
+    )?;
     let manifest_for_selection = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest_for_selection, request.meta.workspace.as_ref())?;
     let selected_for_root = resolve_targets(

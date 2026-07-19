@@ -7,8 +7,8 @@ use crate::artifact::{
 use crate::git::{GitBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, OperationRequest, WorkspaceMutatorLock, par_map_per_host,
-    resolve_jobs, resolve_per_host,
+    EventEmitter, EventSink, OpenMergeCommand, OperationRequest, par_map_per_host, resolve_jobs,
+    resolve_per_host,
 };
 use crate::workspace::WORKSPACE_MANIFEST;
 
@@ -24,7 +24,12 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Snapshot(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let _guard = acquire_workspace_mutation_guard(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::Snapshot,
+    )?;
+    let root = _guard.root().to_path_buf();
     // F13: reject a duplicate snapshot id up front, the same guard `tag` already has —
     // never silently overwrite an existing snapshot.
     if artifact::snapshot_path(&root, &request.snapshot_id).exists() {
@@ -80,8 +85,12 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Capture(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
-    let _guard = WorkspaceMutatorLock::acquire(&root)?;
+    let _guard = acquire_workspace_mutation_guard(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::Capture,
+    )?;
+    let root = _guard.root().to_path_buf();
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
@@ -120,12 +129,12 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
-    let _guard = if request.meta.dry_run.unwrap_or(false) {
-        None
-    } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
-    };
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::Materialize,
+        request.meta.dry_run.unwrap_or(false),
+    )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     if request.target.kind == crate::MaterializeTargetKind::Branch {

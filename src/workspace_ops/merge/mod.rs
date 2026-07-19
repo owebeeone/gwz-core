@@ -14,11 +14,11 @@ pub(crate) use recovery::*;
 pub(crate) use store::FileMergeStore;
 pub(crate) use validate::validate_merge_request;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{EventSink, OperationRequest};
+use crate::operation::{EventSink, OperationRequest, WorkspaceMutatorLock};
 use crate::runtime::clock::Clock;
 use crate::runtime::ids::IdProvider;
 
@@ -96,6 +96,24 @@ where
     let store = FileMergeStore;
     let clock = SystemClock;
     let mut ids = OperationScopedIds::new(&operation_id);
+    let start_guard =
+        if request.op == crate::MergeOp::Start && !request.meta.dry_run.unwrap_or(false) {
+            Some(acquire_workspace_mutation_guard(
+                start,
+                request.meta.workspace.as_ref(),
+                crate::operation::OpenMergeCommand::MergeStart,
+            )?)
+        } else {
+            None
+        };
+    let effective_start = if request.op == crate::MergeOp::Start {
+        start_guard.as_ref().map_or_else(
+            || crate::workspace_ops::resolve_workspace_root(start, request.meta.workspace.as_ref()),
+            |guard| Ok(guard.root().to_path_buf()),
+        )?
+    } else {
+        start.to_path_buf()
+    };
     handle_merge_with_dependencies(
         MergeDependencies {
             backend,
@@ -104,7 +122,7 @@ where
             ids: &mut ids,
             events,
         },
-        start,
+        &effective_start,
         request,
         operation_id,
     )
@@ -131,6 +149,59 @@ pub fn enforce_workspace_open_merge_gate(
         open.as_ref().map(|record| record.merge_id.as_str()),
         command,
     )
+}
+
+/// Authoritative guard for an existing-workspace mutation.
+///
+/// The effective request workspace is resolved before locking; the open-merge
+/// policy is then checked while the same lock remains held for the caller's
+/// mutation. Public mutating handlers migrate to this seam during the M2a
+/// remediation wave so direct core callers cannot bypass driver checks.
+pub struct WorkspaceMutationGuard {
+    root: PathBuf,
+    _lock: WorkspaceMutatorLock,
+}
+
+impl WorkspaceMutationGuard {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+pub fn acquire_workspace_mutation_guard(
+    start: &Path,
+    workspace: Option<&crate::WorkspaceRef>,
+    command: crate::operation::OpenMergeCommand,
+) -> ModelResult<WorkspaceMutationGuard> {
+    let root = crate::workspace_ops::resolve_workspace_root(start, workspace)?;
+    let lock = WorkspaceMutatorLock::acquire(&root)?;
+    let store = FileMergeStore;
+    let open = store.discover_open(&root)?;
+    crate::operation::enforce_open_merge_gate(
+        open.as_ref().map(|record| record.merge_id.as_str()),
+        command,
+    )?;
+    Ok(WorkspaceMutationGuard { root, _lock: lock })
+}
+
+/// Resolve and enforce a gated dry-run without taking the mutator lock, or
+/// retain the authoritative guard for a real mutation.
+pub(crate) fn guarded_workspace_root(
+    start: &Path,
+    workspace: Option<&crate::WorkspaceRef>,
+    command: crate::operation::OpenMergeCommand,
+    dry_run: bool,
+) -> ModelResult<(Option<WorkspaceMutationGuard>, PathBuf)> {
+    if dry_run {
+        enforce_workspace_open_merge_gate(start, workspace, command)?;
+        return Ok((
+            None,
+            crate::workspace_ops::resolve_workspace_root(start, workspace)?,
+        ));
+    }
+    let guard = acquire_workspace_mutation_guard(start, workspace, command)?;
+    let root = guard.root().to_path_buf();
+    Ok((Some(guard), root))
 }
 
 pub(crate) fn enforce_open_merge_stage_targets(
@@ -174,9 +245,54 @@ pub(crate) fn persist_operation_transition<S: MergeStore>(
     emitter: &crate::operation::EventEmitter<'_>,
 ) -> ModelResult<()> {
     record.state = record.state.transition(next)?;
-    store.write_open(root, record)?;
+    persist_merge_record(store, root, record, emitter)?;
     emitter.operation_state_changed(record.state.into());
     Ok(())
+}
+
+pub(crate) fn persist_merge_record<S: MergeStore>(
+    store: &S,
+    root: &Path,
+    record: &MergeOperationRecord,
+    emitter: &crate::operation::EventEmitter<'_>,
+) -> ModelResult<()> {
+    store.write_open(root, record)?;
+    emitter.artifact_written(open_merge_artifact_path(&record.merge_id));
+    Ok(())
+}
+
+pub(crate) fn archive_merge_record<S: MergeStore>(
+    store: &S,
+    root: &Path,
+    merge_id: &str,
+    emitter: &crate::operation::EventEmitter<'_>,
+) -> ModelResult<()> {
+    store.archive(root, merge_id)?;
+    emitter.artifact_written(done_merge_artifact_path(merge_id));
+    Ok(())
+}
+
+pub(crate) fn emit_merge_member_finished(
+    emitter: &crate::operation::EventEmitter<'_>,
+    record: &MergeOperationRecord,
+    target_id: &str,
+) -> ModelResult<()> {
+    let participant = record.participants.get(target_id).ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            format!("merge record is missing participant '{target_id}'"),
+        )
+    })?;
+    emitter.merge_member_finished(participant.to_protocol(target_id, &record.source_ref));
+    Ok(())
+}
+
+fn open_merge_artifact_path(merge_id: &str) -> String {
+    format!(".gwz/merge/{merge_id}.yaml")
+}
+
+fn done_merge_artifact_path(merge_id: &str) -> String {
+    format!(".gwz/merge/done/{merge_id}.yaml")
 }
 
 /// M2a's stable handoff into publication. M2b replaces the implementation
@@ -203,9 +319,13 @@ where
     C: Clock,
     I: IdProvider,
 {
-    validate_merge_request(&request)?;
     let context = OperationRequest::Merge(request.clone()).context(operation_id.into())?;
-    dispatch_merge(dependencies, start, request, context)
+    let emitter = crate::operation::EventEmitter::new(&context, dependencies.events, 0);
+    emitter.operation_started();
+    let result = validate_merge_request(&request)
+        .and_then(|()| dispatch_merge(dependencies, start, request, context.clone(), &emitter));
+    emitter.operation_finished();
+    result
 }
 
 fn dispatch_merge<B, S, C, I>(
@@ -213,6 +333,7 @@ fn dispatch_merge<B, S, C, I>(
     start: &Path,
     request: crate::MergeRequest,
     context: crate::operation::OperationContext,
+    emitter: &crate::operation::EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse>
 where
     B: GitBackend,
@@ -222,7 +343,7 @@ where
 {
     match request.op {
         crate::MergeOp::Start => {
-            start::handle_start_durable(dependencies, start, &request, context)
+            start::handle_start_durable(dependencies, start, &request, &context, emitter)
         }
         crate::MergeOp::Status => {
             let root = resolve_recovery_root(dependencies.store, start, &request)?;
@@ -236,7 +357,7 @@ where
                 &root,
                 &request,
                 &context,
-                dependencies.events,
+                emitter,
             )
         }
         crate::MergeOp::Abort => {
@@ -247,7 +368,7 @@ where
                 &root,
                 &request,
                 &context,
-                dependencies.events,
+                emitter,
             )
         }
         op => Err(ModelError::new(
@@ -320,6 +441,16 @@ mod tests {
     use crate::runtime::ids::SequentialIdProvider;
     use crate::workspace_ops::tests::TempDir;
     use std::fs;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CollectingSink(Mutex<Vec<crate::OperationEvent>>);
+
+    impl crate::operation::EventSink for CollectingSink {
+        fn deliver(&self, event: crate::OperationEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
 
     struct EmptyStore;
     impl MergeStore for EmptyStore {
@@ -383,6 +514,61 @@ mod tests {
     }
 
     #[test]
+    fn every_merge_invocation_closes_its_event_stream() {
+        let backend = crate::git::Git2Backend::new();
+        let store = EmptyStore;
+        let clock = FixedClock::new(TimestampMs(1));
+        let sink = CollectingSink::default();
+
+        let mut ids = SequentialIdProvider::new();
+        let mut invalid = request();
+        invalid.op = crate::MergeOp::Start;
+        let dependencies = MergeDependencies {
+            backend: &backend,
+            store: &store,
+            clock: &clock,
+            ids: &mut ids,
+            events: &sink,
+        };
+        handle_merge_with_dependencies(dependencies, Path::new("."), invalid, "op_bad")
+            .unwrap_err();
+
+        let mut ids = SequentialIdProvider::new();
+        let dependencies = MergeDependencies {
+            backend: &backend,
+            store: &store,
+            clock: &clock,
+            ids: &mut ids,
+            events: &sink,
+        };
+        handle_merge_with_dependencies(dependencies, Path::new("."), request(), "op_status")
+            .unwrap();
+
+        let events = sink.0.lock().unwrap();
+        let invocations = events
+            .split_inclusive(|event| event.kind == crate::EventKind::OperationFinished)
+            .collect::<Vec<_>>();
+        assert_eq!(invocations.len(), 2);
+        for invocation in invocations {
+            assert_eq!(
+                invocation.first().map(|event| event.kind),
+                Some(crate::EventKind::OperationStarted)
+            );
+            assert_eq!(
+                invocation.last().map(|event| event.kind),
+                Some(crate::EventKind::OperationFinished)
+            );
+            assert_eq!(
+                invocation
+                    .iter()
+                    .map(|event| event.sequence)
+                    .collect::<Vec<_>>(),
+                (0..invocation.len() as i64).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn public_handler_exposes_the_frozen_service_entry() {
         let backend = crate::git::Git2Backend::new();
         let response = handle_merge(&backend, Path::new("."), request(), "op_1").unwrap();
@@ -431,6 +617,85 @@ participants: {}
                 crate::operation::OpenMergeCommand::Status,
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn conditional_stage_accepts_a_recorded_conflicted_root_only() {
+        let root = TempDir::new("merge-root-stage-gate");
+        let directory = root.path().join(".gwz/merge");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("merge_root.yaml"),
+            r#"schema: gwz.merge-operation/v0
+record_schema_version: 0
+writer_version: test
+workspace_id: ws_test
+merge_id: merge_root
+operation_id: op_1
+state: awaiting_resolution
+source_ref: feature/x
+created_at: now
+baseline: { lock_sha256: lock, manifest_sha256: manifest }
+selected_targets: ['@root']
+participants:
+  '@root':
+    path: .
+    target_kind: root
+    target_branch: main
+    before_commit: before
+    source_commit: source
+    commit_message: merge
+    state: conflicted
+    expected_merge_head: source
+    conflict_paths: [gwz.conf/gwz.yml]
+"#,
+        )
+        .unwrap();
+
+        let root_target = crate::workspace_ops::StageTarget {
+            member_path: None,
+            pathspecs: vec!["gwz.conf/gwz.yml".to_owned()],
+            explicit: true,
+        };
+        assert!(enforce_open_merge_stage_targets(root.path(), &[root_target]).is_ok());
+
+        let member_target = crate::workspace_ops::StageTarget {
+            member_path: Some("repos/app".to_owned()),
+            pathspecs: vec!["README.md".to_owned()],
+            explicit: true,
+        };
+        assert_eq!(
+            enforce_open_merge_stage_targets(root.path(), &[member_target])
+                .unwrap_err()
+                .code,
+            ErrorCode::OpenOperation
+        );
+    }
+
+    #[test]
+    fn authoritative_guard_retains_mutator_lock_until_drop() {
+        let root = TempDir::new("merge-retained-guard");
+        let workspace = crate::WorkspaceRef {
+            root: Some(root.path().to_string_lossy().into_owned()),
+            workspace_id: None,
+        };
+        let guard = acquire_workspace_mutation_guard(
+            root.path(),
+            Some(&workspace),
+            crate::operation::OpenMergeCommand::Push,
+        )
+        .unwrap();
+        assert!(
+            crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
+                .unwrap()
+                .is_none()
+        );
+        drop(guard);
+        assert!(
+            crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
+                .unwrap()
+                .is_some()
         );
     }
 }

@@ -291,6 +291,91 @@ fn checked_true_merge_uses_exact_message_identities_and_parents() {
 }
 
 #[test]
+fn complete_repository_state_mapping_covers_every_libgit2_variant() {
+    use crate::git::gitbackend::map_repository_state;
+
+    let cases = [
+        (git2::RepositoryState::Clean, GitRepositoryState::Clean),
+        (git2::RepositoryState::Merge, GitRepositoryState::Merge),
+        (git2::RepositoryState::Revert, GitRepositoryState::Revert),
+        (
+            git2::RepositoryState::RevertSequence,
+            GitRepositoryState::RevertSequence,
+        ),
+        (
+            git2::RepositoryState::CherryPick,
+            GitRepositoryState::CherryPick,
+        ),
+        (
+            git2::RepositoryState::CherryPickSequence,
+            GitRepositoryState::CherryPickSequence,
+        ),
+        (git2::RepositoryState::Bisect, GitRepositoryState::Bisect),
+        (git2::RepositoryState::Rebase, GitRepositoryState::Rebase),
+        (
+            git2::RepositoryState::RebaseInteractive,
+            GitRepositoryState::RebaseInteractive,
+        ),
+        (
+            git2::RepositoryState::RebaseMerge,
+            GitRepositoryState::RebaseMerge,
+        ),
+        (
+            git2::RepositoryState::ApplyMailbox,
+            GitRepositoryState::ApplyMailbox,
+        ),
+        (
+            git2::RepositoryState::ApplyMailboxOrRebase,
+            GitRepositoryState::ApplyMailboxOrRebase,
+        ),
+    ];
+
+    for (native, expected) in cases {
+        assert_eq!(map_repository_state(native), expected);
+    }
+}
+
+#[test]
+fn exact_merge_commit_matcher_checks_ordered_parents_and_message() {
+    let temp = TempDir::new("merge-exact-match");
+    let repo = temp.path().join("repo");
+    let (_, before, source) = seed_divergence(&repo);
+    let backend = Git2Backend::new();
+    let message = "frozen merge message";
+    let result = backend
+        .merge_upstream_checked(&repo, "main", &before, &source, message, None)
+        .unwrap();
+    let commit = result.commit.unwrap();
+
+    assert!(
+        backend
+            .commit_matches_merge(&repo, &commit, &before, &source, message)
+            .unwrap()
+    );
+    assert!(
+        !backend
+            .commit_matches_merge(&repo, &commit, &source, &before, message)
+            .unwrap()
+    );
+    assert!(
+        !backend
+            .commit_matches_merge(&repo, &commit, &before, &source, "changed")
+            .unwrap()
+    );
+    assert!(
+        !backend
+            .commit_matches_merge(
+                &repo,
+                "0000000000000000000000000000000000000000",
+                &before,
+                &source,
+                message,
+            )
+            .unwrap()
+    );
+}
+
+#[test]
 fn checked_true_merge_falls_back_each_identity_independently() {
     let temp = TempDir::new("merge-checked-identity-fallback");
     let backend = Git2Backend::new();
@@ -451,7 +536,13 @@ fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
     backend.merge_upstream(&repo, "main", "feature").unwrap();
     let reject = |expected_before: &str, expected_head: &str| {
         backend
-            .commit_merge_resolution_checked(&repo, expected_before, expected_head, "resolved")
+            .commit_merge_resolution_checked(
+                &repo,
+                expected_before,
+                expected_head,
+                "resolved",
+                None,
+            )
             .unwrap_err()
             .code
     };
@@ -471,7 +562,7 @@ fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
     assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
 
     let result = backend
-        .commit_merge_resolution_checked(&repo, &before, &source, "resolved")
+        .commit_merge_resolution_checked(&repo, &before, &source, "resolved", None)
         .unwrap();
     let repository = git2::Repository::open(&repo).unwrap();
     let commit = repository

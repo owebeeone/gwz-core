@@ -213,6 +213,36 @@ mod tests {
     }
 
     #[test]
+    fn merge_outcome_and_artifact_events_carry_structured_payloads() {
+        let context = sample_context(false);
+        let sink = CollectingSink::default();
+        let emitter = EventEmitter::new(&context, &sink, 0);
+        let member = crate::MergeRepoSummary {
+            target_id: "mem_app".to_owned(),
+            path: "repos/app".to_owned(),
+            state: crate::MergeParticipantState::Merged,
+            ..crate::MergeRepoSummary::default()
+        };
+
+        emitter.artifact_written(".gwz/merge/merge_1.yaml");
+        emitter.merge_member_finished(member.clone());
+
+        let events = sink.take();
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            [
+                crate::EventKind::ArtifactWritten,
+                crate::EventKind::MemberFinished,
+            ]
+        );
+        assert_eq!(
+            events[0].artifact_path.as_deref(),
+            Some(".gwz/merge/merge_1.yaml")
+        );
+        assert_eq!(events[1].merge_member.as_ref(), Some(&member));
+    }
+
+    #[test]
     fn dry_run_plan_reports_member_plans_without_execution() {
         let context = sample_context(true);
         let plan = OperationPlan {

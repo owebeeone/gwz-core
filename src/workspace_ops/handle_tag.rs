@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::artifact;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::OperationRequest;
+use crate::operation::{OpenMergeCommand, OperationRequest};
 
 use super::*;
 
@@ -22,7 +22,20 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let (_guard, root) = if request.op == crate::TagOp::List {
+        (
+            None,
+            resolve_workspace_root(start, request.meta.workspace.as_ref())?,
+        )
+    } else {
+        let guard = acquire_workspace_mutation_guard(
+            start,
+            request.meta.workspace.as_ref(),
+            OpenMergeCommand::TagMutate,
+        )?;
+        let root = guard.root().to_path_buf();
+        (Some(guard), root)
+    };
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;

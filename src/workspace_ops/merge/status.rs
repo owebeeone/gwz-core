@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::artifact;
-use crate::git::{GitBackend, GitNativeMergeState, GitStatus};
+use crate::git::{GitBackend, GitNativeMergeState, GitRepositoryState, GitStatus};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
-use crate::workspace::WORKSPACE_MANIFEST;
+use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 
 use super::{
     MergeOperationRecord, MergeParticipantObservation, MergeParticipantRecord, MergeStatusSnapshot,
@@ -28,11 +28,185 @@ pub(crate) fn handle_status<B: GitBackend, S: MergeStore>(
     snapshot_status(backend, root, record)?.to_response(context)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PendingActionReconciliation {
+    NotStarted,
+    ExpectedConflict {
+        conflict_paths: Vec<String>,
+    },
+    Completed {
+        resulting_commit: String,
+    },
+    Ambiguous {
+        reason: String,
+        drift: Vec<ParticipantDrift>,
+    },
+}
+
+/// Reconcile a durable participant action against live Git state without
+/// writing either the repository or the operation record.
+pub(crate) fn reconcile_pending_action<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    target_id: &str,
+    participant: &MergeParticipantRecord,
+) -> ModelResult<PendingActionReconciliation> {
+    let path = validated_participant_path(root, target_id, participant)?;
+    if !path.is_dir() || !member_result(backend.is_repository(&path), target_id, &participant.path)?
+    {
+        return Ok(PendingActionReconciliation::Ambiguous {
+            reason: "recorded participant repository is missing".to_owned(),
+            drift: missing_observation(target_id, participant).drift,
+        });
+    }
+    let live = read_live_participant(backend, &path, target_id, participant)?;
+    reconcile_pending_action_from_live(backend, &path, target_id, participant, &live)
+}
+
+fn reconcile_pending_action_from_live<B: GitBackend>(
+    backend: &B,
+    path: &Path,
+    target_id: &str,
+    participant: &MergeParticipantRecord,
+    live: &ParticipantLiveState,
+) -> ModelResult<PendingActionReconciliation> {
+    let Some(pending) = participant.pending_action.as_ref() else {
+        return Ok(PendingActionReconciliation::Ambiguous {
+            reason: "participant has no pending action to reconcile".to_owned(),
+            drift: Vec::new(),
+        });
+    };
+    if pending.target_branch != participant.target_branch
+        || pending.before_commit != participant.before_commit
+        || pending.source_commit != participant.source_commit
+        || pending.commit_message != participant.commit_message
+    {
+        let reason = "pending action inputs do not match the frozen participant record";
+        return Ok(PendingActionReconciliation::Ambiguous {
+            reason: reason.to_owned(),
+            drift: vec![participant_drift(
+                ParticipantDriftKind::PendingActionAmbiguous,
+                target_id,
+                participant,
+                live,
+                reason,
+            )],
+        });
+    }
+
+    let drift = classify_participant(target_id, participant, live).drift;
+    let exact_branch = live.branch.as_deref() == Some(pending.target_branch.as_str())
+        && live.head == live.target_ref;
+    let clean = live.repository_state == GitRepositoryState::Clean
+        && !live.status.is_dirty
+        && live.missing_objects.is_empty();
+
+    if exact_branch && clean {
+        let live_commit = live.head.as_deref();
+        match pending.kind {
+            super::PendingMergeActionKind::VerifyUpToDate
+                if live_commit == Some(pending.before_commit.as_str()) =>
+            {
+                return Ok(PendingActionReconciliation::NotStarted);
+            }
+            super::PendingMergeActionKind::FastForward
+                if live_commit == Some(pending.source_commit.as_str()) =>
+            {
+                return Ok(PendingActionReconciliation::Completed {
+                    resulting_commit: pending.source_commit.clone(),
+                });
+            }
+            super::PendingMergeActionKind::FastForward
+            | super::PendingMergeActionKind::TrueMerge
+                if live_commit == Some(pending.before_commit.as_str()) =>
+            {
+                return Ok(PendingActionReconciliation::NotStarted);
+            }
+            super::PendingMergeActionKind::TrueMerge
+            | super::PendingMergeActionKind::ResolveConflict => {
+                if let Some(commit) = live_commit
+                    && member_result(
+                        backend.commit_matches_merge(
+                            path,
+                            commit,
+                            &pending.before_commit,
+                            &pending.source_commit,
+                            &pending.commit_message,
+                        ),
+                        target_id,
+                        &participant.path,
+                    )?
+                {
+                    return Ok(PendingActionReconciliation::Completed {
+                        resulting_commit: commit.to_owned(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let native_matches = exact_branch
+        && live.head.as_deref() == Some(pending.before_commit.as_str())
+        && live.repository_state == GitRepositoryState::Merge
+        && live.missing_objects.is_empty()
+        && live
+            .merge_state
+            .as_ref()
+            .is_some_and(|state| state.merge_head == pending.source_commit);
+    if native_matches {
+        let require_resolved = pending.kind == super::PendingMergeActionKind::ResolveConflict;
+        if matches!(
+            pending.kind,
+            super::PendingMergeActionKind::TrueMerge
+                | super::PendingMergeActionKind::ResolveConflict
+        ) && backend
+            .validate_merge_recovery_state(
+                path,
+                &pending.before_commit,
+                &pending.source_commit,
+                require_resolved,
+            )
+            .is_ok()
+        {
+            if require_resolved {
+                return Ok(PendingActionReconciliation::NotStarted);
+            }
+            return Ok(PendingActionReconciliation::ExpectedConflict {
+                conflict_paths: live
+                    .merge_state
+                    .as_ref()
+                    .map(|state| state.conflict_paths.clone())
+                    .unwrap_or_default(),
+            });
+        }
+    }
+
+    let reason = "live repository does not exactly match a pending-action recovery point";
+    let mut drift = drift;
+    drift.push(participant_drift(
+        ParticipantDriftKind::PendingActionAmbiguous,
+        target_id,
+        participant,
+        live,
+        reason,
+    ));
+    Ok(PendingActionReconciliation::Ambiguous {
+        reason: reason.to_owned(),
+        drift,
+    })
+}
+
 pub(crate) fn snapshot_status<B: GitBackend>(
     backend: &B,
     root: &Path,
     record: MergeOperationRecord,
 ) -> ModelResult<MergeStatusSnapshot> {
+    // Validate the entire durable path set before the first repository access;
+    // a corrupt unselected row must not become a later filesystem escape.
+    for (target_id, participant) in &record.participants {
+        validated_participant_path(root, target_id, participant)?;
+    }
     let mut participants = BTreeMap::new();
     for target_id in &record.selected_targets {
         let participant = record.participants.get(target_id).ok_or_else(|| {
@@ -84,31 +258,18 @@ pub(crate) fn observe_participant<B: GitBackend>(
     target_id: &str,
     participant: &MergeParticipantRecord,
 ) -> ModelResult<MergeParticipantObservation> {
-    let path = root.join(&participant.path);
-    if !path.is_dir() || !backend.is_repository(&path)? {
+    let path = validated_participant_path(root, target_id, participant)?;
+    if !path.is_dir() || !member_result(backend.is_repository(&path), target_id, &participant.path)?
+    {
         return Ok(missing_observation(target_id, participant));
     }
-    let expected_head = expected_head(participant)?;
-    let head = backend.head(&path)?;
-    let target_ref =
-        backend.read_ref(&path, &format!("refs/heads/{}", participant.target_branch))?;
-    let relation = match head.commit.as_deref() {
-        Some(live) if live == expected_head => HeadRelation::Equal,
-        Some(live) if backend.is_ancestor(&path, expected_head, live)? => HeadRelation::Advanced,
-        Some(live) if backend.is_ancestor(&path, live, expected_head)? => HeadRelation::Rewound,
-        Some(_) => HeadRelation::Diverged,
-        None => HeadRelation::Missing,
-    };
-    let live = ParticipantLiveState {
-        branch: head.branch,
-        head: head.commit,
-        target_ref,
-        status: backend.status(&path)?,
-        merge_state: backend.merge_state(&path)?,
-        head_relation: relation,
-    };
+    let live = read_live_participant(backend, &path, target_id, participant)?;
     let mut observation = classify_participant(target_id, participant, &live);
-    if participant.state == ParticipantState::Conflicted && observation.drift.is_empty() {
+    if participant.pending_action.is_some() {
+        let reconciliation =
+            reconcile_pending_action_from_live(backend, &path, target_id, participant, &live)?;
+        apply_pending_observation(participant, reconciliation, &mut observation);
+    } else if participant.state == ParticipantState::Conflicted && observation.drift.is_empty() {
         deepen_conflict_eligibility(
             backend,
             &path,
@@ -119,6 +280,259 @@ pub(crate) fn observe_participant<B: GitBackend>(
         );
     }
     Ok(observation)
+}
+
+fn apply_pending_observation(
+    participant: &MergeParticipantRecord,
+    reconciliation: PendingActionReconciliation,
+    observation: &mut MergeParticipantObservation,
+) {
+    let kind = participant
+        .pending_action
+        .as_ref()
+        .expect("pending observation requires durable pending action")
+        .kind;
+    let (state, message) = match reconciliation {
+        PendingActionReconciliation::NotStarted => {
+            observation.continue_eligibility = RetryEligibility {
+                eligible: true,
+                blockers: Vec::new(),
+            };
+            if kind == super::PendingMergeActionKind::ResolveConflict {
+                observation.abort_eligibility = RollbackEligibility {
+                    eligible: false,
+                    blockers: vec![ParticipantDriftKind::IndexModified],
+                };
+            } else {
+                observation.drift.clear();
+                observation.abort_eligibility = RollbackEligibility {
+                    eligible: true,
+                    blockers: Vec::new(),
+                };
+            }
+            (
+                super::PendingActionObservationState::NotStarted,
+                Some("live repository exactly matches the pending action's retry point".to_owned()),
+            )
+        }
+        PendingActionReconciliation::ExpectedConflict { conflict_paths } => {
+            observation.conflict_paths = conflict_paths;
+            observation.drift.clear();
+            observation.continue_eligibility = RetryEligibility {
+                eligible: false,
+                blockers: vec![ParticipantDriftKind::IndexModified],
+            };
+            observation.abort_eligibility = RollbackEligibility {
+                eligible: true,
+                blockers: Vec::new(),
+            };
+            (
+                super::PendingActionObservationState::ExpectedConflict,
+                Some("pending true merge reached its exact expected native conflict".to_owned()),
+            )
+        }
+        PendingActionReconciliation::Completed { resulting_commit } => {
+            observation.live_commit = Some(resulting_commit);
+            observation.drift.clear();
+            observation.continue_eligibility = RetryEligibility {
+                eligible: true,
+                blockers: Vec::new(),
+            };
+            observation.abort_eligibility = RollbackEligibility {
+                eligible: true,
+                blockers: Vec::new(),
+            };
+            (
+                super::PendingActionObservationState::CompletedExactly,
+                Some("pending action completed exactly and can be adopted durably".to_owned()),
+            )
+        }
+        PendingActionReconciliation::Ambiguous { reason, drift } => {
+            for item in drift {
+                if !observation
+                    .drift
+                    .iter()
+                    .any(|existing| existing.kind == item.kind)
+                {
+                    observation.drift.push(item);
+                }
+            }
+            observation.continue_eligibility.eligible = false;
+            observation.abort_eligibility.eligible = false;
+            (
+                super::PendingActionObservationState::Ambiguous,
+                Some(reason),
+            )
+        }
+    };
+    observation.pending_action = Some(super::PendingActionObservation {
+        kind,
+        state,
+        message,
+    });
+}
+
+fn read_live_participant<B: GitBackend>(
+    backend: &B,
+    path: &Path,
+    target_id: &str,
+    participant: &MergeParticipantRecord,
+) -> ModelResult<ParticipantLiveState> {
+    let expected_head = expected_head(participant)?;
+    let head = member_result(backend.head(path), target_id, &participant.path)?;
+    let target_ref = member_result(
+        backend.read_ref(path, &format!("refs/heads/{}", participant.target_branch)),
+        target_id,
+        &participant.path,
+    )?;
+    let mut missing_objects = missing_recorded_objects(backend, path, target_id, participant)?;
+    if let Some(live) = head.commit.as_deref()
+        && !member_result(
+            backend.commit_exists(path, live),
+            target_id,
+            &participant.path,
+        )?
+        && !missing_objects.iter().any(|missing| missing.oid == live)
+    {
+        missing_objects.push(MissingObject {
+            role: "live HEAD".to_owned(),
+            oid: live.to_owned(),
+        });
+    }
+    let expected_exists = !missing_objects
+        .iter()
+        .any(|missing| missing.oid == expected_head);
+    let live_exists = head
+        .commit
+        .as_deref()
+        .is_none_or(|live| !missing_objects.iter().any(|missing| missing.oid == live));
+    let relation = match head.commit.as_deref() {
+        Some(live) if live == expected_head => HeadRelation::Equal,
+        Some(_) if !expected_exists || !live_exists => HeadRelation::ObjectUnavailable,
+        Some(live)
+            if member_result(
+                backend.is_ancestor(path, expected_head, live),
+                target_id,
+                &participant.path,
+            )? =>
+        {
+            HeadRelation::Advanced
+        }
+        Some(live)
+            if member_result(
+                backend.is_ancestor(path, live, expected_head),
+                target_id,
+                &participant.path,
+            )? =>
+        {
+            HeadRelation::Rewound
+        }
+        Some(_) => HeadRelation::Diverged,
+        None => HeadRelation::Missing,
+    };
+    let repository_state =
+        member_result(backend.repository_state(path), target_id, &participant.path)?;
+    let (merge_state, native_detail_error) = if repository_state == GitRepositoryState::Merge {
+        match backend.merge_state(path) {
+            Ok(state) => (state, None),
+            Err(error) => (None, Some(error.message)),
+        }
+    } else {
+        (None, None)
+    };
+    Ok(ParticipantLiveState {
+        branch: head.branch,
+        head: head.commit,
+        target_ref,
+        status: member_result(backend.status(path), target_id, &participant.path)?,
+        repository_state,
+        merge_state,
+        native_detail_error,
+        missing_objects,
+        head_relation: relation,
+    })
+}
+
+fn validated_participant_path(
+    root: &Path,
+    target_id: &str,
+    participant: &MergeParticipantRecord,
+) -> ModelResult<PathBuf> {
+    let valid = match participant.target_kind {
+        MergeTargetKind::Root if participant.path == "." => return Ok(root.to_path_buf()),
+        MergeTargetKind::Root => Err(ModelError::new(
+            ErrorCode::PathEscape,
+            "root participant path must be '.'",
+        )),
+        MergeTargetKind::Member => {
+            MemberPath::parse(&participant.path).map(|path| path.to_string())
+        }
+    };
+    valid.map(|path| root.join(path)).map_err(|error| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            format!("invalid durable participant path: {}", error.message),
+        )
+        .with_member(target_id, &participant.path)
+    })
+}
+
+fn member_result<T>(
+    result: ModelResult<T>,
+    target_id: &str,
+    participant_path: &str,
+) -> ModelResult<T> {
+    result.map_err(|error| {
+        if error.member_id.is_some() {
+            error
+        } else {
+            error.with_member(target_id, participant_path)
+        }
+    })
+}
+
+fn missing_recorded_objects<B: GitBackend>(
+    backend: &B,
+    path: &Path,
+    target_id: &str,
+    participant: &MergeParticipantRecord,
+) -> ModelResult<Vec<MissingObject>> {
+    let mut required = vec![
+        ("before commit", participant.before_commit.as_str()),
+        ("source commit", participant.source_commit.as_str()),
+    ];
+    if let Some(result) = participant.resulting_commit.as_deref() {
+        required.push(("resulting commit", result));
+    }
+    if let Some(merge_head) = participant.expected_merge_head.as_deref() {
+        required.push(("expected merge head", merge_head));
+    }
+    if let Some(pending) = participant.pending_action.as_ref() {
+        required.extend([
+            ("pending before commit", pending.before_commit.as_str()),
+            ("pending source commit", pending.source_commit.as_str()),
+        ]);
+    }
+
+    let mut missing = Vec::new();
+    let mut checked = Vec::new();
+    for (role, oid) in required {
+        if checked.contains(&oid) {
+            continue;
+        }
+        checked.push(oid);
+        if !member_result(
+            backend.commit_exists(path, oid),
+            target_id,
+            &participant.path,
+        )? {
+            missing.push(MissingObject {
+                role: role.to_owned(),
+                oid: oid.to_owned(),
+            });
+        }
+    }
+    Ok(missing)
 }
 
 fn deepen_conflict_eligibility<B: GitBackend>(
@@ -188,8 +602,16 @@ pub(crate) struct ParticipantLiveState {
     pub head: Option<String>,
     pub target_ref: Option<String>,
     pub status: GitStatus,
+    pub repository_state: GitRepositoryState,
     pub merge_state: Option<GitNativeMergeState>,
+    native_detail_error: Option<String>,
+    missing_objects: Vec<MissingObject>,
     head_relation: HeadRelation,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MissingObject {
+    role: String,
+    oid: String,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HeadRelation {
@@ -198,6 +620,7 @@ enum HeadRelation {
     Rewound,
     Diverged,
     Missing,
+    ObjectUnavailable,
 }
 
 pub(crate) fn classify_participant(
@@ -209,7 +632,7 @@ pub(crate) fn classify_participant(
     let mut drift = Vec::new();
     let conflicted = participant.state == ParticipantState::Conflicted;
     {
-        let mut add = |kind, guidance| {
+        let mut add = |kind: ParticipantDriftKind, guidance: &str| {
             drift.push(participant_drift(
                 kind,
                 target_id,
@@ -218,6 +641,13 @@ pub(crate) fn classify_participant(
                 guidance,
             ));
         };
+        for missing in &live.missing_objects {
+            let guidance = format!(
+                "recorded {} object {} is missing; restore the object before recovery",
+                missing.role, missing.oid
+            );
+            add(ParticipantDriftKind::ObjectMissing, &guidance);
+        }
         if live.branch.as_deref() != Some(participant.target_branch.as_str()) {
             add(
                 ParticipantDriftKind::BranchChanged,
@@ -232,8 +662,13 @@ pub(crate) fn classify_participant(
         }
         if live.head_relation != HeadRelation::Equal {
             let kind = match live.head_relation {
-                HeadRelation::Rewound | HeadRelation::Missing => ParticipantDriftKind::HeadRewound,
-                _ => ParticipantDriftKind::HeadAdvanced,
+                HeadRelation::Advanced => ParticipantDriftKind::HeadAdvanced,
+                HeadRelation::Rewound => ParticipantDriftKind::HeadRewound,
+                HeadRelation::Diverged => ParticipantDriftKind::HeadDiverged,
+                HeadRelation::Missing | HeadRelation::ObjectUnavailable => {
+                    ParticipantDriftKind::ObjectMissing
+                }
+                HeadRelation::Equal => unreachable!(),
             };
             let guidance = if matches!(
                 participant.state,
@@ -247,31 +682,52 @@ pub(crate) fn classify_participant(
             };
             add(kind, guidance);
         }
-        if conflicted {
-            match &live.merge_state {
-                None => add(
-                    ParticipantDriftKind::MergeStateMissing,
-                    "restore the recorded native merge state or follow abort recovery guidance",
-                ),
-                Some(state)
-                    if state.merge_head
-                        != participant
-                            .expected_merge_head
-                            .as_deref()
-                            .unwrap_or(&participant.source_commit) =>
-                {
+        match live.repository_state {
+            GitRepositoryState::Clean => {
+                if conflicted {
                     add(
-                        ParticipantDriftKind::MergeHeadChanged,
-                        "restore the expected MERGE_HEAD before recovery",
+                        ParticipantDriftKind::MergeStateMissing,
+                        "the recorded native merge is no longer active; an exact clean before state remains abortable",
                     );
                 }
-                Some(_) => {}
             }
-        } else if live.merge_state.is_some() {
-            add(
-                ParticipantDriftKind::NewIntegrationState,
-                "finish or abort the unrelated integration before merge recovery",
-            );
+            GitRepositoryState::Merge => {
+                if conflicted {
+                    match &live.merge_state {
+                        None => add(
+                            ParticipantDriftKind::MergeStateMissing,
+                            live.native_detail_error.as_deref().unwrap_or(
+                                "restore the recorded native merge metadata before recovery",
+                            ),
+                        ),
+                        Some(state)
+                            if state.merge_head
+                                != participant
+                                    .expected_merge_head
+                                    .as_deref()
+                                    .unwrap_or(&participant.source_commit) =>
+                        {
+                            add(
+                                ParticipantDriftKind::MergeHeadChanged,
+                                "restore the expected MERGE_HEAD before recovery",
+                            );
+                        }
+                        Some(_) => {}
+                    }
+                } else {
+                    add(
+                        ParticipantDriftKind::NewIntegrationState,
+                        "finish or abort the unrelated merge before merge recovery",
+                    );
+                }
+            }
+            foreign => {
+                let guidance = format!(
+                    "finish or abort the unrelated {} operation before merge recovery",
+                    foreign.as_str()
+                );
+                add(ParticipantDriftKind::ForeignIntegrationState, &guidance);
+            }
         }
         if !conflicted && (live.status.staged > 0 || live.status.unresolved > 0) {
             add(
@@ -289,6 +745,7 @@ pub(crate) fn classify_participant(
 
     let drift_blockers: Vec<_> = drift.iter().map(|item| item.kind).collect();
     let native_matches = conflicted
+        && live.repository_state == GitRepositoryState::Merge
         && live.merge_state.as_ref().is_some_and(|state| {
             state.merge_head
                 == participant
@@ -304,14 +761,37 @@ pub(crate) fn classify_participant(
     let continue_eligible = if conflicted {
         drift.is_empty() && native_matches && !continue_extra
     } else {
-        drift.is_empty() && live.merge_state.is_none() && !live.status.is_dirty
+        drift.is_empty()
+            && live.repository_state == GitRepositoryState::Clean
+            && !live.status.is_dirty
     };
     let no_abort_action = does_not_require_rollback(participant.state);
+    let exact_before_clean = live.branch.as_deref() == Some(participant.target_branch.as_str())
+        && live.head.as_deref() == Some(participant.before_commit.as_str())
+        && live.target_ref.as_deref() == Some(participant.before_commit.as_str())
+        && live.repository_state == GitRepositoryState::Clean
+        && !live.status.is_dirty
+        && live.missing_objects.is_empty();
+    let externally_restored_conflict = conflicted && exact_before_clean;
+    let restored_mutation = matches!(
+        participant.state,
+        ParticipantState::FastForwarded | ParticipantState::Merged | ParticipantState::Continued
+    ) && exact_before_clean;
+    let durable_restore_verified = matches!(
+        participant.state,
+        ParticipantState::Aborted | ParticipantState::RolledBack
+    ) && live.target_ref.as_deref()
+        == Some(participant.before_commit.as_str());
     let abort_eligible = no_abort_action
+        || durable_restore_verified
+        || externally_restored_conflict
+        || restored_mutation
         || if conflicted {
             native_matches && drift.is_empty()
         } else {
-            drift.is_empty() && live.merge_state.is_none() && !live.status.is_dirty
+            drift.is_empty()
+                && live.repository_state == GitRepositoryState::Clean
+                && !live.status.is_dirty
         };
     let abort_blockers = if abort_eligible {
         Vec::new()
@@ -334,6 +814,7 @@ pub(crate) fn classify_participant(
             eligible: abort_eligible,
             blockers: abort_blockers,
         },
+        pending_action: None,
     }
 }
 
@@ -359,7 +840,7 @@ fn missing_observation(
     target_id: &str,
     participant: &MergeParticipantRecord,
 ) -> MergeParticipantObservation {
-    let drift = ParticipantDrift {
+    let repository_missing = ParticipantDrift {
         kind: ParticipantDriftKind::RepositoryMissing,
         message: format!(
             "participant '{target_id}' at '{}' is missing; restore it at the recorded path before recovery",
@@ -372,21 +853,46 @@ fn missing_observation(
         expected_merge_head: participant.expected_merge_head.clone(),
         live_merge_head: None,
     };
+    let mut drift = vec![repository_missing];
+    if participant.pending_action.is_some() {
+        drift.push(ParticipantDrift {
+            kind: ParticipantDriftKind::PendingActionAmbiguous,
+            message: format!(
+                "participant '{target_id}' at '{}': pending action cannot be reconciled because the repository is missing",
+                participant.path
+            ),
+            expected_branch: Some(participant.target_branch.clone()),
+            live_branch: None,
+            expected_head: Some(participant.before_commit.clone()),
+            live_head: None,
+            expected_merge_head: participant.expected_merge_head.clone(),
+            live_merge_head: None,
+        });
+    }
     MergeParticipantObservation {
         live_commit: None,
         conflict_paths: Vec::new(),
-        drift: vec![drift],
+        drift,
         continue_eligibility: RetryEligibility {
             eligible: false,
             blockers: vec![ParticipantDriftKind::RepositoryMissing],
         },
         abort_eligibility: RollbackEligibility {
-            eligible: does_not_require_rollback(participant.state),
-            blockers: (!does_not_require_rollback(participant.state))
-                .then_some(ParticipantDriftKind::RepositoryMissing)
-                .into_iter()
-                .collect(),
+            eligible: participant.pending_action.is_none()
+                && does_not_require_rollback(participant.state),
+            blockers: (participant.pending_action.is_some()
+                || !does_not_require_rollback(participant.state))
+            .then_some(ParticipantDriftKind::RepositoryMissing)
+            .into_iter()
+            .collect(),
         },
+        pending_action: participant.pending_action.as_ref().map(|pending| {
+            super::PendingActionObservation {
+                kind: pending.kind,
+                state: super::PendingActionObservationState::Ambiguous,
+                message: Some("recorded participant repository is missing".to_owned()),
+            }
+        }),
     }
 }
 
@@ -451,6 +957,80 @@ fn compare_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::{Git2Backend, GitBackend};
+    use crate::workspace_ops::merge::{PendingMergeAction, PendingMergeActionKind};
+
+    fn test_root(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("gwz-status-{name}-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=GWZ",
+                "-c",
+                "user.email=gwz@example.invalid",
+            ])
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    fn commit(repo: &Path, file: &str, content: &str, message: &str) -> String {
+        fs::write(repo.join(file), content).unwrap();
+        run_git(repo, &["add", file]);
+        run_git(repo, &["commit", "-m", message]);
+        run_git(repo, &["rev-parse", "HEAD"])
+    }
+
+    fn seed_divergence(repo: &Path) -> (String, String) {
+        Git2Backend::new().create_repo(repo).unwrap();
+        commit(repo, "base.txt", "base\n", "base");
+        run_git(repo, &["branch", "feature"]);
+        run_git(repo, &["checkout", "feature"]);
+        let source = commit(repo, "source.txt", "source\n", "source");
+        run_git(repo, &["checkout", "main"]);
+        let before = commit(repo, "main.txt", "main\n", "main");
+        (before, source)
+    }
+
+    fn pending_record(
+        state: ParticipantState,
+        before: &str,
+        source: &str,
+        message: &str,
+        kind: PendingMergeActionKind,
+    ) -> MergeParticipantRecord {
+        let mut record = participant(state);
+        record.before_commit = before.to_owned();
+        record.source_commit = source.to_owned();
+        record.commit_message = message.to_owned();
+        record.pending_action = Some(PendingMergeAction {
+            kind,
+            target_branch: "main".to_owned(),
+            before_commit: before.to_owned(),
+            source_commit: source.to_owned(),
+            commit_message: message.to_owned(),
+            extensions: BTreeMap::new(),
+        });
+        record
+    }
 
     fn participant(state: ParticipantState) -> MergeParticipantRecord {
         let yaml = format!(
@@ -472,7 +1052,10 @@ mod tests {
                 unstaged: 1,
                 ..GitStatus::clean()
             },
+            repository_state: GitRepositoryState::Clean,
             merge_state: None,
+            native_detail_error: None,
+            missing_objects: Vec::new(),
             head_relation: HeadRelation::Advanced,
         };
         let observed = classify_participant("mem_app", &record, &live);
@@ -527,7 +1110,10 @@ mod tests {
             head: Some("later".into()),
             target_ref: Some("later".into()),
             status: GitStatus::clean(),
+            repository_state: GitRepositoryState::Clean,
             merge_state: None,
+            native_detail_error: None,
+            missing_objects: Vec::new(),
             head_relation: HeadRelation::Advanced,
         };
         let observed = classify_participant("mem_app", &record, &live);
@@ -539,5 +1125,385 @@ mod tests {
                 .blockers
                 .contains(&ParticipantDriftKind::HeadAdvanced)
         );
+    }
+
+    #[test]
+    fn divergent_head_has_its_own_structured_drift() {
+        let record = participant(ParticipantState::Merged);
+        let live = ParticipantLiveState {
+            branch: Some("main".into()),
+            head: Some("other-line".into()),
+            target_ref: Some("other-line".into()),
+            status: GitStatus::clean(),
+            repository_state: crate::git::GitRepositoryState::Clean,
+            merge_state: None,
+            native_detail_error: None,
+            missing_objects: Vec::new(),
+            head_relation: HeadRelation::Diverged,
+        };
+        let observed = classify_participant("mem_app", &record, &live);
+
+        assert!(
+            observed
+                .drift
+                .iter()
+                .any(|drift| drift.kind == ParticipantDriftKind::HeadDiverged)
+        );
+        assert!(!observed.continue_eligibility.eligible);
+        assert!(!observed.abort_eligibility.eligible);
+    }
+
+    #[test]
+    fn foreign_native_state_blocks_rows_that_require_mutation() {
+        let record = participant(ParticipantState::Merged);
+        let live = ParticipantLiveState {
+            branch: Some("main".into()),
+            head: None,
+            target_ref: None,
+            status: GitStatus::clean(),
+            repository_state: crate::git::GitRepositoryState::CherryPick,
+            merge_state: None,
+            native_detail_error: None,
+            missing_objects: Vec::new(),
+            head_relation: HeadRelation::Missing,
+        };
+        let observed = classify_participant("mem_app", &record, &live);
+
+        assert!(
+            observed
+                .drift
+                .iter()
+                .any(|drift| drift.kind == ParticipantDriftKind::ForeignIntegrationState)
+        );
+        assert!(!observed.abort_eligibility.eligible);
+    }
+
+    #[test]
+    fn externally_restored_conflict_is_abort_eligible() {
+        let record = participant(ParticipantState::Conflicted);
+        let live = ParticipantLiveState {
+            branch: Some("main".into()),
+            head: Some("before".into()),
+            target_ref: Some("before".into()),
+            status: GitStatus::clean(),
+            repository_state: crate::git::GitRepositoryState::Clean,
+            merge_state: None,
+            native_detail_error: None,
+            missing_objects: Vec::new(),
+            head_relation: HeadRelation::Equal,
+        };
+        let observed = classify_participant("mem_app", &record, &live);
+
+        assert!(!observed.continue_eligibility.eligible);
+        assert!(observed.abort_eligibility.eligible);
+        assert!(
+            observed
+                .drift
+                .iter()
+                .any(|drift| drift.kind == ParticipantDriftKind::MergeStateMissing)
+        );
+    }
+
+    #[test]
+    fn durably_restored_row_ignores_later_worktree_dirt_for_abort() {
+        let record = participant(ParticipantState::RolledBack);
+        let live = ParticipantLiveState {
+            branch: Some("other".into()),
+            head: Some("later".into()),
+            target_ref: Some("before".into()),
+            status: GitStatus {
+                is_dirty: true,
+                staged: 1,
+                untracked: 1,
+                ..GitStatus::clean()
+            },
+            repository_state: crate::git::GitRepositoryState::Clean,
+            merge_state: None,
+            native_detail_error: None,
+            missing_objects: Vec::new(),
+            head_relation: HeadRelation::Advanced,
+        };
+        let observed = classify_participant("mem_app", &record, &live);
+
+        assert!(observed.abort_eligibility.eligible);
+        assert!(
+            observed
+                .drift
+                .iter()
+                .any(|drift| drift.kind == ParticipantDriftKind::WorktreeModified)
+        );
+    }
+
+    #[test]
+    fn invalid_record_path_is_rejected_before_repository_observation() {
+        let root =
+            std::env::temp_dir().join(format!("gwz-status-invalid-path-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let backend = crate::git::Git2Backend::new();
+        for invalid in ["../outside", "/tmp/outside"] {
+            let mut record = participant(ParticipantState::Unattempted);
+            record.path = invalid.to_owned();
+            let error = observe_participant(&backend, &root, "mem_app", &record).unwrap_err();
+            assert_eq!(error.code, ErrorCode::MergeRecordUnreadable);
+            assert_eq!(error.member_id.as_deref(), Some("mem_app"));
+            assert_eq!(error.member_path.as_deref(), Some(invalid));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_expected_and_resulting_commits_are_member_scoped_object_drift() {
+        let root = test_root("missing-object");
+        let repo = root.join("repos/app");
+        Git2Backend::new().create_repo(&repo).unwrap();
+        let head = commit(&repo, "tracked.txt", "one\n", "initial");
+        let missing = "0000000000000000000000000000000000000000";
+        let mut expected = participant(ParticipantState::Unattempted);
+        expected.before_commit = missing.to_owned();
+        expected.source_commit = head.clone();
+        let mut resulting = participant(ParticipantState::Merged);
+        resulting.before_commit = head.clone();
+        resulting.source_commit = head;
+        resulting.resulting_commit = Some(missing.to_owned());
+
+        for record in [expected, resulting] {
+            let observed =
+                observe_participant(&Git2Backend::new(), &root, "mem_app", &record).unwrap();
+            assert!(
+                observed
+                    .drift
+                    .iter()
+                    .any(|drift| drift.kind == ParticipantDriftKind::ObjectMissing)
+            );
+            assert!(!observed.continue_eligibility.eligible);
+        }
+        assert!(repo.join("tracked.txt").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rewound_detached_and_missing_heads_have_distinct_evidence() {
+        let record = participant(ParticipantState::Unattempted);
+        let cases = [
+            (
+                Some("main"),
+                Some("older"),
+                HeadRelation::Rewound,
+                ParticipantDriftKind::HeadRewound,
+            ),
+            (
+                None,
+                Some("other"),
+                HeadRelation::Advanced,
+                ParticipantDriftKind::HeadAdvanced,
+            ),
+            (
+                Some("main"),
+                None,
+                HeadRelation::Missing,
+                ParticipantDriftKind::ObjectMissing,
+            ),
+        ];
+        for (branch, head, relation, expected) in cases {
+            let live = ParticipantLiveState {
+                branch: branch.map(str::to_owned),
+                head: head.map(str::to_owned),
+                target_ref: head.map(str::to_owned),
+                status: GitStatus::clean(),
+                repository_state: GitRepositoryState::Clean,
+                merge_state: None,
+                native_detail_error: None,
+                missing_objects: Vec::new(),
+                head_relation: relation,
+            };
+            let observed = classify_participant("mem_app", &record, &live);
+            assert!(observed.drift.iter().any(|drift| drift.kind == expected));
+            if branch.is_none() {
+                assert!(
+                    observed
+                        .drift
+                        .iter()
+                        .any(|drift| drift.kind == ParticipantDriftKind::BranchChanged)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn actual_foreign_sequencer_state_is_not_optimistically_accepted() {
+        let root = test_root("foreign-state");
+        let repo = root.join("repos/app");
+        Git2Backend::new().create_repo(&repo).unwrap();
+        let head = commit(&repo, "tracked.txt", "one\n", "initial");
+        fs::write(repo.join(".git/CHERRY_PICK_HEAD"), format!("{head}\n")).unwrap();
+        let mut record = participant(ParticipantState::Merged);
+        record.before_commit = head.clone();
+        record.source_commit = head.clone();
+        record.resulting_commit = Some(head);
+
+        let observed = observe_participant(&Git2Backend::new(), &root, "mem_app", &record).unwrap();
+
+        assert!(
+            observed
+                .drift
+                .iter()
+                .any(|drift| drift.kind == ParticipantDriftKind::ForeignIntegrationState)
+        );
+        assert!(!observed.abort_eligibility.eligible);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_true_merge_completion_is_exact_and_read_only() {
+        let root = test_root("reconcile-complete");
+        let repo = root.join("repos/app");
+        let (before, source) = seed_divergence(&repo);
+        let backend = Git2Backend::new();
+        let message = "frozen message";
+        let result = backend
+            .merge_upstream_checked(&repo, "main", &before, &source, message, None)
+            .unwrap();
+        let record = pending_record(
+            ParticipantState::Planned,
+            &before,
+            &source,
+            message,
+            PendingMergeActionKind::TrueMerge,
+        );
+        let index_before = fs::read(repo.join(".git/index")).unwrap();
+        let head_before = backend.head(&repo).unwrap();
+
+        let reconciled = reconcile_pending_action(&backend, &root, "mem_app", &record).unwrap();
+
+        assert_eq!(
+            reconciled,
+            PendingActionReconciliation::Completed {
+                resulting_commit: result.commit.unwrap()
+            }
+        );
+        let observed = observe_participant(&backend, &root, "mem_app", &record).unwrap();
+        assert_eq!(
+            observed
+                .pending_action
+                .as_ref()
+                .map(|pending| pending.state),
+            Some(super::super::PendingActionObservationState::CompletedExactly)
+        );
+        assert!(observed.drift.is_empty());
+        assert!(observed.continue_eligibility.eligible);
+        assert!(observed.abort_eligibility.eligible);
+        assert_eq!(backend.head(&repo).unwrap(), head_before);
+        assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+        assert_eq!(backend.status(&repo).unwrap(), GitStatus::clean());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_conflict_and_resolved_native_state_are_distinguished() {
+        let root = test_root("reconcile-conflict");
+        let repo = root.join("repos/app");
+        let backend = Git2Backend::new();
+        backend.create_repo(&repo).unwrap();
+        commit(&repo, "conflict.txt", "base\n", "base");
+        run_git(&repo, &["branch", "feature"]);
+        run_git(&repo, &["checkout", "feature"]);
+        let source = commit(&repo, "conflict.txt", "source\n", "source");
+        run_git(&repo, &["checkout", "main"]);
+        let before = commit(&repo, "conflict.txt", "main\n", "main");
+        let message = "frozen conflict message";
+        let result = backend
+            .merge_upstream_checked(&repo, "main", &before, &source, message, None)
+            .unwrap();
+        assert_eq!(result.conflicts, vec!["conflict.txt"]);
+        let mut record = pending_record(
+            ParticipantState::Planned,
+            &before,
+            &source,
+            message,
+            PendingMergeActionKind::TrueMerge,
+        );
+
+        assert_eq!(
+            reconcile_pending_action(&backend, &root, "mem_app", &record).unwrap(),
+            PendingActionReconciliation::ExpectedConflict {
+                conflict_paths: vec!["conflict.txt".to_owned()]
+            }
+        );
+        let observed = observe_participant(&backend, &root, "mem_app", &record).unwrap();
+        assert_eq!(
+            observed
+                .pending_action
+                .as_ref()
+                .map(|pending| pending.state),
+            Some(super::super::PendingActionObservationState::ExpectedConflict)
+        );
+        assert!(observed.abort_eligibility.eligible);
+        assert_eq!(observed.conflict_paths, vec!["conflict.txt"]);
+
+        fs::write(repo.join("conflict.txt"), "resolved\n").unwrap();
+        run_git(&repo, &["add", "conflict.txt"]);
+        record.state = ParticipantState::Conflicted;
+        record.expected_merge_head = Some(source.clone());
+        record.pending_action.as_mut().unwrap().kind = PendingMergeActionKind::ResolveConflict;
+        assert_eq!(
+            reconcile_pending_action(&backend, &root, "mem_app", &record).unwrap(),
+            PendingActionReconciliation::NotStarted
+        );
+        let observed = observe_participant(&backend, &root, "mem_app", &record).unwrap();
+        assert_eq!(
+            observed
+                .pending_action
+                .as_ref()
+                .map(|pending| pending.state),
+            Some(super::super::PendingActionObservationState::NotStarted)
+        );
+        assert!(observed.continue_eligibility.eligible);
+        assert!(!observed.abort_eligibility.eligible);
+
+        let committed = backend
+            .commit_merge_resolution_checked(&repo, &before, &source, message, None)
+            .unwrap();
+        assert_eq!(
+            reconcile_pending_action(&backend, &root, "mem_app", &record).unwrap(),
+            PendingActionReconciliation::Completed {
+                resulting_commit: committed.commit
+            }
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ambiguous_pending_inputs_are_structured_and_block_recovery() {
+        let root = test_root("reconcile-ambiguous");
+        let repo = root.join("repos/app");
+        let backend = Git2Backend::new();
+        backend.create_repo(&repo).unwrap();
+        let before = commit(&repo, "tracked.txt", "one\n", "initial");
+        let mut record = pending_record(
+            ParticipantState::Planned,
+            &before,
+            &before,
+            "frozen",
+            PendingMergeActionKind::FastForward,
+        );
+        record.pending_action.as_mut().unwrap().target_branch = "other".to_owned();
+
+        let observed = observe_participant(&backend, &root, "mem_app", &record).unwrap();
+
+        let pending = observed.pending_action.unwrap();
+        assert_eq!(
+            pending.state,
+            super::super::PendingActionObservationState::Ambiguous
+        );
+        assert!(pending.message.unwrap().contains("do not match"));
+        assert!(
+            observed
+                .drift
+                .iter()
+                .any(|drift| drift.kind == ParticipantDriftKind::PendingActionAmbiguous)
+        );
+        assert!(!observed.continue_eligibility.eligible);
+        assert!(!observed.abort_eligibility.eligible);
+        fs::remove_dir_all(root).unwrap();
     }
 }

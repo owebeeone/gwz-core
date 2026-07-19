@@ -1,7 +1,8 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-19; implementation complete through M2a).
-Owner: Gianni. The next implementation wave is M2b finalization and evidence.
+Status: **active** (revised 2026-07-19; M2a remediation implementation and
+verification complete, independent re-review pending). Owner: Gianni. The next
+implementation wave after re-review is M2b finalization and evidence.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -873,6 +874,40 @@ The gate proves:
 M2a remains an internal checkpoint. Continue and abort are not released until
 M2b proves that successful completion and interrupted finalization publish one
 coherent workspace composition.
+
+### M2a review remediation checkpoint
+
+Status: **implementation and verification complete; independent re-review
+pending** (2026-07-19).
+
+The independent M2a reviews found high-fan-out recovery defects that must be
+corrected before shared M2b integration:
+
+- complete native repository operation state must feed the single status /
+  continue / abort classifier;
+- every participant Git action needs durable intent and exact post-crash
+  reconciliation before outcome adoption or retry;
+- `recovery_required` needs guarded exits after exact reclassification;
+- the open-merge gate must use the effective request workspace and be
+  authoritative in core under the mutator lock;
+- abort must recognize exact externally restored and already durably restored
+  no-op rows; and
+- drift, events, attribution, archive-close truth, path validation, driver
+  parity, and user documentation must match those corrected contracts.
+
+The additive record, backend, classifier, gate, transition, event, and
+attribution interfaces are implemented. Native-state classification, exact
+action reconciliation, abort/archive recovery, authoritative gate enforcement,
+event ordering, Rust/Python parity, identity policy, documentation, and the
+combined adversarial lifecycle scenario pass their integrated verification
+gate. The final external condition is an independent re-review reporting no
+P0/P1/P2 defect in these corrected contracts.
+
+M2b-A1 marker-model work and isolated M2b-B scoped-commit experiments may
+continue off the integration path. M2b-A2 finalization, M2b-C driver/event
+completion, and the first public member-merge release gate remain blocked until
+the remediation exit criteria in
+`../../dev-docs/GwzDevCodeM2a-RemPlan.md` pass.
 
 ## 10. Wave M2b — finalization and evidence
 

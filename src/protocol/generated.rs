@@ -311,6 +311,52 @@ impl MergeAnalysisKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergePendingActionKind {
+    #[default] VerifyUpToDate,
+    FastForward,
+    TrueMerge,
+    ResolveConflict,
+}
+impl MergePendingActionKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::VerifyUpToDate => 0,
+        Self::FastForward => 1,
+        Self::TrueMerge => 2,
+        Self::ResolveConflict => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::VerifyUpToDate,
+        1 => Self::FastForward,
+        2 => Self::TrueMerge,
+        3 => Self::ResolveConflict,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergePendingActionKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergePendingActionState {
+    #[default] NotStarted,
+    ExpectedConflict,
+    CompletedExactly,
+    Ambiguous,
+}
+impl MergePendingActionState {
+    pub fn wire(self) -> i64 { match self {
+        Self::NotStarted => 0,
+        Self::ExpectedConflict => 1,
+        Self::CompletedExactly => 2,
+        Self::Ambiguous => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::NotStarted,
+        1 => Self::ExpectedConflict,
+        2 => Self::CompletedExactly,
+        3 => Self::Ambiguous,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergePendingActionState", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum MergeParticipantState {
     #[default] Planned,
     UpToDate,
@@ -404,6 +450,10 @@ pub enum MergeParticipantDriftKind {
     MergeHeadChanged,
     NewIntegrationState,
     RepositoryMissing,
+    HeadDiverged,
+    ObjectMissing,
+    ForeignIntegrationState,
+    PendingActionAmbiguous,
 }
 impl MergeParticipantDriftKind {
     pub fn wire(self) -> i64 { match self {
@@ -417,6 +467,10 @@ impl MergeParticipantDriftKind {
         Self::MergeHeadChanged => 7,
         Self::NewIntegrationState => 8,
         Self::RepositoryMissing => 9,
+        Self::HeadDiverged => 10,
+        Self::ObjectMissing => 11,
+        Self::ForeignIntegrationState => 12,
+        Self::PendingActionAmbiguous => 13,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::BranchChanged,
@@ -429,6 +483,10 @@ impl MergeParticipantDriftKind {
         7 => Self::MergeHeadChanged,
         8 => Self::NewIntegrationState,
         9 => Self::RepositoryMissing,
+        10 => Self::HeadDiverged,
+        11 => Self::ObjectMissing,
+        12 => Self::ForeignIntegrationState,
+        13 => Self::PendingActionAmbiguous,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeParticipantDriftKind", value: v }),
     }) }
 }
@@ -2539,6 +2597,29 @@ impl MergePreservation {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergePendingActionSummary {
+    pub kind: MergePendingActionKind,
+    pub state: MergePendingActionState,
+    pub message: Option<String>,
+}
+impl MergePendingActionSummary {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, Cbor::Int(self.state.wire())),
+            (3, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: MergePendingActionKind::from_wire(c.try_get(1)?.try_int()?)?,
+            state: MergePendingActionState::from_wire(c.try_get(2)?.try_int()?)?,
+            message: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct MergeRepoSummary {
     pub target_id: String,
     pub target_kind: TargetKind,
@@ -2557,6 +2638,7 @@ pub struct MergeRepoSummary {
     pub abort_eligible: Option<bool>,
     pub drift: Vec<MergeParticipantDrift>,
     pub error: Option<GwzError>,
+    pub pending_action: Option<MergePendingActionSummary>,
 }
 impl MergeRepoSummary {
     pub fn to_cbor(&self) -> Cbor {
@@ -2578,6 +2660,7 @@ impl MergeRepoSummary {
             (15, match &self.abort_eligible { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (16, Cbor::Array(self.drift.iter().map(|x| x.to_cbor()).collect())),
             (17, match &self.error { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (18, match &self.pending_action { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2599,6 +2682,7 @@ impl MergeRepoSummary {
             abort_eligible: { let v = c.try_get(15)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             drift: c.try_get(16)?.try_array()?.iter().map(|x| MergeParticipantDrift::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
             error: { let v = c.try_get(17)?; if v.is_null() { None } else { Some(GwzError::from_cbor(v)?) } },
+            pending_action: { let v = c.try_get(18)?; if v.is_null() { None } else { Some(MergePendingActionSummary::from_cbor(v)?) } },
         })
     }
 }
@@ -2713,6 +2797,8 @@ pub struct OperationEvent {
     pub progress: Option<GitTransferProgress>,
     pub target_kind: Option<TargetKind>,
     pub merge_state: Option<MergeOperationState>,
+    pub merge_member: Option<MergeRepoSummary>,
+    pub artifact_path: Option<String>,
 }
 impl OperationEvent {
     pub fn to_cbor(&self) -> Cbor {
@@ -2732,6 +2818,8 @@ impl OperationEvent {
             (13, match &self.progress { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (14, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
             (15, match &self.merge_state { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (16, match &self.merge_member { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (17, match &self.artifact_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2751,6 +2839,8 @@ impl OperationEvent {
             progress: { let v = c.try_get(13)?; if v.is_null() { None } else { Some(GitTransferProgress::from_cbor(v)?) } },
             target_kind: { let v = c.try_get(14)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
             merge_state: { let v = c.try_get(15)?; if v.is_null() { None } else { Some(MergeOperationState::from_wire(v.try_int()?)?) } },
+            merge_member: { let v = c.try_get(16)?; if v.is_null() { None } else { Some(MergeRepoSummary::from_cbor(v)?) } },
+            artifact_path: { let v = c.try_get(17)?; if v.is_null() { None } else { Some(v.try_text()?) } },
         })
     }
 }

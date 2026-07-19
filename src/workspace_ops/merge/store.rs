@@ -86,7 +86,8 @@ impl MergeStore for FileMergeStore {
         let destination = done_path(root, merge_id);
         if !path_exists(&source)? {
             if path_exists(&destination)? {
-                let _ = read_record(&destination)?;
+                let (_, archived) = read_record(&destination)?;
+                ensure_terminal_for_archive(&archived)?;
                 return enforce_retention(root);
             }
             return Err(ModelError::new(
@@ -95,12 +96,7 @@ impl MergeStore for FileMergeStore {
             ));
         }
         let (source_raw, record) = read_record(&source)?;
-        if record.state.is_open() {
-            return Err(recovery_error(format!(
-                "cannot archive open merge record '{merge_id}' in state {:?}",
-                record.state
-            )));
-        }
+        ensure_terminal_for_archive(&record)?;
         fs::create_dir_all(root.join(DONE_DIR)).map_err(io_error)?;
         if path_exists(&destination)? {
             let (archived_raw, archived) = read_record(&destination)?;
@@ -130,6 +126,16 @@ impl MergeStore for FileMergeStore {
             "merge record GC is not available",
         ))
     }
+}
+
+fn ensure_terminal_for_archive(record: &MergeOperationRecord) -> ModelResult<()> {
+    if record.state.is_open() {
+        return Err(recovery_error(format!(
+            "cannot archive open merge record '{}' in state {:?}",
+            record.merge_id, record.state
+        )));
+    }
+    Ok(())
 }
 
 fn open_path(root: &Path, merge_id: &str) -> PathBuf {
@@ -453,6 +459,64 @@ mod tests {
         assert!(done_path(&temp.path, "merge_kept").is_file());
         assert!(store.discover_open(&temp.path).unwrap().is_none());
         assert_eq!(store.load(&temp.path, "merge_kept").unwrap(), kept);
+    }
+
+    #[test]
+    fn archive_retry_accepts_destination_only_after_publish() {
+        let temp = temp("merge-store-archive-destination-only");
+        let store = FileMergeStore;
+        let closed = record("merge_closed", OperationState::Aborted);
+        store.write_open(&temp.path, &closed).unwrap();
+        fs::create_dir_all(temp.path.join(DONE_DIR)).unwrap();
+        fs::rename(
+            open_path(&temp.path, &closed.merge_id),
+            done_path(&temp.path, &closed.merge_id),
+        )
+        .unwrap();
+
+        store.archive(&temp.path, &closed.merge_id).unwrap();
+
+        assert!(store.discover_open(&temp.path).unwrap().is_none());
+        assert_eq!(store.load(&temp.path, &closed.merge_id).unwrap(), closed);
+    }
+
+    #[test]
+    fn archive_retry_removes_matching_open_copy_after_destination_publish() {
+        let temp = temp("merge-store-archive-both-copies");
+        let store = FileMergeStore;
+        let closed = record("merge_closed", OperationState::Aborted);
+        store.write_open(&temp.path, &closed).unwrap();
+        fs::create_dir_all(temp.path.join(DONE_DIR)).unwrap();
+        fs::copy(
+            open_path(&temp.path, &closed.merge_id),
+            done_path(&temp.path, &closed.merge_id),
+        )
+        .unwrap();
+
+        store.archive(&temp.path, &closed.merge_id).unwrap();
+
+        assert!(!open_path(&temp.path, &closed.merge_id).exists());
+        assert_eq!(store.load(&temp.path, &closed.merge_id).unwrap(), closed);
+    }
+
+    #[test]
+    fn archive_retry_rejects_nonterminal_destination_only_record() {
+        let temp = temp("merge-store-archive-open-destination");
+        let store = FileMergeStore;
+        let open = record("merge_open", OperationState::Executing);
+        store.write_open(&temp.path, &open).unwrap();
+        fs::create_dir_all(temp.path.join(DONE_DIR)).unwrap();
+        fs::rename(
+            open_path(&temp.path, &open.merge_id),
+            done_path(&temp.path, &open.merge_id),
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.archive(&temp.path, &open.merge_id).unwrap_err().code,
+            ErrorCode::MergeRecoveryRequired
+        );
+        assert!(done_path(&temp.path, &open.merge_id).exists());
     }
 
     #[test]

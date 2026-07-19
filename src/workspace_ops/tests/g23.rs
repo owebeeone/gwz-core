@@ -635,6 +635,117 @@ fn mixed_merge_abort_restores_exact_baseline_and_archives_operation() {
 }
 
 #[test]
+fn crash_reload_continue_foreign_rejection_and_external_restore_converge_on_abort() {
+    let temp = TempDir::new("merge-adversarial-lifecycle");
+    let backend = crate::git::Git2Backend::new();
+    let fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
+    let merge_id = started.merge_id.clone().unwrap();
+    assert_eq!(
+        merge_repo(&started, "mem_lib").state,
+        crate::MergeParticipantState::Merged
+    );
+    assert_eq!(
+        merge_repo(&started, "mem_docs").state,
+        crate::MergeParticipantState::Conflicted
+    );
+
+    // A new backend instance models a fresh process reloading only durable
+    // operation state before the conflict is resolved.
+    let reloaded = crate::git::Git2Backend::new();
+    let status = handle_merge(
+        &reloaded,
+        temp.path(),
+        recovery_request(crate::MergeOp::Status, None),
+        "op_status_reload",
+    )
+    .unwrap();
+    assert_eq!(
+        merge_repo(&status, "mem_docs").state,
+        crate::MergeParticipantState::Conflicted
+    );
+
+    let docs = temp.path().join("docs");
+    fs::write(docs.join("README.md"), "resolved after reload\n").unwrap();
+    reloaded
+        .stage_paths_allowing_other_conflicts(&docs, &["README.md"])
+        .unwrap();
+    let continued = handle_merge(
+        &reloaded,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(merge_id.clone())),
+        "op_continue_reload",
+    )
+    .unwrap();
+    assert_eq!(continued.state, crate::MergeOperationState::Finalizing);
+    let lib = temp.path().join("lib");
+    let lib_result = merge_repo(&continued, "mem_lib")
+        .resulting_commit
+        .clone()
+        .unwrap();
+    let docs_result = merge_repo(&continued, "mem_docs")
+        .resulting_commit
+        .clone()
+        .unwrap();
+
+    // Poison a participant that abort would have to roll back. Whole-operation
+    // preflight must reject before changing the later docs participant.
+    let lib_repo = git2::Repository::open(&lib).unwrap();
+    let cherry_pick_head = lib_repo.path().join("CHERRY_PICK_HEAD");
+    fs::write(&cherry_pick_head, format!("{lib_result}\n")).unwrap();
+    let record_path = temp.path().join(format!(".gwz/merge/{merge_id}.yaml"));
+    let record_before_rejection = fs::read(&record_path).unwrap();
+    let error = handle_merge(
+        &crate::git::Git2Backend::new(),
+        temp.path(),
+        recovery_request(crate::MergeOp::Abort, Some(merge_id.clone())),
+        "op_abort_foreign",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
+    assert_eq!(
+        reloaded.head(&lib).unwrap().commit.as_deref(),
+        Some(lib_result.as_str())
+    );
+    assert_eq!(
+        reloaded.head(&docs).unwrap().commit.as_deref(),
+        Some(docs_result.as_str())
+    );
+    assert_eq!(fs::read(&record_path).unwrap(), record_before_rejection);
+    fs::remove_file(cherry_pick_head).unwrap();
+
+    // Simulate an exact external restoration after the interrupted process.
+    // Coordinated abort must recognize it as a no-op and roll back only the
+    // participant that remains changed.
+    reloaded
+        .set_branch_target_checked(&docs, "main", &docs_result, &fixture.docs_before)
+        .unwrap();
+    let aborted = handle_merge(
+        &crate::git::Git2Backend::new(),
+        temp.path(),
+        recovery_request(crate::MergeOp::Abort, Some(merge_id.clone())),
+        "op_abort_reloaded",
+    )
+    .unwrap();
+    assert_eq!(aborted.state, crate::MergeOperationState::Aborted);
+    assert!(!aborted.open);
+    assert_eq!(
+        reloaded.head(&lib).unwrap().commit,
+        Some(fixture.lib_before)
+    );
+    assert_eq!(
+        reloaded.head(&docs).unwrap().commit,
+        Some(fixture.docs_before)
+    );
+    assert!(
+        temp.path()
+            .join(format!(".gwz/merge/done/{merge_id}.yaml"))
+            .is_file()
+    );
+}
+
+#[test]
 fn post_merge_commit_rejects_abort_before_conflicted_member_changes() {
     let temp = TempDir::new("merge-mixed-abort-drift");
     let backend = crate::git::Git2Backend::new();
@@ -698,6 +809,7 @@ fn failed_and_unattempted_rows_retry_only_after_whole_operation_preflight() {
         expected_merge_head: None,
         conflict_paths: Vec::new(),
         error: None,
+        pending_action: None,
         preservation: Vec::new(),
         drift: Vec::new(),
         extensions: BTreeMap::new(),
@@ -836,4 +948,95 @@ fn unrelated_staged_conflict_work_blocks_every_resolution_commit() {
     assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
     assert_eq!(backend.head(&app).unwrap().commit, Some(app_before));
     assert!(backend.merge_state(&app).unwrap().is_some());
+}
+
+#[test]
+fn direct_core_mutator_cannot_bypass_open_merge_gate() {
+    let temp = TempDir::new("merge-direct-core-gate");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
+    assert!(started.open);
+
+    let error = handle_branch(
+        &backend,
+        temp.path(),
+        crate::BranchRequest {
+            meta: request_meta(),
+            op: crate::BranchOp::Create,
+            name: Some("blocked-during-merge".to_owned()),
+            start_ref: Some("HEAD".to_owned()),
+            switch_after_create: None,
+        },
+        "op_direct_branch",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::OpenOperation);
+    assert!(error.message.contains(started.merge_id.as_deref().unwrap()));
+    assert!(
+        !backend
+            .branch_list(&temp.path().join("app"))
+            .unwrap()
+            .iter()
+            .any(|branch| branch.name == "blocked-during-merge")
+    );
+}
+
+#[test]
+fn conditional_stage_allows_only_recorded_conflicted_participants() {
+    let temp = TempDir::new("merge-stage-gate");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
+    assert_eq!(
+        started.state,
+        crate::MergeOperationState::AwaitingResolution
+    );
+
+    let stage = |pathspec: &str, operation_id: &str| {
+        handle_stage(
+            &backend,
+            temp.path(),
+            crate::StageRequest {
+                meta: request_meta(),
+                cwd: temp.path().to_string_lossy().into_owned(),
+                pathspecs: vec![pathspec.to_owned()],
+                all: None,
+            },
+            operation_id,
+        )
+    };
+
+    fs::write(temp.path().join("docs/README.md"), "resolved\n").unwrap();
+    stage("docs/README.md", "op_stage_conflict").unwrap();
+    assert_eq!(
+        backend
+            .status(&temp.path().join("docs"))
+            .unwrap()
+            .unresolved,
+        0
+    );
+    let lib_staged = backend.status(&temp.path().join("lib")).unwrap().staged;
+    let app_staged = backend.status(&temp.path().join("app")).unwrap().staged;
+    let root_staged = backend.status(temp.path()).unwrap().staged;
+
+    for (pathspec, operation_id) in [
+        ("lib/new.txt", "op_stage_merged"),
+        ("app/new.txt", "op_stage_unaffected"),
+        ("root-new.txt", "op_stage_root"),
+    ] {
+        fs::write(temp.path().join(pathspec), "must remain unstaged\n").unwrap();
+        let error = stage(pathspec, operation_id).unwrap_err();
+        assert_eq!(error.code, ErrorCode::OpenOperation, "{pathspec}");
+    }
+    assert_eq!(
+        backend.status(&temp.path().join("lib")).unwrap().staged,
+        lib_staged
+    );
+    assert_eq!(
+        backend.status(&temp.path().join("app")).unwrap().staged,
+        app_staged
+    );
+    assert_eq!(backend.status(temp.path()).unwrap().staged, root_staged);
 }

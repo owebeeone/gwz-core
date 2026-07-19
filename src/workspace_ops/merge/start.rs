@@ -1,26 +1,26 @@
 use super::{
     MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord, MergeParticipantPlan,
     MergeParticipantRecord, MergeRecordError, MergeStore, OperationState, ParticipantState,
-    plan::plan_merge,
+    PendingMergeAction, PendingMergeActionKind, plan::plan_merge,
 };
 use crate::artifact;
 use crate::git::{
     GitBackend, GitHeadState, GitIntegrateResult, GitMergeAnalysis, GitMergeAnalysisKind, GitStatus,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{ActionKind, EventEmitter, OperationContext, WorkspaceMutatorLock};
+use crate::operation::{ActionKind, EventEmitter, OperationContext};
 use crate::runtime::clock::Clock;
 use crate::runtime::ids::IdProvider;
-use crate::workspace_ops::resolve_workspace_root;
 use crate::{AggregateStatus, MergeOperationState as OpState, MergeParticipantState as PState};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 pub(super) fn handle_start_durable<B, S, C, I>(
     dependencies: super::MergeDependencies<'_, B, S, C, I>,
-    start: &Path,
+    root: &Path,
     request: &crate::MergeRequest,
-    context: OperationContext,
+    context: &OperationContext,
+    emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse>
 where
     B: GitBackend,
@@ -33,38 +33,29 @@ where
         store,
         clock,
         ids,
-        events,
+        events: _,
     } = dependencies;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     if request.meta.dry_run.unwrap_or(false) {
-        return handle_dry_run(backend, &root, request, &context);
+        return handle_dry_run(backend, root, request, context);
     }
 
-    let _guard = WorkspaceMutatorLock::acquire(&root)?;
-    if let Some(open) = store.discover_open(&root)? {
+    if let Some(open) = store.discover_open(root)? {
         return Err(open_operation_error(&open.merge_id));
     }
-    let mut plan = plan_merge(backend, &root, request)?;
+    let mut plan = plan_merge(backend, root, request)?;
     let merge_id = ids.next_id("merge").to_string();
-    freeze_merge_messages(
-        &mut plan.participants,
-        &plan.source_ref,
-        &merge_id,
-        &context,
-    );
-    let mut record = create_record(&root, &plan, &merge_id, clock, &context)?;
-    store.write_open(&root, &record)?;
-
-    let emitter = EventEmitter::new(&context, events, 0);
+    freeze_merge_messages(&mut plan.participants, &plan.source_ref, &merge_id, context);
+    let mut record = create_record(root, &plan, &merge_id, clock, context)?;
+    super::persist_merge_record(store, root, &record, emitter)?;
     emitter.operation_state_changed(record.state.into());
     execute_durable(
         backend,
         store,
-        &root,
+        root,
         &plan.participants,
         context.attribution.as_ref(),
         &mut record,
-        &emitter,
+        emitter,
     )?;
 
     let next = if record
@@ -83,11 +74,11 @@ where
         OperationState::Finalizing
     };
     if next == OperationState::Finalizing {
-        super::enter_finalizing(store, &root, &mut record, &emitter)?;
+        super::enter_finalizing(store, root, &mut record, emitter)?;
     } else {
-        super::persist_operation_transition(store, &root, &mut record, next, &emitter)?;
+        super::persist_operation_transition(store, root, &mut record, next, emitter)?;
     }
-    start_response(&record, &plan.participants, &context)
+    start_response(&record, &plan.participants, context)
 }
 
 fn handle_dry_run<B: GitBackend>(
@@ -152,6 +143,7 @@ fn create_record<C: Clock>(
                     expected_merge_head: None,
                     conflict_paths: Vec::new(),
                     error: None,
+                    pending_action: None,
                     preservation: Vec::new(),
                     drift: Vec::new(),
                     extensions: BTreeMap::new(),
@@ -192,31 +184,110 @@ fn execute_durable<B: ExecutionBackend, S: MergeStore>(
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<()> {
     for (index, participant) in participants.iter().enumerate() {
-        match execute_one(backend, root, participant, attribution) {
+        emitter.member_started(&participant.target_id, &participant.path);
+        let kind = match prepare_one(backend, root, participant) {
+            Ok(kind) => kind,
+            Err(error) => {
+                persist_start_failure(store, root, record, participant, &error, emitter)?;
+                mark_later_unattempted(store, root, record, &participants[index + 1..], emitter)?;
+                break;
+            }
+        };
+        set_pending_action(record, participant, kind)?;
+        super::persist_merge_record(store, root, record, emitter)?;
+        match execute_prepared(backend, root, participant, kind, attribution) {
             Ok(row) => {
                 apply_row(record, participant, &row, None)?;
-                store.write_open(root, record)?;
-                emitter.member_finished(&participant.target_id, &participant.path);
+                record
+                    .participants
+                    .get_mut(&participant.target_id)
+                    .expect("participant was validated before execution")
+                    .pending_action = None;
+                super::persist_merge_record(store, root, record, emitter)?;
+                super::emit_merge_member_finished(emitter, record, &participant.target_id)?;
             }
             Err(error) => {
-                let contextual = error.with_member(&participant.target_id, &participant.path);
-                apply_row(
-                    record,
-                    participant,
-                    &Row::new(participant, PState::Failed),
-                    Some(&contextual),
-                )?;
-                store.write_open(root, record)?;
-                emitter.member_finished(&participant.target_id, &participant.path);
-                for later in &participants[index + 1..] {
-                    apply_row(record, later, &Row::new(later, PState::Unattempted), None)?;
-                    store.write_open(root, record)?;
-                }
+                persist_start_failure(store, root, record, participant, &error, emitter)?;
+                mark_later_unattempted(store, root, record, &participants[index + 1..], emitter)?;
                 break;
             }
         }
     }
     Ok(())
+}
+
+fn persist_start_failure<S: MergeStore>(
+    store: &S,
+    root: &Path,
+    record: &mut MergeOperationRecord,
+    participant: &MergeParticipantPlan,
+    error: &ModelError,
+    emitter: &EventEmitter<'_>,
+) -> ModelResult<()> {
+    let contextual = error
+        .clone()
+        .with_member(&participant.target_id, &participant.path);
+    apply_row(
+        record,
+        participant,
+        &Row::new(participant, PState::Failed),
+        Some(&contextual),
+    )?;
+    super::persist_merge_record(store, root, record, emitter)?;
+    super::emit_merge_member_finished(emitter, record, &participant.target_id)
+}
+
+fn mark_later_unattempted<S: MergeStore>(
+    store: &S,
+    root: &Path,
+    record: &mut MergeOperationRecord,
+    later: &[MergeParticipantPlan],
+    emitter: &EventEmitter<'_>,
+) -> ModelResult<()> {
+    for participant in later {
+        apply_row(
+            record,
+            participant,
+            &Row::new(participant, PState::Unattempted),
+            None,
+        )?;
+        super::persist_merge_record(store, root, record, emitter)?;
+        super::emit_merge_member_finished(emitter, record, &participant.target_id)?;
+    }
+    Ok(())
+}
+
+fn set_pending_action(
+    record: &mut MergeOperationRecord,
+    plan: &MergeParticipantPlan,
+    kind: GitMergeAnalysisKind,
+) -> ModelResult<()> {
+    let participant = record
+        .participants
+        .get_mut(&plan.target_id)
+        .ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::MergeRecordUnreadable,
+                format!("merge record is missing participant '{}'", plan.target_id),
+            )
+        })?;
+    participant.pending_action = Some(PendingMergeAction {
+        kind: pending_kind(kind),
+        target_branch: plan.target_branch.clone(),
+        before_commit: plan.before_commit.clone(),
+        source_commit: plan.source_commit.clone(),
+        commit_message: plan.commit_message.clone(),
+        extensions: BTreeMap::new(),
+    });
+    Ok(())
+}
+
+fn pending_kind(kind: GitMergeAnalysisKind) -> PendingMergeActionKind {
+    match kind {
+        GitMergeAnalysisKind::UpToDate => PendingMergeActionKind::VerifyUpToDate,
+        GitMergeAnalysisKind::FastForward => PendingMergeActionKind::FastForward,
+        GitMergeAnalysisKind::TrueMerge => PendingMergeActionKind::TrueMerge,
+    }
 }
 
 fn apply_row(
@@ -378,12 +449,22 @@ fn execute_plan<'a, B: ExecutionBackend>(
     }
     execution
 }
+#[cfg(test)]
 fn execute_one<'a, B: ExecutionBackend>(
     backend: &B,
     root: &Path,
     plan: &'a MergeParticipantPlan,
     attribution: Option<&crate::model::OperationAttribution>,
 ) -> ModelResult<Row<'a>> {
+    let kind = prepare_one(backend, root, plan)?;
+    execute_prepared(backend, root, plan, kind, attribution)
+}
+
+fn prepare_one<B: ExecutionBackend>(
+    backend: &B,
+    root: &Path,
+    plan: &MergeParticipantPlan,
+) -> ModelResult<GitMergeAnalysisKind> {
     let path = root.join(&plan.path);
     let (status, head, analysis) =
         backend.inspect(&path, &plan.target_branch, &plan.source_commit)?;
@@ -401,8 +482,18 @@ fn execute_one<'a, B: ExecutionBackend>(
             format!("member '{}' changed after merge planning", plan.target_id),
         ));
     }
+    Ok(kind)
+}
+
+fn execute_prepared<'a, B: ExecutionBackend>(
+    backend: &B,
+    root: &Path,
+    plan: &'a MergeParticipantPlan,
+    kind: GitMergeAnalysisKind,
+    attribution: Option<&crate::model::OperationAttribution>,
+) -> ModelResult<Row<'a>> {
     let result = backend.merge(
-        &path,
+        &root.join(&plan.path),
         &plan.target_branch,
         &plan.before_commit,
         &plan.source_commit,
@@ -477,6 +568,7 @@ fn summary(row: Row<'_>, source_ref: &str) -> crate::MergeRepoSummary {
         abort_eligible: None,
         drift: Vec::new(),
         error: row.err,
+        pending_action: None,
     }
 }
 fn merge_response(
@@ -640,10 +732,33 @@ mod tests {
         }
     }
 
+    fn attributed_context() -> OperationContext {
+        let mut context = context(false);
+        context.attribution = Some(crate::model::OperationAttribution {
+            git_author: Some(crate::model::GitObjectIdentity {
+                name: "Merge Request Author".to_owned(),
+                email: "merge-author@example.invalid".to_owned(),
+                time_ms: Some(TimestampMs(1_700_000_000_000)),
+                timezone_offset_minutes: Some(600),
+            }),
+            git_committer: Some(crate::model::GitObjectIdentity {
+                name: "Merge Request Committer".to_owned(),
+                email: "merge-committer@example.invalid".to_owned(),
+                time_ms: Some(TimestampMs(1_700_000_100_000)),
+                timezone_offset_minutes: Some(-300),
+            }),
+            ..Default::default()
+        });
+        context
+    }
+
     #[derive(Default)]
     struct MemoryStore {
         records: Mutex<Vec<MergeOperationRecord>>,
         trace: Mutex<Vec<String>>,
+        events: Mutex<Vec<crate::OperationEvent>>,
+        writes: Mutex<usize>,
+        fail_write_at: Mutex<Option<usize>>,
     }
 
     impl MergeStore for MemoryStore {
@@ -652,6 +767,14 @@ mod tests {
         }
 
         fn write_open(&self, _root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
+            let mut writes = self.writes.lock().unwrap();
+            *writes += 1;
+            if self.fail_write_at.lock().unwrap().as_ref() == Some(&*writes) {
+                return Err(ModelError::new(
+                    ErrorCode::MergeRecoveryRequired,
+                    "injected record write failure",
+                ));
+            }
             self.trace
                 .lock()
                 .unwrap()
@@ -665,6 +788,7 @@ mod tests {
 
     impl EventSink for TraceSink<'_> {
         fn deliver(&self, event: crate::OperationEvent) {
+            self.0.events.lock().unwrap().push(event.clone());
             self.0
                 .trace
                 .lock()
@@ -692,10 +816,17 @@ mod tests {
             message: &str,
             attribution: Option<&crate::model::OperationAttribution>,
         ) -> ModelResult<GitIntegrateResult> {
+            let records = self.store.records.lock().unwrap();
+            let target_id = format!("mem_{}", key(path));
             assert!(
-                !self.store.records.lock().unwrap().is_empty(),
-                "the operation record must exist before the first Git mutation"
+                records
+                    .last()
+                    .and_then(|record| record.participants.get(&target_id))
+                    .and_then(|participant| participant.pending_action.as_ref())
+                    .is_some(),
+                "the exact participant action must be durable before Git mutation"
             );
+            drop(records);
             self.store
                 .trace
                 .lock()
@@ -829,6 +960,129 @@ mod tests {
         let plan = plan_merge(backend, root, &request).unwrap();
         (plan, bases, sources)
     }
+
+    #[derive(Clone, Copy)]
+    enum ActionFixture {
+        FastForward,
+        TrueMerge,
+        Conflict,
+    }
+
+    fn single_real_plan(
+        root: &Path,
+        backend: &Git2Backend,
+        fixture: ActionFixture,
+    ) -> super::super::MergePlan {
+        let (mut plan, bases, sources) = real_three_member_plan(root, backend);
+        let app = root.join("app");
+        match fixture {
+            ActionFixture::FastForward => {}
+            ActionFixture::TrueMerge => {
+                commit_file(
+                    &app,
+                    "local.txt",
+                    "local\n",
+                    "local",
+                    &[git2::Oid::from_str(&bases[0]).unwrap()],
+                )
+                .unwrap();
+            }
+            ActionFixture::Conflict => {
+                backend.switch_branch(&app, "feature/source").unwrap();
+                commit_file(
+                    &app,
+                    "README.md",
+                    "source\n",
+                    "source conflict",
+                    &[git2::Oid::from_str(&sources[0]).unwrap()],
+                )
+                .unwrap();
+                backend.switch_branch(&app, "main").unwrap();
+                commit_file(
+                    &app,
+                    "README.md",
+                    "local\n",
+                    "local conflict",
+                    &[git2::Oid::from_str(&bases[0]).unwrap()],
+                )
+                .unwrap();
+            }
+        }
+        if !matches!(fixture, ActionFixture::FastForward) {
+            plan = plan_merge(
+                backend,
+                root,
+                &crate::MergeRequest {
+                    meta: request_meta(),
+                    op: crate::MergeOp::Start,
+                    source_ref: Some("feature/source".to_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        plan.participants.truncate(1);
+        plan
+    }
+
+    fn resume_request() -> crate::MergeRequest {
+        crate::MergeRequest {
+            meta: request_meta(),
+            op: crate::MergeOp::Resume,
+            merge_id: Some("merge_test".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    fn resume(
+        backend: &Git2Backend,
+        store: &MemoryStore,
+        root: &Path,
+    ) -> ModelResult<crate::MergeResponse> {
+        let context = context(false);
+        resume_with_context(backend, store, root, &context)
+    }
+
+    fn resume_with_context(
+        backend: &Git2Backend,
+        store: &MemoryStore,
+        root: &Path,
+        context: &OperationContext,
+    ) -> ModelResult<crate::MergeResponse> {
+        let sink = crate::operation::NullSink;
+        let emitter = EventEmitter::new(context, &sink, 0);
+        super::super::continue_op::handle_continue(
+            backend,
+            store,
+            root,
+            &resume_request(),
+            context,
+            &emitter,
+        )
+    }
+
+    fn start_with_outcome_fault(
+        backend: &Git2Backend,
+        root: &Path,
+        plan: &super::super::MergePlan,
+    ) -> MemoryStore {
+        let store = MemoryStore::default();
+        let mut record = durable_record(root, plan);
+        store.write_open(root, &record).unwrap();
+        *store.fail_write_at.lock().unwrap() = Some(3);
+        execute_durable(
+            backend,
+            &store,
+            root,
+            &plan.participants,
+            None,
+            &mut record,
+            &EventEmitter::new(&context(false), &crate::operation::NullSink, 0),
+        )
+        .unwrap_err();
+        *store.fail_write_at.lock().unwrap() = None;
+        store
+    }
     #[test]
     fn conflict_continues_with_frozen_oids_and_maps_response() {
         let fake = Fake::default();
@@ -916,19 +1170,230 @@ mod tests {
         .unwrap();
 
         let trace = store.trace.lock().unwrap().clone();
-        assert_eq!(trace[0], "write:Executing");
-        assert_eq!(trace[1], "event:OperationStateChanged");
-        assert_eq!(trace[2], "git:conflict");
-        assert_eq!(trace[3], "write:Executing");
-        assert_eq!(trace[4], "event:MemberFinished");
-        assert_eq!(trace[5], "git:next");
-        assert_eq!(trace[6], "write:Executing");
-        assert_eq!(trace[7], "event:MemberFinished");
-        assert_eq!(trace[8], "write:AwaitingResolution");
-        assert_eq!(trace[9], "event:OperationStateChanged");
+        assert_eq!(
+            trace,
+            [
+                "write:Executing",
+                "event:OperationStateChanged",
+                "event:MemberStarted",
+                "write:Executing",
+                "event:ArtifactWritten",
+                "git:conflict",
+                "write:Executing",
+                "event:ArtifactWritten",
+                "event:MemberFinished",
+                "event:MemberStarted",
+                "write:Executing",
+                "event:ArtifactWritten",
+                "git:next",
+                "write:Executing",
+                "event:ArtifactWritten",
+                "event:MemberFinished",
+                "write:AwaitingResolution",
+                "event:ArtifactWritten",
+                "event:OperationStateChanged",
+            ]
+        );
+        let events = store.events.lock().unwrap();
+        let artifacts = events
+            .iter()
+            .filter(|event| event.kind == crate::EventKind::ArtifactWritten)
+            .collect::<Vec<_>>();
+        assert_eq!(artifacts.len(), 5);
+        assert!(
+            artifacts.iter().all(|event| {
+                event.artifact_path.as_deref() == Some(".gwz/merge/merge_test.yaml")
+            })
+        );
+        let outcomes = events
+            .iter()
+            .filter_map(|event| event.merge_member.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].state, crate::MergeParticipantState::Conflicted);
+        assert_eq!(outcomes[0].conflict_paths, ["x"]);
+        assert_eq!(outcomes[1].state, crate::MergeParticipantState::Merged);
         assert_eq!(
             store.records.lock().unwrap().last().unwrap().state,
             OperationState::AwaitingResolution
+        );
+        assert!(
+            store
+                .records
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .participants
+                .values()
+                .all(|participant| participant.pending_action.is_none())
+        );
+    }
+
+    #[test]
+    fn clean_start_store_failures_adopt_exact_results_without_duplicate_git() {
+        for (name, fixture, expected) in [
+            (
+                "ff",
+                ActionFixture::FastForward,
+                crate::MergeParticipantState::FastForwarded,
+            ),
+            (
+                "true",
+                ActionFixture::TrueMerge,
+                crate::MergeParticipantState::Merged,
+            ),
+        ] {
+            let root = TempDir::new(&format!("merge-{name}-action-recovery"));
+            let backend = Git2Backend::new();
+            let plan = single_real_plan(root.path(), &backend, fixture);
+            let store = start_with_outcome_fault(&backend, root.path(), &plan);
+            let app = root.path().join("app");
+            let result = backend.head(&app).unwrap().commit.unwrap();
+            let response = resume(&backend, &store, root.path()).unwrap();
+
+            assert_eq!(response.repos[0].state, expected);
+            assert_eq!(
+                response.repos[0].resulting_commit.as_deref(),
+                Some(&*result)
+            );
+            assert_eq!(backend.head(&app).unwrap().commit, Some(result));
+            assert!(
+                store.records.lock().unwrap().last().unwrap().participants["mem_app"]
+                    .pending_action
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn conflict_and_resolution_store_failures_reconcile_after_reload() {
+        let root = TempDir::new("merge-conflict-action-recovery");
+        let backend = Git2Backend::new();
+        let plan = single_real_plan(root.path(), &backend, ActionFixture::Conflict);
+        let app = root.path().join("app");
+        let store = start_with_outcome_fault(&backend, root.path(), &plan);
+        assert!(backend.merge_state(&app).unwrap().is_some());
+
+        let unresolved = resume(&backend, &store, root.path()).unwrap_err();
+        assert_eq!(unresolved.code, ErrorCode::MergeDrift);
+        assert_eq!(
+            store.records.lock().unwrap().last().unwrap().participants["mem_app"].state,
+            ParticipantState::Conflicted
+        );
+        assert!(
+            store.records.lock().unwrap().last().unwrap().participants["mem_app"]
+                .pending_action
+                .is_none()
+        );
+
+        std::fs::write(app.join("README.md"), "resolved\n").unwrap();
+        backend.stage_paths(&app, &["README.md"]).unwrap();
+        let fail_resolution_outcome = *store.writes.lock().unwrap() + 3;
+        *store.fail_write_at.lock().unwrap() = Some(fail_resolution_outcome);
+        let attribution = attributed_context();
+        resume_with_context(&backend, &store, root.path(), &attribution).unwrap_err();
+        let resolution_commit = backend.head(&app).unwrap().commit.unwrap();
+        assert!(backend.merge_state(&app).unwrap().is_none());
+        assert_eq!(
+            store.records.lock().unwrap().last().unwrap().participants["mem_app"]
+                .pending_action
+                .as_ref()
+                .unwrap()
+                .kind,
+            PendingMergeActionKind::ResolveConflict
+        );
+
+        *store.fail_write_at.lock().unwrap() = None;
+        let response = resume(&backend, &store, root.path()).unwrap();
+        assert_eq!(
+            response.repos[0].state,
+            crate::MergeParticipantState::Continued
+        );
+        assert_eq!(
+            response.repos[0].resulting_commit.as_deref(),
+            Some(resolution_commit.as_str())
+        );
+        assert_eq!(backend.head(&app).unwrap().commit, Some(resolution_commit));
+        let repository = git2::Repository::open(&app).unwrap();
+        let commit = repository
+            .find_commit(
+                git2::Oid::from_str(response.repos[0].resulting_commit.as_deref().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(commit.author().name(), Ok("Merge Request Author"));
+        assert_eq!(commit.committer().name(), Ok("Merge Request Committer"));
+    }
+
+    #[test]
+    fn retry_true_merge_uses_request_author_and_committer() {
+        let root = TempDir::new("merge-retry-attribution");
+        let backend = Git2Backend::new();
+        let plan = single_real_plan(root.path(), &backend, ActionFixture::TrueMerge);
+        let store = MemoryStore::default();
+        let mut record = durable_record(root.path(), &plan);
+        record.state = OperationState::RecoveryRequired;
+        record.participants.get_mut("mem_app").unwrap().state = ParticipantState::Failed;
+        store.write_open(root.path(), &record).unwrap();
+
+        let response =
+            resume_with_context(&backend, &store, root.path(), &attributed_context()).unwrap();
+        let repository = git2::Repository::open(root.path().join("app")).unwrap();
+        let commit = repository
+            .find_commit(
+                git2::Oid::from_str(response.repos[0].resulting_commit.as_deref().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(commit.author().name(), Ok("Merge Request Author"));
+        assert_eq!(commit.author().email(), Ok("merge-author@example.invalid"));
+        assert_eq!(commit.committer().name(), Ok("Merge Request Committer"));
+        assert_eq!(
+            commit.committer().email(),
+            Ok("merge-committer@example.invalid")
+        );
+    }
+
+    #[test]
+    fn recovery_required_retry_store_failure_adopts_without_repeating_git() {
+        let root = TempDir::new("merge-retry-action-recovery");
+        let backend = Git2Backend::new();
+        let plan = single_real_plan(root.path(), &backend, ActionFixture::FastForward);
+        let source = plan.participants[0].source_commit.clone();
+        let store = MemoryStore::default();
+        let mut record = durable_record(root.path(), &plan);
+        record.state = OperationState::RecoveryRequired;
+        record.participants.get_mut("mem_app").unwrap().state = ParticipantState::Failed;
+        store.write_open(root.path(), &record).unwrap();
+        *store.fail_write_at.lock().unwrap() = Some(4);
+        resume(&backend, &store, root.path()).unwrap_err();
+        assert_eq!(
+            backend.head(&root.path().join("app")).unwrap().commit,
+            Some(source.clone())
+        );
+        assert_eq!(
+            store.records.lock().unwrap().last().unwrap().participants["mem_app"]
+                .pending_action
+                .as_ref()
+                .unwrap()
+                .kind,
+            PendingMergeActionKind::FastForward
+        );
+
+        *store.fail_write_at.lock().unwrap() = None;
+        let response = resume(&backend, &store, root.path()).unwrap();
+        assert_eq!(
+            response.repos[0].state,
+            crate::MergeParticipantState::FastForwarded
+        );
+        assert_eq!(
+            response.repos[0].resulting_commit.as_deref(),
+            Some(source.as_str())
+        );
+        assert_eq!(
+            backend.head(&root.path().join("app")).unwrap().commit,
+            Some(source)
         );
     }
 

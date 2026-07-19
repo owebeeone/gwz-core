@@ -8,7 +8,7 @@ use crate::git::{
     GitStatusOptions,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{OperationRequest, WorkspaceMutatorLock};
+use crate::operation::{OpenMergeCommand, OperationRequest};
 use crate::stash::{
     self, STASH_BUNDLE_SCHEMA, StashBundle, StashBundleMember, StashDirtySummary, StashDrift,
     StashErrorDetail, StashParticipation, StashPushLifecycle, StashRestoreState, StashWarning,
@@ -26,7 +26,19 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Stash(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let (_guard, root) = if request.op == crate::StashOp::List {
+        (
+            None,
+            resolve_workspace_root(start, request.meta.workspace.as_ref())?,
+        )
+    } else {
+        guarded_workspace_root(
+            start,
+            request.meta.workspace.as_ref(),
+            OpenMergeCommand::StashMutate,
+            request.op == crate::StashOp::Push && request.meta.dry_run.unwrap_or(false),
+        )?
+    };
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
@@ -105,12 +117,6 @@ where
     }
 
     stash::write_bundle(&root, &bundle)?;
-    let _guard = WorkspaceMutatorLock::try_acquire(&root)?.ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::UnsupportedOperation,
-            "workspace mutator lock is already held",
-        )
-    })?;
 
     let options = GitStashPushOptions {
         include_untracked,
@@ -255,12 +261,6 @@ where
 
     let selected_set = selected.iter().cloned().collect::<BTreeSet<_>>();
     let plans = restore_plans(backend, &root, &manifest, &bundle, &selected_set)?;
-    let _guard = WorkspaceMutatorLock::try_acquire(&root)?.ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::UnsupportedOperation,
-            "workspace mutator lock is already held",
-        )
-    })?;
 
     let mut responses = Vec::with_capacity(plans.len());
     let preserve_index = request.preserve_index.unwrap_or(true);

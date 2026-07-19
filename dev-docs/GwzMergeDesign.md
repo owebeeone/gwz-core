@@ -387,8 +387,10 @@ The operation states have the following meanings:
   unwinding recorded mutations;
 - `completed`: final composition and evidence were published and verified;
 - `aborted`: all required merge mutations were restored to the baseline;
-- `recovery_required`: an ambiguous or invariant-breaking state prevents safe
-  automatic continue or abort and requires the reported manual recovery.
+- `recovery_required`: an ambiguous or invariant-breaking state currently
+  prevents safe automatic action and requires the reported manual correction.
+  It is not terminal: after correction, a fresh whole-operation preflight may
+  transition to `executing` or `rolling_back` when the live state is exact.
 
 Every participant stores the exact merge message frozen before mutation so a
 restart-safe continue cannot reconstruct different commit bytes. For changed
@@ -399,10 +401,20 @@ error code, message, and optional detail. When root participates, its record
 also distinguishes the Git merge result commit from the later root
 composition-evidence commit.
 
-The record is written atomically before execution and atomically updated after
-each participant outcome. This makes a process crash inspectable and makes
-`--continue`, `--abort`, and repeated recovery operations idempotent where
-possible.
+The record is written atomically before execution and atomically updated before
+and after each participant Git action. Before mutation, an additive
+`pending_action` freezes the action kind and exact branch/before/source/message
+inputs. The participant outcome clears it atomically. After interruption the
+shared classifier recognizes only not-started, exact expected conflict, exact
+completed result, or ambiguous state. Exact results may be adopted durably;
+ambiguous results remain recovery-required. This applies to start, retry, and
+resolution commits rather than special-casing one action path.
+
+Status projects that reconciliation as an optional structured pending-action
+summary on the participant row. The summary contains the durable action kind,
+the exact reconciliation class, and guidance. Ambiguity additionally produces
+member-scoped `pending_action_ambiguous` drift and blocks both automatic
+continue and abort until the next exact classification.
 
 Atomic record writes use a temporary file in the destination directory,
 flush it, and rename it over the destination. Readers tolerate unknown fields,
@@ -735,7 +747,9 @@ After successful preflight:
    close the local operation record.
 
 The exact recorded parents are the merge invariant. Author and committer
-identity are resolved normally by Git when the resolution commit is created.
+identity use attribution from the request that creates the resolution commit
+when present, otherwise they are resolved from the member repository. The same
+rule applies to an immediate true merge and a true-merge retry.
 
 Post-merge changes in a participant that had already merged are not
 automatically adopted into the coordinated merge. This includes root changes
@@ -779,7 +793,13 @@ Abort first computes the complete rollback plan without mutating anything:
   recorded merge, and native abort must be available;
 - `failed` or `unattempted`: verify that no merge mutation was recorded;
 - already `aborted` or `rolled_back`: treat as an idempotent no-op after
-  verifying the restored before state.
+  verifying the recorded target ref is at the before commit; later unrelated
+  worktree/index content is reported but does not block rollback that will not
+  mutate this participant;
+- a recorded `conflicted` participant already at its exact before ref with a
+  clean index/worktree and no native integration state: treat as an
+  already-restored no-op, including before the operation entered
+  `rolling_back`.
 
 If finalization created the recorded root composition-evidence commit but did
 not close the operation, abort includes that commit in the rollback plan. Root
@@ -1070,6 +1090,11 @@ and durable record/evidence writes emit `ArtifactWritten`. Append a generic
 transition such as `awaiting_resolution`, `finalizing`, or `rolling_back` is
 machine-visible. Event order follows durable order: a transition or participant
 outcome is emitted only after the corresponding atomic record update succeeds.
+For a participant action, `MemberStarted` precedes the durable action-intent
+write, `ArtifactWritten` follows the verified intent, the Git action runs, a
+second `ArtifactWritten` follows the verified outcome write, and only then does
+`MemberFinished` carry that outcome. `OperationFinished` is emitted on both
+success and failure.
 
 ## 17. Backend requirements
 
@@ -1120,6 +1145,11 @@ cannot be overwritten.
 The backend must distinguish untracked files, staged changes, ordinary dirty
 tracked files, unresolved index entries, and native merge metadata. A single
 `is_dirty` boolean is not enough for safe continue, preservation, and rollback.
+It must also expose complete repository operation state independently from
+expected merge detail: clean, merge, cherry-pick, revert, rebase, apply/mailbox,
+bisect, and any other state exposed by the backend. Status and checked recovery
+actions consume the same observation so preflight cannot approve a state that
+execution rejects after another participant has changed.
 
 ## 18. Atomicity and recovery guarantees
 

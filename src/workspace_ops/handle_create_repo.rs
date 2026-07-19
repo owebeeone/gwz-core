@@ -9,7 +9,7 @@ use crate::artifact::{
 };
 use crate::git::{Git2Backend, GitBackend, GitHeadState, GitRemote, GitStatus};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
-use crate::operation::{OperationRequest, WorkspaceMutatorLock};
+use crate::operation::{OpenMergeCommand, OperationRequest, WorkspaceMutatorLock};
 use crate::workspace::{
     MemberPath, discover_workspace_root, preflight_create_workspace, validate_member_path_set,
 };
@@ -82,13 +82,13 @@ where
         ));
     }
 
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let _guard = if dry_run {
-        None
-    } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
-    };
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::RepoMutate,
+        dry_run,
+    )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let member_path = MemberPath::parse(&request.member_path)?;
@@ -230,13 +230,13 @@ where
 {
     let context =
         OperationRequest::AddExistingRepo(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let _guard = if dry_run {
-        None
-    } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
-    };
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::RepoMutate,
+        dry_run,
+    )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let repo_path = resolve_input_path(start, &request.repository_path);
@@ -438,13 +438,13 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::RepoSync(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let _guard = if dry_run {
-        None
-    } else {
-        Some(WorkspaceMutatorLock::acquire(&root)?)
-    };
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        request.meta.workspace.as_ref(),
+        OpenMergeCommand::RepoMutate,
+        dry_run,
+    )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let selected = resolve_manifest_selection(&manifest, request.meta.selection.as_ref())?;

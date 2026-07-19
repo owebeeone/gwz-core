@@ -310,6 +310,7 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
             abort_eligible: Some(true),
             drift: Vec::new(),
             error: None,
+            pending_action: None,
         }],
         operation_drift: Vec::new(),
         preservation: Some(Vec::new()),

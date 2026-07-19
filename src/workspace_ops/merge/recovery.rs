@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::{MergeOperationRecord, MergeStore};
 use crate::model::ModelResult;
+use crate::workspace::WORKSPACE_MANIFEST;
 
 /// An open recovery record found without consulting live workspace metadata.
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +32,17 @@ pub(crate) fn discover_open_before_manifest<S: MergeStore>(
                 root: current,
                 record,
             }));
+        }
+        // Recovery state belongs to the nearest workspace boundary. Inspect
+        // runtime state first so an invalid/conflicted manifest cannot hide an
+        // operation, then stop instead of capturing this nested workspace with
+        // an enclosing workspace's open merge.
+        if current
+            .join(WORKSPACE_MANIFEST)
+            .try_exists()
+            .unwrap_or(true)
+        {
+            return Ok(None);
         }
         if !current.pop() {
             return Ok(None);
@@ -70,5 +82,36 @@ mod tests {
             .unwrap();
         assert_eq!(found.root, temp.path);
         assert_eq!(found.record.merge_id, "merge_1");
+    }
+
+    #[test]
+    fn recovery_discovery_stops_at_nearest_nested_workspace_boundary() {
+        let temp = temp("merge-recovery-nested-boundary");
+        let inner = temp.path.join("repos/inner");
+        let start = inner.join("src");
+        fs::create_dir_all(&start).unwrap();
+        fs::create_dir_all(temp.path.join("gwz.conf")).unwrap();
+        fs::write(
+            temp.path.join(crate::workspace::WORKSPACE_MANIFEST),
+            "schema: gwz.workspace/v0\n",
+        )
+        .unwrap();
+        fs::create_dir_all(inner.join("gwz.conf")).unwrap();
+        fs::write(
+            inner.join(crate::workspace::WORKSPACE_MANIFEST),
+            "schema: gwz.workspace/v0\n",
+        )
+        .unwrap();
+
+        let yaml = r#"{schema: gwz.merge-operation/v0, record_schema_version: 0, writer_version: test, workspace_id: ws_test, merge_id: merge_outer, operation_id: op_1, state: executing, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [], participants: {}}"#;
+        let directory = temp.path.join(".gwz/merge");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("merge_outer.yaml"), yaml).unwrap();
+
+        assert!(
+            discover_open_before_manifest(&FileMergeStore, &start)
+                .unwrap()
+                .is_none()
+        );
     }
 }

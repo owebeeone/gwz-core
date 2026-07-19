@@ -1,12 +1,13 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::git::{GitBackend, GitIntegrateResult, GitMergeAnalysisKind};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{EventEmitter, EventSink, OperationContext, WorkspaceMutatorLock};
+use crate::operation::{EventEmitter, OperationContext, WorkspaceMutatorLock};
 
 use super::{
     MergeOperationRecord, MergeParticipantRecord, MergeRecordError, MergeStore, MergeTargetKind,
-    OperationState, ParticipantState,
+    OperationState, ParticipantState, PendingMergeAction, PendingMergeActionKind,
 };
 
 /// Continue owns the workspace mutator lock. Its caller must resolve `root`
@@ -17,7 +18,7 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
     root: &Path,
     request: &crate::MergeRequest,
     context: &OperationContext,
-    events: &dyn EventSink,
+    emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
     let _guard = WorkspaceMutatorLock::acquire(root)?;
     let Some(mut record) = store.discover_open(root)? else {
@@ -26,24 +27,31 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
     super::validate::validate_open_merge_id(request.merge_id.as_deref(), &record.merge_id)?;
     match record.state {
         OperationState::Finalizing => return record.to_response(context),
-        OperationState::Executing | OperationState::AwaitingResolution | OperationState::Halted => {
-        }
+        OperationState::Executing
+        | OperationState::AwaitingResolution
+        | OperationState::Halted
+        | OperationState::RecoveryRequired => {}
         state => return Err(wrong_state(&record.merge_id, state)),
     }
 
+    reconcile_pending_actions(backend, store, root, &mut record, emitter)?;
     let actions = preflight(backend, root, &record)?;
-    let emitter = EventEmitter::new(context, events, 0);
     super::persist_operation_transition(
         store,
         root,
         &mut record,
         OperationState::Executing,
-        &emitter,
+        emitter,
     )?;
 
     for (position, action) in actions.iter().enumerate() {
+        emitter.member_started(&action.target_id, &action.path);
+        set_pending_action(&mut record, action)?;
+        super::persist_merge_record(store, root, &record, emitter)?;
         let result = match action.kind {
-            ContinueActionKind::Resolve => resolve_conflict(backend, root, &record, action),
+            ContinueActionKind::Resolve => {
+                resolve_conflict(backend, root, &record, action, context)
+            }
             ContinueActionKind::Retry(kind) => {
                 retry_merge(backend, root, &record, action, kind, context)
             }
@@ -51,21 +59,27 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
         match result {
             Ok(outcome) => {
                 apply_outcome(&mut record, &action.target_id, outcome, None)?;
-                store.write_open(root, &record)?;
-                emitter.member_finished(&action.target_id, &action.path);
+                super::persist_merge_record(store, root, &record, emitter)?;
+                super::emit_merge_member_finished(emitter, &record, &action.target_id)?;
             }
             Err(error) => {
                 let contextual = error.with_member(&action.target_id, &action.path);
                 apply_failure(&mut record, &action.target_id, &contextual)?;
-                store.write_open(root, &record)?;
-                emitter.member_finished(&action.target_id, &action.path);
-                mark_later_planned_unattempted(store, root, &mut record, &actions[position + 1..])?;
+                super::persist_merge_record(store, root, &record, emitter)?;
+                super::emit_merge_member_finished(emitter, &record, &action.target_id)?;
+                mark_later_planned_unattempted(
+                    store,
+                    root,
+                    &mut record,
+                    &actions[position + 1..],
+                    emitter,
+                )?;
                 super::persist_operation_transition(
                     store,
                     root,
                     &mut record,
                     OperationState::Halted,
-                    &emitter,
+                    emitter,
                 )?;
                 return observed_response(backend, root, record, context);
             }
@@ -79,20 +93,13 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
             .values()
             .any(|participant| !participant.drift.is_empty())
     {
-        super::persist_operation_transition(
-            store,
-            root,
-            &mut record,
-            OperationState::RecoveryRequired,
-            &emitter,
-        )?;
         return observed_response(backend, root, record, context);
     }
     let next = remaining_state(&record);
     if next == OperationState::Finalizing {
-        super::enter_finalizing(store, root, &mut record, &emitter)?;
+        super::enter_finalizing(store, root, &mut record, emitter)?;
     } else {
-        super::persist_operation_transition(store, root, &mut record, next, &emitter)?;
+        super::persist_operation_transition(store, root, &mut record, next, emitter)?;
     }
     observed_response(backend, root, record, context)
 }
@@ -107,6 +114,172 @@ struct ContinueAction {
     target_id: String,
     path: String,
     kind: ContinueActionKind,
+}
+
+enum ReconciledPendingAction {
+    NotStarted,
+    ExpectedConflict(Vec<String>),
+    Completed(String),
+}
+
+fn reconcile_pending_actions<B: GitBackend, S: MergeStore>(
+    backend: &B,
+    store: &S,
+    root: &Path,
+    record: &mut MergeOperationRecord,
+    emitter: &EventEmitter<'_>,
+) -> ModelResult<()> {
+    let target_ids = record.selected_targets.clone();
+    let mut changed = false;
+    let mut reconciled = Vec::new();
+    let mut ambiguity = None;
+    for target_id in target_ids {
+        let participant = participant(record, &target_id)?;
+        if participant.pending_action.is_none() {
+            continue;
+        }
+        emitter.member_started(&target_id, &participant.path);
+        let result =
+            super::status::reconcile_pending_action(backend, root, &target_id, participant)?;
+        let reconciliation = match result {
+            super::status::PendingActionReconciliation::NotStarted => {
+                ReconciledPendingAction::NotStarted
+            }
+            super::status::PendingActionReconciliation::ExpectedConflict { conflict_paths } => {
+                ReconciledPendingAction::ExpectedConflict(conflict_paths)
+            }
+            super::status::PendingActionReconciliation::Completed { resulting_commit } => {
+                ReconciledPendingAction::Completed(resulting_commit)
+            }
+            super::status::PendingActionReconciliation::Ambiguous { reason, .. } => {
+                ambiguity
+                    .get_or_insert_with(|| (target_id.clone(), participant.path.clone(), reason));
+                continue;
+            }
+        };
+        apply_reconciled_pending(record, &target_id, reconciliation)?;
+        reconciled.push(target_id.clone());
+        changed = true;
+    }
+    if let Some((target_id, path, reason)) = ambiguity {
+        if record.state != OperationState::RecoveryRequired {
+            record.state = record.state.transition(OperationState::RecoveryRequired)?;
+            changed = true;
+        }
+        if changed {
+            super::persist_merge_record(store, root, record, emitter)?;
+            for target_id in &reconciled {
+                super::emit_merge_member_finished(emitter, record, target_id)?;
+            }
+        }
+        return Err(ModelError::new(
+            ErrorCode::MergeRecoveryRequired,
+            format!("pending merge action is ambiguous: {reason}"),
+        )
+        .with_member(&target_id, &path));
+    }
+    if changed {
+        super::persist_merge_record(store, root, record, emitter)?;
+        for target_id in &reconciled {
+            super::emit_merge_member_finished(emitter, record, target_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_reconciled_pending(
+    record: &mut MergeOperationRecord,
+    target_id: &str,
+    reconciliation: ReconciledPendingAction,
+) -> ModelResult<()> {
+    let participant = participant(record, target_id)?;
+    let pending = participant
+        .pending_action
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::MergeRecordUnreadable,
+                "pending-action reconciliation has no pending action",
+            )
+            .with_member(target_id, &participant.path)
+        })?;
+    match reconciliation {
+        ReconciledPendingAction::NotStarted => {
+            let participant = participant_mut(record, target_id)?;
+            participant.pending_action = None;
+            participant.error = None;
+            Ok(())
+        }
+        ReconciledPendingAction::ExpectedConflict(paths) => {
+            if pending.kind != PendingMergeActionKind::TrueMerge {
+                return Err(invariant(
+                    "only a pending true merge can reconcile to a native conflict",
+                ));
+            }
+            apply_outcome(
+                record,
+                target_id,
+                Outcome {
+                    state: ParticipantState::Conflicted,
+                    resulting_commit: None,
+                    expected_merge_head: Some(pending.source_commit),
+                    conflict_paths: paths,
+                },
+                None,
+            )
+        }
+        ReconciledPendingAction::Completed(resulting_commit) => {
+            let state = match pending.kind {
+                PendingMergeActionKind::VerifyUpToDate => ParticipantState::UpToDate,
+                PendingMergeActionKind::FastForward => ParticipantState::FastForwarded,
+                PendingMergeActionKind::TrueMerge => ParticipantState::Merged,
+                PendingMergeActionKind::ResolveConflict => ParticipantState::Continued,
+            };
+            apply_outcome(
+                record,
+                target_id,
+                Outcome::clean(state, resulting_commit),
+                None,
+            )
+        }
+    }
+}
+
+fn set_pending_action(
+    record: &mut MergeOperationRecord,
+    action: &ContinueAction,
+) -> ModelResult<()> {
+    let participant = record
+        .participants
+        .get_mut(&action.target_id)
+        .ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::MergeRecordUnreadable,
+                format!("merge record is missing participant '{}'", action.target_id),
+            )
+        })?;
+    let kind = match action.kind {
+        ContinueActionKind::Resolve => PendingMergeActionKind::ResolveConflict,
+        ContinueActionKind::Retry(GitMergeAnalysisKind::UpToDate) => {
+            PendingMergeActionKind::VerifyUpToDate
+        }
+        ContinueActionKind::Retry(GitMergeAnalysisKind::FastForward) => {
+            PendingMergeActionKind::FastForward
+        }
+        ContinueActionKind::Retry(GitMergeAnalysisKind::TrueMerge) => {
+            PendingMergeActionKind::TrueMerge
+        }
+    };
+    participant.pending_action = Some(PendingMergeAction {
+        kind,
+        target_branch: participant.target_branch.clone(),
+        before_commit: participant.before_commit.clone(),
+        source_commit: participant.source_commit.clone(),
+        commit_message: participant.commit_message.clone(),
+        extensions: BTreeMap::new(),
+    });
+    Ok(())
 }
 
 fn preflight<B: GitBackend>(
@@ -214,6 +387,7 @@ fn resolve_conflict<B: GitBackend>(
     root: &Path,
     record: &MergeOperationRecord,
     action: &ContinueAction,
+    context: &OperationContext,
 ) -> ModelResult<Outcome> {
     let participant = participant(record, &action.target_id)?;
     let merge_head = participant
@@ -225,6 +399,7 @@ fn resolve_conflict<B: GitBackend>(
         &participant.before_commit,
         merge_head,
         &participant.commit_message,
+        context.attribution.as_ref(),
     )?;
     Ok(Outcome::clean(ParticipantState::Continued, commit.commit))
 }
@@ -317,6 +492,7 @@ fn apply_outcome(
     participant.expected_merge_head = outcome.expected_merge_head;
     participant.conflict_paths = outcome.conflict_paths;
     participant.error = error;
+    participant.pending_action = None;
     Ok(())
 }
 
@@ -332,6 +508,7 @@ fn apply_failure(
         ParticipantState::Failed
     };
     let prior = participant(record, target_id)?.clone();
+    let pending_action = prior.pending_action.clone();
     apply_outcome(
         record,
         target_id,
@@ -346,7 +523,9 @@ fn apply_failure(
             message: error.message.clone(),
             detail: None,
         }),
-    )
+    )?;
+    participant_mut(record, target_id)?.pending_action = pending_action;
+    Ok(())
 }
 
 fn mark_later_planned_unattempted<S: MergeStore>(
@@ -354,6 +533,7 @@ fn mark_later_planned_unattempted<S: MergeStore>(
     root: &Path,
     record: &mut MergeOperationRecord,
     later: &[ContinueAction],
+    emitter: &EventEmitter<'_>,
 ) -> ModelResult<()> {
     for action in later {
         let participant = record.participants.get_mut(&action.target_id).unwrap();
@@ -361,7 +541,8 @@ fn mark_later_planned_unattempted<S: MergeStore>(
             participant.state = participant
                 .state
                 .transition(ParticipantState::Unattempted)?;
-            store.write_open(root, record)?;
+            super::persist_merge_record(store, root, record, emitter)?;
+            super::emit_merge_member_finished(emitter, record, &action.target_id)?;
         }
     }
     Ok(())
@@ -402,6 +583,18 @@ fn participant<'a>(
     target_id: &str,
 ) -> ModelResult<&'a MergeParticipantRecord> {
     record.participants.get(target_id).ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            format!("merge record is missing participant '{target_id}'"),
+        )
+    })
+}
+
+fn participant_mut<'a>(
+    record: &'a mut MergeOperationRecord,
+    target_id: &str,
+) -> ModelResult<&'a mut MergeParticipantRecord> {
+    record.participants.get_mut(target_id).ok_or_else(|| {
         ModelError::new(
             ErrorCode::MergeRecordUnreadable,
             format!("merge record is missing participant '{target_id}'"),
@@ -508,6 +701,35 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
         assert_eq!(record, unchanged);
+    }
+
+    #[test]
+    fn retry_intent_freezes_inputs_and_is_cleared_only_with_the_outcome() {
+        let mut record = record(&[("mem_app", ParticipantState::Failed)]);
+        let action = ContinueAction {
+            target_id: "mem_app".to_owned(),
+            path: "repos/app".to_owned(),
+            kind: ContinueActionKind::Retry(GitMergeAnalysisKind::FastForward),
+        };
+
+        set_pending_action(&mut record, &action).unwrap();
+        let pending = record.participants["mem_app"]
+            .pending_action
+            .as_ref()
+            .unwrap();
+        assert_eq!(pending.kind, PendingMergeActionKind::FastForward);
+        assert_eq!(pending.before_commit, "before");
+        assert_eq!(pending.source_commit, "source");
+        assert_eq!(pending.commit_message, "exact message");
+
+        apply_outcome(
+            &mut record,
+            "mem_app",
+            Outcome::clean(ParticipantState::FastForwarded, "source".to_owned()),
+            None,
+        )
+        .unwrap();
+        assert!(record.participants["mem_app"].pending_action.is_none());
     }
 
     #[test]

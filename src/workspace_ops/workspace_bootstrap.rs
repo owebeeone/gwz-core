@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::artifact;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{ActionKind, OperationContext};
+use crate::operation::{ActionKind, OpenMergeCommand, OperationContext};
 
 use super::*;
 
@@ -51,7 +51,12 @@ where
 {
     let context =
         OperationContext::from_meta(operation_id.into(), ActionKind::InitFromSources, &meta)?;
-    let root = resolve_workspace_root(start, meta.workspace.as_ref())?;
+    let (_guard, root) = guarded_workspace_root(
+        start,
+        meta.workspace.as_ref(),
+        OpenMergeCommand::InitUpdate,
+        meta.dry_run.unwrap_or(false),
+    )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, meta.workspace.as_ref())?;
     let status = ensure_workspace_bootstrap_files(

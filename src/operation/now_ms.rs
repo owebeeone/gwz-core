@@ -32,6 +32,8 @@ impl RuntimeEventSink {
             target_kind,
             progress: None,
             merge_state: None,
+            merge_member: None,
+            artifact_path: None,
         };
         state.next_sequence += 1;
         state.events.push_back(event);

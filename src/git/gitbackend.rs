@@ -16,6 +16,19 @@ pub trait GitBackend {
             "commit_exists is not implemented by this GitBackend",
         ))
     }
+    /// Return whether `commit` is an exact two-parent merge commit with the
+    /// supplied ordered parents and byte-exact message. This is read-only and
+    /// never resolves an abbreviation or fetches a missing object.
+    fn commit_matches_merge(
+        &self,
+        _path: &Path,
+        _commit: &str,
+        _first_parent: &str,
+        _second_parent: &str,
+        _message: &str,
+    ) -> ModelResult<bool> {
+        unsupported_backend("commit_matches_merge")
+    }
     fn create_repo(&self, path: &Path) -> ModelResult<GitCreateResult>;
     fn clone_repo(&self, url: &str, path: &Path) -> ModelResult<GitCloneResult>;
     /// Clone, forwarding libgit2 transfer progress to `progress`. The default
@@ -90,6 +103,12 @@ pub trait GitBackend {
     /// Observe native merge metadata, including the exact MERGE_HEAD.
     fn merge_state(&self, _path: &Path) -> ModelResult<Option<GitNativeMergeState>> {
         unsupported_backend("merge_state")
+    }
+    /// Observe the complete native repository operation state. Status,
+    /// continue, abort, and checked recovery actions consume this same value so
+    /// preflight cannot accept a foreign sequencer state rejected only later.
+    fn repository_state(&self, _path: &Path) -> ModelResult<GitRepositoryState> {
+        unsupported_backend("repository_state")
     }
     /// Verify the exact recorded native merge and its index/worktree without
     /// mutating it. `require_resolved` selects continue safety; otherwise the
@@ -370,6 +389,7 @@ pub trait GitBackend {
         _expected_before: &str,
         _expected_merge_head: &str,
         _message: &str,
+        _attribution: Option<&crate::model::OperationAttribution>,
     ) -> ModelResult<GitCommitResult> {
         unsupported_backend("commit_merge_resolution_checked")
     }
@@ -630,6 +650,58 @@ pub struct GitNativeMergeState {
     pub unresolved_entries: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitRepositoryState {
+    Clean,
+    Merge,
+    Revert,
+    RevertSequence,
+    CherryPick,
+    CherryPickSequence,
+    Bisect,
+    Rebase,
+    RebaseInteractive,
+    RebaseMerge,
+    ApplyMailbox,
+    ApplyMailboxOrRebase,
+}
+
+impl GitRepositoryState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::Merge => "merge",
+            Self::Revert => "revert",
+            Self::RevertSequence => "revert_sequence",
+            Self::CherryPick => "cherry_pick",
+            Self::CherryPickSequence => "cherry_pick_sequence",
+            Self::Bisect => "bisect",
+            Self::Rebase => "rebase",
+            Self::RebaseInteractive => "rebase_interactive",
+            Self::RebaseMerge => "rebase_merge",
+            Self::ApplyMailbox => "apply_mailbox",
+            Self::ApplyMailboxOrRebase => "apply_mailbox_or_rebase",
+        }
+    }
+}
+
+pub(crate) fn map_repository_state(state: git2::RepositoryState) -> GitRepositoryState {
+    match state {
+        git2::RepositoryState::Clean => GitRepositoryState::Clean,
+        git2::RepositoryState::Merge => GitRepositoryState::Merge,
+        git2::RepositoryState::Revert => GitRepositoryState::Revert,
+        git2::RepositoryState::RevertSequence => GitRepositoryState::RevertSequence,
+        git2::RepositoryState::CherryPick => GitRepositoryState::CherryPick,
+        git2::RepositoryState::CherryPickSequence => GitRepositoryState::CherryPickSequence,
+        git2::RepositoryState::Bisect => GitRepositoryState::Bisect,
+        git2::RepositoryState::Rebase => GitRepositoryState::Rebase,
+        git2::RepositoryState::RebaseInteractive => GitRepositoryState::RebaseInteractive,
+        git2::RepositoryState::RebaseMerge => GitRepositoryState::RebaseMerge,
+        git2::RepositoryState::ApplyMailbox => GitRepositoryState::ApplyMailbox,
+        git2::RepositoryState::ApplyMailboxOrRebase => GitRepositoryState::ApplyMailboxOrRebase,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitBackupRefResult {
     pub name: String,
@@ -772,6 +844,33 @@ impl GitBackend for Git2Backend {
             Err(error) => return Err(git_error(error)),
         };
         Ok(object.peel_to_commit().is_ok())
+    }
+
+    fn commit_matches_merge(
+        &self,
+        path: &Path,
+        commit: &str,
+        first_parent: &str,
+        second_parent: &str,
+        message: &str,
+    ) -> ModelResult<bool> {
+        let (Ok(commit), Ok(first_parent), Ok(second_parent)) = (
+            git2::Oid::from_str(commit),
+            git2::Oid::from_str(first_parent),
+            git2::Oid::from_str(second_parent),
+        ) else {
+            return Ok(false);
+        };
+        let repo = open_repo(path)?;
+        let commit = match repo.find_commit(commit) {
+            Ok(commit) => commit,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
+            Err(error) => return Err(git_error(error)),
+        };
+        Ok(commit.parent_count() == 2
+            && commit.parent_id(0).map_err(git_error)? == first_parent
+            && commit.parent_id(1).map_err(git_error)? == second_parent
+            && commit.message_bytes() == message.as_bytes())
     }
 
     fn create_repo(&self, path: &Path) -> ModelResult<GitCreateResult> {
@@ -1114,6 +1213,11 @@ impl GitBackend for Git2Backend {
             unresolved_entries: conflict_paths.len(),
             conflict_paths,
         }))
+    }
+
+    fn repository_state(&self, path: &Path) -> ModelResult<GitRepositoryState> {
+        let repo = open_repo(path)?;
+        Ok(map_repository_state(repo.state()))
     }
 
     fn validate_merge_recovery_state(
@@ -1802,6 +1906,7 @@ impl GitBackend for Git2Backend {
         expected_before: &str,
         expected_merge_head: &str,
         message: &str,
+        attribution: Option<&crate::model::OperationAttribution>,
     ) -> ModelResult<GitCommitResult> {
         let repo = open_repo(path)?;
         let before = parse_existing_commit(&repo, expected_before)?;
@@ -1817,12 +1922,12 @@ impl GitBackend for Git2Backend {
         let tree = repo.find_tree(tree_oid).map_err(git_error)?;
         let before_commit = repo.find_commit(before).map_err(git_error)?;
         let merge_commit = repo.find_commit(merge_head).map_err(git_error)?;
-        let signature = merge_signature(&repo)?;
+        let (author, committer) = merge_signatures(&repo, attribution)?;
         let oid = repo
             .commit(
                 None,
-                &signature,
-                &signature,
+                &author,
+                &committer,
                 message,
                 &tree,
                 &[&before_commit, &merge_commit],
@@ -1840,7 +1945,7 @@ impl GitBackend for Git2Backend {
             ));
         }
         transaction
-            .set_target(&ref_name, oid, Some(&signature), "gwz merge resolution")
+            .set_target(&ref_name, oid, Some(&committer), "gwz merge resolution")
             .map_err(git_error)?;
         transaction.commit().map_err(git_error)?;
         repo.cleanup_state().map_err(git_error)?;
