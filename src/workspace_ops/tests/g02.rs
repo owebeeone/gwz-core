@@ -27,6 +27,10 @@ pub(crate) fn create_workspace_writes_empty_manifest_and_lock() {
         fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap(),
         managed_agents_gwz_contents()
     );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("AGENTS.md")).unwrap(),
+        "Read and follow `AGENTS_GWZ.md` before doing any work in this workspace.\n"
+    );
     assert!(!temp.path().join("workspace").exists());
     let root_status = backend.status(temp.path()).unwrap();
     assert_eq!(root_status.untracked, 0);
@@ -35,6 +39,12 @@ pub(crate) fn create_workspace_writes_empty_manifest_and_lock() {
             .files
             .iter()
             .any(|file| { file.path == AGENTS_GWZ_PATH && file.index_status == "A" })
+    );
+    assert!(
+        root_status
+            .files
+            .iter()
+            .any(|file| { file.path == "AGENTS.md" && file.index_status == "A" })
     );
     assert!(
         root_status
@@ -74,7 +84,7 @@ pub(crate) fn update_workspace_bootstrap_rewrites_trusted_managed_file() {
     assert_eq!(response.meta.aggregate_status, crate::AggregateStatus::Ok);
     assert_eq!(
         response.meta.message.as_deref(),
-        Some("updated AGENTS_GWZ.md")
+        Some("updated workspace agent bootstrap files")
     );
     assert_eq!(
         fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap(),
@@ -99,7 +109,33 @@ pub(crate) fn update_workspace_bootstrap_noops_when_current() {
     assert_eq!(response.meta.aggregate_status, crate::AggregateStatus::Noop);
     assert_eq!(
         response.meta.message.as_deref(),
-        Some("AGENTS_GWZ.md already current")
+        Some("workspace agent bootstrap files already current")
+    );
+}
+
+#[test]
+pub(crate) fn update_workspace_bootstrap_adds_reference_without_replacing_local_agent_rules() {
+    let temp = TempDir::new("bootstrap-agent-reference");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    fs::write(
+        temp.path().join("AGENTS.md"),
+        "# Local rules\n\nKeep this text.\n",
+    )
+    .unwrap();
+
+    let response = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_workspace(),
+        "op_bootstrap",
+    )
+    .unwrap();
+
+    assert_eq!(response.meta.aggregate_status, crate::AggregateStatus::Ok);
+    assert_eq!(
+        fs::read_to_string(temp.path().join("AGENTS.md")).unwrap(),
+        "# Local rules\n\nKeep this text.\n\nRead and follow `AGENTS_GWZ.md` before doing any work in this workspace.\n"
     );
 }
 
