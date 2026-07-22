@@ -736,6 +736,8 @@ mod tests {
             before_commit: format!("{path}-before"),
             source_commit: format!("{path}-source"),
             commit_message: "merge".to_owned(),
+            expected_result: None,
+            commit_spec: None,
             extensions: Default::default(),
         }
     }

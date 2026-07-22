@@ -96,23 +96,15 @@ where
     let store = FileMergeStore;
     let clock = SystemClock;
     let mut ids = OperationScopedIds::new(&operation_id);
-    let start_guard =
-        if request.op == crate::MergeOp::Start && !request.meta.dry_run.unwrap_or(false) {
-            Some(acquire_workspace_mutation_guard(
-                start,
-                request.meta.workspace.as_ref(),
-                crate::operation::OpenMergeCommand::MergeStart,
-            )?)
-        } else {
-            None
-        };
-    let effective_start = if request.op == crate::MergeOp::Start {
-        start_guard.as_ref().map_or_else(
-            || crate::workspace_ops::resolve_workspace_root(start, request.meta.workspace.as_ref()),
-            |guard| Ok(guard.root().to_path_buf()),
+    let (_start_guard, effective_start) = if request.op == crate::MergeOp::Start {
+        guarded_workspace_root(
+            start,
+            request.meta.workspace.as_ref(),
+            crate::operation::OpenMergeCommand::MergeStart,
+            request.meta.dry_run.unwrap_or(false),
         )?
     } else {
-        start.to_path_buf()
+        (None, start.to_path_buf())
     };
     handle_merge_with_dependencies(
         MergeDependencies {
@@ -692,6 +684,31 @@ participants:
                 .is_none()
         );
         drop(guard);
+        assert!(
+            crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn dry_run_guard_checks_the_effective_root_without_taking_the_mutator_lock() {
+        let root = TempDir::new("merge-dry-run-no-lock");
+        let workspace = crate::WorkspaceRef {
+            root: Some(root.path().to_string_lossy().into_owned()),
+            workspace_id: None,
+        };
+
+        let (guard, resolved) = guarded_workspace_root(
+            Path::new("/unrelated/cwd"),
+            Some(&workspace),
+            crate::operation::OpenMergeCommand::MergeStart,
+            true,
+        )
+        .unwrap();
+
+        assert!(guard.is_none());
+        assert_eq!(resolved, root.path());
         assert!(
             crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
                 .unwrap()

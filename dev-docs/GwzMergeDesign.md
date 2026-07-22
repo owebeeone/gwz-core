@@ -1096,6 +1096,23 @@ second `ArtifactWritten` follows the verified outcome write, and only then does
 `MemberFinished` carry that outcome. `OperationFinished` is emitted on both
 success and failure.
 
+Commit-producing action intent includes the exact expected tree and fully
+resolved author and committer signatures. Clean true-merge preparation uses an
+in-memory tree merge; resolution preparation freezes the resolved index tree.
+Neither preparation may move a ref, change HEAD, the on-disk index or worktree,
+or enter native merge state. The checked action consumes those frozen values.
+After interruption, a candidate commit must match the ordered parents,
+byte-exact message, tree, author, and committer in addition to the live
+branch/ref and clean repository conditions. Missing evidence or any mismatch
+is ambiguous and is never adopted or made abort-eligible.
+
+The Python native operation store publishes exactly one terminal result for a
+synchronous or submitted merge. On success it makes the complete typed merge
+response available before signalling completion; on failure it retains the
+original structured model error. Python JSONL consumes the submitted form,
+streams each event in sequence order, then emits one final response or
+structured error, matching the Rust CLI's live ordering.
+
 ## 17. Backend requirements
 
 Existing backend primitives cover much of start execution:

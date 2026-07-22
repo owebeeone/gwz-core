@@ -94,6 +94,128 @@ fn merge_analysis_classifies_without_mutating_the_repository() {
 }
 
 #[test]
+fn prepared_clean_merge_freezes_exact_content_without_observable_mutation() {
+    let temp = TempDir::new("merge-prepared-clean");
+    let repo = temp.path().join("repo");
+    let (_, before, source) = seed_divergence(&repo);
+    let backend = Git2Backend::new();
+    {
+        let repository = git2::Repository::open(&repo).unwrap();
+        let mut config = repository.config().unwrap();
+        config.set_str("user.name", "Frozen Identity").unwrap();
+        config
+            .set_str("user.email", "frozen@example.invalid")
+            .unwrap();
+    }
+    let head_before = backend.head(&repo).unwrap();
+    let status_before = backend.status(&repo).unwrap();
+    let index_before = fs::read(repo.join(".git/index")).unwrap();
+    let state_before = git2::Repository::open(&repo).unwrap().state();
+
+    let prepared = backend
+        .prepare_merge_upstream_checked(&repo, "main", &before, &source, None)
+        .unwrap();
+
+    let GitPreparedMerge::Commit(spec) = &prepared else {
+        panic!("divergent non-conflicting fixture must prepare a commit")
+    };
+    assert!(git2::Oid::from_str(&spec.tree_oid).is_ok());
+    assert_eq!(backend.head(&repo).unwrap(), head_before);
+    assert_eq!(backend.status(&repo).unwrap(), status_before);
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+    assert_eq!(git2::Repository::open(&repo).unwrap().state(), state_before);
+
+    {
+        let repository = git2::Repository::open(&repo).unwrap();
+        let mut config = repository.config().unwrap();
+        config.set_str("user.name", "Changed Identity").unwrap();
+        config
+            .set_str("user.email", "changed@example.invalid")
+            .unwrap();
+    }
+
+    let mut wrong = prepared.clone();
+    let GitPreparedMerge::Commit(wrong_spec) = &mut wrong else {
+        unreachable!()
+    };
+    wrong_spec.tree_oid = git2::Repository::open(&repo)
+        .unwrap()
+        .find_commit(git2::Oid::from_str(&before).unwrap())
+        .unwrap()
+        .tree_id()
+        .to_string();
+    let error = backend
+        .execute_prepared_merge_upstream_checked(
+            &repo,
+            "main",
+            &before,
+            &source,
+            "frozen message",
+            &wrong,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
+    assert_eq!(backend.head(&repo).unwrap(), head_before);
+    assert_eq!(backend.status(&repo).unwrap(), status_before);
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+    assert_eq!(git2::Repository::open(&repo).unwrap().state(), state_before);
+
+    let result = backend
+        .execute_prepared_merge_upstream_checked(
+            &repo,
+            "main",
+            &before,
+            &source,
+            "frozen message",
+            &prepared,
+        )
+        .unwrap();
+    let repository = git2::Repository::open(&repo).unwrap();
+    let commit = repository
+        .find_commit(git2::Oid::from_str(result.commit.as_deref().unwrap()).unwrap())
+        .unwrap();
+    assert_eq!(commit.author().name(), Ok("Frozen Identity"));
+    assert_eq!(commit.committer().name(), Ok("Frozen Identity"));
+    assert!(
+        backend
+            .commit_matches_prepared_merge(
+                &repo,
+                result.commit.as_deref().unwrap(),
+                &before,
+                &source,
+                "frozen message",
+                spec,
+            )
+            .unwrap()
+    );
+}
+
+#[test]
+fn prepared_conflict_prediction_does_not_enter_native_merge_state() {
+    let temp = TempDir::new("merge-prepared-conflict");
+    let repo = temp.path().join("repo");
+    let (before, source) = seed_conflict(&repo);
+    let backend = Git2Backend::new();
+    let head_before = backend.head(&repo).unwrap();
+    let status_before = backend.status(&repo).unwrap();
+    let index_before = fs::read(repo.join(".git/index")).unwrap();
+
+    let prepared = backend
+        .prepare_merge_upstream_checked(&repo, "main", &before, &source, None)
+        .unwrap();
+
+    assert_eq!(prepared, GitPreparedMerge::ExpectedConflict);
+    assert_eq!(backend.head(&repo).unwrap(), head_before);
+    assert_eq!(backend.status(&repo).unwrap(), status_before);
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+    assert_eq!(
+        git2::Repository::open(&repo).unwrap().state(),
+        git2::RepositoryState::Clean
+    );
+    assert!(backend.merge_state(&repo).unwrap().is_none());
+}
+
+#[test]
 fn merge_analysis_resolves_only_local_commit_objects() {
     let temp = TempDir::new("merge-analysis-source");
     let repo = temp.path().join("repo");
@@ -342,14 +464,65 @@ fn exact_merge_commit_matcher_checks_ordered_parents_and_message() {
     let (_, before, source) = seed_divergence(&repo);
     let backend = Git2Backend::new();
     let message = "frozen merge message";
+    let prepared = backend
+        .prepare_merge_upstream_checked(&repo, "main", &before, &source, None)
+        .unwrap();
     let result = backend
-        .merge_upstream_checked(&repo, "main", &before, &source, message, None)
+        .execute_prepared_merge_upstream_checked(
+            &repo, "main", &before, &source, message, &prepared,
+        )
         .unwrap();
     let commit = result.commit.unwrap();
+    let GitPreparedMerge::Commit(spec) = prepared else {
+        panic!("fixture must prepare a commit")
+    };
 
     assert!(
         backend
             .commit_matches_merge(&repo, &commit, &before, &source, message)
+            .unwrap()
+    );
+    assert!(
+        backend
+            .commit_matches_prepared_merge(&repo, &commit, &before, &source, message, &spec,)
+            .unwrap()
+    );
+    let mut wrong_tree = spec.clone();
+    wrong_tree.tree_oid = git2::Repository::open(&repo)
+        .unwrap()
+        .find_commit(git2::Oid::from_str(&before).unwrap())
+        .unwrap()
+        .tree_id()
+        .to_string();
+    assert!(
+        !backend
+            .commit_matches_prepared_merge(&repo, &commit, &before, &source, message, &wrong_tree,)
+            .unwrap()
+    );
+    let mut wrong_author = spec.clone();
+    wrong_author.author.time_seconds += 1;
+    assert!(!backend
+        .commit_matches_prepared_merge(
+            &repo,
+            &commit,
+            &before,
+            &source,
+            message,
+            &wrong_author,
+        )
+        .unwrap());
+    let mut wrong_committer = spec.clone();
+    wrong_committer.committer.timezone_offset_minutes += 1;
+    assert!(
+        !backend
+            .commit_matches_prepared_merge(
+                &repo,
+                &commit,
+                &before,
+                &source,
+                message,
+                &wrong_committer,
+            )
             .unwrap()
     );
     assert!(
@@ -561,8 +734,39 @@ fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
     run_git(&repo, &["checkout", "HEAD", "--", "stable.txt"]);
     assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
 
+    let index_before = fs::read(repo.join(".git/index")).unwrap();
+    let status_before = backend.status(&repo).unwrap();
+    let prepared = backend
+        .prepare_merge_resolution_checked(&repo, &before, &source, None)
+        .unwrap();
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+    assert_eq!(backend.status(&repo).unwrap(), status_before);
+    assert_eq!(
+        git2::Repository::open(&repo).unwrap().state(),
+        git2::RepositoryState::Merge
+    );
+
+    let mut wrong = prepared.clone();
+    wrong.tree_oid = git2::Repository::open(&repo)
+        .unwrap()
+        .find_commit(git2::Oid::from_str(&before).unwrap())
+        .unwrap()
+        .tree_id()
+        .to_string();
+    let error = backend
+        .commit_prepared_merge_resolution_checked(&repo, &before, &source, "resolved", &wrong)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+    assert_eq!(backend.status(&repo).unwrap(), status_before);
+    assert_eq!(
+        git2::Repository::open(&repo).unwrap().state(),
+        git2::RepositoryState::Merge
+    );
+
     let result = backend
-        .commit_merge_resolution_checked(&repo, &before, &source, "resolved", None)
+        .commit_prepared_merge_resolution_checked(&repo, &before, &source, "resolved", &prepared)
         .unwrap();
     let repository = git2::Repository::open(&repo).unwrap();
     let commit = repository
@@ -572,5 +776,17 @@ fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
     assert_eq!(commit.parent_id(0).unwrap().to_string(), before);
     assert_eq!(commit.parent_id(1).unwrap().to_string(), source);
     assert_eq!(commit.message(), Ok("resolved"));
+    assert!(
+        backend
+            .commit_matches_prepared_merge(
+                &repo,
+                &result.commit,
+                &before,
+                &commit.parent_id(1).unwrap().to_string(),
+                "resolved",
+                &prepared,
+            )
+            .unwrap()
+    );
     assert!(backend.merge_state(&repo).unwrap().is_none());
 }

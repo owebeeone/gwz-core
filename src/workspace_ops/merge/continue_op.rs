@@ -1,13 +1,17 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::git::{GitBackend, GitIntegrateResult, GitMergeAnalysisKind};
+use crate::git::{
+    GitBackend, GitIntegrateResult, GitMergeAnalysisKind, GitPreparedCommit, GitPreparedMerge,
+    GitPreparedSignature,
+};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext, WorkspaceMutatorLock};
 
 use super::{
     MergeOperationRecord, MergeParticipantRecord, MergeRecordError, MergeStore, MergeTargetKind,
-    OperationState, ParticipantState, PendingMergeAction, PendingMergeActionKind,
+    OperationState, ParticipantState, PendingCommitSpec, PendingGitSignature, PendingMergeAction,
+    PendingMergeActionKind, PendingMergeExpectedResult,
 };
 
 /// Continue owns the workspace mutator lock. Its caller must resolve `root`
@@ -35,7 +39,7 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
     }
 
     reconcile_pending_actions(backend, store, root, &mut record, emitter)?;
-    let actions = preflight(backend, root, &record)?;
+    let actions = preflight(backend, root, &record, context.attribution.as_ref())?;
     super::persist_operation_transition(
         store,
         root,
@@ -114,6 +118,12 @@ struct ContinueAction {
     target_id: String,
     path: String,
     kind: ContinueActionKind,
+    prepared: ContinuePrepared,
+}
+
+enum ContinuePrepared {
+    Merge(GitPreparedMerge),
+    Resolution(GitPreparedCommit),
 }
 
 enum ReconciledPendingAction {
@@ -277,15 +287,53 @@ fn set_pending_action(
         before_commit: participant.before_commit.clone(),
         source_commit: participant.source_commit.clone(),
         commit_message: participant.commit_message.clone(),
+        expected_result: Some(match &action.prepared {
+            ContinuePrepared::Merge(prepared) => pending_expected_result(prepared),
+            ContinuePrepared::Resolution(_) => PendingMergeExpectedResult::Commit,
+        }),
+        commit_spec: match &action.prepared {
+            ContinuePrepared::Merge(GitPreparedMerge::Commit(spec))
+            | ContinuePrepared::Resolution(spec) => Some(pending_commit_spec(spec)),
+            _ => None,
+        },
         extensions: BTreeMap::new(),
     });
     Ok(())
+}
+
+fn pending_expected_result(result: &GitPreparedMerge) -> PendingMergeExpectedResult {
+    match result {
+        GitPreparedMerge::Unchanged => PendingMergeExpectedResult::Unchanged,
+        GitPreparedMerge::FastForward => PendingMergeExpectedResult::FastForward,
+        GitPreparedMerge::ExpectedConflict => PendingMergeExpectedResult::ExpectedConflict,
+        GitPreparedMerge::Commit(_) => PendingMergeExpectedResult::Commit,
+    }
+}
+
+fn pending_commit_spec(spec: &GitPreparedCommit) -> PendingCommitSpec {
+    PendingCommitSpec {
+        tree_oid: spec.tree_oid.clone(),
+        author: pending_signature(&spec.author),
+        committer: pending_signature(&spec.committer),
+        extensions: BTreeMap::new(),
+    }
+}
+
+fn pending_signature(signature: &GitPreparedSignature) -> PendingGitSignature {
+    PendingGitSignature {
+        name: signature.name.clone(),
+        email: signature.email.clone(),
+        time_seconds: signature.time_seconds,
+        timezone_offset_minutes: signature.timezone_offset_minutes,
+        extensions: BTreeMap::new(),
+    }
 }
 
 fn preflight<B: GitBackend>(
     backend: &B,
     root: &Path,
     record: &MergeOperationRecord,
+    attribution: Option<&crate::model::OperationAttribution>,
 ) -> ModelResult<Vec<ContinueAction>> {
     if let Some((target_id, _)) = record
         .participants
@@ -328,11 +376,26 @@ fn preflight<B: GitBackend>(
                 .with_member(target_id, &participant.path));
         }
         match participant.state {
-            ParticipantState::Conflicted => actions.push(ContinueAction {
-                target_id: target_id.clone(),
-                path: participant.path.clone(),
-                kind: ContinueActionKind::Resolve,
-            }),
+            ParticipantState::Conflicted => {
+                let merge_head = participant
+                    .expected_merge_head
+                    .as_deref()
+                    .unwrap_or(&participant.source_commit);
+                let prepared = backend
+                    .prepare_merge_resolution_checked(
+                        &root.join(&participant.path),
+                        &participant.before_commit,
+                        merge_head,
+                        attribution,
+                    )
+                    .map_err(|error| error.with_member(target_id, &participant.path))?;
+                actions.push(ContinueAction {
+                    target_id: target_id.clone(),
+                    path: participant.path.clone(),
+                    kind: ContinueActionKind::Resolve,
+                    prepared: ContinuePrepared::Resolution(prepared),
+                });
+            }
             ParticipantState::Planned
             | ParticipantState::Failed
             | ParticipantState::Unattempted => {
@@ -368,6 +431,17 @@ fn preflight<B: GitBackend>(
                     target_id: target_id.clone(),
                     path: participant.path.clone(),
                     kind: ContinueActionKind::Retry(analysis.kind),
+                    prepared: ContinuePrepared::Merge(
+                        backend
+                            .prepare_merge_upstream_checked(
+                                &path,
+                                &participant.target_branch,
+                                &participant.before_commit,
+                                &participant.source_commit,
+                                attribution,
+                            )
+                            .map_err(|error| error.with_member(target_id, &participant.path))?,
+                    ),
                 });
             }
             ParticipantState::UpToDate
@@ -387,19 +461,22 @@ fn resolve_conflict<B: GitBackend>(
     root: &Path,
     record: &MergeOperationRecord,
     action: &ContinueAction,
-    context: &OperationContext,
+    _context: &OperationContext,
 ) -> ModelResult<Outcome> {
     let participant = participant(record, &action.target_id)?;
     let merge_head = participant
         .expected_merge_head
         .as_deref()
         .unwrap_or(&participant.source_commit);
-    let commit = backend.commit_merge_resolution_checked(
+    let ContinuePrepared::Resolution(prepared) = &action.prepared else {
+        return Err(invariant("resolution action has no prepared commit"));
+    };
+    let commit = backend.commit_prepared_merge_resolution_checked(
         &root.join(&participant.path),
         &participant.before_commit,
         merge_head,
         &participant.commit_message,
-        context.attribution.as_ref(),
+        prepared,
     )?;
     Ok(Outcome::clean(ParticipantState::Continued, commit.commit))
 }
@@ -410,16 +487,19 @@ fn retry_merge<B: GitBackend>(
     record: &MergeOperationRecord,
     action: &ContinueAction,
     kind: GitMergeAnalysisKind,
-    context: &OperationContext,
+    _context: &OperationContext,
 ) -> ModelResult<Outcome> {
     let participant = participant(record, &action.target_id)?;
-    let result = backend.merge_upstream_checked(
+    let ContinuePrepared::Merge(prepared) = &action.prepared else {
+        return Err(invariant("retry action has no prepared merge"));
+    };
+    let result = backend.execute_prepared_merge_upstream_checked(
         &root.join(&participant.path),
         &participant.target_branch,
         &participant.before_commit,
         &participant.source_commit,
         &participant.commit_message,
-        context.attribution.as_ref(),
+        prepared,
     )?;
     classify_retry(participant, kind, result)
 }
@@ -710,6 +790,7 @@ mod tests {
             target_id: "mem_app".to_owned(),
             path: "repos/app".to_owned(),
             kind: ContinueActionKind::Retry(GitMergeAnalysisKind::FastForward),
+            prepared: ContinuePrepared::Merge(GitPreparedMerge::FastForward),
         };
 
         set_pending_action(&mut record, &action).unwrap();

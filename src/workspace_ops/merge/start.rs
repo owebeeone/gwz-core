@@ -1,11 +1,13 @@
 use super::{
     MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord, MergeParticipantPlan,
     MergeParticipantRecord, MergeRecordError, MergeStore, OperationState, ParticipantState,
-    PendingMergeAction, PendingMergeActionKind, plan::plan_merge,
+    PendingCommitSpec, PendingGitSignature, PendingMergeAction, PendingMergeActionKind,
+    PendingMergeExpectedResult, plan::plan_merge,
 };
 use crate::artifact;
 use crate::git::{
-    GitBackend, GitHeadState, GitIntegrateResult, GitMergeAnalysis, GitMergeAnalysisKind, GitStatus,
+    GitBackend, GitHeadState, GitIntegrateResult, GitMergeAnalysis, GitMergeAnalysisKind,
+    GitPreparedMerge, GitPreparedSignature, GitStatus,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{ActionKind, EventEmitter, OperationContext};
@@ -185,17 +187,17 @@ fn execute_durable<B: ExecutionBackend, S: MergeStore>(
 ) -> ModelResult<()> {
     for (index, participant) in participants.iter().enumerate() {
         emitter.member_started(&participant.target_id, &participant.path);
-        let kind = match prepare_one(backend, root, participant) {
-            Ok(kind) => kind,
+        let prepared = match prepare_one(backend, root, participant, attribution) {
+            Ok(prepared) => prepared,
             Err(error) => {
                 persist_start_failure(store, root, record, participant, &error, emitter)?;
                 mark_later_unattempted(store, root, record, &participants[index + 1..], emitter)?;
                 break;
             }
         };
-        set_pending_action(record, participant, kind)?;
+        set_pending_action(record, participant, &prepared)?;
         super::persist_merge_record(store, root, record, emitter)?;
-        match execute_prepared(backend, root, participant, kind, attribution) {
+        match execute_prepared(backend, root, participant, &prepared) {
             Ok(row) => {
                 apply_row(record, participant, &row, None)?;
                 record
@@ -260,7 +262,7 @@ fn mark_later_unattempted<S: MergeStore>(
 fn set_pending_action(
     record: &mut MergeOperationRecord,
     plan: &MergeParticipantPlan,
-    kind: GitMergeAnalysisKind,
+    prepared: &PreparedAction,
 ) -> ModelResult<()> {
     let participant = record
         .participants
@@ -272,14 +274,47 @@ fn set_pending_action(
             )
         })?;
     participant.pending_action = Some(PendingMergeAction {
-        kind: pending_kind(kind),
+        kind: pending_kind(prepared.kind),
         target_branch: plan.target_branch.clone(),
         before_commit: plan.before_commit.clone(),
         source_commit: plan.source_commit.clone(),
         commit_message: plan.commit_message.clone(),
+        expected_result: Some(pending_expected_result(&prepared.result)),
+        commit_spec: pending_commit_spec(&prepared.result),
         extensions: BTreeMap::new(),
     });
     Ok(())
+}
+
+fn pending_expected_result(result: &GitPreparedMerge) -> PendingMergeExpectedResult {
+    match result {
+        GitPreparedMerge::Unchanged => PendingMergeExpectedResult::Unchanged,
+        GitPreparedMerge::FastForward => PendingMergeExpectedResult::FastForward,
+        GitPreparedMerge::ExpectedConflict => PendingMergeExpectedResult::ExpectedConflict,
+        GitPreparedMerge::Commit(_) => PendingMergeExpectedResult::Commit,
+    }
+}
+
+fn pending_commit_spec(result: &GitPreparedMerge) -> Option<PendingCommitSpec> {
+    match result {
+        GitPreparedMerge::Commit(spec) => Some(PendingCommitSpec {
+            tree_oid: spec.tree_oid.clone(),
+            author: pending_signature(&spec.author),
+            committer: pending_signature(&spec.committer),
+            extensions: BTreeMap::new(),
+        }),
+        _ => None,
+    }
+}
+
+fn pending_signature(signature: &GitPreparedSignature) -> PendingGitSignature {
+    PendingGitSignature {
+        name: signature.name.clone(),
+        email: signature.email.clone(),
+        time_seconds: signature.time_seconds,
+        timezone_offset_minutes: signature.timezone_offset_minutes,
+        extensions: BTreeMap::new(),
+    }
 }
 
 fn pending_kind(kind: GitMergeAnalysisKind) -> PendingMergeActionKind {
@@ -352,8 +387,22 @@ fn start_response(
     Ok(response)
 }
 type Inspection = (GitStatus, GitHeadState, GitMergeAnalysis);
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedAction {
+    kind: GitMergeAnalysisKind,
+    result: GitPreparedMerge,
+}
+
 trait ExecutionBackend {
     fn inspect(&self, path: &Path, branch: &str, source: &str) -> ModelResult<Inspection>;
+    fn prepare_merge(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_before: &str,
+        source: &str,
+        attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitPreparedMerge>;
     fn merge(
         &self,
         path: &Path,
@@ -361,7 +410,7 @@ trait ExecutionBackend {
         expected_before: &str,
         source: &str,
         message: &str,
-        attribution: Option<&crate::model::OperationAttribution>,
+        prepared: &GitPreparedMerge,
     ) -> ModelResult<GitIntegrateResult>;
 }
 impl<B: GitBackend> ExecutionBackend for B {
@@ -372,6 +421,23 @@ impl<B: GitBackend> ExecutionBackend for B {
             self.merge_analysis(path, branch, source)?,
         ))
     }
+    fn prepare_merge(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_before: &str,
+        source: &str,
+        attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitPreparedMerge> {
+        GitBackend::prepare_merge_upstream_checked(
+            self,
+            path,
+            branch,
+            expected_before,
+            source,
+            attribution,
+        )
+    }
     fn merge(
         &self,
         path: &Path,
@@ -379,16 +445,16 @@ impl<B: GitBackend> ExecutionBackend for B {
         expected_before: &str,
         source: &str,
         message: &str,
-        attribution: Option<&crate::model::OperationAttribution>,
+        prepared: &GitPreparedMerge,
     ) -> ModelResult<GitIntegrateResult> {
-        GitBackend::merge_upstream_checked(
+        GitBackend::execute_prepared_merge_upstream_checked(
             self,
             path,
             branch,
             expected_before,
             source,
             message,
-            attribution,
+            prepared,
         )
     }
 }
@@ -456,15 +522,16 @@ fn execute_one<'a, B: ExecutionBackend>(
     plan: &'a MergeParticipantPlan,
     attribution: Option<&crate::model::OperationAttribution>,
 ) -> ModelResult<Row<'a>> {
-    let kind = prepare_one(backend, root, plan)?;
-    execute_prepared(backend, root, plan, kind, attribution)
+    let prepared = prepare_one(backend, root, plan, attribution)?;
+    execute_prepared(backend, root, plan, &prepared)
 }
 
 fn prepare_one<B: ExecutionBackend>(
     backend: &B,
     root: &Path,
     plan: &MergeParticipantPlan,
-) -> ModelResult<GitMergeAnalysisKind> {
+    attribution: Option<&crate::model::OperationAttribution>,
+) -> ModelResult<PreparedAction> {
     let path = root.join(&plan.path);
     let (status, head, analysis) =
         backend.inspect(&path, &plan.target_branch, &plan.source_commit)?;
@@ -482,15 +549,30 @@ fn prepare_one<B: ExecutionBackend>(
             format!("member '{}' changed after merge planning", plan.target_id),
         ));
     }
-    Ok(kind)
+    let result = backend.prepare_merge(
+        &path,
+        &plan.target_branch,
+        &plan.before_commit,
+        &plan.source_commit,
+        attribution,
+    )?;
+    if prepared_kind(&result) != kind {
+        return Err(ModelError::new(
+            ErrorCode::MergeDrift,
+            format!(
+                "member '{}' merge result changed during preparation",
+                plan.target_id
+            ),
+        ));
+    }
+    Ok(PreparedAction { kind, result })
 }
 
 fn execute_prepared<'a, B: ExecutionBackend>(
     backend: &B,
     root: &Path,
     plan: &'a MergeParticipantPlan,
-    kind: GitMergeAnalysisKind,
-    attribution: Option<&crate::model::OperationAttribution>,
+    prepared: &PreparedAction,
 ) -> ModelResult<Row<'a>> {
     let result = backend.merge(
         &root.join(&plan.path),
@@ -498,10 +580,10 @@ fn execute_prepared<'a, B: ExecutionBackend>(
         &plan.before_commit,
         &plan.source_commit,
         &plan.commit_message,
-        attribution,
+        &prepared.result,
     )?;
     if !result.conflicts.is_empty() {
-        if kind != GitMergeAnalysisKind::TrueMerge || result.commit.is_some() {
+        if prepared.kind != GitMergeAnalysisKind::TrueMerge || result.commit.is_some() {
             return Err(invariant(
                 plan,
                 "backend returned an invalid conflict result",
@@ -515,15 +597,15 @@ fn execute_prepared<'a, B: ExecutionBackend>(
     let resulting = result
         .commit
         .ok_or_else(|| invariant(plan, "clean merge result omitted its commit"))?;
-    if (kind == GitMergeAnalysisKind::UpToDate && resulting != plan.before_commit)
-        || (kind == GitMergeAnalysisKind::FastForward && resulting != plan.source_commit)
+    if (prepared.kind == GitMergeAnalysisKind::UpToDate && resulting != plan.before_commit)
+        || (prepared.kind == GitMergeAnalysisKind::FastForward && resulting != plan.source_commit)
     {
         return Err(invariant(
             plan,
             "backend returned the wrong clean result commit",
         ));
     }
-    let state = match kind {
+    let state = match prepared.kind {
         GitMergeAnalysisKind::UpToDate => PState::UpToDate,
         GitMergeAnalysisKind::FastForward => PState::FastForwarded,
         GitMergeAnalysisKind::TrueMerge => PState::Merged,
@@ -532,6 +614,16 @@ fn execute_prepared<'a, B: ExecutionBackend>(
         oid: Some(resulting),
         ..Row::new(plan, state)
     })
+}
+
+fn prepared_kind(prepared: &GitPreparedMerge) -> GitMergeAnalysisKind {
+    match prepared {
+        GitPreparedMerge::Unchanged => GitMergeAnalysisKind::UpToDate,
+        GitPreparedMerge::FastForward => GitMergeAnalysisKind::FastForward,
+        GitPreparedMerge::ExpectedConflict | GitPreparedMerge::Commit(_) => {
+            GitMergeAnalysisKind::TrueMerge
+        }
+    }
 }
 fn planned_kind(plan: &MergeParticipantPlan) -> ModelResult<GitMergeAnalysisKind> {
     match plan.analysis {
@@ -675,6 +767,20 @@ mod tests {
                 },
             ))
         }
+        fn prepare_merge(
+            &self,
+            path: &Path,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&crate::model::OperationAttribution>,
+        ) -> ModelResult<GitPreparedMerge> {
+            Ok(if key(path) == "conflict" {
+                GitPreparedMerge::ExpectedConflict
+            } else {
+                fake_prepared_commit(key(path))
+            })
+        }
         fn merge(
             &self,
             path: &Path,
@@ -682,7 +788,7 @@ mod tests {
             expected_before: &str,
             source: &str,
             message: &str,
-            _: Option<&crate::model::OperationAttribution>,
+            _: &GitPreparedMerge,
         ) -> ModelResult<GitIntegrateResult> {
             let key = key(path);
             self.calls
@@ -704,6 +810,19 @@ mod tests {
     }
     fn key(path: &Path) -> &str {
         path.file_name().unwrap().to_str().unwrap()
+    }
+    fn fake_prepared_commit(key: &str) -> GitPreparedMerge {
+        let signature = GitPreparedSignature {
+            name: "GWZ Test".to_owned(),
+            email: "gwz@example.test".to_owned(),
+            time_seconds: 42,
+            timezone_offset_minutes: 0,
+        };
+        GitPreparedMerge::Commit(crate::git::GitPreparedCommit {
+            tree_oid: format!("tree-{key}"),
+            author: signature.clone(),
+            committer: signature,
+        })
     }
     fn plans(names: &[&str]) -> Vec<MergeParticipantPlan> {
         names
@@ -807,6 +926,18 @@ mod tests {
             self.fake.inspect(path, branch, source)
         }
 
+        fn prepare_merge(
+            &self,
+            path: &Path,
+            branch: &str,
+            expected_before: &str,
+            source: &str,
+            attribution: Option<&crate::model::OperationAttribution>,
+        ) -> ModelResult<GitPreparedMerge> {
+            self.fake
+                .prepare_merge(path, branch, expected_before, source, attribution)
+        }
+
         fn merge(
             &self,
             path: &Path,
@@ -814,7 +945,7 @@ mod tests {
             expected_before: &str,
             source: &str,
             message: &str,
-            attribution: Option<&crate::model::OperationAttribution>,
+            prepared: &GitPreparedMerge,
         ) -> ModelResult<GitIntegrateResult> {
             let records = self.store.records.lock().unwrap();
             let target_id = format!("mem_{}", key(path));
@@ -833,7 +964,7 @@ mod tests {
                 .unwrap()
                 .push(format!("git:{}", key(path)));
             self.fake
-                .merge(path, branch, expected_before, source, message, attribution)
+                .merge(path, branch, expected_before, source, message, prepared)
         }
     }
 
@@ -871,6 +1002,24 @@ mod tests {
             ExecutionBackend::inspect(&self.backend, path, branch, source)
         }
 
+        fn prepare_merge(
+            &self,
+            path: &Path,
+            branch: &str,
+            expected_before: &str,
+            source: &str,
+            attribution: Option<&crate::model::OperationAttribution>,
+        ) -> ModelResult<GitPreparedMerge> {
+            ExecutionBackend::prepare_merge(
+                &self.backend,
+                path,
+                branch,
+                expected_before,
+                source,
+                attribution,
+            )
+        }
+
         fn merge(
             &self,
             path: &Path,
@@ -878,7 +1027,7 @@ mod tests {
             expected_before: &str,
             source: &str,
             message: &str,
-            attribution: Option<&crate::model::OperationAttribution>,
+            prepared: &GitPreparedMerge,
         ) -> ModelResult<GitIntegrateResult> {
             ExecutionBackend::merge(
                 &self.backend,
@@ -887,7 +1036,7 @@ mod tests {
                 expected_before,
                 source,
                 message,
-                attribution,
+                prepared,
             )
         }
     }
@@ -1250,6 +1399,30 @@ mod tests {
             let store = start_with_outcome_fault(&backend, root.path(), &plan);
             let app = root.path().join("app");
             let result = backend.head(&app).unwrap().commit.unwrap();
+            {
+                let records = store.records.lock().unwrap();
+                let pending = records.last().unwrap().participants["mem_app"]
+                    .pending_action
+                    .as_ref()
+                    .unwrap();
+                match fixture {
+                    ActionFixture::FastForward => {
+                        assert_eq!(
+                            pending.expected_result,
+                            Some(PendingMergeExpectedResult::FastForward)
+                        );
+                        assert!(pending.commit_spec.is_none());
+                    }
+                    ActionFixture::TrueMerge => {
+                        assert_eq!(
+                            pending.expected_result,
+                            Some(PendingMergeExpectedResult::Commit)
+                        );
+                        assert!(pending.commit_spec.is_some());
+                    }
+                    ActionFixture::Conflict => unreachable!(),
+                }
+            }
             let response = resume(&backend, &store, root.path()).unwrap();
 
             assert_eq!(response.repos[0].state, expected);
@@ -1303,6 +1476,18 @@ mod tests {
                 .kind,
             PendingMergeActionKind::ResolveConflict
         );
+        {
+            let records = store.records.lock().unwrap();
+            let pending = records.last().unwrap().participants["mem_app"]
+                .pending_action
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                pending.expected_result,
+                Some(PendingMergeExpectedResult::Commit)
+            );
+            assert!(pending.commit_spec.is_some());
+        }
 
         *store.fail_write_at.lock().unwrap() = None;
         let response = resume(&backend, &store, root.path()).unwrap();

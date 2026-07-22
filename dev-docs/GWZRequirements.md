@@ -659,6 +659,11 @@ participant failures MUST retain their typed error code and detail. Core MUST
 atomically record every subsequent participant and operation transition.
 Before each participant Git action that may move a ref, create a commit, or
 enter native integration state, core MUST durably record exact action intent.
+For a commit-producing action, that intent MUST include the expected tree and
+the fully resolved author and committer signatures before the action begins;
+the checked action MUST consume those frozen values rather than resolving
+identity again. Preparing this evidence MUST NOT move a ref, change HEAD, the
+on-disk index or worktree, or enter native integration state.
 After interruption it MUST classify the action as not started, exactly
 conflicted, exactly completed, or ambiguous before retrying, adopting, or
 rolling it back.
@@ -692,6 +697,9 @@ by public core mutation entry points under the workspace mutator lock, and MUST
 not be bypassable by a driver or direct handler caller. Recovery MUST remain
 discoverable before parsing live root metadata that may be conflicted, without
 crossing a nearer nested workspace boundary.
+Every merge start, including a read-only dry-run, MUST apply the same
+open-operation decision at the effective workspace. A dry-run MUST perform
+that check without taking the mutator lock or changing workspace state.
 
 ### REQ-089H: Continue And Retry
 
@@ -701,12 +709,22 @@ unattempted participant only from its classified unchanged retry point. It MUST
 reject ambiguous mutation, unrelated dirt, missing repositories, or changed
 branches, heads, target refs, or native merge state.
 An exactly completed recorded pending action MAY be adopted only when its
-branch, ref, parents, source, message, repository state, index, and worktree
-match the durable intent. Ambiguous mutation MUST remain recovery-required.
+branch, ref, parents, source, message, expected tree, frozen author and
+committer signatures, repository state, index, and worktree match the durable
+intent. A commit-producing pending action recorded without that evidence MUST
+be treated as ambiguous rather than accepted under an older, weaker matcher.
+Ambiguous mutation MUST remain recovery-required.
 Status MUST expose the pending action kind and its exact reconciliation class.
 An ambiguous action MUST also carry member-scoped
 `pending_action_ambiguous` drift and MUST make both mutation eligibility flags
 false.
+
+Python synchronous and submitted merge execution MUST publish one terminal
+operation result on success or failure. Failure MUST preserve the original
+typed and member-scoped error. JSONL merge output MUST stream operation events
+as they occur and then emit exactly one complete final response or structured
+error; completion MUST NOT become visible before the final event and successful
+typed response are available to readers.
 
 ### REQ-089I: Coordinated Abort
 

@@ -215,6 +215,38 @@ pub(crate) struct PendingMergeAction {
     pub before_commit: String,
     pub source_commit: String,
     pub commit_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_result: Option<PendingMergeExpectedResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_spec: Option<PendingCommitSpec>,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PendingMergeExpectedResult {
+    Unchanged,
+    FastForward,
+    ExpectedConflict,
+    Commit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PendingCommitSpec {
+    pub tree_oid: String,
+    pub author: PendingGitSignature,
+    pub committer: PendingGitSignature,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PendingGitSignature {
+    pub name: String,
+    pub email: String,
+    pub time_seconds: i64,
+    pub timezone_offset_minutes: i32,
     #[serde(default, flatten)]
     pub extensions: BTreeMap<String, Value>,
 }
@@ -462,6 +494,28 @@ future_record: retained
             before_commit: "111".to_owned(),
             source_commit: "222".to_owned(),
             commit_message: "Merge 'feature/x' into 'main'".to_owned(),
+            expected_result: Some(PendingMergeExpectedResult::Commit),
+            commit_spec: Some(PendingCommitSpec {
+                tree_oid: "333".to_owned(),
+                author: PendingGitSignature {
+                    name: "GWZ Author".to_owned(),
+                    email: "author@example.test".to_owned(),
+                    time_seconds: 1_700_000_000,
+                    timezone_offset_minutes: 600,
+                    extensions: BTreeMap::new(),
+                },
+                committer: PendingGitSignature {
+                    name: "GWZ Committer".to_owned(),
+                    email: "committer@example.test".to_owned(),
+                    time_seconds: 1_700_000_001,
+                    timezone_offset_minutes: 600,
+                    extensions: BTreeMap::new(),
+                },
+                extensions: BTreeMap::from([(
+                    "future_commit".to_owned(),
+                    serde_yaml::Value::String("retained".to_owned()),
+                )]),
+            }),
             extensions: BTreeMap::from([(
                 "future_action".to_owned(),
                 serde_yaml::Value::String("retained".to_owned()),
@@ -471,6 +525,7 @@ future_record: retained
         let decoded: PendingMergeAction = serde_yaml::from_str(&encoded).unwrap();
         assert_eq!(decoded, action);
         assert!(encoded.contains("future_action: retained"));
+        assert!(encoded.contains("future_commit: retained"));
     }
 
     #[test]

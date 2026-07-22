@@ -29,6 +29,19 @@ pub trait GitBackend {
     ) -> ModelResult<bool> {
         unsupported_backend("commit_matches_merge")
     }
+    /// Return whether `commit` exactly matches a prepared two-parent merge,
+    /// including its tree and complete author/committer signatures.
+    fn commit_matches_prepared_merge(
+        &self,
+        _path: &Path,
+        _commit: &str,
+        _first_parent: &str,
+        _second_parent: &str,
+        _message: &str,
+        _prepared: &GitPreparedCommit,
+    ) -> ModelResult<bool> {
+        unsupported_backend("commit_matches_prepared_merge")
+    }
     fn create_repo(&self, path: &Path) -> ModelResult<GitCreateResult>;
     fn clone_repo(&self, url: &str, path: &Path) -> ModelResult<GitCloneResult>;
     /// Clone, forwarding libgit2 transfer progress to `progress`. The default
@@ -77,6 +90,30 @@ pub trait GitBackend {
         _attribution: Option<&crate::model::OperationAttribution>,
     ) -> ModelResult<GitIntegrateResult> {
         unsupported_backend("merge_upstream_checked")
+    }
+    /// Freeze the exact result of a checked merge without moving a ref or
+    /// changing HEAD, the repository index/worktree, or native operation state.
+    fn prepare_merge_upstream_checked(
+        &self,
+        _path: &Path,
+        _branch: &str,
+        _expected_before: &str,
+        _source_commit: &str,
+        _attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitPreparedMerge> {
+        unsupported_backend("prepare_merge_upstream_checked")
+    }
+    /// Execute a merge using only its already frozen content and signatures.
+    fn execute_prepared_merge_upstream_checked(
+        &self,
+        _path: &Path,
+        _branch: &str,
+        _expected_before: &str,
+        _source_commit: &str,
+        _message: &str,
+        _prepared: &GitPreparedMerge,
+    ) -> ModelResult<GitIntegrateResult> {
+        unsupported_backend("execute_prepared_merge_upstream_checked")
     }
     /// Resolve source/target commits and classify the merge without mutation.
     /// Resolution is repository-local, performs no fetch, requires both sides
@@ -393,6 +430,29 @@ pub trait GitBackend {
     ) -> ModelResult<GitCommitResult> {
         unsupported_backend("commit_merge_resolution_checked")
     }
+    /// Freeze the resolved index tree and complete commit signatures without
+    /// changing refs, HEAD, index/worktree bytes, or native merge state.
+    fn prepare_merge_resolution_checked(
+        &self,
+        _path: &Path,
+        _expected_before: &str,
+        _expected_merge_head: &str,
+        _attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitPreparedCommit> {
+        unsupported_backend("prepare_merge_resolution_checked")
+    }
+    /// Commit a native merge resolution only when its resolved tree still
+    /// matches the frozen specification, using the frozen signatures.
+    fn commit_prepared_merge_resolution_checked(
+        &self,
+        _path: &Path,
+        _expected_before: &str,
+        _expected_merge_head: &str,
+        _message: &str,
+        _prepared: &GitPreparedCommit,
+    ) -> ModelResult<GitCommitResult> {
+        unsupported_backend("commit_prepared_merge_resolution_checked")
+    }
     /// Create tag `name` at the current HEAD via the `git` CLI (AD1 per-primitive CLI
     /// fallback — so hooks, signing, and tagger config are honored). Annotated when
     /// `message` is set; signed when `signed` (signing requires a message + GPG config).
@@ -643,6 +703,32 @@ pub enum GitMergeSimulation {
     Conflicts(Vec<String>),
 }
 
+/// A fully resolved Git signature frozen before a durable commit intent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitPreparedSignature {
+    pub name: String,
+    pub email: String,
+    pub time_seconds: i64,
+    pub timezone_offset_minutes: i32,
+}
+
+/// Exact content and identities for an unattached merge commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitPreparedCommit {
+    pub tree_oid: String,
+    pub author: GitPreparedSignature,
+    pub committer: GitPreparedSignature,
+}
+
+/// Result class frozen before a checked merge action is made durable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitPreparedMerge {
+    Unchanged,
+    FastForward,
+    ExpectedConflict,
+    Commit(GitPreparedCommit),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitNativeMergeState {
     pub merge_head: String,
@@ -873,6 +959,38 @@ impl GitBackend for Git2Backend {
             && commit.message_bytes() == message.as_bytes())
     }
 
+    fn commit_matches_prepared_merge(
+        &self,
+        path: &Path,
+        commit: &str,
+        first_parent: &str,
+        second_parent: &str,
+        message: &str,
+        prepared: &GitPreparedCommit,
+    ) -> ModelResult<bool> {
+        let (Ok(commit), Ok(first_parent), Ok(second_parent), Ok(tree_oid)) = (
+            git2::Oid::from_str(commit),
+            git2::Oid::from_str(first_parent),
+            git2::Oid::from_str(second_parent),
+            git2::Oid::from_str(&prepared.tree_oid),
+        ) else {
+            return Ok(false);
+        };
+        let repo = open_repo(path)?;
+        let commit = match repo.find_commit(commit) {
+            Ok(commit) => commit,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
+            Err(error) => return Err(git_error(error)),
+        };
+        Ok(commit.parent_count() == 2
+            && commit.parent_id(0).map_err(git_error)? == first_parent
+            && commit.parent_id(1).map_err(git_error)? == second_parent
+            && commit.message_bytes() == message.as_bytes()
+            && commit.tree_id() == tree_oid
+            && signature_matches_prepared(&commit.author(), &prepared.author)
+            && signature_matches_prepared(&commit.committer(), &prepared.committer))
+    }
+
     fn create_repo(&self, path: &Path) -> ModelResult<GitCreateResult> {
         let mut opts = git2::RepositoryInitOptions::new();
         opts.bare(false).no_reinit(true).initial_head("main");
@@ -1036,6 +1154,72 @@ impl GitBackend for Git2Backend {
         message: &str,
         attribution: Option<&crate::model::OperationAttribution>,
     ) -> ModelResult<GitIntegrateResult> {
+        let prepared = self.prepare_merge_upstream_checked(
+            path,
+            branch,
+            expected_before,
+            source_commit,
+            attribution,
+        )?;
+        self.execute_prepared_merge_upstream_checked(
+            path,
+            branch,
+            expected_before,
+            source_commit,
+            message,
+            &prepared,
+        )
+    }
+
+    fn prepare_merge_upstream_checked(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_before: &str,
+        source_commit: &str,
+        attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitPreparedMerge> {
+        let expected = git2::Oid::from_str(expected_before).map_err(git_error)?;
+        let source = git2::Oid::from_str(source_commit).map_err(git_error)?;
+        let repo = open_repo(path)?;
+        ensure_no_integration_in_progress(&repo)?;
+        let status = self.status(path)?;
+        if status.is_dirty {
+            return Err(ModelError::new(
+                ErrorCode::DirtyMember,
+                "merge requires a clean index and worktree",
+            ));
+        }
+        validate_checked_merge_head(&repo, branch, expected)?;
+        repo.find_commit(source).map_err(git_error)?;
+        match classify_merge(&repo, expected, source)? {
+            GitMergeAnalysisKind::UpToDate => Ok(GitPreparedMerge::Unchanged),
+            GitMergeAnalysisKind::FastForward => Ok(GitPreparedMerge::FastForward),
+            GitMergeAnalysisKind::TrueMerge => {
+                let mut index = in_memory_merge_index(&repo, expected, source)?;
+                if index.has_conflicts() {
+                    return Ok(GitPreparedMerge::ExpectedConflict);
+                }
+                let tree_oid = index.write_tree_to(&repo).map_err(git_error)?;
+                let (author, committer) = merge_signatures(&repo, attribution)?;
+                Ok(GitPreparedMerge::Commit(GitPreparedCommit {
+                    tree_oid: tree_oid.to_string(),
+                    author: prepared_signature(&author)?,
+                    committer: prepared_signature(&committer)?,
+                }))
+            }
+        }
+    }
+
+    fn execute_prepared_merge_upstream_checked(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_before: &str,
+        source_commit: &str,
+        message: &str,
+        prepared: &GitPreparedMerge,
+    ) -> ModelResult<GitIntegrateResult> {
         let expected = git2::Oid::from_str(expected_before).map_err(git_error)?;
         let source = git2::Oid::from_str(source_commit).map_err(git_error)?;
         let expected_text = expected.to_string();
@@ -1081,12 +1265,18 @@ impl GitBackend for Git2Backend {
         let kind = classify_merge(&repo, expected, source)?;
 
         if kind == GitMergeAnalysisKind::UpToDate {
+            if prepared != &GitPreparedMerge::Unchanged {
+                return Err(prepared_merge_mismatch("up-to-date result class changed"));
+            }
             drop(source_object);
             drop(transaction);
             verify_merge_result(self, path, branch, &expected_text)?;
             return Ok(GitIntegrateResult::clean(expected_text));
         }
         if kind == GitMergeAnalysisKind::FastForward {
+            if prepared != &GitPreparedMerge::FastForward {
+                return Err(prepared_merge_mismatch("fast-forward result class changed"));
+            }
             let target_object = repo.find_object(source, None).map_err(git_error)?;
             let mut checkout = git2::build::CheckoutBuilder::new();
             checkout.safe();
@@ -1100,13 +1290,18 @@ impl GitBackend for Git2Backend {
             return Ok(GitIntegrateResult::clean(source_text));
         }
 
-        let (author, committer) = merge_signatures(&repo, attribution)?;
-        let annotated = repo.find_annotated_commit(source).map_err(git_error)?;
-
-        // True three-way merge: git2 stages the result into the index + worktree.
-        repo.merge(&[&annotated], None, None).map_err(git_error)?;
-        let mut index = repo.index().map_err(git_error)?;
-        if index.has_conflicts() {
+        let mut merge_index = in_memory_merge_index(&repo, expected, source)?;
+        if merge_index.has_conflicts() {
+            if prepared != &GitPreparedMerge::ExpectedConflict {
+                return Err(prepared_merge_mismatch(
+                    "prepared clean merge now has conflicts",
+                ));
+            }
+            let annotated = repo.find_annotated_commit(source).map_err(git_error)?;
+            // Enter native merge state only after the in-memory result has been
+            // proven to match the durable expected-conflict intent.
+            repo.merge(&[&annotated], None, None).map_err(git_error)?;
+            let index = repo.index().map_err(git_error)?;
             // Faithful to porcelain: leave the conflict in the worktree and record
             // MERGE_HEAD so the developer can resolve and `git merge --continue`.
             std::fs::write(repo.path().join("MERGE_HEAD"), format!("{source}\n"))
@@ -1132,10 +1327,23 @@ impl GitBackend for Git2Backend {
             });
         }
 
-        // Clean merge: write the merged tree and record the two-parent merge commit.
-        let tree_oid = index.write_tree().map_err(git_error)?;
+        let GitPreparedMerge::Commit(prepared_commit) = prepared else {
+            return Err(prepared_merge_mismatch(
+                "prepared conflict merge is now clean",
+            ));
+        };
+        // The in-memory comparison happens before any ref, index, worktree, or
+        // native-state mutation.
+        let tree_oid = merge_index.write_tree_to(&repo).map_err(git_error)?;
+        if tree_oid.to_string() != prepared_commit.tree_oid {
+            return Err(prepared_merge_mismatch(
+                "clean merge tree changed after intent persistence",
+            ));
+        }
         let tree = repo.find_tree(tree_oid).map_err(git_error)?;
         let head_commit = repo.find_commit(expected).map_err(git_error)?;
+        let author = signature_from_prepared(&prepared_commit.author)?;
+        let committer = signature_from_prepared(&prepared_commit.committer)?;
         let merge_oid = repo
             .commit(
                 None,
@@ -1151,6 +1359,7 @@ impl GitBackend for Git2Backend {
             || committed.parent_id(0).map_err(git_error)? != head_commit.id()
             || committed.parent_id(1).map_err(git_error)? != source
             || committed.message_bytes() != message.as_bytes()
+            || committed.tree_id() != tree_oid
             || !same_signature(&committed.author(), &author)
             || !same_signature(&committed.committer(), &committer)
         {
@@ -1159,6 +1368,8 @@ impl GitBackend for Git2Backend {
                 "post-merge commit metadata does not match the checked merge plan",
             ));
         }
+        repo.checkout_tree(tree.as_object(), None)
+            .map_err(git_error)?;
         transaction
             .set_target(&local_ref_name, merge_oid, Some(&committer), "gwz merge")
             .map_err(git_error)?;
@@ -1908,6 +2119,51 @@ impl GitBackend for Git2Backend {
         message: &str,
         attribution: Option<&crate::model::OperationAttribution>,
     ) -> ModelResult<GitCommitResult> {
+        let prepared = self.prepare_merge_resolution_checked(
+            path,
+            expected_before,
+            expected_merge_head,
+            attribution,
+        )?;
+        self.commit_prepared_merge_resolution_checked(
+            path,
+            expected_before,
+            expected_merge_head,
+            message,
+            &prepared,
+        )
+    }
+
+    fn prepare_merge_resolution_checked(
+        &self,
+        path: &Path,
+        expected_before: &str,
+        expected_merge_head: &str,
+        attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitPreparedCommit> {
+        let repo = open_repo(path)?;
+        let before = parse_existing_commit(&repo, expected_before)?;
+        let merge_head = parse_existing_commit(&repo, expected_merge_head)?;
+        validate_expected_native_merge(&repo, before, merge_head)?;
+        validate_resolution_index_and_worktree(self, path, &repo, before, merge_head)?;
+        let mut index = repo.index().map_err(git_error)?;
+        let tree_oid = index.write_tree().map_err(git_error)?;
+        let (author, committer) = merge_signatures(&repo, attribution)?;
+        Ok(GitPreparedCommit {
+            tree_oid: tree_oid.to_string(),
+            author: prepared_signature(&author)?,
+            committer: prepared_signature(&committer)?,
+        })
+    }
+
+    fn commit_prepared_merge_resolution_checked(
+        &self,
+        path: &Path,
+        expected_before: &str,
+        expected_merge_head: &str,
+        message: &str,
+        prepared: &GitPreparedCommit,
+    ) -> ModelResult<GitCommitResult> {
         let repo = open_repo(path)?;
         let before = parse_existing_commit(&repo, expected_before)?;
         let merge_head = parse_existing_commit(&repo, expected_merge_head)?;
@@ -1919,10 +2175,16 @@ impl GitBackend for Git2Backend {
 
         let mut index = repo.index().map_err(git_error)?;
         let tree_oid = index.write_tree().map_err(git_error)?;
+        if tree_oid.to_string() != prepared.tree_oid {
+            return Err(prepared_merge_mismatch(
+                "resolved index tree changed after intent persistence",
+            ));
+        }
         let tree = repo.find_tree(tree_oid).map_err(git_error)?;
         let before_commit = repo.find_commit(before).map_err(git_error)?;
         let merge_commit = repo.find_commit(merge_head).map_err(git_error)?;
-        let (author, committer) = merge_signatures(&repo, attribution)?;
+        let author = signature_from_prepared(&prepared.author)?;
+        let committer = signature_from_prepared(&prepared.committer)?;
         let oid = repo
             .commit(
                 None,
@@ -1938,10 +2200,13 @@ impl GitBackend for Git2Backend {
             || committed.parent_id(0).map_err(git_error)? != before
             || committed.parent_id(1).map_err(git_error)? != merge_head
             || committed.message_bytes() != message.as_bytes()
+            || committed.tree_id() != tree_oid
+            || !same_signature(&committed.author(), &author)
+            || !same_signature(&committed.committer(), &committer)
         {
             return Err(ModelError::new(
                 ErrorCode::GitCommandFailed,
-                "merge resolution commit does not match its checked parents or message",
+                "merge resolution commit does not match its checked specification",
             ));
         }
         transaction
@@ -2380,6 +2645,60 @@ fn classify_merge(
     }
 }
 
+fn validate_checked_merge_head(
+    repo: &git2::Repository,
+    branch: &str,
+    expected: git2::Oid,
+) -> ModelResult<()> {
+    let target = repo
+        .find_reference(&branch_ref_name(branch))
+        .and_then(|reference| reference.peel_to_commit())
+        .map_err(git_error)?
+        .id();
+    let observed = repo_head(repo)?;
+    if target != expected
+        || observed.branch.as_deref() != Some(branch)
+        || observed.commit.as_deref() != Some(expected.to_string().as_str())
+    {
+        return Err(ModelError::new(
+            ErrorCode::MergeDrift,
+            format!(
+                "target branch '{branch}' changed before merge preparation; expected {expected}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn in_memory_merge_index(
+    repo: &git2::Repository,
+    target: git2::Oid,
+    source: git2::Oid,
+) -> ModelResult<git2::Index> {
+    let base = repo.merge_base(target, source).map_err(git_error)?;
+    let base_tree = repo
+        .find_commit(base)
+        .and_then(|commit| commit.tree())
+        .map_err(git_error)?;
+    let target_tree = repo
+        .find_commit(target)
+        .and_then(|commit| commit.tree())
+        .map_err(git_error)?;
+    let source_tree = repo
+        .find_commit(source)
+        .and_then(|commit| commit.tree())
+        .map_err(git_error)?;
+    repo.merge_trees(&base_tree, &target_tree, &source_tree, None)
+        .map_err(git_error)
+}
+
+fn prepared_merge_mismatch(detail: &str) -> ModelError {
+    ModelError::new(
+        ErrorCode::MergeRecoveryRequired,
+        format!("prepared merge intent no longer matches the repository: {detail}"),
+    )
+}
+
 pub(crate) fn verify_merge_result(
     backend: &impl GitBackend,
     path: &Path,
@@ -2601,6 +2920,48 @@ fn merge_signatures(
         None => merge_signature(repo)?,
     };
     Ok((author, committer))
+}
+
+fn prepared_signature(signature: &git2::Signature<'_>) -> ModelResult<GitPreparedSignature> {
+    let name = std::str::from_utf8(signature.name_bytes()).map_err(|_| {
+        ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "git signature name is not valid UTF-8",
+        )
+    })?;
+    let email = std::str::from_utf8(signature.email_bytes()).map_err(|_| {
+        ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "git signature email is not valid UTF-8",
+        )
+    })?;
+    Ok(GitPreparedSignature {
+        name: name.to_owned(),
+        email: email.to_owned(),
+        time_seconds: signature.when().seconds(),
+        timezone_offset_minutes: signature.when().offset_minutes(),
+    })
+}
+
+fn signature_from_prepared(
+    signature: &GitPreparedSignature,
+) -> ModelResult<git2::Signature<'static>> {
+    git2::Signature::new(
+        &signature.name,
+        &signature.email,
+        &git2::Time::new(signature.time_seconds, signature.timezone_offset_minutes),
+    )
+    .map_err(git_error)
+}
+
+fn signature_matches_prepared(
+    actual: &git2::Signature<'_>,
+    expected: &GitPreparedSignature,
+) -> bool {
+    actual.name_bytes() == expected.name.as_bytes()
+        && actual.email_bytes() == expected.email.as_bytes()
+        && actual.when().seconds() == expected.time_seconds
+        && actual.when().offset_minutes() == expected.timezone_offset_minutes
 }
 
 fn signature_from_identity(

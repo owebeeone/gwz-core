@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::artifact::read_lock;
 use crate::git::GitBackend;
 use crate::model::ErrorCode;
+use crate::workspace_ops::merge::{FileMergeStore, MergeStore, OperationState};
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -175,6 +177,70 @@ fn merge_repo<'a>(
         .iter()
         .find(|repo| repo.target_id == target_id)
         .unwrap()
+}
+
+fn workspace_file_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let file_type = entry.file_type().unwrap();
+            let path = entry.path();
+            if file_type.is_dir() {
+                visit(root, &path, files);
+            } else if file_type.is_file() {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
+fn assert_open_merge_blocks_all_starts_without_mutation(
+    root: &Path,
+    backend: &crate::git::Git2Backend,
+    merge_id: &str,
+) {
+    let unrelated = TempDir::new("merge-gate-unrelated-cwd");
+    let before = workspace_file_snapshot(root);
+
+    for dry_run in [true, false] {
+        let mut rejected = request(dry_run);
+        rejected.meta.workspace = Some(crate::WorkspaceRef {
+            root: Some(root.to_string_lossy().into_owned()),
+            workspace_id: None,
+        });
+
+        let error = handle_merge(
+            backend,
+            unrelated.path(),
+            rejected,
+            if dry_run {
+                "op_rejected_dry_run"
+            } else {
+                "op_rejected_real"
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::OpenOperation);
+        assert!(error.message.contains(merge_id));
+        assert_eq!(workspace_file_snapshot(root), before);
+    }
+}
+
+fn force_open_merge_state(root: &Path, state: OperationState) -> String {
+    let store = FileMergeStore;
+    let mut record = store.discover_open(root).unwrap().unwrap();
+    record.state = state;
+    let merge_id = record.merge_id.clone();
+    store.write_open(root, &record).unwrap();
+    merge_id
 }
 
 #[test]
@@ -350,6 +416,75 @@ fn first_class_merge_dry_run_does_not_change_head_lock_or_merge_state() {
         lock_before
     );
     assert!(backend.merge_state(&member).unwrap().is_none());
+}
+
+#[test]
+fn open_awaiting_resolution_blocks_dry_run_and_real_starts_from_an_explicit_root() {
+    let temp = TempDir::new("merge-start-gate-awaiting");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
+    assert_eq!(
+        started.state,
+        crate::MergeOperationState::AwaitingResolution
+    );
+
+    assert_open_merge_blocks_all_starts_without_mutation(
+        temp.path(),
+        &backend,
+        started.merge_id.as_deref().unwrap(),
+    );
+}
+
+#[test]
+fn open_finalizing_blocks_dry_run_and_real_starts_from_an_explicit_root() {
+    let temp = TempDir::new("merge-start-gate-finalizing");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-gate-finalizing");
+    feature_commit(
+        &backend,
+        &temp.path().join("remote"),
+        "README.md",
+        "source\n",
+    );
+    let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
+    assert_eq!(started.state, crate::MergeOperationState::Finalizing);
+
+    assert_open_merge_blocks_all_starts_without_mutation(
+        temp.path(),
+        &backend,
+        started.merge_id.as_deref().unwrap(),
+    );
+}
+
+#[test]
+fn open_halted_blocks_dry_run_and_real_starts_from_an_explicit_root() {
+    let temp = TempDir::new("merge-start-gate-halted");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
+    assert_eq!(
+        started.state,
+        crate::MergeOperationState::AwaitingResolution
+    );
+    let merge_id = force_open_merge_state(temp.path(), OperationState::Halted);
+
+    assert_open_merge_blocks_all_starts_without_mutation(temp.path(), &backend, &merge_id);
+}
+
+#[test]
+fn open_recovery_required_blocks_dry_run_and_real_starts_from_an_explicit_root() {
+    let temp = TempDir::new("merge-start-gate-recovery-required");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
+    assert_eq!(
+        started.state,
+        crate::MergeOperationState::AwaitingResolution
+    );
+    let merge_id = force_open_merge_state(temp.path(), OperationState::RecoveryRequired);
+
+    assert_open_merge_blocks_all_starts_without_mutation(temp.path(), &backend, &merge_id);
 }
 
 #[test]
