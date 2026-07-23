@@ -320,6 +320,26 @@ impl OperationRuntime {
 }
 
 impl<'a> EventEmitter<'a> {
+    /// Build the invocation lifecycle owner before any fallible model-context
+    /// conversion. This copies protocol envelope fields only; it does not
+    /// validate or authorize attribution for Git actions.
+    pub fn from_request_meta(
+        operation_id: impl Into<String>,
+        meta: &crate::RequestMeta,
+        sink: &'a dyn EventSink,
+        progress_min_interval_ms: i64,
+    ) -> Self {
+        Self {
+            operation_id: operation_id.into(),
+            request_id: meta.request_id.clone(),
+            attribution: meta.attribution.clone(),
+            sequence: AtomicI64::new(0),
+            progress_min_interval_ms: progress_min_interval_ms.max(0),
+            last_progress_ms: Mutex::new(HashMap::new()),
+            sink,
+        }
+    }
+
     pub fn new(
         context: &OperationContext,
         sink: &'a dyn EventSink,

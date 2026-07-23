@@ -546,8 +546,11 @@ For a true member merge, start records the exact member commit message before
 mutation. Unless `-m` overrides it in a later phase, the default is
 `Merge '<source-ref>' into '<target-branch>'` with the same two GWZ trailers.
 Immediate clean merges and resolution commits use that recorded message.
-Author and committer identity come from the member repository at commit time;
-the recorded parent commits, not the person identity, are the merge invariant.
+Before durable action intent, GWZ resolves author and committer identity from
+the request attribution or member repository and freezes the complete
+signatures. Immediate and recovered execution use those exact signatures; they
+are part of the commit-producing action invariant alongside the parents,
+message, and tree.
 
 M0 intentionally retains the legacy member message
 `Merge <source-ref> into <target-branch>` without quotes or GWZ trailers. The
@@ -746,10 +749,14 @@ After successful preflight:
 6. Otherwise finalize the lock and root merge evidence as described above and
    close the local operation record.
 
-The exact recorded parents are the merge invariant. Author and committer
-identity use attribution from the request that creates the resolution commit
-when present, otherwise they are resolved from the member repository. The same
-rule applies to an immediate true merge and a true-merge retry.
+The exact recorded parents are part of the merge invariant. While preparing a
+new commit-producing action, GWZ resolves author and committer identity from
+request attribution when present and otherwise from the member repository,
+then persists the complete signatures with the action before execution. Once
+that intent exists, both its immediate execution and every recovered
+resolution or true-merge retry consume those recorded signatures; they never
+re-resolve identity from the retry request, repository configuration, or
+clock.
 
 Post-merge changes in a participant that had already merged are not
 automatically adopted into the coordinated merge. This includes root changes
@@ -1090,6 +1097,10 @@ and durable record/evidence writes emit `ArtifactWritten`. Append a generic
 transition such as `awaiting_resolution`, `finalizing`, or `rolling_back` is
 machine-visible. Event order follows durable order: a transition or participant
 outcome is emitted only after the corresponding atomic record update succeeds.
+One outer invocation owner emits `OperationStarted` before fallible request
+context conversion, open-operation gating, validation, root resolution, and
+dispatch, and emits exactly one `OperationFinished` after the final inner event
+on every success or failure path.
 For a participant action, `MemberStarted` precedes the durable action-intent
 write, `ArtifactWritten` follows the verified intent, the Git action runs, a
 second `ArtifactWritten` follows the verified outcome write, and only then does
@@ -1101,6 +1112,10 @@ resolved author and committer signatures. Clean true-merge preparation uses an
 in-memory tree merge; resolution preparation freezes the resolved index tree.
 Neither preparation may move a ref, change HEAD, the on-disk index or worktree,
 or enter native merge state. The checked action consumes those frozen values.
+After interruption, a `not_started` classification retains that durable intent
+and executes it directly; it never clears the intent or re-resolves content,
+identity, or time. A resolved native merge is `not_started` only when its live
+index tree exactly matches the recorded tree.
 After interruption, a candidate commit must match the ordered parents,
 byte-exact message, tree, author, and committer in addition to the live
 branch/ref and clean repository conditions. Missing evidence or any mismatch

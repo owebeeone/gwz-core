@@ -711,6 +711,7 @@ fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
         backend
             .commit_merge_resolution_checked(
                 &repo,
+                "main",
                 expected_before,
                 expected_head,
                 "resolved",
@@ -737,7 +738,7 @@ fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
     let index_before = fs::read(repo.join(".git/index")).unwrap();
     let status_before = backend.status(&repo).unwrap();
     let prepared = backend
-        .prepare_merge_resolution_checked(&repo, &before, &source, None)
+        .prepare_merge_resolution_checked(&repo, "main", &before, &source, None)
         .unwrap();
     assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
     assert_eq!(backend.status(&repo).unwrap(), status_before);
@@ -754,7 +755,9 @@ fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
         .tree_id()
         .to_string();
     let error = backend
-        .commit_prepared_merge_resolution_checked(&repo, &before, &source, "resolved", &wrong)
+        .commit_prepared_merge_resolution_checked(
+            &repo, "main", &before, &source, "resolved", &wrong,
+        )
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
@@ -766,7 +769,9 @@ fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
     );
 
     let result = backend
-        .commit_prepared_merge_resolution_checked(&repo, &before, &source, "resolved", &prepared)
+        .commit_prepared_merge_resolution_checked(
+            &repo, "main", &before, &source, "resolved", &prepared,
+        )
         .unwrap();
     let repository = git2::Repository::open(&repo).unwrap();
     let commit = repository

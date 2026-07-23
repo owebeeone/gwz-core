@@ -5,10 +5,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::artifact;
-use crate::git::{
-    GitBackend, GitNativeMergeState, GitPreparedCommit, GitPreparedSignature, GitRepositoryState,
-    GitStatus,
-};
+use crate::git::{GitBackend, GitNativeMergeState, GitRepositoryState, GitStatus};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
@@ -79,11 +76,7 @@ fn reconcile_pending_action_from_live<B: GitBackend>(
             drift: Vec::new(),
         });
     };
-    if pending.target_branch != participant.target_branch
-        || pending.before_commit != participant.before_commit
-        || pending.source_commit != participant.source_commit
-        || pending.commit_message != participant.commit_message
-    {
+    if !pending_inputs_match_participant(pending, participant) {
         let reason = "pending action inputs do not match the frozen participant record";
         return Ok(PendingActionReconciliation::Ambiguous {
             reason: reason.to_owned(),
@@ -96,19 +89,21 @@ fn reconcile_pending_action_from_live<B: GitBackend>(
             )],
         });
     }
-    if let Err(reason) = validate_pending_intent(pending) {
-        return Ok(PendingActionReconciliation::Ambiguous {
-            reason: reason.to_owned(),
-            drift: vec![participant_drift(
-                ParticipantDriftKind::PendingActionAmbiguous,
-                target_id,
-                participant,
-                live,
-                reason,
-            )],
-        });
-    }
-
+    let prepared = match super::pending::decode_durable_prepared_action(pending) {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            return Ok(PendingActionReconciliation::Ambiguous {
+                reason: reason.to_owned(),
+                drift: vec![participant_drift(
+                    ParticipantDriftKind::PendingActionAmbiguous,
+                    target_id,
+                    participant,
+                    live,
+                    reason,
+                )],
+            });
+        }
+    };
     let drift = classify_participant(target_id, participant, live).drift;
     let exact_branch = live.branch.as_deref() == Some(pending.target_branch.as_str())
         && live.head == live.target_ref;
@@ -132,15 +127,43 @@ fn reconcile_pending_action_from_live<B: GitBackend>(
                 });
             }
             super::PendingMergeActionKind::FastForward
-            | super::PendingMergeActionKind::TrueMerge
                 if live_commit == Some(pending.before_commit.as_str()) =>
             {
                 return Ok(PendingActionReconciliation::NotStarted);
             }
             super::PendingMergeActionKind::TrueMerge
+                if live_commit == Some(pending.before_commit.as_str())
+                    && member_result(
+                        backend.validate_prepared_merge_upstream_state(
+                            path,
+                            &pending.target_branch,
+                            &pending.before_commit,
+                            &pending.source_commit,
+                            match &prepared {
+                                super::pending::DurablePreparedAction::Merge(prepared) => prepared,
+                                super::pending::DurablePreparedAction::Resolution(_) => {
+                                    unreachable!(
+                                        "true-merge pending action decoded as a resolution"
+                                    )
+                                }
+                            },
+                        ),
+                        target_id,
+                        &participant.path,
+                    )
+                    .is_ok() =>
+            {
+                return Ok(PendingActionReconciliation::NotStarted);
+            }
+            super::PendingMergeActionKind::TrueMerge
             | super::PendingMergeActionKind::ResolveConflict => {
-                if let (Some(commit), Some(prepared)) =
-                    (live_commit, pending_prepared_commit(pending))
+                if let (
+                    Some(commit),
+                    super::pending::DurablePreparedAction::Merge(
+                        crate::git::GitPreparedMerge::Commit(prepared),
+                    )
+                    | super::pending::DurablePreparedAction::Resolution(prepared),
+                ) = (live_commit, &prepared)
                     && member_result(
                         backend.commit_matches_prepared_merge(
                             path,
@@ -148,7 +171,7 @@ fn reconcile_pending_action_from_live<B: GitBackend>(
                             &pending.before_commit,
                             &pending.source_commit,
                             &pending.commit_message,
-                            &prepared,
+                            prepared,
                         ),
                         target_id,
                         &participant.path,
@@ -177,16 +200,31 @@ fn reconcile_pending_action_from_live<B: GitBackend>(
             || (pending.kind == super::PendingMergeActionKind::TrueMerge
                 && pending.expected_result
                     == Some(super::PendingMergeExpectedResult::ExpectedConflict));
-        if native_intent_matches
-            && backend
+        let native_state_valid = match &prepared {
+            super::pending::DurablePreparedAction::Resolution(prepared) if require_resolved => {
+                backend
+                    .validate_prepared_merge_resolution_state(
+                        path,
+                        &pending.target_branch,
+                        &pending.before_commit,
+                        &pending.source_commit,
+                        prepared,
+                    )
+                    .is_ok()
+            }
+            super::pending::DurablePreparedAction::Merge(
+                crate::git::GitPreparedMerge::ExpectedConflict,
+            ) if !require_resolved => backend
                 .validate_merge_recovery_state(
                     path,
                     &pending.before_commit,
                     &pending.source_commit,
-                    require_resolved,
+                    false,
                 )
-                .is_ok()
-        {
+                .is_ok(),
+            _ => false,
+        };
+        if native_intent_matches && native_state_valid {
             if require_resolved {
                 return Ok(PendingActionReconciliation::NotStarted);
             }
@@ -215,44 +253,14 @@ fn reconcile_pending_action_from_live<B: GitBackend>(
     })
 }
 
-fn validate_pending_intent(pending: &super::PendingMergeAction) -> Result<(), &'static str> {
-    use super::{PendingMergeActionKind as Kind, PendingMergeExpectedResult as Result};
-    let valid = matches!(
-        (
-            pending.kind,
-            pending.expected_result,
-            pending.commit_spec.is_some(),
-        ),
-        (Kind::VerifyUpToDate, None | Some(Result::Unchanged), false)
-            | (Kind::FastForward, None | Some(Result::FastForward), false)
-            | (Kind::TrueMerge, Some(Result::ExpectedConflict), false)
-            | (
-                Kind::TrueMerge | Kind::ResolveConflict,
-                Some(Result::Commit),
-                true
-            )
-    );
-    valid.then_some(()).ok_or(
-        "pending commit-producing action lacks a complete exact result and signature specification",
-    )
-}
-
-fn pending_prepared_commit(pending: &super::PendingMergeAction) -> Option<GitPreparedCommit> {
-    let spec = pending.commit_spec.as_ref()?;
-    Some(GitPreparedCommit {
-        tree_oid: spec.tree_oid.clone(),
-        author: prepared_signature(&spec.author),
-        committer: prepared_signature(&spec.committer),
-    })
-}
-
-fn prepared_signature(signature: &super::PendingGitSignature) -> GitPreparedSignature {
-    GitPreparedSignature {
-        name: signature.name.clone(),
-        email: signature.email.clone(),
-        time_seconds: signature.time_seconds,
-        timezone_offset_minutes: signature.timezone_offset_minutes,
-    }
+fn pending_inputs_match_participant(
+    pending: &super::PendingMergeAction,
+    participant: &MergeParticipantRecord,
+) -> bool {
+    pending.target_branch == participant.target_branch
+        && pending.before_commit == participant.before_commit
+        && pending.source_commit == participant.source_commit
+        && pending.commit_message == participant.commit_message
 }
 
 pub(crate) fn snapshot_status<B: GitBackend>(
@@ -1015,7 +1023,7 @@ fn compare_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{Git2Backend, GitBackend};
+    use crate::git::{Git2Backend, GitBackend, GitPreparedCommit, GitPreparedSignature};
     use crate::workspace_ops::merge::{
         PendingCommitSpec, PendingGitSignature, PendingMergeAction, PendingMergeActionKind,
         PendingMergeExpectedResult,
@@ -1711,7 +1719,7 @@ mod tests {
         record.expected_merge_head = Some(source.clone());
         record.pending_action.as_mut().unwrap().kind = PendingMergeActionKind::ResolveConflict;
         let prepared = backend
-            .prepare_merge_resolution_checked(&repo, &before, &source, None)
+            .prepare_merge_resolution_checked(&repo, "main", &before, &source, None)
             .unwrap();
         set_prepared_commit(&mut record, &prepared);
         assert_eq!(
@@ -1730,7 +1738,9 @@ mod tests {
         assert!(!observed.abort_eligibility.eligible);
 
         let committed = backend
-            .commit_prepared_merge_resolution_checked(&repo, &before, &source, message, &prepared)
+            .commit_prepared_merge_resolution_checked(
+                &repo, "main", &before, &source, message, &prepared,
+            )
             .unwrap();
         assert_eq!(
             reconcile_pending_action(&backend, &root, "mem_app", &record).unwrap(),
@@ -1738,6 +1748,81 @@ mod tests {
                 resulting_commit: committed.commit
             }
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_resolution_tree_change_is_ambiguous_without_mutation() {
+        let root = test_root("pending-resolution-tree-change");
+        let repo = root.join("repos/app");
+        let backend = Git2Backend::new();
+        backend.create_repo(&repo).unwrap();
+        commit(&repo, "conflict.txt", "base\n", "base");
+        run_git(&repo, &["branch", "feature"]);
+        run_git(&repo, &["checkout", "feature"]);
+        let source = commit(&repo, "conflict.txt", "source\n", "source");
+        run_git(&repo, &["checkout", "main"]);
+        let before = commit(&repo, "conflict.txt", "main\n", "main");
+        let conflict = backend
+            .prepare_merge_upstream_checked(&repo, "main", &before, &source, None)
+            .unwrap();
+        assert_eq!(conflict, crate::git::GitPreparedMerge::ExpectedConflict);
+        backend
+            .execute_prepared_merge_upstream_checked(
+                &repo,
+                "main",
+                &before,
+                &source,
+                "frozen resolution",
+                &conflict,
+            )
+            .unwrap();
+        fs::write(repo.join("conflict.txt"), "resolution A\n").unwrap();
+        run_git(&repo, &["add", "conflict.txt"]);
+        let prepared = backend
+            .prepare_merge_resolution_checked(&repo, "main", &before, &source, None)
+            .unwrap();
+        let mut record = pending_record(
+            ParticipantState::Conflicted,
+            &before,
+            &source,
+            "frozen resolution",
+            PendingMergeActionKind::ResolveConflict,
+        );
+        record.expected_merge_head = Some(source);
+        set_prepared_commit(&mut record, &prepared);
+
+        fs::write(repo.join("conflict.txt"), "resolution B\n").unwrap();
+        run_git(&repo, &["add", "conflict.txt"]);
+        let durable_before = record.clone();
+        let head_before = backend.head(&repo).unwrap();
+        let index_before = fs::read(repo.join(".git/index")).unwrap();
+        let worktree_before = fs::read(repo.join("conflict.txt")).unwrap();
+        let native_before = backend.merge_state(&repo).unwrap();
+        let status_before = backend.status(&repo).unwrap();
+
+        let reconciliation = reconcile_pending_action(&backend, &root, "mem_app", &record).unwrap();
+        let observed = observe_participant(&backend, &root, "mem_app", &record).unwrap();
+
+        assert!(matches!(
+            reconciliation,
+            PendingActionReconciliation::Ambiguous { .. }
+        ));
+        assert_eq!(
+            observed.pending_action.unwrap().state,
+            super::super::PendingActionObservationState::Ambiguous
+        );
+        assert!(!observed.continue_eligibility.eligible);
+        assert!(!observed.abort_eligibility.eligible);
+        assert_eq!(record, durable_before);
+        assert_eq!(backend.head(&repo).unwrap(), head_before);
+        assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+        assert_eq!(
+            fs::read(repo.join("conflict.txt")).unwrap(),
+            worktree_before
+        );
+        assert_eq!(backend.merge_state(&repo).unwrap(), native_before);
+        assert_eq!(backend.status(&repo).unwrap(), status_before);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1769,7 +1854,7 @@ mod tests {
         fs::write(repo.join("conflict.txt"), "resolved\n").unwrap();
         run_git(&repo, &["add", "conflict.txt"]);
         let prepared = backend
-            .prepare_merge_resolution_checked(&repo, &before, &source, None)
+            .prepare_merge_resolution_checked(&repo, "main", &before, &source, None)
             .unwrap();
         let candidate = alternate_merge_commit(
             &repo,

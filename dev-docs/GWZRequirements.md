@@ -666,7 +666,9 @@ identity again. Preparing this evidence MUST NOT move a ref, change HEAD, the
 on-disk index or worktree, or enter native integration state.
 After interruption it MUST classify the action as not started, exactly
 conflicted, exactly completed, or ambiguous before retrying, adopting, or
-rolling it back.
+rolling it back. A not-started action MUST retain and execute the existing
+durable intent; it MUST NOT clear that intent and prepare a replacement from
+later repository content, identity, or time.
 
 ### REQ-089F: Merge Lifecycle And Drift
 
@@ -713,6 +715,10 @@ branch, ref, parents, source, message, expected tree, frozen author and
 committer signatures, repository state, index, and worktree match the durable
 intent. A commit-producing pending action recorded without that evidence MUST
 be treated as ambiguous rather than accepted under an older, weaker matcher.
+An exactly not-started pending action MUST be executed from the same frozen
+result class, tree, and signatures. A resolved native merge whose current
+index tree differs from the durable intent MUST be ambiguous and mutation
+ineligible rather than re-prepared.
 Ambiguous mutation MUST remain recovery-required.
 Status MUST expose the pending action kind and its exact reconciliation class.
 An ambiguous action MUST also carry member-scoped
@@ -723,8 +729,10 @@ Python synchronous and submitted merge execution MUST publish one terminal
 operation result on success or failure. Failure MUST preserve the original
 typed and member-scoped error. JSONL merge output MUST stream operation events
 as they occur and then emit exactly one complete final response or structured
-error; completion MUST NOT become visible before the final event and successful
-typed response are available to readers.
+error. Every accepted merge invocation MUST emit exactly one operation start
+and finish event, including failures during context conversion and
+open-operation gating. Completion MUST NOT become visible before the final
+event and successful typed response are available to readers.
 
 ### REQ-089I: Coordinated Abort
 

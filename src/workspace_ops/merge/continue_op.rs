@@ -50,8 +50,10 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
 
     for (position, action) in actions.iter().enumerate() {
         emitter.member_started(&action.target_id, &action.path);
-        set_pending_action(&mut record, action)?;
-        super::persist_merge_record(store, root, &record, emitter)?;
+        if !action.durable {
+            set_pending_action(&mut record, action)?;
+            super::persist_merge_record(store, root, &record, emitter)?;
+        }
         let result = match action.kind {
             ContinueActionKind::Resolve => {
                 resolve_conflict(backend, root, &record, action, context)
@@ -68,6 +70,13 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
             }
             Err(error) => {
                 let contextual = error.with_member(&action.target_id, &action.path);
+                if action.durable {
+                    let participant = participant(&record, &action.target_id)?;
+                    emitter.merge_member_finished(
+                        participant.to_protocol(&action.target_id, &record.source_ref),
+                    );
+                    return Err(contextual);
+                }
                 apply_failure(&mut record, &action.target_id, &contextual)?;
                 super::persist_merge_record(store, root, &record, emitter)?;
                 super::emit_merge_member_finished(emitter, &record, &action.target_id)?;
@@ -119,6 +128,7 @@ struct ContinueAction {
     path: String,
     kind: ContinueActionKind,
     prepared: ContinuePrepared,
+    durable: bool,
 }
 
 enum ContinuePrepared {
@@ -140,15 +150,12 @@ fn reconcile_pending_actions<B: GitBackend, S: MergeStore>(
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<()> {
     let target_ids = record.selected_targets.clone();
-    let mut changed = false;
-    let mut reconciled = Vec::new();
-    let mut ambiguity = None;
+    let mut reconciliations = Vec::new();
     for target_id in target_ids {
         let participant = participant(record, &target_id)?;
         if participant.pending_action.is_none() {
             continue;
         }
-        emitter.member_started(&target_id, &participant.path);
         let result =
             super::status::reconcile_pending_action(backend, root, &target_id, participant)?;
         let reconciliation = match result {
@@ -162,35 +169,34 @@ fn reconcile_pending_actions<B: GitBackend, S: MergeStore>(
                 ReconciledPendingAction::Completed(resulting_commit)
             }
             super::status::PendingActionReconciliation::Ambiguous { reason, .. } => {
-                ambiguity
-                    .get_or_insert_with(|| (target_id.clone(), participant.path.clone(), reason));
-                continue;
+                return Err(ModelError::new(
+                    ErrorCode::MergeRecoveryRequired,
+                    format!("pending merge action is ambiguous: {reason}"),
+                )
+                .with_member(&target_id, &participant.path));
             }
         };
-        apply_reconciled_pending(record, &target_id, reconciliation)?;
-        reconciled.push(target_id.clone());
-        changed = true;
+        reconciliations.push((target_id, participant.path.clone(), reconciliation));
     }
-    if let Some((target_id, path, reason)) = ambiguity {
-        if record.state != OperationState::RecoveryRequired {
-            record.state = record.state.transition(OperationState::RecoveryRequired)?;
-            changed = true;
-        }
-        if changed {
-            super::persist_merge_record(store, root, record, emitter)?;
-            for target_id in &reconciled {
-                super::emit_merge_member_finished(emitter, record, target_id)?;
-            }
-        }
-        return Err(ModelError::new(
-            ErrorCode::MergeRecoveryRequired,
-            format!("pending merge action is ambiguous: {reason}"),
-        )
-        .with_member(&target_id, &path));
+
+    let adopted = reconciliations
+        .iter()
+        .filter(|(_, _, reconciliation)| {
+            !matches!(reconciliation, ReconciledPendingAction::NotStarted)
+        })
+        .map(|(target_id, path, _)| (target_id.clone(), path.clone()))
+        .collect::<Vec<_>>();
+    for (target_id, path) in &adopted {
+        emitter.member_started(target_id, path);
     }
-    if changed {
+    for (target_id, _, reconciliation) in reconciliations {
+        if !matches!(reconciliation, ReconciledPendingAction::NotStarted) {
+            apply_reconciled_pending(record, &target_id, reconciliation)?;
+        }
+    }
+    if !adopted.is_empty() {
         super::persist_merge_record(store, root, record, emitter)?;
-        for target_id in &reconciled {
+        for (target_id, _) in &adopted {
             super::emit_merge_member_finished(emitter, record, target_id)?;
         }
     }
@@ -215,12 +221,7 @@ fn apply_reconciled_pending(
             .with_member(target_id, &participant.path)
         })?;
     match reconciliation {
-        ReconciledPendingAction::NotStarted => {
-            let participant = participant_mut(record, target_id)?;
-            participant.pending_action = None;
-            participant.error = None;
-            Ok(())
-        }
+        ReconciledPendingAction::NotStarted => Ok(()),
         ReconciledPendingAction::ExpectedConflict(paths) => {
             if pending.kind != PendingMergeActionKind::TrueMerge {
                 return Err(invariant(
@@ -375,6 +376,23 @@ fn preflight<B: GitBackend>(
             return Err(ModelError::new(ErrorCode::MergeDrift, reason)
                 .with_member(target_id, &participant.path));
         }
+        if let Some(pending) = participant.pending_action.as_ref() {
+            let prepared =
+                super::pending::decode_durable_prepared_action(pending).map_err(|reason| {
+                    ModelError::new(ErrorCode::MergeRecoveryRequired, reason)
+                        .with_member(target_id, &participant.path)
+                })?;
+            let (kind, prepared) = durable_continue_action(participant, prepared)
+                .map_err(|error| error.with_member(target_id, &participant.path))?;
+            actions.push(ContinueAction {
+                target_id: target_id.clone(),
+                path: participant.path.clone(),
+                kind,
+                prepared,
+                durable: true,
+            });
+            continue;
+        }
         match participant.state {
             ParticipantState::Conflicted => {
                 let merge_head = participant
@@ -384,6 +402,7 @@ fn preflight<B: GitBackend>(
                 let prepared = backend
                     .prepare_merge_resolution_checked(
                         &root.join(&participant.path),
+                        &participant.target_branch,
                         &participant.before_commit,
                         merge_head,
                         attribution,
@@ -394,6 +413,7 @@ fn preflight<B: GitBackend>(
                     path: participant.path.clone(),
                     kind: ContinueActionKind::Resolve,
                     prepared: ContinuePrepared::Resolution(prepared),
+                    durable: false,
                 });
             }
             ParticipantState::Planned
@@ -442,6 +462,7 @@ fn preflight<B: GitBackend>(
                             )
                             .map_err(|error| error.with_member(target_id, &participant.path))?,
                     ),
+                    durable: false,
                 });
             }
             ParticipantState::UpToDate
@@ -454,6 +475,40 @@ fn preflight<B: GitBackend>(
         }
     }
     Ok(actions)
+}
+
+fn durable_continue_action(
+    participant: &MergeParticipantRecord,
+    prepared: super::pending::DurablePreparedAction,
+) -> ModelResult<(ContinueActionKind, ContinuePrepared)> {
+    match (participant.state, prepared) {
+        (
+            ParticipantState::Conflicted,
+            super::pending::DurablePreparedAction::Resolution(prepared),
+        ) => Ok((
+            ContinueActionKind::Resolve,
+            ContinuePrepared::Resolution(prepared),
+        )),
+        (
+            ParticipantState::Planned | ParticipantState::Failed | ParticipantState::Unattempted,
+            super::pending::DurablePreparedAction::Merge(prepared),
+        ) => {
+            let kind = match prepared {
+                GitPreparedMerge::Unchanged => GitMergeAnalysisKind::UpToDate,
+                GitPreparedMerge::FastForward => GitMergeAnalysisKind::FastForward,
+                GitPreparedMerge::ExpectedConflict | GitPreparedMerge::Commit(_) => {
+                    GitMergeAnalysisKind::TrueMerge
+                }
+            };
+            Ok((
+                ContinueActionKind::Retry(kind),
+                ContinuePrepared::Merge(prepared),
+            ))
+        }
+        _ => Err(invariant(
+            "pending action kind does not match the participant recovery state",
+        )),
+    }
 }
 
 fn resolve_conflict<B: GitBackend>(
@@ -473,6 +528,7 @@ fn resolve_conflict<B: GitBackend>(
     };
     let commit = backend.commit_prepared_merge_resolution_checked(
         &root.join(&participant.path),
+        &participant.target_branch,
         &participant.before_commit,
         merge_head,
         &participant.commit_message,
@@ -791,6 +847,7 @@ mod tests {
             path: "repos/app".to_owned(),
             kind: ContinueActionKind::Retry(GitMergeAnalysisKind::FastForward),
             prepared: ContinuePrepared::Merge(GitPreparedMerge::FastForward),
+            durable: false,
         };
 
         set_pending_action(&mut record, &action).unwrap();

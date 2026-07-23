@@ -1,9 +1,8 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-19; second M2a remediation implemented and
-locally verified, independent re-review pending). Owner: Gianni. The next
-shared implementation wave after the re-review is M2b finalization and
-evidence.
+Status: **active** (revised 2026-07-23; M2a remediation complete after the full
+local gate and two independent final reviews passed). Owner: Gianni. The next
+shared implementation wave is M2b finalization and evidence.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -878,12 +877,15 @@ coherent workspace composition.
 
 ### M2a review remediation checkpoint
 
-Status: **second remediation implemented and locally verified; independent
-re-review pending** (2026-07-19). The integrated gate passes with 648 Rust
-tests (plus 1 ignored) and 286 Python tests. The actual Rust and Python CLIs are
-also compared semantically across the eight required JSONL lifecycle and
-failure scenarios. The exact evidence is recorded in
-`../../dev-docs/GwzDevCodeM2a-RemPlan-2.md`.
+Status: **complete; M2b shared integration unblocked** (2026-07-23). The final
+snapshot passes 666 Rust tests (plus 1 ignored) and 314 Python tests with all
+strict format, Clippy, generated-artifact, documentation, Bazel, and
+diff-hygiene gates green. Preparation, status, and checked resolution
+execution share exact durable target-branch, native-state, tree, and signature
+validation, and execution consumes the existing tree without recreating it.
+`GwzDevCodeM2a-Review56-6.md` and `GwzDevCodeM2a-ReviewF5-6.md` independently
+report zero P0/P1/P2/P3 findings. The complete evidence is recorded in
+`../../dev-docs/GwzDevCodeM2a-RemPlan-3.md`.
 
 The independent M2a reviews found high-fan-out recovery defects that must be
 corrected before shared M2b integration:
@@ -902,17 +904,17 @@ corrected before shared M2b integration:
 
 The first remediation's additive record, backend, classifier, gate,
 transition, event, and attribution interfaces remain the baseline. The second
-remediation strengthens commit-producing action evidence with exact tree and
-resolved-signature identity, applies the merge-start gate to dry-run, completes
-the Python native operation exactly once on failure, and implements actual
-Python merge JSONL streaming. Its final external condition is a fresh
-independent re-review reporting no P0/P1/P2 defect in the corrected contracts.
+remediation strengthened commit-producing evidence, merge-start gating, native
+completion, and Python JSONL streaming. The third remediation closes the
+remaining crash boundary by retaining and executing an exact not-started
+durable action instead of re-preparing it, and moves lifecycle ownership
+outside fallible context conversion and open-operation gating.
 
 M2b-A1 marker-model work and isolated M2b-B scoped-commit experiments may
 continue off the integration path. M2b-A2 finalization, M2b-C driver/event
 completion, and the first public member-merge release gate remain blocked until
 the remediation exit criteria in
-`../../dev-docs/GwzDevCodeM2a-RemPlan-2.md` pass.
+`../../dev-docs/GwzDevCodeM2a-RemPlan-3.md` pass.
 
 ## 10. Wave M2b — finalization and evidence
 
