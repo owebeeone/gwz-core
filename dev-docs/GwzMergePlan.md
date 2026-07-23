@@ -1,8 +1,9 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-23; M2a remediation complete after the full
-local gate and two independent final reviews passed). Owner: Gianni. The next
-shared implementation wave is M2b finalization and evidence.
+Status: **active** (revised 2026-07-23; M2b and the first public member-merge
+release gate are complete). Owner: Gianni. The next implementation decision is
+whether to take explicit workspace-root participation in M2c before the M3
+preservation and cleanup increment.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -910,18 +911,45 @@ remaining crash boundary by retaining and executing an exact not-started
 durable action instead of re-preparing it, and moves lifecycle ownership
 outside fallible context conversion and open-operation gating.
 
-M2b-A1 marker-model work and isolated M2b-B scoped-commit experiments may
-continue off the integration path. M2b-A2 finalization, M2b-C driver/event
-completion, and the first public member-merge release gate remain blocked until
-the remediation exit criteria in
-`../../dev-docs/GwzDevCodeM2a-RemPlan-3.md` pass.
+The remediation exit criteria in
+`../../dev-docs/GwzDevCodeM2a-RemPlan-3.md` have passed. M2b-A1, M2b-B, and
+their shared integration path are unblocked. M2b-A2 starts after the A1
+conversion contract is implemented and verified; M2b-C starts after the
+finalization response and event contracts are frozen.
 
 ## 10. Wave M2b — finalization and evidence
 
 Goal: publish one coherent workspace composition after successful participant
 merges and make every publication step idempotently recoverable.
 
+### M2b-I0 — Finalization interface checkpoint
+
+Status: **complete; A1 and B unblocked in parallel** (2026-07-23).
+
+The lead owns the shared module wiring and freezes these boundaries before
+parallel implementation:
+
+- `marker_merge_from_verified(record, verified_results)` is a pure conversion.
+  Its input is a complete set of participant branches and commits already
+  re-observed by finalization. It compares those values with the durable record
+  and produces the optional marker `merge` section without Git or filesystem
+  I/O. The containing root commit remains the composition-commit identity.
+- `GitBackend::commit_gwz_paths_checked` accepts unique normalized candidate
+  files below `gwz.conf/`, an expected root HEAD (or an unborn-root
+  expectation), and the exact message. It constructs and commits a candidate
+  tree without consuming the user's index or worktree and returns the commit,
+  tree, and sorted candidate hashes after a checked attached-ref update.
+- publication progress remains the durable hand-off to A2. A2 may extend it
+  additively with candidate hashes and verification data, but it does not
+  change either A1 or B's frozen request/result contracts.
+
+A1 exclusively owns marker validation/conversion files. B exclusively owns
+the Git backend implementation and its focused primitive tests. A2 does not
+start until A1 passes its focused gate.
+
 ### M2b-A1 — Merge-marker model and conversion
+
+Status: **complete; A2 conversion dependency satisfied** (2026-07-23).
 
 Owner: marker agent. Budget: at most 300 handwritten changed lines.
 
@@ -940,6 +968,8 @@ Work:
 - test schema compatibility and exact before/source/result evidence.
 
 ### M2b-A2 — Candidate composition and publication state machine
+
+Status: **complete** (2026-07-23).
 
 Owner: finalization agent after M2b-A1's conversion interface is frozen.
 Budget: at most 500 handwritten changed lines.
@@ -964,7 +994,18 @@ Work:
 - resume from every injected crash point without a second evidence commit;
 - archive only after all postconditions are verified.
 
+The completed implementation durably prepares and hashes the candidate lock,
+merge marker, and local boundary; creates or recovers one checked root
+composition commit; publishes and verifies the accepted artifacts; and
+archives only after the complete postcondition passes. Focused real-Git tests
+cover all-up-to-date no-op completion, born and unborn roots, unrelated staged,
+dirty, and untracked root work, late participant drift, evidence-aware abort,
+and each required interruption point. Status is read-only at every resting
+point and continue resumes without a duplicate evidence commit.
+
 ### M2b-B — Scoped root commit primitive
+
+Status: **complete** (2026-07-23).
 
 Owner: Git backend agent. Budget: at most 450 handwritten changed lines.
 
@@ -979,7 +1020,21 @@ Work:
 - add tests for concurrent ref movement, unrelated staged/dirty files, unborn
   root, and repeat verification.
 
+### M2b A1/B integration checkpoint
+
+Status: **complete; M2b-A2 unblocked** (2026-07-23).
+
+The combined implementation passes 675 Rust workspace test executions with one
+ignored test and no failures. Workspace-wide formatting and strict Clippy pass.
+The focused evidence covers additive old-marker compatibility, exact
+before/source/result conversion, root-result evidence without a composition
+self-reference, unrelated root index/worktree preservation, born and unborn
+roots, invalid candidate paths, stale expectations, and deterministic
+concurrent root-ref movement.
+
 ### M2b-C — Driver and event completion
+
+Status: **complete** (2026-07-23).
 
 Owner: driver/parity agent. Budget: at most 400 handwritten changed lines.
 
@@ -991,7 +1046,18 @@ Work:
 - add JSON/JSONL fields and event parity checks;
 - update command docs and recovery examples.
 
+Rust and Python now publicly expose `merge --status`, `merge --continue`, and
+`merge --abort`; both render the current publication step and the same recovery
+guidance. The generated Rust reference and user-facing merge/machine-output
+documentation describe the released member-only lifecycle without internal
+milestone terminology. The real-driver parity matrix covers dry-run, clean
+completion, conflict, status, continue, recovery rejection, abort, and
+preflight failure.
+
 ### M2b integration gate
+
+Status: **complete; first public member-merge release gate passed**
+(2026-07-23).
 
 Required fault points include:
 
@@ -1004,6 +1070,15 @@ Required fault points include:
 
 At each point, status must explain the state, continue must resume
 idempotently, and abort must account for any recorded evidence commit.
+
+The integrated gate passes 681 Rust test executions (680 passed, one ignored)
+and 314 Python tests with no failures. Workspace formatting, strict Clippy,
+generated Rust CLI reference, Rust/Python protocol generation checks, and the
+native-extension freshness build all pass. The six finalization fault points
+are exercised against the durable filesystem store and real Git backend;
+additional drift tests cover candidate-artifact deletion and a same-commit
+workspace-root branch switch without allowing continue or abort to overwrite
+the changed state.
 
 ### First public member-merge release gate
 

@@ -399,6 +399,10 @@ mod tests {
             candidate_marker_path: None,
             root_merge_commit: None,
             composition_commit: None,
+            composition_tree: None,
+            candidate_hashes: Vec::new(),
+            candidate: None,
+            evidence_rolled_back: false,
         });
         store.write_open(&temp.path, &expected).unwrap();
         assert_eq!(store.load(&temp.path, "merge_1").unwrap(), expected);

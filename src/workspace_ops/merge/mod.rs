@@ -1,5 +1,8 @@
 mod abort;
 mod continue_op;
+mod finalize;
+#[allow(dead_code)] // Frozen M2b-A1 interface; consumed by finalization in M2b-A2.
+pub(crate) mod marker;
 mod model;
 mod pending;
 mod plan;
@@ -717,7 +720,7 @@ participants: {{}}
         let response =
             handle_merge_with_events(&backend, root.path(), start, "op_success", &sink).unwrap();
 
-        assert_eq!(response.state, crate::MergeOperationState::Finalizing);
+        assert_eq!(response.state, crate::MergeOperationState::Completed);
         let events = sink.0.lock().unwrap();
         assert_eq!(
             events.first().map(|event| event.kind),

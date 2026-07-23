@@ -216,6 +216,7 @@ mod tests {
             selected_targets: vec!["mem_app".to_owned()],
             committed_targets: vec!["mem_app".to_owned()],
             members: [("mem_app".to_owned(), resolved(commit))].into(),
+            merge: None,
         }
     }
 

@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 
+mod merge_marker;
+
+pub use merge_marker::{
+    MarkerMergeArtifact, MarkerMergeParticipantArtifact, MarkerMergeTargetKind,
+};
+
 pub const WORKSPACE_SCHEMA: &str = "gwz.workspace/v0";
 pub const LOCK_SCHEMA: &str = "gwz.lock/v0";
 pub const SNAPSHOT_SCHEMA: &str = "gwz.snapshot/v0";
@@ -257,6 +263,8 @@ pub struct MarkerArtifact {
     pub selected_targets: Vec<String>,
     pub committed_targets: Vec<String>,
     pub members: BTreeMap<String, ResolvedMemberArtifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge: Option<MarkerMergeArtifact>,
 }
 
 impl MarkerArtifact {
@@ -284,6 +292,14 @@ impl MarkerArtifact {
         }
         for target in &self.committed_targets {
             validate_target_ref("committed target", target)?;
+        }
+        if let Some(merge) = &self.merge {
+            if merge.selected_targets != self.selected_targets {
+                return Err(invalid(
+                    "marker selected_targets must match merge selected_targets",
+                ));
+            }
+            merge.validate()?;
         }
         validate_member_record(&self.created_at, &self.created_by, &[], &self.members)
     }
@@ -713,6 +729,34 @@ mod tests {
     }
 
     #[test]
+    fn marker_merge_targets_must_match_outer_marker_targets() {
+        let mut marker = sample_marker();
+        marker.merge = Some(MarkerMergeArtifact {
+            merge_id: "merge_1".to_owned(),
+            operation_id: "op_1".to_owned(),
+            source_ref: "feature/x".to_owned(),
+            selected_targets: vec!["mem_01".to_owned()],
+            participants: [(
+                "mem_01".to_owned(),
+                MarkerMergeParticipantArtifact {
+                    target_kind: MarkerMergeTargetKind::Member,
+                    target_branch: "main".to_owned(),
+                    before_commit: "before".to_owned(),
+                    source_commit: "source".to_owned(),
+                    resulting_commit: "result".to_owned(),
+                },
+            )]
+            .into(),
+            root_merge_commit: None,
+        });
+
+        assert_eq!(
+            marker.validate().unwrap_err().code,
+            ErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
     fn unsupported_major_schema_versions_fail_with_typed_error() {
         let manifest = MANIFEST_GOLDEN.replace("gwz.workspace/v0", "gwz.workspace/v1");
         let lock = LOCK_GOLDEN.replacen("gwz.lock/v0", "gwz.lock/v1", 1);
@@ -950,6 +994,7 @@ mod tests {
             selected_targets: vec!["@root".to_owned(), "mem_01".to_owned()],
             committed_targets: vec!["mem_01".to_owned(), "@root".to_owned()],
             members: [("mem_01".to_owned(), sample_short_member())].into(),
+            merge: None,
         }
     }
 

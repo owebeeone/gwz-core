@@ -77,6 +77,13 @@ where
     };
     if next == OperationState::Finalizing {
         super::enter_finalizing(store, root, &mut record, emitter)?;
+        let completed =
+            super::finalize::finalize(backend, store, root, &mut record, context, emitter)?;
+        if !completed {
+            let response = super::status::snapshot_status(backend, root, record.clone())?
+                .to_response(context)?;
+            return decorate_start_response(response, &plan.participants);
+        }
     } else {
         super::persist_operation_transition(store, root, &mut record, next, emitter)?;
     }
@@ -372,7 +379,13 @@ fn start_response(
     plan: &[MergeParticipantPlan],
     context: &OperationContext,
 ) -> ModelResult<crate::MergeResponse> {
-    let mut response = record.to_response(context)?;
+    decorate_start_response(record.to_response(context)?, plan)
+}
+
+fn decorate_start_response(
+    mut response: crate::MergeResponse,
+    plan: &[MergeParticipantPlan],
+) -> ModelResult<crate::MergeResponse> {
     for (repo, participant) in response.repos.iter_mut().zip(plan) {
         repo.predicted = participant.analysis;
         repo.prediction_complete = Some(participant.prediction_complete);
@@ -900,6 +913,10 @@ mod tests {
                 .unwrap()
                 .push(format!("write:{:?}", record.state));
             self.records.lock().unwrap().push(record.clone());
+            Ok(())
+        }
+
+        fn archive(&self, _root: &Path, _merge_id: &str) -> ModelResult<()> {
             Ok(())
         }
     }

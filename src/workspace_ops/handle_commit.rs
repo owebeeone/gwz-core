@@ -195,6 +195,7 @@ where
                 selected_targets: selected_marker_targets(&selected, commit_root_selected),
                 committed_targets,
                 members: full_members,
+                merge: None,
             },
         )?;
         // Refresh the boundary excludes + stage gwz.conf so the lock update and marker
@@ -278,7 +279,7 @@ fn root_origin_url_hash<B: GitBackend>(backend: &B, root: &Path) -> ModelResult<
         }))
 }
 
-fn new_uuid_v7() -> ModelResult<String> {
+pub(crate) fn new_uuid_v7() -> ModelResult<String> {
     let timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {

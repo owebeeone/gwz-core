@@ -32,7 +32,8 @@ pub(crate) fn plan_merge<B: GitBackend>(
             "workspace manifest and lock identify different workspaces",
         ));
     }
-    build_merge_plan(
+    let root_head = backend.head(root)?;
+    let plan = build_merge_plan(
         &BackendPlanningView(backend),
         root,
         request,
@@ -41,10 +42,24 @@ pub(crate) fn plan_merge<B: GitBackend>(
         MergeBaseline {
             lock_sha256: file_sha256(&root.join(artifact::LOCK_PATH))?,
             manifest_sha256: file_sha256(&root.join(WORKSPACE_MANIFEST))?,
-            root_head: None,
+            root_head: root_head.commit.clone(),
+            root_branch: root_head.branch.clone(),
             extensions: Default::default(),
         },
-    )
+    )?;
+    if plan
+        .participants
+        .iter()
+        .any(|participant| participant.analysis != Some(crate::MergeAnalysisKind::UpToDate))
+        && (root_head.is_detached || root_head.branch.is_none())
+    {
+        return Err(ModelError::new(
+            ErrorCode::BranchDetachedHead,
+            "workspace root must be on an attached branch to publish merge evidence",
+        )
+        .with_member("@root", "."));
+    }
+    Ok(plan)
 }
 
 trait PlanningBackend {
@@ -417,6 +432,7 @@ mod tests {
                 lock_sha256: "lock".into(),
                 manifest_sha256: "manifest".into(),
                 root_head: None,
+                root_branch: None,
                 extensions: Default::default(),
             },
         )

@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 
+use sha2::{Digest, Sha256};
+
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::*;
@@ -210,6 +212,16 @@ pub trait GitBackend {
     ) -> ModelResult<GitUpdateResult> {
         unsupported_backend("set_branch_target_checked")
     }
+    /// Delete an attached branch only when it still equals `expected_current`,
+    /// leaving symbolic HEAD attached to the now-unborn branch.
+    fn delete_branch_target_checked(
+        &self,
+        _path: &Path,
+        _branch: &str,
+        _expected_current: &str,
+    ) -> ModelResult<()> {
+        unsupported_backend("delete_branch_target_checked")
+    }
     /// Create and verify an exact local preservation ref.
     fn create_backup_ref(
         &self,
@@ -229,8 +241,14 @@ pub trait GitBackend {
         unsupported_backend("stash_for_merge_preservation")
     }
     /// Commit only the supplied GWZ-owned candidate files through an isolated
-    /// index and checked root ref update. `expected_head=None` means the root
-    /// ref must be unborn and the first tree contains only candidate files.
+    /// index and checked attached-root-ref update.
+    ///
+    /// Candidate paths must be unique, normalized repository-relative files
+    /// below `gwz.conf/`. The candidate tree starts from `expected_head`, or
+    /// from an empty tree when `expected_head=None` requires an unborn ref.
+    /// The real index and worktree are never read as candidate content and are
+    /// left byte-for-byte unchanged. The returned candidate hashes are sorted
+    /// by path and cover every supplied file for later recovery verification.
     fn commit_gwz_paths_checked(
         &self,
         _root: &Path,
@@ -239,6 +257,18 @@ pub trait GitBackend {
         _message: &str,
     ) -> ModelResult<GitScopedCommitResult> {
         unsupported_backend("commit_gwz_paths_checked")
+    }
+    /// Verify and recover an already-published scoped commit from its exact
+    /// parent, message, candidate paths, and candidate bytes.
+    fn verify_gwz_paths_commit(
+        &self,
+        _root: &Path,
+        _commit: &str,
+        _expected_parent: Option<&str>,
+        _candidate_files: &[GitCandidateFile],
+        _message: &str,
+    ) -> ModelResult<GitScopedCommitResult> {
+        unsupported_backend("verify_gwz_paths_commit")
     }
     /// Integrate `upstream_ref` into `branch` by **rebase** (porcelain `git rebase`):
     /// replay the branch's commits onto the upstream tip. Fast-forwards when strictly
@@ -561,12 +591,24 @@ impl Git2Backend {
             );
         });
     }
+
+    #[cfg(test)]
+    pub(crate) fn before_next_scoped_commit_ref_lock(callback: impl FnOnce() + 'static) {
+        BEFORE_SCOPED_COMMIT_REF_LOCK.with(|slot| {
+            assert!(
+                slot.borrow_mut().replace(Box::new(callback)).is_none(),
+                "a scoped-commit callback is already installed"
+            );
+        });
+    }
 }
 
 #[cfg(test)]
 thread_local! {
     static PREPARATION_CALL_COUNT: Cell<usize> = const { Cell::new(0) };
     static BEFORE_PREPARED_EXECUTION: RefCell<Option<Box<dyn FnOnce()>>> =
+        const { RefCell::new(None) };
+    static BEFORE_SCOPED_COMMIT_REF_LOCK: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
 }
 
@@ -587,6 +629,16 @@ fn run_before_prepared_execution() {
 
 #[cfg(not(test))]
 fn run_before_prepared_execution() {}
+
+#[cfg(test)]
+fn run_before_scoped_commit_ref_lock() {
+    if let Some(callback) = BEFORE_SCOPED_COMMIT_REF_LOCK.with(|slot| slot.borrow_mut().take()) {
+        callback();
+    }
+}
+
+#[cfg(not(test))]
+fn run_before_scoped_commit_ref_lock() {}
 
 impl Default for Git2Backend {
     fn default() -> Self {
@@ -1597,6 +1649,184 @@ impl GitBackend for Git2Backend {
         })
     }
 
+    fn delete_branch_target_checked(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_current: &str,
+    ) -> ModelResult<()> {
+        let repo = open_repo(path)?;
+        let expected = parse_existing_commit(&repo, expected_current)?;
+        let ref_name = branch_ref_name(branch);
+        if scoped_attached_head_ref(&repo)? != ref_name {
+            return Err(recovery_drift(
+                "checked branch deletion requires the attached target branch",
+            ));
+        }
+        let mut transaction = repo.transaction().map_err(git_error)?;
+        transaction.lock_ref("HEAD").map_err(git_error)?;
+        transaction.lock_ref(&ref_name).map_err(git_error)?;
+        validate_scoped_expected_head(&repo, &ref_name, Some(expected))?;
+        transaction.remove(&ref_name).map_err(git_error)?;
+        transaction.commit().map_err(git_error)?;
+        let head = self.head(path)?;
+        if head.branch.as_deref() != Some(branch) || head.commit.is_some() || head.is_detached {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "checked branch deletion did not leave the expected unborn branch",
+            ));
+        }
+        Ok(())
+    }
+
+    fn commit_gwz_paths_checked(
+        &self,
+        root: &Path,
+        expected_head: Option<&str>,
+        candidate_files: &[GitCandidateFile],
+        message: &str,
+    ) -> ModelResult<GitScopedCommitResult> {
+        let candidates = validate_scoped_candidates(candidate_files, message)?;
+        let repo = open_repo(root)?;
+        let ref_name = scoped_attached_head_ref(&repo)?;
+        let expected = expected_head
+            .map(|value| parse_existing_commit(&repo, value))
+            .transpose()?;
+        validate_scoped_expected_head(&repo, &ref_name, expected)?;
+
+        let parent = expected
+            .map(|oid| repo.find_commit(oid).map_err(git_error))
+            .transpose()?;
+        let parent_tree = parent
+            .as_ref()
+            .map(|commit| commit.tree().map_err(git_error))
+            .transpose()?;
+        let mut index = git2::Index::new().map_err(git_error)?;
+        if let Some(tree) = parent_tree.as_ref() {
+            index.read_tree(tree).map_err(git_error)?;
+        }
+
+        let mut candidate_hashes = Vec::with_capacity(candidates.len());
+        for candidate in &candidates {
+            let blob = repo.blob(&candidate.bytes).map_err(git_error)?;
+            let file_size = u32::try_from(candidate.bytes.len()).map_err(|_| {
+                ModelError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "candidate '{}' is too large for a Git blob entry",
+                        candidate.path
+                    ),
+                )
+            })?;
+            index
+                .add(&git2::IndexEntry {
+                    ctime: git2::IndexTime::new(0, 0),
+                    mtime: git2::IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: 0o100644,
+                    uid: 0,
+                    gid: 0,
+                    file_size,
+                    id: blob,
+                    flags: 0,
+                    flags_extended: 0,
+                    path: candidate.path.as_bytes().to_vec(),
+                })
+                .map_err(git_error)?;
+            candidate_hashes.push(GitCandidateHash {
+                path: candidate.path.clone(),
+                sha256: format!("{:x}", Sha256::digest(&candidate.bytes)),
+            });
+        }
+        let tree_oid = index.write_tree_to(&repo).map_err(git_error)?;
+        let tree = repo.find_tree(tree_oid).map_err(git_error)?;
+        verify_scoped_candidate_tree(&repo, parent_tree.as_ref(), &tree, &candidates)?;
+
+        run_before_scoped_commit_ref_lock();
+        let mut transaction = repo.transaction().map_err(git_error)?;
+        transaction.lock_ref("HEAD").map_err(git_error)?;
+        transaction.lock_ref(&ref_name).map_err(git_error)?;
+        if scoped_attached_head_ref(&repo)? != ref_name {
+            return Err(recovery_drift(
+                "workspace root HEAD changed before scoped commit publication",
+            ));
+        }
+        validate_scoped_expected_head(&repo, &ref_name, expected)?;
+
+        let signature = repo.signature().map_err(git_error)?;
+        let parents = parent.iter().collect::<Vec<_>>();
+        let commit_oid = repo
+            .commit(None, &signature, &signature, message, &tree, &parents)
+            .map_err(git_error)?;
+        verify_scoped_commit_object(&repo, commit_oid, expected, tree_oid, message, &signature)?;
+        transaction
+            .set_target(
+                &ref_name,
+                commit_oid,
+                Some(&signature),
+                "gwz merge composition",
+            )
+            .map_err(git_error)?;
+        transaction.commit().map_err(git_error)?;
+        verify_scoped_commit_publication(&repo, &ref_name, commit_oid, tree_oid, &candidates)?;
+
+        Ok(GitScopedCommitResult {
+            commit: commit_oid.to_string(),
+            tree: tree_oid.to_string(),
+            candidate_hashes,
+        })
+    }
+
+    fn verify_gwz_paths_commit(
+        &self,
+        root: &Path,
+        commit: &str,
+        expected_parent: Option<&str>,
+        candidate_files: &[GitCandidateFile],
+        message: &str,
+    ) -> ModelResult<GitScopedCommitResult> {
+        let candidates = validate_scoped_candidates(candidate_files, message)?;
+        let repo = open_repo(root)?;
+        let commit_oid = parse_existing_commit(&repo, commit)?;
+        let expected = expected_parent
+            .map(|value| parse_existing_commit(&repo, value))
+            .transpose()?;
+        let published = repo.find_commit(commit_oid).map_err(git_error)?;
+        let parents_match = match expected {
+            Some(parent) => published.parent_count() == 1 && published.parent_id(0) == Ok(parent),
+            None => published.parent_count() == 0,
+        };
+        if !parents_match || published.message_bytes() != message.as_bytes() {
+            return Err(recovery_drift(
+                "root HEAD is not the recorded merge composition commit",
+            ));
+        }
+        let parent_tree = expected
+            .map(|parent| {
+                repo.find_commit(parent)
+                    .and_then(|commit| commit.tree())
+                    .map_err(git_error)
+            })
+            .transpose()?;
+        let tree = published.tree().map_err(git_error)?;
+        verify_scoped_candidate_tree(&repo, parent_tree.as_ref(), &tree, &candidates)
+            .map_err(|_| recovery_drift("root composition candidate tree changed"))?;
+        let ref_name = scoped_attached_head_ref(&repo)?;
+        validate_scoped_expected_head(&repo, &ref_name, Some(commit_oid))?;
+        Ok(GitScopedCommitResult {
+            commit: commit_oid.to_string(),
+            tree: tree.id().to_string(),
+            candidate_hashes: candidates
+                .iter()
+                .map(|candidate| GitCandidateHash {
+                    path: candidate.path.clone(),
+                    sha256: format!("{:x}", Sha256::digest(&candidate.bytes)),
+                })
+                .collect(),
+        })
+    }
+
     fn rebase_onto(
         &self,
         path: &Path,
@@ -2549,6 +2779,218 @@ fn attached_head_ref(repo: &git2::Repository) -> ModelResult<String> {
     }
     let name = head.name().map_err(git_error)?;
     Ok(name.to_owned())
+}
+
+fn validate_scoped_candidates<'a>(
+    candidate_files: &'a [GitCandidateFile],
+    message: &str,
+) -> ModelResult<Vec<&'a GitCandidateFile>> {
+    if candidate_files.is_empty() {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "scoped root commit requires at least one candidate file",
+        ));
+    }
+    if message.contains('\0') {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "scoped root commit message contains a NUL byte",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for candidate in candidate_files {
+        let path = Path::new(&candidate.path);
+        let components = path
+            .components()
+            .map(|component| match component {
+                std::path::Component::Normal(value) => value.to_str(),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| invalid_scoped_path(&candidate.path))?;
+        if path.is_absolute()
+            || components.len() < 2
+            || components[0] != "gwz.conf"
+            || components.contains(&".git")
+            || components.join("/") != candidate.path
+        {
+            return Err(invalid_scoped_path(&candidate.path));
+        }
+        if !seen.insert(candidate.path.as_str()) {
+            return Err(ModelError::new(
+                ErrorCode::InvalidRequest,
+                format!("duplicate scoped root candidate path '{}'", candidate.path),
+            ));
+        }
+    }
+    let mut candidates = candidate_files.iter().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(candidates)
+}
+
+fn invalid_scoped_path(path: &str) -> ModelError {
+    ModelError::new(
+        ErrorCode::InvalidRequest,
+        format!(
+            "candidate path '{path}' must be a normalized repository-relative file below gwz.conf/"
+        ),
+    )
+}
+
+fn scoped_attached_head_ref(repo: &git2::Repository) -> ModelResult<String> {
+    let head = repo.find_reference("HEAD").map_err(git_error)?;
+    let Some(target) = head.symbolic_target().map_err(git_error)? else {
+        return Err(recovery_drift(
+            "scoped root commit requires an attached local branch",
+        ));
+    };
+    if target
+        .strip_prefix("refs/heads/")
+        .is_none_or(|branch| branch.is_empty())
+    {
+        return Err(recovery_drift(
+            "scoped root commit requires an attached local branch",
+        ));
+    }
+    Ok(target.to_owned())
+}
+
+fn validate_scoped_expected_head(
+    repo: &git2::Repository,
+    ref_name: &str,
+    expected: Option<git2::Oid>,
+) -> ModelResult<()> {
+    match (repo.find_reference(ref_name), expected) {
+        (Ok(reference), Some(expected)) => {
+            let observed = reference.peel_to_commit().map_err(git_error)?.id();
+            if observed != expected {
+                return Err(recovery_drift(format!(
+                    "workspace root changed before scoped commit; expected {expected}, observed {observed}"
+                )));
+            }
+            Ok(())
+        }
+        (Err(error), None) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+        (Ok(reference), None) => {
+            let observed = reference.peel_to_commit().map_err(git_error)?.id();
+            Err(recovery_drift(format!(
+                "workspace root was expected to be unborn, observed {observed}"
+            )))
+        }
+        (Err(error), Some(expected)) if error.code() == git2::ErrorCode::NotFound => {
+            Err(recovery_drift(format!(
+                "workspace root was expected at {expected}, but its attached branch is unborn"
+            )))
+        }
+        (Err(error), _) => Err(git_error(error)),
+    }
+}
+
+fn verify_scoped_candidate_tree(
+    repo: &git2::Repository,
+    parent: Option<&git2::Tree<'_>>,
+    candidate: &git2::Tree<'_>,
+    files: &[&GitCandidateFile],
+) -> ModelResult<()> {
+    verify_scoped_candidate_blobs(repo, candidate, files)?;
+    let paths = files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let diff = repo
+        .diff_tree_to_tree(parent, Some(candidate), None)
+        .map_err(git_error)?;
+    if diff.deltas().any(|delta| {
+        delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .and_then(Path::to_str)
+            .is_none_or(|path| !paths.contains(path))
+    }) {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "scoped candidate tree changes a path outside the supplied GWZ files",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_scoped_candidate_blobs(
+    repo: &git2::Repository,
+    tree: &git2::Tree<'_>,
+    files: &[&GitCandidateFile],
+) -> ModelResult<()> {
+    for file in files {
+        let entry = tree.get_path(Path::new(&file.path)).map_err(git_error)?;
+        if entry.kind() != Some(git2::ObjectType::Blob)
+            || entry.filemode() != 0o100644
+            || repo.find_blob(entry.id()).map_err(git_error)?.content() != file.bytes
+        {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("candidate tree does not contain exact file '{}'", file.path),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_scoped_commit_object(
+    repo: &git2::Repository,
+    oid: git2::Oid,
+    expected_parent: Option<git2::Oid>,
+    tree: git2::Oid,
+    message: &str,
+    signature: &git2::Signature<'_>,
+) -> ModelResult<()> {
+    let commit = repo.find_commit(oid).map_err(git_error)?;
+    let parents_match = match expected_parent {
+        Some(parent) => commit.parent_count() == 1 && commit.parent_id(0) == Ok(parent),
+        None => commit.parent_count() == 0,
+    };
+    if !parents_match
+        || commit.tree_id() != tree
+        || commit.message_bytes() != message.as_bytes()
+        || !same_signature(&commit.author(), signature)
+        || !same_signature(&commit.committer(), signature)
+    {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "scoped root commit does not match its checked specification",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_scoped_commit_publication(
+    repo: &git2::Repository,
+    ref_name: &str,
+    commit: git2::Oid,
+    tree: git2::Oid,
+    files: &[&GitCandidateFile],
+) -> ModelResult<()> {
+    if scoped_attached_head_ref(repo)? != ref_name
+        || repo
+            .find_reference(ref_name)
+            .and_then(|reference| reference.peel_to_commit())
+            .map_err(git_error)?
+            .id()
+            != commit
+    {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "scoped root commit ref publication did not persist",
+        ));
+    }
+    let published = repo.find_commit(commit).map_err(git_error)?;
+    if published.tree_id() != tree {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "published scoped root commit tree changed",
+        ));
+    }
+    verify_scoped_candidate_blobs(repo, &published.tree().map_err(git_error)?, files)
 }
 
 fn validate_expected_native_merge(

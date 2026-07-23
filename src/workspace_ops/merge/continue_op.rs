@@ -30,7 +30,15 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
     };
     super::validate::validate_open_merge_id(request.merge_id.as_deref(), &record.merge_id)?;
     match record.state {
-        OperationState::Finalizing => return record.to_response(context),
+        OperationState::Finalizing | OperationState::Completed => {
+            let completed =
+                super::finalize::finalize(backend, store, root, &mut record, context, emitter)?;
+            return if completed {
+                record.to_response(context)
+            } else {
+                observed_response(backend, root, record, context)
+            };
+        }
         OperationState::Executing
         | OperationState::AwaitingResolution
         | OperationState::Halted
@@ -111,6 +119,13 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
     let next = remaining_state(&record);
     if next == OperationState::Finalizing {
         super::enter_finalizing(store, root, &mut record, emitter)?;
+        let completed =
+            super::finalize::finalize(backend, store, root, &mut record, context, emitter)?;
+        return if completed {
+            record.to_response(context)
+        } else {
+            observed_response(backend, root, record, context)
+        };
     } else {
         super::persist_operation_transition(store, root, &mut record, next, emitter)?;
     }

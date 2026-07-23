@@ -296,13 +296,43 @@ pub(crate) fn snapshot_status<B: GitBackend>(
     });
     let mut operation_drift = record.operation_drift.clone();
     if !root_attempted {
-        compare_digest(
-            root,
-            artifact::LOCK_PATH,
-            &record.baseline.lock_sha256,
-            OperationDriftKind::BaselineLockChanged,
-            &mut operation_drift,
-        );
+        match record.publication.as_ref() {
+            Some(publication)
+                if publication.step == super::PublicationStep::PublishingCandidate =>
+            {
+                let mut expected = vec![record.baseline.lock_sha256.as_str()];
+                if let Some(candidate) = publication.candidate_lock_sha256.as_deref() {
+                    expected.push(candidate);
+                }
+                compare_digest_any(
+                    root,
+                    artifact::LOCK_PATH,
+                    &expected,
+                    OperationDriftKind::RootCandidateStateChanged,
+                    &mut operation_drift,
+                );
+            }
+            Some(publication)
+                if publication.step >= super::PublicationStep::VerifyingPublication =>
+            {
+                if let Some(candidate) = publication.candidate_lock_sha256.as_deref() {
+                    compare_digest(
+                        root,
+                        artifact::LOCK_PATH,
+                        candidate,
+                        OperationDriftKind::RootCandidateStateChanged,
+                        &mut operation_drift,
+                    );
+                }
+            }
+            _ => compare_digest(
+                root,
+                artifact::LOCK_PATH,
+                &record.baseline.lock_sha256,
+                OperationDriftKind::BaselineLockChanged,
+                &mut operation_drift,
+            ),
+        }
         compare_digest(
             root,
             WORKSPACE_MANIFEST,
@@ -310,6 +340,30 @@ pub(crate) fn snapshot_status<B: GitBackend>(
             OperationDriftKind::BaselineManifestChanged,
             &mut operation_drift,
         );
+        if record.state == super::OperationState::Finalizing && record.publication.is_some() {
+            let expected_root = record
+                .publication
+                .as_ref()
+                .and_then(|publication| publication.composition_commit.as_deref())
+                .or(record.baseline.root_head.as_deref());
+            let expected_branch = record
+                .publication
+                .as_ref()
+                .and_then(|publication| publication.candidate.as_ref())
+                .map(|candidate| candidate.root_branch.as_str())
+                .or(record.baseline.root_branch.as_deref());
+            let root_head = backend.head(root)?;
+            if root_head.is_detached
+                || root_head.commit.as_deref() != expected_root
+                || expected_branch.is_some_and(|branch| root_head.branch.as_deref() != Some(branch))
+            {
+                push_operation_drift(
+                    &mut operation_drift,
+                    OperationDriftKind::RootCandidateStateChanged,
+                    "workspace root HEAD does not match the recorded merge publication state",
+                );
+            }
+        }
     }
     Ok(MergeStatusSnapshot {
         record,
@@ -1000,6 +1054,30 @@ fn push_once(values: &mut Vec<ParticipantDriftKind>, value: ParticipantDriftKind
     }
 }
 
+fn compare_digest_any(
+    root: &Path,
+    relative: &str,
+    expected: &[&str],
+    kind: OperationDriftKind,
+    drift: &mut Vec<OperationDrift>,
+) {
+    let actual = fs::read(root.join(relative))
+        .ok()
+        .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+    if !actual
+        .as_deref()
+        .is_some_and(|actual| expected.contains(&actual))
+        && !drift.iter().any(|item| item.kind == kind)
+    {
+        drift.push(OperationDrift {
+            kind,
+            message: format!(
+                "workspace artifact '{relative}' does not match an allowed merge publication state"
+            ),
+        });
+    }
+}
+
 fn compare_digest(
     root: &Path,
     relative: &str,
@@ -1016,6 +1094,15 @@ fn compare_digest(
             message: format!(
                 "workspace artifact '{relative}' changed from the recorded merge baseline"
             ),
+        });
+    }
+}
+
+fn push_operation_drift(drift: &mut Vec<OperationDrift>, kind: OperationDriftKind, message: &str) {
+    if !drift.iter().any(|item| item.kind == kind) {
+        drift.push(OperationDrift {
+            kind,
+            message: message.to_owned(),
         });
     }
 }

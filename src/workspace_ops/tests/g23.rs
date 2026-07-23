@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -5,8 +6,13 @@ use std::path::{Path, PathBuf};
 
 use crate::artifact::read_lock;
 use crate::git::GitBackend;
-use crate::model::ErrorCode;
-use crate::workspace_ops::merge::{FileMergeStore, MergeStore, OperationState};
+use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::runtime::clock::{FixedClock, TimestampMs};
+use crate::runtime::ids::SequentialIdProvider;
+use crate::workspace_ops::merge::{
+    FileMergeStore, MergeDependencies, MergeOperationRecord, MergeStore, OperationState,
+    PublicationStep, handle_merge_with_dependencies,
+};
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -20,6 +26,115 @@ fn request(dry_run: bool) -> crate::MergeRequest {
         source_ref: Some("feature/source".to_owned()),
         ..Default::default()
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FinalizationFault {
+    AfterEnteringFinalizing,
+    BeforeCandidateCreation,
+    AfterCandidatePersistence,
+    AfterEvidenceCommit,
+    AfterLockPublication,
+    BeforeArchive,
+}
+
+struct FaultingMergeStore {
+    fault: FinalizationFault,
+    fired: Cell<bool>,
+}
+
+impl FaultingMergeStore {
+    fn new(fault: FinalizationFault) -> Self {
+        Self {
+            fault,
+            fired: Cell::new(false),
+        }
+    }
+
+    fn should_fail_write(&self, root: &Path, record: &MergeOperationRecord) -> bool {
+        let Some(publication) = record.publication.as_ref() else {
+            return false;
+        };
+        match self.fault {
+            FinalizationFault::AfterEnteringFinalizing => {
+                publication.step == PublicationStep::NotStarted
+            }
+            FinalizationFault::BeforeCandidateCreation => {
+                publication.step == PublicationStep::PreparingCandidate
+                    && publication.candidate.is_none()
+            }
+            FinalizationFault::AfterCandidatePersistence => {
+                publication.step == PublicationStep::CommittingEvidence
+                    && publication.candidate.is_some()
+                    && publication.composition_commit.is_none()
+            }
+            FinalizationFault::AfterEvidenceCommit => publication.composition_commit.is_some(),
+            FinalizationFault::AfterLockPublication => {
+                let actual = fs::read(root.join(crate::artifact::LOCK_PATH))
+                    .ok()
+                    .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+                publication.step == PublicationStep::PublishingCandidate
+                    && publication.composition_commit.is_some()
+                    && actual.as_deref() == publication.candidate_lock_sha256.as_deref()
+            }
+            FinalizationFault::BeforeArchive => false,
+        }
+    }
+
+    fn inject(&self) -> ModelResult<()> {
+        self.fired.set(true);
+        Err(ModelError::new(
+            ErrorCode::MergeRecoveryRequired,
+            format!("injected {:?} failure", self.fault),
+        ))
+    }
+}
+
+impl MergeStore for FaultingMergeStore {
+    fn discover_open(&self, root: &Path) -> ModelResult<Option<MergeOperationRecord>> {
+        FileMergeStore.discover_open(root)
+    }
+
+    fn load(&self, root: &Path, merge_id: &str) -> ModelResult<MergeOperationRecord> {
+        FileMergeStore.load(root, merge_id)
+    }
+
+    fn write_open(&self, root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
+        if !self.fired.get() && self.should_fail_write(root, record) {
+            return self.inject();
+        }
+        FileMergeStore.write_open(root, record)
+    }
+
+    fn archive(&self, root: &Path, merge_id: &str) -> ModelResult<()> {
+        if !self.fired.get() && matches!(self.fault, FinalizationFault::BeforeArchive) {
+            return self.inject();
+        }
+        FileMergeStore.archive(root, merge_id)
+    }
+}
+
+fn invoke_with_store(
+    backend: &crate::git::Git2Backend,
+    store: &FaultingMergeStore,
+    root: &Path,
+    request: crate::MergeRequest,
+    operation_id: &str,
+) -> ModelResult<crate::MergeResponse> {
+    let clock = FixedClock::new(TimestampMs(1_700_000_000_000));
+    let mut ids = SequentialIdProvider::new();
+    handle_merge_with_dependencies(
+        MergeDependencies {
+            backend,
+            store,
+            clock: &clock,
+            ids: &mut ids,
+            events: &crate::operation::NullSink,
+        },
+        root,
+        request,
+        operation_id,
+    )
 }
 
 fn feature_commit(
@@ -244,7 +359,7 @@ fn force_open_merge_state(root: &Path, state: OperationState) -> String {
 }
 
 #[test]
-fn first_class_merge_fast_forwards_into_durable_finalizing_with_baseline_lock() {
+fn first_class_merge_fast_forwards_and_publishes_durable_composition() {
     let temp = TempDir::new("merge-start-ff");
     let backend = crate::git::Git2Backend::new();
     let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-start-ff-source");
@@ -256,15 +371,19 @@ fn first_class_merge_fast_forwards_into_durable_finalizing_with_baseline_lock() 
     assert_eq!(response.response.meta.action, crate::ActionKind::Merge);
     assert_eq!(
         response.response.meta.aggregate_status,
-        crate::AggregateStatus::Accepted
+        crate::AggregateStatus::Ok
     );
     assert_eq!(
         response.repos[0].state,
         crate::MergeParticipantState::FastForwarded
     );
     assert_eq!(response.repos[0].source_ref, "feature/source");
-    assert_eq!(response.state, crate::MergeOperationState::Finalizing);
-    assert!(response.open);
+    assert_eq!(response.state, crate::MergeOperationState::Completed);
+    assert!(!response.open);
+    assert_eq!(
+        response.publication_step,
+        Some(crate::MergePublicationStep::Complete)
+    );
     assert_eq!(response.merge_id.as_deref(), Some("merge_op_merge_0001"));
     assert_eq!(
         backend.head(&member).unwrap().commit.as_deref(),
@@ -272,15 +391,282 @@ fn first_class_merge_fast_forwards_into_durable_finalizing_with_baseline_lock() 
     );
     assert!(
         temp.path()
-            .join(".gwz/merge/merge_op_merge_0001.yaml")
+            .join(".gwz/merge/done/merge_op_merge_0001.yaml")
             .is_file()
     );
     assert_eq!(
         read_lock(temp.path()).unwrap().members["mem_remote"]
             .commit
             .as_deref(),
-        Some(base.as_str())
+        Some(source.as_str())
     );
+    assert_ne!(base, source);
+    let markers = crate::artifact::list_markers(temp.path()).unwrap();
+    assert_eq!(markers.len(), 1);
+    assert_eq!(
+        markers[0].merge.as_ref().unwrap().participants["mem_remote"].resulting_commit,
+        source
+    );
+}
+
+#[test]
+fn finalization_faults_report_status_and_resume_without_duplicate_evidence() {
+    for fault in [
+        FinalizationFault::AfterEnteringFinalizing,
+        FinalizationFault::BeforeCandidateCreation,
+        FinalizationFault::AfterCandidatePersistence,
+        FinalizationFault::AfterEvidenceCommit,
+        FinalizationFault::AfterLockPublication,
+        FinalizationFault::BeforeArchive,
+    ] {
+        let temp = TempDir::new(&format!("merge-finalize-{fault:?}"));
+        let backend = crate::git::Git2Backend::new();
+        let _fixture =
+            init_one_member_workspace(temp.path(), &backend, &format!("merge-fault-{fault:?}"));
+        let member = temp.path().join("remote");
+        feature_commit(&backend, &member, "README.md", "source\n");
+        let baseline_root = backend.head(temp.path()).unwrap().commit;
+        let store = FaultingMergeStore::new(fault);
+
+        let failure = invoke_with_store(&backend, &store, temp.path(), request(false), "op_fault")
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::MergeRecoveryRequired, "{fault:?}");
+        assert!(store.fired.get(), "{fault:?}");
+
+        let before_status = store.discover_open(temp.path()).unwrap().unwrap();
+        let head_before_status = backend.head(temp.path()).unwrap();
+        let status = invoke_with_store(
+            &backend,
+            &store,
+            temp.path(),
+            recovery_request(crate::MergeOp::Status, None),
+            "op_status",
+        )
+        .unwrap();
+        assert!(matches!(
+            status.state,
+            crate::MergeOperationState::Finalizing | crate::MergeOperationState::Completed
+        ));
+        assert_eq!(
+            store.discover_open(temp.path()).unwrap().unwrap(),
+            before_status,
+            "status changed the durable record at {fault:?}"
+        );
+        assert_eq!(
+            backend.head(temp.path()).unwrap(),
+            head_before_status,
+            "status changed root HEAD at {fault:?}"
+        );
+
+        let merge_id = before_status.merge_id.clone();
+        let completed = invoke_with_store(
+            &backend,
+            &store,
+            temp.path(),
+            recovery_request(crate::MergeOp::Resume, Some(merge_id.clone())),
+            "op_resume",
+        )
+        .unwrap();
+        assert_eq!(completed.state, crate::MergeOperationState::Completed);
+        assert!(!completed.open);
+        assert!(store.discover_open(temp.path()).unwrap().is_none());
+
+        let archived = store.load(temp.path(), &merge_id).unwrap();
+        let composition = archived
+            .publication
+            .as_ref()
+            .and_then(|publication| publication.composition_commit.as_deref())
+            .unwrap();
+        assert_eq!(
+            backend.head(temp.path()).unwrap().commit.as_deref(),
+            Some(composition)
+        );
+        let repository = git2::Repository::open(temp.path()).unwrap();
+        let commit = repository
+            .find_commit(git2::Oid::from_str(composition).unwrap())
+            .unwrap();
+        match baseline_root {
+            Some(baseline) => {
+                assert_eq!(commit.parent_count(), 1);
+                assert_eq!(commit.parent_id(0).unwrap().to_string(), baseline);
+            }
+            None => assert_eq!(commit.parent_count(), 0),
+        }
+    }
+}
+
+#[test]
+fn candidate_artifact_drift_blocks_continue_and_abort_without_mutation() {
+    let temp = TempDir::new("merge-finalize-candidate-drift");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-candidate-drift-source");
+    let member = temp.path().join("remote");
+    feature_commit(&backend, &member, "README.md", "source\n");
+    let store = FaultingMergeStore::new(FinalizationFault::AfterLockPublication);
+    invoke_with_store(&backend, &store, temp.path(), request(false), "op_fault").unwrap_err();
+    let record = store.discover_open(temp.path()).unwrap().unwrap();
+    let candidate = record
+        .publication
+        .as_ref()
+        .and_then(|publication| publication.candidate.as_ref())
+        .unwrap();
+    let marker = crate::artifact::marker_path(temp.path(), &candidate.marker_id);
+    fs::remove_file(&marker).unwrap();
+    let root_head = backend.head(temp.path()).unwrap();
+    let member_head = backend.head(&member).unwrap();
+
+    let continued = invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(record.merge_id.clone())),
+        "op_continue",
+    )
+    .unwrap();
+    assert_eq!(continued.state, crate::MergeOperationState::Finalizing);
+    assert!(
+        continued.operation_drift.iter().any(|drift| {
+            drift.kind == crate::MergeOperationDriftKind::RootCandidateStateChanged
+        })
+    );
+    assert!(!marker.exists());
+
+    let aborted = invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        recovery_request(crate::MergeOp::Abort, Some(record.merge_id)),
+        "op_abort",
+    )
+    .unwrap_err();
+    assert_eq!(aborted.code, ErrorCode::MergeDrift);
+    assert_eq!(backend.head(temp.path()).unwrap(), root_head);
+    assert_eq!(backend.head(&member).unwrap(), member_head);
+}
+
+#[test]
+fn root_branch_switch_at_the_same_commit_blocks_finalization() {
+    let temp = TempDir::new("merge-finalize-root-branch-drift");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture =
+        init_one_member_workspace(temp.path(), &backend, "merge-root-branch-drift-source");
+    commit_file(temp.path(), "root.txt", "root\n", "root baseline", &[]).unwrap();
+    let member = temp.path().join("remote");
+    feature_commit(&backend, &member, "README.md", "source\n");
+    let store = FaultingMergeStore::new(FinalizationFault::AfterEnteringFinalizing);
+    invoke_with_store(&backend, &store, temp.path(), request(false), "op_fault").unwrap_err();
+    let record = store.discover_open(temp.path()).unwrap().unwrap();
+    let baseline_root = backend.head(temp.path()).unwrap().commit.unwrap();
+    backend.branch_create(temp.path(), "other", "HEAD").unwrap();
+    backend.switch_branch(temp.path(), "other").unwrap();
+
+    let continued = invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(record.merge_id)),
+        "op_continue",
+    )
+    .unwrap();
+
+    assert_eq!(continued.state, crate::MergeOperationState::Finalizing);
+    assert!(
+        continued.operation_drift.iter().any(|drift| {
+            drift.kind == crate::MergeOperationDriftKind::RootCandidateStateChanged
+        })
+    );
+    let root_head = backend.head(temp.path()).unwrap();
+    assert_eq!(root_head.branch.as_deref(), Some("other"));
+    assert_eq!(root_head.commit.as_deref(), Some(baseline_root.as_str()));
+    assert!(
+        store
+            .discover_open(temp.path())
+            .unwrap()
+            .unwrap()
+            .publication
+            .unwrap()
+            .composition_commit
+            .is_none()
+    );
+}
+
+#[test]
+fn all_up_to_date_merge_completes_without_root_evidence() {
+    let temp = TempDir::new("merge-all-up-to-date");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-no-op-source");
+    let member = temp.path().join("remote");
+    backend
+        .branch_create(&member, "feature/source", "HEAD")
+        .unwrap();
+    let root_before = backend.head(temp.path()).unwrap();
+
+    let response = handle_merge(&backend, temp.path(), request(false), "op_noop").unwrap();
+
+    assert_eq!(response.state, crate::MergeOperationState::Completed);
+    assert_eq!(
+        response.repos[0].state,
+        crate::MergeParticipantState::UpToDate
+    );
+    assert_eq!(backend.head(temp.path()).unwrap(), root_before);
+    assert!(
+        crate::artifact::list_markers(temp.path())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn finalization_preserves_unrelated_root_staged_dirty_and_untracked_work() {
+    let temp = TempDir::new("merge-root-local-work");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-root-work-source");
+    let member = temp.path().join("remote");
+    feature_commit(&backend, &member, "README.md", "source\n");
+
+    commit_file(
+        temp.path(),
+        "root-note.txt",
+        "accepted\n",
+        "root baseline",
+        &[],
+    )
+    .unwrap();
+    fs::write(temp.path().join("root-note.txt"), "dirty\n").unwrap();
+    fs::write(temp.path().join("staged-local.txt"), "staged\n").unwrap();
+    backend
+        .stage_paths(temp.path(), &["staged-local.txt"])
+        .unwrap();
+    fs::write(temp.path().join("untracked-local.txt"), "untracked\n").unwrap();
+    let repository = git2::Repository::open(temp.path()).unwrap();
+    let staged_before = repository
+        .index()
+        .unwrap()
+        .get_path(Path::new("staged-local.txt"), 0)
+        .unwrap()
+        .id;
+
+    let response = handle_merge(&backend, temp.path(), request(false), "op_local_work").unwrap();
+
+    assert_eq!(response.state, crate::MergeOperationState::Completed);
+    assert_eq!(
+        fs::read_to_string(temp.path().join("root-note.txt")).unwrap(),
+        "dirty\n"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("untracked-local.txt")).unwrap(),
+        "untracked\n"
+    );
+    let repository = git2::Repository::open(temp.path()).unwrap();
+    let staged_after = repository
+        .index()
+        .unwrap()
+        .get_path(Path::new("staged-local.txt"), 0)
+        .unwrap()
+        .id;
+    assert_eq!(staged_after, staged_before);
+    let head_tree = repository.head().unwrap().peel_to_tree().unwrap();
+    assert!(head_tree.get_path(Path::new("staged-local.txt")).is_err());
 }
 
 #[test]
@@ -448,13 +834,15 @@ fn open_finalizing_blocks_dry_run_and_real_starts_from_an_explicit_root() {
         "source\n",
     );
     let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
-    assert_eq!(started.state, crate::MergeOperationState::Finalizing);
+    assert_eq!(started.state, crate::MergeOperationState::Completed);
+    let merge_id = started.merge_id.clone().unwrap();
+    let done = temp.path().join(format!(".gwz/merge/done/{merge_id}.yaml"));
+    let mut record: MergeOperationRecord =
+        serde_yaml::from_slice(&fs::read(&done).unwrap()).unwrap();
+    record.state = OperationState::Finalizing;
+    FileMergeStore.write_open(temp.path(), &record).unwrap();
 
-    assert_open_merge_blocks_all_starts_without_mutation(
-        temp.path(),
-        &backend,
-        started.merge_id.as_deref().unwrap(),
-    );
+    assert_open_merge_blocks_all_starts_without_mutation(temp.path(), &backend, &merge_id);
 }
 
 #[test]
@@ -670,15 +1058,15 @@ fn mixed_merge_continue_resolves_conflict_and_preserves_prior_result() {
     )
     .unwrap();
 
-    assert_eq!(continued.state, crate::MergeOperationState::Finalizing);
-    assert!(continued.open);
+    assert_eq!(continued.state, crate::MergeOperationState::Completed);
+    assert!(!continued.open);
     assert_eq!(
         merge_repo(&continued, "mem_docs").state,
         crate::MergeParticipantState::Continued
     );
     assert_eq!(
         backend.head(&temp.path().join("lib")).unwrap().commit,
-        Some(lib_result)
+        Some(lib_result.clone())
     );
     let docs_result = git2::Oid::from_str(
         merge_repo(&continued, "mem_docs")
@@ -697,9 +1085,20 @@ fn mixed_merge_continue_resolves_conflict_and_preserves_prior_result() {
         commit.parent_id(1).unwrap().to_string(),
         fixture.docs_source
     );
-    assert_eq!(
+    assert_ne!(
         fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
         lock_before
+    );
+    let published = read_lock(temp.path()).unwrap();
+    assert_eq!(
+        published.members["mem_lib"].commit.as_deref(),
+        Some(lib_result.as_str())
+    );
+    assert_eq!(
+        published.members["mem_docs"].commit.as_deref(),
+        merge_repo(&continued, "mem_docs")
+            .resulting_commit
+            .as_deref()
     );
 }
 
@@ -805,6 +1204,11 @@ fn crash_reload_continue_foreign_rejection_and_external_restore_converge_on_abor
     reloaded
         .stage_paths_allowing_other_conflicts(&docs, &["README.md"])
         .unwrap();
+    let late_drift = temp.path().join("lib/late-finalization.txt");
+    let injected_drift = late_drift.clone();
+    crate::git::Git2Backend::before_next_scoped_commit_ref_lock(move || {
+        fs::write(injected_drift, "late drift\n").unwrap();
+    });
     let continued = handle_merge(
         &reloaded,
         temp.path(),
@@ -813,6 +1217,8 @@ fn crash_reload_continue_foreign_rejection_and_external_restore_converge_on_abor
     )
     .unwrap();
     assert_eq!(continued.state, crate::MergeOperationState::Finalizing);
+    assert!(continued.open);
+    fs::remove_file(late_drift).unwrap();
     let lib = temp.path().join("lib");
     let lib_result = merge_repo(&continued, "mem_lib")
         .resulting_commit
@@ -965,6 +1371,7 @@ fn failed_and_unattempted_rows_retry_only_after_whole_operation_preflight() {
             lock_sha256: digest(temp.path().join(crate::artifact::LOCK_PATH)),
             manifest_sha256: digest(temp.path().join(crate::workspace::WORKSPACE_MANIFEST)),
             root_head: None,
+            root_branch: None,
             extensions: BTreeMap::new(),
         },
         selected_targets: vec!["mem_app".to_owned(), "mem_lib".to_owned()],
@@ -1014,7 +1421,7 @@ fn failed_and_unattempted_rows_retry_only_after_whole_operation_preflight() {
         "op_continue_retry",
     )
     .unwrap();
-    assert_eq!(response.state, crate::MergeOperationState::Finalizing);
+    assert_eq!(response.state, crate::MergeOperationState::Completed);
     assert_eq!(
         merge_repo(&response, "mem_app").state,
         crate::MergeParticipantState::FastForwarded

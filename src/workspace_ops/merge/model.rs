@@ -148,8 +148,10 @@ pub(crate) struct MergeParticipantPlan {
 pub(crate) struct MergeBaseline {
     pub lock_sha256: String,
     pub manifest_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_branch: Option<String>,
     #[serde(default, flatten)]
     pub extensions: BTreeMap<String, Value>,
 }
@@ -279,10 +281,45 @@ pub(crate) struct PreservationEvidence {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PublicationProgress {
     pub step: PublicationStep,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_lock_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_marker_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_merge_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composition_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_tree: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_hashes: Vec<PublicationCandidateHash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<PublicationCandidate>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub evidence_rolled_back: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PublicationCandidate {
+    pub marker_id: String,
+    pub root_branch: String,
+    pub actor_id: String,
+    pub baseline_lock_yaml: String,
+    pub lock_yaml: String,
+    pub marker_yaml: String,
+    pub baseline_boundary_text: String,
+    pub boundary_text: String,
+    pub baseline_boundary_sha256: String,
+    pub marker_sha256: String,
+    pub boundary_sha256: String,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PublicationCandidateHash {
+    pub path: String,
+    pub sha256: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -582,6 +619,7 @@ future_record: retained
                 lock_sha256: "lock".to_owned(),
                 manifest_sha256: "manifest".to_owned(),
                 root_head: None,
+                root_branch: None,
                 extensions: BTreeMap::new(),
             },
             selected_targets: vec!["mem_core".to_owned(), "mem_lib".to_owned()],

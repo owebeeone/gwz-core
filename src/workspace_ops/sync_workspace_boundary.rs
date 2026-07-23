@@ -37,6 +37,20 @@ pub(crate) fn ensure_workspace_exclude<B: GitBackend>(
     manifest: &ManifestArtifact,
     lock: &LockArtifact,
 ) -> ModelResult<()> {
+    let (existing, updated) = workspace_exclude_candidate(backend, root, manifest, lock)?;
+    if updated != existing {
+        crate::artifact::write_atomic(&workspace_exclude_path(root), updated)?;
+    }
+    Ok(())
+}
+
+/// Build the exact local boundary bytes without publishing them.
+pub(crate) fn workspace_exclude_candidate<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    lock: &LockArtifact,
+) -> ModelResult<(String, String)> {
     let mut paths: BTreeSet<String> = lock
         .members
         .values()
@@ -57,7 +71,7 @@ pub(crate) fn ensure_workspace_exclude<B: GitBackend>(
     lines.push(EXCLUDE_END.to_owned());
     let block = lines.join("\n");
 
-    let exclude_path = root.join(".git").join("info").join("exclude");
+    let exclude_path = workspace_exclude_path(root);
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
     }
@@ -67,10 +81,15 @@ pub(crate) fn ensure_workspace_exclude<B: GitBackend>(
         Err(error) => return Err(io_error(error)),
     };
     let updated = replace_managed_block(&existing, &block);
-    if updated != existing {
-        fs::write(&exclude_path, updated).map_err(io_error)?;
-    }
-    Ok(())
+    Ok((existing, updated))
+}
+
+pub(crate) fn publish_workspace_exclude_candidate(root: &Path, contents: &str) -> ModelResult<()> {
+    crate::artifact::write_atomic(&workspace_exclude_path(root), contents)
+}
+
+pub(crate) fn workspace_exclude_path(root: &Path) -> std::path::PathBuf {
+    root.join(".git").join("info").join("exclude")
 }
 
 /// Surgically replace gwz's `BEGIN..END` block within `existing`, preserving everything
