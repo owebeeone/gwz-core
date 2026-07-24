@@ -270,6 +270,24 @@ pub trait GitBackend {
     ) -> ModelResult<GitScopedCommitResult> {
         unsupported_backend("verify_gwz_paths_commit")
     }
+    /// Roll back an exact scoped GWZ evidence commit by moving its attached
+    /// branch to `expected_parent`, or deleting the branch when the evidence
+    /// commit was the unborn root's first commit.
+    ///
+    /// The real index and worktree are deliberately not checked out or
+    /// rewritten. Callers restore only GWZ-owned candidate paths afterwards so
+    /// unrelated user state is preserved.
+    fn rollback_gwz_paths_commit_checked(
+        &self,
+        _root: &Path,
+        _branch: &str,
+        _commit: &str,
+        _expected_parent: Option<&str>,
+        _candidate_files: &[GitCandidateFile],
+        _message: &str,
+    ) -> ModelResult<()> {
+        unsupported_backend("rollback_gwz_paths_commit_checked")
+    }
     /// Integrate `upstream_ref` into `branch` by **rebase** (porcelain `git rebase`):
     /// replay the branch's commits onto the upstream tip. Fast-forwards when strictly
     /// behind. On conflict, leave `.git/rebase-merge/` in place (do NOT abort) so the
@@ -1825,6 +1843,65 @@ impl GitBackend for Git2Backend {
                 })
                 .collect(),
         })
+    }
+
+    fn rollback_gwz_paths_commit_checked(
+        &self,
+        root: &Path,
+        branch: &str,
+        commit: &str,
+        expected_parent: Option<&str>,
+        candidate_files: &[GitCandidateFile],
+        message: &str,
+    ) -> ModelResult<()> {
+        self.verify_gwz_paths_commit(root, commit, expected_parent, candidate_files, message)?;
+        let repo = open_repo(root)?;
+        let commit_oid = parse_existing_commit(&repo, commit)?;
+        let parent_oid = expected_parent
+            .map(|value| parse_existing_commit(&repo, value))
+            .transpose()?;
+        let ref_name = branch_ref_name(branch);
+        if scoped_attached_head_ref(&repo)? != ref_name {
+            return Err(recovery_drift(
+                "scoped evidence rollback requires the attached target branch",
+            ));
+        }
+
+        let mut transaction = repo.transaction().map_err(git_error)?;
+        transaction.lock_ref("HEAD").map_err(git_error)?;
+        transaction.lock_ref(&ref_name).map_err(git_error)?;
+        if scoped_attached_head_ref(&repo)? != ref_name {
+            return Err(recovery_drift(
+                "workspace root HEAD changed before scoped evidence rollback",
+            ));
+        }
+        validate_scoped_expected_head(&repo, &ref_name, Some(commit_oid))?;
+        self.verify_gwz_paths_commit(root, commit, expected_parent, candidate_files, message)?;
+        if let Some(parent) = parent_oid {
+            transaction
+                .set_target(
+                    &ref_name,
+                    parent,
+                    None,
+                    "gwz checked composition evidence rollback",
+                )
+                .map_err(git_error)?;
+        } else {
+            transaction.remove(&ref_name).map_err(git_error)?;
+        }
+        transaction.commit().map_err(git_error)?;
+
+        let head = self.head(root)?;
+        if head.is_detached
+            || head.branch.as_deref() != Some(branch)
+            || head.commit.as_deref() != expected_parent
+        {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "checked composition evidence rollback did not restore the expected root HEAD",
+            ));
+        }
+        Ok(())
     }
 
     fn rebase_onto(

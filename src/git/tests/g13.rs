@@ -251,3 +251,91 @@ fn scoped_commit_fails_closed_on_concurrent_ref_movement() {
     assert_eq!(fs::read(root.join(".git/index")).unwrap(), index_before);
     assert!(!root.join("gwz.conf/gwz.lock").exists());
 }
+
+#[test]
+fn scoped_evidence_rollback_preserves_unrelated_index_and_worktree_state() {
+    let temp = TempDir::new("scoped-rollback-born");
+    let root = temp.path().join("repo");
+    let parent = seed(
+        &root,
+        &[
+            ("gwz.conf/gwz.lock", "baseline\n"),
+            ("staged.txt", "base\n"),
+            ("dirty.txt", "base\n"),
+        ],
+    );
+    fs::write(root.join("staged.txt"), "staged user work\n").unwrap();
+    stage_path(&root, "staged.txt").unwrap();
+    fs::write(root.join("dirty.txt"), "dirty user work\n").unwrap();
+    fs::write(root.join("untracked.txt"), "untracked user work\n").unwrap();
+    let index_before = fs::read(root.join(".git/index")).unwrap();
+    let files = vec![
+        candidate("gwz.conf/gwz.lock", "candidate\n"),
+        candidate("gwz.conf/merge/marker.yaml", "marker\n"),
+    ];
+    let backend = Git2Backend::new();
+    let evidence = backend
+        .commit_gwz_paths_checked(&root, Some(&parent), &files, "evidence")
+        .unwrap();
+
+    backend
+        .rollback_gwz_paths_commit_checked(
+            &root,
+            "main",
+            &evidence.commit,
+            Some(&parent),
+            &files,
+            "evidence",
+        )
+        .unwrap();
+
+    assert_eq!(
+        backend.head(&root).unwrap().commit.as_deref(),
+        Some(parent.as_str())
+    );
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), index_before);
+    for (path, expected) in [
+        ("staged.txt", "staged user work\n"),
+        ("dirty.txt", "dirty user work\n"),
+        ("untracked.txt", "untracked user work\n"),
+        ("gwz.conf/gwz.lock", "baseline\n"),
+    ] {
+        assert_text_eq(root.join(path), expected);
+    }
+}
+
+#[test]
+fn scoped_evidence_rollback_restores_an_unborn_attached_branch() {
+    let temp = TempDir::new("scoped-rollback-unborn");
+    let root = temp.path().join("repo");
+    let backend = Git2Backend::new();
+    backend.create_repo(&root).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let mut config = repo.config().unwrap();
+    config.set_str("user.name", "GWZ").unwrap();
+    config.set_str("user.email", "gwz@example.invalid").unwrap();
+    drop((config, repo));
+    fs::write(root.join("unrelated.txt"), "preserve\n").unwrap();
+    let files = vec![candidate("gwz.conf/gwz.lock", "candidate\n")];
+    let evidence = backend
+        .commit_gwz_paths_checked(&root, None, &files, "initial evidence")
+        .unwrap();
+
+    backend
+        .rollback_gwz_paths_commit_checked(
+            &root,
+            "main",
+            &evidence.commit,
+            None,
+            &files,
+            "initial evidence",
+        )
+        .unwrap();
+
+    let head = backend.head(&root).unwrap();
+    assert_eq!(head.branch.as_deref(), Some("main"));
+    assert!(head.commit.is_none());
+    assert!(!head.is_detached);
+    assert_text_eq(root.join("unrelated.txt"), "preserve\n");
+    assert!(!root.join(".git/index").exists());
+}

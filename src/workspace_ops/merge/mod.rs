@@ -6,12 +6,16 @@ pub(crate) mod marker;
 mod model;
 mod pending;
 mod plan;
+mod publication;
 mod recovery;
 mod response;
 mod start;
 mod status;
 mod store;
 mod validate;
+
+#[cfg(test)]
+pub(crate) use abort::{EvidenceRollbackMutation, fail_next_evidence_rollback_after};
 
 pub(crate) use model::*;
 pub(crate) use recovery::*;

@@ -3,13 +3,19 @@ use super::{
     ParticipantState,
 };
 use crate::artifact;
-use crate::git::{GitBackend, GitHeadState};
+use crate::git::{GitBackend, GitCandidateFile, GitHeadState};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext, WorkspaceMutatorLock};
 use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::{fs, path::Path};
+
+use super::publication::{
+    CandidatePublicationPrefix, RootEvidenceObservation, candidate_files,
+    classify_candidate_publication, composition_message, observe_root_evidence,
+    publication_prefix_allowed,
+};
 pub(crate) fn handle_abort<B: GitBackend, S: MergeStore>(
     backend: &B,
     store: &S,
@@ -54,10 +60,28 @@ trait AbortRuntime {
             "abort runtime does not support root evidence inspection",
         ))
     }
-    fn delete_branch(&self, _path: &Path, _branch: &str, _current: &str) -> ModelResult<()> {
+    fn observe_root_evidence(
+        &self,
+        _root: &Path,
+        _record: &MergeOperationRecord,
+    ) -> ModelResult<Option<RootEvidenceObservation>> {
         Err(ModelError::new(
             ErrorCode::UnsupportedOperation,
-            "abort runtime does not support root branch deletion",
+            "abort runtime does not support root evidence observation",
+        ))
+    }
+    fn rollback_evidence_commit(
+        &self,
+        _root: &Path,
+        _branch: &str,
+        _commit: &str,
+        _parent: Option<&str>,
+        _files: &[GitCandidateFile],
+        _message: &str,
+    ) -> ModelResult<()> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "abort runtime does not support root evidence rollback",
         ))
     }
     fn stage_paths(&self, _path: &Path, _paths: &[&str]) -> ModelResult<()> {
@@ -97,8 +121,25 @@ impl<B: GitBackend> AbortRuntime for GitAbortRuntime<'_, B> {
         self.0.head(path)
     }
 
-    fn delete_branch(&self, path: &Path, branch: &str, current: &str) -> ModelResult<()> {
-        self.0.delete_branch_target_checked(path, branch, current)
+    fn observe_root_evidence(
+        &self,
+        root: &Path,
+        record: &MergeOperationRecord,
+    ) -> ModelResult<Option<RootEvidenceObservation>> {
+        observe_root_evidence(self.0, root, record)
+    }
+
+    fn rollback_evidence_commit(
+        &self,
+        root: &Path,
+        branch: &str,
+        commit: &str,
+        parent: Option<&str>,
+        files: &[GitCandidateFile],
+        message: &str,
+    ) -> ModelResult<()> {
+        self.0
+            .rollback_gwz_paths_commit_checked(root, branch, commit, parent, files, message)
     }
 
     fn stage_paths(&self, path: &Path, paths: &[&str]) -> ModelResult<()> {
@@ -147,7 +188,12 @@ fn abort_with_runtime<A: AbortRuntime, S: MergeStore>(
     record
         .operation_drift
         .retain(|drift| drift.kind != super::OperationDriftKind::RootCandidateStateChanged);
-    let snapshot = runtime.snapshot(root, record)?;
+    let mut snapshot = runtime.snapshot(root, record)?;
+    if snapshot.record.state == OperationState::RollingBack && evidence.is_some() {
+        snapshot
+            .operation_drift
+            .retain(|drift| drift.kind != super::OperationDriftKind::RootCandidateStateChanged);
+    }
     let preflight = preflight(&snapshot)?;
     record = snapshot.record;
     for target_id in preflight.pending.keys() {
@@ -277,6 +323,8 @@ struct EvidenceRollback {
     marker_id: String,
     baseline_lock_yaml: String,
     baseline_boundary_text: String,
+    candidate_files: Vec<GitCandidateFile>,
+    composition_message: String,
 }
 
 fn preflight_evidence<A: AbortRuntime>(
@@ -287,64 +335,62 @@ fn preflight_evidence<A: AbortRuntime>(
     let Some(publication) = record.publication.as_ref() else {
         return Ok(None);
     };
-    let Some(composition_commit) = publication.composition_commit.clone() else {
+    let Some(candidate) = publication.candidate.as_ref() else {
+        if publication.candidate_lock_sha256.is_some()
+            || publication.candidate_marker_path.is_some()
+            || publication.root_merge_commit.is_some()
+            || publication.composition_commit.is_some()
+            || publication.composition_tree.is_some()
+            || !publication.candidate_hashes.is_empty()
+            || publication.evidence_rolled_back
+        {
+            return Err(ModelError::new(
+                ErrorCode::MergeRecordUnreadable,
+                "merge publication has evidence fields but no durable candidate",
+            ));
+        }
         return Ok(None);
     };
-    let candidate = publication.candidate.as_ref().ok_or_else(|| {
+    let prefix = classify_candidate_publication(root, record)?.ok_or_else(|| {
         ModelError::new(
-            ErrorCode::MergeRecordUnreadable,
-            "composition commit has no durable publication candidate",
-        )
-    })?;
-    let head = runtime.head(root)?;
-    if head.is_detached || head.branch.as_deref() != Some(candidate.root_branch.as_str()) {
-        return Err(ModelError::new(
-            ErrorCode::MergeDrift,
-            "workspace root branch changed after merge evidence creation",
-        )
-        .with_member("@root", "."));
-    }
-    let at_composition = head.commit.as_deref() == Some(composition_commit.as_str());
-    let at_baseline = head.commit == record.baseline.root_head;
-    if !at_composition && !at_baseline {
-        return Err(ModelError::new(
-            ErrorCode::MergeDrift,
-            "workspace root moved after merge evidence creation",
-        )
-        .with_member("@root", "."));
-    }
-    let hash = |path: &Path| {
-        fs::read(path)
-            .ok()
-            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
-    };
-    let lock = hash(&root.join(artifact::LOCK_PATH));
-    let marker = hash(&artifact::marker_path(root, &candidate.marker_id));
-    let boundary = hash(&super::super::workspace_exclude_path(root));
-    let baseline_lock_sha256 = format!(
-        "{:x}",
-        Sha256::digest(candidate.baseline_lock_yaml.as_bytes())
-    );
-    let baseline_boundary_sha256 = format!(
-        "{:x}",
-        Sha256::digest(candidate.baseline_boundary_text.as_bytes())
-    );
-    let baseline_lock = lock.as_deref() == Some(baseline_lock_sha256.as_str());
-    let candidate_lock = lock.as_deref() == publication.candidate_lock_sha256.as_deref();
-    let marker_absent = marker.is_none();
-    let candidate_marker = marker.as_deref() == Some(candidate.marker_sha256.as_str());
-    let baseline_boundary = boundary.as_deref() == Some(baseline_boundary_sha256.as_str())
-        || (boundary.is_none() && candidate.baseline_boundary_text.is_empty());
-    let candidate_boundary = boundary.as_deref() == Some(candidate.boundary_sha256.as_str());
-    let valid_prefix = (baseline_lock && baseline_boundary && (marker_absent || candidate_marker))
-        || (candidate_lock && candidate_marker && (baseline_boundary || candidate_boundary));
-    if !valid_prefix {
-        return Err(ModelError::new(
             ErrorCode::MergeDrift,
             "workspace root candidate artifacts changed after evidence creation",
         )
+        .with_member("@root", ".")
+    })?;
+    if record.state != OperationState::RollingBack && !publication_prefix_allowed(record, prefix)? {
+        return Err(ModelError::new(
+            ErrorCode::MergeDrift,
+            "workspace root candidate artifacts do not match the recorded publication step",
+        )
         .with_member("@root", "."));
     }
+    let observation = runtime.observe_root_evidence(root, record)?;
+    let composition_commit = match observation {
+        Some(RootEvidenceObservation::Composition(result)) => result.commit,
+        Some(RootEvidenceObservation::Baseline)
+            if publication.composition_commit.is_none()
+                && prefix == CandidatePublicationPrefix::Baseline =>
+        {
+            return Ok(None);
+        }
+        Some(RootEvidenceObservation::Baseline) => {
+            publication.composition_commit.clone().ok_or_else(|| {
+                ModelError::new(
+                    ErrorCode::MergeDrift,
+                    "published candidate has no recorded root evidence commit",
+                )
+                .with_member("@root", ".")
+            })?
+        }
+        None => {
+            return Err(ModelError::new(
+                ErrorCode::MergeDrift,
+                "workspace root moved after merge evidence creation",
+            )
+            .with_member("@root", "."));
+        }
+    };
     Ok(Some(EvidenceRollback {
         branch: candidate.root_branch.clone(),
         composition_commit,
@@ -352,6 +398,8 @@ fn preflight_evidence<A: AbortRuntime>(
         marker_id: candidate.marker_id.clone(),
         baseline_lock_yaml: candidate.baseline_lock_yaml.clone(),
         baseline_boundary_text: candidate.baseline_boundary_text.clone(),
+        candidate_files: candidate_files(record)?,
+        composition_message: composition_message(record),
     }))
 }
 
@@ -365,22 +413,24 @@ fn rollback_evidence<A: AbortRuntime, S: MergeStore>(
 ) -> ModelResult<()> {
     let head = runtime.head(root)?;
     if head.commit.as_deref() == Some(evidence.composition_commit.as_str()) {
-        if let Some(baseline) = evidence.baseline_commit.as_deref() {
-            runtime.reset_branch(
-                root,
-                &evidence.branch,
-                &evidence.composition_commit,
-                baseline,
-            )?;
-        } else {
-            runtime.delete_branch(root, &evidence.branch, &evidence.composition_commit)?;
-        }
+        runtime.rollback_evidence_commit(
+            root,
+            &evidence.branch,
+            &evidence.composition_commit,
+            evidence.baseline_commit.as_deref(),
+            &evidence.candidate_files,
+            &evidence.composition_message,
+        )?;
     }
+    super::super::publish_workspace_exclude_candidate(root, &evidence.baseline_boundary_text)?;
+    #[cfg(test)]
+    maybe_fail_evidence_rollback_after(EvidenceRollbackMutation::Boundary)?;
     artifact::write_atomic(
         &root.join(artifact::LOCK_PATH),
         &evidence.baseline_lock_yaml,
     )?;
-    super::super::publish_workspace_exclude_candidate(root, &evidence.baseline_boundary_text)?;
+    #[cfg(test)]
+    maybe_fail_evidence_rollback_after(EvidenceRollbackMutation::Lock)?;
     let marker_path = artifact::marker_path(root, &evidence.marker_id);
     match fs::remove_file(&marker_path) {
         Ok(()) => {}
@@ -392,12 +442,53 @@ fn rollback_evidence<A: AbortRuntime, S: MergeStore>(
             ));
         }
     }
+    #[cfg(test)]
+    maybe_fail_evidence_rollback_after(EvidenceRollbackMutation::Marker)?;
     let marker_relative = format!("{}/{}.yaml", artifact::MARKER_DIR, evidence.marker_id);
     runtime.stage_paths(root, &[artifact::LOCK_PATH, &marker_relative])?;
     if let Some(publication) = record.publication.as_mut() {
         publication.evidence_rolled_back = true;
     }
     super::persist_merge_record(store, root, record, emitter)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EvidenceRollbackMutation {
+    Boundary,
+    Lock,
+    Marker,
+}
+
+#[cfg(test)]
+thread_local! {
+    static EVIDENCE_ROLLBACK_FAILURE:
+        std::cell::Cell<Option<EvidenceRollbackMutation>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_evidence_rollback_after(mutation: EvidenceRollbackMutation) {
+    EVIDENCE_ROLLBACK_FAILURE.with(|failure| {
+        assert!(
+            failure.replace(Some(mutation)).is_none(),
+            "an evidence rollback failure is already installed"
+        );
+    });
+}
+
+#[cfg(test)]
+fn maybe_fail_evidence_rollback_after(mutation: EvidenceRollbackMutation) -> ModelResult<()> {
+    EVIDENCE_ROLLBACK_FAILURE.with(|failure| {
+        if failure.get() == Some(mutation) {
+            failure.set(None);
+            Err(ModelError::new(
+                ErrorCode::MergeRecoveryRequired,
+                format!("injected failure after evidence {mutation:?} restoration"),
+            ))
+        } else {
+            Ok(())
+        }
+    })
 }
 
 fn verify_evidence_baseline<A: AbortRuntime>(

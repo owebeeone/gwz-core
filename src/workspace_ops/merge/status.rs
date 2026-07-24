@@ -10,6 +10,10 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 
+use super::publication::{
+    RootEvidenceObservation, classify_candidate_publication, observe_root_evidence,
+    publication_prefix_allowed,
+};
 use super::{
     MergeOperationRecord, MergeParticipantObservation, MergeParticipantRecord, MergeStatusSnapshot,
     MergeStore, MergeTargetKind, OperationDrift, OperationDriftKind, ParticipantDrift,
@@ -296,36 +300,27 @@ pub(crate) fn snapshot_status<B: GitBackend>(
     });
     let mut operation_drift = record.operation_drift.clone();
     if !root_attempted {
-        match record.publication.as_ref() {
-            Some(publication)
-                if publication.step == super::PublicationStep::PublishingCandidate =>
-            {
-                let mut expected = vec![record.baseline.lock_sha256.as_str()];
-                if let Some(candidate) = publication.candidate_lock_sha256.as_deref() {
-                    expected.push(candidate);
-                }
-                compare_digest_any(
-                    root,
-                    artifact::LOCK_PATH,
-                    &expected,
-                    OperationDriftKind::RootCandidateStateChanged,
-                    &mut operation_drift,
-                );
-            }
-            Some(publication)
-                if publication.step >= super::PublicationStep::VerifyingPublication =>
-            {
-                if let Some(candidate) = publication.candidate_lock_sha256.as_deref() {
-                    compare_digest(
-                        root,
-                        artifact::LOCK_PATH,
-                        candidate,
-                        OperationDriftKind::RootCandidateStateChanged,
+        match record
+            .publication
+            .as_ref()
+            .and_then(|publication| publication.candidate.as_ref())
+        {
+            Some(_) => {
+                let prefix = classify_candidate_publication(root, &record)?;
+                if prefix.is_none()
+                    || !publication_prefix_allowed(
+                        &record,
+                        prefix.expect("candidate prefix was checked"),
+                    )?
+                {
+                    push_operation_drift(
                         &mut operation_drift,
+                        OperationDriftKind::RootCandidateStateChanged,
+                        "workspace root candidate artifacts do not match an allowed publication prefix",
                     );
                 }
             }
-            _ => compare_digest(
+            None => compare_digest(
                 root,
                 artifact::LOCK_PATH,
                 &record.baseline.lock_sha256,
@@ -340,23 +335,31 @@ pub(crate) fn snapshot_status<B: GitBackend>(
             OperationDriftKind::BaselineManifestChanged,
             &mut operation_drift,
         );
-        if record.state == super::OperationState::Finalizing && record.publication.is_some() {
-            let expected_root = record
-                .publication
-                .as_ref()
-                .and_then(|publication| publication.composition_commit.as_deref())
-                .or(record.baseline.root_head.as_deref());
-            let expected_branch = record
-                .publication
-                .as_ref()
-                .and_then(|publication| publication.candidate.as_ref())
-                .map(|candidate| candidate.root_branch.as_str())
-                .or(record.baseline.root_branch.as_deref());
-            let root_head = backend.head(root)?;
-            if root_head.is_detached
-                || root_head.commit.as_deref() != expected_root
-                || expected_branch.is_some_and(|branch| root_head.branch.as_deref() != Some(branch))
-            {
+        if record.state == super::OperationState::Finalizing
+            && let Some(publication) = record.publication.as_ref()
+        {
+            let root_matches = if publication.candidate.is_some() {
+                match observe_root_evidence(backend, root, &record)? {
+                    Some(RootEvidenceObservation::Baseline) => {
+                        publication.composition_commit.is_none()
+                    }
+                    Some(RootEvidenceObservation::Composition(result)) => publication
+                        .composition_commit
+                        .as_deref()
+                        .is_none_or(|recorded| recorded == result.commit),
+                    None => false,
+                }
+            } else {
+                let root_head = backend.head(root)?;
+                !root_head.is_detached
+                    && root_head.commit == record.baseline.root_head
+                    && record
+                        .baseline
+                        .root_branch
+                        .as_deref()
+                        .is_none_or(|branch| root_head.branch.as_deref() == Some(branch))
+            };
+            if !root_matches {
                 push_operation_drift(
                     &mut operation_drift,
                     OperationDriftKind::RootCandidateStateChanged,
@@ -1051,30 +1054,6 @@ fn participant_drift(
 fn push_once(values: &mut Vec<ParticipantDriftKind>, value: ParticipantDriftKind) {
     if !values.contains(&value) {
         values.push(value);
-    }
-}
-
-fn compare_digest_any(
-    root: &Path,
-    relative: &str,
-    expected: &[&str],
-    kind: OperationDriftKind,
-    drift: &mut Vec<OperationDrift>,
-) {
-    let actual = fs::read(root.join(relative))
-        .ok()
-        .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
-    if !actual
-        .as_deref()
-        .is_some_and(|actual| expected.contains(&actual))
-        && !drift.iter().any(|item| item.kind == kind)
-    {
-        drift.push(OperationDrift {
-            kind,
-            message: format!(
-                "workspace artifact '{relative}' does not match an allowed merge publication state"
-            ),
-        });
     }
 }
 

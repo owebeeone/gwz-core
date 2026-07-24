@@ -1,9 +1,8 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-23; M2b and the first public member-merge
-release gate are complete). Owner: Gianni. The next implementation decision is
-whether to take explicit workspace-root participation in M2c before the M3
-preservation and cleanup increment.
+Status: **active** (revised 2026-07-24; the corrected M2b and first public
+member-merge release gate are complete). Owner: Gianni. M2c explicit
+workspace-root participation is the next planned implementation wave.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -1056,8 +1055,8 @@ preflight failure.
 
 ### M2b integration gate
 
-Status: **complete; first public member-merge release gate passed**
-(2026-07-23).
+Status: **complete; corrected first public member-merge release gate passed**
+(2026-07-24).
 
 Required fault points include:
 
@@ -1065,20 +1064,41 @@ Required fault points include:
 - after entering `finalizing`;
 - after candidate persistence;
 - after root evidence commit;
+- after root evidence commit persistence;
 - after lock publication;
 - before archive/close.
 
 At each point, status must explain the state, continue must resume
 idempotently, and abort must account for any recorded evidence commit.
 
-The integrated gate passes 681 Rust test executions (680 passed, one ignored)
-and 314 Python tests with no failures. Workspace formatting, strict Clippy,
-generated Rust CLI reference, Rust/Python protocol generation checks, and the
-native-extension freshness build all pass. The six finalization fault points
-are exercised against the durable filesystem store and real Git backend;
-additional drift tests cover candidate-artifact deletion and a same-commit
-workspace-root branch switch without allowing continue or abort to overwrite
-the changed state.
+The original integrated gate passed, but an independent post-commit review
+reopened it on 2026-07-24 with five P2 recovery/driver defects and one P3
+event-contract gap. The remediation in
+`../../dev-docs/GwzDevCodeM2b-RemPlan.md` is implemented. The first re-review
+confirmed the original six corrections but found two additional P2 abort gaps
+and one P3 orchestration-test gap. Those are corrected: pre-candidate
+finalization can be aborted; evidence artifacts are restored in reverse
+publication order with interruption coverage after every mutation; and the two
+evidence-record windows run end-to-end for both born and unborn roots.
+
+The corrected local gate passes 691 Rust test executions (690 passed, one
+ignored) and 315 Python/native tests with no failures. Workspace formatting,
+strict Clippy, generated protocol freshness, native-extension freshness,
+cross-driver parity, and diff hygiene pass.
+
+The corrected fault matrix covers both interruption windows around durable
+root evidence persistence, including an unborn workspace root, and verifies
+that evidence rollback preserves unrelated staged, dirty, and untracked root
+work. Direct status checks cover marker and boundary drift. Continue rechecks
+manifest and complete candidate-prefix drift, permits retry after exact repair,
+and does not duplicate the evidence commit. Rust and Python event streams
+publish the verified evidence commit, marker, accepted lock, and boundary in
+deterministic order, while Python recovery guidance names its installed
+`gwz-py` executable.
+
+The final independent re-review reports no P0/P1/P2/P3 defect. It independently
+reran all 32 focused `g23` lifecycle tests and both scoped evidence rollback
+backend tests. M2c is unblocked.
 
 ### First public member-merge release gate
 

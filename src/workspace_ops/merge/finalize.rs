@@ -5,7 +5,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use crate::artifact::{self, CreatedByArtifact, MarkerArtifact, MarkerRootArtifact};
-use crate::git::{GitBackend, GitCandidateFile, GitScopedCommitResult};
+use crate::git::{GitBackend, GitScopedCommitResult};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext};
 use crate::workspace::WORKSPACE_MANIFEST;
@@ -14,6 +14,7 @@ use crate::workspace_ops::{
 };
 
 use super::marker::{VerifiedMergeParticipant, marker_merge_from_verified};
+use super::publication::{candidate_files, classify_candidate_publication, composition_message};
 use super::{
     MergeOperationRecord, MergeStore, MergeTargetKind, OperationDrift, OperationDriftKind,
     OperationState, ParticipantState, PublicationCandidate, PublicationCandidateHash,
@@ -60,7 +61,7 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
         PublicationStep::ValidatingResults,
         emitter,
     )?;
-    let Some(verified) = verified_participants(backend, root, record)? else {
+    let Some(verified) = verified_participants(backend, store, root, record, emitter)? else {
         return Ok(false);
     };
     if !has_changed_participant(record) {
@@ -103,7 +104,7 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
         PublicationStep::CommittingEvidence,
         emitter,
     )?;
-    let Some(verified) = verified_participants(backend, root, record)? else {
+    let Some(verified) = verified_participants(backend, store, root, record, emitter)? else {
         return Ok(false);
     };
     marker_merge_from_verified(record, &verified)?;
@@ -118,7 +119,7 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
         PublicationStep::PublishingCandidate,
         emitter,
     )?;
-    let Some(verified) = verified_participants(backend, root, record)? else {
+    let Some(verified) = verified_participants(backend, store, root, record, emitter)? else {
         return Ok(false);
     };
     marker_merge_from_verified(record, &verified)?;
@@ -133,7 +134,7 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
         PublicationStep::VerifyingPublication,
         emitter,
     )?;
-    let Some(verified) = verified_participants(backend, root, record)? else {
+    let Some(verified) = verified_participants(backend, store, root, record, emitter)? else {
         return Ok(false);
     };
     marker_merge_from_verified(record, &verified)?;
@@ -146,18 +147,31 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
     Ok(true)
 }
 
-fn verified_participants<B: GitBackend>(
+fn verified_participants<B: GitBackend, S: MergeStore>(
     backend: &B,
+    store: &S,
     root: &Path,
-    record: &MergeOperationRecord,
+    record: &mut MergeOperationRecord,
+    emitter: &EventEmitter<'_>,
 ) -> ModelResult<Option<Vec<VerifiedMergeParticipant>>> {
-    let snapshot = super::status::snapshot_status(backend, root, record.clone())?;
-    if snapshot
-        .participants
-        .values()
-        .any(|participant| !participant.drift.is_empty())
+    let mut observed_record = record.clone();
+    clear_root_drift(&mut observed_record);
+    let snapshot = super::status::snapshot_status(backend, root, observed_record)?;
+    if !snapshot.operation_drift.is_empty()
+        || snapshot
+            .participants
+            .values()
+            .any(|participant| !participant.drift.is_empty())
     {
         return Ok(None);
+    }
+    if record
+        .operation_drift
+        .iter()
+        .any(|drift| drift.kind == OperationDriftKind::RootCandidateStateChanged)
+    {
+        clear_root_drift(record);
+        super::persist_merge_record(store, root, record, emitter)?;
     }
     record
         .selected_targets
@@ -337,6 +351,7 @@ fn ensure_composition_commit<B: GitBackend, S: MergeStore>(
     let expected = record.baseline.root_head.as_deref();
     let candidate = candidate(record)?;
     let head = backend.head(root)?;
+    let had_recorded_composition = progress(record)?.composition_commit.is_some();
     if head.is_detached || head.branch.as_deref() != Some(candidate.root_branch.as_str()) {
         return block_root(
             store,
@@ -383,6 +398,11 @@ fn ensure_composition_commit<B: GitBackend, S: MergeStore>(
             "workspace root became unborn before evidence publication",
         );
     };
+    if had_recorded_composition && !recorded_composition_matches(record, &result)? {
+        return Err(unreadable(
+            "recorded root evidence tree or candidate hashes do not match",
+        ));
+    }
     record_composition(record, &result);
     clear_root_drift(record);
     super::persist_merge_record(store, root, record, emitter)?;
@@ -396,7 +416,7 @@ fn publish_candidate<B: GitBackend, S: MergeStore>(
     record: &mut MergeOperationRecord,
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<bool> {
-    if !candidate_destinations_safe(root, record)? {
+    if classify_candidate_publication(root, record)?.is_none() {
         return block_root(
             store,
             root,
@@ -441,11 +461,11 @@ fn verify_publication<B: GitBackend, S: MergeStore>(
         == Some(candidate.boundary_sha256.as_str());
     let commit = progress(record)?
         .composition_commit
-        .as_deref()
+        .clone()
         .ok_or_else(|| unreadable("composition commit is missing"))?;
     let result = backend.verify_gwz_paths_commit(
         root,
-        commit,
+        &commit,
         record.baseline.root_head.as_deref(),
         &candidate_files(record)?,
         &composition_message(record),
@@ -461,26 +481,16 @@ fn verify_publication<B: GitBackend, S: MergeStore>(
     }
     clear_root_drift(record);
     super::persist_merge_record(store, root, record, emitter)?;
+    emitter.artifact_written(format!("git:@root/{commit}"));
+    emitter.artifact_written(
+        progress(record)?
+            .candidate_marker_path
+            .as_deref()
+            .ok_or_else(|| unreadable("candidate marker path is missing"))?,
+    );
+    emitter.artifact_written(artifact::LOCK_PATH);
+    emitter.artifact_written(".git/info/exclude");
     Ok(true)
-}
-
-fn candidate_destinations_safe(root: &Path, record: &MergeOperationRecord) -> ModelResult<bool> {
-    let candidate = candidate(record)?;
-    let lock = file_sha256(&root.join(artifact::LOCK_PATH));
-    let marker = file_sha256(&artifact::marker_path(root, &candidate.marker_id));
-    let boundary = file_sha256(&workspace_exclude_path(root));
-    let baseline_lock = lock.as_deref() == Some(record.baseline.lock_sha256.as_str());
-    let candidate_lock = lock.as_deref() == progress(record)?.candidate_lock_sha256.as_deref();
-    let marker_absent = marker.is_none();
-    let candidate_marker = marker.as_deref() == Some(candidate.marker_sha256.as_str());
-    let baseline_boundary = boundary.as_deref()
-        == Some(candidate.baseline_boundary_sha256.as_str())
-        || (boundary.is_none() && candidate.baseline_boundary_text.is_empty());
-    let candidate_boundary = boundary.as_deref() == Some(candidate.boundary_sha256.as_str());
-    Ok(
-        (baseline_lock && baseline_boundary && (marker_absent || candidate_marker))
-            || (candidate_lock && candidate_marker && (baseline_boundary || candidate_boundary)),
-    )
 }
 
 fn validate_candidate(record: &MergeOperationRecord) -> ModelResult<()> {
@@ -520,23 +530,6 @@ fn validate_candidate(record: &MergeOperationRecord) -> ModelResult<()> {
     Ok(())
 }
 
-fn candidate_files(record: &MergeOperationRecord) -> ModelResult<Vec<GitCandidateFile>> {
-    let candidate = candidate(record)?;
-    Ok(vec![
-        GitCandidateFile {
-            path: artifact::LOCK_PATH.to_owned(),
-            bytes: candidate.lock_yaml.as_bytes().to_vec(),
-        },
-        GitCandidateFile {
-            path: progress(record)?
-                .candidate_marker_path
-                .clone()
-                .ok_or_else(|| unreadable("candidate marker path is missing"))?,
-            bytes: candidate.marker_yaml.as_bytes().to_vec(),
-        },
-    ])
-}
-
 fn record_composition(record: &mut MergeOperationRecord, result: &GitScopedCommitResult) {
     let publication = record
         .publication
@@ -552,6 +545,25 @@ fn record_composition(record: &mut MergeOperationRecord, result: &GitScopedCommi
             sha256: hash.sha256.clone(),
         })
         .collect();
+}
+
+fn recorded_composition_matches(
+    record: &MergeOperationRecord,
+    result: &GitScopedCommitResult,
+) -> ModelResult<bool> {
+    let publication = progress(record)?;
+    Ok(
+        publication.composition_commit.as_deref() == Some(result.commit.as_str())
+            && publication.composition_tree.as_deref() == Some(result.tree.as_str())
+            && publication.candidate_hashes.len() == result.candidate_hashes.len()
+            && publication
+                .candidate_hashes
+                .iter()
+                .zip(&result.candidate_hashes)
+                .all(|(recorded, observed)| {
+                    recorded.path == observed.path && recorded.sha256 == observed.sha256
+                }),
+    )
 }
 
 fn set_step<S: MergeStore>(
@@ -644,13 +656,6 @@ fn candidate(record: &MergeOperationRecord) -> ModelResult<&PublicationCandidate
         .candidate
         .as_ref()
         .ok_or_else(|| unreadable("publication candidate is missing"))
-}
-
-fn composition_message(record: &MergeOperationRecord) -> String {
-    format!(
-        "gwz merge: {}\n\nGWZ-Merge-ID: {}\nGWZ-Operation-ID: {}",
-        record.source_ref, record.merge_id, record.operation_id
-    )
 }
 
 fn file_sha256(path: &Path) -> Option<String> {
