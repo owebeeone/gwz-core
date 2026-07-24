@@ -1,8 +1,10 @@
 # GWZ Merge Implementation Plan
 
 Status: **active** (revised 2026-07-24; the corrected M2b and first public
-member-merge release gate are complete). Owner: Gianni. M2c explicit
-workspace-root participation is the next planned implementation wave.
+member-merge release gate are complete, and the god-file refactor prerequisite
+has passed its full technical gate). Owner: Gianni. M2c explicit workspace-root
+participation is the next planned implementation wave after the coordinated
+structural commit.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -1098,7 +1100,8 @@ deterministic order, while Python recovery guidance names its installed
 
 The final independent re-review reports no P0/P1/P2/P3 defect. It independently
 reran all 32 focused `g23` lifecycle tests and both scoped evidence rollback
-backend tests. M2c is unblocked.
+backend tests. M2c is behaviorally unblocked; its structural prerequisite is
+recorded below.
 
 ### First public member-merge release gate
 
@@ -1132,6 +1135,11 @@ redefine or strand the in-flight operation.
 
 Root work starts only after member-only continue, abort, and finalization pass
 M2b. It is not developed in parallel with the first finalization implementation.
+The zero-behavior-change god-file refactor in
+`../../dev-docs/GwzGodFileRefactorPlan.md` was implemented and passed its
+complete technical exit gate on 2026-07-24, including an independent review
+with no P0/P1/P2/P3 finding. M2c feature work may begin after that structural
+change is committed through the installed `gwz`.
 
 ### M2c-A — Root planning and execution
 
