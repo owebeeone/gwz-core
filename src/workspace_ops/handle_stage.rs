@@ -123,7 +123,7 @@ fn handle_open_merge_stage<B: GitBackend>(
     let all = request.all.unwrap_or(false);
     let narrowed = has_explicit_target_selection(request.meta.selection.as_ref());
     let targets = if all && narrowed {
-        selected_open_merge_targets(record, request.meta.selection.as_ref().unwrap())
+        selected_open_merge_targets(record, request.meta.selection.as_ref().unwrap())?
     } else {
         resolve_stage_targets(
             root,
@@ -163,7 +163,7 @@ fn handle_open_merge_stage<B: GitBackend>(
 fn selected_open_merge_targets(
     record: &merge::MergeOperationRecord,
     selection: &crate::Selection,
-) -> Vec<StageTarget> {
+) -> ModelResult<Vec<StageTarget>> {
     let included = selection
         .member_ids
         .iter()
@@ -171,22 +171,52 @@ fn selected_open_merge_targets(
         .chain(&selection.targets)
         .collect::<Vec<_>>();
     let excluded = selection.exclude_targets.iter().collect::<Vec<_>>();
-    let include_all =
-        selection.all.unwrap_or(false) || included.iter().any(|target| target.as_str() == "@all");
-    record
+    let token_matches = |target_id: &str, token: &str| {
+        matches!(token, "@all" | "@default")
+            || target_id == token
+            || record
+                .participants
+                .get(target_id)
+                .is_some_and(|participant| {
+                    participant.target_kind == merge::MergeTargetKind::Member
+                        && participant.path == token
+                })
+    };
+    let known = |token: &str| {
+        matches!(token, "@all" | "@default")
+            || record
+                .selected_targets
+                .iter()
+                .any(|target_id| token_matches(target_id, token))
+    };
+    for token in included.iter().chain(&excluded) {
+        if !known(token) {
+            return Err(ModelError::new(
+                ErrorCode::OpenOperation,
+                format!(
+                    "merge '{}' is open; selected add target '{}' is not a frozen merge participant",
+                    record.merge_id, token
+                ),
+            ));
+        }
+    }
+    let include_all = selection.all.unwrap_or(false)
+        || included.is_empty()
+        || included
+            .iter()
+            .any(|target| matches!(target.as_str(), "@all" | "@default"));
+    Ok(record
         .selected_targets
         .iter()
         .filter_map(|target_id| {
             let participant = record.participants.get(target_id)?;
             let selected = include_all
-                || included.iter().any(|target| {
-                    target.as_str() == target_id || target.as_str() == participant.path
-                });
-            let rejected = excluded.iter().any(|target| {
-                target.as_str() == "@all"
-                    || target.as_str() == target_id
-                    || target.as_str() == participant.path
-            });
+                || included
+                    .iter()
+                    .any(|target| token_matches(target_id, target));
+            let rejected = excluded
+                .iter()
+                .any(|target| token_matches(target_id, target));
             (selected && !rejected).then(|| StageTarget {
                 member_path: match participant.target_kind {
                     merge::MergeTargetKind::Member => Some(participant.path.clone()),
@@ -196,5 +226,116 @@ fn selected_open_merge_targets(
                 explicit: true,
             })
         })
-        .collect()
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open_record() -> merge::MergeOperationRecord {
+        serde_yaml::from_str(
+            r#"
+schema: gwz.merge-operation/v0
+record_schema_version: 0
+writer_version: test
+workspace_id: ws_test
+merge_id: merge_stage
+operation_id: op_stage
+state: awaiting_resolution
+source_ref: feature/x
+created_at: now
+baseline: {lock_sha256: lock, manifest_sha256: manifest}
+selected_targets: [mem_app, "@root"]
+participants:
+  mem_app:
+    path: app
+    target_kind: member
+    target_branch: main
+    before_commit: before
+    source_commit: source
+    commit_message: merge
+    state: conflicted
+  "@root":
+    path: "."
+    target_kind: root
+    target_branch: main
+    before_commit: before
+    source_commit: source
+    commit_message: merge
+    state: conflicted
+"#,
+        )
+        .unwrap()
+    }
+
+    fn selected(targets: &[&str]) -> crate::Selection {
+        crate::Selection {
+            targets: targets.iter().map(|target| (*target).to_owned()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn open_merge_selection_rejects_unknown_unselected_and_mixed_tokens() {
+        let record = open_record();
+        for targets in [
+            vec!["@rot"],
+            vec!["mem_not_selected"],
+            vec!["@root", "mem_not_selected"],
+        ] {
+            let error = selected_open_merge_targets(&record, &selected(&targets)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::OpenOperation);
+            assert!(error.message.contains(targets.last().unwrap()));
+        }
+    }
+
+    #[test]
+    fn open_merge_selection_keeps_frozen_order_and_supports_exclusion_only() {
+        let record = open_record();
+        let root = selected_open_merge_targets(&record, &selected(&["@root"])).unwrap();
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].member_path, None);
+
+        let without_root = selected_open_merge_targets(
+            &record,
+            &crate::Selection {
+                exclude_targets: vec!["@root".to_owned()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            without_root
+                .iter()
+                .map(|target| target.member_path.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("app")]
+        );
+    }
+
+    #[test]
+    fn open_merge_selection_expands_default_and_requires_literal_root_selector() {
+        let record = open_record();
+        let all = selected_open_merge_targets(&record, &selected(&["@default"])).unwrap();
+        assert_eq!(
+            all.iter()
+                .map(|target| target.member_path.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("app"), None]
+        );
+
+        let none = selected_open_merge_targets(
+            &record,
+            &crate::Selection {
+                exclude_targets: vec!["@default".to_owned()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(none.is_empty());
+
+        let error = selected_open_merge_targets(&record, &selected(&["."])).unwrap_err();
+        assert_eq!(error.code, ErrorCode::OpenOperation);
+    }
 }

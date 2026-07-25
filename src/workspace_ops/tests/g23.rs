@@ -26,7 +26,9 @@ mod open_operation_gate;
 mod root_abort;
 mod root_drift;
 mod root_recovery;
+mod root_stage;
 mod root_start;
+mod root_status;
 mod start;
 
 use fixtures::*;

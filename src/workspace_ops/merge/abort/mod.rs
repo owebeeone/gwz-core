@@ -76,9 +76,13 @@ fn abort_with_runtime<A: AbortRuntime, S: MergeStore>(
     }
 
     let evidence = preflight_evidence(runtime, root, &record)?;
-    record
-        .operation_drift
-        .retain(|drift| drift.kind != super::OperationDriftKind::RootCandidateStateChanged);
+    record.operation_drift.retain(|drift| {
+        !matches!(
+            drift.kind,
+            super::OperationDriftKind::RootCandidateMetadataInvalid
+                | super::OperationDriftKind::RootCandidateStateChanged
+        )
+    });
     let mut snapshot = runtime.snapshot(root, record)?;
     if evidence
         .as_ref()
@@ -87,9 +91,13 @@ fn abort_with_runtime<A: AbortRuntime, S: MergeStore>(
         super::root::normalize_evidence_observation(&mut snapshot)?;
     }
     if snapshot.record.state == OperationState::RollingBack && evidence.is_some() {
-        snapshot
-            .operation_drift
-            .retain(|drift| drift.kind != super::OperationDriftKind::RootCandidateStateChanged);
+        snapshot.operation_drift.retain(|drift| {
+            !matches!(
+                drift.kind,
+                super::OperationDriftKind::RootCandidateMetadataInvalid
+                    | super::OperationDriftKind::RootCandidateStateChanged
+            )
+        });
     }
     let preflight = preflight(&snapshot)?;
     record = snapshot.record;

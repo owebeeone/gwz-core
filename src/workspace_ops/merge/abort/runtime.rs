@@ -63,6 +63,13 @@ pub(super) trait AbortRuntime {
     ) -> ModelResult<bool> {
         Ok(false)
     }
+    fn root_evidence_rollback_is_exact(
+        &self,
+        _root: &Path,
+        _record: &MergeOperationRecord,
+    ) -> ModelResult<bool> {
+        Ok(false)
+    }
 }
 
 pub(super) struct GitAbortRuntime<'a, B>(pub(super) &'a B);
@@ -127,5 +134,13 @@ impl<B: GitBackend> AbortRuntime for GitAbortRuntime<'_, B> {
         record: &MergeOperationRecord,
     ) -> ModelResult<bool> {
         super::super::root::root_finalization_is_exact(self.0, root, record)
+    }
+
+    fn root_evidence_rollback_is_exact(
+        &self,
+        root: &Path,
+        record: &MergeOperationRecord,
+    ) -> ModelResult<bool> {
+        super::super::root::interrupted_evidence_rollback_is_exact(self.0, root, record)
     }
 }

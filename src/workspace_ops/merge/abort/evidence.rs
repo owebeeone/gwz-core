@@ -96,16 +96,22 @@ pub(super) fn preflight_evidence<A: AbortRuntime>(
         {
             return Ok(None);
         }
-        Some(RootEvidenceObservation::Baseline) => (
-            publication.composition_commit.clone().ok_or_else(|| {
-                ModelError::new(
-                    ErrorCode::MergeDrift,
-                    "published candidate has no recorded root evidence commit",
-                )
-                .with_member("@root", ".")
-            })?,
-            false,
-        ),
+        Some(RootEvidenceObservation::Baseline) => {
+            let interrupted_root_rollback = root_participant.is_some()
+                && record.state == OperationState::RollingBack
+                && !publication.evidence_rolled_back
+                && runtime.root_evidence_rollback_is_exact(root, record)?;
+            (
+                publication.composition_commit.clone().ok_or_else(|| {
+                    ModelError::new(
+                        ErrorCode::MergeDrift,
+                        "published candidate has no recorded root evidence commit",
+                    )
+                    .with_member("@root", ".")
+                })?,
+                interrupted_root_rollback,
+            )
+        }
         None => {
             return Err(ModelError::new(
                 ErrorCode::MergeDrift,
@@ -173,6 +179,8 @@ pub(super) fn rollback_evidence<A: AbortRuntime, S: MergeStore>(
     maybe_fail_evidence_rollback_after(EvidenceRollbackMutation::Marker)?;
     let marker_relative = format!("{}/{}.yaml", artifact::MARKER_DIR, evidence.marker_id);
     runtime.stage_paths(root, &[artifact::LOCK_PATH, &marker_relative])?;
+    #[cfg(test)]
+    maybe_fail_evidence_rollback_after(EvidenceRollbackMutation::Staging)?;
     if let Some(publication) = record.publication.as_mut() {
         publication.evidence_rolled_back = true;
     }
@@ -185,6 +193,7 @@ pub(crate) enum EvidenceRollbackMutation {
     Boundary,
     Lock,
     Marker,
+    Staging,
 }
 
 #[cfg(test)]

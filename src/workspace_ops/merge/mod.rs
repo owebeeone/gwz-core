@@ -165,7 +165,20 @@ pub fn acquire_workspace_mutation_guard(
     workspace: Option<&crate::WorkspaceRef>,
     command: crate::operation::OpenMergeCommand,
 ) -> ModelResult<WorkspaceMutationGuard> {
-    let root = crate::workspace_ops::resolve_workspace_root(start, workspace)?;
+    let root = if command == crate::operation::OpenMergeCommand::StageConflictResolution
+        && workspace
+            .and_then(|workspace| workspace.root.as_ref())
+            .is_none()
+    {
+        discover_open_before_manifest(&FileMergeStore, start)?
+            .map(|recovery| recovery.root)
+            .map_or_else(
+                || crate::workspace_ops::resolve_workspace_root(start, workspace),
+                Ok,
+            )?
+    } else {
+        crate::workspace_ops::resolve_workspace_root(start, workspace)?
+    };
     let lock = WorkspaceMutatorLock::acquire(&root)?;
     let store = FileMergeStore;
     let open = store.discover_open(&root)?;

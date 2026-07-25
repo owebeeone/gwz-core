@@ -233,6 +233,15 @@ pub trait GitBackend {
     ) -> ModelResult<GitBackupRefResult> {
         unsupported_backend("create_backup_ref")
     }
+    /// Delete an exact local preservation ref when it still has the recorded target.
+    fn delete_backup_ref_checked(
+        &self,
+        _path: &Path,
+        _name: &str,
+        _expected_target: &str,
+    ) -> ModelResult<()> {
+        unsupported_backend("delete_backup_ref_checked")
+    }
     /// Save staged, unstaged, and optionally untracked preservation work.
     fn stash_for_merge_preservation(
         &self,

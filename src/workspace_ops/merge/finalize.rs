@@ -79,11 +79,16 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
     if progress(record)?.candidate.is_none() {
         let prepared = match prepare_candidate(backend, root, record, context, &verified) {
             Ok(prepared) => prepared,
-            Err(error) if error.code == ErrorCode::MergeDrift => {
+            Err(CandidatePreparationError::Other(error)) if error.code == ErrorCode::MergeDrift => {
                 return block_root(store, root, record, emitter, &error.message);
             }
-            Err(error) => return Err(error),
+            Err(CandidatePreparationError::Metadata(error)) => {
+                record_root_metadata_invalid(store, root, record, emitter, &error.message)?;
+                return Err(error);
+            }
+            Err(CandidatePreparationError::Other(error)) => return Err(error),
         };
+        clear_root_metadata_drift(record);
         let root_merge_commit = super::root::root_merge_commit(record)?.map(str::to_owned);
         let publication = progress_mut(record)?;
         publication.candidate_lock_sha256 = Some(sha256(prepared.lock_yaml.as_bytes()));
@@ -156,7 +161,7 @@ fn verified_participants<B: GitBackend, S: MergeStore>(
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<Option<Vec<VerifiedMergeParticipant>>> {
     let mut observed_record = record.clone();
-    clear_root_drift(&mut observed_record);
+    clear_root_recovery_drift(&mut observed_record);
     let snapshot = super::status::snapshot_status(backend, root, observed_record)?;
     let root_finalization_exact = super::root::root_finalization_is_exact(backend, root, record)?;
     if !snapshot.operation_drift.is_empty()
@@ -209,25 +214,34 @@ fn verified_participants<B: GitBackend, S: MergeStore>(
         .map(Some)
 }
 
+enum CandidatePreparationError {
+    Metadata(ModelError),
+    Other(ModelError),
+}
+
 fn prepare_candidate<B: GitBackend>(
     backend: &B,
     root: &Path,
     record: &MergeOperationRecord,
     context: &OperationContext,
     verified: &[VerifiedMergeParticipant],
-) -> ModelResult<PublicationCandidate> {
-    let root_metadata = super::root::candidate_metadata(backend, root, record)?;
+) -> Result<PublicationCandidate, CandidatePreparationError> {
+    let root_metadata = super::root::candidate_metadata(backend, root, record)
+        .map_err(CandidatePreparationError::Metadata)?;
     let manifest = root_metadata.manifest;
     let mut lock = root_metadata.lock;
     let baseline_lock_yaml = root_metadata.baseline_lock_yaml;
     for target_id in &record.selected_targets {
-        let participant = record
-            .participants
-            .get(target_id)
-            .ok_or_else(|| unreadable(format!("participant '{target_id}' is missing")))?;
+        let participant = record.participants.get(target_id).ok_or_else(|| {
+            CandidatePreparationError::Other(unreadable(format!(
+                "participant '{target_id}' is missing"
+            )))
+        })?;
         if participant.target_kind == MergeTargetKind::Root {
             if target_id != "@root" || participant.path != "." {
-                return Err(unreadable("root participant identity is inconsistent"));
+                return Err(CandidatePreparationError::Other(unreadable(
+                    "root participant identity is inconsistent",
+                )));
             }
             continue;
         }
@@ -235,22 +249,35 @@ fn prepare_candidate<B: GitBackend>(
             .members
             .iter()
             .find(|member| member.id == *target_id && member.active)
-            .ok_or_else(|| metadata(format!("active member '{target_id}' is missing")))?;
-        let locked = lock
-            .members
-            .get_mut(target_id)
-            .ok_or_else(|| metadata(format!("lock member '{target_id}' is missing")))?;
+            .ok_or_else(|| {
+                CandidatePreparationError::Metadata(
+                    metadata(format!("active member '{target_id}' is missing"))
+                        .with_member(target_id, &participant.path),
+                )
+            })?;
+        let locked = lock.members.get_mut(target_id).ok_or_else(|| {
+            CandidatePreparationError::Metadata(
+                metadata(format!("lock member '{target_id}' is missing"))
+                    .with_member(target_id, &participant.path),
+            )
+        })?;
         if locked.path != participant.path
             || locked.path != member.path
             || locked.source_id.as_deref() != Some(member.source_id.as_str())
             || locked.source_kind != member.source_kind
         {
-            return Err(metadata(format!(
-                "member '{target_id}' identity changed before finalization"
-            )));
+            return Err(CandidatePreparationError::Metadata(
+                metadata(format!(
+                    "member '{target_id}' identity changed before finalization"
+                ))
+                .with_member(target_id, &participant.path),
+            ));
         }
         let result = participant.resulting_commit.clone().ok_or_else(|| {
-            unreadable(format!("participant '{target_id}' has no resulting commit"))
+            CandidatePreparationError::Other(
+                unreadable(format!("participant '{target_id}' has no resulting commit"))
+                    .with_member(target_id, &participant.path),
+            )
         })?;
         locked.commit = Some(result);
         locked.branch = Some(participant.target_branch.clone());
@@ -258,17 +285,22 @@ fn prepare_candidate<B: GitBackend>(
         locked.dirty = Some(false);
         locked.materialized = Some(true);
     }
-    let lock_yaml = lock.to_yaml()?;
-    let marker_id = crate::workspace_ops::handle_commit::new_uuid_v7()?;
-    let root_head = backend.head(root)?;
+    let lock_yaml = lock
+        .to_yaml()
+        .map_err(CandidatePreparationError::Metadata)?;
+    let marker_id = crate::workspace_ops::handle_commit::new_uuid_v7()
+        .map_err(CandidatePreparationError::Other)?;
+    let root_head = backend
+        .head(root)
+        .map_err(CandidatePreparationError::Other)?;
     if root_head.is_detached
         || root_head.branch.is_none()
         || root_head.commit != root_metadata.evidence_parent
         || root_head.branch.as_deref() != Some(root_metadata.root_branch.as_str())
     {
-        return Err(root_drift(
+        return Err(CandidatePreparationError::Other(root_drift(
             "workspace root changed before candidate creation",
-        ));
+        )));
     }
     let actor_id = context
         .attribution
@@ -276,7 +308,8 @@ fn prepare_candidate<B: GitBackend>(
         .and_then(|attribution| attribution.actor.as_ref())
         .map(|actor| actor.actor_id.clone())
         .unwrap_or_else(|| "unknown".to_owned());
-    let merge = marker_merge_from_verified(record, verified)?;
+    let merge =
+        marker_merge_from_verified(record, verified).map_err(CandidatePreparationError::Other)?;
     let mut committed_targets = record
         .selected_targets
         .iter()
@@ -313,9 +346,10 @@ fn prepare_candidate<B: GitBackend>(
         members: lock.members.clone(),
         merge: Some(merge),
     };
-    let marker_yaml = marker.to_yaml()?;
+    let marker_yaml = marker.to_yaml().map_err(CandidatePreparationError::Other)?;
     let (baseline_boundary, boundary_text) =
-        workspace_exclude_candidate(backend, root, &manifest, &lock)?;
+        workspace_exclude_candidate(backend, root, &manifest, &lock)
+            .map_err(CandidatePreparationError::Other)?;
     Ok(PublicationCandidate {
         marker_id,
         root_branch: root_metadata.root_branch,
@@ -603,10 +637,36 @@ fn block_root<S: MergeStore>(
     Ok(false)
 }
 
+fn record_root_metadata_invalid<S: MergeStore>(
+    store: &S,
+    root: &Path,
+    record: &mut MergeOperationRecord,
+    emitter: &EventEmitter<'_>,
+    message: &str,
+) -> ModelResult<()> {
+    clear_root_metadata_drift(record);
+    record.operation_drift.push(OperationDrift {
+        kind: OperationDriftKind::RootCandidateMetadataInvalid,
+        message: message.to_owned(),
+    });
+    super::persist_merge_record(store, root, record, emitter)
+}
+
 fn clear_root_drift(record: &mut MergeOperationRecord) {
     record
         .operation_drift
         .retain(|drift| drift.kind != OperationDriftKind::RootCandidateStateChanged);
+}
+
+fn clear_root_metadata_drift(record: &mut MergeOperationRecord) {
+    record
+        .operation_drift
+        .retain(|drift| drift.kind != OperationDriftKind::RootCandidateMetadataInvalid);
+}
+
+fn clear_root_recovery_drift(record: &mut MergeOperationRecord) {
+    clear_root_drift(record);
+    clear_root_metadata_drift(record);
 }
 
 fn has_changed_participant(record: &MergeOperationRecord) -> bool {

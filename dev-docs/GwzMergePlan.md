@@ -1275,6 +1275,46 @@ below 500 LOC, and the enlarged planning tests were split into
 Goal: safely preserve eligible post-merge drift before coordinated rollback and
 provide explicit lifecycle cleanup.
 
+### M3-I0 — Preservation and cleanup interface checkpoint
+
+Status: **complete; isolated M3-A backend work unblocked** (2026-07-25).
+Preserve-abort and GC lifecycle integration remain blocked until the focused
+M2c review is clean.
+
+The lead freezes these contracts before M3 lifecycle work:
+
+- existing taut request, response, preservation, and lifecycle values remain
+  unchanged;
+- private refs use
+  `refs/gwz/merge/<merge-id>/<target-key>/head`, where a member's stable target
+  key is its member id and the root key is `root`;
+- `create_backup_ref` is idempotent only at the recorded target and fails
+  closed on a collision; the additive `delete_backup_ref_checked` seam removes
+  only that exact recorded target and is idempotent when already absent;
+- one coordinated bundle uses deterministic id `stash_<merge-id>` and native
+  message prefix `gwz:stash_<merge-id>:` across its participant repositories;
+- `stash_for_merge_preservation` includes untracked files, excludes ignored
+  files, rejects unresolved or foreign integration state, returns a verified
+  object id, and treats later work after an existing preservation stash as
+  drift rather than silently adopting it;
+- each verified artifact is recorded immediately in the owning participant's
+  existing `PreservationEvidence`; a retry re-verifies recorded object ids;
+- the operation enters durable `preserving` before artifact mutation, and the
+  existing reverse-order abort implementation is not entered until every
+  required artifact for every participant is verified;
+- an explicit root uses the same evidence model and the existing coordinated
+  stash-bundle store, while ordinary `gwz stash push` remains member-only;
+- explicit GC loads one terminal archived record, checked-deletes every private
+  ref it owns, and only then removes that record; it never drops native stashes
+  or coordinated stash bundles; and
+- unqualified GC applies only ordinary last-20 retention. Records owning any
+  preservation evidence remain exempt.
+
+`MergeStore` retains its existing `load` and `gc` seams. M3 adds archived
+enumeration only for read-only status projection; Git evidence cleanup remains
+core-owned because the store does not know repository paths or backend
+postconditions.
+
 ### M3-A — Preservation backend
 
 Owner: Git backend agent. Budget: at most 500 handwritten changed lines.

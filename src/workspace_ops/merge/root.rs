@@ -10,7 +10,9 @@ use crate::model::ModelResult;
 
 use super::MergeOperationRecord;
 
-pub(in crate::workspace_ops::merge) use abort::normalize_evidence_observation;
+pub(in crate::workspace_ops::merge) use abort::{
+    interrupted_evidence_rollback_is_exact, normalize_evidence_observation,
+};
 
 pub(in crate::workspace_ops::merge) use finalization::{
     candidate_metadata, evidence_parent, root_finalization_is_exact, root_merge_commit,

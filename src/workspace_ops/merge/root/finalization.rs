@@ -29,6 +29,14 @@ pub(in crate::workspace_ops::merge) fn candidate_metadata<B: GitBackend>(
     root: &Path,
     record: &MergeOperationRecord,
 ) -> ModelResult<CandidateMetadata> {
+    candidate_metadata_inner(backend, root, record).map_err(root_context)
+}
+
+fn candidate_metadata_inner<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &MergeOperationRecord,
+) -> ModelResult<CandidateMetadata> {
     let root_participant = root_participant(record)?;
     let (baseline_manifest_bytes, baseline_lock_bytes, evidence_parent, root_branch) =
         if let Some(participant) = root_participant {
@@ -145,13 +153,15 @@ pub(in crate::workspace_ops::merge) fn root_finalization_is_exact<B: GitBackend>
     root: &Path,
     record: &MergeOperationRecord,
 ) -> ModelResult<bool> {
-    if root_participant(record)?.is_none()
-        || record
-            .publication
-            .as_ref()
-            .and_then(|publication| publication.candidate.as_ref())
-            .is_none()
+    if record
+        .publication
+        .as_ref()
+        .and_then(|publication| publication.candidate.as_ref())
+        .is_none()
     {
+        return Ok(false);
+    }
+    if root_participant(record)?.is_none() {
         return Ok(false);
     }
     if !matches!(
@@ -257,4 +267,12 @@ fn metadata(message: impl Into<String>) -> ModelError {
 
 fn root_drift(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::MergeDrift, message).with_member("@root", ".")
+}
+
+fn root_context(error: ModelError) -> ModelError {
+    if error.member_id.is_some() {
+        error
+    } else {
+        error.with_member("@root", ".")
+    }
 }

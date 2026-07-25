@@ -84,6 +84,7 @@ fn evidence_abort_resumes_after_each_artifact_restoration_mutation() {
         EvidenceRollbackMutation::Boundary,
         EvidenceRollbackMutation::Lock,
         EvidenceRollbackMutation::Marker,
+        EvidenceRollbackMutation::Staging,
     ] {
         let temp = TempDir::new(&format!("merge-evidence-artifact-abort-{mutation:?}"));
         let backend = crate::git::Git2Backend::new();
