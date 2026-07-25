@@ -8,7 +8,6 @@ use crate::artifact::{self, CreatedByArtifact, MarkerArtifact, MarkerRootArtifac
 use crate::git::{GitBackend, GitScopedCommitResult};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext};
-use crate::workspace::WORKSPACE_MANIFEST;
 use crate::workspace_ops::{
     publish_workspace_exclude_candidate, workspace_exclude_candidate, workspace_exclude_path,
 };
@@ -85,6 +84,7 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
             }
             Err(error) => return Err(error),
         };
+        let root_merge_commit = super::root::root_merge_commit(record)?.map(str::to_owned);
         let publication = progress_mut(record)?;
         publication.candidate_lock_sha256 = Some(sha256(prepared.lock_yaml.as_bytes()));
         publication.candidate_marker_path = Some(format!(
@@ -92,6 +92,7 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
             artifact::MARKER_DIR,
             prepared.marker_id
         ));
+        publication.root_merge_commit = root_merge_commit;
         publication.candidate = Some(prepared);
         super::persist_merge_record(store, root, record, emitter)?;
     }
@@ -157,11 +158,14 @@ fn verified_participants<B: GitBackend, S: MergeStore>(
     let mut observed_record = record.clone();
     clear_root_drift(&mut observed_record);
     let snapshot = super::status::snapshot_status(backend, root, observed_record)?;
+    let root_finalization_exact = super::root::root_finalization_is_exact(backend, root, record)?;
     if !snapshot.operation_drift.is_empty()
         || snapshot
             .participants
-            .values()
-            .any(|participant| !participant.drift.is_empty())
+            .iter()
+            .any(|(target_id, participant)| {
+                !(participant.drift.is_empty() || target_id == "@root" && root_finalization_exact)
+            })
     {
         return Ok(None);
     }
@@ -185,7 +189,12 @@ fn verified_participants<B: GitBackend, S: MergeStore>(
                 .participants
                 .get(target_id)
                 .ok_or_else(|| unreadable(format!("merge observation '{target_id}' is missing")))?;
-            let resulting_commit = observed.live_commit.clone().ok_or_else(|| {
+            let resulting_commit = if target_id == "@root" && root_finalization_exact {
+                durable.resulting_commit.clone()
+            } else {
+                observed.live_commit.clone()
+            }
+            .ok_or_else(|| {
                 recovery(format!(
                     "verified participant '{target_id}' has no live commit"
                 ))
@@ -207,29 +216,20 @@ fn prepare_candidate<B: GitBackend>(
     context: &OperationContext,
     verified: &[VerifiedMergeParticipant],
 ) -> ModelResult<PublicationCandidate> {
-    require_baseline_artifacts(root, record)?;
-    let manifest = artifact::read_manifest(root)?;
-    let mut lock = artifact::read_lock(root)?;
-    let baseline_lock_yaml =
-        fs::read_to_string(root.join(artifact::LOCK_PATH)).map_err(|error| {
-            ModelError::new(
-                ErrorCode::IoError,
-                format!("failed to read merge baseline lock: {error}"),
-            )
-        })?;
-    if manifest.workspace.id != record.workspace_id || lock.workspace_id != record.workspace_id {
-        return Err(metadata("workspace identity changed before finalization"));
-    }
+    let root_metadata = super::root::candidate_metadata(backend, root, record)?;
+    let manifest = root_metadata.manifest;
+    let mut lock = root_metadata.lock;
+    let baseline_lock_yaml = root_metadata.baseline_lock_yaml;
     for target_id in &record.selected_targets {
         let participant = record
             .participants
             .get(target_id)
             .ok_or_else(|| unreadable(format!("participant '{target_id}' is missing")))?;
-        if participant.target_kind != MergeTargetKind::Member {
-            return Err(ModelError::new(
-                ErrorCode::RootMergeNotYetSupported,
-                "root participant finalization is deferred to M2c",
-            ));
+        if participant.target_kind == MergeTargetKind::Root {
+            if target_id != "@root" || participant.path != "." {
+                return Err(unreadable("root participant identity is inconsistent"));
+            }
+            continue;
         }
         let member = manifest
             .members
@@ -263,12 +263,8 @@ fn prepare_candidate<B: GitBackend>(
     let root_head = backend.head(root)?;
     if root_head.is_detached
         || root_head.branch.is_none()
-        || root_head.commit != record.baseline.root_head
-        || record
-            .baseline
-            .root_branch
-            .as_ref()
-            .is_some_and(|branch| root_head.branch.as_deref() != Some(branch.as_str()))
+        || root_head.commit != root_metadata.evidence_parent
+        || root_head.branch.as_deref() != Some(root_metadata.root_branch.as_str())
     {
         return Err(root_drift(
             "workspace root changed before candidate creation",
@@ -295,7 +291,9 @@ fn prepare_candidate<B: GitBackend>(
         })
         .cloned()
         .collect::<Vec<_>>();
-    committed_targets.push("@root".to_owned());
+    if !committed_targets.iter().any(|target| target == "@root") {
+        committed_targets.push("@root".to_owned());
+    }
     let marker = MarkerArtifact {
         schema: artifact::MARKER_SCHEMA.to_owned(),
         gwz_commit_id: marker_id.clone(),
@@ -307,7 +305,7 @@ fn prepare_candidate<B: GitBackend>(
         },
         root: MarkerRootArtifact {
             path: ".".to_owned(),
-            before_commit: record.baseline.root_head.clone(),
+            before_commit: root_metadata.evidence_parent.clone(),
             branch: root_head.branch.clone(),
         },
         selected_targets: record.selected_targets.clone(),
@@ -320,12 +318,7 @@ fn prepare_candidate<B: GitBackend>(
         workspace_exclude_candidate(backend, root, &manifest, &lock)?;
     Ok(PublicationCandidate {
         marker_id,
-        root_branch: record
-            .baseline
-            .root_branch
-            .clone()
-            .or(root_head.branch)
-            .expect("attached root branch was checked"),
+        root_branch: root_metadata.root_branch,
         actor_id,
         baseline_lock_yaml,
         lock_yaml,
@@ -348,7 +341,7 @@ fn ensure_composition_commit<B: GitBackend, S: MergeStore>(
 ) -> ModelResult<bool> {
     let files = candidate_files(record)?;
     let message = composition_message(record);
-    let expected = record.baseline.root_head.as_deref();
+    let expected = super::root::evidence_parent(record)?;
     let candidate = candidate(record)?;
     let head = backend.head(root)?;
     let had_recorded_composition = progress(record)?.composition_commit.is_some();
@@ -466,7 +459,7 @@ fn verify_publication<B: GitBackend, S: MergeStore>(
     let result = backend.verify_gwz_paths_commit(
         root,
         &commit,
-        record.baseline.root_head.as_deref(),
+        super::root::evidence_parent(record)?,
         &candidate_files(record)?,
         &composition_message(record),
     );
@@ -498,9 +491,11 @@ fn validate_candidate(record: &MergeOperationRecord) -> ModelResult<()> {
     let publication = progress(record)?;
     let lock_sha256 = sha256(candidate.lock_yaml.as_bytes());
     let marker_path = format!("{}/{}.yaml", artifact::MARKER_DIR, candidate.marker_id);
+    let root_participated = publication.root_merge_commit.is_some();
     if publication.candidate_lock_sha256.as_deref() != Some(lock_sha256.as_str())
         || publication.candidate_marker_path.as_deref() != Some(marker_path.as_str())
-        || sha256(candidate.baseline_lock_yaml.as_bytes()) != record.baseline.lock_sha256
+        || (!root_participated
+            && sha256(candidate.baseline_lock_yaml.as_bytes()) != record.baseline.lock_sha256)
         || candidate.baseline_boundary_sha256 != sha256(candidate.baseline_boundary_text.as_bytes())
         || candidate.marker_sha256 != sha256(candidate.marker_yaml.as_bytes())
         || candidate.boundary_sha256 != sha256(candidate.boundary_text.as_bytes())
@@ -509,6 +504,7 @@ fn validate_candidate(record: &MergeOperationRecord) -> ModelResult<()> {
             .root_branch
             .as_ref()
             .is_some_and(|branch| branch != &candidate.root_branch)
+        || publication.root_merge_commit.as_deref() != super::root::root_merge_commit(record)?
     {
         return Err(unreadable("persisted merge candidate hashes do not match"));
     }
@@ -611,19 +607,6 @@ fn clear_root_drift(record: &mut MergeOperationRecord) {
     record
         .operation_drift
         .retain(|drift| drift.kind != OperationDriftKind::RootCandidateStateChanged);
-}
-
-fn require_baseline_artifacts(root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
-    if file_sha256(&root.join(artifact::LOCK_PATH)).as_deref()
-        != Some(record.baseline.lock_sha256.as_str())
-        || file_sha256(&root.join(WORKSPACE_MANIFEST)).as_deref()
-            != Some(record.baseline.manifest_sha256.as_str())
-    {
-        return Err(root_drift(
-            "workspace manifest or lock changed before candidate creation",
-        ));
-    }
-    Ok(())
 }
 
 fn has_changed_participant(record: &MergeOperationRecord) -> bool {

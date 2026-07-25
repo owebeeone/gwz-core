@@ -33,7 +33,8 @@ pub(super) fn classify_candidate_publication(
     let lock = file_sha256(&root.join(artifact::LOCK_PATH));
     let marker = file_sha256(&artifact::marker_path(root, &candidate.marker_id));
     let boundary = file_sha256(&workspace_exclude_path(root));
-    let baseline_lock = lock.as_deref() == Some(record.baseline.lock_sha256.as_str());
+    let baseline_lock_sha256 = sha256(candidate.baseline_lock_yaml.as_bytes());
+    let baseline_lock = lock.as_deref() == Some(baseline_lock_sha256.as_str());
     let candidate_lock = lock.as_deref() == publication.candidate_lock_sha256.as_deref();
     let marker_absent = marker.is_none();
     let candidate_marker = marker.as_deref() == Some(candidate.marker_sha256.as_str());
@@ -67,6 +68,11 @@ pub(super) fn publication_prefix_allowed(
         PublicationStep::PublishingCandidate => true,
         PublicationStep::VerifyingPublication | PublicationStep::Complete => {
             prefix == CandidatePublicationPrefix::Boundary
+                || (prefix == CandidatePublicationPrefix::Marker
+                    && progress(record)?.candidate_lock_sha256.as_deref()
+                        == Some(sha256(candidate(record)?.baseline_lock_yaml.as_bytes()).as_str())
+                    && candidate(record)?.boundary_sha256
+                        == candidate(record)?.baseline_boundary_sha256)
         }
     })
 }
@@ -88,7 +94,8 @@ pub(super) fn observe_root_evidence<B: GitBackend>(
     {
         return Ok(None);
     }
-    if head.commit == record.baseline.root_head {
+    let expected_parent = super::root::evidence_parent(record)?;
+    if head.commit.as_deref() == expected_parent {
         return Ok(Some(RootEvidenceObservation::Baseline));
     }
     let Some(commit) = head.commit.as_deref() else {
@@ -105,7 +112,7 @@ pub(super) fn observe_root_evidence<B: GitBackend>(
     let result = backend.verify_gwz_paths_commit(
         root,
         commit,
-        record.baseline.root_head.as_deref(),
+        expected_parent,
         &candidate_files(record)?,
         &composition_message(record),
     );

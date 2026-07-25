@@ -155,3 +155,7 @@ use resolution_race_tests::*;
 mod resolution_validation_tests;
 #[cfg(test)]
 use resolution_validation_tests::*;
+
+#[cfg(test)]
+#[path = "start/tests/root_execution.rs"]
+mod root_execution_tests;

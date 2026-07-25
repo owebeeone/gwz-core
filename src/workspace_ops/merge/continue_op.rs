@@ -9,8 +9,8 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext, WorkspaceMutatorLock};
 
 use super::{
-    MergeOperationRecord, MergeParticipantRecord, MergeRecordError, MergeStore, MergeTargetKind,
-    OperationState, ParticipantState, PendingCommitSpec, PendingGitSignature, PendingMergeAction,
+    MergeOperationRecord, MergeParticipantRecord, MergeRecordError, MergeStore, OperationState,
+    ParticipantState, PendingCommitSpec, PendingGitSignature, PendingMergeAction,
     PendingMergeActionKind, PendingMergeExpectedResult,
 };
 
@@ -351,16 +351,6 @@ fn preflight<B: GitBackend>(
     record: &MergeOperationRecord,
     attribution: Option<&crate::model::OperationAttribution>,
 ) -> ModelResult<Vec<ContinueAction>> {
-    if let Some((target_id, _)) = record
-        .participants
-        .iter()
-        .find(|(_, participant)| participant.target_kind == MergeTargetKind::Root)
-    {
-        return Err(ModelError::new(
-            ErrorCode::RootMergeNotYetSupported,
-            format!("merge participant '{target_id}' targets the workspace root"),
-        ));
-    }
     let snapshot = super::status::snapshot_status(backend, root, record.clone())?;
     if let Some(drift) = snapshot.operation_drift.first() {
         return Err(ModelError::new(

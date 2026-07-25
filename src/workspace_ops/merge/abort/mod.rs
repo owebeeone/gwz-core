@@ -16,7 +16,7 @@ use self::{
     reconciliation::apply_pending_reconciliations,
     runtime::{AbortRuntime, GitAbortRuntime},
 };
-use super::{MergeStore, MergeTargetKind, OperationState};
+use super::{MergeStore, OperationState};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext, WorkspaceMutatorLock};
@@ -59,16 +59,6 @@ fn abort_with_runtime<A: AbortRuntime, S: MergeStore>(
         return closed_or_missing(store, root, requested_id, context, emitter);
     };
     super::validate::validate_open_merge_id(requested_id, &record.merge_id)?;
-    let has_root_participant = record
-        .participants
-        .values()
-        .any(|participant| participant.target_kind == MergeTargetKind::Root);
-    if has_root_participant {
-        return Err(ModelError::new(
-            ErrorCode::RootMergeNotYetSupported,
-            "coordinated abort for root state is not available",
-        ));
-    }
     if record.state == OperationState::Completed {
         return Err(ModelError::new(
             ErrorCode::MergeRecoveryRequired,
@@ -90,6 +80,12 @@ fn abort_with_runtime<A: AbortRuntime, S: MergeStore>(
         .operation_drift
         .retain(|drift| drift.kind != super::OperationDriftKind::RootCandidateStateChanged);
     let mut snapshot = runtime.snapshot(root, record)?;
+    if evidence
+        .as_ref()
+        .is_some_and(|evidence| evidence.root_participant_evidence_present)
+    {
+        super::root::normalize_evidence_observation(&mut snapshot)?;
+    }
     if snapshot.record.state == OperationState::RollingBack && evidence.is_some() {
         snapshot
             .operation_drift
@@ -133,12 +129,10 @@ fn abort_with_runtime<A: AbortRuntime, S: MergeStore>(
     }
     if let Some(evidence) = evidence.as_ref() {
         rollback_evidence(runtime, store, root, &mut record, evidence, emitter)?;
+        verify_evidence_baseline(runtime, root, evidence)?;
     }
     rollback_participants(runtime, store, root, &mut record, &preflight, emitter)?;
     verify_baseline(root, &record)?;
-    if let Some(evidence) = evidence.as_ref() {
-        verify_evidence_baseline(runtime, root, evidence)?;
-    }
     super::persist_operation_transition(
         store,
         root,

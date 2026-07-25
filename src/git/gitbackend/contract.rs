@@ -11,6 +11,18 @@ pub trait GitBackend {
             "commit_exists is not implemented by this GitBackend",
         ))
     }
+    /// Read one repository-relative file from the exact committed tree.
+    ///
+    /// This is read-only, never resolves a symbolic revision, and returns
+    /// `None` only when the path is absent from the specified commit.
+    fn read_file_at_commit(
+        &self,
+        _path: &Path,
+        _commit: &str,
+        _relative_path: &str,
+    ) -> ModelResult<Option<Vec<u8>>> {
+        unsupported_backend("read_file_at_commit")
+    }
     /// Return whether `commit` is an exact two-parent merge commit with the
     /// supplied ordered parents and byte-exact message. This is read-only and
     /// never resolves an abbreviation or fetches a missing object.

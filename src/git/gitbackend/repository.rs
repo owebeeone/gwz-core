@@ -24,6 +24,42 @@ pub(super) fn commit_exists(_backend: &Git2Backend, path: &Path, oid: &str) -> M
     Ok(object.peel_to_commit().is_ok())
 }
 
+pub(super) fn read_file_at_commit(
+    _backend: &Git2Backend,
+    path: &Path,
+    commit: &str,
+    relative_path: &str,
+) -> ModelResult<Option<Vec<u8>>> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            format!("committed file path must be normalized and relative: '{relative_path}'"),
+        ));
+    }
+    let repo = open_repo(path)?;
+    let oid = git2::Oid::from_str(commit).map_err(git_error)?;
+    let commit = repo.find_commit(oid).map_err(git_error)?;
+    let tree = commit.tree().map_err(git_error)?;
+    let entry = match tree.get_path(relative) {
+        Ok(entry) => entry,
+        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(error) => return Err(git_error(error)),
+    };
+    let object = entry.to_object(&repo).map_err(git_error)?;
+    let blob = object.as_blob().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::GitCommandFailed,
+            format!("committed path '{relative_path}' is not a file"),
+        )
+    })?;
+    Ok(Some(blob.content().to_vec()))
+}
+
 pub(super) fn create_repo(_backend: &Git2Backend, path: &Path) -> ModelResult<GitCreateResult> {
     let mut opts = git2::RepositoryInitOptions::new();
     opts.bare(false).no_reinit(true).initial_head("main");

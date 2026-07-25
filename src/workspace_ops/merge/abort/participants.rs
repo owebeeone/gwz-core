@@ -5,7 +5,6 @@ use super::{
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::EventEmitter;
-use crate::workspace::MemberPath;
 use std::path::Path;
 
 pub(super) fn rollback_participants<A: AbortRuntime, S: MergeStore>(
@@ -24,7 +23,8 @@ pub(super) fn rollback_participants<A: AbortRuntime, S: MergeStore>(
                     format!("merge record is missing participant '{target_id}'"),
                 )
             })?;
-            let path = root.join(MemberPath::parse(&participant.path)?.as_str());
+            let path =
+                super::super::status::validated_participant_path(root, &target_id, participant)?;
             let prior = participant.state;
             if matches!(
                 prior,

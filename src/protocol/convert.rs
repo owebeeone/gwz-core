@@ -171,13 +171,21 @@ impl From<&model::OperationPolicy> for generated::OperationPolicy {
 
 impl From<&model::ModelError> for generated::GwzError {
     fn from(value: &model::ModelError) -> Self {
-        let has_member_context = value.member_id.is_some() || value.member_path.is_some();
+        let target_kind = if value.member_id.as_deref() == Some("@root")
+            && value.member_path.as_deref() == Some(".")
+        {
+            Some(generated::TargetKind::Root)
+        } else if value.member_id.is_some() || value.member_path.is_some() {
+            Some(generated::TargetKind::Member)
+        } else {
+            None
+        };
         Self {
             code: value.code.into(),
             message: value.message.clone(),
             member_id: value.member_id.clone(),
             member_path: value.member_path.clone(),
-            target_kind: has_member_context.then_some(generated::TargetKind::Member),
+            target_kind,
             detail: None,
         }
     }
@@ -260,5 +268,18 @@ mod tests {
         assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
         assert_eq!(error.member_path.as_deref(), Some("repos/lib"));
         assert_eq!(error.target_kind, Some(generated::TargetKind::Member));
+    }
+
+    #[test]
+    fn model_error_root_context_converts_to_structured_root_fields() {
+        let model_error =
+            model::ModelError::new(model::ErrorCode::MergeDrift, "post-merge work exists")
+                .with_member("@root", ".");
+
+        let error = generated::GwzError::from(&model_error);
+
+        assert_eq!(error.member_id.as_deref(), Some("@root"));
+        assert_eq!(error.member_path.as_deref(), Some("."));
+        assert_eq!(error.target_kind, Some(generated::TargetKind::Root));
     }
 }

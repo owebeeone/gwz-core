@@ -56,6 +56,13 @@ pub(super) trait AbortRuntime {
             "abort runtime does not support root evidence staging",
         ))
     }
+    fn root_finalization_is_exact(
+        &self,
+        _root: &Path,
+        _record: &MergeOperationRecord,
+    ) -> ModelResult<bool> {
+        Ok(false)
+    }
 }
 
 pub(super) struct GitAbortRuntime<'a, B>(pub(super) &'a B);
@@ -112,5 +119,13 @@ impl<B: GitBackend> AbortRuntime for GitAbortRuntime<'_, B> {
 
     fn stage_paths(&self, path: &Path, paths: &[&str]) -> ModelResult<()> {
         self.0.stage_paths(path, paths).map(|_| ())
+    }
+
+    fn root_finalization_is_exact(
+        &self,
+        root: &Path,
+        record: &MergeOperationRecord,
+    ) -> ModelResult<bool> {
+        super::super::root::root_finalization_is_exact(self.0, root, record)
     }
 }

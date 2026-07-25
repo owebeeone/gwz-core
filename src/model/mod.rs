@@ -84,7 +84,12 @@ impl ModelError {
     ) -> Self {
         let member_id = member_id.into();
         let member_path = member_path.into();
-        self.message = format!("member '{member_id}' at '{member_path}': {}", self.message);
+        let target = if member_id == "@root" && member_path == "." {
+            "workspace root '@root' at '.'".to_owned()
+        } else {
+            format!("member '{member_id}' at '{member_path}'")
+        };
+        self.message = format!("{target}: {}", self.message);
         self.member_id = Some(member_id);
         self.member_path = Some(member_path);
         self
@@ -634,6 +639,19 @@ mod tests {
         assert_eq!(
             error.message,
             "member 'mem_a' at 'repos/a': revspec not found"
+        );
+    }
+
+    #[test]
+    fn model_error_formats_the_workspace_root_as_a_root_target() {
+        let error = ModelError::new(ErrorCode::MergeDrift, "post-merge work exists")
+            .with_member("@root", ".");
+
+        assert_eq!(error.member_id.as_deref(), Some("@root"));
+        assert_eq!(error.member_path.as_deref(), Some("."));
+        assert_eq!(
+            error.message,
+            "workspace root '@root' at '.': post-merge work exists"
         );
     }
 

@@ -1,6 +1,6 @@
 use super::{
     super::{
-        MergeOperationRecord, MergeStore, OperationState,
+        MergeOperationRecord, MergeStore, MergeTargetKind, OperationState,
         publication::{
             CandidatePublicationPrefix, RootEvidenceObservation, candidate_files,
             classify_candidate_publication, composition_message, publication_prefix_allowed,
@@ -23,6 +23,7 @@ pub(super) struct EvidenceRollback {
     baseline_boundary_text: String,
     candidate_files: Vec<GitCandidateFile>,
     composition_message: String,
+    pub(super) root_participant_evidence_present: bool,
 }
 
 pub(super) fn preflight_evidence<A: AbortRuntime>(
@@ -49,6 +50,20 @@ pub(super) fn preflight_evidence<A: AbortRuntime>(
         }
         return Ok(None);
     };
+    let root_participant = record.participants.get("@root").filter(|participant| {
+        participant.target_kind == MergeTargetKind::Root && participant.path == "."
+    });
+    if publication.evidence_rolled_back
+        && let Some(participant) = root_participant
+    {
+        let head = runtime.head(root)?;
+        if !head.is_detached
+            && head.branch.as_deref() == Some(participant.target_branch.as_str())
+            && head.commit.as_deref() == Some(participant.before_commit.as_str())
+        {
+            return Ok(None);
+        }
+    }
     let prefix = classify_candidate_publication(root, record)?.ok_or_else(|| {
         ModelError::new(
             ErrorCode::MergeDrift,
@@ -64,23 +79,33 @@ pub(super) fn preflight_evidence<A: AbortRuntime>(
         .with_member("@root", "."));
     }
     let observation = runtime.observe_root_evidence(root, record)?;
-    let composition_commit = match observation {
-        Some(RootEvidenceObservation::Composition(result)) => result.commit,
+    let (composition_commit, root_participant_evidence_present) = match observation {
+        Some(RootEvidenceObservation::Composition(result)) => {
+            if root_participant.is_some() && !runtime.root_finalization_is_exact(root, record)? {
+                return Err(ModelError::new(
+                    ErrorCode::MergeDrift,
+                    "workspace root contains post-merge work that must be preserved or removed before abort",
+                )
+                .with_member("@root", "."));
+            }
+            (result.commit, root_participant.is_some())
+        }
         Some(RootEvidenceObservation::Baseline)
             if publication.composition_commit.is_none()
                 && prefix == CandidatePublicationPrefix::Baseline =>
         {
             return Ok(None);
         }
-        Some(RootEvidenceObservation::Baseline) => {
+        Some(RootEvidenceObservation::Baseline) => (
             publication.composition_commit.clone().ok_or_else(|| {
                 ModelError::new(
                     ErrorCode::MergeDrift,
                     "published candidate has no recorded root evidence commit",
                 )
                 .with_member("@root", ".")
-            })?
-        }
+            })?,
+            false,
+        ),
         None => {
             return Err(ModelError::new(
                 ErrorCode::MergeDrift,
@@ -92,12 +117,13 @@ pub(super) fn preflight_evidence<A: AbortRuntime>(
     Ok(Some(EvidenceRollback {
         branch: candidate.root_branch.clone(),
         composition_commit,
-        baseline_commit: record.baseline.root_head.clone(),
+        baseline_commit: super::super::root::evidence_parent(record)?.map(str::to_owned),
         marker_id: candidate.marker_id.clone(),
         baseline_lock_yaml: candidate.baseline_lock_yaml.clone(),
         baseline_boundary_text: candidate.baseline_boundary_text.clone(),
         candidate_files: candidate_files(record)?,
         composition_message: composition_message(record),
+        root_participant_evidence_present,
     }))
 }
 

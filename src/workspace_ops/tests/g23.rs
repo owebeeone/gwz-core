@@ -23,6 +23,10 @@ mod drift;
 mod finalization;
 mod fixtures;
 mod open_operation_gate;
+mod root_abort;
+mod root_drift;
+mod root_recovery;
+mod root_start;
 mod start;
 
 use fixtures::*;

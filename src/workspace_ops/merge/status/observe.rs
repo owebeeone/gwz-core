@@ -211,7 +211,7 @@ pub(super) fn read_live_participant<B: GitBackend>(
     })
 }
 
-pub(super) fn validated_participant_path(
+pub(in crate::workspace_ops::merge) fn validated_participant_path(
     root: &Path,
     target_id: &str,
     participant: &MergeParticipantRecord,

@@ -53,7 +53,7 @@ pub(super) fn summary(row: Row<'_>, source_ref: &str) -> crate::MergeRepoSummary
     let plan = row.plan;
     crate::MergeRepoSummary {
         target_id: plan.target_id.clone(),
-        target_kind: crate::TargetKind::Member,
+        target_kind: plan.target_kind.into(),
         path: plan.path.clone(),
         source_ref: source_ref.to_owned(),
         source_commit: plan.source_commit.clone(),
@@ -140,6 +140,6 @@ pub(super) fn participant_error(
     let mut wire: crate::GwzError = error.into();
     wire.member_id = Some(plan.target_id.clone());
     wire.member_path = Some(plan.path.clone());
-    wire.target_kind = Some(crate::TargetKind::Member);
+    wire.target_kind = Some(plan.target_kind.into());
     wire
 }

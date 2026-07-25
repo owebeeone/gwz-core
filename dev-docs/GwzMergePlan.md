@@ -2,9 +2,9 @@
 
 Status: **active** (revised 2026-07-24; the corrected M2b and first public
 member-merge release gate are complete, and the god-file refactor prerequisite
-has passed its full technical gate). Owner: Gianni. M2c explicit workspace-root
-participation is the next planned implementation wave after the coordinated
-structural commit.
+has passed its full technical gate and is committed). Owner: Gianni. M2c
+explicit workspace-root participation is implemented and has passed its local
+technical gate; independent review remains before the M2c release gate closes.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -69,8 +69,8 @@ are not promises that the intermediate behavior is suitable for users.
   dry-run, `--status`, `--continue`, coordinated `--abort`, and finalization.
 - Ordinary abort is non-destructive: post-merge drift rejects the entire abort
   rather than discarding user work.
-- Explicit `@root` participation follows only after M2c passes its recovery
-  gate. It may be included in the next release train with M3.
+- Explicit `@root` participation has passed its local recovery gate and awaits
+  independent review. It may be included in the next release train with M3.
 - Preserve-abort, retention, and cleanup form the next lifecycle release
   increment after the first member-merge release.
 - Strategy and source expansions in M4 ship independently after the normal
@@ -1121,8 +1121,8 @@ released. The lead verifies all M0, M1, M2a, and M2b gates together and proves:
   every tested interruption point;
 - unavailable preserve, strategy, and custom-message forms remain hidden and
   return typed unsupported errors when submitted directly;
-- explicit `@root` remains unadvertised and returns its typed unsupported error
-  until M2c passes; and
+- the member-only release does not advertise `@root`; its later exposure is
+  owned by the complete M2c release gate; and
 - public documentation describes capabilities and limitations without exposing
   internal milestone names.
 
@@ -1138,18 +1138,62 @@ M2b. It is not developed in parallel with the first finalization implementation.
 The zero-behavior-change god-file refactor in
 `../../dev-docs/GwzGodFileRefactorPlan.md` was implemented and passed its
 complete technical exit gate on 2026-07-24, including an independent review
-with no P0/P1/P2/P3 finding. M2c feature work may begin after that structural
-change is committed through the installed `gwz`.
+with no P0/P1/P2/P3 finding. The structural change is committed through the
+installed `gwz`; M2c feature work is unblocked.
+
+Implementation status: **M2c-A, M2c-B, M2c-C, driver parity, and public
+documentation are complete; the local technical gate is green** (2026-07-24).
+Independent review remains required before the release gate is marked complete
+or M3 begins.
+
+### M2c-I0 — Root lifecycle interface checkpoint
+
+Status: **complete; M2c-A unblocked** (2026-07-24).
+
+The lead freezes these existing contracts before root feature work:
+
+- an explicit root is represented by participant id `@root`, path `.`, and
+  `MergeTargetKind::Root` in the same frozen ordered plan and durable
+  participant map as members;
+- default selection remains members only, while explicit root-only and mixed
+  selection preserve member manifest order and append root last;
+- `MergeParticipantRecord.resulting_commit` records the root merge result,
+  while `PublicationProgress.root_merge_commit` and `composition_commit`
+  retain the distinct root merge and composition-evidence identities through
+  finalization and recovery;
+- root start, continue, status, and abort reuse the existing pending-action,
+  drift, and checked Git primitives rather than introducing a parallel state
+  machine; and
+- existing public protocol values and mutation-oriented backend signatures
+  remain frozen. M2c adds one read-only `read_file_at_commit` backend seam so
+  recovery can load exact pre-merge metadata from the recorded root commit.
+
+Structural ownership is also frozen:
+
+- `merge/root.rs` is the root-lifecycle facade, with substantive work in
+  `merge/root/planning.rs`, `reconciliation.rs`, `finalization.rs`, and
+  `abort.rs`; root execution uses the existing generic participant loop, so a
+  separate `root/execution.rs` was not required;
+- existing `merge/plan.rs`, `start.rs`, `finalize.rs`, and `abort/mod.rs`
+  receive only small lead-owned integration hooks;
+- root scenarios use named split test modules rather than rebuilding a single
+  G23 test file; and
+- no new ordinary implementation or test file may exceed 500 LOC. Existing
+  oversized cohesive files must not grow to absorb root behavior.
 
 ### M2c-A — Root planning and execution
+
+Status: **complete** (2026-07-24).
 
 Owner: root lifecycle agent. Budget: at most 500 handwritten changed lines.
 
 Owned files:
 
 - `merge/root.rs`;
-- root-specific additions in plan/start through lead-coordinated patches;
-- root-focused tests.
+- `merge/root/planning.rs`;
+- lead-coordinated hooks in `merge/plan.rs` and the split `merge/start/`
+  modules; and
+- `workspace_ops/tests/g23/root_start.rs`.
 
 Work:
 
@@ -1163,8 +1207,18 @@ Work:
 
 ### M2c-B — Root recovery and reconciliation
 
+Status: **complete** (2026-07-24).
+
 Owner: recovery/finalization agent. Budget: at most 500 handwritten changed
 lines.
+
+Owned files:
+
+- `merge/root/reconciliation.rs`;
+- `merge/root/finalization.rs`;
+- lead-coordinated hooks in `merge/recovery.rs`, `status/`, and `finalize.rs`;
+  and
+- `workspace_ops/tests/g23/root_recovery.rs`.
 
 Work:
 
@@ -1180,7 +1234,15 @@ Work:
 
 ### M2c-C — Root abort and drift tests
 
+Status: **complete** (2026-07-24).
+
 Owner: abort/backend test agent. Budget: at most 500 handwritten changed lines.
+
+Owned files:
+
+- `merge/root/abort.rs`;
+- lead-coordinated hooks in the split `merge/abort/` modules; and
+- `workspace_ops/tests/g23/root_abort.rs` and `root_drift.rs`.
 
 Work:
 
@@ -1200,6 +1262,14 @@ without a valid live manifest. M2c may ship as a follow-up to the first
 member-only release or in the same release train as M3; it does not retroactively
 make the M0 or M1 checkpoints releasable.
 
+Technical status: **green locally** (2026-07-24). Formatting and strict Clippy
+pass; the workspace Rust suite reports 710 passed and one ignored; the freshly
+rebuilt Python/native suite reports 317 passed; generated Rust protocol,
+Python protocol, and CLI reference checks pass; cross-driver root fast-forward
+parity and diff hygiene pass. The new root implementation and test modules are
+below 500 LOC, and the enlarged planning tests were split into
+`merge/plan/tests.rs`. Independent review is the remaining release-gate item.
+
 ## 12. Wave M3 — preservation, retention, and GC
 
 Goal: safely preserve eligible post-merge drift before coordinated rollback and
@@ -1208,6 +1278,14 @@ provide explicit lifecycle cleanup.
 ### M3-A — Preservation backend
 
 Owner: Git backend agent. Budget: at most 500 handwritten changed lines.
+
+Owned files:
+
+- `git/gitbackend/preservation.rs`;
+- narrowly scoped support additions in `gitbackend/refs.rs` and `stash.rs`;
+  and
+- thin delegators in `gitbackend.rs`. The 557-line stable contract file does
+  not grow unless a separately reviewed contract change is required.
 
 Work:
 
@@ -1242,8 +1320,10 @@ Owner: lifecycle/store agent. Budget: at most 350 handwritten changed lines.
 Owned files:
 
 - GC operation handling in `merge/gc.rs`;
-- retention/archived-record changes in `merge/store.rs` allocated exclusively
-  for this task;
+- `merge/store/archived.rs`, `retention.rs`, and `gc.rs`, extracted behind the
+  existing store facade before adding behavior;
+- only thin registration and re-export changes in the existing
+  `merge/store.rs`; and
 - GC and retention tests.
 
 Work:
@@ -1463,21 +1543,18 @@ marked as release gates authorize a public merge release.
 | M3 | Preserve-abort, evidence retention, archived status, and GC are safe, explicit, and recoverable. | **Next lifecycle release gate:** preservation, retention, and cleanup. |
 | M4 | Each optional strategy/source ships independently without weakening the established lifecycle. | Later independent feature releases. |
 
-## 19. Recommended first implementation run
+## 19. Recommended next implementation run
 
-The first run should stop at I0 rather than immediately launching feature
-agents:
+The implementation and local verification portions of M2c are complete. The
+next run is:
 
-1. Lead updates requirements and taut protocol.
-2. Lead regenerates Rust and Python protocol artifacts.
-3. Lead adds request-validation and lifecycle transition tests.
-4. Lead adds internal record and backend seams with unsupported defaults.
-5. Lead creates the empty merge dispatcher and verifies the workspace.
-6. Lead installs the Python native-test freshness guard and verifies a rebuild.
-7. Lead publishes the frozen ownership/interface checkpoint.
-8. With the lead retaining one lane, start M0-A, M0-B1, and M0-C1 in the three
-   agent lanes. Start M0-C2 when the driver lane hands off M0-C1, and start
-   M0-B2 when M0-B1 hands off its frozen plan interface.
+1. obtain an independent review of the M2c root lifecycle, cross-driver parity,
+   and public documentation;
+2. remediate and re-run the full gate if that review finds a release-blocking
+   defect;
+3. close the M2c release gate when the review is clean; and
+4. begin M3 preservation, retention, and GC from the root-aware lifecycle.
 
-This yields useful concurrency without asking agents to guess the contracts
-that their work must share.
+M3 does not start until M2c is integrated. This avoids implementing
+preserve-abort once for members and immediately extending it for a
+participating root.

@@ -9,6 +9,7 @@ mod plan;
 mod publication;
 mod recovery;
 mod response;
+pub(crate) mod root;
 mod start;
 mod status;
 mod store;

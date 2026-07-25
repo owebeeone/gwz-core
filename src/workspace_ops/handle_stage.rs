@@ -5,6 +5,7 @@ use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OpenMergeCommand, OperationRequest};
 
+use super::merge::MergeStore;
 use super::*;
 
 /// Stage pathspecs across the repos that own them — the multi-repo `git add` verb
@@ -28,6 +29,9 @@ where
         OpenMergeCommand::StageConflictResolution,
     )?;
     let root = _guard.root().to_path_buf();
+    if let Some(record) = merge::FileMergeStore.discover_open(&root)? {
+        return handle_open_merge_stage(backend, &root, &record, &request, context);
+    }
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
 
@@ -106,4 +110,91 @@ where
     Ok(crate::StageResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
     })
+}
+
+fn handle_open_merge_stage<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &merge::MergeOperationRecord,
+    request: &crate::StageRequest,
+    context: crate::operation::OperationContext,
+) -> ModelResult<crate::StageResponse> {
+    let member_paths = merge::root::open_merge_stage_member_paths(backend, root, record)?;
+    let all = request.all.unwrap_or(false);
+    let narrowed = has_explicit_target_selection(request.meta.selection.as_ref());
+    let targets = if all && narrowed {
+        selected_open_merge_targets(record, request.meta.selection.as_ref().unwrap())
+    } else {
+        resolve_stage_targets(
+            root,
+            &member_paths,
+            Path::new(&request.cwd),
+            &request.pathspecs,
+            all,
+        )?
+    };
+    merge::enforce_open_merge_stage_targets(root, &targets)?;
+    for target in &targets {
+        let repo_root = target
+            .member_path
+            .as_ref()
+            .map_or_else(|| root.to_path_buf(), |path| root.join(path));
+        if !backend.is_repository(&repo_root)? {
+            return Err(ModelError::new(
+                ErrorCode::MemberNotFound,
+                format!(
+                    "merge participant '{}' is not materialized",
+                    target.member_path.as_deref().unwrap_or("@root")
+                ),
+            ));
+        }
+        let pathspecs = target
+            .pathspecs
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        backend.stage_paths_allowing_other_conflicts(&repo_root, &pathspecs)?;
+    }
+    Ok(crate::StageResponse {
+        response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
+    })
+}
+
+fn selected_open_merge_targets(
+    record: &merge::MergeOperationRecord,
+    selection: &crate::Selection,
+) -> Vec<StageTarget> {
+    let included = selection
+        .member_ids
+        .iter()
+        .chain(&selection.paths)
+        .chain(&selection.targets)
+        .collect::<Vec<_>>();
+    let excluded = selection.exclude_targets.iter().collect::<Vec<_>>();
+    let include_all =
+        selection.all.unwrap_or(false) || included.iter().any(|target| target.as_str() == "@all");
+    record
+        .selected_targets
+        .iter()
+        .filter_map(|target_id| {
+            let participant = record.participants.get(target_id)?;
+            let selected = include_all
+                || included.iter().any(|target| {
+                    target.as_str() == target_id || target.as_str() == participant.path
+                });
+            let rejected = excluded.iter().any(|target| {
+                target.as_str() == "@all"
+                    || target.as_str() == target_id
+                    || target.as_str() == participant.path
+            });
+            (selected && !rejected).then(|| StageTarget {
+                member_path: match participant.target_kind {
+                    merge::MergeTargetKind::Member => Some(participant.path.clone()),
+                    merge::MergeTargetKind::Root => None,
+                },
+                pathspecs: vec![".".to_owned()],
+                explicit: true,
+            })
+        })
+        .collect()
 }

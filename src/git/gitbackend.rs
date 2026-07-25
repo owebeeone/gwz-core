@@ -65,6 +65,7 @@ macro_rules! delegate {
 impl GitBackend for Git2Backend {
     delegate!(is_repository(path: &Path) -> ModelResult<bool> => repository::is_repository);
     delegate!(commit_exists(path: &Path, oid: &str) -> ModelResult<bool> => repository::commit_exists);
+    delegate!(read_file_at_commit(path: &Path, commit: &str, relative_path: &str,) -> ModelResult<Option<Vec<u8>>> => repository::read_file_at_commit);
     delegate!(commit_matches_merge(path: &Path, commit: &str, first_parent: &str, second_parent: &str, message: &str,) -> ModelResult<bool> => merge_prepared::commit_matches_merge);
     delegate!(commit_matches_prepared_merge(path: &Path, commit: &str, first_parent: &str, second_parent: &str, message: &str, prepared: &GitPreparedCommit,) -> ModelResult<bool> => merge_prepared::commit_matches_prepared_merge);
     delegate!(create_repo(path: &Path) -> ModelResult<GitCreateResult> => repository::create_repo);
