@@ -141,6 +141,7 @@ Preserving post-merge work before an abort is explicit:
 
 ```text
 gwz merge --abort --preserve
+gwz merge --gc [<merge-id>]
 ```
 
 Later compatible additions:
@@ -149,21 +150,23 @@ Later compatible additions:
 gwz merge <source> --ff-only
 gwz merge <source> --no-ff
 gwz merge <source> -m <message>
-gwz merge +<snapshot>
 gwz merge <source> --into <branch>
-gwz merge --gc [<merge-id>]
+gwz merge +<snapshot>
 ```
 
 The delivery phases in section 19 introduce this surface incrementally. M0 has
 only start and dry-run; it must not advertise continue or coordinated abort in
 its conflict epilogue. Status arrives with the durable operation record in M1,
-and continue and abort arrive in M2.
+and continue and abort arrive in M2. M4 completes required planning and
+fast-forward safety, M5 adds expected Git controls, and M6 separately owns
+target-branch switching. M7 adds exact snapshot sources, and M8 owns any
+explicit merge partial/skip policy.
 
 Global GWZ selection and output options continue to apply. `--dry-run` applies
-only to merge start. Until an explicit partial/skip policy is designed,
-`--partial` is a typed rejection for every merge operation. `--force` is also
-a typed rejection and must never lower to a force-abort or bypass a drift
-check. The deprecated `branch --merge` alias applies the same validation.
+only to merge start. Until M8's explicit partial/skip policy is designed and
+released, `--partial` is a typed rejection for every merge operation. `--force`
+is also a typed rejection and must never lower to a force-abort or bypass a
+drift check. The deprecated `branch --merge` alias applies the same validation.
 
 With no explicit selection, merge targets all active members and excludes the
 workspace root. An explicit `--target @root` selects the root repository,
@@ -192,8 +195,7 @@ name does not identify one shared object id across repositories.
 The source must resolve in every selected repository. A missing source rejects
 the whole operation before mutation. A user who intends to merge only the
 repositories where a branch exists must select those repositories explicitly.
-A future explicit skip policy may be added, but skipping must never be the
-default.
+M8 may add an explicit skip policy, but skipping must never be the default.
 
 Selected repositories may currently be attached to different target branch
 names. This is valid because the Git-equivalent target is the current branch of
@@ -212,9 +214,11 @@ pre-merge manifest and lock. A later root merge may change workspace metadata,
 but it does not add, remove, retarget, or reorder participants in the already
 running operation.
 
-`--into <branch>` is deferred because switching target branches while an
+`--into <branch>` belongs to M6 because switching target branches while an
 operation is in flight adds a second coordinated mutation and additional
-rollback requirements.
+rollback requirements. Its implementation may not begin until the original
+and target branch evidence, journaled switching, restart reconciliation, branch
+creation policy, and checked rollback are separately designed and reviewed.
 
 ## 7. Start preflight
 
@@ -1073,7 +1077,7 @@ shares one contract:
 
 | `MergeOp` | `source_ref` | `merge_id` | `mode` | `message` | `preserve` |
 | --- | --- | --- | --- | --- | --- |
-| `start` | required | reject | accepted when its delivery phase supports it | accepted from M4 | reject |
+| `start` | required | reject | `normal` now, `ff_only` from M4, `no_ff` from M5 | accepted from M5 | reject |
 | `resume` | reject | optional; must equal the single open merge id | reject | reject | reject |
 | `abort` | reject | optional; must equal the single open merge id | reject | reject | optional |
 | `status` | reject | optional; selects the open or one archived record | reject | reject | reject |
@@ -1178,11 +1182,15 @@ stash_for_merge_preservation(repo, merge_id, include_untracked)
 commit_gwz_paths_checked(root, expected_head?, candidate_files, message)
 ```
 
-`merge_simulate` is an explicitly optional/deferred M4 primitive. It uses an
-in-memory tree merge (`merge_commits`/`merge_trees` in a libgit2 backend), never
-touches the index or worktree, and upgrades dry-run to predict clean versus
-conflicted true merges and conflict paths. Reserving it now keeps that upgrade
-within the existing plan, response, and recovery-record contracts.
+`merge_simulate` is a required M4 primitive. It uses an in-memory tree merge
+(`merge_commits`/`merge_trees` in a libgit2 backend), never touches refs, HEAD,
+the index, or worktree, and upgrades dry-run to predict clean versus conflicted
+true merges and conflict paths. The same primitive preflights
+`pull --sync merge` after fetch but before any local branch, index, worktree, or
+workspace-lock mutation. A predicted conflict rejects a non-partial pull
+selection before local mutation; the pull command's existing explicit
+`--partial` policy may skip and report predicted-conflict members. Pull remains
+outside the durable coordinated-merge lifecycle.
 
 `commit_gwz_paths_checked` constructs a root commit from an isolated/scoped
 index and candidate bytes, verifies that only the supplied GWZ-owned paths
@@ -1295,14 +1303,48 @@ the first public release gate defined in `GwzMergePlan.md`.
 - Add `gwz merge --gc [<merge-id>]` for archived records and preservation refs.
 - Report manual-recovery cases without destructive fallback.
 
-### Phase M4: controlled expansion
+### Phase M4: required merge completion
 
-- Add optional in-memory `merge_simulate` and conflict-predicting dry-run.
-- Add `--ff-only`, then `--no-ff`.
-- Add custom message support.
-- Add exact per-member snapshot sources.
-- Consider `--into` only after switch-plus-merge rollback is designed.
-- Consider explicit partial/skip policy only with complete machine reporting.
+- Add in-memory `merge_simulate` and conflict-predicting dry-run.
+- Reuse simulation to prevent non-partial `pull --sync merge` from beginning
+  local mutation when a selected repository is predicted to conflict.
+- Add selection-wide `--ff-only`; any true-merge requirement rejects the
+  complete merge before mutation.
+- Release M4 only when both additions pass member-only, root-only, mixed,
+  restart, driver-parity, and non-mutation gates.
+
+### Phase M5: expected Git controls
+
+- Add `--no-ff`, including exact prepared-commit recovery for commits that
+  would otherwise fast-forward.
+- Add custom merge-message support while retaining mandatory GWZ recovery
+  identity.
+- Release both only through the established continue, abort, preservation,
+  root-finalization, and driver-parity lifecycle.
+
+### Phase M6: explicit target branch
+
+- Add `--into` only after a separate switch-plus-merge design defines durable
+  original/target branch evidence, branch creation, restart reconciliation, and
+  checked reverse-order restoration.
+
+### Phase M7: exact per-member snapshot sources
+
+- Add the GWZ-specific `+<snapshot>` source form.
+- Resolve and freeze one exact source commit for every selected participant
+  before mutation.
+- Persist snapshot identity and resolved commits so recovery never depends on a
+  later read of mutable snapshot data.
+- Define typed selection-wide handling for missing participants, missing
+  recorded commits, unavailable objects, and explicit-root coverage.
+
+### Phase M8: explicit partial/skip policy
+
+- Add opt-in merge partial/skip behavior only after a separate design defines
+  skippable causes, durable participant states, exit status, lock composition,
+  finalization, root behavior, recovery scope, preservation ownership, and
+  complete machine reporting.
+- Never make skipping the default for a missing source or failed participant.
 
 ## 20. Test matrix
 

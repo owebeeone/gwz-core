@@ -57,8 +57,11 @@ The implementation must provide:
   first-class merge request and response, while direct protocol
   `BranchRequest { op: merge }` returns a typed deprecation error.
 
-Advanced strategies and sources remain in M4 and are not allowed to delay the
-recoverable normal-merge lifecycle.
+Conflict prediction and selection-wide `--ff-only` form the required M4
+completion release. Git-expected `--no-ff` and custom messages follow in M5.
+Target-branch switching through `--into` is isolated in M6. Exact per-member
+snapshot sources follow in M7, and explicitly designed merge partial/skip
+semantics follow in M8.
 
 ### 1.1 Release boundaries
 
@@ -73,8 +76,15 @@ are not promises that the intermediate behavior is suitable for users.
 - Explicit `@root` participation, preserve-abort, retention, and cleanup have
   passed their combined implementation, verification, and independent-review
   gate and are committed.
-- Strategy and source expansions in M4 ship independently after the normal
-  recoverable lifecycle is established.
+- M4 ships conflict prediction and selection-wide `--ff-only` together as the
+  next required merge-completion release.
+- M5 ships Git-expected `--no-ff` and custom-message behavior only after M4.
+- M6 owns `--into` and cannot begin implementation until coordinated
+  switch-plus-merge rollback has an accepted design.
+- M7 owns exact per-member snapshot sources.
+- M8 owns merge partial/skip semantics and cannot begin implementation until
+  participant state, exit status, composition, root, and machine-reporting
+  behavior have an accepted design.
 
 ## 2. Execution model
 
@@ -180,7 +190,13 @@ Initial budgets are:
 | M3-B preserve-abort lifecycle | ≤500 lines |
 | M3-C1 retention/GC lifecycle | ≤350 lines |
 | M3-C2 preservation/GC drivers | ≤350 lines |
-| Each separately released M4 addition | ≤500 lines |
+| M4-A conflict prediction | ≤500 lines |
+| M4-B selection-wide `--ff-only` | ≤500 lines |
+| M5-A `--no-ff` | ≤500 lines |
+| M5-B custom merge messages | ≤350 lines |
+| M6 `--into` design/interface slice | ≤500 lines |
+| M7 exact per-member snapshot sources | ≤500 lines |
+| M8 partial/skip design/interface slice | ≤500 lines |
 
 ## 3. Mandatory engineering rules
 
@@ -363,7 +379,7 @@ Freeze signatures and postconditions for the design's narrow primitives:
 
 ```text
 merge_analysis
-merge_simulate                 # reserved until M4
+merge_simulate                 # required by M4-A
 merge_state
 abort_merge
 set_branch_target_checked
@@ -470,7 +486,20 @@ flowchart TD
     M3B --> G3
     M3C1 --> G3
     M3C2 --> G3
-    G3 --> M4["M4: optional strategies and sources"]
+    G3 --> M4A["M4-A: conflict prediction"]
+    G3 --> M4B["M4-B: selection-wide --ff-only"]
+    M4A --> G4["M4 required-completion release gate"]
+    M4B --> G4
+    G4 --> M5A["M5-A: --no-ff"]
+    G4 --> M5B["M5-B: custom messages"]
+    M5A --> G5["M5 Git-expected release gate"]
+    M5B --> G5
+    G5 --> M6["M6: --into design and implementation"]
+    M6 --> G6["M6 target-branch release gate"]
+    G6 --> M7["M7: exact snapshot sources"]
+    M7 --> G7["M7 snapshot-source release gate"]
+    G7 --> M8["M8: explicit partial/skip policy"]
+    M8 --> G8["M8 partial/skip release gate"]
 ```
 
 ## 7. Wave M0 — first-class start
@@ -636,7 +665,8 @@ Frozen contract:
   continue and abort consume after the M1 gate;
 - M1-C1 owns durable integration changes in `merge/start.rs`; M1-A supplies the
   store implementation and does not edit start execution policy; and
-- user-visible diagnostics describe capabilities without M0/M1/M2/M3/M4 names.
+- user-visible diagnostics describe capabilities without
+  M0/M1/M2/M3/M4/M5/M6/M7/M8 names.
 
 Exit gate:
 
@@ -1408,10 +1438,9 @@ No rollback may begin until every required artifact is verified. Successful
 preserve-abort must report enough information to recover work without the
 operation record.
 
-M3 is the planned next lifecycle release increment after the first public
-member-merge release. It ships `--abort --preserve`, retention, and explicit
-cleanup only after this gate is green. If explicit-root work is bundled into
-the same release train, the M2c gate must also be green.
+M3 is the completed lifecycle increment after the first public member-merge
+release. It adds `--abort --preserve`, retention, and explicit cleanup. The
+combined M2c/M3 gate below is green and the accepted change set is committed.
 
 Current gate status: successive independent combined reviews found and drove
 regression-first fixes for preservation, conflict crash windows, root evidence
@@ -1425,21 +1454,95 @@ build passes, and cross-repository diff hygiene passes. Two independent final
 re-reviews report no P0/P1/P2 defect; the combined M2c/M3 local release gate is
 accepted.
 
-## 13. Wave M4 — controlled expansion
+## 13. Remaining merge release waves
 
-M4 is a sequence of small, separately releasable additions:
+Each wave extends the established lifecycle. None creates a second start,
+continue, abort, preservation, or finalization path.
 
-1. in-memory merge simulation and conflict-predicting dry-run;
-2. `--ff-only`;
-3. `--no-ff`;
-4. custom merge messages;
-5. exact per-member snapshot sources;
-6. `--into` only after switch-plus-merge rollback has its own accepted design;
-7. an explicit partial/skip policy only after its machine-reporting and
-   composition semantics are designed.
+### Wave M4 — required merge completion
 
-Each addition starts with a requirements/design update and extends the existing
-lifecycle. None creates a second start, continue, abort, or finalization path.
+Goal: make planning truthful about conflicts and provide a selection-wide
+fast-forward guarantee. M4-A and M4-B ship together.
+
+#### M4-I0 — prediction and mode interface checkpoint
+
+Before parallel implementation, freeze:
+
+- the read-only `merge_simulate` result, including stable conflict paths and an
+  explicit unavailable/unknown result;
+- the response projection for clean and conflicted predictions;
+- durable recording of the selected merge mode;
+- selection-wide `--ff-only` rejection semantics; and
+- reuse of simulation by `pull --sync merge` after fetch but before any local
+  branch, index, worktree, or workspace-lock mutation.
+
+#### M4-A — conflict prediction
+
+- implement in-memory true-merge simulation without changing Git or GWZ state;
+- make merge dry-run report clean versus conflicted outcomes and conflict paths
+  for every selected participant, including an explicit root;
+- use the same primitive to preflight `pull --sync merge`;
+- reject a non-partial pull selection before local mutation when any simulated
+  merge conflicts, while the pull command's existing explicit `--partial`
+  policy may skip and report predicted-conflict members; and
+- prove by snapshot tests that HEAD, refs, index, worktree, lock, marker, and
+  merge-operation storage remain unchanged.
+
+#### M4-B — selection-wide `--ff-only`
+
+- accept `MergeMode.ff_only` only for merge start;
+- require every changing participant to be fast-forwardable during complete
+  preflight;
+- reject the whole selection before mutation when any participant needs a true
+  merge or has unrelated history;
+- reuse existing checked fast-forward, durable recovery, abort, root, and
+  finalization paths; and
+- add Rust/Python human, JSON, and JSONL parity tests.
+
+#### M4 release gate
+
+M4 releases only when conflict-predicting dry-run and `--ff-only` are both
+green across member-only, root-only, and mixed selections. The full Rust,
+Python, generated protocol/reference, strict Clippy, formatting, Bazel, and
+diff-hygiene gates apply.
+
+### Wave M5 — Git-expected controls
+
+M5 follows the M4 release and contains:
+
+- M5-A: `--no-ff`, preserving up-to-date no-ops while preparing and journaling
+  an exact two-parent commit for normally fast-forwardable participants; and
+- M5-B: `-m`/custom merge messages, with exact per-participant messages frozen
+  before mutation and mandatory GWZ recovery identity retained.
+
+The two additions share an interface checkpoint and may be implemented in
+parallel afterward. They ship together only after restart reconciliation,
+continue, abort, preservation, root finalization, and driver parity cover both.
+
+### Wave M6 — explicit target branch
+
+M6 owns `--into`. Implementation is blocked until a separately reviewed design
+defines selection-wide branch existence/creation policy, original and target
+branch evidence, detached-HEAD behavior, journaled switching, restart
+reconciliation, and checked reverse-order rollback. Fault injection is required
+after every switch, branch creation, merge, and restoration mutation.
+
+### Wave M7 — exact per-member snapshot sources
+
+M7 adds the GWZ-specific `+<snapshot>` source form. Complete preflight resolves
+and freezes one exact source commit per selected participant before mutation.
+The durable record retains the snapshot identity and resolved commits so
+continue, abort, and restart never depend on a later read of a changed or
+deleted snapshot. Missing participants, missing recorded commits, unavailable
+objects, and explicit-root coverage require typed selection-wide handling.
+
+### Wave M8 — explicit partial/skip policy
+
+M8 owns opt-in merge partial/skip behavior. Implementation is blocked until a
+separately reviewed design defines skippable causes, durable participant
+states, exit status, selection-wide reporting, lock composition, finalization,
+root behavior, continue/abort scope, and preservation ownership. Skipping never
+becomes the default for a missing source or failed participant.
 
 ## 14. Test architecture
 
@@ -1609,14 +1712,20 @@ marked as release gates authorize a public merge release.
 | M2b | Successful merge finalizes exactly once with scoped evidence and resumable `finalizing`. | **First public member-merge release gate:** start, dry-run, status, continue, and safe coordinated abort. |
 | M2c | Explicit root works through start, conflict, continue, finalization, drift, and abort without relying on valid live metadata. | Follow-up explicit-root release gate; may be bundled with M3. |
 | M3 | Preserve-abort, evidence retention, archived status, and GC are safe, explicit, and recoverable. | **Next lifecycle release gate:** preservation, retention, and cleanup. |
-| M4 | Each optional strategy/source ships independently without weakening the established lifecycle. | Later independent feature releases. |
+| M4 | Dry-run predicts conflicts without mutation and `--ff-only` rejects selection-wide before mutation. | **Required merge-completion release gate.** |
+| M5 | `--no-ff` and custom messages survive recovery and preserve Rust/Python parity. | Git-expected behavior release gate. |
+| M6 | `--into` switches and restores target branches through a reviewed, durable, fault-tested lifecycle. | Separate target-branch release gate. |
+| M7 | Snapshot identity and exact per-participant sources remain durable and recoverable after the snapshot changes or disappears. | GWZ snapshot-source release gate. |
+| M8 | Explicit skips have complete state, exit-status, composition, recovery, and machine-output semantics. | Separate partial/skip policy release gate. |
 
 ## 19. Recommended next implementation run
 
 M2c and M3 implementation, remediation, verification, and independent
 re-reviews are complete and committed. The next run is:
 
-1. accept a focused design update for conflict-predicting dry-run;
-2. implement and release that addition through the established lifecycle; and
-3. repeat the focused design, implementation, and release gate for each later
-   M4 strategy or source addition.
+1. freeze the M4-I0 simulation, response, durable-mode, and pull-preflight
+   contracts;
+2. implement M4-A conflict prediction and M4-B `--ff-only`, in parallel only
+   after that checkpoint;
+3. integrate, independently review, and release the complete M4 gate; and
+4. begin M5 only after the M4 release is accepted.
