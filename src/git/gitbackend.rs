@@ -85,12 +85,14 @@ impl GitBackend for Git2Backend {
     delegate!(merge_state(path: &Path) -> ModelResult<Option<GitNativeMergeState>> => merge_recovery::merge_state);
     delegate!(repository_state(path: &Path) -> ModelResult<GitRepositoryState> => merge_recovery::repository_state);
     delegate!(validate_merge_recovery_state(path: &Path, expected_before: &str, expected_merge_head: &str, require_resolved: bool,) -> ModelResult<()> => merge_recovery::validate_merge_recovery_state);
+    delegate!(merge_conflict_snapshot(path: &Path, expected_before: &str, expected_merge_head: &str,) -> ModelResult<GitMergeConflictSnapshot> => merge_recovery::merge_conflict_snapshot);
     delegate!(abort_merge(path: &Path, expected_before: &str, expected_merge_head: &str,) -> ModelResult<()> => merge_recovery::abort_merge);
     delegate!(set_branch_target_checked(path: &Path, branch: &str, expected_current: &str, target: &str,) -> ModelResult<GitUpdateResult> => merge_recovery::set_branch_target_checked);
     delegate!(delete_branch_target_checked(path: &Path, branch: &str, expected_current: &str,) -> ModelResult<()> => merge_recovery::delete_branch_target_checked);
     delegate!(create_backup_ref(path: &Path, name: &str, target: &str,) -> ModelResult<GitBackupRefResult> => preservation::create_backup_ref);
     delegate!(delete_backup_ref_checked(path: &Path, name: &str, expected_target: &str,) -> ModelResult<()> => preservation::delete_backup_ref_checked);
     delegate!(stash_for_merge_preservation(path: &Path, merge_id: &str, include_untracked: bool,) -> ModelResult<GitStashPushResult> => preservation::stash_for_merge_preservation);
+    delegate!(index_matches_candidate_files(path: &Path, expected_files: &[GitCandidateFile], absent_paths: &[String],) -> ModelResult<bool> => preservation::index_matches_candidate_files);
     delegate!(commit_gwz_paths_checked(root: &Path, expected_head: Option<&str>, candidate_files: &[GitCandidateFile], message: &str,) -> ModelResult<GitScopedCommitResult> => scoped_evidence::commit_gwz_paths_checked);
     delegate!(verify_gwz_paths_commit(root: &Path, commit: &str, expected_parent: Option<&str>, candidate_files: &[GitCandidateFile], message: &str,) -> ModelResult<GitScopedCommitResult> => scoped_evidence::verify_gwz_paths_commit);
     delegate!(rollback_gwz_paths_commit_checked(root: &Path, branch: &str, commit: &str, expected_parent: Option<&str>, candidate_files: &[GitCandidateFile], message: &str,) -> ModelResult<()> => scoped_evidence::rollback_gwz_paths_commit_checked);

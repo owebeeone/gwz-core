@@ -1,10 +1,11 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-24; the corrected M2b and first public
+Status: **active** (revised 2026-07-25; the corrected M2b and first public
 member-merge release gate are complete, and the god-file refactor prerequisite
 has passed its full technical gate and is committed). Owner: Gianni. M2c
-explicit workspace-root participation is implemented and has passed its local
-technical gate; independent review remains before the M2c release gate closes.
+explicit workspace-root participation and M3 preservation, retention, and GC
+are implemented; their combined local release gate and independent re-reviews
+are complete. These changes remain uncommitted.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -35,7 +36,7 @@ Deliver a first-class, recoverable workspace merge lifecycle:
 
 ```text
 gwz merge <source>
-gwz merge --status
+gwz merge --status [<merge-id>]
 gwz merge --continue
 gwz merge --abort
 gwz merge --abort --preserve
@@ -1142,9 +1143,9 @@ with no P0/P1/P2/P3 finding. The structural change is committed through the
 installed `gwz`; M2c feature work is unblocked.
 
 Implementation status: **M2c-A, M2c-B, M2c-C, driver parity, and public
-documentation are complete; the local technical gate is green** (2026-07-24).
-Independent review remains required before the release gate is marked complete
-or M3 begins.
+documentation are complete; independent review remedies and the local
+technical gate are green** (updated 2026-07-25). Its final targeted re-review
+was accepted with M3 because the preservation lifecycle consumes root recovery.
 
 ### M2c-I0 — Root lifecycle interface checkpoint
 
@@ -1262,13 +1263,12 @@ without a valid live manifest. M2c may ship as a follow-up to the first
 member-only release or in the same release train as M3; it does not retroactively
 make the M0 or M1 checkpoints releasable.
 
-Technical status: **green locally** (2026-07-24). Formatting and strict Clippy
-pass; the workspace Rust suite reports 710 passed and one ignored; the freshly
-rebuilt Python/native suite reports 317 passed; generated Rust protocol,
-Python protocol, and CLI reference checks pass; cross-driver root fast-forward
-parity and diff hygiene pass. The new root implementation and test modules are
-below 500 LOC, and the enlarged planning tests were split into
-`merge/plan/tests.rs`. Independent review is the remaining release-gate item.
+Historical M2c checkpoint (2026-07-24): formatting, strict Clippy, the then
+current 710-test Rust workspace suite, 317-test Python/native suite, generated
+protocol/reference checks, root fast-forward parity, and diff hygiene were
+green. The new root modules were below 500 LOC and the enlarged planning tests
+were split into `merge/plan/tests.rs`. Subsequent independent reviews and
+remedies are recorded in the combined current M2c/M3 gate below.
 
 ## 12. Wave M3 — preservation, retention, and GC
 
@@ -1277,9 +1277,9 @@ provide explicit lifecycle cleanup.
 
 ### M3-I0 — Preservation and cleanup interface checkpoint
 
-Status: **complete; isolated M3-A backend work unblocked** (2026-07-25).
-Preserve-abort and GC lifecycle integration remain blocked until the focused
-M2c review is clean.
+Status: **complete; all M3 work unblocked** (2026-07-25). The focused M2c
+reviews and remediation are complete; preserve-abort, retention, GC, and
+driver integration have consumed these frozen contracts.
 
 The lead freezes these contracts before M3 lifecycle work:
 
@@ -1302,6 +1302,10 @@ The lead freezes these contracts before M3 lifecycle work:
 - the operation enters durable `preserving` before artifact mutation, and the
   existing reverse-order abort implementation is not entered until every
   required artifact for every participant is verified;
+- a plain abort rejects `preserving`; only a preserve retry may reconcile an
+  interrupted deterministic stash or ref and enter rollback;
+- root publication recovery verifies exact stage-0 blob identity, regular-file
+  mode, and expected absence as well as worktree bytes before repair;
 - an explicit root uses the same evidence model and the existing coordinated
   stash-bundle store, while ordinary `gwz stash push` remains member-only;
 - explicit GC loads one terminal archived record, checked-deletes every private
@@ -1319,13 +1323,17 @@ postconditions.
 
 Owner: Git backend agent. Budget: at most 500 handwritten changed lines.
 
+Implementation status: **complete locally; independent re-review accepted**
+(2026-07-25).
+
 Owned files:
 
 - `git/gitbackend/preservation.rs`;
 - narrowly scoped support additions in `gitbackend/refs.rs` and `stash.rs`;
   and
-- thin delegators in `gitbackend.rs`. The 557-line stable contract file does
-  not grow unless a separately reviewed contract change is required.
+- thin delegators in `gitbackend.rs`. The pre-existing stable contract file is
+  exempt from the new-file ceiling; its additive exact-index verification seam
+  was required and independently reviewed with the recovery fix.
 
 Work:
 
@@ -1339,6 +1347,9 @@ Work:
 ### M3-B — Preserve-abort lifecycle
 
 Owner: lifecycle agent. Budget: at most 500 handwritten changed lines.
+
+Implementation status: **complete locally; independent re-review accepted**
+(2026-07-25).
 
 Owned file: `merge/preserve.rs` except the GC surface assigned below.
 
@@ -1356,6 +1367,9 @@ Work:
 ### M3-C1 — Retention and GC lifecycle
 
 Owner: lifecycle/store agent. Budget: at most 350 handwritten changed lines.
+
+Implementation status: **complete locally; independent re-review accepted**
+(2026-07-25).
 
 Owned files:
 
@@ -1378,6 +1392,9 @@ Work:
 
 Owner: driver/parity agent. Budget: at most 350 handwritten changed lines.
 
+Implementation status: **complete locally; independent re-review accepted**
+(2026-07-25).
+
 Work:
 
 - add `--abort --preserve` and `--gc [<merge-id>]` to Rust/Python surfaces;
@@ -1396,6 +1413,18 @@ M3 is the planned next lifecycle release increment after the first public
 member-merge release. It ships `--abort --preserve`, retention, and explicit
 cleanup only after this gate is green. If explicit-root work is bundled into
 the same release train, the M2c gate must also be green.
+
+Current gate status: successive independent combined reviews found and drove
+regression-first fixes for preservation, conflict crash windows, root evidence
+and retry normalization, GC ownership/preflight, and stash recovery. The
+required `rust-split`-guided structural re-splitting is complete, and every new
+or materially enlarged M3 implementation and focused test module is below 500
+lines. The latest complete local gate is green: 570 core tests pass with one
+ignored, the remaining Rust workspace tests pass, strict Clippy and formatting
+pass, generated CLI and protocol checks pass, 319 Python tests pass, the Bazel
+build passes, and cross-repository diff hygiene passes. Two independent final
+re-reviews report no P0/P1/P2 defect; the combined M2c/M3 local release gate is
+accepted.
 
 ## 13. Wave M4 — controlled expansion
 
@@ -1585,16 +1614,8 @@ marked as release gates authorize a public merge release.
 
 ## 19. Recommended next implementation run
 
-The implementation and local verification portions of M2c are complete. The
-next run is:
+M2c and M3 implementation, remediation, verification, and independent
+re-reviews are complete locally. The next run is:
 
-1. obtain an independent review of the M2c root lifecycle, cross-driver parity,
-   and public documentation;
-2. remediate and re-run the full gate if that review finds a release-blocking
-   defect;
-3. close the M2c release gate when the review is clean; and
-4. begin M3 preservation, retention, and GC from the root-aware lifecycle.
-
-M3 does not start until M2c is integrated. This avoids implementing
-preserve-abort once for members and immediately extending it for a
-participating root.
+1. commit the accepted M2c/M3 change set through the installed `gwz`; and
+2. start M4 only from a separately accepted strategy or source-design update.

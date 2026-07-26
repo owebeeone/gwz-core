@@ -2,7 +2,8 @@ use super::merge_support::{
     conflict_paths, merge_signature, merge_signatures, prepared_signature, same_signature,
 };
 use super::recovery_support::{
-    attached_head_ref, ensure_clean_recovery_state, recovery_drift,
+    attached_head_ref, comparable_index_entries, ensure_clean_recovery_state,
+    expected_conflicts_and_index, recovery_dirty, recovery_drift,
     validate_abort_index_and_worktree, validate_expected_native_merge,
     validate_expected_resolution_repository_state, validate_prepared_merge_resolution_in_repo,
     validate_resolution_index_and_worktree, verify_restored_merge_state,
@@ -61,6 +62,67 @@ pub(super) fn validate_merge_recovery_state(
     } else {
         validate_abort_index_and_worktree(backend, path, &repo, before, merge_head)
     }
+}
+
+pub(super) fn merge_conflict_snapshot(
+    backend: &Git2Backend,
+    path: &Path,
+    expected_before: &str,
+    expected_merge_head: &str,
+) -> ModelResult<GitMergeConflictSnapshot> {
+    let repo = open_repo(path)?;
+    let before = parse_existing_commit(&repo, expected_before)?;
+    let merge_head = parse_existing_commit(&repo, expected_merge_head)?;
+    validate_expected_native_merge(&repo, before, merge_head)?;
+    let (conflicts, expected) = expected_conflicts_and_index(&repo, before, merge_head)?;
+    let current = repo.index().map_err(git_error)?;
+    let excluded = BTreeSet::new();
+    if comparable_index_entries(&current, &excluded)
+        != comparable_index_entries(&expected, &excluded)
+    {
+        return Err(recovery_dirty(
+            "merge conflict index no longer matches its original unresolved state",
+        ));
+    }
+    validate_abort_index_and_worktree(backend, path, &repo, before, merge_head)?;
+    let mut files = Vec::with_capacity(conflicts.len());
+    for raw in conflicts {
+        let relative = std::str::from_utf8(&raw).map_err(|_| {
+            recovery_dirty("merge conflict path is not valid UTF-8 and requires manual recovery")
+        })?;
+        let relative_path = Path::new(relative);
+        if relative_path.as_os_str().is_empty()
+            || relative_path.is_absolute()
+            || relative_path
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(recovery_dirty(
+                "merge conflict path is not a normalized repository-relative file",
+            ));
+        }
+        let absolute = path.join(relative_path);
+        let metadata = std::fs::symlink_metadata(&absolute).map_err(|error| {
+            recovery_dirty(format!(
+                "failed to read original conflict file '{relative}': {error}"
+            ))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(recovery_dirty(format!(
+                "conflict file '{relative}' is not an ordinary file and requires manual recovery"
+            )));
+        }
+        let bytes = std::fs::read(&absolute).map_err(|error| {
+            recovery_dirty(format!(
+                "failed to read original conflict file '{relative}': {error}"
+            ))
+        })?;
+        files.push(GitConflictFileSnapshot {
+            path: relative.to_owned(),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+        });
+    }
+    Ok(GitMergeConflictSnapshot { files })
 }
 
 pub(super) fn abort_merge(

@@ -21,12 +21,18 @@ pub(crate) fn handle_status<B: GitBackend, S: MergeStore>(
     backend: &B,
     store: &S,
     root: &Path,
+    merge_id: Option<&str>,
     context: &OperationContext,
 ) -> ModelResult<crate::MergeResponse> {
-    let Some(record) = store.discover_open(root)? else {
-        return super::super::response::idle_status_response(context);
-    };
-    snapshot_status(backend, root, record)?.to_response(context)
+    let open = store.discover_open(root)?;
+    match (merge_id, open) {
+        (None, Some(record)) => snapshot_status(backend, root, record)?.to_response(context),
+        (None, None) => super::super::response::idle_status_response(context),
+        (Some(requested), Some(record)) if requested == record.merge_id => {
+            snapshot_status(backend, root, record)?.to_response(context)
+        }
+        (Some(requested), _) => store.load_archived(root, requested)?.to_response(context),
+    }
 }
 
 pub(crate) fn snapshot_status<B: GitBackend>(

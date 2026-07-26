@@ -194,6 +194,17 @@ pub struct GitNativeMergeState {
     pub unresolved_entries: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitConflictFileSnapshot {
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitMergeConflictSnapshot {
+    pub files: Vec<GitConflictFileSnapshot>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitRepositoryState {
     Clean,

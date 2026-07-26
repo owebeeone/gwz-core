@@ -30,18 +30,44 @@ pub(crate) fn handle_abort<B: GitBackend, S: MergeStore>(
     context: &OperationContext,
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
-    if request.preserve == Some(true) {
-        return Err(ModelError::new(
-            ErrorCode::MergePhaseUnsupported,
-            "preserve-abort is not available",
-        ));
-    }
     let _guard = WorkspaceMutatorLock::acquire(root)?;
+    if request.preserve == Some(true) {
+        return super::preserve::preserve_then_abort(
+            backend, store, root, request, context, emitter,
+        );
+    }
+    if let Some(record) = store.discover_open(root)? {
+        super::validate::validate_open_merge_id(request.merge_id.as_deref(), &record.merge_id)?;
+        if record.state == OperationState::Preserving {
+            return Err(ModelError::new(
+                ErrorCode::MergeRecoveryRequired,
+                "merge preservation is incomplete; retry `gwz merge --abort --preserve` so every preservation artifact is reconciled and verified before rollback",
+            ));
+        }
+    }
+    abort_locked(
+        backend,
+        store,
+        root,
+        request.merge_id.as_deref(),
+        context,
+        emitter,
+    )
+}
+
+pub(super) fn abort_locked<B: GitBackend, S: MergeStore>(
+    backend: &B,
+    store: &S,
+    root: &Path,
+    requested_id: Option<&str>,
+    context: &OperationContext,
+    emitter: &EventEmitter<'_>,
+) -> ModelResult<crate::MergeResponse> {
     abort_with_runtime(
         &GitAbortRuntime(backend),
         store,
         root,
-        request.merge_id.as_deref(),
+        requested_id,
         context,
         emitter,
     )

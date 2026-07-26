@@ -61,7 +61,7 @@ impl StashBundle {
 
         let mut selected = BTreeSet::new();
         for member_id in &self.selected_members {
-            parse_id("selected_members", "mem_", member_id)?;
+            validate_target_id("selected_members", member_id)?;
             if !selected.insert(member_id.as_str()) {
                 return Err(invalid(format!(
                     "duplicate selected stash member '{member_id}'"
@@ -124,8 +124,14 @@ pub struct StashBundleMember {
 
 impl StashBundleMember {
     fn validate(&self) -> ModelResult<()> {
-        parse_id("member_id", "mem_", &self.member_id)?;
-        MemberPath::parse(&self.path)?;
+        validate_target_id("member_id", &self.member_id)?;
+        if self.member_id == "@root" {
+            if self.path != "." {
+                return Err(invalid("root stash member path must be '.'"));
+            }
+        } else {
+            MemberPath::parse(&self.path)?;
+        }
         if self.participation == StashParticipation::Skipped {
             return Err(invalid("persisted stash members must not be skipped"));
         }
@@ -202,7 +208,7 @@ impl StashWarning {
         require_non_empty("warning.code", &self.code)?;
         require_non_empty("warning.message", &self.message)?;
         if let Some(member_id) = &self.member_id {
-            parse_id("warning.member_id", "mem_", member_id)?;
+            validate_target_id("warning.member_id", member_id)?;
         }
         Ok(())
     }
@@ -220,7 +226,7 @@ impl StashDrift {
     fn validate(&self) -> ModelResult<()> {
         require_non_empty("drift.code", &self.code)?;
         require_non_empty("drift.message", &self.message)?;
-        parse_id("drift.member_id", "mem_", &self.member_id)
+        validate_target_id("drift.member_id", &self.member_id)
     }
 }
 
@@ -324,6 +330,14 @@ fn parse_id(field: &str, prefix: &str, value: &str) -> ModelResult<()> {
         Err(invalid(format!(
             "{field} must start with {prefix} and contain only portable characters"
         )))
+    }
+}
+
+fn validate_target_id(field: &str, value: &str) -> ModelResult<()> {
+    if value == "@root" {
+        Ok(())
+    } else {
+        parse_id(field, "mem_", value)
     }
 }
 

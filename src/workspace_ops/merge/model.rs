@@ -60,6 +60,7 @@ impl OperationState {
                     Self::AwaitingResolution
                         | Self::Halted
                         | Self::Finalizing
+                        | Self::Preserving
                         | Self::RecoveryRequired
                 ) | (
                     Self::AwaitingResolution,
@@ -193,6 +194,8 @@ pub(crate) struct MergeParticipantRecord {
     pub expected_merge_head: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflict_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflict_snapshot: Vec<ConflictFileEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<MergeRecordError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,6 +206,12 @@ pub(crate) struct MergeParticipantRecord {
     pub drift: Vec<ParticipantDrift>,
     #[serde(default, flatten)]
     pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ConflictFileEvidence {
+    pub path: String,
+    pub sha256: String,
 }
 
 /// Durable intent written before an individual participant Git action.
@@ -297,6 +306,10 @@ pub(crate) struct PublicationProgress {
     pub candidate: Option<PublicationCandidate>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub evidence_rolled_back: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub root_preservation: Vec<PreservationEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preservation_prefix: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -578,6 +591,7 @@ future_record: retained
             resulting_commit: None,
             expected_merge_head: Some("222".to_owned()),
             conflict_paths: vec!["src/lib.rs".to_owned()],
+            conflict_snapshot: Vec::new(),
             error: None,
             pending_action: None,
             preservation: Vec::new(),
@@ -595,6 +609,7 @@ future_record: retained
             resulting_commit: None,
             expected_merge_head: None,
             conflict_paths: Vec::new(),
+            conflict_snapshot: Vec::new(),
             error: Some(MergeRecordError {
                 code: ErrorCode::GitCommandFailed,
                 message: "revspec 'feature/x' not found".to_owned(),

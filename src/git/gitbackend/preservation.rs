@@ -164,6 +164,63 @@ pub(super) fn stash_for_merge_preservation(
     Ok(result)
 }
 
+pub(super) fn index_matches_candidate_files(
+    _backend: &Git2Backend,
+    path: &Path,
+    expected_files: &[GitCandidateFile],
+    absent_paths: &[String],
+) -> ModelResult<bool> {
+    let repo = open_repo(path)?;
+    let index = repo.index().map_err(git_error)?;
+    for file in expected_files {
+        let entries = index
+            .iter()
+            .filter(|entry| entry.path == file.path.as_bytes())
+            .collect::<Vec<_>>();
+        let Some(entry) = entries.as_slice().first() else {
+            return Ok(false);
+        };
+        let expected_blob =
+            git2::Oid::hash_object(git2::ObjectType::Blob, &file.bytes).map_err(git_error)?;
+        if entries.len() != 1
+            || (entry.flags >> 12) & 3 != 0
+            || entry.mode != 0o100644
+            || entry.id != expected_blob
+        {
+            return Ok(false);
+        }
+        let worktree_path = path.join(&file.path);
+        let metadata = match std::fs::symlink_metadata(&worktree_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(crate::git::io_error(error)),
+        };
+        if !metadata.file_type().is_file()
+            || std::fs::read(&worktree_path).map_err(crate::git::io_error)? != file.bytes
+        {
+            return Ok(false);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 != 0 {
+                return Ok(false);
+            }
+        }
+    }
+    for absent in absent_paths {
+        if index.iter().any(|entry| entry.path == absent.as_bytes()) {
+            return Ok(false);
+        }
+        match std::fs::symlink_metadata(path.join(absent)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return Ok(false),
+            Err(error) => return Err(crate::git::io_error(error)),
+        }
+    }
+    Ok(true)
+}
+
 fn parse_commit(repo: &git2::Repository, target: &str) -> ModelResult<git2::Oid> {
     let oid = git2::Oid::from_str(target).map_err(|error| {
         ModelError::new(

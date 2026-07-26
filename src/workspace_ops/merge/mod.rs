@@ -1,11 +1,13 @@
 mod abort;
 mod continue_op;
 mod finalize;
+mod gc;
 #[allow(dead_code)] // Frozen M2b-A1 interface; consumed by finalization in M2b-A2.
 pub(crate) mod marker;
 mod model;
 mod pending;
 mod plan;
+mod preserve;
 mod publication;
 mod recovery;
 mod response;
@@ -31,9 +33,8 @@ use crate::operation::{EventSink, OperationRequest, WorkspaceMutatorLock};
 use crate::runtime::clock::Clock;
 use crate::runtime::ids::IdProvider;
 
-/// Persistence seam frozen at I0. M1 provides the filesystem implementation.
-/// Initial status discovers only the open record; archived enumeration and
-/// id-qualified archived status deliberately remain outside this M1 seam.
+/// Persistence seam frozen at I0 and extended in M3 with exact archived loads
+/// for id-qualified status and checked cleanup.
 #[allow(dead_code)] // Remove when M1 wires the durable merge store.
 pub(crate) trait MergeStore {
     fn discover_open(&self, _root: &Path) -> ModelResult<Option<MergeOperationRecord>> {
@@ -41,6 +42,9 @@ pub(crate) trait MergeStore {
     }
     fn load(&self, _root: &Path, _merge_id: &str) -> ModelResult<MergeOperationRecord> {
         unsupported_store("load")
+    }
+    fn load_archived(&self, _root: &Path, _merge_id: &str) -> ModelResult<MergeOperationRecord> {
+        unsupported_store("load_archived")
     }
     fn write_open(&self, _root: &Path, _record: &MergeOperationRecord) -> ModelResult<()> {
         unsupported_store("write_open")
@@ -392,7 +396,13 @@ where
         }
         crate::MergeOp::Status => {
             let root = resolve_recovery_root(dependencies.store, start, &request)?;
-            status::handle_status(dependencies.backend, dependencies.store, &root, &context)
+            status::handle_status(
+                dependencies.backend,
+                dependencies.store,
+                &root,
+                request.merge_id.as_deref(),
+                &context,
+            )
         }
         crate::MergeOp::Resume => {
             let root = resolve_recovery_root(dependencies.store, start, &request)?;
@@ -416,10 +426,16 @@ where
                 emitter,
             )
         }
-        op => Err(ModelError::new(
-            ErrorCode::MergePhaseUnsupported,
-            format!("merge operation '{op:?}' is not available"),
-        )),
+        crate::MergeOp::Gc => {
+            let root = resolve_recovery_root(dependencies.store, start, &request)?;
+            gc::handle_gc(
+                dependencies.backend,
+                dependencies.store,
+                &root,
+                request.merge_id.as_deref(),
+                &context,
+            )
+        }
     }
 }
 

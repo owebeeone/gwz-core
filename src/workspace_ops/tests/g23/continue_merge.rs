@@ -197,6 +197,7 @@ fn failed_and_unattempted_rows_retry_only_after_whole_operation_preflight() {
         resulting_commit: None,
         expected_merge_head: None,
         conflict_paths: Vec::new(),
+        conflict_snapshot: Vec::new(),
         error: None,
         pending_action: None,
         preservation: Vec::new(),

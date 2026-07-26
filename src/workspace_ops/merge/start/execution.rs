@@ -32,7 +32,24 @@ pub(super) fn execute_durable<B: ExecutionBackend, S: MergeStore>(
         super::super::persist_merge_record(store, root, record, emitter)?;
         match execute_prepared(backend, root, participant, &prepared) {
             Ok(row) => {
-                apply_row(record, participant, &row, None)?;
+                let conflict_snapshot = if row.state == PState::Conflicted {
+                    backend
+                        .merge_conflict_snapshot(
+                            &root.join(&participant.path),
+                            &participant.before_commit,
+                            &participant.source_commit,
+                        )?
+                        .files
+                        .into_iter()
+                        .map(|file| super::super::ConflictFileEvidence {
+                            path: file.path,
+                            sha256: file.sha256,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                apply_row(record, participant, &row, None, conflict_snapshot)?;
                 record
                     .participants
                     .get_mut(&participant.target_id)
@@ -67,6 +84,7 @@ fn persist_start_failure<S: MergeStore>(
         participant,
         &Row::new(participant, PState::Failed),
         Some(&contextual),
+        Vec::new(),
     )?;
     super::super::persist_merge_record(store, root, record, emitter)?;
     super::super::emit_merge_member_finished(emitter, record, &participant.target_id)
@@ -85,6 +103,7 @@ fn mark_later_unattempted<S: MergeStore>(
             participant,
             &Row::new(participant, PState::Unattempted),
             None,
+            Vec::new(),
         )?;
         super::super::persist_merge_record(store, root, record, emitter)?;
         super::super::emit_merge_member_finished(emitter, record, &participant.target_id)?;
@@ -112,6 +131,14 @@ pub(super) trait ExecutionBackend {
         message: &str,
         prepared: &GitPreparedMerge,
     ) -> ModelResult<GitIntegrateResult>;
+    fn merge_conflict_snapshot(
+        &self,
+        _path: &Path,
+        _expected_before: &str,
+        _expected_merge_head: &str,
+    ) -> ModelResult<crate::git::GitMergeConflictSnapshot> {
+        Ok(crate::git::GitMergeConflictSnapshot { files: Vec::new() })
+    }
 }
 impl<B: GitBackend> ExecutionBackend for B {
     fn inspect(&self, path: &Path, branch: &str, source: &str) -> ModelResult<Inspection> {
@@ -137,6 +164,14 @@ impl<B: GitBackend> ExecutionBackend for B {
             source,
             attribution,
         )
+    }
+    fn merge_conflict_snapshot(
+        &self,
+        path: &Path,
+        expected_before: &str,
+        expected_merge_head: &str,
+    ) -> ModelResult<crate::git::GitMergeConflictSnapshot> {
+        GitBackend::merge_conflict_snapshot(self, path, expected_before, expected_merge_head)
     }
     fn merge(
         &self,

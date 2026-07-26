@@ -7,6 +7,8 @@ use crate::stash::{self, StashPushLifecycle, StashRestoreState};
 
 use super::*;
 
+mod m3_review;
+
 fn stash_request(op: crate::StashOp, stash_id: &str) -> crate::StashRequest {
     crate::StashRequest {
         meta: request_meta(),
@@ -274,6 +276,16 @@ fn stash_apply_keeps_native_stash_and_marks_applied() {
     );
     assert_eq!(backend.stash_list(&member).unwrap().len(), 1);
     assert!(stash::bundle_path(temp.path(), "stash_apply_op").exists());
+
+    handle_stash(
+        &backend,
+        temp.path(),
+        stash_request(crate::StashOp::Drop, "stash_apply_op"),
+        "op_drop_after_apply",
+    )
+    .unwrap();
+    assert!(backend.stash_list(&member).unwrap().is_empty());
+    assert!(!stash::bundle_path(temp.path(), "stash_apply_op").exists());
 }
 
 #[test]

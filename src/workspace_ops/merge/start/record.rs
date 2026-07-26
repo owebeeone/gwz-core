@@ -52,6 +52,7 @@ pub(super) fn create_record<C: Clock>(
                     resulting_commit: None,
                     expected_merge_head: None,
                     conflict_paths: Vec::new(),
+                    conflict_snapshot: Vec::new(),
                     error: None,
                     pending_action: None,
                     preservation: Vec::new(),
@@ -155,6 +156,7 @@ pub(super) fn apply_row(
     plan: &MergeParticipantPlan,
     row: &Row<'_>,
     error: Option<&ModelError>,
+    conflict_snapshot: Vec<super::super::ConflictFileEvidence>,
 ) -> ModelResult<()> {
     let participant = record
         .participants
@@ -182,6 +184,7 @@ pub(super) fn apply_row(
     participant.state = participant.state.transition(next)?;
     participant.resulting_commit.clone_from(&row.oid);
     participant.conflict_paths.clone_from(&row.paths);
+    participant.conflict_snapshot = conflict_snapshot;
     participant.expected_merge_head =
         (next == ParticipantState::Conflicted).then(|| plan.source_commit.clone());
     participant.error = error.map(|error| MergeRecordError {

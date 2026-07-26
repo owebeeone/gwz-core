@@ -71,7 +71,11 @@ pub(super) fn preflight_evidence<A: AbortRuntime>(
         )
         .with_member("@root", ".")
     })?;
-    if record.state != OperationState::RollingBack && !publication_prefix_allowed(record, prefix)? {
+    if !matches!(
+        record.state,
+        OperationState::Preserving | OperationState::RollingBack
+    ) && !publication_prefix_allowed(record, prefix)?
+    {
         return Err(ModelError::new(
             ErrorCode::MergeDrift,
             "workspace root candidate artifacts do not match the recorded publication step",

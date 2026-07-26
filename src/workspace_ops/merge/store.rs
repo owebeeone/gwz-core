@@ -2,12 +2,15 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::UNIX_EPOCH;
 
 use serde_yaml::Value;
 
 use super::{MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord, MergeStore};
 use crate::model::{ErrorCode, ModelError, ModelResult};
+
+mod archived;
+mod gc;
+mod retention;
 
 const MERGE_DIR: &str = ".gwz/merge";
 const DONE_DIR: &str = ".gwz/merge/done";
@@ -47,6 +50,10 @@ impl MergeStore for FileMergeStore {
         ))
     }
 
+    fn load_archived(&self, root: &Path, merge_id: &str) -> ModelResult<MergeOperationRecord> {
+        archived::load(root, merge_id)
+    }
+
     fn write_open(&self, root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
         validate_record(record, None)?;
         let path = open_path(root, &record.merge_id);
@@ -81,50 +88,11 @@ impl MergeStore for FileMergeStore {
     }
 
     fn archive(&self, root: &Path, merge_id: &str) -> ModelResult<()> {
-        validate_merge_id(merge_id)?;
-        let source = open_path(root, merge_id);
-        let destination = done_path(root, merge_id);
-        if !path_exists(&source)? {
-            if path_exists(&destination)? {
-                let (_, archived) = read_record(&destination)?;
-                ensure_terminal_for_archive(&archived)?;
-                return enforce_retention(root);
-            }
-            return Err(ModelError::new(
-                ErrorCode::OperationNotFound,
-                format!("merge record '{merge_id}' was not found"),
-            ));
-        }
-        let (source_raw, record) = read_record(&source)?;
-        ensure_terminal_for_archive(&record)?;
-        fs::create_dir_all(root.join(DONE_DIR)).map_err(io_error)?;
-        if path_exists(&destination)? {
-            let (archived_raw, archived) = read_record(&destination)?;
-            if archived != record || archived_raw != source_raw {
-                return Err(recovery_error(format!(
-                    "archived merge record '{merge_id}' does not match the open record"
-                )));
-            }
-            fs::remove_file(&source).map_err(io_error)?;
-        } else {
-            fs::rename(&source, &destination).map_err(io_error)?;
-        }
-        sync_dir(&root.join(MERGE_DIR))?;
-        sync_dir(&root.join(DONE_DIR))?;
-        let (_, verified) = read_record(&destination)?;
-        if verified != record {
-            return Err(recovery_error(format!(
-                "archived merge record '{merge_id}' failed verification"
-            )));
-        }
-        enforce_retention(root)
+        archived::archive(root, merge_id)
     }
 
-    fn gc(&self, _root: &Path, _merge_id: Option<&str>) -> ModelResult<()> {
-        Err(ModelError::new(
-            ErrorCode::MergePhaseUnsupported,
-            "merge record GC is not available",
-        ))
+    fn gc(&self, root: &Path, merge_id: Option<&str>) -> ModelResult<()> {
+        gc::collect(root, merge_id)
     }
 }
 
@@ -300,33 +268,6 @@ fn carry_unknown(old_raw: &Value, old_known: &Value, new: &mut Value) {
     }
 }
 
-fn enforce_retention(root: &Path) -> ModelResult<()> {
-    let mut ordinary = Vec::new();
-    for path in record_files(&root.join(DONE_DIR))? {
-        let Ok((_, record)) = read_record(&path) else {
-            continue; // Unknown/corrupt archives may own evidence: fail safe by retaining them.
-        };
-        if record
-            .participants
-            .values()
-            .any(|participant| !participant.preservation.is_empty())
-        {
-            continue;
-        }
-        let modified = fs::metadata(&path)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |duration| duration.as_nanos());
-        ordinary.push((modified, path));
-    }
-    ordinary.sort_by(|left, right| right.cmp(left));
-    for (_, path) in ordinary.into_iter().skip(ORDINARY_RETENTION) {
-        fs::remove_file(path).map_err(io_error)?;
-    }
-    sync_dir(&root.join(DONE_DIR))
-}
-
 fn unreadable(path: Option<&Path>, reason: impl std::fmt::Display) -> ModelError {
     let location = path.map_or_else(
         || "merge record".to_owned(),
@@ -403,6 +344,8 @@ mod tests {
             candidate_hashes: Vec::new(),
             candidate: None,
             evidence_rolled_back: false,
+            root_preservation: Vec::new(),
+            preservation_prefix: None,
         });
         store.write_open(&temp.path, &expected).unwrap();
         assert_eq!(store.load(&temp.path, "merge_1").unwrap(), expected);
@@ -533,9 +476,6 @@ mod tests {
             ErrorCode::IoError
         );
         assert_eq!(fs::read_dir(&temp.path).unwrap().count(), 1);
-        assert_eq!(
-            FileMergeStore.gc(Path::new("."), None).unwrap_err().code,
-            ErrorCode::MergePhaseUnsupported
-        );
+        FileMergeStore.gc(&temp.path, None).unwrap();
     }
 }

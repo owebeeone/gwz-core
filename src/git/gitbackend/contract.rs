@@ -181,6 +181,18 @@ pub trait GitBackend {
     ) -> ModelResult<()> {
         unsupported_backend("validate_merge_recovery_state")
     }
+    /// Capture an exact pristine native-conflict snapshot. The current index
+    /// must still equal the deterministic merge index, including conflict
+    /// stages, and the returned hashes cover the conflict-marker worktree
+    /// files. This is read-only.
+    fn merge_conflict_snapshot(
+        &self,
+        _path: &Path,
+        _expected_before: &str,
+        _expected_merge_head: &str,
+    ) -> ModelResult<GitMergeConflictSnapshot> {
+        unsupported_backend("merge_conflict_snapshot")
+    }
     /// Read-only verification that a resolved native merge is still attached
     /// to the exact target branch and has the exact index tree frozen in
     /// `prepared`. This must not write a tree object, change the
@@ -250,6 +262,20 @@ pub trait GitBackend {
         _include_untracked: bool,
     ) -> ModelResult<GitStashPushResult> {
         unsupported_backend("stash_for_merge_preservation")
+    }
+    /// Verify exact stage-0 regular-file entries for `expected_files` and the
+    /// complete absence of every `absent_path`.
+    ///
+    /// Implementations compare blob identity, mode, stage, and worktree file
+    /// type without writing objects, the index, or the worktree. Unrelated
+    /// index entries are deliberately ignored.
+    fn index_matches_candidate_files(
+        &self,
+        _path: &Path,
+        _expected_files: &[GitCandidateFile],
+        _absent_paths: &[String],
+    ) -> ModelResult<bool> {
+        unsupported_backend("index_matches_candidate_files")
     }
     /// Commit only the supplied GWZ-owned candidate files through an isolated
     /// index and checked attached-root-ref update.

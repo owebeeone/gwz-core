@@ -59,6 +59,18 @@ impl MergeOperationRecord {
             }));
             repos.push(participant.to_protocol(target_id, &self.source_ref));
         }
+        if let Some(publication) = self.publication.as_ref() {
+            preservation.extend(publication.root_preservation.iter().map(|evidence| {
+                crate::MergePreservation {
+                    target_id: "@root".to_owned(),
+                    path: ".".to_owned(),
+                    backup_ref: evidence.backup_ref.clone(),
+                    backup_commit: evidence.backup_commit.clone(),
+                    stash_id: evidence.stash_id.clone(),
+                    stash_object_id: evidence.stash_object_id.clone(),
+                }
+            }));
+        }
         Ok(crate::MergeResponse {
             response: crate::operation::response_envelope_for(
                 &context_meta(context),

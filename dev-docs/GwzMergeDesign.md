@@ -134,7 +134,7 @@ gwz merge <source>
 gwz merge <source> --dry-run
 gwz merge --continue
 gwz merge --abort
-gwz merge --status
+gwz merge --status [<merge-id>]
 ```
 
 Preserving post-merge work before an abort is explicit:
@@ -635,12 +635,12 @@ coordinated operation.
 
 ## 12. `gwz merge --status`
 
-Status reads the open record and compares it with every live participant. With
-no open operation, initial status returns a successful `idle` response with no
-merge id, participants, or drift; it does not fabricate a completed operation.
-Archived-record enumeration, id-qualified archived status, and retained
-preservation evidence arrive with the preservation/GC increment in M3. Status
-does not mutate Git or GWZ artifacts.
+Status without an id reads the open record and compares it with every live
+participant. With no open operation, it returns a successful `idle` response
+with no merge id, participants, or drift; it does not fabricate a completed
+operation. `gwz merge --status <merge-id>` reads that retained terminal record
+without inspecting repositories or reopening the operation. Both forms report
+retained preservation evidence. Status does not mutate Git or GWZ artifacts.
 
 Status also reports operation-level drift independently from participant drift.
 This allows a caller to see why the next continue or abort would reject even
@@ -877,6 +877,12 @@ For each eligible drifted merged participant, GWZ records:
   when the index has no unresolved entries;
 - the backup ref target and stash object id in the merge operation record.
 
+Root composition evidence for a member-only merge is not added to the frozen
+participant set. Its preservation evidence is owned by the durable publication
+record and projects as target `@root`; explicit-root preservation continues to
+use the selected root participant. Both forms use the same deterministic
+`root/head` ref and coordinated stash row.
+
 The stash is not a parallel hidden mechanism. It uses the existing coordinated
 stash-bundle store, is tagged with the merge id, is visible through
 `gwz stash list`, and retains the existing object-id-first identity and restore
@@ -897,6 +903,9 @@ Preservation has two phases:
 If preservation fails after some artifacts are created, no rollback begins.
 The operation remains open and the successfully created artifacts are reported
 as recoverable evidence. Rerunning preserve is idempotent by recorded object id.
+A plain `--abort` rejects while the operation is `Preserving`; only a
+`--abort --preserve` retry may reconcile missing evidence, reverify every
+artifact, and enter rollback.
 
 After all preservation artifacts exist, coordinated rollback proceeds:
 
@@ -920,6 +929,23 @@ Initial preserve support is intentionally conservative:
   integration state require manual recovery;
 - preserving partial conflict-resolution work from an unmerged index is
   deferred because a normal stash cannot safely represent it.
+- the normal conflict path records the original unresolved index and
+  conflict-marker file hashes when the conflict is created; preserve-abort
+  requires both to remain exact before it creates any artifact;
+- if Git created the conflict but the durable outcome write was interrupted,
+  reconciliation records that the original marker snapshot is unavailable
+  rather than hashing later live files; continue remains possible, but
+  preserve-abort rejects until the conflict is resolved or the work is
+  preserved manually;
+- root work created before a composition commit is recorded requires manual
+  preservation, avoiding candidate lock/marker contamination; and
+- an interrupted root-publication normalization is repairable only when both
+  worktree bytes/file types and exact stage-0 blob ids and modes match a known
+  deterministic prefix; arbitrary staged modes, symlinks, or bytes reject
+  without rewrite; and
+- an unborn-root composition may preserve committed descendants by ref, but
+  automatic root worktree preservation is deferred because baseline GWZ files
+  are not ordinary user-untracked content.
 
 ### 14.4 Abort execution and failures
 

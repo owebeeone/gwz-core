@@ -26,15 +26,9 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
             reject_present("source_ref", request.source_ref.is_some())?;
             reject_present("mode", request.mode.is_some())?;
             reject_present("message", request.message.is_some())?;
-            if request.preserve == Some(true) {
-                return phase("preserve-abort is not available");
-            }
         }
         crate::MergeOp::Status => {
             reject_recovery_fields(request)?;
-            if request.merge_id.is_some() {
-                return phase("status by merge id is not available");
-            }
         }
         crate::MergeOp::Gc => {
             reject_recovery_fields(request)?;
@@ -164,7 +158,7 @@ mod tests {
         normal.mode = Some(crate::MergeMode::Normal);
         assert!(validate_merge_request(&normal).is_ok());
         let mut abort = request(crate::MergeOp::Abort);
-        abort.preserve = Some(false);
+        abort.preserve = Some(true);
         assert!(validate_merge_request(&abort).is_ok());
     }
 
@@ -221,17 +215,9 @@ mod tests {
         assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
         assert_eq!(error.message, "non-default merge modes are not available");
 
-        let mut preserve = request(crate::MergeOp::Abort);
-        preserve.preserve = Some(true);
-        let error = validate_merge_request(&preserve).unwrap_err();
-        assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
-        assert_eq!(error.message, "preserve-abort is not available");
-
         let mut archived_status = request(crate::MergeOp::Status);
         archived_status.merge_id = Some("merge_1".to_owned());
-        let error = validate_merge_request(&archived_status).unwrap_err();
-        assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
-        assert_eq!(error.message, "status by merge id is not available");
+        assert!(validate_merge_request(&archived_status).is_ok());
 
         let mut root = request(crate::MergeOp::Start);
         root.meta.selection = Some(crate::Selection {

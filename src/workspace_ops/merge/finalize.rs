@@ -49,6 +49,8 @@ pub(super) fn finalize<B: GitBackend, S: MergeStore>(
             candidate_hashes: Vec::new(),
             candidate: None,
             evidence_rolled_back: false,
+            root_preservation: Vec::new(),
+            preservation_prefix: None,
         });
         super::persist_merge_record(store, root, record, emitter)?;
     }
