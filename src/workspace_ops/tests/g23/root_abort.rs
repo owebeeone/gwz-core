@@ -33,7 +33,6 @@ fn init_root_metadata_feature(
     backend.stage_paths(root, &["gwz.conf"]).unwrap();
     let baseline = commit_file(root, "root.txt", "baseline\n", "root baseline", &[]).unwrap();
     let baseline_manifest = fs::read(root.join(crate::workspace::WORKSPACE_MANIFEST)).unwrap();
-    let baseline_lock = fs::read(root.join(crate::artifact::LOCK_PATH)).unwrap();
     backend
         .branch_create(root, "feature/source", "HEAD")
         .unwrap();
@@ -65,6 +64,8 @@ fn init_root_metadata_feature(
     )
     .unwrap();
     backend.switch_branch(root, "main").unwrap();
+    let baseline_manifest = fs::read(root.join(crate::workspace::WORKSPACE_MANIFEST)).unwrap();
+    let baseline_lock = fs::read(root.join(crate::artifact::LOCK_PATH)).unwrap();
     (baseline, source, baseline_manifest, baseline_lock)
 }
 
@@ -74,7 +75,6 @@ fn init_root_manifest_conflict(
 ) -> (String, Vec<u8>, Vec<u8>) {
     let manifest_path = root.join(crate::workspace::WORKSPACE_MANIFEST);
     let baseline_manifest = fs::read(&manifest_path).unwrap();
-    let baseline_lock = fs::read(root.join(crate::artifact::LOCK_PATH)).unwrap();
     backend.stage_paths(root, &["gwz.conf"]).unwrap();
     let base = commit_file(root, "root.txt", "baseline\n", "root baseline", &[]).unwrap();
     backend
@@ -111,6 +111,7 @@ fn init_root_manifest_conflict(
     )
     .unwrap();
     let before_manifest = fs::read(&manifest_path).unwrap();
+    let baseline_lock = fs::read(root.join(crate::artifact::LOCK_PATH)).unwrap();
     (before, before_manifest, baseline_lock)
 }
 

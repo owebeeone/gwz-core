@@ -163,6 +163,8 @@ fn build(
         MergeBaseline {
             lock_sha256: format!("{:x}", Sha256::digest(b"baseline-lock")),
             manifest_sha256: format!("{:x}", Sha256::digest(b"baseline-manifest")),
+            lock_yaml: Some("baseline-lock".to_owned()),
+            manifest_yaml: Some("baseline-manifest".to_owned()),
             lock_commit_sha256: Some(format!("{:x}", Sha256::digest(b"baseline-lock"))),
             manifest_commit_sha256: Some(format!("{:x}", Sha256::digest(b"baseline-manifest"))),
             root_head: Some("before-root".into()),
@@ -277,6 +279,8 @@ fn explicit_root_distinguishes_persisted_and_git_normalized_metadata_bytes() {
         MergeBaseline {
             lock_sha256: format!("{:x}", Sha256::digest(b"baseline-lock\r\n")),
             manifest_sha256: format!("{:x}", Sha256::digest(b"baseline-manifest\r\n")),
+            lock_yaml: Some("baseline-lock\r\n".to_owned()),
+            manifest_yaml: Some("baseline-manifest\r\n".to_owned()),
             lock_commit_sha256: Some(format!("{:x}", Sha256::digest(b"baseline-lock"))),
             manifest_commit_sha256: Some(format!("{:x}", Sha256::digest(b"baseline-manifest"))),
             root_head: Some("before-root".into()),

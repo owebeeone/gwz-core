@@ -33,6 +33,8 @@ pub(crate) fn plan_merge<B: GitBackend>(
         ));
     }
     let root_head = backend.head(root)?;
+    let (lock_yaml, lock_sha256) = file_text_and_sha256(&root.join(artifact::LOCK_PATH))?;
+    let (manifest_yaml, manifest_sha256) = file_text_and_sha256(&root.join(WORKSPACE_MANIFEST))?;
     let plan = build_merge_plan(
         &BackendPlanningView(backend),
         root,
@@ -40,8 +42,10 @@ pub(crate) fn plan_merge<B: GitBackend>(
         &manifest,
         &lock,
         MergeBaseline {
-            lock_sha256: file_sha256(&root.join(artifact::LOCK_PATH))?,
-            manifest_sha256: file_sha256(&root.join(WORKSPACE_MANIFEST))?,
+            lock_sha256,
+            manifest_sha256,
+            lock_yaml: Some(lock_yaml),
+            manifest_yaml: Some(manifest_yaml),
             lock_commit_sha256: None,
             manifest_commit_sha256: None,
             root_head: root_head.commit.clone(),
@@ -389,14 +393,24 @@ fn preflight_member<P: PlanningBackend>(
     })
 }
 
-fn file_sha256(path: &Path) -> ModelResult<String> {
+fn file_text_and_sha256(path: &Path) -> ModelResult<(String, String)> {
     let bytes = fs::read(path).map_err(|error| {
         ModelError::new(
             ErrorCode::IoError,
             format!("failed to hash '{}': {error}", path.display()),
         )
     })?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let text = String::from_utf8(bytes).map_err(|error| {
+        ModelError::new(
+            ErrorCode::ManifestInvalid,
+            format!(
+                "workspace artifact '{}' is not UTF-8: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    Ok((text, sha256))
 }
 
 fn committed_file_sha256<B: PlanningBackend>(

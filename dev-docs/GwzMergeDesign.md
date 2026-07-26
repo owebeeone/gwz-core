@@ -306,6 +306,8 @@ created_at: 2026-07-16T00:00:00Z
 baseline:
   lock_sha256: 9f86d081...
   manifest_sha256: 60303ae2...
+  lock_yaml: "schema: gwz.lock/v0\n..."
+  manifest_yaml: "schema: gwz.workspace/v0\n..."
   lock_commit_sha256: 2cc1957b...
   manifest_commit_sha256: e587e3a1...
   root_head: ddd111
@@ -427,13 +429,15 @@ flush it, and rename it over the destination. Readers tolerate unknown fields,
 and an updater retains unknown fields across read-modify-write so an older
 binary does not erase recovery data introduced by a newer one.
 
-The baseline digests are computed over the exact persisted manifest and lock
-bytes. The lock digest is the authoritative abort baseline. The manifest
-digest detects membership changes while the operation is open. When root
-participates, the record also stores digests of the corresponding Git blob
-bytes. Git may normalize text in the index and restore different worktree line
-endings, so the committed-byte digests validate planning and recovery while
-the persisted-byte digests continue to prove exact abort restoration.
+The baseline digests and YAML values are computed over the exact persisted
+manifest and lock bytes. The lock digest and content are the authoritative
+abort baseline. The manifest digest detects membership changes while the
+operation is open, and its exact content makes byte-for-byte root restoration
+restart-safe. When root participates, the record also stores digests of the
+corresponding Git blob bytes. Git may normalize text in the index and restore
+different worktree line endings, so the committed-byte digests validate
+planning and recovery while the persisted bytes continue to drive and prove
+exact abort restoration.
 `root_head` is for diagnostics and checked root-ref updates; when root
 participates it is also the root's recorded before commit. After the root is
 attempted, recovery uses its recorded participant state rather than incorrectly

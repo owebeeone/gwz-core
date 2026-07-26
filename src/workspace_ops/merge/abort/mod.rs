@@ -12,7 +12,7 @@ pub(crate) use evidence::{EvidenceRollbackMutation, fail_next_evidence_rollback_
 use self::{
     evidence::{preflight_evidence, rollback_evidence, verify_evidence_baseline},
     participants::rollback_participants,
-    preflight::{preflight, verify_baseline},
+    preflight::{preflight, restore_baseline, verify_baseline},
     reconciliation::apply_pending_reconciliations,
     runtime::{AbortRuntime, GitAbortRuntime},
 };
@@ -166,6 +166,7 @@ fn abort_with_runtime<A: AbortRuntime, S: MergeStore>(
         verify_evidence_baseline(runtime, root, evidence)?;
     }
     rollback_participants(runtime, store, root, &mut record, &preflight, emitter)?;
+    restore_baseline(root, &record)?;
     verify_baseline(root, &record)?;
     super::persist_operation_transition(
         store,

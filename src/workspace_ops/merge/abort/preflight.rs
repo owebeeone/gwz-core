@@ -123,3 +123,73 @@ pub(super) fn verify_baseline(root: &Path, record: &MergeOperationRecord) -> Mod
     }
     Ok(())
 }
+
+pub(super) fn restore_baseline(root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
+    let root_selected = record
+        .selected_targets
+        .iter()
+        .any(|target| target == "@root");
+    if !root_selected {
+        return Ok(());
+    }
+    let root_participant = record.participants.get("@root");
+    let participant = root_participant.ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "selected root participant is missing from the merge record",
+        )
+    })?;
+    if participant.target_kind != super::super::MergeTargetKind::Root
+        || participant.path != "."
+        || !matches!(
+            participant.state,
+            ParticipantState::Aborted | ParticipantState::RolledBack
+        )
+    {
+        return Err(ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "root participant is not at an exact rolled-back state",
+        ));
+    }
+    let (Some(manifest_yaml), Some(lock_yaml)) = (
+        record.baseline.manifest_yaml.as_deref(),
+        record.baseline.lock_yaml.as_deref(),
+    ) else {
+        if record.baseline.manifest_yaml.is_none() && record.baseline.lock_yaml.is_none() {
+            return Ok(());
+        }
+        return Err(ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "merge baseline contains only one of the exact workspace artifacts",
+        ));
+    };
+    let manifest = artifact::ManifestArtifact::from_yaml(manifest_yaml)?;
+    let lock = artifact::LockArtifact::from_yaml(lock_yaml)?;
+    if manifest.workspace.id != record.workspace_id || lock.workspace_id != record.workspace_id {
+        return Err(ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "exact merge baseline identifies a different workspace",
+        ));
+    }
+    for (contents, expected, relative) in [
+        (
+            manifest_yaml,
+            record.baseline.manifest_sha256.as_str(),
+            WORKSPACE_MANIFEST,
+        ),
+        (
+            lock_yaml,
+            record.baseline.lock_sha256.as_str(),
+            artifact::LOCK_PATH,
+        ),
+    ] {
+        if format!("{:x}", Sha256::digest(contents.as_bytes())) != expected {
+            return Err(ModelError::new(
+                ErrorCode::MergeRecordUnreadable,
+                format!("exact merge baseline for '{relative}' does not match its digest"),
+            ));
+        }
+    }
+    artifact::write_atomic(&root.join(WORKSPACE_MANIFEST), manifest_yaml)?;
+    artifact::write_atomic(&root.join(artifact::LOCK_PATH), lock_yaml)
+}

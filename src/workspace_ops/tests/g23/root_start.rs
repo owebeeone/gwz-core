@@ -325,8 +325,11 @@ fn root_metadata_merge_uses_the_root_result_as_publication_baseline() {
         .unwrap();
     let publication = record.publication.unwrap();
     assert_eq!(
-        publication.candidate.as_ref().unwrap().baseline_lock_yaml,
-        source_lock
+        crate::artifact::LockArtifact::from_yaml(
+            &publication.candidate.as_ref().unwrap().baseline_lock_yaml
+        )
+        .unwrap(),
+        crate::artifact::LockArtifact::from_yaml(&source_lock).unwrap()
     );
 }
 

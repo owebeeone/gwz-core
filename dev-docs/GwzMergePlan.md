@@ -364,9 +364,9 @@ Task: I0-M. Budget: at most 450 handwritten changed lines.
 Define internal types with no Git mutation:
 
 - `MergePlan` and ordered `MergeParticipantPlan`;
-- `MergeOperationRecord` with version, exact persisted-byte baseline digests,
-  optional Git-normalized committed-byte digests for root recovery, frozen
-  targets, and per-participant result;
+- `MergeOperationRecord` with version, exact persisted baseline bytes and
+  digests, optional Git-normalized committed-byte digests for root recovery,
+  frozen targets, and per-participant result;
 - operation-state transition validation;
 - participant-state transition validation;
 - candidate publication progress;
