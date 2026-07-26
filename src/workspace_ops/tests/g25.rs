@@ -28,7 +28,7 @@ fn seed_root_fast_forward(backend: &Git2Backend, root: &Path) -> RootFastForward
     let before = commit_file(root, "root.txt", "root\n", "root baseline", &[]).unwrap();
     let temp = TempDir::new("pull-race-root-remote");
     let bare = temp.path().join("remote.git");
-    git2::Repository::init_bare(&bare).unwrap();
+    init_bare_main(&bare);
     backend
         .add_remote(root, "origin", bare.to_str().unwrap())
         .unwrap();

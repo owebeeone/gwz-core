@@ -150,7 +150,7 @@ fn default_merge_pull_does_not_fast_forward_root_before_member_prediction_reject
     let root_before = commit_file(temp.path(), "root.txt", "root\n", "root baseline", &[]).unwrap();
     let root_remote = TempDir::new("pull-root-remote");
     let bare = root_remote.path().join("remote.git");
-    git2::Repository::init_bare(&bare).unwrap();
+    init_bare_main(&bare);
     backend
         .add_remote(temp.path(), "origin", bare.to_str().unwrap())
         .unwrap();
@@ -212,7 +212,7 @@ fn default_merge_pull_applies_a_planned_root_fast_forward_after_member_preflight
     let root_before = commit_file(temp.path(), "root.txt", "root\n", "root baseline", &[]).unwrap();
     let root_remote = TempDir::new("pull-root-ff-remote");
     let bare = root_remote.path().join("remote.git");
-    git2::Repository::init_bare(&bare).unwrap();
+    init_bare_main(&bare);
     backend
         .add_remote(temp.path(), "origin", bare.to_str().unwrap())
         .unwrap();
@@ -267,7 +267,7 @@ fn default_merge_pull_rejects_a_predicted_root_conflict_without_local_mutation()
 
     let root_remote = TempDir::new("pull-root-conflict-remote");
     let bare = root_remote.path().join("remote.git");
-    git2::Repository::init_bare(&bare).unwrap();
+    init_bare_main(&bare);
     backend
         .add_remote(temp.path(), "origin", bare.to_str().unwrap())
         .unwrap();
@@ -335,7 +335,7 @@ fn default_merge_pull_applies_a_clean_checked_root_merge_after_member_preflight(
 
     let root_remote = TempDir::new("pull-root-clean-merge-remote");
     let bare = root_remote.path().join("remote.git");
-    git2::Repository::init_bare(&bare).unwrap();
+    init_bare_main(&bare);
     backend
         .add_remote(temp.path(), "origin", bare.to_str().unwrap())
         .unwrap();

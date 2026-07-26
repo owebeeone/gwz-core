@@ -12,6 +12,7 @@ pub mod cbor;
 
 pub mod artifact;
 pub mod diff;
+mod durable_fs;
 pub mod git;
 pub mod model;
 pub mod operation;

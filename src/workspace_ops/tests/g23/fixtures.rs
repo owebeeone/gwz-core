@@ -183,6 +183,9 @@ pub(super) fn init_two_member_workspace(
         &CollectingSink::default(),
     )
     .unwrap();
+    set_identity(root);
+    set_identity(&root.join("app"));
+    set_identity(&root.join("lib"));
     (app, lib)
 }
 
@@ -226,6 +229,10 @@ pub(super) fn init_mixed_merge_workspace(
         &CollectingSink::default(),
     )
     .unwrap();
+    set_identity(root);
+    for path in ["app", "lib", "docs"] {
+        set_identity(&root.join(path));
+    }
 
     let app_path = root.join("app");
     let lib_path = root.join("lib");

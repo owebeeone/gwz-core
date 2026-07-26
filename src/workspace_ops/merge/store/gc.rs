@@ -15,5 +15,5 @@ pub(super) fn collect(root: &Path, merge_id: Option<&str>) -> ModelResult<()> {
     let (_, record) = read_record(&path)?;
     ensure_terminal_for_archive(&record)?;
     fs::remove_file(&path).map_err(io_error)?;
-    sync_dir(&root.join(DONE_DIR))
+    sync_dir(&root.join(DONE_DIR)).map_err(io_error)
 }

@@ -803,6 +803,9 @@ pub(crate) fn commit_file(
 ) -> Result<String, git2::Error> {
     fs::write(repo_path.join(relative_path), content).unwrap();
     let repo = git2::Repository::open(repo_path)?;
+    let mut config = repo.config()?;
+    config.set_str("user.name", "GWZ Test")?;
+    config.set_str("user.email", "gwz@example.invalid")?;
     let mut index = repo.index()?;
     index.add_path(Path::new(relative_path))?;
     index.write()?;

@@ -55,6 +55,8 @@ pub(crate) fn init_one_member_workspace(
         &events,
     )
     .unwrap();
+    set_identity(temp);
+    set_identity(&temp.join("remote"));
     fixture
 }
 

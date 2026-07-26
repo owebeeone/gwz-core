@@ -32,7 +32,7 @@ pub(super) fn enforce(root: &Path) -> ModelResult<()> {
     }
     let done = root.join(DONE_DIR);
     if path_exists(&done)? {
-        sync_dir(&done)
+        sync_dir(&done).map_err(io_error)
     } else {
         Ok(())
     }

@@ -15,6 +15,7 @@ pub(super) fn real_three_member_plan(
     backend: &Git2Backend,
 ) -> (super::super::MergePlan, Vec<String>, Vec<String>) {
     backend.create_repo(root).unwrap();
+    crate::workspace_ops::tests::set_identity(root);
     let mut lock = artifact::LockArtifact {
         schema: artifact::LOCK_SCHEMA.to_owned(),
         workspace_id: "ws_ops".to_owned(),

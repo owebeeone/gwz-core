@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::durable_fs::{rename_durable, sync_dir};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 
@@ -463,14 +464,12 @@ fn stage_durably(path: &Path, contents: &str) -> ModelResult<PathBuf> {
 /// Publish a staged temp to `path` (atomic rename) and best-effort fsync the directory so
 /// the rename entry itself survives a crash.
 fn publish_staged(tmp_path: &Path, path: &Path) -> ModelResult<()> {
-    if let Err(err) = fs::rename(tmp_path, path).map_err(io_error) {
+    if let Err(err) = rename_durable(tmp_path, path, true).map_err(io_error) {
         let _ = fs::remove_file(tmp_path);
         return Err(err);
     }
-    if let Some(parent) = path.parent()
-        && let Ok(dir) = fs::File::open(parent)
-    {
-        let _ = dir.sync_all();
+    if let Some(parent) = path.parent() {
+        let _ = sync_dir(parent);
     }
     Ok(())
 }

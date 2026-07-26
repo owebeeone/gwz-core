@@ -43,10 +43,10 @@ pub(super) fn archive(root: &Path, merge_id: &str) -> ModelResult<()> {
         }
         fs::remove_file(&source).map_err(io_error)?;
     } else {
-        fs::rename(&source, &destination).map_err(io_error)?;
+        rename_durable(&source, &destination, false).map_err(io_error)?;
     }
-    sync_dir(&root.join(MERGE_DIR))?;
-    sync_dir(&root.join(DONE_DIR))?;
+    sync_dir(&root.join(MERGE_DIR)).map_err(io_error)?;
+    sync_dir(&root.join(DONE_DIR)).map_err(io_error)?;
     let (_, verified) = read_record(&destination)?;
     if verified != record {
         return Err(recovery_error(format!(

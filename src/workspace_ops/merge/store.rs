@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_yaml::Value;
 
 use super::{MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord, MergeStore};
+use crate::durable_fs::{rename_durable, sync_dir};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 mod archived;
@@ -222,23 +223,17 @@ fn write_atomic_verified(path: &Path, bytes: &[u8]) -> ModelResult<()> {
         let _ = fs::remove_file(&temporary);
         return Err(io_error(error));
     }
-    if let Err(error) = fs::rename(&temporary, path) {
+    if let Err(error) = rename_durable(&temporary, path, true) {
         let _ = fs::remove_file(&temporary);
         return Err(io_error(error));
     }
-    sync_dir(parent)?;
+    sync_dir(parent).map_err(io_error)?;
     if fs::read(path).map_err(io_error)? != bytes {
         return Err(recovery_error(
             "merge record bytes failed write verification",
         ));
     }
     Ok(())
-}
-
-fn sync_dir(path: &Path) -> ModelResult<()> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(io_error)
 }
 
 /// Overlay new known state while retaining fields the old serde model did not know.
