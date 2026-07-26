@@ -227,8 +227,11 @@ fn preserve_abort_handles_post_composition_root_work_with_root_bundle_identity()
     )
     .unwrap();
     assert_eq!(
-        fs::read_to_string(temp.path().join("root-untracked.txt")).unwrap(),
-        "keep me too\n"
+        fs::read_to_string(temp.path().join("root-untracked.txt"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["keep me too"]
     );
     handle_stash(
         &backend,

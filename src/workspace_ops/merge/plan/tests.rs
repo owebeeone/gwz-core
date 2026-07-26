@@ -163,6 +163,8 @@ fn build(
         MergeBaseline {
             lock_sha256: format!("{:x}", Sha256::digest(b"baseline-lock")),
             manifest_sha256: format!("{:x}", Sha256::digest(b"baseline-manifest")),
+            lock_commit_sha256: Some(format!("{:x}", Sha256::digest(b"baseline-lock"))),
+            manifest_commit_sha256: Some(format!("{:x}", Sha256::digest(b"baseline-manifest"))),
             root_head: Some("before-root".into()),
             root_branch: Some("main".into()),
             extensions: Default::default(),
@@ -257,6 +259,38 @@ fn explicit_root_is_appended_after_frozen_member_order() {
             ["mem_z", "mem_a"]
         );
     }
+}
+
+#[test]
+fn explicit_root_distinguishes_persisted_and_git_normalized_metadata_bytes() {
+    let fixture = fixture();
+    let selection = crate::Selection {
+        targets: vec!["@root".into()],
+        ..Default::default()
+    };
+    let plan = build_merge_plan(
+        &FakeBackend::default(),
+        fixture.0.path(),
+        &request(Some(selection), false),
+        &fixture.1,
+        &fixture.2,
+        MergeBaseline {
+            lock_sha256: format!("{:x}", Sha256::digest(b"baseline-lock\r\n")),
+            manifest_sha256: format!("{:x}", Sha256::digest(b"baseline-manifest\r\n")),
+            lock_commit_sha256: Some(format!("{:x}", Sha256::digest(b"baseline-lock"))),
+            manifest_commit_sha256: Some(format!("{:x}", Sha256::digest(b"baseline-manifest"))),
+            root_head: Some("before-root".into()),
+            root_branch: Some("main".into()),
+            extensions: Default::default(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(ids(&plan), ["@root"]);
+    assert_ne!(
+        plan.baseline.lock_sha256,
+        plan.baseline.lock_commit_sha256.unwrap()
+    );
 }
 
 #[test]

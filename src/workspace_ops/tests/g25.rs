@@ -320,8 +320,11 @@ fn mixed_pull_executes_frozen_root_and_member_sources_after_remote_refs_move() {
         Some(root_remote.remote.as_str())
     );
     assert_eq!(
-        fs::read_to_string(temp.path().join("remote-root.txt")).unwrap(),
-        "remote\n"
+        fs::read_to_string(temp.path().join("remote-root.txt"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["remote"]
     );
     let member_result = backend.head(&member.path).unwrap().commit.unwrap();
     assert!(

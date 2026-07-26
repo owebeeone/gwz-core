@@ -250,8 +250,11 @@ fn default_merge_pull_applies_a_planned_root_fast_forward_after_member_preflight
         Some(remote_commit.as_str())
     );
     assert_eq!(
-        fs::read_to_string(temp.path().join("remote-root.txt")).unwrap(),
-        "remote\n"
+        fs::read_to_string(temp.path().join("remote-root.txt"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["remote"]
     );
     assert!(backend.merge_state(temp.path()).unwrap().is_none());
 }
@@ -389,12 +392,18 @@ fn default_merge_pull_applies_a_clean_checked_root_merge_after_member_preflight(
             .unwrap()
     );
     assert_eq!(
-        fs::read_to_string(temp.path().join("local-root.txt")).unwrap(),
-        "local\n"
+        fs::read_to_string(temp.path().join("local-root.txt"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["local"]
     );
     assert_eq!(
-        fs::read_to_string(temp.path().join("remote-root.txt")).unwrap(),
-        "remote\n"
+        fs::read_to_string(temp.path().join("remote-root.txt"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["remote"]
     );
     assert!(backend.merge_state(temp.path()).unwrap().is_none());
 }

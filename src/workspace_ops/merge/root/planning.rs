@@ -55,14 +55,14 @@ pub(in crate::workspace_ops::merge) fn preflight_root<P: PlanningBackend>(
         root,
         &before,
         artifact::LOCK_PATH,
-        &baseline.lock_sha256,
+        baseline.lock_commit_sha256.as_deref(),
     )?;
     verify_baseline_file(
         backend,
         root,
         &before,
         WORKSPACE_MANIFEST,
-        &baseline.manifest_sha256,
+        baseline.manifest_commit_sha256.as_deref(),
     )?;
     let analysis = backend
         .merge_analysis(root, &branch, source)
@@ -103,7 +103,7 @@ fn verify_baseline_file<P: PlanningBackend>(
     root: &Path,
     before: &str,
     relative_path: &str,
-    expected_sha256: &str,
+    expected_sha256: Option<&str>,
 ) -> ModelResult<()> {
     let bytes = backend
         .read_file_at_commit(root, before, relative_path)
@@ -116,7 +116,7 @@ fn verify_baseline_file<P: PlanningBackend>(
                 ),
             )
         })?;
-    if format!("{:x}", Sha256::digest(&bytes)) != expected_sha256 {
+    if expected_sha256.is_some_and(|expected| format!("{:x}", Sha256::digest(&bytes)) != expected) {
         return Err(root_error(
             ErrorCode::MergeDrift,
             &format!(

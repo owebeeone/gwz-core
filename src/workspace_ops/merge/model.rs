@@ -177,6 +177,10 @@ pub(crate) struct MergeBaseline {
     pub lock_sha256: String,
     pub manifest_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_commit_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_commit_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_branch: Option<String>,
@@ -676,6 +680,8 @@ future_record: retained
             baseline: MergeBaseline {
                 lock_sha256: "lock".to_owned(),
                 manifest_sha256: "manifest".to_owned(),
+                lock_commit_sha256: None,
+                manifest_commit_sha256: None,
                 root_head: None,
                 root_branch: None,
                 extensions: BTreeMap::new(),

@@ -85,12 +85,12 @@ fn candidate_metadata_inner<B: GitBackend>(
     verify_digest(
         WORKSPACE_MANIFEST,
         &baseline_manifest_bytes,
-        &record.baseline.manifest_sha256,
+        record.baseline.manifest_commit_sha256.as_deref(),
     )?;
     verify_digest(
         artifact::LOCK_PATH,
         &baseline_lock_bytes,
-        &record.baseline.lock_sha256,
+        record.baseline.lock_commit_sha256.as_deref(),
     )?;
     let baseline_manifest_yaml = text(WORKSPACE_MANIFEST, baseline_manifest_bytes)?;
     let baseline_lock_yaml = text(artifact::LOCK_PATH, baseline_lock_bytes)?;
@@ -232,8 +232,8 @@ fn committed_file<B: GitBackend>(
         })
 }
 
-fn verify_digest(relative_path: &str, bytes: &[u8], expected: &str) -> ModelResult<()> {
-    if format!("{:x}", Sha256::digest(bytes)) != expected {
+fn verify_digest(relative_path: &str, bytes: &[u8], expected: Option<&str>) -> ModelResult<()> {
+    if expected.is_some_and(|expected| format!("{:x}", Sha256::digest(bytes)) != expected) {
         return Err(root_drift(format!(
             "root before-commit '{relative_path}' does not match the recorded baseline"
         )));

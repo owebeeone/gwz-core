@@ -42,6 +42,8 @@ pub(crate) fn plan_merge<B: GitBackend>(
         MergeBaseline {
             lock_sha256: file_sha256(&root.join(artifact::LOCK_PATH))?,
             manifest_sha256: file_sha256(&root.join(WORKSPACE_MANIFEST))?,
+            lock_commit_sha256: None,
+            manifest_commit_sha256: None,
             root_head: root_head.commit.clone(),
             root_branch: root_head.branch.clone(),
             extensions: Default::default(),
@@ -138,7 +140,7 @@ fn build_merge_plan<P: PlanningBackend>(
     request: &crate::MergeRequest,
     manifest: &ManifestArtifact,
     lock: &LockArtifact,
-    baseline: MergeBaseline,
+    mut baseline: MergeBaseline,
 ) -> ModelResult<MergePlan> {
     let targets = resolve_targets(
         manifest,
@@ -178,6 +180,18 @@ fn build_merge_plan<P: PlanningBackend>(
         .map(|member| preflight_member(backend, root, lock, member, source))
         .collect::<ModelResult<Vec<_>>>()?;
     if root_selected {
+        baseline.lock_commit_sha256 = committed_file_sha256(
+            backend,
+            root,
+            baseline.root_head.as_deref(),
+            artifact::LOCK_PATH,
+        )?;
+        baseline.manifest_commit_sha256 = committed_file_sha256(
+            backend,
+            root,
+            baseline.root_head.as_deref(),
+            WORKSPACE_MANIFEST,
+        )?;
         let root_plan = super::root::preflight_root(backend, root, source, &baseline)?;
         if baseline.root_head.as_deref() != Some(root_plan.before_commit.as_str())
             || baseline.root_branch.as_deref() != Some(root_plan.target_branch.as_str())
@@ -383,6 +397,20 @@ fn file_sha256(path: &Path) -> ModelResult<String> {
         )
     })?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn committed_file_sha256<B: PlanningBackend>(
+    backend: &B,
+    root: &Path,
+    commit: Option<&str>,
+    relative_path: &str,
+) -> ModelResult<Option<String>> {
+    let Some(commit) = commit else {
+        return Ok(None);
+    };
+    Ok(backend
+        .read_file_at_commit(root, commit, relative_path)?
+        .map(|bytes| format!("{:x}", Sha256::digest(bytes))))
 }
 
 fn member_error(code: ErrorCode, member: &ManifestMember, detail: &str) -> ModelError {

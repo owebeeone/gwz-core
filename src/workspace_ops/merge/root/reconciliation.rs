@@ -33,7 +33,12 @@ pub(in crate::workspace_ops::merge) fn frozen_manifest<B: GitBackend>(
             )
         })?,
     };
-    if format!("{:x}", Sha256::digest(&bytes)) != record.baseline.manifest_sha256 {
+    if record
+        .baseline
+        .manifest_commit_sha256
+        .as_deref()
+        .is_some_and(|expected| format!("{:x}", Sha256::digest(&bytes)) != expected)
+    {
         return Err(ModelError::new(
             ErrorCode::MergeDrift,
             "frozen workspace manifest does not match the merge baseline",

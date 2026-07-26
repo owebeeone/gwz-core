@@ -220,6 +220,8 @@ fn failed_and_unattempted_rows_retry_only_after_whole_operation_preflight() {
         baseline: MergeBaseline {
             lock_sha256: digest(temp.path().join(crate::artifact::LOCK_PATH)),
             manifest_sha256: digest(temp.path().join(crate::workspace::WORKSPACE_MANIFEST)),
+            lock_commit_sha256: None,
+            manifest_commit_sha256: None,
             root_head: None,
             root_branch: None,
             extensions: BTreeMap::new(),

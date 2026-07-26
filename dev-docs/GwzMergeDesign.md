@@ -306,6 +306,8 @@ created_at: 2026-07-16T00:00:00Z
 baseline:
   lock_sha256: 9f86d081...
   manifest_sha256: 60303ae2...
+  lock_commit_sha256: 2cc1957b...
+  manifest_commit_sha256: e587e3a1...
   root_head: ddd111
 selected_targets:
 - mem_app
@@ -427,12 +429,16 @@ binary does not erase recovery data introduced by a newer one.
 
 The baseline digests are computed over the exact persisted manifest and lock
 bytes. The lock digest is the authoritative abort baseline. The manifest
-digest detects membership changes while the operation is open. `root_head` is
-for diagnostics and checked root-ref updates; when root participates it is
-also the root's recorded before commit. After the root is attempted, recovery
-uses its recorded participant state rather than incorrectly requiring the live
-manifest and lock to retain their baseline digests. Every record also carries
-both the record schema version and writer/tool version.
+digest detects membership changes while the operation is open. When root
+participates, the record also stores digests of the corresponding Git blob
+bytes. Git may normalize text in the index and restore different worktree line
+endings, so the committed-byte digests validate planning and recovery while
+the persisted-byte digests continue to prove exact abort restoration.
+`root_head` is for diagnostics and checked root-ref updates; when root
+participates it is also the root's recorded before commit. After the root is
+attempted, recovery uses its recorded participant state rather than incorrectly
+requiring the live manifest and lock to retain their baseline digests. Every
+record also carries both the record schema version and writer/tool version.
 
 Closed records move to `.gwz/merge/done/`; the versioned root marker remains
 the canonical history. GWZ retains the latest 20 ordinary closed records by
