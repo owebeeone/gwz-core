@@ -174,11 +174,12 @@ fn merged_root_cannot_redefine_an_in_flight_member_and_remains_abortable() {
     backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
     let root_before =
         commit_file(temp.path(), "root.txt", "baseline\n", "root baseline", &[]).unwrap();
-    let baseline_manifest =
+    let initial_manifest =
         fs::read(temp.path().join(crate::workspace::WORKSPACE_MANIFEST)).unwrap();
-    let changed_manifest = String::from_utf8(baseline_manifest.clone())
-        .unwrap()
-        .replacen("path: remote", "path: renamed", 1);
+    let changed_manifest =
+        String::from_utf8(initial_manifest)
+            .unwrap()
+            .replacen("path: remote", "path: renamed", 1);
     let (reported_root_before, _) = feature_commit(
         &backend,
         temp.path(),
@@ -186,6 +187,8 @@ fn merged_root_cannot_redefine_an_in_flight_member_and_remains_abortable() {
         &changed_manifest,
     );
     assert_eq!(reported_root_before, root_before);
+    let baseline_manifest =
+        fs::read(temp.path().join(crate::workspace::WORKSPACE_MANIFEST)).unwrap();
 
     let error =
         handle_merge(&backend, temp.path(), mixed_request(), "op_root_redefines").unwrap_err();
