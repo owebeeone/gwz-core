@@ -1,11 +1,11 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-25; the corrected M2b and first public
+Status: **active** (revised 2026-07-26; the corrected M2b and first public
 member-merge release gate are complete, and the god-file refactor prerequisite
 has passed its full technical gate and is committed). Owner: Gianni. M2c
 explicit workspace-root participation and M3 preservation, retention, and GC
 are implemented; their combined local release gate and independent re-reviews
-are complete. These changes remain uncommitted.
+are complete, and the accepted change set is committed.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -70,10 +70,9 @@ are not promises that the intermediate behavior is suitable for users.
   dry-run, `--status`, `--continue`, coordinated `--abort`, and finalization.
 - Ordinary abort is non-destructive: post-merge drift rejects the entire abort
   rather than discarding user work.
-- Explicit `@root` participation has passed its local recovery gate and awaits
-  independent review. It may be included in the next release train with M3.
-- Preserve-abort, retention, and cleanup form the next lifecycle release
-  increment after the first member-merge release.
+- Explicit `@root` participation, preserve-abort, retention, and cleanup have
+  passed their combined implementation, verification, and independent-review
+  gate and are committed.
 - Strategy and source expansions in M4 ship independently after the normal
   recoverable lifecycle is established.
 
@@ -1615,7 +1614,9 @@ marked as release gates authorize a public merge release.
 ## 19. Recommended next implementation run
 
 M2c and M3 implementation, remediation, verification, and independent
-re-reviews are complete locally. The next run is:
+re-reviews are complete and committed. The next run is:
 
-1. commit the accepted M2c/M3 change set through the installed `gwz`; and
-2. start M4 only from a separately accepted strategy or source-design update.
+1. accept a focused design update for conflict-predicting dry-run;
+2. implement and release that addition through the established lifecycle; and
+3. repeat the focused design, implementation, and release gate for each later
+   M4 strategy or source addition.
