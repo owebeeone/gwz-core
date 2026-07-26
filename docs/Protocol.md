@@ -20,6 +20,13 @@ merges report the resulting commit per member; conflicted merges report
 native Git merge state intact for user resolution. `StashRequest` supports
 push/list/apply/pop/drop coordinated bundle behavior.
 
+Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
+fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is
+double-quoted; quotes, backslashes, and familiar control bytes use backslash
+escapes, while invalid bytes use uppercase `\xNN`. These values are stable
+diagnostics for human and machine output, not UTF-8 path selectors that can
+necessarily be passed back to an operating-system API.
+
 ## Transport
 
 The message boundary is intentionally transport-neutral. A caller can use the

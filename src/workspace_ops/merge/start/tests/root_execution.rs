@@ -62,6 +62,7 @@ fn unexpected_member_failure_leaves_the_root_unattempted() {
             source_commit: "member-source".to_owned(),
             analysis: Some(crate::MergeAnalysisKind::FastForward),
             prediction_complete: true,
+            predicted_conflict_paths: Vec::new(),
             commit_message: "merge".to_owned(),
         },
         MergeParticipantPlan {
@@ -73,6 +74,7 @@ fn unexpected_member_failure_leaves_the_root_unattempted() {
             source_commit: "root-source".to_owned(),
             analysis: Some(crate::MergeAnalysisKind::FastForward),
             prediction_complete: true,
+            predicted_conflict_paths: Vec::new(),
             commit_message: "merge".to_owned(),
         },
     ];

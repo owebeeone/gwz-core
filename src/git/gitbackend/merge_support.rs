@@ -86,13 +86,13 @@ pub(super) fn validate_prepared_merge_upstream_in_repo(
     prepared: &GitPreparedMerge,
 ) -> ModelResult<GitMergeAnalysisKind> {
     ensure_no_integration_in_progress(repo)?;
+    validate_checked_merge_head(repo, branch, expected)?;
     if backend.status(path)?.is_dirty {
         return Err(ModelError::new(
             ErrorCode::DirtyMember,
             "merge requires a clean index and worktree",
         ));
     }
-    validate_checked_merge_head(repo, branch, expected)?;
     repo.find_commit(source).map_err(git_error)?;
     let kind = classify_merge(repo, expected, source)?;
     match (kind, prepared) {
@@ -148,20 +148,104 @@ pub(super) fn prepared_merge_mismatch(detail: &str) -> ModelError {
     )
 }
 
-/// Conflicted paths in `index`, sorted and de-duplicated. A conflict carries up to
-/// three stages (ancestor/our/their); any one supplies the path.
+/// Render one Git path without assuming that Git's byte string is UTF-8.
+///
+/// Ordinary printable UTF-8 keeps its familiar spelling. Paths that need
+/// escaping are quoted so diagnostics remain lossless and unambiguous on every
+/// supported host platform.
+pub(crate) fn render_git_path(path: &[u8]) -> String {
+    if let Ok(path) = std::str::from_utf8(path)
+        && path
+            .chars()
+            .all(|character| !character.is_control() && character != '"' && character != '\\')
+    {
+        return path.to_owned();
+    }
+
+    fn push_hex_byte(output: &mut String, byte: u8) {
+        use std::fmt::Write as _;
+
+        write!(output, "\\x{byte:02X}").expect("writing to a String cannot fail");
+    }
+
+    fn push_valid(output: &mut String, text: &str) {
+        for character in text.chars() {
+            match character {
+                '"' => output.push_str("\\\""),
+                '\\' => output.push_str("\\\\"),
+                '\0' => output.push_str("\\0"),
+                '\u{0007}' => output.push_str("\\a"),
+                '\u{0008}' => output.push_str("\\b"),
+                '\t' => output.push_str("\\t"),
+                '\n' => output.push_str("\\n"),
+                '\u{000B}' => output.push_str("\\v"),
+                '\u{000C}' => output.push_str("\\f"),
+                '\r' => output.push_str("\\r"),
+                character if character.is_control() => {
+                    let mut encoded = [0; 4];
+                    for byte in character.encode_utf8(&mut encoded).as_bytes() {
+                        push_hex_byte(output, *byte);
+                    }
+                }
+                character => output.push(character),
+            }
+        }
+    }
+
+    let mut output = String::from("\"");
+    let mut remaining = path;
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(valid) => {
+                push_valid(&mut output, valid);
+                break;
+            }
+            Err(error) => {
+                let valid_length = error.valid_up_to();
+                if valid_length != 0 {
+                    // `valid_up_to` is guaranteed to end on a UTF-8 boundary.
+                    let valid = std::str::from_utf8(&remaining[..valid_length])
+                        .expect("validated UTF-8 prefix");
+                    push_valid(&mut output, valid);
+                }
+                let invalid_length = error.error_len().unwrap_or(remaining.len() - valid_length);
+                for byte in &remaining[valid_length..valid_length + invalid_length] {
+                    push_hex_byte(&mut output, *byte);
+                }
+                remaining = &remaining[valid_length + invalid_length..];
+            }
+        }
+    }
+    output.push('"');
+    output
+}
+
+/// Conflicted paths in `index`, sorted and de-duplicated. Git may record a
+/// distinct path at each ancestor/our/their stage, so every present stage is
+/// projected independently.
 pub(crate) fn conflict_paths(index: &git2::Index) -> ModelResult<Vec<String>> {
+    if !index.has_conflicts() {
+        return Ok(Vec::new());
+    }
+
     let mut paths = Vec::new();
     for conflict in index.conflicts().map_err(git_error)? {
         let conflict = conflict.map_err(git_error)?;
-        if let Some(entry) = conflict.our.or(conflict.their).or(conflict.ancestor)
-            && let Ok(path) = std::str::from_utf8(&entry.path)
+        for entry in [conflict.ancestor, conflict.our, conflict.their]
+            .into_iter()
+            .flatten()
         {
-            paths.push(path.to_owned());
+            paths.push(render_git_path(&entry.path));
         }
     }
     paths.sort();
     paths.dedup();
+    if paths.is_empty() {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "Git index reports conflicts but exposes no conflict paths",
+        ));
+    }
     Ok(paths)
 }
 

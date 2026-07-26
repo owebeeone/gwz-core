@@ -26,6 +26,32 @@ fn init_root_feature(root: &Path, backend: &crate::git::Git2Backend) -> (String,
     (baseline, source)
 }
 
+fn init_root_true_merge(root: &Path, backend: &crate::git::Git2Backend) -> String {
+    backend.stage_paths(root, &["gwz.conf"]).unwrap();
+    let baseline = commit_file(root, "root.txt", "baseline\n", "root baseline", &[]).unwrap();
+    backend
+        .branch_create(root, "feature/source", "HEAD")
+        .unwrap();
+    backend.switch_branch(root, "feature/source").unwrap();
+    commit_file(
+        root,
+        "root.txt",
+        "source\n",
+        "root source",
+        &[git2::Oid::from_str(&baseline).unwrap()],
+    )
+    .unwrap();
+    backend.switch_branch(root, "main").unwrap();
+    commit_file(
+        root,
+        "root.txt",
+        "target\n",
+        "root target",
+        &[git2::Oid::from_str(&baseline).unwrap()],
+    )
+    .unwrap()
+}
+
 fn init_root_metadata_feature(
     root: &Path,
     backend: &crate::git::Git2Backend,
@@ -90,6 +116,61 @@ fn explicit_root_dry_run_is_visible_and_does_not_mutate() {
         backend.head(temp.path()).unwrap().commit.as_deref(),
         Some(baseline.as_str())
     );
+    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+}
+
+#[test]
+fn explicit_root_dry_run_predicts_conflict_without_mutation() {
+    let temp = TempDir::new("merge-root-dry-conflict");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-root-conflict-source");
+    let target = init_root_true_merge(temp.path(), &backend);
+    let index = fs::read(temp.path().join(".git/index")).unwrap();
+    let worktree = fs::read(temp.path().join("root.txt")).unwrap();
+    let lock = fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap();
+
+    let response =
+        handle_merge(&backend, temp.path(), root_request(true), "op_root_predict").unwrap();
+
+    let root = merge_repo(&response, "@root");
+    assert_eq!(root.predicted, Some(crate::MergeAnalysisKind::TrueMerge));
+    assert_eq!(root.prediction_complete, Some(true));
+    assert_eq!(root.conflict_paths, ["root.txt"]);
+    assert_eq!(
+        backend.head(temp.path()).unwrap().commit.as_deref(),
+        Some(target.as_str())
+    );
+    assert_eq!(fs::read(temp.path().join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(temp.path().join("root.txt")).unwrap(), worktree);
+    assert_eq!(
+        fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
+        lock
+    );
+    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+}
+
+#[test]
+fn explicit_root_ff_only_rejects_true_merge_before_mutation() {
+    let temp = TempDir::new("merge-root-ff-only-reject");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-root-ff-only-source");
+    let target = init_root_true_merge(temp.path(), &backend);
+    let index = fs::read(temp.path().join(".git/index")).unwrap();
+    let worktree = fs::read(temp.path().join("root.txt")).unwrap();
+    let mut request = root_request(false);
+    request.mode = Some(crate::MergeMode::FfOnly);
+
+    let error = handle_merge(&backend, temp.path(), request, "op_root_ff_only").unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::MergeValidationFailed);
+    assert_eq!(error.member_id.as_deref(), Some("@root"));
+    assert_eq!(error.member_path.as_deref(), Some("."));
+    assert_eq!(
+        backend.head(temp.path()).unwrap().commit.as_deref(),
+        Some(target.as_str())
+    );
+    assert_eq!(fs::read(temp.path().join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(temp.path().join("root.txt")).unwrap(), worktree);
     assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
 }
 

@@ -150,7 +150,7 @@ pub trait GitBackend {
     ) -> ModelResult<GitMergeAnalysis> {
         unsupported_backend("merge_analysis")
     }
-    /// Optional M4 in-memory tree merge; never writes an index or worktree.
+    /// M4 in-memory tree merge; never writes refs, HEAD, index, or worktree.
     fn merge_simulate(
         &self,
         _path: &Path,

@@ -104,12 +104,12 @@ mod merge_interface_tests {
     use super::*;
 
     #[test]
-    fn deferred_merge_primitive_has_typed_unsupported_default() {
+    fn merge_simulation_is_wired_to_the_production_backend() {
         let backend = Git2Backend::new();
         let error = backend
             .merge_simulate(Path::new("missing"), "before", "source")
             .unwrap_err();
-        assert_eq!(error.code, ErrorCode::UnsupportedOperation);
+        assert_eq!(error.code, ErrorCode::GitCommandFailed);
     }
 
     #[test]

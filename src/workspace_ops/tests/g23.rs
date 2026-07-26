@@ -23,6 +23,7 @@ mod drift;
 mod finalization;
 mod fixtures;
 mod gc;
+mod m4_matrix;
 mod open_operation_gate;
 mod preserve;
 mod root_abort;

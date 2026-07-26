@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 
 use crate::artifact::{self, ArtifactSourceKind, LockArtifact, ManifestArtifact, ManifestMember};
 use crate::git::{
-    GitBackend, GitHeadState, GitMergeAnalysis, GitMergeAnalysisKind, GitNativeMergeState,
-    GitStatus,
+    GitBackend, GitHeadState, GitMergeAnalysis, GitMergeAnalysisKind, GitMergeSimulation,
+    GitNativeMergeState, GitStatus,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
@@ -73,6 +73,12 @@ pub(super) trait PlanningBackend {
         branch: &str,
         source: &str,
     ) -> ModelResult<GitMergeAnalysis>;
+    fn merge_simulate(
+        &self,
+        path: &Path,
+        target_commit: &str,
+        source_commit: &str,
+    ) -> ModelResult<GitMergeSimulation>;
     fn read_ref(&self, path: &Path, name: &str) -> ModelResult<Option<String>>;
     fn read_file_at_commit(
         &self,
@@ -104,6 +110,14 @@ impl<B: GitBackend> PlanningBackend for BackendPlanningView<'_, B> {
         source: &str,
     ) -> ModelResult<GitMergeAnalysis> {
         self.0.merge_analysis(path, branch, source)
+    }
+    fn merge_simulate(
+        &self,
+        path: &Path,
+        target_commit: &str,
+        source_commit: &str,
+    ) -> ModelResult<GitMergeSimulation> {
+        self.0.merge_simulate(path, target_commit, source_commit)
     }
     fn read_ref(&self, path: &Path, name: &str) -> ModelResult<Option<String>> {
         self.0.read_ref(path, name)
@@ -176,11 +190,77 @@ fn build_merge_plan<P: PlanningBackend>(
         }
         participants.push(root_plan);
     }
+    let mode = request.mode.into();
+    enforce_mode(mode, &participants)?;
+    if request.meta.dry_run == Some(true) {
+        complete_predictions(backend, root, &mut participants)?;
+    }
     Ok(MergePlan {
         source_ref: source.to_owned(),
+        mode,
         baseline,
         participants,
     })
+}
+
+fn enforce_mode(
+    mode: super::MergeExecutionMode,
+    participants: &[MergeParticipantPlan],
+) -> ModelResult<()> {
+    if mode != super::MergeExecutionMode::FfOnly {
+        return Ok(());
+    }
+    if let Some(participant) = participants
+        .iter()
+        .find(|participant| participant.analysis == Some(crate::MergeAnalysisKind::TrueMerge))
+    {
+        return Err(ModelError::new(
+            ErrorCode::MergeValidationFailed,
+            "merge requires a merge commit but --ff-only was requested",
+        )
+        .with_member(&participant.target_id, &participant.path));
+    }
+    Ok(())
+}
+
+fn complete_predictions<P: PlanningBackend>(
+    backend: &P,
+    root: &Path,
+    participants: &mut [MergeParticipantPlan],
+) -> ModelResult<()> {
+    for participant in participants
+        .iter_mut()
+        .filter(|participant| participant.analysis == Some(crate::MergeAnalysisKind::TrueMerge))
+    {
+        let path = if participant.target_kind == MergeTargetKind::Root {
+            root.to_path_buf()
+        } else {
+            root.join(&participant.path)
+        };
+        match backend.merge_simulate(
+            &path,
+            &participant.before_commit,
+            &participant.source_commit,
+        ) {
+            Ok(GitMergeSimulation::Clean) => {
+                participant.prediction_complete = true;
+                participant.predicted_conflict_paths.clear();
+            }
+            Ok(GitMergeSimulation::Conflicts(paths)) => {
+                participant.prediction_complete = true;
+                participant.predicted_conflict_paths = paths;
+            }
+            Err(error) if error.code == ErrorCode::UnsupportedOperation => {}
+            Err(error) => {
+                return Err(if participant.target_kind == MergeTargetKind::Root {
+                    error.with_member("@root", ".")
+                } else {
+                    error.with_member(&participant.target_id, &participant.path)
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn preflight_member<P: PlanningBackend>(
@@ -290,6 +370,7 @@ fn preflight_member<P: PlanningBackend>(
             GitMergeAnalysisKind::TrueMerge => crate::MergeAnalysisKind::TrueMerge,
         }),
         prediction_complete: analysis.prediction_complete,
+        predicted_conflict_paths: Vec::new(),
         commit_message: format!("Merge {source} into {branch}"),
     })
 }

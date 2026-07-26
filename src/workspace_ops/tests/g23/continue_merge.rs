@@ -215,6 +215,7 @@ fn failed_and_unattempted_rows_retry_only_after_whole_operation_preflight() {
         operation_id: "op_start".to_owned(),
         state: OperationState::Halted,
         source_ref: "feature/source".to_owned(),
+        mode: crate::workspace_ops::merge::MergeExecutionMode::Normal,
         created_at: "now".to_owned(),
         baseline: MergeBaseline {
             lock_sha256: digest(temp.path().join(crate::artifact::LOCK_PATH)),

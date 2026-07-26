@@ -49,7 +49,9 @@
       {
         "abort_eligible": null,
         "before_commit": "before123",
-        "conflict_paths": [],
+        "conflict_paths": [
+          "src/lib.rs"
+        ],
         "continue_eligible": null,
         "drift": [],
         "error": null,
@@ -61,7 +63,7 @@
           "state": "NotStarted"
         },
         "predicted": "TrueMerge",
-        "prediction_complete": null,
+        "prediction_complete": true,
         "resulting_commit": null,
         "source_commit": "source123",
         "source_ref": "feature/x",

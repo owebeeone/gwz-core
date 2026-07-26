@@ -99,6 +99,7 @@ fn plans(names: &[&str]) -> Vec<MergeParticipantPlan> {
             source_commit: format!("source-{name}"),
             analysis: Some(crate::MergeAnalysisKind::TrueMerge),
             prediction_complete: false,
+            predicted_conflict_paths: Vec::new(),
             commit_message: "merge".into(),
         })
         .collect()

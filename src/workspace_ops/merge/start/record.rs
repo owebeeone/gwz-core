@@ -71,6 +71,7 @@ pub(super) fn create_record<C: Clock>(
         operation_id: context.operation_id.clone(),
         state: OperationState::Executing,
         source_ref: plan.source_ref.clone(),
+        mode: plan.mode,
         created_at: clock.now_ms().0.to_string(),
         baseline: plan.baseline.clone(),
         selected_targets: plan

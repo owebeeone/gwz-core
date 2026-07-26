@@ -5,7 +5,13 @@ member-merge release gate are complete, and the god-file refactor prerequisite
 has passed its full technical gate and is committed). Owner: Gianni. M2c
 explicit workspace-root participation and M3 preservation, retention, and GC
 are implemented; their combined local release gate and independent re-reviews
-are complete, and the accepted change set is committed.
+are complete, and the accepted change set is committed. M4 conflict prediction
+and selection-wide `--ff-only` are implementation-complete with green local
+technical and independent remediation re-review gates. All original and
+follow-up findings are closed, and the completed release builds provide the
+Windows, macOS, Linux x86, and Linux arm64 platform evidence. The uncommitted
+change set is ready for the normal commit recorded in
+`../../dev-docs/GwzMergeM4-RemPlan.md`.
 
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
@@ -1464,6 +1470,29 @@ continue, abort, preservation, or finalization path.
 Goal: make planning truthful about conflicts and provide a selection-wide
 fast-forward guarantee. M4-A and M4-B ship together.
 
+Status: **accepted; local, independent re-review, and release-platform gates
+green**
+(2026-07-26).
+The corrected local gate passes `cargo test --workspace` (596 core tests
+passed, one ignored), 320 Python tests, strict Clippy, formatting, generated
+protocol and CLI-reference checks, cross-repository diff hygiene, and the
+Bazel build.
+The configured Bazel labels currently contain no test targets, so `bazel test`
+finishes its successful build phase and then reports that no test targets were
+found. The first independent review found two release-blocking P1 defects:
+conflicted non-UTF-8 paths can be misclassified as clean, and pull can simulate
+one commit but later execute a moved remote-tracking ref. The accepted
+corrections are implemented with portable raw-byte conflict rendering,
+complete rename-stage projection, exact prepared pull actions, a
+selection-wide final barrier, and mixed member/root regression coverage. The
+same-repository rename/rename regression now proves simulated and native
+conflict-path parity, and the M4 test support remains in bounded focused
+modules rather than enlarging an existing god file. The
+final independent re-review reports no P0/P1/P2 defect and no M4-specific P3
+coverage gap. The completed Windows, macOS, Linux x86, and Linux arm64 release
+builds are the platform evidence. The accepted gate is recorded in
+`../../dev-docs/GwzMergeM4-RemPlan.md`.
+
 #### M4-I0 — prediction and mode interface checkpoint
 
 Before parallel implementation, freeze:
@@ -1720,12 +1749,11 @@ marked as release gates authorize a public merge release.
 
 ## 19. Recommended next implementation run
 
-M2c and M3 implementation, remediation, verification, and independent
-re-reviews are complete and committed. The next run is:
+M4-I0, M4-A, and M4-B are integrated, the independent-review remediation in
+`../../dev-docs/GwzMergeM4-RemPlan.md` is implemented, every review finding is
+closed, and the corrected complete local and independent re-review gates are
+green. The next run is:
 
-1. freeze the M4-I0 simulation, response, durable-mode, and pull-preflight
-   contracts;
-2. implement M4-A conflict prediction and M4-B `--ff-only`, in parallel only
-   after that checkpoint;
-3. integrate, independently review, and release the complete M4 gate; and
-4. begin M5 only after the M4 release is accepted.
+1. commit the accepted M4 change set with the installed `gwz`;
+2. push the accepted M4 change set; and
+3. begin M5.

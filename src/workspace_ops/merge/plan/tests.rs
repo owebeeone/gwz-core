@@ -4,6 +4,8 @@ use crate::workspace_ops::tests::TempDir;
 #[derive(Default)]
 struct FakeBackend {
     calls: std::cell::RefCell<Vec<String>>,
+    simulations: std::cell::RefCell<Vec<String>>,
+    simulation_conflict: Option<&'static str>,
     dirty: Option<&'static str>,
     drift: Option<&'static str>,
     failure: Option<(FailurePoint, &'static str)>,
@@ -78,6 +80,15 @@ impl PlanningBackend for FakeBackend {
             kind: GitMergeAnalysisKind::TrueMerge,
             commit_identity_required: true,
             prediction_complete: false,
+        })
+    }
+    fn merge_simulate(&self, path: &Path, _: &str, _: &str) -> ModelResult<GitMergeSimulation> {
+        let key = key(path);
+        self.simulations.borrow_mut().push(key.to_owned());
+        Ok(if self.simulation_conflict == Some(key) {
+            GitMergeSimulation::Conflicts(vec![format!("{key}.txt")])
+        } else {
+            GitMergeSimulation::Clean
         })
     }
     fn read_ref(&self, path: &Path, _: &str) -> ModelResult<Option<String>> {
@@ -251,12 +262,34 @@ fn explicit_root_is_appended_after_frozen_member_order() {
 #[test]
 fn dry_run_is_advisory_and_full_preflight_precedes_any_execution() {
     let fixture = fixture();
-    let mut backend = FakeBackend::default();
+    let mut backend = FakeBackend {
+        simulation_conflict: Some("a"),
+        ..Default::default()
+    };
     let normal = build(&backend, &fixture, &request(None, false)).unwrap();
-    backend.calls.borrow_mut().clear();
-    assert_eq!(
-        build(&backend, &fixture, &request(None, true)).unwrap(),
+    assert!(
         normal
+            .participants
+            .iter()
+            .all(|participant| !participant.prediction_complete)
+    );
+    backend.calls.borrow_mut().clear();
+    let predicted = build(&backend, &fixture, &request(None, true)).unwrap();
+    assert_eq!(*backend.simulations.borrow(), ["z", "a"]);
+    assert!(
+        predicted
+            .participants
+            .iter()
+            .all(|participant| participant.prediction_complete)
+    );
+    assert!(
+        predicted.participants[0]
+            .predicted_conflict_paths
+            .is_empty()
+    );
+    assert_eq!(
+        predicted.participants[1].predicted_conflict_paths,
+        ["a.txt"]
     );
     backend.calls.borrow_mut().clear();
     backend.dirty = Some("a");
@@ -267,6 +300,22 @@ fn dry_run_is_advisory_and_full_preflight_precedes_any_execution() {
         ErrorCode::DirtyMember
     );
     assert_eq!(*backend.calls.borrow(), ["z"]);
+}
+
+#[test]
+fn ff_only_rejects_the_complete_preflight_before_execution() {
+    let fixture = fixture();
+    let backend = FakeBackend::default();
+    let mut value = request(None, false);
+    value.mode = Some(crate::MergeMode::FfOnly);
+
+    let error = build(&backend, &fixture, &value).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::MergeValidationFailed);
+    assert_eq!(error.member_id.as_deref(), Some("mem_z"));
+    assert_eq!(error.member_path.as_deref(), Some("z"));
+    assert_eq!(*backend.calls.borrow(), ["z", "a"]);
+    assert!(backend.simulations.borrow().is_empty());
 }
 
 #[test]

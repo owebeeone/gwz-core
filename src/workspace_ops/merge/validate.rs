@@ -9,11 +9,8 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
             require_source(request.source_ref.as_deref())?;
             reject_present("merge_id", request.merge_id.is_some())?;
             reject_present("preserve", request.preserve.is_some())?;
-            if matches!(
-                request.mode,
-                Some(crate::MergeMode::FfOnly | crate::MergeMode::NoFf)
-            ) {
-                return phase("non-default merge modes are not available");
+            if request.mode == Some(crate::MergeMode::NoFf) {
+                return phase("no_ff merge mode is not available until M5");
             }
             if request.message.is_some() {
                 return phase("custom merge messages are not available");
@@ -209,11 +206,15 @@ mod tests {
         assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
         assert_eq!(error.message, "custom merge messages are not available");
 
+        let mut ff_only = request(crate::MergeOp::Start);
+        ff_only.mode = Some(crate::MergeMode::FfOnly);
+        assert!(validate_merge_request(&ff_only).is_ok());
+
         let mut mode = request(crate::MergeOp::Start);
-        mode.mode = Some(crate::MergeMode::FfOnly);
+        mode.mode = Some(crate::MergeMode::NoFf);
         let error = validate_merge_request(&mode).unwrap_err();
         assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
-        assert_eq!(error.message, "non-default merge modes are not available");
+        assert_eq!(error.message, "no_ff merge mode is not available until M5");
 
         let mut archived_status = request(crate::MergeOp::Status);
         archived_status.merge_id = Some("merge_1".to_owned());

@@ -93,6 +93,7 @@ pub(in crate::workspace_ops::merge) fn preflight_root<P: PlanningBackend>(
             GitMergeAnalysisKind::TrueMerge => crate::MergeAnalysisKind::TrueMerge,
         }),
         prediction_complete: analysis.prediction_complete,
+        predicted_conflict_paths: Vec::new(),
         commit_message: format!("Merge {source} into {branch}"),
     })
 }

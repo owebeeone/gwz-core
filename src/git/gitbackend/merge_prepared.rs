@@ -326,6 +326,29 @@ pub(super) fn merge_analysis(
     })
 }
 
+pub(super) fn merge_simulate(
+    _backend: &Git2Backend,
+    path: &Path,
+    target_commit: &str,
+    source_commit: &str,
+) -> ModelResult<GitMergeSimulation> {
+    let repo = open_repo(path)?;
+    ensure_no_integration_in_progress(&repo)?;
+    let target = git2::Oid::from_str(target_commit).map_err(git_error)?;
+    let source = git2::Oid::from_str(source_commit).map_err(git_error)?;
+    repo.find_commit(target).map_err(git_error)?;
+    repo.find_commit(source).map_err(git_error)?;
+    if classify_merge(&repo, target, source)? != GitMergeAnalysisKind::TrueMerge {
+        return Ok(GitMergeSimulation::Clean);
+    }
+    let index = in_memory_merge_index(&repo, target, source)?;
+    if index.has_conflicts() {
+        Ok(GitMergeSimulation::Conflicts(conflict_paths(&index)?))
+    } else {
+        Ok(GitMergeSimulation::Clean)
+    }
+}
+
 pub(super) fn rebase_onto(
     backend: &Git2Backend,
     path: &Path,

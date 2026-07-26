@@ -10,6 +10,12 @@ use crate::operation::{
     resolve_jobs, resolve_per_host,
 };
 
+use super::pull_head_barrier::validate_pull_barrier;
+use super::pull_head_merge_preflight::{apply_root_merge_pull, plan_root_merge_pull};
+use super::pull_head_plan::{
+    PullHeadAction, PullHeadPlan, PullHeadSource, apply_pull_action, pull_aggregate_status,
+    pull_response_aggregate, pull_result_response,
+};
 use super::*;
 
 pub fn handle_pull_head<B>(
@@ -44,6 +50,7 @@ where
     )?;
     let manifest_for_selection = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest_for_selection, request.meta.workspace.as_ref())?;
+    let lock_for_selection = artifact::read_lock(&root)?;
     let selected_for_root = resolve_targets(
         &manifest_for_selection,
         request.meta.selection.as_ref(),
@@ -53,14 +60,39 @@ where
     let pull_root_selected = selected_for_root
         .iter()
         .any(|target| matches!(target, SelectedTarget::Root));
-    let root_changed = if dry_run || !pull_root_selected {
+    let sync = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.sync)
+        .unwrap_or(crate::SyncBehavior::FfOnly);
+    let root_merge_plan = (pull_root_selected && sync == crate::SyncBehavior::Merge)
+        .then(|| {
+            plan_root_merge_pull(
+                backend,
+                &root,
+                request.meta.policy.as_ref(),
+                manifest_for_selection.clone(),
+                lock_for_selection.clone(),
+            )
+        })
+        .transpose()?;
+    let mut root_changed = if dry_run || !pull_root_selected || root_merge_plan.is_some() {
         false
     } else {
         pull_workspace_root(backend, &root, request.meta.policy.as_ref())?
     };
-    let manifest = artifact::read_manifest(&root)?;
+    let manifest = root_merge_plan
+        .as_ref()
+        .map(|plan| plan.manifest.clone())
+        .map(Ok)
+        .unwrap_or_else(|| artifact::read_manifest(&root))?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let mut lock = artifact::read_lock(&root)?;
+    let mut lock = root_merge_plan
+        .as_ref()
+        .map(|plan| plan.lock.clone())
+        .map(Ok)
+        .unwrap_or_else(|| artifact::read_lock(&root))?;
     let selected_targets = resolve_targets(
         &manifest,
         request.meta.selection.as_ref(),
@@ -115,10 +147,15 @@ where
         request.meta.policy.as_ref(),
         Some(&emitter),
     )?;
+    validate_pull_barrier(backend, &root, root_merge_plan.as_ref(), &plans)?;
+    if let Some(plan) = &root_merge_plan {
+        root_changed = apply_root_merge_pull(backend, &root, plan)?;
+    }
     let mut responses = Vec::with_capacity(plans.len());
     for plan in plans {
         let member_root = root.join(&plan.state.path);
-        let conflicts = apply_pull_action(backend, &member_root, &plan)?;
+        let conflicts = apply_pull_action(backend, &member_root, &plan)
+            .map_err(|error| error.with_member(&plan.member_id, &plan.state.path))?;
         let member = manifest
             .members
             .iter()
@@ -213,7 +250,14 @@ where
                     &local_commit,
                     &remote_commit,
                 )? {
-                    let result = backend.merge_upstream(root, &branch, &remote_ref)?;
+                    let result = backend.merge_upstream_checked(
+                        root,
+                        &branch,
+                        &local_commit,
+                        &remote_commit,
+                        &format!("Merge {remote_ref} into {branch}"),
+                        None,
+                    )?;
                     if result.conflicts.is_empty() {
                         rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
                         return Ok(true);
@@ -234,17 +278,24 @@ where
                     ));
                 }
             }
-            backend.fast_forward(root, &branch, &remote_ref)?;
+            backend.fast_forward(root, &branch, &remote_commit)?;
             rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
             Ok(true)
         }
         crate::SyncBehavior::Merge => {
             if behind {
-                backend.fast_forward(root, &branch, &remote_ref)?;
+                backend.fast_forward(root, &branch, &remote_commit)?;
                 rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
                 return Ok(true);
             }
-            let result = backend.merge_upstream(root, &branch, &remote_ref)?;
+            let result = backend.merge_upstream_checked(
+                root,
+                &branch,
+                &local_commit,
+                &remote_commit,
+                &format!("Merge {remote_ref} into {branch}"),
+                None,
+            )?;
             if result.conflicts.is_empty() {
                 rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
                 return Ok(true);
@@ -261,9 +312,9 @@ where
         }
         crate::SyncBehavior::Rebase => {
             if behind {
-                backend.fast_forward(root, &branch, &remote_ref)?;
+                backend.fast_forward(root, &branch, &remote_commit)?;
             } else {
-                let result = backend.rebase_onto(root, &branch, &remote_ref)?;
+                let result = backend.rebase_onto(root, &branch, &remote_commit)?;
                 if !result.conflicts.is_empty() {
                     return Err(ModelError::new(
                         ErrorCode::GitCommandFailed,
@@ -278,7 +329,7 @@ where
             Ok(true)
         }
         crate::SyncBehavior::Reset => {
-            backend.reset_hard(root, &branch, &remote_ref)?;
+            backend.reset_hard(root, &branch, &remote_commit)?;
             rewrite_root_lock_from_live_members(backend, root, &fallback_lock)?;
             Ok(true)
         }
@@ -420,93 +471,6 @@ where
     artifact::write_lock(root, &lock)?;
     sync_workspace_boundary(backend, root, &manifest, &lock)?;
     Ok(lock)
-}
-
-pub(crate) const NO_FETCH_REMOTE_PULL_MESSAGE: &str = "no fetch remote configured; skipping pull";
-pub(crate) const FETCH_ONLY_PULL_MESSAGE: &str = "fetched; not integrated (fetch-only)";
-
-pub(crate) enum PullHeadAction {
-    Noop,
-    SkipNoFetchRemote,
-    /// Fetched but deliberately not integrated (`--sync fetch-only`).
-    FetchOnly,
-    FastForward {
-        remote_ref: String,
-    },
-    Merge {
-        remote_ref: String,
-    },
-    Rebase {
-        remote_ref: String,
-    },
-    Reset {
-        remote_ref: String,
-    },
-}
-
-impl PullHeadAction {
-    pub(crate) fn is_noop(&self) -> bool {
-        matches!(self, Self::Noop | Self::SkipNoFetchRemote)
-    }
-
-    pub(crate) fn planned_message(&self) -> Option<String> {
-        match self {
-            Self::SkipNoFetchRemote => Some(NO_FETCH_REMOTE_PULL_MESSAGE.to_owned()),
-            Self::FetchOnly => Some(FETCH_ONLY_PULL_MESSAGE.to_owned()),
-            Self::Noop
-            | Self::FastForward { .. }
-            | Self::Merge { .. }
-            | Self::Rebase { .. }
-            | Self::Reset { .. } => None,
-        }
-    }
-}
-
-pub(crate) struct PullHeadPlan {
-    pub(crate) member_id: String,
-    pub(crate) branch: String,
-    pub(crate) state: ResolvedMemberArtifact,
-    pub(crate) action: PullHeadAction,
-}
-
-impl PullHeadPlan {
-    pub(crate) fn planned_response(&self) -> crate::MemberResponse {
-        crate::MemberResponse {
-            member_id: self.member_id.clone(),
-            member_path: self.state.path.clone(),
-            source_kind: crate::SourceKind::Git,
-            status: match self.action {
-                PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => {
-                    crate::MemberStatus::Noop
-                }
-                PullHeadAction::FetchOnly
-                | PullHeadAction::FastForward { .. }
-                | PullHeadAction::Merge { .. }
-                | PullHeadAction::Rebase { .. }
-                | PullHeadAction::Reset { .. } => crate::MemberStatus::Planned,
-            },
-            error: None,
-            planned: Some(crate::PlannedChange {
-                action: match self.action {
-                    PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => {
-                        crate::PlannedAction::Noop
-                    }
-                    PullHeadAction::FetchOnly => crate::PlannedAction::Fetch,
-                    PullHeadAction::FastForward { .. } => crate::PlannedAction::FastForward,
-                    PullHeadAction::Merge { .. } => crate::PlannedAction::Merge,
-                    PullHeadAction::Rebase { .. } => crate::PlannedAction::Rebase,
-                    PullHeadAction::Reset { .. } => crate::PlannedAction::Reset,
-                },
-                from_ref: self.state.commit.clone(),
-                to_ref: None,
-                message: self.action.planned_message(),
-            }),
-            state: None,
-            git_status: None,
-            target_kind: Some(crate::TargetKind::Member),
-            lock_match: None,
-        }
-    }
 }
 
 pub(crate) fn pull_head_preflight<B>(
@@ -754,8 +718,27 @@ where
             "cannot fast-forward unborn member",
         ));
     };
+    let source = PullHeadSource {
+        remote_ref,
+        expected_local: local_commit.clone(),
+        source_commit: remote_commit.clone(),
+    };
     let action = if local_commit == remote_commit {
-        PullHeadAction::Noop
+        let prepared = match sync {
+            crate::SyncBehavior::FetchOnly | crate::SyncBehavior::Reset => None,
+            crate::SyncBehavior::FfOnly
+            | crate::SyncBehavior::DriverSelected
+            | crate::SyncBehavior::Merge
+            | crate::SyncBehavior::Rebase => Some(prepare_pull_unchanged(
+                backend,
+                &member_root,
+                &branch,
+                &source,
+                &member.id,
+                &state.path,
+            )?),
+        };
+        PullHeadAction::UpToDate { source, prepared }
     } else {
         // Strictly behind ⇒ a fast-forward is always available, and the integration
         // modes take it too (git merge/rebase fast-forward by default). Diverged ⇒
@@ -765,7 +748,17 @@ where
             crate::SyncBehavior::FetchOnly => PullHeadAction::FetchOnly,
             crate::SyncBehavior::FfOnly | crate::SyncBehavior::DriverSelected => {
                 if behind {
-                    PullHeadAction::FastForward { remote_ref }
+                    PullHeadAction::FastForward {
+                        prepared: prepare_pull_fast_forward(
+                            backend,
+                            &member_root,
+                            &branch,
+                            &source,
+                            &member.id,
+                            &state.path,
+                        )?,
+                        source,
+                    }
                 } else {
                     return Err(ModelError::new(
                         ErrorCode::DivergedMember,
@@ -775,19 +768,78 @@ where
             }
             crate::SyncBehavior::Merge => {
                 if behind {
-                    PullHeadAction::FastForward { remote_ref }
+                    PullHeadAction::FastForward {
+                        prepared: prepare_pull_fast_forward(
+                            backend,
+                            &member_root,
+                            &branch,
+                            &source,
+                            &member.id,
+                            &state.path,
+                        )?,
+                        source,
+                    }
                 } else {
-                    PullHeadAction::Merge { remote_ref }
+                    match backend
+                        .merge_simulate(&member_root, &local_commit, &remote_commit)
+                        .map_err(|error| error.with_member(&member.id, &state.path))?
+                    {
+                        crate::git::GitMergeSimulation::Clean => {
+                            let prepared = backend
+                                .prepare_merge_upstream_checked(
+                                    &member_root,
+                                    &branch,
+                                    &source.expected_local,
+                                    &source.source_commit,
+                                    None,
+                                )
+                                .map_err(|error| error.with_member(&member.id, &state.path))?;
+                            if !matches!(prepared, crate::git::GitPreparedMerge::Commit(_)) {
+                                return Err(ModelError::new(
+                                    ErrorCode::MergeRecoveryRequired,
+                                    "pull merge result changed during preparation",
+                                )
+                                .with_member(&member.id, &state.path));
+                            }
+                            PullHeadAction::Merge { source, prepared }
+                        }
+                        crate::git::GitMergeSimulation::Conflicts(conflicts)
+                            if policy.and_then(|policy| policy.partial)
+                                == Some(crate::PartialBehavior::Partial) =>
+                        {
+                            PullHeadAction::PredictedConflict { conflicts }
+                        }
+                        crate::git::GitMergeSimulation::Conflicts(conflicts) => {
+                            return Err(ModelError::new(
+                                ErrorCode::MergeValidationFailed,
+                                format!(
+                                    "pull merge is predicted to conflict in: {}",
+                                    conflicts.join(", ")
+                                ),
+                            )
+                            .with_member(&member.id, &state.path));
+                        }
+                    }
                 }
             }
             crate::SyncBehavior::Rebase => {
                 if behind {
-                    PullHeadAction::FastForward { remote_ref }
+                    PullHeadAction::FastForward {
+                        prepared: prepare_pull_fast_forward(
+                            backend,
+                            &member_root,
+                            &branch,
+                            &source,
+                            &member.id,
+                            &state.path,
+                        )?,
+                        source,
+                    }
                 } else {
-                    PullHeadAction::Rebase { remote_ref }
+                    PullHeadAction::Rebase { source }
                 }
             }
-            crate::SyncBehavior::Reset => PullHeadAction::Reset { remote_ref },
+            crate::SyncBehavior::Reset => PullHeadAction::Reset { source },
         }
     };
     if let Some(emitter) = emitter {
@@ -799,6 +851,60 @@ where
         state,
         action,
     })
+}
+
+fn prepare_pull_unchanged<B: GitBackend>(
+    backend: &B,
+    member_root: &Path,
+    branch: &str,
+    source: &PullHeadSource,
+    member_id: &str,
+    member_path: &str,
+) -> ModelResult<crate::git::GitPreparedMerge> {
+    let prepared = backend
+        .prepare_merge_upstream_checked(
+            member_root,
+            branch,
+            &source.expected_local,
+            &source.source_commit,
+            None,
+        )
+        .map_err(|error| error.with_member(member_id, member_path))?;
+    if prepared != crate::git::GitPreparedMerge::Unchanged {
+        return Err(ModelError::new(
+            ErrorCode::MergeRecoveryRequired,
+            "pull up-to-date result changed during preparation",
+        )
+        .with_member(member_id, member_path));
+    }
+    Ok(prepared)
+}
+
+fn prepare_pull_fast_forward<B: GitBackend>(
+    backend: &B,
+    member_root: &Path,
+    branch: &str,
+    source: &PullHeadSource,
+    member_id: &str,
+    member_path: &str,
+) -> ModelResult<crate::git::GitPreparedMerge> {
+    let prepared = backend
+        .prepare_merge_upstream_checked(
+            member_root,
+            branch,
+            &source.expected_local,
+            &source.source_commit,
+            None,
+        )
+        .map_err(|error| error.with_member(member_id, member_path))?;
+    if prepared != crate::git::GitPreparedMerge::FastForward {
+        return Err(ModelError::new(
+            ErrorCode::MergeRecoveryRequired,
+            "pull fast-forward result changed during preparation",
+        )
+        .with_member(member_id, member_path));
+    }
+    Ok(prepared)
 }
 
 pub(crate) fn pull_fetch_remote_name(
@@ -827,114 +933,4 @@ pub(crate) fn pull_remote_host(
         .iter()
         .find(|candidate| candidate.name == remote)
         .and_then(|candidate| git_host(&candidate.url))
-}
-
-/// Execute a planned pull action against the materialized member, returning any
-/// conflicted paths (empty when clean or non-integrating). Merge/rebase conflicts are
-/// RETURNED, not errored — the worktree is left `--continue`-able for the developer.
-pub(crate) fn apply_pull_action<B>(
-    backend: &B,
-    member_root: &Path,
-    plan: &PullHeadPlan,
-) -> ModelResult<Vec<String>>
-where
-    B: GitBackend,
-{
-    match &plan.action {
-        PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote | PullHeadAction::FetchOnly => {
-            Ok(Vec::new())
-        }
-        PullHeadAction::FastForward { remote_ref } => {
-            backend.fast_forward(member_root, &plan.branch, remote_ref)?;
-            Ok(Vec::new())
-        }
-        PullHeadAction::Merge { remote_ref } => Ok(backend
-            .merge_upstream(member_root, &plan.branch, remote_ref)?
-            .conflicts),
-        PullHeadAction::Rebase { remote_ref } => Ok(backend
-            .rebase_onto(member_root, &plan.branch, remote_ref)?
-            .conflicts),
-        PullHeadAction::Reset { remote_ref } => {
-            backend.reset_hard(member_root, &plan.branch, remote_ref)?;
-            Ok(Vec::new())
-        }
-    }
-}
-
-pub(crate) fn pull_result_response(
-    member: &ManifestMember,
-    state: &ResolvedMemberArtifact,
-    action: &PullHeadAction,
-    conflicts: &[String],
-) -> crate::MemberResponse {
-    let status = if conflicts.is_empty() {
-        match action {
-            PullHeadAction::Noop | PullHeadAction::SkipNoFetchRemote => crate::MemberStatus::Noop,
-            PullHeadAction::FetchOnly
-            | PullHeadAction::FastForward { .. }
-            | PullHeadAction::Merge { .. }
-            | PullHeadAction::Rebase { .. }
-            | PullHeadAction::Reset { .. } => crate::MemberStatus::Ok,
-        }
-    } else {
-        crate::MemberStatus::Conflicted
-    };
-    let message = if conflicts.is_empty() {
-        action.planned_message()
-    } else {
-        Some(format!(
-            "integration left {} conflicted path(s); resolve and continue: {}",
-            conflicts.len(),
-            conflicts.join(", ")
-        ))
-    };
-    crate::MemberResponse {
-        member_id: member.id.clone(),
-        member_path: state.path.clone(),
-        source_kind: crate::SourceKind::Git,
-        status,
-        error: None,
-        planned: message.map(|message| crate::PlannedChange {
-            action: crate::PlannedAction::Noop,
-            from_ref: state.commit.clone(),
-            to_ref: None,
-            message: Some(message),
-        }),
-        state: Some(protocol_state(member, state)),
-        git_status: None,
-        // A conflicted worktree no longer matches the lock; don't claim it does.
-        target_kind: Some(crate::TargetKind::Member),
-        lock_match: conflicts.is_empty().then_some(crate::LockMatch::Matches),
-    }
-}
-
-pub(crate) fn pull_aggregate_status(plans: &[PullHeadPlan]) -> crate::AggregateStatus {
-    if plans.iter().all(|plan| plan.action.is_noop()) {
-        crate::AggregateStatus::Noop
-    } else {
-        crate::AggregateStatus::Accepted
-    }
-}
-
-pub(crate) fn pull_response_aggregate(
-    responses: &[crate::MemberResponse],
-    root_changed: bool,
-) -> crate::AggregateStatus {
-    if responses
-        .iter()
-        .any(|response| response.status == crate::MemberStatus::Conflicted)
-    {
-        crate::AggregateStatus::Conflicted
-    } else if responses
-        .iter()
-        .all(|response| response.status == crate::MemberStatus::Noop)
-    {
-        if root_changed {
-            crate::AggregateStatus::Ok
-        } else {
-            crate::AggregateStatus::Noop
-        }
-    } else {
-        crate::AggregateStatus::Ok
-    }
 }

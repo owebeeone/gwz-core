@@ -213,6 +213,118 @@ fn first_class_merge_dry_run_does_not_change_head_lock_or_merge_state() {
 }
 
 #[test]
+fn dry_run_predicts_conflicts_without_changing_git_or_gwz_state() {
+    let temp = TempDir::new("merge-dry-conflict-prediction");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-dry-conflict-source");
+    let member = temp.path().join("remote");
+    let (base, _) = feature_commit(&backend, &member, "README.md", "source\n");
+    let before = commit_file(
+        &member,
+        "README.md",
+        "target\n",
+        "target",
+        &[git2::Oid::from_str(&base).unwrap()],
+    )
+    .unwrap();
+    let root_head = backend.head(temp.path()).unwrap();
+    let member_head = backend.head(&member).unwrap();
+    let member_index = fs::read(member.join(".git/index")).unwrap();
+    let member_file = fs::read(member.join("README.md")).unwrap();
+    let lock = fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap();
+
+    let response =
+        handle_merge(&backend, temp.path(), request(true), "op_predict_conflict").unwrap();
+
+    assert_eq!(
+        response.repos[0].predicted,
+        Some(crate::MergeAnalysisKind::TrueMerge)
+    );
+    assert_eq!(response.repos[0].prediction_complete, Some(true));
+    assert_eq!(response.repos[0].conflict_paths, ["README.md"]);
+    assert_eq!(backend.head(&member).unwrap(), member_head);
+    assert_eq!(member_head.commit.as_deref(), Some(before.as_str()));
+    assert_eq!(backend.head(temp.path()).unwrap(), root_head);
+    assert_eq!(fs::read(member.join(".git/index")).unwrap(), member_index);
+    assert_eq!(fs::read(member.join("README.md")).unwrap(), member_file);
+    assert_eq!(
+        fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
+        lock
+    );
+    assert!(backend.merge_state(&member).unwrap().is_none());
+    assert!(!temp.path().join(".gwz/merge/open").exists());
+}
+
+#[test]
+fn ff_only_rejects_mixed_batch_before_an_earlier_fast_forward() {
+    let temp = TempDir::new("merge-ff-only-atomic");
+    let backend = crate::git::Git2Backend::new();
+    let (_app_fixture, _lib_fixture) = init_two_member_workspace(temp.path(), &backend);
+    let app = temp.path().join("app");
+    let lib = temp.path().join("lib");
+    let (app_before, _) = feature_commit(&backend, &app, "source.txt", "source\n");
+    let (lib_base, _) = feature_commit(&backend, &lib, "source.txt", "source\n");
+    let lib_before = commit_file(
+        &lib,
+        "local.txt",
+        "local\n",
+        "local",
+        &[git2::Oid::from_str(&lib_base).unwrap()],
+    )
+    .unwrap();
+    let lock = fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap();
+    let mut value = request(false);
+    value.mode = Some(crate::MergeMode::FfOnly);
+
+    let error = handle_merge(&backend, temp.path(), value, "op_ff_only").unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::MergeValidationFailed);
+    assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
+    assert_eq!(error.member_path.as_deref(), Some("lib"));
+    assert_eq!(
+        backend.head(&app).unwrap().commit.as_deref(),
+        Some(app_before.as_str())
+    );
+    assert_eq!(
+        backend.head(&lib).unwrap().commit.as_deref(),
+        Some(lib_before.as_str())
+    );
+    assert_eq!(
+        fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
+        lock
+    );
+    assert!(!temp.path().join(".gwz/merge/open").exists());
+}
+
+#[test]
+fn ff_only_fast_forward_persists_its_durable_mode() {
+    let temp = TempDir::new("merge-ff-only-success");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-ff-only-source");
+    let member = temp.path().join("remote");
+    let (_, source) = feature_commit(&backend, &member, "source.txt", "source\n");
+    let mut value = request(false);
+    value.mode = Some(crate::MergeMode::FfOnly);
+
+    let response = handle_merge(&backend, temp.path(), value, "op_ff_only").unwrap();
+
+    assert_eq!(
+        response.repos[0].state,
+        crate::MergeParticipantState::FastForwarded
+    );
+    assert_eq!(
+        backend.head(&member).unwrap().commit.as_deref(),
+        Some(source.as_str())
+    );
+    let record = fs::read_to_string(
+        temp.path()
+            .join(".gwz/merge/done/merge_op_ff_only_0001.yaml"),
+    )
+    .unwrap();
+    assert!(record.contains("\nmode: ff_only\n"));
+}
+
+#[test]
 fn first_class_merge_rejects_unrelated_history_without_mutation() {
     let temp = TempDir::new("merge-start-unrelated");
     let backend = crate::git::Git2Backend::new();

@@ -151,7 +151,7 @@ pub struct GitMergeAnalysis {
     pub source_commit: String,
     pub kind: GitMergeAnalysisKind,
     pub commit_identity_required: bool,
-    /// False for a true merge that has not run the optional simulation seam.
+    /// False for a true merge that has not run the simulation seam.
     pub prediction_complete: bool,
 }
 

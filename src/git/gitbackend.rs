@@ -35,7 +35,7 @@ pub use transport_support::set_server_timeout_ms;
 pub use types::*;
 
 #[allow(unused_imports)]
-pub(crate) use merge_support::{conflict_paths, merge_signature};
+pub(crate) use merge_support::{conflict_paths, merge_signature, render_git_path};
 #[allow(unused_imports)]
 pub(crate) use repository_support::{
     branch_ref_name, ensure_branch_at_commit, ensure_no_integration_in_progress, git_branch_record,
@@ -82,6 +82,7 @@ impl GitBackend for Git2Backend {
     delegate!(validate_prepared_merge_upstream_state(path: &Path, branch: &str, expected_before: &str, source_commit: &str, prepared: &GitPreparedMerge,) -> ModelResult<()> => merge_prepared::validate_prepared_merge_upstream_state);
     delegate!(execute_prepared_merge_upstream_checked(path: &Path, branch: &str, expected_before: &str, source_commit: &str, message: &str, prepared: &GitPreparedMerge,) -> ModelResult<GitIntegrateResult> => merge_prepared::execute_prepared_merge_upstream_checked);
     delegate!(merge_analysis(path: &Path, target_branch: &str, source: &str,) -> ModelResult<GitMergeAnalysis> => merge_prepared::merge_analysis);
+    delegate!(merge_simulate(path: &Path, target_commit: &str, source_commit: &str,) -> ModelResult<GitMergeSimulation> => merge_prepared::merge_simulate);
     delegate!(merge_state(path: &Path) -> ModelResult<Option<GitNativeMergeState>> => merge_recovery::merge_state);
     delegate!(repository_state(path: &Path) -> ModelResult<GitRepositoryState> => merge_recovery::repository_state);
     delegate!(validate_merge_recovery_state(path: &Path, expected_before: &str, expected_merge_head: &str, require_resolved: bool,) -> ModelResult<()> => merge_recovery::validate_merge_recovery_state);

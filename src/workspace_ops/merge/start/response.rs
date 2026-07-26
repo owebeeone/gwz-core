@@ -68,7 +68,11 @@ pub(super) fn summary(row: Row<'_>, source_ref: &str) -> crate::MergeRepoSummary
         state: row.state,
         predicted: plan.analysis,
         prediction_complete: Some(plan.prediction_complete),
-        conflict_paths: row.paths,
+        conflict_paths: if row.state == PState::Planned {
+            plan.predicted_conflict_paths.clone()
+        } else {
+            row.paths
+        },
         continue_eligible: None,
         abort_eligible: None,
         drift: Vec::new(),

@@ -10,6 +10,31 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 pub(crate) const MERGE_RECORD_SCHEMA: &str = "gwz.merge-operation/v0";
 pub(crate) const MERGE_RECORD_SCHEMA_VERSION: u32 = 0;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MergeExecutionMode {
+    #[default]
+    Normal,
+    FfOnly,
+    NoFf,
+}
+
+impl MergeExecutionMode {
+    fn is_normal(&self) -> bool {
+        *self == Self::Normal
+    }
+}
+
+impl From<Option<crate::MergeMode>> for MergeExecutionMode {
+    fn from(value: Option<crate::MergeMode>) -> Self {
+        match value.unwrap_or_default() {
+            crate::MergeMode::Normal => Self::Normal,
+            crate::MergeMode::FfOnly => Self::FfOnly,
+            crate::MergeMode::NoFf => Self::NoFf,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MergeTargetKind {
@@ -128,6 +153,7 @@ fn transition_error<T: std::fmt::Debug>(kind: &str, from: T, to: T) -> ModelErro
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MergePlan {
     pub source_ref: String,
+    pub mode: MergeExecutionMode,
     pub baseline: MergeBaseline,
     pub participants: Vec<MergeParticipantPlan>,
 }
@@ -142,6 +168,7 @@ pub(crate) struct MergeParticipantPlan {
     pub source_commit: String,
     pub analysis: Option<crate::MergeAnalysisKind>,
     pub prediction_complete: bool,
+    pub predicted_conflict_paths: Vec<String>,
     pub commit_message: String,
 }
 
@@ -167,6 +194,8 @@ pub(crate) struct MergeOperationRecord {
     pub operation_id: String,
     pub state: OperationState,
     pub source_ref: String,
+    #[serde(default, skip_serializing_if = "MergeExecutionMode::is_normal")]
+    pub mode: MergeExecutionMode,
     pub created_at: String,
     pub baseline: MergeBaseline,
     pub selected_targets: Vec<String>,
@@ -531,9 +560,22 @@ participants: {}
 future_record: retained
 "#;
         let record: MergeOperationRecord = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(record.mode, MergeExecutionMode::Normal);
         let rewritten = serde_yaml::to_string(&record).unwrap();
+        assert!(!rewritten.contains("\nmode:"));
         assert!(rewritten.contains("future_record: retained"));
         assert!(rewritten.contains("future_baseline: retained"));
+
+        let mut ff_only = record;
+        ff_only.mode = MergeExecutionMode::FfOnly;
+        let encoded = serde_yaml::to_string(&ff_only).unwrap();
+        assert!(encoded.contains("mode: ff_only"));
+        assert_eq!(
+            serde_yaml::from_str::<MergeOperationRecord>(&encoded)
+                .unwrap()
+                .mode,
+            MergeExecutionMode::FfOnly
+        );
     }
 
     #[test]
@@ -629,6 +671,7 @@ future_record: retained
             operation_id: "op_1".to_owned(),
             state: OperationState::AwaitingResolution,
             source_ref: "feature/x".to_owned(),
+            mode: MergeExecutionMode::Normal,
             created_at: "now".to_owned(),
             baseline: MergeBaseline {
                 lock_sha256: "lock".to_owned(),
