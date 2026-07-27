@@ -34,23 +34,14 @@ pub use contract::*;
 pub use transport_support::set_server_timeout_ms;
 pub use types::*;
 
-#[allow(unused_imports)]
-pub(crate) use merge_support::{conflict_paths, merge_signature, render_git_path};
-#[allow(unused_imports)]
-pub(crate) use repository_support::{
-    branch_ref_name, ensure_branch_at_commit, ensure_no_integration_in_progress, git_branch_record,
-    git_file_status, open_repo, rename_delta, resolve_commit_oid, verify_merge_result,
-};
-#[allow(unused_imports)]
-pub(crate) use stash_support::{
-    resolve_stash_index, stash_entries, stash_message_matches_gwz_prefix, stash_push_flags,
-    stash_restore_error, stash_restore_options,
-};
-#[allow(unused_imports)]
-pub(crate) use transport_support::{
-    fetch_options_with_progress, remote_callbacks, remote_credential, remote_fetch_options,
-    remote_push_options,
-};
+pub(crate) use repository_support::open_repo;
+
+#[cfg(test)]
+pub(crate) use merge_support::{conflict_paths, render_git_path};
+#[cfg(test)]
+pub(crate) use stash_support::stash_message_matches_gwz_prefix;
+#[cfg(test)]
+pub(crate) use transport_support::remote_credential;
 
 use backend::{
     record_preparation_call, run_before_prepared_execution, run_before_scoped_commit_ref_lock,

@@ -2,7 +2,6 @@ mod abort;
 mod continue_op;
 mod finalize;
 mod gc;
-#[allow(dead_code)] // Frozen M2b-A1 interface; consumed by finalization in M2b-A2.
 pub(crate) mod marker;
 mod model;
 mod pending;
@@ -35,7 +34,6 @@ use crate::runtime::ids::IdProvider;
 
 /// Persistence seam frozen at I0 and extended in M3 with exact archived loads
 /// for id-qualified status and checked cleanup.
-#[allow(dead_code)] // Remove when M1 wires the durable merge store.
 pub(crate) trait MergeStore {
     fn discover_open(&self, _root: &Path) -> ModelResult<Option<MergeOperationRecord>> {
         unsupported_store("discover_open")
@@ -57,7 +55,6 @@ pub(crate) trait MergeStore {
     }
 }
 
-#[allow(dead_code)] // Used by the M1 store seam once its default methods are live.
 fn unsupported_store<T>(method: &str) -> ModelResult<T> {
     Err(ModelError::new(
         ErrorCode::UnsupportedOperation,
@@ -66,7 +63,6 @@ fn unsupported_store<T>(method: &str) -> ModelResult<T> {
 }
 
 /// All environmental dependencies used by the merge lifecycle are explicit.
-#[allow(dead_code)] // Remove when M1 routes the service through durable dependencies.
 pub(crate) struct MergeDependencies<'a, B, S, C, I> {
     pub backend: &'a B,
     pub store: &'a S,
@@ -316,7 +312,7 @@ pub(crate) fn enter_finalizing<S: MergeStore>(
 }
 
 /// Dependency-injected lifecycle seam used by the persistence milestones.
-#[allow(dead_code)] // Production enters through the public gate; focused tests inject dependencies.
+#[cfg(test)]
 pub(crate) fn handle_merge_with_dependencies<B, S, C, I>(
     dependencies: MergeDependencies<'_, B, S, C, I>,
     start: &Path,

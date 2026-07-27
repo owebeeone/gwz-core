@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Frozen durable lifecycle model; remove as M1-M3 consume each item.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

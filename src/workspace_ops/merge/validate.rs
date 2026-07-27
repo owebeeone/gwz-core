@@ -34,7 +34,6 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
     Ok(())
 }
 
-#[allow(dead_code)] // Remove when M1 implements status and open-operation dispatch.
 pub(crate) fn validate_open_merge_id(requested: Option<&str>, open_id: &str) -> ModelResult<()> {
     if requested.is_some_and(|requested| requested != open_id) {
         return Err(ModelError::new(
