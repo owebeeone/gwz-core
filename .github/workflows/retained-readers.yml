@@ -1,0 +1,114 @@
+name: Retained merge readers
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - ".github/workflows/retained-readers.yml"
+      - "dev-docs/GwzMergeDesign.md"
+      - "dev-docs/GwzMergePlan.md"
+      - "protocol/**"
+      - "scripts/retained_readers/**"
+      - "src/workspace_ops/merge/**"
+      - "src/workspace_ops/tests/g23/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/retained-readers.yml"
+      - "dev-docs/GwzMergeDesign.md"
+      - "dev-docs/GwzMergePlan.md"
+      - "protocol/**"
+      - "scripts/retained_readers/**"
+      - "src/workspace_ops/merge/**"
+      - "src/workspace_ops/tests/g23/**"
+
+jobs:
+  harness:
+    name: Harness unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Test and validate retained-reader inputs
+        run: |
+          python -m unittest discover -s scripts/retained_readers -p 'test_*.py' -v
+          python scripts/retained_readers/retained_reader_harness.py validate scripts/retained_readers/manifest.json
+          python scripts/retained_readers/retained_reader_harness.py gate-ready scripts/retained_readers/manifest.json
+
+  matrix:
+    name: ${{ matrix.platform }}
+    needs: harness
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: windows-2022
+            platform: windows-x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+          - runner: macos-14
+            platform: macos-aarch64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Cache checksum-verified release artifacts
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/gwz-retained-reader-cache/objects/sha256
+          key: retained-readers-${{ matrix.platform }}-${{ hashFiles('scripts/retained_readers/manifest.json') }}
+      - name: Generate canonical fixtures
+        shell: bash
+        run: |
+          python scripts/retained_readers/generate_retained_reader_fixtures.py \
+            "$RUNNER_TEMP/gwz-retained-reader-fixtures"
+      - name: Run actual retained readers
+        shell: bash
+        run: |
+          python scripts/retained_readers/retained_reader_matrix.py \
+            scripts/retained_readers/manifest.json \
+            scripts/retained_readers/cases.json \
+            --platform "${{ matrix.platform }}" \
+            --fixtures "$RUNNER_TEMP/gwz-retained-reader-fixtures" \
+            --cache "$RUNNER_TEMP/gwz-retained-reader-cache" \
+            --allow-network \
+            --evidence-out "$RUNNER_TEMP/evidence-${{ matrix.platform }}.json" \
+            --attestation-out "$RUNNER_TEMP/attestation-${{ matrix.platform }}.json"
+      - name: Compare portable macOS arm64 evidence
+        if: matrix.platform == 'macos-aarch64'
+        shell: bash
+        run: |
+          python scripts/retained_readers/retained_reader_evidence.py compare \
+            --checked scripts/retained_readers/evidence-macos-aarch64.json \
+            --actual "$RUNNER_TEMP/evidence-macos-aarch64.json" \
+            --manifest scripts/retained_readers/manifest.json \
+            --cases scripts/retained_readers/cases.json \
+            --fixtures "$RUNNER_TEMP/gwz-retained-reader-fixtures"
+      - name: Upload normalized evidence and execution attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: retained-reader-evidence-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/evidence-${{ matrix.platform }}.json
+            ${{ runner.temp }}/attestation-${{ matrix.platform }}.json
+          if-no-files-found: error

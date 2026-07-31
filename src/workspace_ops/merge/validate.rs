@@ -10,7 +10,7 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
             reject_present("merge_id", request.merge_id.is_some())?;
             reject_present("preserve", request.preserve.is_some())?;
             if request.mode == Some(crate::MergeMode::NoFf) {
-                return phase("no_ff merge mode is not available until M5");
+                return phase("no_ff requires the v1 record lifecycle and is not yet activated");
             }
             if request.message.is_some() {
                 return phase("custom merge messages are not available");
@@ -213,7 +213,10 @@ mod tests {
         mode.mode = Some(crate::MergeMode::NoFf);
         let error = validate_merge_request(&mode).unwrap_err();
         assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
-        assert_eq!(error.message, "no_ff merge mode is not available until M5");
+        assert_eq!(
+            error.message,
+            "no_ff requires the v1 record lifecycle and is not yet activated"
+        );
 
         let mut archived_status = request(crate::MergeOp::Status);
         archived_status.merge_id = Some("merge_1".to_owned());

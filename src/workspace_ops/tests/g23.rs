@@ -18,6 +18,11 @@ use sha2::{Digest, Sha256};
 use super::*;
 
 mod abort_recovery;
+mod characterization_archive_v0;
+mod characterization_preservation_v0;
+mod characterization_publication_prefix_v0;
+mod characterization_publication_v0;
+mod characterization_v0;
 mod continue_merge;
 mod drift;
 mod finalization;

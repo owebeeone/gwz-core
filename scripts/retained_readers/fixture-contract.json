@@ -1,0 +1,13 @@
+{
+  "fixture_set_sha256": "d2ee4f1f5e05335d886c52d3e8435155d4b9328a5e34c129ea21a5944c7543e7",
+  "fixtures": {
+    "archived-v0": "c6a095af22067848b43f5195fc625cd0a4b9eb353f2de95e6bee8d627724528a",
+    "custom-message-pending": "c49fed2d358cf4ba04202943aa3b9721158c4e54eb8a05d723cdaa847397b7e6",
+    "custom-message-pending-completed": "3d453979ce40439e9f0d80caf3e02360b106e67631b29b8743e7fcf7cf2cc68d",
+    "custom-message-pending-wrong-message": "9079afb63fa3f7ce602cb9877d5e28f90c0f127bd0316819bbdf52d2a4cff7a0",
+    "no-ff-fast-forwardable": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1",
+    "pre-record-open-v0": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1"
+  },
+  "git_object_format": "sha1",
+  "schema": "gwz.retained-reader-fixtures/v1"
+}

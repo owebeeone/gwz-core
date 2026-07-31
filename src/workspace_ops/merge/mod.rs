@@ -17,7 +17,13 @@ mod store;
 mod validate;
 
 #[cfg(test)]
+#[path = "tests/transition_matrix_v0.rs"]
+mod transition_matrix_v0;
+
+#[cfg(test)]
 pub(crate) use abort::{EvidenceRollbackMutation, fail_next_evidence_rollback_after};
+#[cfg(test)]
+pub(crate) use finalize::{CandidatePublicationMutation, fail_next_candidate_publication_after};
 
 pub(crate) use model::*;
 pub(crate) use recovery::*;

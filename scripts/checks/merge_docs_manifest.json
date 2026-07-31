@@ -1,0 +1,240 @@
+{
+  "manifest_version": 1,
+  "description": "R0 canonical merge milestone and public-capability assertions. Update this reviewed manifest at each M5a-A4 gate when the active capability changes.",
+  "global_forbidden": [
+    {
+      "id": "m5a_must_not_release_no_ff",
+      "match": "regex",
+      "value": "(?i)\\bM5a\\b\\s+(?:ships|releases|adds|activates|includes|advertises|writes)\\s+(?:`?--no-ff`?|no-ff)\\b"
+    },
+    {
+      "id": "no_ff_must_not_be_available_at_m5a",
+      "match": "regex",
+      "value": "(?i)(?:`?--no-ff`?|no-ff)\\s+is\\s+(?:now\\s+)?(?:available|supported|released|writable)\\s+(?:in|at|under)\\s+M5a\\b"
+    },
+    {
+      "id": "no_ff_must_not_be_available_in_v0",
+      "match": "regex",
+      "value": "(?i)(?:`?--no-ff`?|no-ff)\\s+is\\s+(?:now\\s+)?(?:available|supported|released|writable)\\s+(?:in|at|under)\\s+(?:record\\s+)?v0\\b"
+    },
+    {
+      "id": "m5b_must_not_release_v0",
+      "match": "regex",
+      "value": "(?i)\\bM5b\\b\\s+(?:ships|releases|activates|writes)\\s+(?:`?--no-ff`?|no-ff)[^.\\n]{0,80}\\bv0\\b"
+    }
+  ],
+  "sources": [
+    {
+      "id": "proposal",
+      "path": "dev-docs/GwzM5-8Refactor.md",
+      "required": [
+        {
+          "id": "proposal_m5a_defers_no_ff",
+          "value": "M5a custom-message slice approved; `--no-ff` deferred to v1/A1"
+        },
+        {
+          "id": "proposal_m5b_a1_proves_v1_no_ff",
+          "value": "M5b/A1 proves v1 no-ff."
+        },
+        {
+          "id": "proposal_v0_scope",
+          "value": "| v0 | Released M4 integration plus M5 custom messages using existing commit-message recovery authority | M4/M5a custom-message slice |"
+        },
+        {
+          "id": "proposal_v1_scope",
+          "value": "| v1 | v0 semantics plus executable `--no-ff`, persisted `AcceptedWorkspace`, born/unborn acceptance, and publication/no-publication consumption | A1 after R4b |"
+        },
+        {
+          "id": "proposal_v2_scope",
+          "value": "| v2 | v1 plus M6 create/switch/integrate/restore/delete branch lifecycle and ownership-aware rollback | M6 activation |"
+        },
+        {
+          "id": "proposal_v3_scope",
+          "value": "| v3 | v2 plus M7 snapshot-source provenance, resolution, and reporting | M7 activation |"
+        },
+        {
+          "id": "proposal_v4_scope",
+          "value": "| v4 | v3 plus M8 required/optional participation, skipped outcomes, partial composition, and its recovery/reporting semantics | M8 activation |"
+        },
+        {
+          "id": "proposal_m5a_rejects_before_record",
+          "value": "M5a rejects `--no-ff` before record creation;"
+        }
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "merge_plan",
+      "path": "gwz-core/dev-docs/GwzMergePlan.md",
+      "required": [
+        {
+          "id": "plan_m5a_custom_only",
+          "value": "The next release slice is M5a custom messages only. `--no-ff` is not writable or releasable under record v0"
+        },
+        {
+          "id": "plan_m5b_disabled_v1",
+          "value": "it is implemented as M5b behind the disabled v1 writer and activates only with A1"
+        },
+        {
+          "id": "plan_m5a_release_boundary",
+          "value": "M5a ships only `-m`/custom-message behavior under v0 after M4 and rejects `--no-ff` before record creation."
+        },
+        {
+          "id": "plan_a1_atomic_activation",
+          "value": "A1 atomically activates the v1 writer, eligible v0 migration, and deterministic `--no-ff` start surface."
+        },
+        {
+          "id": "plan_i6_v2",
+          "value": "I6/M6/A2 owns `--into` and cannot begin implementation until coordinated switch-plus-merge rollback has an accepted v2 design."
+        },
+        {
+          "id": "plan_i7_v3",
+          "value": "I7/M7/A3 owns exact per-member snapshot sources and the v3 wire/archive/downgrade contract."
+        },
+        {
+          "id": "plan_i8_v4",
+          "value": "I8/M8/A4 owns merge partial/skip semantics"
+        },
+        {
+          "id": "plan_gate_runs_every_wave",
+          "value": "R0 adds and every M5a–A4 gate runs the merge document-consistency check."
+        }
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "merge_design",
+      "path": "gwz-core/dev-docs/GwzMergeDesign.md",
+      "required": [
+        {
+          "id": "design_m5a_custom_only",
+          "value": "M5a adds v0-safe custom messages. Deterministic `--no-ff` is M5b under record v1 and activates only with A1"
+        },
+        {
+          "id": "design_no_v0_no_ff_path",
+          "value": "it has no writable or releasable v0 path."
+        },
+        {
+          "id": "design_i6_i7_i8_sequence",
+          "value": "I6/M6/A2 separately owns target-branch switching, I7/M7/A3 adds exact snapshot sources, and I8/M8/A4 owns any explicit merge partial/skip policy."
+        },
+        {
+          "id": "design_request_table_versions",
+          "value": "`normal` now, `ff_only` from M4, `no_ff` from M5b/A1 under v1"
+        },
+        {
+          "id": "design_m5a_rejects_before_record",
+          "value": "Reject `--no-ff` before record creation and never write `mode: no_ff` under v0."
+        },
+        {
+          "id": "design_m5b_no_v0_release",
+          "value": "Give M5b no independently releasable v0 path."
+        },
+        {
+          "id": "design_a1_atomic_activation",
+          "value": "Activate the v1 writer, eligible v0 migration, and no-ff start surface together only at A1."
+        },
+        {
+          "id": "design_later_wave_phases",
+          "value": "### Phase I6/M6/A2: explicit target branch"
+        }
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "merge_command",
+      "path": "gwz-cli/docs/commands/merge.md",
+      "required": [
+        {
+          "id": "merge_command_ff_only_current",
+          "value": "gwz merge <source> [--dry-run] [--ff-only]"
+        },
+        {
+          "id": "merge_command_deferred_heading",
+          "value": "## Features not yet available"
+        },
+        {
+          "id": "merge_command_no_ff_and_message_deferred",
+          "value": "`--no-ff` and custom merge messages are not yet available."
+        },
+        {
+          "id": "merge_command_unsupported_is_typed",
+          "value": "These forms remain hidden and return typed unsupported errors if submitted directly."
+        }
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "releases",
+      "path": "gwz-cli/docs/Releases.md",
+      "required": [
+        {
+          "id": "releases_unreleased_compatibility",
+          "value": "## Unreleased Compatibility Notes"
+        },
+        {
+          "id": "releases_merge_surface",
+          "value": "Coordinated merge start, dry-run, status, continue, and safe abort are available together."
+        },
+        {
+          "id": "releases_recovery_guidance",
+          "value": "Recovery must not substitute raw `git merge --abort` for the coordinated operation."
+        }
+      ],
+      "forbidden": [
+        {
+          "id": "releases_must_not_claim_no_ff_yet",
+          "value": "`--no-ff` is available"
+        }
+      ]
+    },
+    {
+      "id": "machine_output",
+      "path": "gwz-cli/docs/MachineOutput.md",
+      "required": [
+        {
+          "id": "machine_output_merge_json",
+          "value": "## Merge JSON"
+        },
+        {
+          "id": "machine_output_current_shape",
+          "value": "Merge responses use the normal response envelope and populate its `merge` field."
+        },
+        {
+          "id": "machine_output_additive_keys",
+          "value": "GWZ is pre-1.0, so strict consumers must tolerate additive keys"
+        }
+      ],
+      "forbidden": [
+        {
+          "id": "machine_output_must_not_claim_no_ff_yet",
+          "value": "`--no-ff` is available"
+        }
+      ]
+    },
+    {
+      "id": "generated_cli",
+      "path": "gwz-cli/docs/CLI.md",
+      "required": [
+        {
+          "id": "generated_cli_merge_section",
+          "value": "### `gwz merge`"
+        },
+        {
+          "id": "generated_cli_current_usage",
+          "value": "Usage: gwz merge [source] [--dry-run]"
+        },
+        {
+          "id": "generated_cli_ff_only",
+          "value": "--ff-only Require every selected repository to merge by fast-forward"
+        }
+      ],
+      "forbidden": [
+        {
+          "id": "generated_cli_no_ff_must_remain_hidden",
+          "value": "--no-ff"
+        }
+      ]
+    }
+  ]
+}

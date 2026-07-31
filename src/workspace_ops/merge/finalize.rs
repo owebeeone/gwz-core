@@ -20,6 +20,39 @@ use super::{
     PublicationProgress, PublicationStep,
 };
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CandidatePublicationMutation {
+    Marker,
+    Lock,
+    Boundary,
+    Staging,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_CANDIDATE_PUBLICATION_AFTER:
+        std::cell::Cell<Option<CandidatePublicationMutation>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_candidate_publication_after(mutation: CandidatePublicationMutation) {
+    FAIL_NEXT_CANDIDATE_PUBLICATION_AFTER.with(|next| next.set(Some(mutation)));
+}
+
+#[cfg(test)]
+fn fail_candidate_publication_after(mutation: CandidatePublicationMutation) -> ModelResult<()> {
+    FAIL_NEXT_CANDIDATE_PUBLICATION_AFTER.with(|next| {
+        if next.get() == Some(mutation) {
+            next.set(None);
+            return Err(recovery(format!(
+                "injected failure after candidate {mutation:?} publication"
+            )));
+        }
+        Ok(())
+    })
+}
+
 pub(super) fn finalize<B: GitBackend, S: MergeStore>(
     backend: &B,
     store: &S,
@@ -457,8 +490,14 @@ fn publish_candidate<B: GitBackend, S: MergeStore>(
     let candidate = candidate(record)?.clone();
     let marker_path = artifact::marker_path(root, &candidate.marker_id);
     artifact::write_atomic(&marker_path, &candidate.marker_yaml)?;
+    #[cfg(test)]
+    fail_candidate_publication_after(CandidatePublicationMutation::Marker)?;
     artifact::write_atomic(&root.join(artifact::LOCK_PATH), &candidate.lock_yaml)?;
+    #[cfg(test)]
+    fail_candidate_publication_after(CandidatePublicationMutation::Lock)?;
     publish_workspace_exclude_candidate(root, &candidate.boundary_text)?;
+    #[cfg(test)]
+    fail_candidate_publication_after(CandidatePublicationMutation::Boundary)?;
     backend.stage_paths(
         root,
         &[
@@ -469,6 +508,8 @@ fn publish_candidate<B: GitBackend, S: MergeStore>(
                 .ok_or_else(|| unreadable("candidate marker path is missing"))?,
         ],
     )?;
+    #[cfg(test)]
+    fail_candidate_publication_after(CandidatePublicationMutation::Staging)?;
     clear_root_drift(record);
     super::persist_merge_record(store, root, record, emitter)?;
     Ok(true)

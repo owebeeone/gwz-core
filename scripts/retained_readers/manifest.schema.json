@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/owebeeone/gwz-core/blob/main/scripts/retained_readers/manifest.schema.json",
+  "title": "GWZ retained-reader compatibility inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "default_timeout_seconds",
+    "decode_generations",
+    "platforms",
+    "runtimes",
+    "readers"
+  ],
+  "properties": {
+    "schema": { "const": "gwz.retained-readers/v1" },
+    "default_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 300 },
+    "decode_generations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/decodeGeneration" }
+    },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/platform" }
+    },
+    "runtimes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/runtime" }
+    },
+    "readers": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/reader" }
+    }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "minLength": 1 },
+    "release": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "decodeGeneration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "release", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "release": { "$ref": "#/$defs/release" },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "os", "arch", "lane"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "os": { "$ref": "#/$defs/identifier" },
+        "arch": { "$ref": "#/$defs/identifier" },
+        "lane": { "enum": ["behavioral", "artifact-smoke"] }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "bootstrap"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "kind": { "enum": ["native", "python"] },
+        "python_version": { "type": "string", "minLength": 1 },
+        "abi": { "type": "string", "minLength": 1 },
+        "bootstrap": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeArtifact" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "python" } } },
+          "then": { "required": ["python_version", "abi"] }
+        }
+      ]
+    },
+    "runtimeArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "name", "url", "sha256"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "status": { "const": "verified" },
+        "name": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "pythonIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "abi", "native_extension"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "abi": { "type": "string", "minLength": 1 },
+        "native_extension": { "type": "string", "minLength": 1 }
+      }
+    },
+    "requiredArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "support",
+        "status",
+        "name",
+        "url",
+        "sha256",
+        "format",
+        "entry_point"
+      ],
+      "properties": {
+        "platform": { "$ref": "#/$defs/identifier" },
+        "support": { "const": "required" },
+        "status": { "enum": ["verified", "pending-acquisition"] },
+        "name": { "type": ["string", "null"], "minLength": 1 },
+        "url": { "type": ["string", "null"], "minLength": 1 },
+        "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "format": { "type": "string", "minLength": 1 },
+        "entry_point": { "type": "string", "minLength": 1 },
+        "wheel_tag": { "type": ["string", "null"], "minLength": 1 },
+        "acquisition_note": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "verified" } } },
+          "then": {
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "url": { "type": "string", "format": "uri", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          },
+          "else": { "required": ["acquisition_note"] }
+        }
+      ]
+    },
+    "unsupportedArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "support", "reason", "substitute_evidence"],
+      "properties": {
+        "platform": { "$ref": "#/$defs/identifier" },
+        "support": { "const": "unsupported" },
+        "reason": { "type": "string", "minLength": 1 },
+        "substitute_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "reader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "surface",
+        "release",
+        "decode_generation",
+        "runtime",
+        "supported_record_versions",
+        "envelope_behavior",
+        "commands",
+        "projections",
+        "invocation",
+        "artifacts"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "surface": { "enum": ["rust-cli", "gwz-py"] },
+        "release": { "$ref": "#/$defs/release" },
+        "decode_generation": { "$ref": "#/$defs/identifier" },
+        "runtime": { "$ref": "#/$defs/identifier" },
+        "python": { "$ref": "#/$defs/pythonIdentity" },
+        "supported_record_versions": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "uniqueItems": true
+        },
+        "envelope_behavior": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "commands": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "enum": ["available", "unavailable"] }
+        },
+        "command_absence_evidence": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "projections": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "invocation": { "$ref": "#/$defs/command" },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/requiredArtifact" },
+              { "$ref": "#/$defs/unsupportedArtifact" }
+            ]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "surface": { "const": "gwz-py" } } },
+          "then": { "required": ["python"] }
+        }
+      ]
+    }
+  }
+}

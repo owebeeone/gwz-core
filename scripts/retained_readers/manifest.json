@@ -1,0 +1,478 @@
+{
+  "schema": "gwz.retained-readers/v1",
+  "default_timeout_seconds": 30,
+  "decode_generations": [
+    {
+      "id": "pre-v0-record-reader",
+      "release": "v0.9.2",
+      "description": "The release predates the durable coordinated-merge record and exposes only one-shot merge start."
+    },
+    {
+      "id": "v0-field-unknown",
+      "release": "v0.10.0",
+      "description": "The first durable v0 reader predates later additive baseline YAML and committed-digest evidence fields."
+    },
+    {
+      "id": "v0-mode-known-recovery-dormant",
+      "release": "v0.10.2",
+      "description": "The reader decodes the v0 NoFf variant, but recovery can re-derive normal fast-forward behavior."
+    }
+  ],
+  "platforms": [
+    { "id": "linux-x86_64", "os": "linux", "arch": "x86_64", "lane": "behavioral" },
+    { "id": "windows-x86_64", "os": "windows", "arch": "x86_64", "lane": "behavioral" },
+    { "id": "linux-aarch64", "os": "linux", "arch": "aarch64", "lane": "artifact-smoke" },
+    { "id": "macos-x86_64", "os": "macos", "arch": "x86_64", "lane": "artifact-smoke" },
+    { "id": "macos-aarch64", "os": "macos", "arch": "aarch64", "lane": "artifact-smoke" },
+    { "id": "windows-aarch64", "os": "windows", "arch": "aarch64", "lane": "artifact-smoke" }
+  ],
+  "runtimes": [
+    {
+      "id": "native",
+      "kind": "native",
+      "bootstrap": []
+    },
+    {
+      "id": "cpython-3.10-abi3",
+      "kind": "python",
+      "python_version": "3.10",
+      "abi": "abi3",
+      "artifacts": [
+        {
+          "id": "taut_proto_artifact",
+          "status": "verified",
+          "name": "taut_proto-0.8.1-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/6e/3f/c1c9eb4c92da3acacb3ab4d6938f4849a01942872fc4c360bb0656eb27b9/taut_proto-0.8.1-py3-none-any.whl",
+          "sha256": "41bb278298a255f1b9f674ead79a97040efe15cb79324bd2ee9f8dd0370dd062"
+        }
+      ],
+      "bootstrap": [
+        ["{python}", "-m", "venv", "{runtime_dir}"],
+        ["{runtime_python}", "-m", "pip", "install", "--no-index", "--no-deps", "{taut_proto_artifact}", "{artifact}"]
+      ]
+    }
+  ],
+  "readers": [
+    {
+      "id": "rust-cli-v0.9.2",
+      "surface": "rust-cli",
+      "release": "v0.9.2",
+      "decode_generation": "pre-v0-record-reader",
+      "runtime": "native",
+      "supported_record_versions": [],
+      "envelope_behavior": {
+        "gwz.merge-operation/v0@0": "not decoded; the released one-shot merge surface has no coordinated-operation record guard",
+        "unsupported": "not applicable because this generation has no durable-record dispatcher"
+      },
+      "commands": {
+        "workspace-status": "available",
+        "legacy-branch-merge": "available",
+        "merge-start": "unavailable",
+        "merge-status": "unavailable",
+        "merge-continue": "unavailable",
+        "merge-abort": "unavailable",
+        "merge-preserve": "unavailable",
+        "merge-gc": "unavailable"
+      },
+      "command_absence_evidence": {
+        "merge-start": "The released parser has no `gwz merge` subcommand; its one-shot integration surface is `gwz branch --merge <ref>`.",
+        "merge-status": "The released parser has no merge-status form; exercise workspace status and legacy branch merge against an isolated open-record fixture.",
+        "merge-continue": "The released parser has no continue form; exercise workspace status and legacy branch merge against an isolated open-record fixture.",
+        "merge-abort": "The released parser has no abort form; exercise workspace status and legacy branch merge against an isolated open-record fixture.",
+        "merge-preserve": "The released parser has no preserve form; exercise workspace status and legacy branch merge against an isolated open-record fixture.",
+        "merge-gc": "The released parser has no merge-record GC form; the fixture proves the unknown open record remains untouched."
+      },
+      "projections": ["human", "json", "jsonl"],
+      "invocation": ["{executable}", "--root", "{workspace}"],
+      "artifacts": [
+        {
+          "platform": "linux-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-x86_64-unknown-linux-gnu.tar.xz",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.9.2/gwz-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "e061854495deef20ad8eec1b17f1a9540e585112ee427d6cae4769c8c8306cc0",
+          "format": "tar.xz",
+          "entry_point": "gwz"
+        },
+        {
+          "platform": "windows-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-x86_64-pc-windows-msvc.zip",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.9.2/gwz-x86_64-pc-windows-msvc.zip",
+          "sha256": "91ad855c3d685cd48b7bd2f0ede7c91cf5b0839254e789ec9f1bfcf0210dfb17",
+          "format": "zip",
+          "entry_point": "gwz.exe"
+        },
+        {
+          "platform": "linux-aarch64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-aarch64-unknown-linux-gnu.tar.xz",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.9.2/gwz-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "9af510e989623d42084fa4963e22678f8988a32c3576c6787c47057e8410ffec",
+          "format": "tar.xz",
+          "entry_point": "gwz"
+        },
+        {
+          "platform": "macos-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-x86_64-apple-darwin.tar.xz",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.9.2/gwz-x86_64-apple-darwin.tar.xz",
+          "sha256": "47f698d456d97980668bab4558b053ecf92eb208edfa828571ed2fec3d427b20",
+          "format": "tar.xz",
+          "entry_point": "gwz"
+        },
+        {
+          "platform": "macos-aarch64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-aarch64-apple-darwin.tar.xz",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.9.2/gwz-aarch64-apple-darwin.tar.xz",
+          "sha256": "1c365d6ca7a959d9f8c0513c5ee0d368288133f82655d040239651b88095dc03",
+          "format": "tar.xz",
+          "entry_point": "gwz"
+        },
+        {
+          "platform": "windows-aarch64",
+          "support": "unsupported",
+          "reason": "The v0.9.2 cargo-dist target matrix did not distribute Windows arm64.",
+          "substitute_evidence": ["v0.9.2 source tag", "Windows x86_64 artifact-smoke lane"]
+        }
+      ]
+    },
+    {
+      "id": "gwz-py-v0.9.2",
+      "surface": "gwz-py",
+      "release": "v0.9.2",
+      "decode_generation": "pre-v0-record-reader",
+      "runtime": "cpython-3.10-abi3",
+      "python": {
+        "version": "3.10",
+        "abi": "cp310-abi3",
+        "native_extension": "gwz._gwz_core"
+      },
+      "supported_record_versions": [],
+      "envelope_behavior": {
+        "gwz.merge-operation/v0@0": "not decoded; the distributed one-shot Python/native merge surface has no coordinated-operation record guard",
+        "unsupported": "not applicable because this generation has no durable-record dispatcher"
+      },
+      "commands": {
+        "workspace-status": "available",
+        "legacy-branch-merge": "available",
+        "merge-start": "unavailable",
+        "merge-status": "unavailable",
+        "merge-continue": "unavailable",
+        "merge-abort": "unavailable",
+        "merge-preserve": "unavailable",
+        "merge-gc": "unavailable"
+      },
+      "command_absence_evidence": {
+        "merge-start": "The distributed parser has no `gwz-py merge` subcommand; its one-shot integration surface is `gwz-py branch --merge <ref>`.",
+        "merge-status": "The distributed parser has no merge-status form; exercise workspace status and legacy branch merge against an isolated open-record fixture.",
+        "merge-continue": "The distributed parser has no continue form; exercise workspace status and legacy branch merge against an isolated open-record fixture.",
+        "merge-abort": "The distributed parser has no abort form; exercise workspace status and legacy branch merge against an isolated open-record fixture.",
+        "merge-preserve": "The distributed parser has no preserve form; exercise workspace status and legacy branch merge against an isolated open-record fixture.",
+        "merge-gc": "The distributed parser has no merge-record GC form; the fixture proves the unknown open record remains untouched."
+      },
+      "projections": ["human", "json", "jsonl"],
+      "invocation": ["{entry_point}", "--root", "{workspace}"],
+      "artifacts": [
+        {
+          "platform": "linux-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.9.2-cp310-abi3-manylinux_2_39_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/82/17/8ab0bf7633ba8623e54042a46b5c024fc8279f9c7701e0abeb4152bbcf2d/gwz-0.9.2-cp310-abi3-manylinux_2_39_x86_64.whl",
+          "sha256": "b90dd4869825f7f00baf1ffd104435469fb582748ebeafb15dc77050bd401900",
+          "format": "wheel",
+          "entry_point": "gwz-py",
+          "wheel_tag": "cp310-abi3-manylinux_2_39_x86_64"
+        },
+        {
+          "platform": "windows-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.9.2-cp310-abi3-win_amd64.whl",
+          "url": "https://files.pythonhosted.org/packages/b6/e6/db4ee396d828d70a8d89a637955e3faf3bd322271906beb57cd63e98d320/gwz-0.9.2-cp310-abi3-win_amd64.whl",
+          "sha256": "200a5f732cffc91c4adaab0683202aaac4cf06f6375d25630ee7bea847829b50",
+          "format": "wheel",
+          "entry_point": "gwz-py.exe",
+          "wheel_tag": "cp310-abi3-win_amd64"
+        },
+        {
+          "platform": "linux-aarch64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.9.2-cp310-abi3-manylinux_2_39_aarch64.whl",
+          "url": "https://files.pythonhosted.org/packages/d9/61/31c02393dead1cc3a644c6d51c701b8cfd83f7af1cf877e96a79ff92c0ee/gwz-0.9.2-cp310-abi3-manylinux_2_39_aarch64.whl",
+          "sha256": "fbc6b0a2d9cd8f524ab5c4d8b6232c8664047b51d41e13c120e5754f07b02aba",
+          "format": "wheel",
+          "entry_point": "gwz-py",
+          "wheel_tag": "cp310-abi3-manylinux_2_39_aarch64"
+        },
+        {
+          "platform": "macos-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.9.2-cp310-abi3-macosx_10_12_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/17/f8/217d1faa4017621abe95cb70845dc89e2e36e46fa7216e9309b16436bcb0/gwz-0.9.2-cp310-abi3-macosx_10_12_x86_64.whl",
+          "sha256": "ae9f7e260319ae0834cb79ba4918b7ca672e8537811b3e5570c3bad5992a13a5",
+          "format": "wheel",
+          "entry_point": "gwz-py",
+          "wheel_tag": "cp310-abi3-macosx_10_12_x86_64"
+        },
+        {
+          "platform": "macos-aarch64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.9.2-cp310-abi3-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/d2/85/cdc967393bed9a3abe9cdea7bfd1338b7f4d3bfdf2904c17474012a39865/gwz-0.9.2-cp310-abi3-macosx_11_0_arm64.whl",
+          "sha256": "7a933c9044d306c4ae7cd6327d8dc4bf378250bae14ab98e44557ddae3ee871a",
+          "format": "wheel",
+          "entry_point": "gwz-py",
+          "wheel_tag": "cp310-abi3-macosx_11_0_arm64"
+        },
+        {
+          "platform": "windows-aarch64",
+          "support": "unsupported",
+          "reason": "The v0.9.2 wheel build matrix did not distribute Windows arm64.",
+          "substitute_evidence": ["v0.9.2 source tag", "distributed Windows x86_64 wheel smoke lane"]
+        }
+      ]
+    },
+    {
+      "id": "rust-cli-v0.10.0",
+      "surface": "rust-cli",
+      "release": "v0.10.0",
+      "decode_generation": "v0-field-unknown",
+      "runtime": "native",
+      "supported_record_versions": [0],
+      "envelope_behavior": {
+        "gwz.merge-operation/v0@0": "decode while treating later additive baseline evidence fields as unknown",
+        "unsupported": "capture exact released schema-mismatch result before any later-version writer activates"
+      },
+      "commands": {
+        "merge-start": "available",
+        "merge-status": "available",
+        "merge-continue": "available",
+        "merge-abort": "available",
+        "merge-preserve": "available",
+        "merge-gc": "available"
+      },
+      "projections": ["human", "json", "jsonl"],
+      "invocation": ["{executable}", "--root", "{workspace}"],
+      "artifacts": [
+        { "platform": "linux-x86_64", "support": "required", "status": "verified", "name": "gwz-x86_64-unknown-linux-gnu.tar.xz", "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.0/gwz-x86_64-unknown-linux-gnu.tar.xz", "sha256": "9cc33ea35997e658efb23752a43fa465ceed04431221c070d3b16a0c70514766", "format": "tar.xz", "entry_point": "gwz" },
+        { "platform": "windows-x86_64", "support": "required", "status": "verified", "name": "gwz-x86_64-pc-windows-msvc.zip", "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.0/gwz-x86_64-pc-windows-msvc.zip", "sha256": "1b4616efa9f1b0f6a69c3fbb401f3cbd8ffa264a79e0cc2268a759f7b28a106e", "format": "zip", "entry_point": "gwz.exe" },
+        { "platform": "linux-aarch64", "support": "required", "status": "verified", "name": "gwz-aarch64-unknown-linux-gnu.tar.xz", "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.0/gwz-aarch64-unknown-linux-gnu.tar.xz", "sha256": "11183fd62c71fcfe6bc11ae296a678aa3f1b23928dc636d9bfff4ed361f08ea8", "format": "tar.xz", "entry_point": "gwz" },
+        { "platform": "macos-x86_64", "support": "required", "status": "verified", "name": "gwz-x86_64-apple-darwin.tar.xz", "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.0/gwz-x86_64-apple-darwin.tar.xz", "sha256": "eaf003fba453612219c5c54e4c195a2fc81aa0b6829919f25e0f8e479d8f684c", "format": "tar.xz", "entry_point": "gwz" },
+        { "platform": "macos-aarch64", "support": "required", "status": "verified", "name": "gwz-aarch64-apple-darwin.tar.xz", "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.0/gwz-aarch64-apple-darwin.tar.xz", "sha256": "3ae3a77d7f0dc822d0eb4248ed1935df794800f07c19c543426b321ebcbc5084", "format": "tar.xz", "entry_point": "gwz" },
+        { "platform": "windows-aarch64", "support": "unsupported", "reason": "The v0.10.0 cargo-dist target matrix did not distribute Windows arm64.", "substitute_evidence": ["v0.10.0 source tag", "Windows x86_64 artifact-smoke lane"] }
+      ]
+    },
+    {
+      "id": "gwz-py-v0.10.0",
+      "surface": "gwz-py",
+      "release": "v0.10.0",
+      "decode_generation": "v0-field-unknown",
+      "runtime": "cpython-3.10-abi3",
+      "python": { "version": "3.10", "abi": "cp310-abi3", "native_extension": "gwz._gwz_core" },
+      "supported_record_versions": [0],
+      "envelope_behavior": {
+        "gwz.merge-operation/v0@0": "the source tag contains this decoder, but no distributed gwz-py v0.10.0 package exists",
+        "unsupported": "no distributed entry point"
+      },
+      "commands": {
+        "merge-start": "available",
+        "merge-status": "available",
+        "merge-continue": "available",
+        "merge-abort": "available",
+        "merge-preserve": "available",
+        "merge-gc": "available"
+      },
+      "projections": ["human", "json", "jsonl"],
+      "invocation": ["{entry_point}", "--root", "{workspace}"],
+      "artifacts": [
+        { "platform": "linux-x86_64", "support": "unsupported", "reason": "PyPI has no gwz v0.10.0 release.", "substitute_evidence": ["v0.10.0 Rust reader", "v0.10.0 gwz-py source tag"] },
+        { "platform": "windows-x86_64", "support": "unsupported", "reason": "PyPI has no gwz v0.10.0 release.", "substitute_evidence": ["v0.10.0 Rust reader", "v0.10.0 gwz-py source tag"] },
+        { "platform": "linux-aarch64", "support": "unsupported", "reason": "PyPI has no gwz v0.10.0 release.", "substitute_evidence": ["v0.10.0 Rust reader", "v0.10.0 gwz-py source tag"] },
+        { "platform": "macos-x86_64", "support": "unsupported", "reason": "PyPI has no gwz v0.10.0 release.", "substitute_evidence": ["v0.10.0 Rust reader", "v0.10.0 gwz-py source tag"] },
+        { "platform": "macos-aarch64", "support": "unsupported", "reason": "PyPI has no gwz v0.10.0 release.", "substitute_evidence": ["v0.10.0 Rust reader", "v0.10.0 gwz-py source tag"] },
+        { "platform": "windows-aarch64", "support": "unsupported", "reason": "PyPI has no gwz v0.10.0 release and the source build matrix did not target Windows arm64.", "substitute_evidence": ["v0.10.0 Rust reader", "v0.10.0 gwz-py source tag"] }
+      ]
+    },
+    {
+      "id": "rust-cli-v0.10.2",
+      "surface": "rust-cli",
+      "release": "v0.10.2",
+      "decode_generation": "v0-mode-known-recovery-dormant",
+      "runtime": "native",
+      "supported_record_versions": [0],
+      "envelope_behavior": {
+        "gwz.merge-operation/v0@0": "decode with released v0.10.2 mode-known recovery-dormant behavior",
+        "unsupported": "capture exact released schema-mismatch result before any later-version writer activates"
+      },
+      "commands": {
+        "merge-start": "available",
+        "merge-status": "available",
+        "merge-continue": "available",
+        "merge-abort": "available",
+        "merge-preserve": "available",
+        "merge-gc": "available"
+      },
+      "projections": ["human", "json", "jsonl"],
+      "invocation": ["{executable}", "--root", "{workspace}"],
+      "artifacts": [
+        {
+          "platform": "linux-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-x86_64-unknown-linux-gnu.tar.xz",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.2/gwz-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "6a6e6baeb36e2e20bbde05af7a64bda86c150ee911e571b9211cb21ca63d2638",
+          "format": "tar.xz",
+          "entry_point": "gwz"
+        },
+        {
+          "platform": "windows-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-x86_64-pc-windows-msvc.zip",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.2/gwz-x86_64-pc-windows-msvc.zip",
+          "sha256": "cde89c518d5b69922f39ae157ac8ac21864df1add6a189ac2e66d2076241c501",
+          "format": "zip",
+          "entry_point": "gwz.exe"
+        },
+        {
+          "platform": "linux-aarch64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-aarch64-unknown-linux-gnu.tar.xz",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.2/gwz-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "243158f45d10945a7f06f3faced639a18ba69a6987fe2bd25a8d1080c58a20da",
+          "format": "tar.xz",
+          "entry_point": "gwz"
+        },
+        {
+          "platform": "macos-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-x86_64-apple-darwin.tar.xz",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.2/gwz-x86_64-apple-darwin.tar.xz",
+          "sha256": "d5ebbb5fb425c5b52676e534ed39d897950263b5e654ceb7d2a27b6fd73e8e73",
+          "format": "tar.xz",
+          "entry_point": "gwz"
+        },
+        {
+          "platform": "macos-aarch64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-aarch64-apple-darwin.tar.xz",
+          "url": "https://github.com/owebeeone/gwz-cli/releases/download/v0.10.2/gwz-aarch64-apple-darwin.tar.xz",
+          "sha256": "b8be59275306546285e14fdbdc04bccd1934b03048698b919896bd22edfd65e4",
+          "format": "tar.xz",
+          "entry_point": "gwz"
+        },
+        {
+          "platform": "windows-aarch64",
+          "support": "unsupported",
+          "reason": "The v0.10.2 cargo-dist target matrix did not distribute Windows arm64.",
+          "substitute_evidence": ["v0.10.2 source tag", "Windows x86_64 artifact-smoke lane"]
+        }
+      ]
+    },
+    {
+      "id": "gwz-py-v0.10.2",
+      "surface": "gwz-py",
+      "release": "v0.10.2",
+      "decode_generation": "v0-mode-known-recovery-dormant",
+      "runtime": "cpython-3.10-abi3",
+      "python": {
+        "version": "3.10",
+        "abi": "cp310-abi3",
+        "native_extension": "gwz._gwz_core"
+      },
+      "supported_record_versions": [0],
+      "envelope_behavior": {
+        "gwz.merge-operation/v0@0": "decode through the distributed v0.10.2 native extension with mode-known recovery-dormant behavior",
+        "unsupported": "capture exact released bridge and rendering result before any later-version writer activates"
+      },
+      "commands": {
+        "merge-start": "available",
+        "merge-status": "available",
+        "merge-continue": "available",
+        "merge-abort": "available",
+        "merge-preserve": "available",
+        "merge-gc": "available"
+      },
+      "projections": ["human", "json", "jsonl"],
+      "invocation": ["{entry_point}", "--root", "{workspace}"],
+      "artifacts": [
+        {
+          "platform": "linux-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.10.2-cp310-abi3-manylinux_2_39_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/22/69/c03b6216f9e4d798e3fe3a3066ff2bc6518ad53afed188bd46a5455a4776/gwz-0.10.2-cp310-abi3-manylinux_2_39_x86_64.whl",
+          "sha256": "8a879f36eee53ac43a102a23ce823752c311cc022c4a26fabb27188a3c89b616",
+          "format": "wheel",
+          "entry_point": "gwz-py",
+          "wheel_tag": "cp310-abi3-manylinux_2_39_x86_64"
+        },
+        {
+          "platform": "windows-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.10.2-cp310-abi3-win_amd64.whl",
+          "url": "https://files.pythonhosted.org/packages/8d/8f/c7c23f2ad3b3f6358f7a64ae6ebc1b4d3311c525ffd563e178799adefa76/gwz-0.10.2-cp310-abi3-win_amd64.whl",
+          "sha256": "95befd7abab04a10e4cd349dd064dc3c82e93c64177da27653449c23a0f5b758",
+          "format": "wheel",
+          "entry_point": "gwz-py.exe",
+          "wheel_tag": "cp310-abi3-win_amd64"
+        },
+        {
+          "platform": "linux-aarch64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.10.2-cp310-abi3-manylinux_2_39_aarch64.whl",
+          "url": "https://files.pythonhosted.org/packages/d8/80/da43bcf59f18c90db7738478eb5270a38d237113d10bab961a2f77579ca3/gwz-0.10.2-cp310-abi3-manylinux_2_39_aarch64.whl",
+          "sha256": "2c2616c5e67bddaa45dc6bb61f26da34562ad9e71cf7deca1741bc28544b9c77",
+          "format": "wheel",
+          "entry_point": "gwz-py",
+          "wheel_tag": "cp310-abi3-manylinux_2_39_aarch64"
+        },
+        {
+          "platform": "macos-x86_64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.10.2-cp310-abi3-macosx_10_12_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/59/a3/e1867775ca09d6b0f47f87a3eb6e7d99904309b1cd26393e6f17d15fc1a6/gwz-0.10.2-cp310-abi3-macosx_10_12_x86_64.whl",
+          "sha256": "738d5f035de1ddea75819cfd1e68d3ce7d891bfa0007cc29f8132187a5288220",
+          "format": "wheel",
+          "entry_point": "gwz-py",
+          "wheel_tag": "cp310-abi3-macosx_10_12_x86_64"
+        },
+        {
+          "platform": "macos-aarch64",
+          "support": "required",
+          "status": "verified",
+          "name": "gwz-0.10.2-cp310-abi3-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/16/13/a0bb994fff36fd1895a4dc47fd972098d992805f62011b3d4b090b110ede/gwz-0.10.2-cp310-abi3-macosx_11_0_arm64.whl",
+          "sha256": "d769fa21ca0cf512de34eb9c65ebc5f210f104dc57df13efeb2778e582bddc18",
+          "format": "wheel",
+          "entry_point": "gwz-py",
+          "wheel_tag": "cp310-abi3-macosx_11_0_arm64"
+        },
+        {
+          "platform": "windows-aarch64",
+          "support": "unsupported",
+          "reason": "The v0.10.2 wheel build matrix did not distribute Windows arm64.",
+          "substitute_evidence": ["v0.10.2 source tag", "distributed Windows x86_64 wheel smoke lane"]
+        }
+      ]
+    }
+  ]
+}
