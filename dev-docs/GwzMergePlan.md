@@ -1,6 +1,6 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-26; the corrected M2b and first public
+Status: **active** (revised 2026-07-30; the corrected M2b and first public
 member-merge release gate are complete, and the god-file refactor prerequisite
 has passed its full technical gate and is committed). Owner: Gianni. M2c
 explicit workspace-root participation and M3 preservation, retention, and GC
@@ -13,12 +13,22 @@ Windows, macOS, Linux x86, and Linux arm64 platform evidence. The uncommitted
 change set is ready for the normal commit recorded in
 `../../dev-docs/GwzMergeM4-RemPlan.md`.
 
+The next release slice is M5a custom messages only. `--no-ff` is not writable
+or releasable under record v0; it is implemented as M5b behind the disabled v1
+writer and activates only with A1 after the I1/I2 and R4a/R3/R4b sequence.
+
 This plan implements `GwzMergeDesign.md`, including the dispositions in
 `GwzMergeDesign-ReviewF5.md`, `GwzMergeDesign-ReviewF5-2.md`, and
 `GwzMergePlan-ReviewF5.md`. The design is the behavioral authority for merge.
 `GWZDesign.md` remains authoritative for the overall workspace model, and
 `GWZRequirements.md` remains the baseline for required behavior. This plan owns
 implementation sequencing and public release boundaries.
+
+The M5–M8 durability architecture and revised release sequence are specified
+by `../../dev-docs/GwzM5-8Refactor.md`, including numbered Review 8 and the
+independent F5/F5-2 corrections. This plan and `GwzMergeDesign.md` use the same
+M5a/M5b/A1 and I6/I7/I8 names; the document-consistency gate below prevents
+either document from silently reintroducing a v0 no-ff path.
 
 Plan-review disposition: F2, F3, and F5 are accepted. F1 and F4 were based on
 an older design revision: the current design already specifies explicit
@@ -64,10 +74,11 @@ The implementation must provide:
   `BranchRequest { op: merge }` returns a typed deprecation error.
 
 Conflict prediction and selection-wide `--ff-only` form the required M4
-completion release. Git-expected `--no-ff` and custom messages follow in M5.
-Target-branch switching through `--into` is isolated in M6. Exact per-member
-snapshot sources follow in M7, and explicitly designed merge partial/skip
-semantics follow in M8.
+completion release. V0-safe custom messages follow in M5a. Deterministic
+`--no-ff` is M5b under v1 and activates only at A1; it has no independently
+releasable v0 path. Target-branch switching through `--into` is isolated in
+I6/M6/A2. Exact per-member snapshot sources follow through I7/M7/A3, and
+explicitly designed merge partial/skip semantics follow through I8/M8/A4.
 
 ### 1.1 Release boundaries
 
@@ -84,11 +95,16 @@ are not promises that the intermediate behavior is suitable for users.
   gate and are committed.
 - M4 ships conflict prediction and selection-wide `--ff-only` together as the
   next required merge-completion release.
-- M5 ships Git-expected `--no-ff` and custom-message behavior only after M4.
-- M6 owns `--into` and cannot begin implementation until coordinated
-  switch-plus-merge rollback has an accepted design.
-- M7 owns exact per-member snapshot sources.
-- M8 owns merge partial/skip semantics and cannot begin implementation until
+- M5a ships only `-m`/custom-message behavior under v0 after M4 and rejects
+  `--no-ff` before record creation.
+- I1/I2, R4a, disabled-writer R3, R4b, and disabled M5b precede A1.
+- A1 atomically activates the v1 writer, eligible v0 migration, and
+  deterministic `--no-ff` start surface.
+- I6/M6/A2 owns `--into` and cannot begin implementation until coordinated
+  switch-plus-merge rollback has an accepted v2 design.
+- I7/M7/A3 owns exact per-member snapshot sources and the v3
+  wire/archive/downgrade contract.
+- I8/M8/A4 owns merge partial/skip semantics and cannot begin implementation until
   participant state, exit status, composition, root, and machine-reporting
   behavior have an accepted design.
 
@@ -198,11 +214,25 @@ Initial budgets are:
 | M3-C2 preservation/GC drivers | ≤350 lines |
 | M4-A conflict prediction | ≤500 lines |
 | M4-B selection-wide `--ff-only` | ≤500 lines |
-| M5-A `--no-ff` | ≤500 lines |
-| M5-B custom merge messages | ≤350 lines |
-| M6 `--into` design/interface slice | ≤500 lines |
-| M7 exact per-member snapshot sources | ≤500 lines |
-| M8 partial/skip design/interface slice | ≤500 lines |
+| R0 characterization/retained-reader foundation | ≤500 lines per harness or fixture slice |
+| R1 runtime/store or participant-policy extraction | ≤500 lines per ownership slice |
+| R2a v0-safe integration/message seam | ≤500 lines |
+| M5a custom merge messages | ≤350 lines |
+| I1 v1 directional memo | documentation/interface-only; ≤300 lines |
+| I2 v1 record/protocol checkpoint | ≤500 lines per independently reviewed interface slice |
+| R4a acceptance-semantics extraction | ≤500 lines per pure semantic slice |
+| R3 v0/v1 record, adapter, archive, and upgrade machinery | ≤500 lines per store/adapter slice |
+| R4b accepted-workspace persistence/finalizer consumption | ≤500 lines per finalization slice |
+| M5b deterministic v1 `--no-ff`, writer disabled | ≤500 lines |
+| A1 v1 writer/migration/no-ff activation | ≤250 lines |
+| I6/M6 v2 `--into` checkpoint/implementation | ≤500 lines per interface or implementation slice |
+| I7/M7 v3 snapshot checkpoint/implementation | ≤500 lines per interface or implementation slice |
+| I8/M8 v4 partial/skip checkpoint/implementation | ≤500 lines per interface or implementation slice |
+
+R0 also freezes the more precise production/test LOC and file ceilings required
+by `GwzM5-8Refactor.md`. Moved LOC is reported separately. A package stops for
+scope review when it exceeds a frozen ceiling by more than 20%, adds an
+unlisted production module, or changes its declared wire/protocol delta.
 
 ## 3. Mandatory engineering rules
 
@@ -497,16 +527,28 @@ flowchart TD
     G3 --> M4B["M4-B: selection-wide --ff-only"]
     M4A --> G4["M4 required-completion release gate"]
     M4B --> G4
-    G4 --> M5A["M5-A: --no-ff"]
-    G4 --> M5B["M5-B: custom messages"]
-    M5A --> G5["M5 Git-expected release gate"]
-    M5B --> G5
-    G5 --> M6["M6: --into design and implementation"]
-    M6 --> G6["M6 target-branch release gate"]
-    G6 --> M7["M7: exact snapshot sources"]
-    M7 --> G7["M7 snapshot-source release gate"]
-    G7 --> M8["M8: explicit partial/skip policy"]
-    M8 --> G8["M8 partial/skip release gate"]
+    G4 --> R0["R0: characterization and retained readers"]
+    R0 --> R1["R1: pure policy and ownership extraction"]
+    R1 --> R2A["R2a: v0-safe integration/message seam"]
+    R2A --> M5A["M5a: custom messages only"]
+    M5A --> G5A["M5a v0 custom-message release gate"]
+    G5A --> I1["I1: v1 directional memo"]
+    I1 --> I2["I2: v1 record/protocol checkpoint"]
+    I2 --> R4A["R4a: acceptance-semantics extraction"]
+    R4A --> R3["R3: v0/v1 adapters; writer disabled"]
+    R3 --> R4B["R4b: persisted acceptance consumption"]
+    R4B --> M5B["M5b: deterministic v1 --no-ff; disabled"]
+    M5B --> A1["A1: activate v1 writer, migration, and --no-ff"]
+    A1 --> G1V["A1 v1 integration/no-ff release gate"]
+    G1V --> I6["I6: v2 branch checkpoint"]
+    I6 --> M6["M6: --into implementation"]
+    M6 --> A2["A2: v2 target-branch release gate"]
+    A2 --> I7["I7: v3 snapshot checkpoint"]
+    I7 --> M7["M7: exact snapshot sources"]
+    M7 --> A3["A3: v3 snapshot-source release gate"]
+    A3 --> I8["I8: v4 partial/skip checkpoint"]
+    I8 --> M8["M8: explicit partial/skip policy"]
+    M8 --> A4["A4: v4 partial/skip release gate"]
 ```
 
 ## 7. Wave M0 — first-class start
@@ -1536,43 +1578,105 @@ green across member-only, root-only, and mixed selections. The full Rust,
 Python, generated protocol/reference, strict Clippy, formatting, Bazel, and
 diff-hygiene gates apply.
 
-### Wave M5 — Git-expected controls
+### Wave M5a — v0-safe custom messages
 
-M5 follows the M4 release and contains:
+M5a follows the M4 release and contains only `-m`/custom merge messages.
+Existing `participant.commit_message` bytes remain the v0 recovery authority;
+R2a alone freezes the exact per-participant message, separator/normalization,
+and mandatory GWZ recovery identity before M5a implementation.
 
-- M5-A: `--no-ff`, preserving up-to-date no-ops while preparing and journaling
-  an exact two-parent commit for normally fast-forwardable participants; and
-- M5-B: `-m`/custom merge messages, with exact per-participant messages frozen
-  before mutation and mandatory GWZ recovery identity retained.
+The pre-release packages and ownership are:
 
-The two additions share an interface checkpoint and may be implemented in
-parallel afterward. They ship together only after restart reconciliation,
-continue, abort, preservation, root finalization, and driver parity cover both.
+- R0, lead/test-infrastructure owned: characterize every legal v0 state,
+  establish checksum-pinned retained Rust/Python readers, freeze the change
+  ledger, and add the cross-document consistency gate without production
+  behavior changes;
+- R1, lead/core owned by the §13–§14 map in
+  `../../dev-docs/GwzM5-8Refactor.md`: move dispatch, open-gate,
+  mutation-guard, store/persistence, and participant policy to their named
+  owners without record, protocol, event, or behavior changes;
+- R2a, core-lifecycle owned: add only the existing integration/message seam,
+  preserve the v0 record bytes, and freeze the exact custom-message contract;
+- M5a, lifecycle plus driver/parity owners in disjoint files: implement and
+  render custom messages through R2a, update public capability text to expose
+  custom messages, and leave no-ff in the deferred-feature list.
+
+M5a rejects `--no-ff` before record creation. No v0 writer emits
+`mode: no_ff`, no v0 no-ff record is migrated, and help/capability
+documentation continues to mark `--no-ff` unavailable.
+
+#### M5a release gate
+
+The first M5 release gate covers custom messages only. It requires exact
+message bytes across start/restart/continue/abort/preservation/root
+finalization, Rust/Python human/JSON/JSONL parity, actual v0.9.2/v0.10.2
+Rust and distributed Python reader compatibility, and the full existing
+technical gate. It also runs the
+document-consistency check proving that this plan, `GwzMergeDesign.md`,
+`../../dev-docs/GwzM5-8Refactor.md`, and public capability/deferred-feature
+text do not make no-ff writable or releasable in v0.
+
+### V1/A1 durability boundary and M5b no-ff
+
+After the M5a release gate, work is strictly sequential at the shared
+boundaries:
+
+1. I1, lead owned, freezes only the M6 checkout-evidence and M8 lock-domain
+   directions needed by v1.
+2. I2, lead/interface owned, freezes the v1 envelope, adapters, accepted
+   workspace, append-only protocol codes, retained-reader contract, and
+   concrete v0/v1 archive projections.
+3. R4a, finalization-semantics owned, extracts current
+   acceptance/finalization decisions without changing behavior.
+4. R3, store/compatibility owned, implements v0/v1 record, archive,
+   unknown-field, and atomic migration machinery with the production v1 writer
+   and migration dispatch unreachable.
+5. R4b, finalization owned, makes every finalization and recovery path consume
+   persisted acceptance.
+6. M5b splits exact prepared-commit work between the Git backend owner and
+   integration/reconciliation work in the core lifecycle owner; it prepares
+   deterministic two-parent no-ff actions under v1 while the writer and start
+   surface remain unreachable.
+7. A1, lead owned, alone activates the v1 writer, the closed eligible-v0
+   migration path, and `--no-ff` start surface together.
+
+M5b has no independently releasable v0 path. A1 is the v1 release gate and
+must prove every v0 reader fails closed on v1, the installed finalizer can
+resume every v1 state it writes, `RecoveryRequired`/operation-drift migration
+is representation-only, and ordinary/custom/no-ff new operations all use the
+v1 writer floor.
 
 ### Wave M6 — explicit target branch
 
-M6 owns `--into`. Implementation is blocked until a separately reviewed design
-defines selection-wide branch existence/creation policy, original and target
-branch evidence, detached-HEAD behavior, journaled switching, restart
-reconciliation, and checked reverse-order rollback. Fault injection is required
-after every switch, branch creation, merge, and restoration mutation.
+I6 follows the accepted A1 boundary and freezes v2 before M6. M6 owns
+`--into`. Implementation is blocked until I6 defines selection-wide branch
+existence/creation policy, original and target branch evidence, detached-HEAD
+behavior, journaled switching, restart reconciliation, checked reverse-order
+rollback, v2 archive projection, unknown-field retirement, and actual A1
+downgrade fixtures. Fault injection is required after every switch, branch
+creation, merge, and restoration mutation. A2 alone activates the v2 writer.
 
 ### Wave M7 — exact per-member snapshot sources
 
-M7 adds the GWZ-specific `+<snapshot>` source form. Complete preflight resolves
-and freezes one exact source commit per selected participant before mutation.
-The durable record retains the snapshot identity and resolved commits so
-continue, abort, and restart never depend on a later read of a changed or
-deleted snapshot. Missing participants, missing recorded commits, unavailable
-objects, and explicit-root coverage require typed selection-wide handling.
+I7 follows A2 and freezes the v3 source, wire, archive projection,
+unknown-field retirement, and actual A1/v2 downgrade fixtures before M7. M7
+adds the GWZ-specific `+<snapshot>` source form. Complete preflight resolves and
+freezes one exact source commit per selected participant before mutation. The
+durable record retains the snapshot identity and resolved commits so continue,
+abort, and restart never depend on a later read of a changed or deleted
+snapshot. Missing participants, missing recorded commits, unavailable objects,
+and explicit-root coverage require typed selection-wide handling. A3 alone
+activates the v3 writer.
 
 ### Wave M8 — explicit partial/skip policy
 
-M8 owns opt-in merge partial/skip behavior. Implementation is blocked until a
-separately reviewed design defines skippable causes, durable participant
-states, exit status, selection-wide reporting, lock composition, finalization,
-root behavior, continue/abort scope, and preservation ownership. Skipping never
-becomes the default for a missing source or failed participant.
+I8 follows A3 and freezes v4 before M8. M8 owns opt-in merge partial/skip
+behavior. Implementation is blocked until I8 defines skippable causes, durable
+participant states, exit status, selection-wide reporting, lock composition,
+finalization, root behavior, continue/abort scope, preservation ownership, v4
+archive projection, unknown-field retirement, and actual A1/v2/v3 downgrade
+fixtures. Skipping never becomes the default for a missing source or failed
+participant. A4 alone activates the v4 writer.
 
 ## 14. Test architecture
 
@@ -1588,7 +1692,11 @@ Cover:
 - Rust/Python request and response parity;
 - deprecated CLI aliases producing merge action and response types;
 - the retained `BranchOp.merge` numeric value and a direct protocol request
-  returning `deprecated_operation` without invoking the merge handler.
+  returning `deprecated_operation` without invoking the merge handler;
+- pinned append-only v1 compatibility/recovery error codes and identical
+  human/JSON/JSONL projection; and
+- only the archive projection discriminants approved for the active semantic
+  wave—V1 at A1, V2 at A2, V3 at A3, and V4 at A4.
 
 ### 14.2 Pure lifecycle tests
 
@@ -1681,6 +1789,26 @@ The lead records commands and outcomes in the handoff or change description.
 Tests are not considered green when generated protocol or generated CLI docs
 are stale.
 
+R0 adds and every M5a–A4 gate runs the merge document-consistency check. It
+compares this plan, `GwzMergeDesign.md`,
+`../../dev-docs/GwzM5-8Refactor.md`, and current public
+capability/deferred-feature documentation against one canonical milestone
+matrix. The check fails if:
+
+- M5a includes, writes, advertises, or releases `--no-ff`;
+- M5b has a v0 or independently releasable path;
+- A1 does not activate the v1 writer, eligible migration, and no-ff surface
+  together;
+- M6 starts before accepted A1/I6; or
+- the I6/I7/I8 to v2/v3/v4 sequence differs between documents.
+
+Record-changing gates additionally run the checksum-pinned retained-reader
+matrix from `GwzM5-8Refactor.md`: actual Rust CLI and distributed `gwz-py`
+artifacts on the required Linux x86_64 and Windows x86_64 behavioral lanes,
+plus build/package evidence for every supported distribution target including
+macOS and Linux arm64. Missing required artifacts, runtimes, explicit
+unsupported-tuple declarations, or lanes fail rather than skip the gate.
+
 ## 16. Agent handoff contract
 
 Every agent returns:
@@ -1723,7 +1851,13 @@ discovers that it requires:
 - adding a second compatibility implementation;
 - adding partial selection, adoption, force-abort, or automatic preservation
   reapplication;
-- weakening checked-ref or postcondition verification.
+- weakening checked-ref or postcondition verification;
+- making `mode: no_ff` writable under v0 or exposing `--no-ff` before A1;
+- compiling a V2–V4 archive projection before its I6/I7/I8 checkpoint;
+- adding a typed compatibility result without a pinned append-only protocol
+  code; or
+- making this plan, the merge design, refactor proposal, and public
+  capability/deferred-feature text disagree on a release boundary.
 
 These are design decisions, not local implementation details.
 
@@ -1743,10 +1877,14 @@ marked as release gates authorize a public merge release.
 | M2c | Explicit root works through start, conflict, continue, finalization, drift, and abort without relying on valid live metadata. | Follow-up explicit-root release gate; may be bundled with M3. |
 | M3 | Preserve-abort, evidence retention, archived status, and GC are safe, explicit, and recoverable. | **Next lifecycle release gate:** preservation, retention, and cleanup. |
 | M4 | Dry-run predicts conflicts without mutation and `--ff-only` rejects selection-wide before mutation. | **Required merge-completion release gate.** |
-| M5 | `--no-ff` and custom messages survive recovery and preserve Rust/Python parity. | Git-expected behavior release gate. |
-| M6 | `--into` switches and restores target branches through a reviewed, durable, fault-tested lifecycle. | Separate target-branch release gate. |
-| M7 | Snapshot identity and exact per-participant sources remain durable and recoverable after the snapshot changes or disappears. | GWZ snapshot-source release gate. |
-| M8 | Explicit skips have complete state, exit-status, composition, recovery, and machine-output semantics. | Separate partial/skip policy release gate. |
+| R0/R1/R2a | M4 behavior is characterized, current policy/ownership is centralized, and the v0-safe integration/message seam freezes exact message bytes without a record change. | Internal prerequisite for M5a. |
+| M5a | Custom messages survive recovery and preserve Rust/Python parity; `--no-ff` rejects before record creation and remains unavailable. | **V0 custom-message release gate.** |
+| I1/I2 | V1 direction, envelope, record, protocol codes, retained readers, migration eligibility, and concrete v0/v1 archive projection are frozen and re-reviewed. | Internal v1 interface checkpoint. |
+| R4a/R3/R4b/M5b | Acceptance semantics are centralized; v0/v1 machinery and deterministic no-ff are installed with the production writer/migration/no-ff surface unreachable until A1. | Internal v1 implementation checkpoint. |
+| A1 | The installed finalizer resumes every v1 state; the v1 writer, eligible v0 migration, and deterministic `--no-ff` start surface activate together. | **V1 integration/no-ff release gate.** |
+| I6/M6/A2 | V2 is frozen, `--into` switches/restores through a reviewed durable lifecycle, downgrade/archive matrices pass, and A2 activates v2. | Separate target-branch release gate. |
+| I7/M7/A3 | V3 source/wire/archive/retirement contracts are frozen; exact snapshot sources remain recoverable after snapshot change/deletion; A3 activates v3. | GWZ snapshot-source release gate. |
+| I8/M8/A4 | V4 is frozen; explicit skips have complete state, exit-status, composition, recovery, and machine-output semantics; A4 activates v4. | Separate partial/skip policy release gate. |
 
 ## 19. Recommended next implementation run
 
@@ -1755,6 +1893,13 @@ M4-I0, M4-A, and M4-B are integrated, the independent-review remediation in
 closed, and the corrected complete local and independent re-review gates are
 green. The next run is:
 
-1. commit the accepted M4 change set with the installed `gwz`;
-2. push the accepted M4 change set; and
-3. begin M5.
+1. confirm the accepted M4 change set is committed and pushed with the
+   installed `gwz`;
+2. land the synchronized proposal/plan/design wording and enable the
+   document-consistency gate;
+3. execute R0 and freeze its characterization, retained-reader manifest, and
+   package budgets;
+4. execute the behavior-preserving R1 ownership/policy extraction;
+5. execute R2a and release only M5a custom messages after its v0-reader gate;
+6. leave `--no-ff` unavailable until the I1/I2 → R4a → disabled R3 → R4b →
+   disabled M5b → A1 sequence passes.

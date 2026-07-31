@@ -158,9 +158,12 @@ The delivery phases in section 19 introduce this surface incrementally. M0 has
 only start and dry-run; it must not advertise continue or coordinated abort in
 its conflict epilogue. Status arrives with the durable operation record in M1,
 and continue and abort arrive in M2. M4 completes required planning and
-fast-forward safety, M5 adds expected Git controls, and M6 separately owns
-target-branch switching. M7 adds exact snapshot sources, and M8 owns any
-explicit merge partial/skip policy.
+fast-forward safety. M5a adds v0-safe custom messages. Deterministic
+`--no-ff` is M5b under record v1 and activates only with A1 after the
+durability refactor in `../../dev-docs/GwzM5-8Refactor.md`; it has no writable
+or releasable v0 path. I6/M6/A2 separately owns target-branch switching,
+I7/M7/A3 adds exact snapshot sources, and I8/M8/A4 owns any explicit merge
+partial/skip policy.
 
 Global GWZ selection and output options continue to apply. `--dry-run` applies
 only to merge start. Until M8's explicit partial/skip policy is designed and
@@ -1087,7 +1090,7 @@ shares one contract:
 
 | `MergeOp` | `source_ref` | `merge_id` | `mode` | `message` | `preserve` |
 | --- | --- | --- | --- | --- | --- |
-| `start` | required | reject | `normal` now, `ff_only` from M4, `no_ff` from M5 | accepted from M5 | reject |
+| `start` | required | reject | `normal` now, `ff_only` from M4, `no_ff` from M5b/A1 under v1 | accepted from M5a under v0 | reject |
 | `resume` | reject | optional; must equal the single open merge id | reject | reject | reject |
 | `abort` | reject | optional; must equal the single open merge id | reject | reject | optional |
 | `status` | reject | optional; selects the open or one archived record | reject | reject | reject |
@@ -1323,22 +1326,32 @@ the first public release gate defined in `GwzMergePlan.md`.
 - Release M4 only when both additions pass member-only, root-only, mixed,
   restart, driver-parity, and non-mutation gates.
 
-### Phase M5: expected Git controls
+### Phase M5a: v0-safe custom messages
 
-- Add `--no-ff`, including exact prepared-commit recovery for commits that
-  would otherwise fast-forward.
 - Add custom merge-message support while retaining mandatory GWZ recovery
-  identity.
-- Release both only through the established continue, abort, preservation,
-  root-finalization, and driver-parity lifecycle.
+  identity and using the existing persisted participant message as recovery
+  authority.
+- Reject `--no-ff` before record creation and never write `mode: no_ff` under
+  v0.
+- Release custom messages only after established continue, abort,
+  preservation, root-finalization, retained-reader, and driver-parity gates.
 
-### Phase M6: explicit target branch
+### Phase M5b/A1: deterministic v1 no-ff
+
+- After I1/I2 and R4a/R3/R4b, add `--no-ff` behind the disabled v1 writer,
+  including exact prepared-commit recovery for commits that would otherwise
+  fast-forward.
+- Give M5b no independently releasable v0 path.
+- Activate the v1 writer, eligible v0 migration, and no-ff start surface
+  together only at A1.
+
+### Phase I6/M6/A2: explicit target branch
 
 - Add `--into` only after a separate switch-plus-merge design defines durable
   original/target branch evidence, branch creation, restart reconciliation, and
   checked reverse-order restoration.
 
-### Phase M7: exact per-member snapshot sources
+### Phase I7/M7/A3: exact per-member snapshot sources
 
 - Add the GWZ-specific `+<snapshot>` source form.
 - Resolve and freeze one exact source commit for every selected participant
@@ -1348,7 +1361,7 @@ the first public release gate defined in `GwzMergePlan.md`.
 - Define typed selection-wide handling for missing participants, missing
   recorded commits, unavailable objects, and explicit-root coverage.
 
-### Phase M8: explicit partial/skip policy
+### Phase I8/M8/A4: explicit partial/skip policy
 
 - Add opt-in merge partial/skip behavior only after a separate design defines
   skippable causes, durable participant states, exit status, lock composition,
