@@ -54,7 +54,7 @@
   },
   "platform": "macos-aarch64",
   "provenance": {
-    "evaluator_sha256": "17fe0840f3bac47cd15e5ff676652fef176af0718f6d4cfd7f4b07129d3d583a",
+    "evaluator_sha256": "7379e60229e5e4d029937fcebcdd433d8f3b9f9c132e47c8e87f29d37f3d3a94",
     "execution": {
       "identity": "separate-attestation",
       "required_in_ci": true
@@ -68,7 +68,7 @@
       "no-ff-fast-forwardable": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1",
       "pre-record-open-v0": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1"
     },
-    "generator_sha256": "00812d413e3924b1a9c90c05a823dba1b038953a571145d129c73a1336ffb494",
+    "generator_sha256": "a6fae35bbe448b117b9f0a6c22a5e69c22e7164e9a77390c1a23490fc5039224",
     "git": {
       "object_format": "sha1",
       "version": "git version 2.52.0"
@@ -80,22 +80,22 @@
     },
     "python": {
       "architecture": "arm64",
-      "executable_sha256": "fcb4b1b61e840c7cf8ddbfa2f795799c88c827d48f77a804c678c14c5ab6e560",
+      "executable_sha256": "cbf84109626aa1013bbe408fbb9590bd0f1c1548f038b2221c6b8b87de26ca43",
       "implementation": "CPython",
       "pointer_bits": 64,
-      "version": "3.10.15"
+      "version": "3.14.3"
     },
-    "source_set_sha256": "17fe0840f3bac47cd15e5ff676652fef176af0718f6d4cfd7f4b07129d3d583a",
+    "source_set_sha256": "7379e60229e5e4d029937fcebcdd433d8f3b9f9c132e47c8e87f29d37f3d3a94",
     "sources": {
       "cases.schema.json": "289aecaa593da3db3b2132cb745d3d59b4c6be3ffdb4c76daeccf969fae854c2",
       "fixture-contract.json": "fe0ea35cd07096fd9bf4db9c14842f94b3bd94626d7d86488f31068a7a0be398",
-      "generate_retained_reader_fixtures.py": "00812d413e3924b1a9c90c05a823dba1b038953a571145d129c73a1336ffb494",
+      "generate_retained_reader_fixtures.py": "a6fae35bbe448b117b9f0a6c22a5e69c22e7164e9a77390c1a23490fc5039224",
       "manifest.schema.json": "a0bd2f2a4cea854f40394a6da5dd7bc30492e4edb2e9b44d6f5bbdb288640f43",
       "retained_reader_errors.py": "0076ef95b84fe5f801aef173e11335283269213e315dfd4fdb8b28a5d3504e46",
       "retained_reader_evidence.py": "f3125d30da739c0da68e9638bb0459ce966e9769ea7cee9cb2a7bd234a45e473",
       "retained_reader_fixture.py": "db8948735a7c0b0bb59c5af83af16e2d0d79c0d1de9ad964cf9f0d1bdcb690ee",
       "retained_reader_harness.py": "dfa48afb4a2cf167f7a8e471be9737ed83958691d594e45b1f75f22fc17f04b7",
-      "retained_reader_matrix.py": "d7906f349962cae1761366eca2bf3c13a054af378b25938e1583bbb904c1568c",
+      "retained_reader_matrix.py": "58a002d90bee3ba22379eb53e951e12e8a851f26cd538a283d3ffeb160940aa7",
       "retained_reader_process.py": "0f77cc3c13e7a0ed8751cea5dc3d12c7415ce021f078936afc1501159f491cce",
       "retained_reader_runtime.py": "da33b7bdadd518795e59041f872a34233a7e1b5ec665d3c585f09b8fce2ea425",
       "retained_reader_schema.py": "6116a217b59849068091b80769c56830fe7b6ef1dc187b9bf0aee8f04bd990c1",

@@ -382,6 +382,39 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual("passed", json.loads(completed.stdout)["status"])
 
+    def test_failing_matrix_with_evidence_request_still_emits_complete_summary(self) -> None:
+        manifest_path = self.root / "manifest.json"
+        cases_path = self.root / "cases.json"
+        evidence_path = self.root / "failed-evidence.json"
+        manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+        cases_path.write_text(json.dumps(self.cases(["probe", "mutate"])), encoding="utf-8")
+        script = Path(matrix.__file__).resolve()
+
+        completed = harness.run_command(
+            [
+                sys.executable,
+                str(script),
+                str(manifest_path),
+                str(cases_path),
+                "--platform",
+                "host",
+                "--fixtures",
+                str(self.root / "fixtures"),
+                "--cache",
+                str(self.cache),
+                "--evidence-out",
+                str(evidence_path),
+            ],
+            timeout_seconds=20,
+        )
+
+        self.assertEqual(1, completed.returncode)
+        summary = json.loads(completed.stdout)
+        self.assertEqual("failed", summary["status"])
+        self.assertEqual("failed", summary["results"][0]["status"])
+        self.assertIn("unexpected mutation", summary["results"][0]["errors"][0])
+        self.assertFalse(evidence_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

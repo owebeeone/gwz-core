@@ -282,6 +282,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             offline=not args.allow_network,
             python_executable=args.python,
         )
+        if summary["status"] != "passed":
+            print(json.dumps(summary, ensure_ascii=True, sort_keys=True))
+            return 1
         if args.evidence_out is not None:
             provenance = evidence.collect_provenance(args.fixtures, args.python, args.platform)
             normalized = evidence.build_evidence(

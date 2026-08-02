@@ -7,8 +7,10 @@ import argparse
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Sequence
 
@@ -72,12 +74,32 @@ def _git(repository: Path, *args: str) -> str:
 
 def _git_input(repository: Path, input_text: str, *args: str) -> str:
     completed = subprocess.run(
-        ["git", *args], cwd=repository, env=_environment(), input=input_text,
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        ["git", *args],
+        cwd=repository,
+        env=_environment(),
+        input=input_text.encode("utf-8"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
     )
     if completed.returncode:
-        raise GenerationError(f"git {' '.join(args)} failed: {completed.stderr.strip()}")
-    return completed.stdout.strip()
+        error = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise GenerationError(f"git {' '.join(args)} failed: {error}")
+    return completed.stdout.decode("ascii").strip()
+
+
+def _remove_readonly(
+    function: Callable[[str], object],
+    path: str,
+    error_info: tuple[type[BaseException], BaseException, object],
+) -> None:
+    """Retry a Windows tree removal after clearing a read-only Git object."""
+
+    error = error_info[1]
+    if not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
 
 
 def _configure(repository: Path) -> None:
@@ -329,7 +351,7 @@ def generate(destination: Path) -> None:
         temporary = Path()
     finally:
         if temporary != Path() and temporary.exists():
-            shutil.rmtree(temporary)
+            shutil.rmtree(temporary, onerror=_remove_readonly)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

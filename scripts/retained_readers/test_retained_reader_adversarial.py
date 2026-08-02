@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -145,6 +146,35 @@ class CaseAdversarialTests(unittest.TestCase):
 
 
 class FixtureAdversarialTests(unittest.TestCase):
+    def test_git_object_payload_uses_binary_stdin_without_newline_translation(self) -> None:
+        payload = "tree deadbeef\nparent cafe1234\n\nmessage\n"
+        completed = subprocess.CompletedProcess(
+            ["git", "hash-object"], 0, b"0123456789abcdef\n", b""
+        )
+        with mock.patch.object(generator.subprocess, "run", return_value=completed) as run:
+            result = generator._git_input(
+                Path("."), payload, "hash-object", "-t", "commit", "-w", "--stdin"
+            )
+
+        self.assertEqual("0123456789abcdef", result)
+        self.assertEqual(payload.encode("utf-8"), run.call_args.kwargs["input"])
+        self.assertNotIn("text", run.call_args.kwargs)
+
+    def test_read_only_cleanup_handler_makes_git_objects_writable_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "object"
+            target.write_bytes(b"git object")
+            target.chmod(stat.S_IREAD)
+
+            def remove(path: str) -> None:
+                self.assertTrue(Path(path).stat().st_mode & stat.S_IWUSR)
+                Path(path).unlink()
+
+            error = PermissionError("read-only Git object")
+            generator._remove_readonly(remove, str(target), (PermissionError, error, None))
+
+            self.assertFalse(target.exists())
+
     def test_hostile_git_environment_does_not_change_fixture_identity(self) -> None:
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             clean = Path(first) / "fixtures"
