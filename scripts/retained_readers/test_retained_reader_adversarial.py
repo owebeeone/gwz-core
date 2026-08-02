@@ -326,7 +326,7 @@ class FixtureAdversarialTests(unittest.TestCase):
             generator._init(workspace)
             (workspace / "tracked").write_text("tracked\n")
             generator._commit(workspace, "baseline", "tracked")
-            (workspace / ".git/info/exclude").write_text(boundary)
+            (workspace / ".git/info/exclude").write_bytes(boundary.encode("utf-8"))
             (workspace / "record.yaml").write_text(record)
             expected = semantics.merge_record_semantic(workspace, record)
             matched, _ = semantics.yaml_observation(
@@ -339,7 +339,7 @@ class FixtureAdversarialTests(unittest.TestCase):
                 workspace,
             )
             self.assertTrue(matched)
-            (workspace / ".git/info/exclude").write_text("!/*\n")
+            (workspace / ".git/info/exclude").write_bytes(b"!/*\n")
             matched, _ = semantics.yaml_observation(
                 {
                     "path": "record.yaml",
@@ -351,7 +351,7 @@ class FixtureAdversarialTests(unittest.TestCase):
             )
             self.assertFalse(matched)
             external = Path(temp) / "external-exclude"
-            external.write_text(boundary)
+            external.write_bytes(boundary.encode("utf-8"))
             (workspace / ".git/info/exclude").unlink()
             (workspace / ".git/info/exclude").symlink_to(external)
             self.assertNotEqual(expected, semantics.merge_record_semantic(workspace, record))

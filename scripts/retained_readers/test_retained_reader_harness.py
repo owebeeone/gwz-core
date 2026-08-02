@@ -326,5 +326,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(1, summary["tuple_count"])
 
 
+class WorkflowTests(unittest.TestCase):
+    def test_harness_commands_run_in_a_fail_fast_shell_on_windows(self) -> None:
+        workflow = (HERE.parents[1] / ".github/workflows/retained-readers.yml").read_text(
+            encoding="utf-8"
+        )
+        step = workflow.split(
+            "      - name: Test and validate retained-reader inputs\n", 1
+        )[1].split("\n\n", 1)[0]
+
+        self.assertIn("        shell: bash\n", step)
+        self.assertLess(step.index("shell: bash"), step.index("run: |"))
+
+
 if __name__ == "__main__":
     unittest.main()

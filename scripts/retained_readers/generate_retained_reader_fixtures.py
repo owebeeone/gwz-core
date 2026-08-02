@@ -154,18 +154,7 @@ def _canonicalize_git_dir(repository: Path, exclude: str = "") -> None:
     entries = _git(repository, "ls-tree", "-r", "HEAD")
     payload = "\n".join(line.replace(" blob ", " ", 1) for line in entries.splitlines()) + "\n"
     (git_dir / "index").unlink(missing_ok=True)
-    completed = subprocess.run(
-        ["git", "update-index", "--index-info"],
-        cwd=repository,
-        env=_environment(),
-        input=payload,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if completed.returncode:
-        raise GenerationError(f"cannot canonicalize Git index: {completed.stderr.strip()}")
+    _git_input(repository, payload, "update-index", "--index-info")
 
 
 def _member(repository: Path, true_merge: bool) -> tuple[str, str, str | None]:

@@ -42,6 +42,7 @@ jobs:
         with:
           python-version: "3.10"
       - name: Test and validate retained-reader inputs
+        shell: bash
         run: |
           python -m unittest discover -s scripts/retained_readers -p 'test_*.py' -v
           python scripts/retained_readers/retained_reader_harness.py validate scripts/retained_readers/manifest.json

@@ -54,7 +54,7 @@
   },
   "platform": "macos-aarch64",
   "provenance": {
-    "evaluator_sha256": "44bb5dd19e20e36d149190344e65906e7c3c7265734d78d7a5031fd83dbadd2c",
+    "evaluator_sha256": "db8bf5c1b40ec2145cad50800fd8d3830bf0f1cc4933734518a52dd5d696f389",
     "execution": {
       "identity": "separate-attestation",
       "required_in_ci": true
@@ -68,7 +68,7 @@
       "no-ff-fast-forwardable": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
       "pre-record-open-v0": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296"
     },
-    "generator_sha256": "a6fae35bbe448b117b9f0a6c22a5e69c22e7164e9a77390c1a23490fc5039224",
+    "generator_sha256": "611570010f8e82eb7c7419f8a83c1229973a604ac572187ff71c50a5517e9578",
     "git": {
       "object_format": "sha1",
       "version": "git version 2.52.0"
@@ -85,11 +85,11 @@
       "pointer_bits": 64,
       "version": "3.10.15"
     },
-    "source_set_sha256": "44bb5dd19e20e36d149190344e65906e7c3c7265734d78d7a5031fd83dbadd2c",
+    "source_set_sha256": "db8bf5c1b40ec2145cad50800fd8d3830bf0f1cc4933734518a52dd5d696f389",
     "sources": {
       "cases.schema.json": "289aecaa593da3db3b2132cb745d3d59b4c6be3ffdb4c76daeccf969fae854c2",
       "fixture-contract.json": "fd230f9176873e9db28028340ea66bc97aa895a2ee5d50b973ac239127ca58f6",
-      "generate_retained_reader_fixtures.py": "a6fae35bbe448b117b9f0a6c22a5e69c22e7164e9a77390c1a23490fc5039224",
+      "generate_retained_reader_fixtures.py": "611570010f8e82eb7c7419f8a83c1229973a604ac572187ff71c50a5517e9578",
       "manifest.schema.json": "a0bd2f2a4cea854f40394a6da5dd7bc30492e4edb2e9b44d6f5bbdb288640f43",
       "retained_reader_errors.py": "0076ef95b84fe5f801aef173e11335283269213e315dfd4fdb8b28a5d3504e46",
       "retained_reader_evidence.py": "f3125d30da739c0da68e9638bb0459ce966e9769ea7cee9cb2a7bd234a45e473",

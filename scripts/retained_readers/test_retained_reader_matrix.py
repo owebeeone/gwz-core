@@ -12,6 +12,7 @@ import unittest
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -95,8 +96,8 @@ class SnapshotTests(unittest.TestCase):
 
     def test_snapshot_preserves_non_utf8_path_identity(self) -> None:
         raw = b"non-utf8-\xff"
-        path = Path(os.fsdecode(raw))
-        key = matrix._path_key(path)
+        with mock.patch.object(os, "fsencode", return_value=raw):
+            key = matrix._path_key(Path("synthetic"))
         self.assertTrue(key.startswith("b64:"))
 
 

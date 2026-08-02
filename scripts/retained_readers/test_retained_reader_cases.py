@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -33,6 +34,15 @@ def git(root: Path, *args: str) -> str:
 
 
 class RetainedReaderCaseTests(unittest.TestCase):
+    def test_index_canonicalization_uses_binary_git_input(self) -> None:
+        oid = "a" * 40
+        with tempfile.TemporaryDirectory() as temp:
+            repository = Path(temp)
+            (repository / ".git").mkdir()
+            with mock.patch.object(generator, "_git", return_value=f"100644 blob {oid}\ttracked"), mock.patch.object(generator, "_git_input") as update:
+                generator._canonicalize_git_dir(repository)
+            update.assert_called_once_with(repository, f"100644 {oid}\ttracked\n", "update-index", "--index-info")
+
     def test_index_identity_keeps_non_utf8_paths_and_unmerged_stages(self) -> None:
         raw_path = b"non-utf8-\xff"
         rows = semantics._index_rows(b"100644 " + b"a" * 40 + b" 0\t" + raw_path + b"\0")
