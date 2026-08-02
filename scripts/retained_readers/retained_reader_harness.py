@@ -36,8 +36,6 @@ SCHEMA_PATH = Path(__file__).with_name("manifest.schema.json")
 FROZEN_R0_READERS = {
     "rust-cli-v0.9.2",
     "gwz-py-v0.9.2",
-    "rust-cli-v0.10.0",
-    "gwz-py-v0.10.0",
     "rust-cli-v0.10.2",
     "gwz-py-v0.10.2",
 }
@@ -94,7 +92,20 @@ def load_manifest(path: Path | str) -> dict[str, Any]:
 
 
 def validate_manifest(manifest: Mapping[str, Any]) -> None:
-    """Validate the checked schema without requiring a third-party package."""
+    """Validate the checked R0 contract without requiring a third-party package."""
+
+    _validate_manifest(manifest, enforce_frozen_contract=True)
+
+
+def _validate_manifest_shape(manifest: Mapping[str, Any]) -> None:
+    """Validate a synthetic manifest used by focused unit tests."""
+
+    _validate_manifest(manifest, enforce_frozen_contract=False)
+
+
+def _validate_manifest(
+    manifest: Mapping[str, Any], *, enforce_frozen_contract: bool
+) -> None:
 
     try:
         validate_schema(manifest, load_schema(SCHEMA_PATH))
@@ -228,12 +239,12 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             seen_tuples.add(tuple_id)
             _validate_artifact(artifact, artifact_path, release, surface)
 
-    if reader_ids & FROZEN_R0_READERS:
+    if enforce_frozen_contract:
         _require(reader_ids == FROZEN_R0_READERS, "frozen reader set differs from the reviewed R0 contract")
         _require(platform_ids == FROZEN_R0_PLATFORMS, "frozen platform set differs from the reviewed R0 contract")
         required = FROZEN_R0_PLATFORMS - {"windows-aarch64"}
         for reader in readers:
-            expected_required = set() if reader["id"] == "gwz-py-v0.10.0" else required
+            expected_required = required
             actual_required = {
                 artifact["platform"]
                 for artifact in reader["artifacts"]

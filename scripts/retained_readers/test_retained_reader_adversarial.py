@@ -36,7 +36,7 @@ class ManifestAdversarialTests(unittest.TestCase):
             {"id": "windows-aarch64", "os": "windows", "arch": "aarch64", "lane": "artifact-smoke"}
         )
         with self.assertRaisesRegex(harness.ManifestError, "exactly one artifact.*windows-aarch64"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
     def test_frozen_r0_support_cannot_be_reclassified(self) -> None:
         manifest = harness.load_manifest(MANIFEST)
@@ -55,14 +55,14 @@ class ManifestAdversarialTests(unittest.TestCase):
         manifest = complete_manifest()
         manifest["readers"][0]["artifacts"][0]["sha25_typo"] = "ignored"
         with self.assertRaisesRegex(harness.ManifestError, "sha25_typo"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
     def test_unreviewed_https_provider_is_not_immutable(self) -> None:
         manifest = complete_manifest()
         artifact = manifest["readers"][0]["artifacts"][0]
         artifact["url"] = "https://example.invalid/releases/download/v0.9.2/gwz-linux.tar.xz"
         with self.assertRaisesRegex(harness.ManifestError, "immutable"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
 
 class CaseAdversarialTests(unittest.TestCase):
@@ -134,10 +134,10 @@ class CaseAdversarialTests(unittest.TestCase):
             self.assertNotEqual("allow", case["expected"]["mutation"]["mode"], case["id"])
             self.assertRegex(case["fixture_sha256"], r"^[0-9a-f]{64}$")
 
-    def test_v0100_record_rewrites_pin_unknown_baseline_fields(self) -> None:
+    def test_durable_record_rewrites_pin_baseline_fields(self) -> None:
         fields = {"lock_yaml", "manifest_yaml", "lock_commit_sha256", "manifest_commit_sha256"}
         for case in self.cases["cases"]:
-            if "rust-cli-v0.10.0" not in case["readers"]:
+            if "rust-cli-v0.10.2" not in case["readers"]:
                 continue
             mutation = case["expected"]["mutation"]
             archives = "text:.gwz/merge/done/merge_retained.yaml" in mutation.get("paths", mutation.get("exact", []))
@@ -463,7 +463,7 @@ class EvidenceAdversarialTests(unittest.TestCase):
                 "status": "passed",
                 "platform": "macos-aarch64",
                 "results": [{
-                    "reader": "rust-cli-v0.10.0",
+                    "reader": "rust-cli-v0.10.2",
                     "case": "probe",
                     "status": "passed",
                     "exit_code": 0,

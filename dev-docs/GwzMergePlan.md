@@ -1609,9 +1609,9 @@ documentation continues to mark `--no-ff` unavailable.
 
 The first M5 release gate covers custom messages only. It requires exact
 message bytes across start/restart/continue/abort/preservation/root
-finalization, Rust/Python human/JSON/JSONL parity, actual v0.10.0/v0.10.2
-Rust reader compatibility, every actually distributed durable-v0 Python
-reader with undistributed tuples explicit, the separate v0.9.2 pre-record
+finalization, Rust/Python human/JSON/JSONL parity, actual selected
+durable-v0 baseline compatibility on both distributed reader surfaces with
+undistributed platform tuples explicit, the separate v0.9.2 pre-record
 downgrade lane, and the full existing
 technical gate. It also runs the
 document-consistency check proving that this plan, `GwzMergeDesign.md`,

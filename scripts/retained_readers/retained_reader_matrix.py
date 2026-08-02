@@ -46,20 +46,43 @@ CASES_SCHEMA_PATH = Path(__file__).with_name("cases.schema.json")
 FROZEN_COMMANDS = {
     "rust-cli-v0.9.2": ("workspace-status", "legacy-branch-merge"),
     "gwz-py-v0.9.2": ("workspace-status", "legacy-branch-merge"),
-    "rust-cli-v0.10.0": ("merge-status", "merge-continue", "merge-abort", "merge-preserve", "merge-gc"),
-    "gwz-py-v0.10.0": (),
     "rust-cli-v0.10.2": ("merge-status", "merge-continue", "merge-abort", "merge-preserve", "merge-gc"),
     "gwz-py-v0.10.2": ("merge-status", "merge-continue", "merge-abort", "merge-preserve", "merge-gc"),
 }
 
 
-def validate_cases(cases: Mapping[str, Any], manifest_or_reader_ids: Mapping[str, Any] | set[str]) -> list[Mapping[str, Any]]:
+def validate_cases(
+    cases: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> list[Mapping[str, Any]]:
+    if not isinstance(manifest, Mapping):
+        raise MatrixError("validate_cases requires the frozen R0 manifest")
+    harness.validate_manifest(manifest)
+    result = _validate_cases_shape(
+        cases, {reader["id"] for reader in manifest["readers"]}
+    )
+    for case in result:
+        if not isinstance(case.get("fixture_sha256"), str):
+            raise MatrixError(f"case {case['id']} must bind its canonical fixture_sha256")
+    covered = {
+        (reader, case["command"])
+        for case in result
+        for reader in case["readers"]
+        if reader != "*"
+    }
+    for reader, commands in FROZEN_COMMANDS.items():
+        for command in commands:
+            if (reader, command) not in covered:
+                raise MatrixError(f"required command {command!r} has no case for {reader}")
+    return result
+
+
+def _validate_cases_shape(
+    cases: Mapping[str, Any], reader_ids: set[str]
+) -> list[Mapping[str, Any]]:
     try:
         validate_schema(cases, load_schema(CASES_SCHEMA_PATH))
     except SchemaValidationError as error:
         raise MatrixError(str(error)) from error
-    manifest = manifest_or_reader_ids if isinstance(manifest_or_reader_ids, Mapping) else None
-    reader_ids = ({reader["id"] for reader in manifest["readers"]} if manifest else manifest_or_reader_ids)
     result = cases["cases"]
     seen: set[str] = set()
     for case in result:
@@ -88,15 +111,6 @@ def validate_cases(cases: Mapping[str, Any], manifest_or_reader_ids: Mapping[str
             item["maximum"] < item["minimum"] for item in mutation["dynamic"]
         ):
             raise MatrixError(f"case {case['id']} dynamic mutation maximum is below minimum")
-    if manifest is not None and set(reader_ids) == set(FROZEN_COMMANDS):
-        for case in result:
-            if not isinstance(case.get("fixture_sha256"), str):
-                raise MatrixError(f"case {case['id']} must bind its canonical fixture_sha256")
-        covered = {(reader, case["command"]) for case in result for reader in case["readers"] if reader != "*"}
-        for reader, commands in FROZEN_COMMANDS.items():
-            for command in commands:
-                if (reader, command) not in covered:
-                    raise MatrixError(f"required command {command!r} has no case for {reader}")
     return result
 
 
@@ -202,10 +216,63 @@ def run_matrix(
     offline: bool,
     python_executable: Path,
 ) -> dict[str, Any]:
-    harness.validate_manifest(manifest)
+    return _run_matrix(
+        manifest,
+        cases_document,
+        platform=platform,
+        fixture_root=fixture_root,
+        cache_root=cache_root,
+        offline=offline,
+        python_executable=python_executable,
+        enforce_frozen_contract=True,
+    )
+
+
+def _run_synthetic_matrix(
+    manifest: Mapping[str, Any],
+    cases_document: Mapping[str, Any],
+    *,
+    platform: str,
+    fixture_root: Path,
+    cache_root: Path,
+    offline: bool,
+    python_executable: Path,
+) -> dict[str, Any]:
+    """Run a focused synthetic manifest without weakening the public R0 gate."""
+
+    return _run_matrix(
+        manifest,
+        cases_document,
+        platform=platform,
+        fixture_root=fixture_root,
+        cache_root=cache_root,
+        offline=offline,
+        python_executable=python_executable,
+        enforce_frozen_contract=False,
+    )
+
+
+def _run_matrix(
+    manifest: Mapping[str, Any],
+    cases_document: Mapping[str, Any],
+    *,
+    platform: str,
+    fixture_root: Path,
+    cache_root: Path,
+    offline: bool,
+    python_executable: Path,
+    enforce_frozen_contract: bool,
+) -> dict[str, Any]:
+    if enforce_frozen_contract:
+        harness.validate_manifest(manifest)
+        cases = validate_cases(cases_document, manifest)
+    else:
+        harness._validate_manifest_shape(manifest)
+        cases = _validate_cases_shape(
+            cases_document, {reader["id"] for reader in manifest["readers"]}
+        )
     if platform not in {item["id"] for item in manifest["platforms"]}:
         raise MatrixError(f"unknown platform {platform!r}")
-    cases = validate_cases(cases_document, manifest)
     identities = fixture_identities(fixture_root)
     results: list[dict[str, Any]] = []
     timeout = manifest["default_timeout_seconds"]

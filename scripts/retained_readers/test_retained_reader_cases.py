@@ -128,7 +128,7 @@ class RetainedReaderCaseTests(unittest.TestCase):
         manifest = harness.load_manifest(HERE / "manifest.json")
         cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
 
-        validated = matrix.validate_cases(cases, {reader["id"] for reader in manifest["readers"]})
+        validated = matrix.validate_cases(cases, manifest)
 
         covered = {reader for case in validated for reader in case["readers"]}
         runnable = {
@@ -223,13 +223,13 @@ class RetainedReaderCaseTests(unittest.TestCase):
     def test_normalized_evidence_keeps_digests_and_results_but_not_host_paths(self) -> None:
         manifest = harness.load_manifest(HERE / "manifest.json")
         manifest["readers"] = [
-            reader for reader in manifest["readers"] if reader["id"] == "rust-cli-v0.10.0"
+            reader for reader in manifest["readers"] if reader["id"] == "rust-cli-v0.10.2"
         ]
         manifest["runtimes"] = []
         cases = {
             "cases": [{
                 "id": "v0-custom-message-pending-continue",
-                "readers": ["rust-cli-v0.10.0"],
+                "readers": ["rust-cli-v0.10.2"],
             }]
         }
         sources = evidence.source_digests(HERE)
@@ -239,7 +239,7 @@ class RetainedReaderCaseTests(unittest.TestCase):
             "platform": "macos-aarch64",
             "results": [
                 {
-                    "reader": "rust-cli-v0.10.0",
+                    "reader": "rust-cli-v0.10.2",
                     "case": "v0-custom-message-pending-continue",
                     "status": "passed",
                     "exit_code": 0,

@@ -5,11 +5,12 @@ for actual released GWZ readers. It does not emulate an old decoder with
 current code.
 
 `manifest.json` enumerates both distributed reader surfaces (`gwz` and
-`gwz-py`), the v0.9.2 pre-record downgrade generation, the v0.10.0
-additive-field-unknown Rust generation, and the v0.10.2
-field-known/recovery-dormant generation. It also records the two behavioral
-lanes, release-platform smoke lanes, Python runtime identity, and explicit
-unsupported tuples—including the undistributed `gwz-py` v0.10.0 release.
+`gwz-py`), the v0.9.2 pre-record downgrade generation, and the selected
+durable-record baseline. The selection rule is the latest successfully
+published pre-change release that supports the record; for this checkpoint the
+manifest pins v0.10.2. It also records the two behavioral lanes,
+release-platform smoke lanes, Python runtime identity, and explicit
+unsupported platform tuples.
 `manifest.schema.json` is the tooling schema. The stdlib validator implements
 every schema keyword used here and rejects unknown document fields and unknown
 schema keywords. The harness additionally freezes the R0 reader/platform
@@ -76,7 +77,7 @@ mutation policy:
   "schema": "gwz.retained-reader-cases/v1",
   "cases": [{
     "id": "idle-status-json",
-    "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+    "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
     "command": "merge-status",
     "args": ["--json", "merge", "--status"],
     "fixture": "custom-message-pending",
@@ -152,9 +153,8 @@ python3 scripts/retained_readers/retained_reader_matrix.py \
 valid only with `--evidence-out`.
 
 `evidence-macos-aarch64.json` is the checked result of the full behavioral
-case set against the actual macOS arm64 release artifacts: 37 executable
-reader/case results passed and the absent `gwz-py` v0.10.0 distribution is
-reported as declared unsupported. CI repeats the complete behavioral matrix on
+case set against the actual macOS arm64 release artifacts: all 26 executable
+reader/case results passed. CI repeats the complete behavioral matrix on
 Linux x86_64, Linux arm64, Windows x86_64, and both macOS architectures.
 Windows arm64 is historically undistributed and remains explicit substitute
 evidence rather than a skip.

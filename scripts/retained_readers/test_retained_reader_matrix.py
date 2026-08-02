@@ -10,7 +10,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -289,7 +289,7 @@ class MatrixTests(unittest.TestCase):
         }
 
     def test_runs_required_tuple_and_evaluates_fixture(self) -> None:
-        summary = matrix.run_matrix(
+        summary = matrix._run_synthetic_matrix(
             self.manifest,
             self.cases(),
             platform="host",
@@ -302,7 +302,7 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual("passed", summary["results"][0]["status"])
 
     def test_reports_unexpected_mutation_as_failure(self) -> None:
-        summary = matrix.run_matrix(
+        summary = matrix._run_synthetic_matrix(
             self.manifest,
             self.cases(["probe", "mutate"]),
             platform="host",
@@ -346,7 +346,7 @@ class MatrixTests(unittest.TestCase):
             {"kind": "path", "path": "repo/tracked", "state": "file"},
         ]
 
-        summary = matrix.run_matrix(
+        summary = matrix._run_synthetic_matrix(
             self.manifest,
             cases,
             platform="host",
@@ -363,7 +363,7 @@ class MatrixTests(unittest.TestCase):
         cases["cases"][0]["postconditions"] = [
             {"kind": "path", "path": "missing", "state": "file"}
         ]
-        summary = matrix.run_matrix(
+        summary = matrix._run_synthetic_matrix(
             self.manifest,
             cases,
             platform="host",
@@ -376,7 +376,7 @@ class MatrixTests(unittest.TestCase):
         self.assertIn("postcondition", summary["results"][0]["errors"][0])
 
     def test_missing_case_fails_instead_of_skipping_reader(self) -> None:
-        summary = matrix.run_matrix(
+        summary = matrix._run_synthetic_matrix(
             self.manifest,
             {"schema": "gwz.retained-reader-cases/v1", "cases": []},
             platform="host",
@@ -393,24 +393,25 @@ class MatrixTests(unittest.TestCase):
         cases_path = self.root / "cases.json"
         manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
         cases_path.write_text(json.dumps(self.cases()), encoding="utf-8")
-        script = Path(matrix.__file__).resolve()
-        completed = harness.run_command(
-            [
-                sys.executable,
-                str(script),
-                str(manifest_path),
-                str(cases_path),
-                "--platform",
-                "host",
-                "--fixtures",
-                str(self.root / "fixtures"),
-                "--cache",
-                str(self.cache),
-            ],
-            timeout_seconds=20,
-        )
-        self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual("passed", json.loads(completed.stdout)["status"])
+        output = StringIO()
+        summary = {"status": "passed", "platform": "host", "results": []}
+        with mock.patch.object(matrix, "run_matrix", return_value=summary), mock.patch(
+            "sys.stdout", output
+        ):
+            result = matrix.main(
+                [
+                    str(manifest_path),
+                    str(cases_path),
+                    "--platform",
+                    "host",
+                    "--fixtures",
+                    str(self.root / "fixtures"),
+                    "--cache",
+                    str(self.cache),
+                ]
+            )
+        self.assertEqual(0, result)
+        self.assertEqual("passed", json.loads(output.getvalue())["status"])
 
     def test_failing_matrix_with_evidence_request_still_emits_complete_summary(self) -> None:
         manifest_path = self.root / "manifest.json"
@@ -418,28 +419,32 @@ class MatrixTests(unittest.TestCase):
         evidence_path = self.root / "failed-evidence.json"
         manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
         cases_path.write_text(json.dumps(self.cases(["probe", "mutate"])), encoding="utf-8")
-        script = Path(matrix.__file__).resolve()
+        summary = {
+            "status": "failed",
+            "platform": "host",
+            "results": [{"status": "failed", "errors": ["unexpected mutation"]}],
+        }
+        output = StringIO()
+        with mock.patch.object(matrix, "run_matrix", return_value=summary), mock.patch(
+            "sys.stdout", output
+        ):
+            result = matrix.main(
+                [
+                    str(manifest_path),
+                    str(cases_path),
+                    "--platform",
+                    "host",
+                    "--fixtures",
+                    str(self.root / "fixtures"),
+                    "--cache",
+                    str(self.cache),
+                    "--evidence-out",
+                    str(evidence_path),
+                ]
+            )
 
-        completed = harness.run_command(
-            [
-                sys.executable,
-                str(script),
-                str(manifest_path),
-                str(cases_path),
-                "--platform",
-                "host",
-                "--fixtures",
-                str(self.root / "fixtures"),
-                "--cache",
-                str(self.cache),
-                "--evidence-out",
-                str(evidence_path),
-            ],
-            timeout_seconds=20,
-        )
-
-        self.assertEqual(1, completed.returncode)
-        summary = json.loads(completed.stdout)
+        self.assertEqual(1, result)
+        summary = json.loads(output.getvalue())
         self.assertEqual("failed", summary["status"])
         self.assertEqual("failed", summary["results"][0]["status"])
         self.assertIn("unexpected mutation", summary["results"][0]["errors"][0])

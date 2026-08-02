@@ -3,7 +3,7 @@
   "cases": [
     {
       "id": "v0-custom-message-status-read-only",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-status",
       "args": ["--json", "merge", "--status"],
       "fixture": "custom-message-pending",
@@ -17,7 +17,7 @@
     },
     {
       "id": "v0-custom-message-pending-continue",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-continue",
       "args": ["--json", "merge", "--continue"],
       "fixture": "custom-message-pending",
@@ -59,7 +59,7 @@
     },
     {
       "id": "v0-custom-message-pending-abort-after-restart",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-abort",
       "args": ["--json", "merge", "--abort"],
       "fixture": "custom-message-pending",
@@ -85,7 +85,7 @@
     },
     {
       "id": "v0-no-ff-fast-forwardable-status-read-only",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-status",
       "args": ["--json", "merge", "--status"],
       "fixture": "no-ff-fast-forwardable",
@@ -103,7 +103,7 @@
     },
     {
       "id": "v0-no-ff-fast-forwardable-continue-known-failure",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-continue",
       "args": ["--json", "merge", "--continue"],
       "fixture": "no-ff-fast-forwardable",
@@ -143,7 +143,7 @@
     },
     {
       "id": "v0-no-ff-fast-forwardable-abort",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-abort",
       "args": ["--json", "merge", "--abort"],
       "fixture": "no-ff-fast-forwardable",
@@ -166,7 +166,7 @@
     },
     {
       "id": "v0-custom-message-post-mutation-abort",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-abort",
       "args": ["--json", "merge", "--abort"],
       "fixture": "custom-message-pending-completed",
@@ -197,7 +197,7 @@
     },
     {
       "id": "v0-custom-message-post-mutation-abort-wrong-message-rejected",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-abort",
       "args": ["--json", "merge", "--abort"],
       "fixture": "custom-message-pending-wrong-message",
@@ -217,7 +217,7 @@
     },
     {
       "id": "v0-custom-message-post-mutation-preserve-abort",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-preserve",
       "args": ["--json", "merge", "--abort", "--preserve"],
       "fixture": "custom-message-pending-completed",
@@ -244,7 +244,7 @@
     },
     {
       "id": "v0-archived-status-read-only",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-status",
       "args": ["--json", "merge", "--status", "merge_retained"],
       "fixture": "archived-v0",
@@ -263,7 +263,7 @@
     },
     {
       "id": "v0-explicit-archived-record-gc",
-      "readers": ["rust-cli-v0.10.0", "rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
       "command": "merge-gc",
       "args": ["--json", "merge", "--gc", "merge_retained"],
       "fixture": "archived-v0",

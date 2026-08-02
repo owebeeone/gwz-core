@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import retained_reader_harness as harness
+import retained_reader_matrix as matrix
 
 
 HERE = Path(__file__).resolve().parent
@@ -24,9 +25,9 @@ def complete_manifest() -> dict[str, object]:
         "default_timeout_seconds": 10,
         "decode_generations": [
             {
-                "id": "v0-field-unknown",
+                "id": "pre-record-reader",
                 "release": "v0.9.2",
-                "description": "unknown additive v0 fields are flattened",
+                "description": "the reader predates durable merge records",
             }
         ],
         "platforms": [
@@ -42,17 +43,17 @@ def complete_manifest() -> dict[str, object]:
         ],
         "readers": [
             {
-                "id": "rust-v0.9.2",
+                "id": "synthetic-pre-record-rust",
                 "surface": "rust-cli",
                 "release": "v0.9.2",
-                "decode_generation": "v0-field-unknown",
+                "decode_generation": "pre-record-reader",
                 "runtime": "native",
-                "supported_record_versions": [0],
+                "supported_record_versions": [],
                 "envelope_behavior": {
-                    "gwz.merge-operation/v0@0": "decode",
-                    "unsupported": "released-behavior-fixture",
+                    "gwz.merge-operation/v0@0": "not decoded",
+                    "unsupported": "no durable-record dispatcher",
                 },
-                "commands": {"merge-start": "available"},
+                "commands": {"workspace-status": "available"},
                 "projections": ["human"],
                 "invocation": ["{executable}", "--root", "{workspace}"],
                 "artifacts": [
@@ -78,12 +79,13 @@ class ManifestTests(unittest.TestCase):
         harness.validate_manifest(manifest)
 
         generations = {item["id"] for item in manifest["decode_generations"]}
-        self.assertIn("pre-v0-record-reader", generations)
-        self.assertIn("v0-field-unknown", generations)
-        self.assertIn("v0-mode-known-recovery-dormant", generations)
+        self.assertEqual(
+            {"pre-v0-record-reader", "v0-mode-known-recovery-dormant"},
+            generations,
+        )
 
         tuple_ids = set(harness.iter_tuple_ids(manifest))
-        for release in ("v0.9.2", "v0.10.0", "v0.10.2"):
+        for release in ("v0.9.2", "v0.10.2"):
             for surface in ("rust-cli", "gwz-py"):
                 for platform in (
                     "linux-x86_64",
@@ -95,12 +97,43 @@ class ManifestTests(unittest.TestCase):
                 ):
                     self.assertIn(f"{surface}:{release}:{platform}", tuple_ids)
 
+        self.assertEqual(24, len(tuple_ids))
         self.assertEqual([], harness.gate_readiness_errors(manifest))
-        python_0100 = next(reader for reader in manifest["readers"] if reader["id"] == "gwz-py-v0.10.0")
-        self.assertTrue(all(item["support"] == "unsupported" for item in python_0100["artifacts"]))
+
+    def test_frozen_r0_contract_cannot_be_bypassed_by_renaming_every_reader(self) -> None:
+        manifest = harness.load_manifest(MANIFEST)
+        cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
+        renamed = {
+            reader["id"]: f"renamed-reader-{index}"
+            for index, reader in enumerate(manifest["readers"])
+        }
+        for reader in manifest["readers"]:
+            reader["id"] = renamed[reader["id"]]
+        for case in cases["cases"]:
+            case["readers"] = [renamed[reader] for reader in case["readers"]]
+        cases["cases"] = [
+            case for case in cases["cases"] if case["command"] != "merge-gc"
+        ]
+
+        with self.assertRaisesRegex(harness.ManifestError, "frozen reader set"):
+            harness.validate_manifest(manifest)
+        with self.assertRaisesRegex(harness.ManifestError, "frozen reader set"):
+            matrix.validate_cases(cases, manifest)
+        with self.assertRaisesRegex(matrix.MatrixError, "manifest"):
+            matrix.validate_cases(cases, set(renamed.values()))
+        with self.assertRaisesRegex(harness.ManifestError, "frozen reader set"):
+            matrix.run_matrix(
+                manifest,
+                cases,
+                platform="macos-aarch64",
+                fixture_root=HERE,
+                cache_root=HERE,
+                offline=True,
+                python_executable=Path(sys.executable),
+            )
 
     def test_pending_required_artifact_is_valid_inventory_but_fails_gate(self) -> None:
-        manifest = complete_manifest()
+        manifest = harness.load_manifest(MANIFEST)
         artifact = manifest["readers"][0]["artifacts"][0]
         artifact.update(
             {
@@ -129,23 +162,23 @@ class ManifestTests(unittest.TestCase):
                 "substitute_evidence": ["source-release-build"],
             }
         )
-        harness.validate_manifest(manifest)
+        harness._validate_manifest_shape(manifest)
 
         artifact["substitute_evidence"] = []
         with self.assertRaisesRegex(harness.ManifestError, "substitute_evidence"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
     def test_verified_artifact_requires_immutable_url_and_lowercase_digest(self) -> None:
         manifest = complete_manifest()
         artifact = manifest["readers"][0]["artifacts"][0]
         artifact["url"] = "https://github.com/owebeeone/gwz-cli/releases/latest/download/gwz.tar.xz"
         with self.assertRaisesRegex(harness.ManifestError, "immutable"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
         artifact["url"] = "https://example.invalid/gwz.tar.xz"
         artifact["sha256"] = "A" * 64
         with self.assertRaisesRegex(harness.ManifestError, "sha256"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
     def test_pending_artifact_cannot_inventory_a_mutable_url(self) -> None:
         manifest = complete_manifest()
@@ -159,24 +192,24 @@ class ManifestTests(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(harness.ManifestError, "immutable"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
     def test_unavailable_command_requires_explicit_substitute_evidence(self) -> None:
         manifest = complete_manifest()
         reader = manifest["readers"][0]
         reader["commands"]["merge-status"] = "unavailable"
         with self.assertRaisesRegex(harness.ManifestError, "command_absence_evidence"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
         reader["command_absence_evidence"] = {
             "merge-status": "released parser rejects it; exercise merge-start and record-byte observation"
         }
-        harness.validate_manifest(manifest)
+        harness._validate_manifest_shape(manifest)
 
     def test_pre_record_reader_can_support_no_durable_record_versions(self) -> None:
         manifest = complete_manifest()
         manifest["readers"][0]["supported_record_versions"] = []
-        harness.validate_manifest(manifest)
+        harness._validate_manifest_shape(manifest)
 
     def test_python_wheel_tag_is_required_on_each_platform_tuple(self) -> None:
         manifest = complete_manifest()
@@ -189,11 +222,11 @@ class ManifestTests(unittest.TestCase):
         }
         artifact = reader["artifacts"][0]
         artifact["wheel_tag"] = "cp310-abi3-manylinux_x86_64"
-        harness.validate_manifest(manifest)
+        harness._validate_manifest_shape(manifest)
 
         del artifact["wheel_tag"]
         with self.assertRaisesRegex(harness.ManifestError, "wheel_tag"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
     def test_runtime_companion_artifact_requires_immutable_checksum_pin(self) -> None:
         manifest = complete_manifest()
@@ -206,11 +239,11 @@ class ManifestTests(unittest.TestCase):
                 "sha256": "0" * 64,
             }
         ]
-        harness.validate_manifest(manifest)
+        harness._validate_manifest_shape(manifest)
 
         manifest["runtimes"][0]["artifacts"][0]["sha256"] = None
         with self.assertRaisesRegex(harness.ManifestError, "sha256"):
-            harness.validate_manifest(manifest)
+            harness._validate_manifest_shape(manifest)
 
     def test_acquisition_inventory_includes_runtime_companions(self) -> None:
         manifest = complete_manifest()
@@ -315,7 +348,7 @@ class CliTests(unittest.TestCase):
     def test_validate_cli_emits_machine_readable_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "manifest.json"
-            path.write_text(json.dumps(complete_manifest()), encoding="utf-8")
+            path.write_bytes(MANIFEST.read_bytes())
             result = harness.run_command(
                 [sys.executable, str(HERE / "retained_reader_harness.py"), "validate", str(path)],
                 timeout_seconds=5,
@@ -323,7 +356,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         summary = json.loads(result.stdout)
         self.assertEqual("valid", summary["status"])
-        self.assertEqual(1, summary["tuple_count"])
+        self.assertEqual(24, summary["tuple_count"])
 
 
 class WorkflowTests(unittest.TestCase):
