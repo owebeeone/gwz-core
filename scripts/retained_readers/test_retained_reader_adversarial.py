@@ -272,8 +272,8 @@ class FixtureAdversarialTests(unittest.TestCase):
                 if label in {"corrupt-object", "missing-object"}:
                     oid = generator._git(repository, "rev-parse", "HEAD")
                     loose = repository / f".git/objects/{oid[:2]}/{oid[2:]}"
+                    loose.chmod(stat.S_IREAD | stat.S_IWRITE)
                     if label == "corrupt-object":
-                        loose.chmod(stat.S_IREAD | stat.S_IWRITE)
                         loose.write_bytes(b"corrupt Git object")
                     else:
                         loose.unlink()

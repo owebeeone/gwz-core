@@ -8,6 +8,7 @@ on:
   workflow_call:
   pull_request:
     paths:
+      - ".gitattributes"
       - ".github/workflows/retained-readers.yml"
       - "dev-docs/GwzMergeDesign.md"
       - "dev-docs/GwzMergePlan.md"
@@ -18,6 +19,7 @@ on:
   push:
     branches: [main]
     paths:
+      - ".gitattributes"
       - ".github/workflows/retained-readers.yml"
       - "dev-docs/GwzMergeDesign.md"
       - "dev-docs/GwzMergePlan.md"

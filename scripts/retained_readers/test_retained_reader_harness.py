@@ -327,6 +327,16 @@ class CliTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_evidence_bound_inputs_have_portable_lf_checkout_policy(self) -> None:
+        root = HERE.parents[1]
+        paths = [path.relative_to(root).as_posix() for path in sorted(HERE.iterdir()) if path.is_file()]
+        result = harness.run_command(
+            ["git", "-C", str(root), "check-attr", "text", "eol", "--", *paths],
+            timeout_seconds=5,
+        )
+        expected = "".join(f"{path}: text: set\n{path}: eol: lf\n" for path in paths)
+        self.assertEqual((0, expected), (result.returncode, result.stdout), result.stderr)
+
     def test_harness_commands_run_in_a_fail_fast_shell_on_windows(self) -> None:
         workflow = (HERE.parents[1] / ".github/workflows/retained-readers.yml").read_text(
             encoding="utf-8"
@@ -337,6 +347,7 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertIn("        shell: bash\n", step)
         self.assertLess(step.index("shell: bash"), step.index("run: |"))
+        self.assertEqual(2, workflow.split("\njobs:", 1)[0].count('      - ".gitattributes"\n'))
 
 
 if __name__ == "__main__":
