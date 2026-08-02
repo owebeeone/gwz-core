@@ -21,6 +21,7 @@ import retained_reader_evidence as evidence
 import retained_reader_fixture as fixture
 import retained_reader_harness as harness
 import retained_reader_matrix as matrix
+import retained_reader_semantics as semantics
 from test_retained_reader_harness import MANIFEST, complete_manifest
 from test_retained_reader_matrix import write_zip
 
@@ -197,6 +198,164 @@ class FixtureAdversarialTests(unittest.TestCase):
                 fixture.fixture_set_identity(hostile),
             )
 
+    def test_fixture_identity_ignores_non_authoritative_git_bookkeeping(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "fixtures"
+            generator.generate(root)
+            before = fixture.fixture_set_identity(root)
+
+            for repository in (root / "custom-message-pending", root / "custom-message-pending/member"):
+                git_dir = repository / ".git"
+                (git_dir / "COMMIT_EDITMSG").write_text("host-specific editor state\r\n")
+                (git_dir / "description").write_text("host-specific description\r\n")
+                (git_dir / "logs/HEAD").write_text("host-specific reflog\r\n")
+                (git_dir / "gc.log").write_text("host-specific maintenance state\r\n")
+
+            self.assertEqual(before, fixture.fixture_set_identity(root))
+
+    def test_fixture_identity_retains_behavior_affecting_git_state(self) -> None:
+        mutations = {
+            "config": lambda repository: (repository / ".git/config").write_text(
+                (repository / ".git/config").read_text() + "[test]\n\tvalue = changed\n"
+            ),
+            "exclude": lambda repository: (repository / ".git/info/exclude").write_text("/different/\n"),
+            "head": lambda repository: (repository / ".git/HEAD").write_text("ref: refs/heads/feature/source\n"),
+            "ref": lambda repository: (repository / ".git/refs/heads/main").write_text(
+                (repository / ".git/refs/heads/feature/source").read_text()
+            ),
+            "object": lambda repository: generator._git_input(
+                repository, "new object", "hash-object", "-w", "--stdin"
+            ),
+            "index": lambda repository: generator._git(repository, "rm", "--cached", "base.txt"),
+            "worktree": lambda repository: (repository / "base.txt").write_text("changed\n"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp) / "fixtures"
+                generator.generate(root)
+                before = fixture.fixture_set_identity(root)
+                mutate(root / "custom-message-pending/member")
+                self.assertNotEqual(before, fixture.fixture_set_identity(root))
+
+    def test_fixture_identity_normalizes_git_ref_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "fixtures"
+            generator.generate(root)
+            before = fixture.fixture_set_identity(root)
+            workspace = root / "custom-message-pending"
+            for path in (
+                workspace / ".git/HEAD",
+                workspace / ".git/refs/heads/main",
+                workspace / "member/.git/HEAD",
+                workspace / "member/.git/refs/heads/main",
+                workspace / "member/.git/refs/heads/feature/source",
+            ):
+                path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+            self.assertEqual(before, fixture.fixture_set_identity(root))
+
+    def test_fixture_identity_is_stable_across_git_storage_layouts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "fixtures"
+            generator.generate(root)
+            before = fixture.fixture_set_identity(root)
+            repository = root / "custom-message-pending/member"
+            for command in (("repack", "-a", "-d"), ("pack-refs", "--all"), ("update-server-info",), ("commit-graph", "write", "--reachable"), ("commit-graph", "write", "--reachable", "--split"), ("multi-pack-index", "write")):
+                generator._git(repository, *command)
+                self.assertEqual(before, fixture.fixture_set_identity(root), command)
+
+    def test_fixture_identity_rejects_corrupt_or_unmodeled_git_authority(self) -> None:
+        for label in ("corrupt-object", "missing-object", "merge-head", "active-hook", "legacy-branch", "ref-lock", "object-info", "symlink-config", "symlink-exclude", "directory-ref-lock", "directory-index-lock", "directory-log-lock", "directory-hook"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp) / "fixtures"
+                generator.generate(root)
+                repository = root / "custom-message-pending/member"
+                if label in {"corrupt-object", "missing-object"}:
+                    oid = generator._git(repository, "rev-parse", "HEAD")
+                    loose = repository / f".git/objects/{oid[:2]}/{oid[2:]}"
+                    if label == "corrupt-object":
+                        loose.chmod(stat.S_IREAD | stat.S_IWRITE)
+                        loose.write_bytes(b"corrupt Git object")
+                    else:
+                        loose.unlink()
+                elif label == "merge-head":
+                    (repository / ".git/MERGE_HEAD").write_text(
+                        (repository / ".git/refs/heads/feature/source").read_text()
+                    )
+                else:
+                    relative = {"active-hook": "hooks/pre-commit", "legacy-branch": "branches/legacy", "ref-lock": "refs/heads/main.lock", "object-info": "objects/info/unclassified", "symlink-config": "config", "symlink-exclude": "info/exclude", "directory-ref-lock": "refs/heads/main.lock", "directory-index-lock": "index.lock", "directory-log-lock": "logs/refs/heads/main.lock", "directory-hook": "hooks/pre-commit"}[label]
+                    authority = repository / ".git" / relative
+                    if label.startswith("directory-"):
+                        authority.mkdir(parents=True)
+                    elif label.startswith("symlink-"):
+                        target = Path(temp) / label
+                        target.write_bytes(authority.read_bytes())
+                        authority.unlink(); authority.symlink_to(target)
+                    else:
+                        authority.parent.mkdir(parents=True, exist_ok=True)
+                        authority.write_text((repository / ".git/refs/heads/main").read_text() if label == "ref-lock" else "#!/bin/sh\nexit 1\n")
+                        if label == "active-hook": authority.chmod(0o755)
+                with self.assertRaises(fixture.FixtureError):
+                    fixture.fixture_set_identity(root)
+
+    def test_fixture_identity_retains_durable_workspace_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "fixtures"
+            generator.generate(root)
+            before = fixture.fixture_set_identity(root)
+            record = root / "custom-message-pending/.gwz/merge/merge_retained.yaml"
+            record.write_text(record.read_text() + "review_probe: changed\n")
+            self.assertNotEqual(before, fixture.fixture_set_identity(root))
+
+    def test_merge_record_semantic_binds_live_boundary_to_candidate_bytes(self) -> None:
+        boundary = "/.gwz/\n/member/\n"
+        digest = hashlib.sha256(boundary.encode()).hexdigest()
+        record = (
+            "publication:\n"
+            "  candidate:\n"
+            "    baseline_boundary_text: |\n"
+            "      /.gwz/\n"
+            "      /member/\n"
+            "    boundary_text: |\n"
+            "      /.gwz/\n"
+            "      /member/\n"
+            f"    baseline_boundary_sha256: {digest}\n"
+            f"    boundary_sha256: {digest}\n"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            generator._init(workspace)
+            (workspace / "tracked").write_text("tracked\n")
+            generator._commit(workspace, "baseline", "tracked")
+            (workspace / ".git/info/exclude").write_text(boundary)
+            (workspace / "record.yaml").write_text(record)
+            expected = semantics.merge_record_semantic(workspace, record)
+            matched, _ = semantics.yaml_observation(
+                {
+                    "path": "record.yaml",
+                    "semantic": "merge-record",
+                    "sha256": expected,
+                    "required": {},
+                },
+                workspace,
+            )
+            self.assertTrue(matched)
+            (workspace / ".git/info/exclude").write_text("!/*\n")
+            matched, _ = semantics.yaml_observation(
+                {
+                    "path": "record.yaml",
+                    "semantic": "merge-record",
+                    "sha256": expected,
+                    "required": {},
+                },
+                workspace,
+            )
+            self.assertFalse(matched)
+            external = Path(temp) / "external-exclude"
+            external.write_text(boundary)
+            (workspace / ".git/info/exclude").unlink()
+            (workspace / ".git/info/exclude").symlink_to(external)
+            self.assertNotEqual(expected, semantics.merge_record_semantic(workspace, record))
+
     def test_generated_fixtures_match_reviewed_logical_digests(self) -> None:
         contract = json.loads((HERE / "fixture-contract.json").read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as temp:
@@ -223,6 +382,18 @@ class FixtureAdversarialTests(unittest.TestCase):
                 (workspace / ".gwz/merge/done/merge_retained.yaml").write_text(after)
                 errors, _ = fixture.evaluate_postconditions(specification, workspace, before_root=source)
                 self.assertTrue(errors)
+            target = workspace / ".gwz/merge/done/merge_retained.yaml"
+            external = Path(temp) / "archived-record"
+            external.write_text(before)
+            target.unlink(); target.symlink_to(external)
+            errors, _ = fixture.evaluate_postconditions(specification, workspace, before_root=source)
+            self.assertTrue(errors)
+            lock = workspace / "gwz.conf/gwz.lock.yml"
+            lock.parent.mkdir()
+            lock.symlink_to(external)
+            checks = [{"kind": "path", "path": "gwz.conf/gwz.lock.yml", "state": "file"}, {"kind": "yaml-semantic", "path": "gwz.conf/gwz.lock.yml", "sha256": semantics.canonical_yaml_sha256(before)}]
+            errors, _ = fixture.evaluate_postconditions(checks, workspace)
+            self.assertEqual(2, len(errors))
 
 
 class RuntimeAdversarialTests(unittest.TestCase):

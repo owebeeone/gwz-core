@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import subprocess
@@ -15,6 +16,7 @@ import retained_reader_fixture as fixture_tools
 import retained_reader_harness as harness
 import retained_reader_evidence as evidence
 import retained_reader_matrix as matrix
+import retained_reader_semantics as semantics
 
 
 HERE = Path(__file__).resolve().parent
@@ -31,6 +33,46 @@ def git(root: Path, *args: str) -> str:
 
 
 class RetainedReaderCaseTests(unittest.TestCase):
+    def test_index_identity_keeps_non_utf8_paths_and_unmerged_stages(self) -> None:
+        raw_path = b"non-utf8-\xff"
+        rows = semantics._index_rows(b"100644 " + b"a" * 40 + b" 0\t" + raw_path + b"\0")
+        self.assertEqual(raw_path, base64.b64decode(rows[0]["path_b64"]))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "fixtures"
+            generator.generate(root)
+            repository = root / "custom-message-pending/member"
+            before = fixture_tools.fixture_set_identity(root)
+            oid = git(repository, "rev-parse", "HEAD:base.txt")
+            generator._git(repository, "rm", "--cached", "base.txt")
+            generator._git_input(repository, f"100644 {oid} 1\tbase.txt\n100644 {oid} 2\tbase.txt\n", "update-index", "--index-info")
+            self.assertNotEqual(before, fixture_tools.fixture_set_identity(root))
+            generator._git(repository, "reset", "--hard", "HEAD")
+            attached = semantics.repository_identity(repository)
+            generator._git(repository, "checkout", "--detach", "HEAD")
+            detached = semantics.repository_identity(repository)
+            self.assertNotEqual(attached, detached)
+            self.assertIsNone(detached["head"]["symbolic"])
+
+    def test_fixture_identity_retains_pseudorefs_and_rejects_index_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "fixtures"
+            generator.generate(root)
+            before = fixture_tools.fixture_set_identity(root)
+            repository = root / "custom-message-pending-completed/member"
+            orig_head = repository / ".git/ORIG_HEAD"
+            orig_head.write_text((repository / ".git/refs/heads/feature/source").read_text())
+            self.assertNotEqual(before, fixture_tools.fixture_set_identity(root))
+        for command, delete in (("update-index --assume-unchanged base.txt", False), ("add -N intent.txt", False), ("add -N intent.txt", True)):
+            with self.subTest(command=command, delete=delete), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp) / "fixtures"
+                generator.generate(root)
+                repository = root / "custom-message-pending/member"
+                if command.startswith("add"): (repository / "intent.txt").write_text("")
+                generator._git(repository, *command.split())
+                if delete: (repository / "intent.txt").unlink()
+                with self.assertRaises(fixture_tools.FixtureError):
+                    fixture_tools.fixture_set_identity(root)
+
     def test_checked_macos_evidence_matches_current_inputs_and_is_path_free(self) -> None:
         evidence_path = HERE / "evidence-macos-aarch64.json"
         checked = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -85,6 +127,29 @@ class RetainedReaderCaseTests(unittest.TestCase):
             if any(artifact["support"] == "required" for artifact in reader["artifacts"])
         }
         self.assertEqual(runnable, covered)
+
+    def test_continue_cases_classify_optional_workspace_boundary_rewrite(self) -> None:
+        document = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
+        by_id = {case["id"]: case for case in document["cases"]}
+        for case_id in (
+            "v0-custom-message-pending-continue",
+            "v0-no-ff-fast-forwardable-continue-known-failure",
+        ):
+            dynamic = by_id[case_id]["expected"]["mutation"]["dynamic"]
+            boundary = [item for item in dynamic if item["pattern"] == "text:.git/info/exclude"]
+            self.assertEqual(
+                [{"pattern": "text:.git/info/exclude", "minimum": 0, "maximum": 1}],
+                boundary,
+                case_id,
+            )
+            self.assertTrue(
+                any(
+                    item.get("kind") == "yaml-semantic"
+                    and item.get("semantic") == "merge-record"
+                    for item in by_id[case_id]["postconditions"]
+                ),
+                case_id,
+            )
 
     def test_generation_is_byte_deterministic_and_contains_no_absolute_paths(self) -> None:
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:

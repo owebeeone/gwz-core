@@ -15,6 +15,34 @@ from retained_reader_errors import HarnessError
 TEMPLATE_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 
 
+def regular_tree_inventory(root: Path) -> tuple[set[str], set[str]]:
+    """List real files and directories below a directory, rejecting indirection."""
+
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"not a real directory: {root}")
+    files: set[str] = set()
+    directories: set[str] = set()
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ValueError(f"non-regular filesystem entry: {relative}")
+        if path.is_file():
+            files.add(relative)
+        else:
+            directories.add(relative)
+    return files, directories
+
+
+def is_regular_file(path: Path) -> bool:
+    return not path.is_symlink() and path.is_file()
+
+
+def read_regular_text(path: Path, *, encoding: str = "utf-8", errors: str = "strict") -> str:
+    if not is_regular_file(path):
+        raise ValueError(f"not a regular file: {path}")
+    return path.read_text(encoding=encoding, errors=errors)
+
+
 def render_command(command: Sequence[str], variables: Mapping[str, str]) -> list[str]:
     rendered: list[str] = []
     for argument in command:

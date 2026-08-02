@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
+from retained_reader_process import is_regular_file, read_regular_text, regular_tree_inventory
 from retained_reader_yaml import (
     UUID_RE,
     YamlSubsetError,
@@ -20,6 +22,9 @@ from retained_reader_yaml import (
 
 
 OBJECT_RE = re.compile(r"^(?P<prefix>(?:.+/)?)\.git/objects/(?P<fan>[0-9a-f]{2})/(?P<rest>[0-9a-f]{38})$")
+OBJECT_STORAGE_RE = re.compile(
+    r"objects/(?:[0-9a-f]{2}/[0-9a-f]{38}|info/(?:packs|commit-graph|commit-graphs/(?:commit-graph-chain|graph-[0-9a-f]{40}\.graph))|pack/(?:pack-[0-9a-f]{40}\.(?:pack|idx|rev|bitmap|mtimes)|multi-pack-index(?:-[0-9a-f]{40}\.(?:bitmap|rev))?))"
+)
 OID_RE = re.compile(r"\b[0-9a-f]{40}\b")
 SIGNATURE_TIME_RE = re.compile(r"\s\d+ [+-]\d{4}$")
 
@@ -49,6 +54,137 @@ def _git(repository: Path, args: list[str], *, binary: bool = False) -> bytes | 
 
 def _canonical(value: Any) -> str:
     return _sha256(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+
+
+def _canonical_text(path: Path) -> str:
+    return "\n".join(path.read_text(encoding="utf-8").splitlines())
+
+
+def _index_rows(staged: bytes) -> list[dict[str, Any]]:
+    rows = []
+    for row in staged.rstrip(b"\0").split(b"\0") if staged else []:
+        metadata, path = row.split(b"\t", 1)
+        mode, oid, stage = metadata.decode("ascii").split()
+        rows.append(
+            {
+                "mode": mode,
+                "oid": oid,
+                "stage": int(stage),
+                "path_b64": base64.b64encode(path).decode("ascii"),
+            }
+        )
+    return rows
+
+
+def _git_storage_files(git_dir: Path) -> tuple[set[str], set[str]]:
+    try:
+        files, directories = regular_tree_inventory(git_dir)
+    except (OSError, ValueError) as error:
+        raise SemanticError(f"invalid Git administration storage: {error}") from error
+    missing = {"HEAD", "config", "index", "info/exclude"} - files
+    if missing:
+        raise SemanticError(f"missing Git administration files: {sorted(missing)}")
+    fixed = {"HEAD", "ORIG_HEAD", "COMMIT_EDITMSG", "config", "description", "gc.log", "index", "info/exclude", "info/refs", "logs/HEAD", "packed-refs"}
+    for path in files:
+        allowed = path in fixed or path.startswith("refs/") or path.startswith("logs/refs/")
+        allowed |= bool(re.fullmatch(r"hooks/[^/]+\.sample", path) or OBJECT_STORAGE_RE.fullmatch(path))
+        if not allowed or path.startswith("refs/replace/"):
+            raise SemanticError(f"unclassified Git administration file: {path}")
+    fixed_dirs = {"branches", "hooks", "info", "logs", "logs/refs", "objects", "objects/info", "objects/info/commit-graphs", "objects/pack", "refs", "refs/heads", "refs/remotes", "refs/tags"}
+    for path in directories:
+        allowed = path in fixed_dirs or bool(re.fullmatch(r"objects/[0-9a-f]{2}", path))
+        allowed |= path.startswith("refs/") or path.startswith("logs/refs/")
+        if not allowed:
+            raise SemanticError(f"unclassified Git administration directory: {path}")
+    return files, directories
+
+
+def repository_identity(repository: Path) -> dict[str, Any]:
+    """Return storage-independent, fail-closed identity for a generated Git repo."""
+
+    git_dir = repository / ".git"
+    storage_files, storage_directories = _git_storage_files(git_dir)
+
+    _git(repository, ["fsck", "--strict", "--no-reflogs", "--unreachable", "--no-progress"])
+    object_format = str(_git(repository, ["rev-parse", "--show-object-format"])).strip()
+    repo_format = str(_git(repository, ["config", "--local", "--get", "core.repositoryformatversion"])).strip()
+    if object_format != "sha1" or repo_format != "0":
+        raise SemanticError(
+            f"unsupported generated repository format: object={object_format}, repository={repo_format}"
+        )
+
+    head_value = _canonical_text(git_dir / "HEAD")
+    head_target = head_value[5:] if head_value.startswith("ref: ") else None
+    try:
+        head_oid = str(_git(repository, ["rev-parse", "--verify", "HEAD"])).strip()
+    except SemanticError:
+        if head_target is None:
+            raise
+        head_oid = None
+    ref_text = str(
+        _git(
+            repository,
+            [
+                "for-each-ref",
+                "--sort=refname",
+                "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)",
+            ],
+        )
+    )
+    refs = [line.split("\0") for line in ref_text.splitlines() if line]
+    ref_names = {row[0] for row in refs}
+    unexpected_refs = {path for path in storage_files if path.startswith("refs/")} - ref_names
+    allowed_logs = {"logs/HEAD"} | {f"logs/{name}" for name in ref_names}
+    unexpected_logs = {path for path in storage_files if path.startswith("logs/")} - allowed_logs
+    ref_dirs = {"refs", "refs/heads", "refs/remotes", "refs/tags"} | {"/".join(name.split("/")[:stop]) for name in ref_names for stop in range(1, len(name.split("/")))}
+    log_dirs = {"logs", "logs/refs"} | {"/".join(f"logs/{name}".split("/")[:stop]) for name in ref_names for stop in range(1, len(f"logs/{name}".split("/")))}
+    unexpected_dirs = {path for path in storage_directories if path == "refs" or path.startswith(("refs/", "logs/"))} - ref_dirs - log_dirs
+    unexpected = unexpected_refs | unexpected_logs | unexpected_dirs
+    if unexpected:
+        raise SemanticError(f"unclassified Git ref/log storage: {sorted(unexpected)}")
+
+    staged = _git(repository, ["ls-files", "--stage", "-z"], binary=True)
+    assert isinstance(staged, bytes)
+    index = _index_rows(staged)
+    tags = _git(repository, ["ls-files", "-v", "-z"], binary=True)
+    fsmonitor = _git(repository, ["ls-files", "-f", "-z"], binary=True)
+    resolve_undo = _git(repository, ["ls-files", "--resolve-undo", "-z"], binary=True)
+    ita_visible = _git(repository, ["diff", "--cached", "--name-only", "-z", "--ita-visible-in-index"], binary=True)
+    ita_invisible = _git(repository, ["diff", "--cached", "--name-only", "-z", "--ita-invisible-in-index"], binary=True)
+    assert all(isinstance(value, bytes) for value in (tags, fsmonitor, resolve_undo, ita_visible, ita_invisible))
+    if any(row[:1] == b"S" or row[:1].islower() for row in tags.rstrip(b"\0").split(b"\0") if row):
+        raise SemanticError("generated fixture index has skip-worktree or assume-unchanged state")
+    if any(row[:1].islower() for row in fsmonitor.rstrip(b"\0").split(b"\0") if row):
+        raise SemanticError("generated fixture index has fsmonitor-valid state")
+    if resolve_undo:
+        raise SemanticError("generated fixture index has resolve-undo state")
+    if ita_visible != ita_invisible:
+        raise SemanticError("generated fixture index has intent-to-add state")
+
+    object_text = str(
+        _git(
+            repository,
+            [
+                "cat-file",
+                "--batch-all-objects",
+                "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+            ],
+        )
+    )
+    return {
+        "object_format": object_format,
+        "repository_format": repo_format,
+        "head": {"symbolic": head_target, "oid": head_oid},
+        "refs": refs,
+        "pseudorefs": {
+            name: _canonical_text(git_dir / name)
+            for name in sorted(storage_files & {"ORIG_HEAD"})
+        },
+        "index": index,
+        "objects": sorted(line.split() for line in object_text.splitlines() if line),
+        "config": _canonical_text(git_dir / "config"),
+        "exclude": _canonical_text(git_dir / "info/exclude"),
+    }
 
 
 def _normalize_name(value: str) -> str:
@@ -169,7 +305,7 @@ def merge_record_semantic(workspace: Path, text: str) -> str:
                     raise SemanticError("publication marker path is unsafe")
                 actual_marker = workspace / relative
                 checks["marker_file_matches_yaml"] = (
-                    actual_marker.is_file()
+                    is_regular_file(actual_marker)
                     and actual_marker.read_text(encoding="utf-8") == marker_text
                 )
             candidate["marker_yaml"] = marker
@@ -179,8 +315,23 @@ def merge_record_semantic(workspace: Path, text: str) -> str:
             checks["lock_sha256_matches_yaml"] = publication.get("candidate_lock_sha256") == _sha256(lock_text)
             lock_path = workspace / "gwz.conf/gwz.lock.yml"
             checks["lock_file_matches_yaml"] = (
-                lock_path.is_file() and lock_path.read_text(encoding="utf-8") == lock_text
+                is_regular_file(lock_path) and lock_path.read_text(encoding="utf-8") == lock_text
             )
+        if isinstance(candidate, dict):
+            baseline_boundary = candidate.get("baseline_boundary_text")
+            boundary = candidate.get("boundary_text")
+            if isinstance(baseline_boundary, str):
+                checks["baseline_boundary_sha256_matches_text"] = (
+                    candidate.get("baseline_boundary_sha256") == _sha256(baseline_boundary)
+                )
+            if isinstance(boundary, str):
+                checks["boundary_sha256_matches_text"] = (
+                    candidate.get("boundary_sha256") == _sha256(boundary)
+                )
+                boundary_path = workspace / ".git/info/exclude"
+                checks["boundary_file_matches_text"] = (
+                    is_regular_file(boundary_path) and boundary_path.read_bytes() == boundary.encode()
+                )
         hashes = publication.get("candidate_hashes")
         if marker_digest is not None and isinstance(hashes, list):
             for row in hashes:
@@ -191,7 +342,7 @@ def merge_record_semantic(workspace: Path, text: str) -> str:
                     raise SemanticError("publication candidate hash path is unsafe")
                 actual = workspace / relative
                 checks[f"candidate_hash:{_normalize_name(row['path'])}"] = (
-                    actual.is_file() and row.get("sha256") == _sha256(actual.read_bytes())
+                    is_regular_file(actual) and row.get("sha256") == _sha256(actual.read_bytes())
                 )
                 if "/markers/" in row["path"]:
                     row["sha256"] = marker_digest
@@ -216,20 +367,22 @@ def semantic_path_identity(workspace: Path, path_key: str, entry: Mapping[str, A
         return "directory"
     match = OBJECT_RE.fullmatch(plain)
     if match:
+        if entry.get("kind") != "file": raise SemanticError(f"Git object is not regular: {plain}")
         repository = workspace / match.group("prefix").removesuffix("/")
         return git_object_semantic(repository, match.group("fan") + match.group("rest"))
     path = workspace / plain
     if plain.endswith("/.git/index") or plain == ".git/index":
+        if entry.get("kind") != "file": raise SemanticError(f"Git index is not regular: {plain}")
         repository, _ = _repository_for(workspace, plain)
         return _index_semantic(repository)
     if "/.git/refs/" in plain or plain.startswith(".git/refs/"):
         repository, git_path = _repository_for(workspace, plain)
-        oid = path.read_text(encoding="ascii").strip()
+        oid = read_regular_text(path, encoding="ascii").strip()
         return _canonical({"ref": git_path.removeprefix(".git/"), "target": git_object_semantic(repository, oid)})
     if "/.git/logs/" in plain or plain.startswith(".git/logs/"):
         repository, _ = _repository_for(workspace, plain)
         cache: dict[str, str] = {}
-        text = path.read_text(encoding="utf-8", errors="surrogateescape")
+        text = read_regular_text(path, encoding="utf-8", errors="surrogateescape")
         normalized = OID_RE.sub(
             lambda match: (
                 "<zero-oid>"
@@ -242,8 +395,8 @@ def semantic_path_identity(workspace: Path, path_key: str, entry: Mapping[str, A
         return _sha256(normalized)
     if path.suffix in {".yaml", ".yml"}:
         if "/.gwz/merge/done/" in f"/{plain}":
-            return merge_record_semantic(workspace, path.read_text(encoding="utf-8"))
-        return canonical_yaml_sha256(path.read_text(encoding="utf-8"), normalize_dynamic="/markers/" in f"/{plain}")
+            return merge_record_semantic(workspace, read_regular_text(path))
+        return canonical_yaml_sha256(read_regular_text(path), normalize_dynamic="/markers/" in f"/{plain}")
     return str(entry.get("sha256") or _canonical(entry))
 
 
@@ -273,7 +426,7 @@ def normalized_mutations(
 
 def yaml_observation(specification: Mapping[str, Any], workspace: Path) -> tuple[bool, dict[str, Any]]:
     path = workspace / str(specification["path"])
-    text = path.read_text(encoding="utf-8")
+    text = read_regular_text(path)
     normalize = bool(specification.get("normalize_dynamic", False))
     document = parse_yaml_subset(text)
     digest = (
@@ -297,12 +450,12 @@ def yaml_set_observation(
 ) -> tuple[bool, dict[str, Any]]:
     files = sorted(workspace.glob(str(specification["pattern"])))
     digests = [
-        canonical_yaml_sha256(path.read_text(encoding="utf-8"), normalize_dynamic=True)
+        canonical_yaml_sha256(read_regular_text(path), normalize_dynamic=True)
         for path in files
-        if path.is_file()
+        if is_regular_file(path)
     ]
     expected = specification.get("sha256", [])
-    matched = len(files) == specification.get("count") and digests == expected
+    matched = all(is_regular_file(path) for path in files) and len(files) == specification.get("count") and digests == expected
     return matched, {
         "kind": "yaml-set-semantic", "pattern": str(specification["pattern"]),
         "count": len(files), "sha256": digests, "matched": matched,

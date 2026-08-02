@@ -17,10 +17,12 @@ from retained_reader_semantics import (
     SemanticError,
     index_observation,
     normalized_mutations,
+    repository_identity,
     root_publication_observation,
     yaml_observation,
     yaml_set_observation,
 )
+from retained_reader_process import is_regular_file, read_regular_text
 
 
 class FixtureError(RuntimeError):
@@ -52,7 +54,7 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def snapshot_tree(root: Path) -> TreeSnapshot:
+def snapshot_tree(root: Path, *, skip_git_admin: bool = False) -> TreeSnapshot:
     if not root.is_dir():
         raise FixtureError(f"snapshot root is not a directory: {root}")
     entries: dict[str, dict[str, Any]] = {}
@@ -77,6 +79,9 @@ def snapshot_tree(root: Path) -> TreeSnapshot:
                     "target_b64": base64.b64encode(target).decode("ascii"),
                 }
             elif child.is_dir(follow_symlinks=False):
+                if skip_git_admin and child.name == ".git":
+                    entries[key] = {"kind": "directory", "mode": mode}
+                    continue
                 is_object_fanout = (
                     len(child_relative.parts) >= 3
                     and child_relative.parts[-2] == "objects"
@@ -107,22 +112,30 @@ def changed_paths(before: TreeSnapshot, after: TreeSnapshot) -> list[str]:
 
 
 def _logical_snapshot(root: Path) -> str:
-    snapshot = snapshot_tree(root)
+    snapshot = snapshot_tree(root, skip_git_admin=True)
     entries: dict[str, dict[str, Any]] = {}
+    repositories: dict[str, dict[str, Any]] = {}
     for key, item in snapshot.entries.items():
-        logical = {name: value for name, value in item.items() if name != "mode"}
         plain = key.removeprefix("text:")
-        object_match = __import__("re").fullmatch(r"(?:.+/)?\.git/objects/([0-9a-f]{2})/([0-9a-f]{38})", plain)
-        if object_match and logical.get("kind") == "file":
-            logical = {"kind": "git-object", "oid": "".join(object_match.groups())}
-        elif plain.endswith("/.git/index") or plain == ".git/index":
-            repository = root / plain.removesuffix("/.git/index") if plain != ".git/index" else root
-            listed = _run_git(repository, ["ls-files", "--stage", "-z"])
-            if listed.returncode:
-                raise FixtureError(f"cannot identify logical Git index: {listed.stderr.strip()}")
-            logical = {"kind": "git-index", "sha256": hashlib.sha256(listed.stdout.encode()).hexdigest()}
-        entries[key] = logical
-    canonical = json.dumps(entries, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        parts = Path(plain).parts
+        if ".git" in parts:
+            git_at = parts.index(".git")
+            if len(parts) == git_at + 1:
+                if item.get("kind") != "directory":
+                    raise FixtureError(f"Git administration path is not a directory: {plain}")
+                label = Path(*parts[:git_at]).as_posix() if git_at else "."
+                try:
+                    repositories[label] = repository_identity(root.joinpath(*parts[:git_at]))
+                except (OSError, SemanticError, UnicodeError, ValueError) as error:
+                    raise FixtureError(f"cannot identify repository {label}: {error}") from error
+            continue
+        entries[key] = {name: value for name, value in item.items() if name != "mode"}
+    canonical = json.dumps(
+        {"workspace": entries, "repositories": repositories},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -347,8 +360,8 @@ def evaluate_postconditions(
                 path = workspace / _safe_relative_path(specification.get("path"), "postcondition")
                 state = specification.get("state")
                 matched = {
-                    "file": path.is_file(),
-                    "directory": path.is_dir(),
+                    "file": is_regular_file(path),
+                    "directory": not path.is_symlink() and path.is_dir(),
                     "absent": not path.exists() and not path.is_symlink(),
                 }.get(str(state))
                 if matched is not True:
@@ -368,8 +381,8 @@ def evaluate_postconditions(
             if kind == "merge-record-baseline-preserved":
                 if before_root is None:
                     raise FixtureError("baseline comparison requires before_root")
-                source = (before_root / _safe_relative_path(specification.get("before"), "before")).read_text(encoding="utf-8")
-                target = (workspace / _safe_relative_path(specification.get("after"), "after")).read_text(encoding="utf-8")
+                source = read_regular_text(before_root / _safe_relative_path(specification.get("before"), "before"))
+                target = read_regular_text(workspace / _safe_relative_path(specification.get("after"), "after"))
                 fields = specification.get("fields", [])
                 def extract(text: str, field: str) -> str | None:
                     lines = text.splitlines()
@@ -419,7 +432,7 @@ def evaluate_postconditions(
             repository = workspace / _safe_relative_path(
                 specification.get("repository"), "repository"
             )
-            if not repository.is_dir():
+            if repository.is_symlink() or not repository.is_dir():
                 errors.append(f"postcondition {position}: repository is missing")
                 continue
             if kind == "git-ref-equals":

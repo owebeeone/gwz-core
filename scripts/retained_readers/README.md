@@ -80,7 +80,7 @@ mutation policy:
     "command": "merge-status",
     "args": ["--json", "merge", "--status"],
     "fixture": "custom-message-pending",
-    "fixture_sha256": "d272a637a8d49b5926e4e7456c713941358be6b9890dc5639358c1ba4451a23c",
+    "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
     "expected": {
       "exit_codes": [1],
       "stdout": {"mode": "json-contract", "value": {
@@ -109,6 +109,12 @@ absolute source or destination path into a fixture. `fixture-contract.json`
 freezes portable logical identities for all six fixtures: pending custom
 message, the exact already-created commit, its wrong-message negative twin,
 fast-forwardable `mode: no_ff`, an archived record, and the pre-record view.
+Each identity retains the durable non-Git tree plus storage-independent Git
+HEAD, refs, pseudorefs, index tuples, and the complete validated object set.
+Config and workspace-boundary content remain authoritative; only explicitly
+classified editor, reflog, description, and maintenance bookkeeping is
+ignored. Active hooks, legacy branch authority, ref/reflog locks, filesystem
+indirection, and unclassified object storage all fail closed.
 
 Run one platform lane from an already populated cache:
 
@@ -148,10 +154,10 @@ valid only with `--evidence-out`.
 `evidence-macos-aarch64.json` is the checked result of the full behavioral
 case set against the actual macOS arm64 release artifacts: 37 executable
 reader/case results passed and the absent `gwz-py` v0.10.0 distribution is
-reported as declared unsupported. The remaining cross-platform execution is
-the Linux x86_64 and Windows x86_64 behavioral lanes. Linux arm64 and macOS
-x86_64 retain artifact-smoke coverage; Windows arm64 is historically
-undistributed and remains explicit substitute evidence rather than a skip.
+reported as declared unsupported. CI repeats the complete behavioral matrix on
+Linux x86_64, Linux arm64, Windows x86_64, and both macOS architectures.
+Windows arm64 is historically undistributed and remains explicit substitute
+evidence rather than a skip.
 
 `.github/workflows/retained-readers.yml` runs this same case set on Linux and
 Windows x86_64, Linux arm64, and both supported macOS architectures. It uploads

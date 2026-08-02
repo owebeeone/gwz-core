@@ -105,6 +105,7 @@ def _run_case(
     entry_point: Path,
     case: Mapping[str, Any],
     fixture_root: Path,
+    identities: Mapping[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
     command_name = case.get("command")
@@ -114,7 +115,7 @@ def _run_case(
     if not fixture.is_dir():
         return {"reader": reader["id"], "case": case["id"], "status": "failed", "errors": [f"fixture is missing: {fixture}"]}
     expected_fixture = case.get("fixture_sha256")
-    actual_fixture = fixture_identities(fixture.parent).get(fixture.name)
+    actual_fixture = identities.get(fixture.name)
     if expected_fixture is not None and actual_fixture != expected_fixture:
         return {"reader": reader["id"], "case": case["id"], "status": "failed", "errors": [f"fixture identity differs: {actual_fixture}"]}
     with tempfile.TemporaryDirectory(prefix="gwz-retained-reader-") as temp:
@@ -205,6 +206,7 @@ def run_matrix(
     if platform not in {item["id"] for item in manifest["platforms"]}:
         raise MatrixError(f"unknown platform {platform!r}")
     cases = validate_cases(cases_document, manifest)
+    identities = fixture_identities(fixture_root)
     results: list[dict[str, Any]] = []
     timeout = manifest["default_timeout_seconds"]
     with tempfile.TemporaryDirectory(prefix="gwz-retained-derived-") as derived:
@@ -240,7 +242,9 @@ def run_matrix(
                 continue
             for case in selected:
                 try:
-                    results.append(_run_case(reader, entry_point, case, fixture_root, timeout))
+                    results.append(
+                        _run_case(reader, entry_point, case, fixture_root, identities, timeout)
+                    )
                 except (FixtureError, MatrixError, harness.HarnessError) as error:
                     results.append(
                         {

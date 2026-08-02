@@ -49,24 +49,24 @@
     }
   ],
   "inputs": {
-    "cases_sha256": "2f49962d80d2eec3498f8feedbf1ae6d251ba775e9666ed7bbf1383211b45e75",
+    "cases_sha256": "e4e6d83eb8679953b46d15f01186a198bc6d8510d90f90b553f8bab50191759e",
     "manifest_sha256": "967af83e7452bdb22f2d7fd682f57c31bc91a066d2e8c6181623c9e9473f2ff5"
   },
   "platform": "macos-aarch64",
   "provenance": {
-    "evaluator_sha256": "7379e60229e5e4d029937fcebcdd433d8f3b9f9c132e47c8e87f29d37f3d3a94",
+    "evaluator_sha256": "44bb5dd19e20e36d149190344e65906e7c3c7265734d78d7a5031fd83dbadd2c",
     "execution": {
       "identity": "separate-attestation",
       "required_in_ci": true
     },
-    "fixture_set_sha256": "d2ee4f1f5e05335d886c52d3e8435155d4b9328a5e34c129ea21a5944c7543e7",
+    "fixture_set_sha256": "bbbf6892988a969627e76b3244f2e872410a53927c792668d51ece0f8806d28b",
     "fixtures": {
-      "archived-v0": "c6a095af22067848b43f5195fc625cd0a4b9eb353f2de95e6bee8d627724528a",
-      "custom-message-pending": "c49fed2d358cf4ba04202943aa3b9721158c4e54eb8a05d723cdaa847397b7e6",
-      "custom-message-pending-completed": "3d453979ce40439e9f0d80caf3e02360b106e67631b29b8743e7fcf7cf2cc68d",
-      "custom-message-pending-wrong-message": "9079afb63fa3f7ce602cb9877d5e28f90c0f127bd0316819bbdf52d2a4cff7a0",
-      "no-ff-fast-forwardable": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1",
-      "pre-record-open-v0": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1"
+      "archived-v0": "9cb06c1c459657ba02b2f8f4c53f01d802a45684dacb3521ab9a761aaa9a0757",
+      "custom-message-pending": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
+      "custom-message-pending-completed": "d24e8b82a69d3be55107b0852b72f06e63ec37342ecb709c26ea1255f755c5ec",
+      "custom-message-pending-wrong-message": "4cf2a69a2b171447441c2a9c5b56b64d247edfb9aef95e11179e6a45881be79a",
+      "no-ff-fast-forwardable": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
+      "pre-record-open-v0": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296"
     },
     "generator_sha256": "a6fae35bbe448b117b9f0a6c22a5e69c22e7164e9a77390c1a23490fc5039224",
     "git": {
@@ -80,26 +80,26 @@
     },
     "python": {
       "architecture": "arm64",
-      "executable_sha256": "cbf84109626aa1013bbe408fbb9590bd0f1c1548f038b2221c6b8b87de26ca43",
+      "executable_sha256": "fcb4b1b61e840c7cf8ddbfa2f795799c88c827d48f77a804c678c14c5ab6e560",
       "implementation": "CPython",
       "pointer_bits": 64,
-      "version": "3.14.3"
+      "version": "3.10.15"
     },
-    "source_set_sha256": "7379e60229e5e4d029937fcebcdd433d8f3b9f9c132e47c8e87f29d37f3d3a94",
+    "source_set_sha256": "44bb5dd19e20e36d149190344e65906e7c3c7265734d78d7a5031fd83dbadd2c",
     "sources": {
       "cases.schema.json": "289aecaa593da3db3b2132cb745d3d59b4c6be3ffdb4c76daeccf969fae854c2",
-      "fixture-contract.json": "fe0ea35cd07096fd9bf4db9c14842f94b3bd94626d7d86488f31068a7a0be398",
+      "fixture-contract.json": "fd230f9176873e9db28028340ea66bc97aa895a2ee5d50b973ac239127ca58f6",
       "generate_retained_reader_fixtures.py": "a6fae35bbe448b117b9f0a6c22a5e69c22e7164e9a77390c1a23490fc5039224",
       "manifest.schema.json": "a0bd2f2a4cea854f40394a6da5dd7bc30492e4edb2e9b44d6f5bbdb288640f43",
       "retained_reader_errors.py": "0076ef95b84fe5f801aef173e11335283269213e315dfd4fdb8b28a5d3504e46",
       "retained_reader_evidence.py": "f3125d30da739c0da68e9638bb0459ce966e9769ea7cee9cb2a7bd234a45e473",
-      "retained_reader_fixture.py": "db8948735a7c0b0bb59c5af83af16e2d0d79c0d1de9ad964cf9f0d1bdcb690ee",
+      "retained_reader_fixture.py": "709b12e95279645d8529816f3b4298e26d8e5d8c8243b59963f93d090678f46f",
       "retained_reader_harness.py": "dfa48afb4a2cf167f7a8e471be9737ed83958691d594e45b1f75f22fc17f04b7",
-      "retained_reader_matrix.py": "58a002d90bee3ba22379eb53e951e12e8a851f26cd538a283d3ffeb160940aa7",
-      "retained_reader_process.py": "0f77cc3c13e7a0ed8751cea5dc3d12c7415ce021f078936afc1501159f491cce",
+      "retained_reader_matrix.py": "07c8def951f7cdba86646b6cf215212e3d0e7ffe11208556e8c82d170767fd4c",
+      "retained_reader_process.py": "6e3c4eeb0a74f8aa28e1dc1727fa71e1631adf0499e59d686a417041dbc76df0",
       "retained_reader_runtime.py": "da33b7bdadd518795e59041f872a34233a7e1b5ec665d3c585f09b8fce2ea425",
       "retained_reader_schema.py": "6116a217b59849068091b80769c56830fe7b6ef1dc187b9bf0aee8f04bd990c1",
-      "retained_reader_semantics.py": "b3a5bcf8d0c7b28a1adce307a863bda005187d53323de3717265c911146da8be",
+      "retained_reader_semantics.py": "344cbf7c3024b154af769211a77dcd2bee3dd543122376f36ed1f20f96894952",
       "retained_reader_yaml.py": "5281b55c64967025de4d0827abb5486d49fc6b5ac1621ec66e0c32814cf0d561"
     }
   },
@@ -175,7 +175,7 @@
       "status": "passed"
     },
     {
-      "after_invariant_sha256": "0efa28428e25cc2633de3d92d067fe10022cf624e98ed1bde2bd880808e855e0",
+      "after_invariant_sha256": "a92c591710c3987d83058c1a796ea61264c07e72f0ce8e0acfeae63253112d33",
       "before_sha256": "a231c23f1006a44efa144e1e30c5fba6c75ab10bf8abb6d94cc16aafca964d4e",
       "case": "v0-custom-message-pending-continue",
       "exit_code": 0,
@@ -218,7 +218,7 @@
       "status": "passed"
     },
     {
-      "after_invariant_sha256": "cc7c2f8d4bd3c534b42cfddd023dac66b328eab41848638e4e900d78fdfbc4a4",
+      "after_invariant_sha256": "7e64700ab7708c525fdc7d3585a166fbe59642a4ddf3d2934e0c20de61c0eaf1",
       "before_sha256": "6800b79130fca475305e091d8af4ec67254182cc1b684f9af2f8c5f180f610bd",
       "case": "v0-no-ff-fast-forwardable-continue-known-failure",
       "exit_code": 0,
@@ -337,7 +337,7 @@
       "status": "passed"
     },
     {
-      "after_invariant_sha256": "0efa28428e25cc2633de3d92d067fe10022cf624e98ed1bde2bd880808e855e0",
+      "after_invariant_sha256": "a92c591710c3987d83058c1a796ea61264c07e72f0ce8e0acfeae63253112d33",
       "before_sha256": "a231c23f1006a44efa144e1e30c5fba6c75ab10bf8abb6d94cc16aafca964d4e",
       "case": "v0-custom-message-pending-continue",
       "exit_code": 0,
@@ -380,7 +380,7 @@
       "status": "passed"
     },
     {
-      "after_invariant_sha256": "cc7c2f8d4bd3c534b42cfddd023dac66b328eab41848638e4e900d78fdfbc4a4",
+      "after_invariant_sha256": "7e64700ab7708c525fdc7d3585a166fbe59642a4ddf3d2934e0c20de61c0eaf1",
       "before_sha256": "6800b79130fca475305e091d8af4ec67254182cc1b684f9af2f8c5f180f610bd",
       "case": "v0-no-ff-fast-forwardable-continue-known-failure",
       "exit_code": 0,
@@ -493,7 +493,7 @@
       "status": "passed"
     },
     {
-      "after_invariant_sha256": "0efa28428e25cc2633de3d92d067fe10022cf624e98ed1bde2bd880808e855e0",
+      "after_invariant_sha256": "a92c591710c3987d83058c1a796ea61264c07e72f0ce8e0acfeae63253112d33",
       "before_sha256": "a231c23f1006a44efa144e1e30c5fba6c75ab10bf8abb6d94cc16aafca964d4e",
       "case": "v0-custom-message-pending-continue",
       "exit_code": 0,
@@ -536,7 +536,7 @@
       "status": "passed"
     },
     {
-      "after_invariant_sha256": "cc7c2f8d4bd3c534b42cfddd023dac66b328eab41848638e4e900d78fdfbc4a4",
+      "after_invariant_sha256": "7e64700ab7708c525fdc7d3585a166fbe59642a4ddf3d2934e0c20de61c0eaf1",
       "before_sha256": "6800b79130fca475305e091d8af4ec67254182cc1b684f9af2f8c5f180f610bd",
       "case": "v0-no-ff-fast-forwardable-continue-known-failure",
       "exit_code": 0,

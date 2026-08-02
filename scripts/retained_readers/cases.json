@@ -7,7 +7,7 @@
       "command": "merge-status",
       "args": ["--json", "merge", "--status"],
       "fixture": "custom-message-pending",
-      "fixture_sha256": "c49fed2d358cf4ba04202943aa3b9721158c4e54eb8a05d723cdaa847397b7e6",
+      "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
       "expected": {
         "exit_codes": [1],
         "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Halted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Planned"]}},
@@ -21,7 +21,7 @@
       "command": "merge-continue",
       "args": ["--json", "merge", "--continue"],
       "fixture": "custom-message-pending",
-      "fixture_sha256": "c49fed2d358cf4ba04202943aa3b9721158c4e54eb8a05d723cdaa847397b7e6",
+      "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Completed"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Merged"]}},
@@ -38,7 +38,8 @@
           ],
           "dynamic": [
             {"pattern": "text:.git/objects/??/??????????????????????????????????????", "minimum": 6, "maximum": 6},
-            {"pattern": "text:gwz.conf/markers/????????-????-????-????-????????????.yaml", "minimum": 1, "maximum": 1}
+            {"pattern": "text:gwz.conf/markers/????????-????-????-????-????????????.yaml", "minimum": 1, "maximum": 1},
+            {"pattern": "text:.git/info/exclude", "minimum": 0, "maximum": 1}
           ]
         }
       },
@@ -47,7 +48,7 @@
         {"kind": "yaml-set-semantic", "pattern": "gwz.conf/markers/*.yaml", "count": 1, "sha256": ["2453398ae53832be4a63a664362035fe7bc7210fe414bbda0b97e1c3e0b5203d"]},
         {"kind": "root-publication", "repository": ".", "branch": "refs/heads/main", "parent": "7f1a5b337244d3e7b0b4cff6952a530de07f99ff", "message": "gwz merge: feature/source\n\nGWZ-Merge-ID: merge_retained\nGWZ-Operation-ID: op_retained", "sha256": "c72c812071d01b5352fa25944e83b33302835d09bcb616f370cfbe1cc330c945"},
         {"kind": "git-index-semantic", "repository": ".", "sha256": "402872888c81242de2573e233dda5a4c8279ac157e151cdd471a493eabb3c950"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "09d03b2277c9ba377045aaab54fa81ca402e6be2121eb2b5cc4f05f4b78b9a88", "required": {"schema": "gwz.merge-operation/v0", "state": "completed", "participants.mem_member.state": "merged", "participants.mem_member.resulting_commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f", "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
+        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "707d2eaebe3373a1ffea9aaa52b2de1a169f626aa3d9738ee75d991a2cbaa4f1", "required": {"schema": "gwz.merge-operation/v0", "state": "completed", "participants.mem_member.state": "merged", "participants.mem_member.resulting_commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f", "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
         {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "refs/heads/main"},
         {"kind": "git-commit-message", "repository": "member", "ref": "HEAD", "value": "custom retained-reader message"},
         {"kind": "git-parent-count", "repository": "member", "ref": "HEAD", "count": 2},
@@ -62,7 +63,7 @@
       "command": "merge-abort",
       "args": ["--json", "merge", "--abort"],
       "fixture": "custom-message-pending",
-      "fixture_sha256": "c49fed2d358cf4ba04202943aa3b9721158c4e54eb8a05d723cdaa847397b7e6",
+      "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Aborted"]}},
@@ -88,7 +89,7 @@
       "command": "merge-status",
       "args": ["--json", "merge", "--status"],
       "fixture": "no-ff-fast-forwardable",
-      "fixture_sha256": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
       "known_incompatibility": "The v0 record stores mode no_ff, but recovery can re-derive normal fast-forward behavior when no pending action exists.",
       "expected": {
         "exit_codes": [1],
@@ -106,7 +107,7 @@
       "command": "merge-continue",
       "args": ["--json", "merge", "--continue"],
       "fixture": "no-ff-fast-forwardable",
-      "fixture_sha256": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
       "known_incompatibility": "Legacy continuation ignores the stored no_ff authority and fast-forwards; the one-parent result below deliberately pins that defect.",
       "expected": {
         "exit_codes": [0],
@@ -123,7 +124,8 @@
           ],
           "dynamic": [
             {"pattern": "text:.git/objects/??/??????????????????????????????????????", "minimum": 6, "maximum": 6},
-            {"pattern": "text:gwz.conf/markers/????????-????-????-????-????????????.yaml", "minimum": 1, "maximum": 1}
+            {"pattern": "text:gwz.conf/markers/????????-????-????-????-????????????.yaml", "minimum": 1, "maximum": 1},
+            {"pattern": "text:.git/info/exclude", "minimum": 0, "maximum": 1}
           ]
         }
       },
@@ -132,7 +134,7 @@
         {"kind": "yaml-set-semantic", "pattern": "gwz.conf/markers/*.yaml", "count": 1, "sha256": ["470e7115a58ddcfe634081a92e32225fb2f35d4c25aa83b5d89a8d4c7c5e51a0"]},
         {"kind": "root-publication", "repository": ".", "branch": "refs/heads/main", "parent": "e8878845dffb55a9b92f39bc906f6e1fd0df40b6", "message": "gwz merge: feature/source\n\nGWZ-Merge-ID: merge_retained\nGWZ-Operation-ID: op_retained", "sha256": "ca1d648ace27532ee59331aff98b068a999fd8170ef6168905034203357b9c90"},
         {"kind": "git-index-semantic", "repository": ".", "sha256": "c3957fac4bb9beadc63fb1135764f444ff26bc36f5ef433ff6f7fae39bad5565"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "6d86fc6a39fb7609271aca84327dc08109c7ff4ecb7427911384a413dd6aafef", "required": {"schema": "gwz.merge-operation/v0", "state": "completed", "participants.mem_member.state": "fast_forwarded", "participants.mem_member.resulting_commit": "068bf19ed329e4a745cbc2e298e723698f3f80d3", "baseline.lock_commit_sha256": "794c82404fbac763673115c1062ed6384da6e711989c91661bb48945d6506d5c", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
+        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "f4a57ec322c2bfc539a2ef90c5b778104719e9ac23a17daf30aa21f0fa20f12c", "required": {"schema": "gwz.merge-operation/v0", "state": "completed", "participants.mem_member.state": "fast_forwarded", "participants.mem_member.resulting_commit": "068bf19ed329e4a745cbc2e298e723698f3f80d3", "baseline.lock_commit_sha256": "794c82404fbac763673115c1062ed6384da6e711989c91661bb48945d6506d5c", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
         {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "feature/source"},
         {"kind": "git-parent-count", "repository": "member", "ref": "HEAD", "count": 1},
         {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "file"},
@@ -145,7 +147,7 @@
       "command": "merge-abort",
       "args": ["--json", "merge", "--abort"],
       "fixture": "no-ff-fast-forwardable",
-      "fixture_sha256": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Aborted"]}},
@@ -168,7 +170,7 @@
       "command": "merge-abort",
       "args": ["--json", "merge", "--abort"],
       "fixture": "custom-message-pending-completed",
-      "fixture_sha256": "3d453979ce40439e9f0d80caf3e02360b106e67631b29b8743e7fcf7cf2cc68d",
+      "fixture_sha256": "d24e8b82a69d3be55107b0852b72f06e63ec37342ecb709c26ea1255f755c5ec",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["RolledBack"]}},
@@ -199,7 +201,7 @@
       "command": "merge-abort",
       "args": ["--json", "merge", "--abort"],
       "fixture": "custom-message-pending-wrong-message",
-      "fixture_sha256": "9079afb63fa3f7ce602cb9877d5e28f90c0f127bd0316819bbdf52d2a4cff7a0",
+      "fixture_sha256": "4cf2a69a2b171447441c2a9c5b56b64d247edfb9aef95e11179e6a45881be79a",
       "expected": {
         "exit_codes": [1],
         "stdout": {"mode": "json-contract", "value": {"shape": "error", "outcomes": ["MergeDrift"]}},
@@ -219,7 +221,7 @@
       "command": "merge-preserve",
       "args": ["--json", "merge", "--abort", "--preserve"],
       "fixture": "custom-message-pending-completed",
-      "fixture_sha256": "3d453979ce40439e9f0d80caf3e02360b106e67631b29b8743e7fcf7cf2cc68d",
+      "fixture_sha256": "d24e8b82a69d3be55107b0852b72f06e63ec37342ecb709c26ea1255f755c5ec",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["RolledBack"]}},
@@ -246,7 +248,7 @@
       "command": "merge-status",
       "args": ["--json", "merge", "--status", "merge_retained"],
       "fixture": "archived-v0",
-      "fixture_sha256": "c6a095af22067848b43f5195fc625cd0a4b9eb353f2de95e6bee8d627724528a",
+      "fixture_sha256": "9cb06c1c459657ba02b2f8f4c53f01d802a45684dacb3521ab9a761aaa9a0757",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Aborted"]}},
@@ -265,7 +267,7 @@
       "command": "merge-gc",
       "args": ["--json", "merge", "--gc", "merge_retained"],
       "fixture": "archived-v0",
-      "fixture_sha256": "c6a095af22067848b43f5195fc625cd0a4b9eb353f2de95e6bee8d627724528a",
+      "fixture_sha256": "9cb06c1c459657ba02b2f8f4c53f01d802a45684dacb3521ab9a761aaa9a0757",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Aborted"]}},
@@ -282,7 +284,7 @@
       "command": "workspace-status",
       "args": ["--json", "status", "--combined"],
       "fixture": "pre-record-open-v0",
-      "fixture_sha256": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "workspace-status", "outcomes": ["Ok", "ok"], "member_id": "mem_member", "member_outcomes": ["Ok", "ok"]}},
@@ -300,7 +302,7 @@
       "command": "legacy-branch-merge",
       "args": ["--json", "branch", "--merge", "feature/source"],
       "fixture": "pre-record-open-v0",
-      "fixture_sha256": "3eb0b5c4bde6b959b8858cc688c24e0b110ba2ff0407ffbcaad4139dc2c6c4f1",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
       "expected": {
         "exit_codes": [0],
         "stdout": {"mode": "json-contract", "value": {"shape": "legacy-branch", "outcomes": ["Merged", "merged"], "member_id": "mem_member"}},

@@ -138,6 +138,35 @@ class ExpectationTests(unittest.TestCase):
             )
             self.assertTrue(any("unexpected mutation" in error for error in errors))
 
+    def test_optional_boundary_mutation_accepts_zero_or_one_physical_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            boundary = workspace / ".git/info/exclude"
+            boundary.parent.mkdir(parents=True)
+            boundary.write_text("/member/\n", encoding="utf-8")
+            before = matrix.snapshot_tree(workspace)
+            mutation = {
+                "mode": "contract",
+                "exact": [],
+                "dynamic": [{
+                    "pattern": "text:.git/info/exclude",
+                    "minimum": 0,
+                    "maximum": 1,
+                }],
+            }
+            expected = {"exit_codes": [0], "mutation": mutation}
+            unchanged = matrix.snapshot_tree(workspace)
+            self.assertEqual([], matrix.evaluate_expectation(expected, self.result(), before, unchanged))
+            zero = matrix.normalized_mutation_identity(mutation, [], unchanged, workspace)
+
+            boundary.chmod(stat.S_IREAD)
+            changed = matrix.snapshot_tree(workspace)
+            changes = matrix.changed_paths(before, changed)
+            self.assertEqual([], matrix.evaluate_expectation(expected, self.result(), before, changed))
+            one = matrix.normalized_mutation_identity(mutation, changes, changed, workspace)
+            self.assertNotEqual(zero, one)
+
 
 class PythonBootstrapTests(unittest.TestCase):
     def test_bootstraps_wheel_in_isolated_venv_without_network(self) -> None:
