@@ -1,3 +1,4 @@
+mod branch_switch;
 mod handle_branch;
 mod handle_commit;
 mod handle_create_repo;
@@ -27,6 +28,7 @@ mod target_selection;
 mod tests;
 mod workspace_bootstrap;
 
+pub(crate) use branch_switch::*;
 pub use handle_branch::*;
 pub use handle_commit::*;
 pub use handle_create_repo::*;

@@ -123,7 +123,10 @@ mutations; run branch and stash mutators serially there.
 ## Branch And Stash Outcomes
 
 `gwz branch --create --switch` and `gwz materialize --switch` rewrite the lock
-from observed post-switch member state. Branch create attempts rollback of
+from observed post-switch member state. A dirty member may switch when the
+target branch resolves to its current `HEAD`; GWZ only reattaches `HEAD` and
+preserves staged, unstaged, and untracked changes. A dirty switch to a different
+commit is rejected even under force policy. Branch create attempts rollback of
 branches created earlier in the same operation when a later member fails.
 Branch delete preflights selected members and reports post-preflight failures as
 partial rather than claiming transactional deletion.

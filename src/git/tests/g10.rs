@@ -102,7 +102,36 @@ fn switch_branch_rejects_missing_branch_without_mutation() {
 }
 
 #[test]
-fn switch_branch_rejects_dirty_worktree_without_mutation() {
+fn switch_branch_at_current_head_preserves_index_worktree_and_untracked_files() {
+    let temp = TempDir::new("branch-switch-dirty-same-head");
+    let backend = Git2Backend::new();
+    let repo = temp.path().join("repo");
+    backend.create_repo(&repo).unwrap();
+    let base = commit_file(&repo, "f.txt", "base\n", "base", &[]).unwrap();
+    backend.branch_create(&repo, "feature", "HEAD").unwrap();
+    fs::write(repo.join("f.txt"), "staged\n").unwrap();
+    run_git(&repo, &["add", "f.txt"]);
+    fs::write(repo.join("f.txt"), "unstaged\n").unwrap();
+    fs::write(repo.join("untracked.txt"), "untracked\n").unwrap();
+    let index_before = fs::read(repo.join(".git/index")).unwrap();
+    let status_before = backend.status(&repo).unwrap();
+
+    let result = backend.switch_branch(&repo, "feature").unwrap();
+
+    assert!(result.updated);
+    assert_eq!(result.commit.as_deref(), Some(base.as_str()));
+    assert_eq!(
+        backend.head(&repo).unwrap().branch.as_deref(),
+        Some("feature")
+    );
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+    assert_text_eq(repo.join("f.txt"), "unstaged\n");
+    assert_text_eq(repo.join("untracked.txt"), "untracked\n");
+    assert_eq!(backend.status(&repo).unwrap(), status_before);
+}
+
+#[test]
+fn switch_branch_rejects_dirty_worktree_when_target_moves_head() {
     let temp = TempDir::new("branch-switch-dirty");
     let backend = Git2Backend::new();
     let repo = temp.path().join("repo");

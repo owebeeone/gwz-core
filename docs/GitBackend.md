@@ -88,8 +88,12 @@ Branch commands use real local Git branches in selected member repositories.
   branch at the same commit is a no-op; an existing branch at another commit is
   rejected as divergence.
 - `branch_delete` refuses to delete the current branch.
-- `switch_branch` checks out an existing local branch without creating it or
-  moving the branch ref, then verifies HEAD is attached to that branch.
+- `switch_branch` attaches an existing local branch without creating or moving
+  the branch ref. When the target is at current `HEAD`, it preserves the index,
+  worktree, and untracked files without checking out the tree; dirty switches
+  that move commits are rejected. Branch-switch workspace preflight also calls
+  `repository_state` for clean-looking repositories, so custom backends that
+  implement branch switching must implement that observation method.
 - `checkout_branch` remains the materialize-restore primitive that can create a
   branch at a saved commit when that is safe; command branch switching uses
   `switch_branch` instead.

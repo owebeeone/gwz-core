@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::artifact::{self, ManifestArtifact, ManifestMember};
@@ -148,7 +149,9 @@ fn create_branch<B: GitBackend>(
                     &plan.repo,
                     &branch,
                     plan.start_commit.clone(),
-                    if plan.existed {
+                    if switch_after_create {
+                        crate::BranchActionResult::Switched
+                    } else if plan.existed {
                         crate::BranchActionResult::Exists
                     } else {
                         crate::BranchActionResult::Created
@@ -166,7 +169,7 @@ fn create_branch<B: GitBackend>(
 
     let mut created_by_this_op: Vec<PathBuf> = Vec::new();
     let mut summaries = Vec::with_capacity(plans.len());
-    let mut observed_states = Vec::new();
+    let mut observed_states = BTreeMap::new();
     for plan in &plans {
         let created = match backend.branch_create(&plan.repo.path, &branch, start_ref) {
             Ok(result) => result.created,
@@ -187,7 +190,7 @@ fn create_branch<B: GitBackend>(
             let head = backend.head(&plan.repo.path)?;
             let status = backend.status(&plan.repo.path)?;
             let observed = resolved_member(&plan.repo.member, &head, &status);
-            observed_states.push((plan.repo.member_id.clone(), observed.clone()));
+            observed_states.insert(plan.repo.member_id.clone(), observed.clone());
             summaries.push(summary_from_head(
                 &plan.repo,
                 crate::BranchActionResult::Switched,
@@ -209,7 +212,7 @@ fn create_branch<B: GitBackend>(
         }
     }
 
-    if switch_after_create {
+    let response_members = if switch_after_create {
         let manifest = artifact::read_manifest(root)?;
         let mut next = read_lock_or_empty(root, &manifest.workspace.id)?;
         for (member_id, observed) in &observed_states {
@@ -217,12 +220,16 @@ fn create_branch<B: GitBackend>(
         }
         artifact::write_lock(root, &next)?;
         sync_workspace_boundary(backend, root, &manifest, &next)?;
-    }
+        locked_member_responses(&manifest, &observed_states)
+    } else {
+        Vec::new()
+    };
 
-    Ok(branch_response(
+    Ok(branch_response_with_members(
         context,
         crate::AggregateStatus::Ok,
         summaries,
+        response_members,
         Vec::new(),
     ))
 }
@@ -287,32 +294,39 @@ fn create_preflight<B: GitBackend>(
     let mut plans = Vec::with_capacity(repos.len());
     let branch_ref = format!("refs/heads/{branch}");
     for repo in repos {
-        let status = backend.status(&repo.path)?;
-        if switch_after_create && status.is_dirty {
-            return Err(ModelError::new(
-                ErrorCode::DirtyMember,
-                format!("member '{}' has uncommitted changes", repo.member_id),
-            ));
+        let status = backend
+            .status(&repo.path)
+            .map_err(|error| error.with_member(&repo.member_id, &repo.member_path))?;
+        let start_commit = backend
+            .read_ref(&repo.path, start_ref)
+            .map_err(|error| error.with_member(&repo.member_id, &repo.member_path))?
+            .ok_or_else(|| {
+                ModelError::new(
+                    ErrorCode::GitCommandFailed,
+                    format!("start ref '{start_ref}' not found"),
+                )
+                .with_member(&repo.member_id, &repo.member_path)
+            })?;
+        let existing = backend
+            .read_ref(&repo.path, &branch_ref)
+            .map_err(|error| error.with_member(&repo.member_id, &repo.member_path))?;
+        if switch_after_create {
+            preflight_branch_switch(
+                backend,
+                &repo.path,
+                &repo.member_id,
+                &repo.member_path,
+                &start_commit,
+                &status,
+            )?;
         }
-        let start_commit = backend.read_ref(&repo.path, start_ref)?.ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::GitCommandFailed,
-                format!(
-                    "start ref '{start_ref}' not found for member '{}'",
-                    repo.member_id
-                ),
-            )
-        })?;
-        let existing = backend.read_ref(&repo.path, &branch_ref)?;
         if let Some(existing_commit) = existing {
             if existing_commit != start_commit {
                 return Err(ModelError::new(
                     ErrorCode::DivergedMember,
-                    format!(
-                        "branch '{branch}' for member '{}' is at {existing_commit}, not {start_commit}",
-                        repo.member_id
-                    ),
-                ));
+                    format!("branch '{branch}' is at {existing_commit}, not {start_commit}"),
+                )
+                .with_member(&repo.member_id, &repo.member_path));
             }
             plans.push(CreatePlan {
                 repo: repo.clone(),
@@ -482,7 +496,17 @@ fn branch_response(
     repos: Vec<crate::BranchRepoSummary>,
     errors: Vec<crate::GwzError>,
 ) -> crate::BranchResponse {
-    let mut response = response_envelope(context, aggregate_status, Vec::new());
+    branch_response_with_members(context, aggregate_status, repos, Vec::new(), errors)
+}
+
+fn branch_response_with_members(
+    context: OperationContext,
+    aggregate_status: crate::AggregateStatus,
+    repos: Vec<crate::BranchRepoSummary>,
+    members: Vec<crate::MemberResponse>,
+    errors: Vec<crate::GwzError>,
+) -> crate::BranchResponse {
+    let mut response = response_envelope(context, aggregate_status, members);
     response.errors = errors;
     crate::BranchResponse {
         response,

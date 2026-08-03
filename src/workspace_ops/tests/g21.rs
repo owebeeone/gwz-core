@@ -182,26 +182,199 @@ fn branch_delete_rejects_current_branch_but_allows_dirty_non_current_branch() {
 }
 
 #[test]
-fn branch_create_with_switch_rewrites_lock_from_observed_state() {
+fn branch_create_with_switch_preserves_dirty_state_and_records_it_in_lock() {
     let temp = TempDir::new("branch-create-switch");
     let backend = crate::git::Git2Backend::new();
     let _fixture = init_one_member_workspace(temp.path(), &backend, "branch-switch-source");
     let member = temp.path().join("remote");
+    fs::write(member.join("README.md"), "staged\n").unwrap();
+    let repo = git2::Repository::open(&member).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("README.md")).unwrap();
+    index.write().unwrap();
+    fs::write(member.join("README.md"), "unstaged\n").unwrap();
+    fs::write(member.join("untracked.txt"), "untracked\n").unwrap();
+    let index_before = fs::read(member.join(".git/index")).unwrap();
+    let status_before = backend.status(&member).unwrap();
 
     let mut request = create_request("feature/switch");
     request.switch_after_create = Some(true);
     let response = handle_branch(&backend, temp.path(), request, "op_branch_switch").unwrap();
 
+    let member_response = response.response.members.single();
+    assert_eq!(member_response.member_id, "mem_remote");
+    assert_eq!(
+        member_response.state.as_ref().and_then(|state| state.dirty),
+        Some(true)
+    );
     assert_eq!(
         response.repos.unwrap().single().result,
         crate::BranchActionResult::Switched
     );
     let head = backend.head(&member).unwrap();
     assert_eq!(head.branch.as_deref(), Some("feature/switch"));
+    assert_eq!(fs::read(member.join(".git/index")).unwrap(), index_before);
+    assert_eq!(
+        fs::read_to_string(member.join("README.md")).unwrap(),
+        "unstaged\n"
+    );
+    assert_eq!(
+        fs::read_to_string(member.join("untracked.txt")).unwrap(),
+        "untracked\n"
+    );
+    assert_eq!(backend.status(&member).unwrap(), status_before);
     let lock = read_lock(temp.path()).unwrap();
     let state = &lock.members["mem_remote"];
     assert_eq!(state.branch.as_deref(), Some("feature/switch"));
     assert_eq!(state.commit, head.commit);
+    assert_eq!(state.dirty, Some(true));
+}
+
+#[test]
+fn branch_create_switches_to_existing_same_head_branch_with_dirty_state() {
+    let temp = TempDir::new("branch-existing-switch-dirty");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "branch-existing-source");
+    let member = temp.path().join("remote");
+    backend
+        .branch_create(&member, "feature/existing", "HEAD")
+        .unwrap();
+    fs::write(member.join("untracked.txt"), "keep\n").unwrap();
+
+    let mut request = create_request("feature/existing");
+    request.switch_after_create = Some(true);
+    let response = handle_branch(&backend, temp.path(), request, "op_existing_switch").unwrap();
+
+    assert_eq!(
+        response.repos.unwrap().single().result,
+        crate::BranchActionResult::Switched
+    );
+    assert_eq!(
+        backend.head(&member).unwrap().branch.as_deref(),
+        Some("feature/existing")
+    );
+    assert_eq!(
+        fs::read_to_string(member.join("untracked.txt")).unwrap(),
+        "keep\n"
+    );
+    assert_eq!(
+        read_lock(temp.path()).unwrap().members["mem_remote"].dirty,
+        Some(true)
+    );
+}
+
+#[test]
+fn branch_create_switch_dry_run_accepts_dirty_same_head_without_mutation() {
+    let temp = TempDir::new("branch-switch-dirty-dry-run");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "branch-dry-source");
+    let member = temp.path().join("remote");
+    fs::write(member.join("README.md"), "dirty\n").unwrap();
+    let head_before = backend.head(&member).unwrap();
+    let status_before = backend.status(&member).unwrap();
+
+    let mut request = create_request("feature/dry");
+    request.switch_after_create = Some(true);
+    request.meta.dry_run = Some(true);
+    let response = handle_branch(&backend, temp.path(), request, "op_dirty_dry").unwrap();
+
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Accepted
+    );
+    assert_eq!(
+        response.repos.unwrap().single().result,
+        crate::BranchActionResult::Switched
+    );
+    assert_eq!(backend.head(&member).unwrap(), head_before);
+    assert_eq!(backend.status(&member).unwrap(), status_before);
+    assert!(
+        backend
+            .read_ref(&member, "refs/heads/feature/dry")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn branch_create_switch_rejects_dirty_different_start_before_creating_branch() {
+    let temp = TempDir::new("branch-switch-dirty-different-start");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "branch-different-source");
+    let member = temp.path().join("remote");
+    let old_head = backend.head(&member).unwrap().commit.unwrap();
+    let parent = git2::Oid::from_str(&old_head).unwrap();
+    let current_head = commit_file(&member, "README.md", "advanced\n", "advance", &[parent])
+        .unwrap()
+        .to_string();
+    fs::write(member.join("README.md"), "pending\n").unwrap();
+
+    let mut request = create_request("feature/old-start");
+    request.start_ref = Some(old_head);
+    request.switch_after_create = Some(true);
+    request.meta.policy = Some(crate::OperationPolicy {
+        destructive: Some(crate::DestructiveBehavior::Allow),
+        ..Default::default()
+    });
+    let error = handle_branch(&backend, temp.path(), request, "op_dirty_different").unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::DirtyMember);
+    assert_eq!(error.member_id.as_deref(), Some("mem_remote"));
+    assert_eq!(error.member_path.as_deref(), Some("remote"));
+    assert_eq!(
+        backend.head(&member).unwrap().commit.as_deref(),
+        Some(current_head.as_str())
+    );
+    assert_eq!(
+        backend.head(&member).unwrap().branch.as_deref(),
+        Some("main")
+    );
+    assert!(
+        backend
+            .read_ref(&member, "refs/heads/feature/old-start")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fs::read_to_string(member.join("README.md")).unwrap(),
+        "pending\n"
+    );
+}
+
+#[test]
+fn branch_create_switch_rejects_clean_looking_git_operation_before_any_member_mutation() {
+    let temp = TempDir::new("branch-switch-native-operation");
+    let backend = crate::git::Git2Backend::new();
+    let (_app_fixture, _lib_fixture) = super::g19::init_two_member_workspace(temp.path(), &backend);
+    let app = temp.path().join("app");
+    let lib = temp.path().join("lib");
+    let lib_head = backend.head(&lib).unwrap().commit.unwrap();
+    fs::write(lib.join(".git/MERGE_HEAD"), format!("{lib_head}\n")).unwrap();
+    assert!(!backend.status(&lib).unwrap().is_dirty);
+    assert_eq!(
+        backend.repository_state(&lib).unwrap(),
+        crate::git::GitRepositoryState::Merge
+    );
+
+    let mut request = create_request("feature/native-operation");
+    request.switch_after_create = Some(true);
+    let error = handle_branch(&backend, temp.path(), request, "op_native_operation").unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::GitCommandFailed);
+    assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
+    assert_eq!(error.member_path.as_deref(), Some("lib"));
+    for member in [&app, &lib] {
+        assert_eq!(
+            backend.head(member).unwrap().branch.as_deref(),
+            Some("main")
+        );
+        assert!(
+            backend
+                .read_ref(member, "refs/heads/feature/native-operation")
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 #[test]

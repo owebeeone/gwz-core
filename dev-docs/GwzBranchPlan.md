@@ -65,7 +65,7 @@ deferred for switch/merge.
 | B3 | Snapshot branch source | `gwz snapshot <id> --branch` captures the current attached branch HEAD. `gwz snapshot <id> --branch <name>` captures `refs/heads/<name>` without switching. |
 | B4 | Mixed current branches for `snapshot --branch` | Reject by default when selected members are on different branch names. Allow later via `--allow-mixed-branches` if needed. |
 | B5 | Missing branch on a selected member | Reject the whole batch in preflight for switch, snapshot, delete, and merge. Create can report existing-at-same-commit as noop. |
-| B6 | Dirty worktrees before switch or merge | Require clean selected repos by default. Add an explicit policy escape hatch later if drivers need Git's permissive checkout behavior. |
+| B6 | Dirty worktrees before switch or merge | Allow branch attachment when the target branch is already at the member's current `HEAD`, preserving staged, unstaged, and untracked changes. Reject dirty switches that move to another commit; force policy never discards pending changes. Merge continues to require clean selected repos. |
 | B7 | Merge conflicts | Conflicts are an expected result, not a hard error. Leave conflicted repos in Git's normal in-progress merge state and report per-member `conflicted`. |
 | B8 | Root repo participation | Keep root opt-in until root switch reload semantics are implemented and tested. |
 
@@ -96,8 +96,11 @@ Details:
   `--from <ref>` is supplied, each repo resolves that ref independently.
 - `gwz branch --create <name> --switch` creates the branch, then switches to it
   in every selected repo. The operation preflights all repos before mutating.
+  Dirty state is preserved when the target is at the member's current `HEAD`;
+  a dirty switch to another commit is rejected.
 - `gwz materialize --switch <branch>` switches to an existing local branch in
   each selected repo. It does not create missing branches and does not fetch.
+  The same dirty same-`HEAD` preservation rule applies.
 - `gwz snapshot <id> --branch` records the selected members' current branch HEADs
   as snapshot `<id>`. It requires attached HEADs and, by default, one shared branch
   name across the selection.
@@ -295,7 +298,9 @@ For switch:
 
 - all selected repos must be materialized;
 - the branch must exist in every selected repo;
-- selected repos must be clean by default;
+- dirty staged, unstaged, and untracked state is preserved when the branch is at
+  the member's current `HEAD`;
+- a dirty switch that moves to another commit is rejected even with force;
 - if any repo fails preflight, switch no repos.
 
 For delete:

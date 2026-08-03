@@ -806,19 +806,27 @@ fn branch_switch_preflight<B: GitBackend>(
                 format!("member '{member_id}' is not materialized"),
             ));
         }
-        let status = backend.status(&member_root)?;
-        if status.is_dirty {
-            return Err(ModelError::new(
-                ErrorCode::DirtyMember,
-                format!("member '{member_id}' has uncommitted changes"),
-            ));
-        }
-        let commit = backend.read_ref(&member_root, &ref_name)?.ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::GitCommandFailed,
-                format!("branch '{branch}' not found for member '{member_id}'"),
-            )
-        })?;
+        let commit = backend
+            .read_ref(&member_root, &ref_name)
+            .map_err(|error| error.with_member(member_id, &state.path))?
+            .ok_or_else(|| {
+                ModelError::new(
+                    ErrorCode::GitCommandFailed,
+                    format!("branch '{branch}' not found"),
+                )
+                .with_member(member_id, &state.path)
+            })?;
+        let status = backend
+            .status(&member_root)
+            .map_err(|error| error.with_member(member_id, &state.path))?;
+        preflight_branch_switch(
+            backend,
+            &member_root,
+            member_id,
+            &state.path,
+            &commit,
+            &status,
+        )?;
         plans.push(crate::MemberResponse {
             member_id: member_id.clone(),
             member_path: state.path.clone(),
@@ -837,7 +845,7 @@ fn branch_switch_preflight<B: GitBackend>(
                     commit: Some(commit),
                     branch: Some(branch.to_owned()),
                     detached: Some(false),
-                    dirty: Some(false),
+                    dirty: Some(status.is_dirty),
                     materialized: Some(true),
                     ..state.clone()
                 },

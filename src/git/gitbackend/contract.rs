@@ -384,8 +384,10 @@ pub trait GitBackend {
             "branch_delete is not implemented by this GitBackend",
         ))
     }
-    /// Check out an existing branch without moving it. Self-verifies HEAD is
-    /// attached to the requested branch.
+    /// Check out an existing branch without moving it. When the branch already
+    /// points at the current HEAD, attach HEAD without touching the index or
+    /// worktree so pending changes survive. Self-verifies HEAD is attached to
+    /// the requested branch.
     fn switch_branch(&self, _path: &Path, _branch: &str) -> ModelResult<GitUpdateResult> {
         Err(ModelError::new(
             ErrorCode::UnsupportedOperation,

@@ -617,10 +617,14 @@ members:
 - delete a branch without force
 
 Branch create and switch refresh the lock from observed member state after the
-Git mutation succeeds. Branch list does not mutate Git repositories or GWZ
-artifacts. Branch delete is not gated on clean worktrees because deleting an
-unattached branch does not change working tree contents; force delete remains
-outside v0.
+Git mutation succeeds. A dirty member may be attached to the target branch when
+that branch resolves to the member's current `HEAD`; GWZ must preserve the
+index, worktree, and untracked files without checking out the tree. A dirty
+switch that would move `HEAD` to another commit is rejected, and force policy
+must not discard pending changes. All selected members are preflighted before
+mutation. Branch list does not mutate Git repositories or GWZ artifacts. Branch
+delete is not gated on clean worktrees because deleting an unattached branch
+does not change working tree contents; force delete remains outside v0.
 
 Merge is selection-wide and v0 merges the requested source ref into each
 selected member's current attached branch. `--into` or any operation that first

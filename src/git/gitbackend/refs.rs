@@ -113,14 +113,41 @@ pub(super) fn switch_branch(
         .find_branch(branch, git2::BranchType::Local)
         .map_err(git_error)?;
     let oid = local_branch.get().peel_to_commit().map_err(git_error)?.id();
-    let object = repo.find_object(oid, None).map_err(git_error)?;
-    let mut checkout = git2::build::CheckoutBuilder::new();
-    checkout.safe();
-    repo.checkout_tree(&object, Some(&mut checkout))
-        .map_err(git_error)?;
+    let oid_text = oid.to_string();
     let ref_name = branch_ref_name(branch);
+    let current = repo_head(&repo)?;
+    let same_commit = current.commit.as_deref() == Some(oid_text.as_str());
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "cannot switch branches during an in-progress Git operation",
+        ));
+    }
+    if !same_commit {
+        if backend.status(path)?.is_dirty {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                "cannot switch a dirty worktree to a different commit",
+            ));
+        }
+        let object = repo.find_object(oid, None).map_err(git_error)?;
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.safe();
+        repo.checkout_tree(&object, Some(&mut checkout))
+            .map_err(git_error)?;
+    }
     repo.set_head(&ref_name).map_err(git_error)?;
-    verify_checkout_state(path, oid)?;
+    if same_commit {
+        let observed = repo_head(&open_repo(path)?)?;
+        if observed.commit.as_deref() != Some(oid_text.as_str()) {
+            return Err(ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("post-switch HEAD does not match target {oid}"),
+            ));
+        }
+    } else {
+        verify_checkout_state(path, oid)?;
+    }
     let observed = backend.head(path)?;
     if observed.is_detached || observed.branch.as_deref() != Some(branch) {
         return Err(ModelError::new(
@@ -130,7 +157,7 @@ pub(super) fn switch_branch(
     }
     Ok(GitUpdateResult {
         updated: true,
-        commit: Some(oid.to_string()),
+        commit: Some(oid_text),
     })
 }
 
