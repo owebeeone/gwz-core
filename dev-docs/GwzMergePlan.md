@@ -2,8 +2,9 @@
 
 Status: **active** (revised 2026-08-04). Owner: Gianni. M2b through M4, the
 god-file refactor, R0, R1, R2a, M5a, I1/I2, and R4a are complete. The R3
-envelope, validated-model, unknown-field, and open-v0 adapter checkpoints are
-implemented and independently accepted, with only the v0 body decoder
+envelope, validated-model, unknown-field, open-v0 adapter, and
+archive-projection checkpoints are implemented and independently accepted,
+with only the v0 body decoder
 installed in production. M5a custom
 messages have green local technical, compatibility, and cross-driver gates.
 The corrected I1/I2 durability contracts and R4a acceptance/finalization
@@ -1668,8 +1669,12 @@ boundaries:
    adapter, closed-source baseline recovery, invariant-specific live evidence,
    raw/typed unknown-field binding, valid-unlisted boundary, and canonical v1
    validation are now implemented under `cfg(test)` and independently accepted
-   with no P0–P3 finding. Production remains v0-only. Archive projection and
-   the test-only atomic upgrade remain before R3 is complete.
+   with no P0–P3 finding. The byte-only v0/v1 archive projection and immutable
+   cleanup-worklist seam are also implemented under `cfg(test)` and accepted by
+   two independent settled-tree reviews with no P0–P3 finding; focused archive
+   tests pass 17/17 and the full core gate passes 801 with 1 ignored plus every
+   integration suite. Production remains v0-only. The test-only atomic upgrade
+   remains before R3 is complete.
 5. R4b, finalization owned, makes every finalization and recovery path consume
    persisted acceptance.
 6. M5b splits exact prepared-commit work between the Git backend owner and

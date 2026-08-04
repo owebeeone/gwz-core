@@ -15,6 +15,16 @@ pub(crate) enum RecordVersion {
     V1,
 }
 
+#[cfg(test)]
+impl RecordVersion {
+    pub(crate) const fn archive_pinned_value(self) -> u32 {
+        match self {
+            Self::V0 => 0,
+            Self::V1 => 1,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CanonicalMergeRecord {
     source_version: RecordVersion,

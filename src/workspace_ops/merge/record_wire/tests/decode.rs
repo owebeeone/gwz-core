@@ -1,4 +1,5 @@
 use super::super::decode::{RecordDecodeError, decode_production_v0, decode_v1_for_r3_tests};
+use super::super::decode_archived_for_r3_tests;
 use super::super::header::HeaderClassificationError;
 use super::super::raw_yaml::StrictYamlErrorKind;
 use sha2::{Digest, Sha256};
@@ -132,4 +133,17 @@ fn test_only_v1_decoder_preserves_typed_post_body_validation_errors() {
             if header.schema == "gwz.merge-operation/v1"
                 && error.code == crate::model::ErrorCode::UnexpectedAcceptanceEvidence
     ));
+}
+
+#[test]
+fn test_only_archive_decoder_rejects_allocated_future_before_body_decode() {
+    let error = decode_archived_for_r3_tests(
+        b"schema: gwz.merge-operation/v2\nrecord_schema_version: 2\nbody: invalid\n",
+        "merge_future",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::model::ErrorCode::UnsupportedRecordVersion
+    );
 }

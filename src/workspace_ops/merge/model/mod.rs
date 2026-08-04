@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) mod archive_projection;
 mod lifecycle;
 mod plan;
 mod status;

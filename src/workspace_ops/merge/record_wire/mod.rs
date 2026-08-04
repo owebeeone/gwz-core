@@ -4,6 +4,8 @@ mod raw_yaml;
 mod scalar;
 
 #[cfg(test)]
+mod archive;
+#[cfg(test)]
 mod open_v0;
 #[cfg(test)]
 mod unknown_fields;
@@ -12,6 +14,9 @@ mod unknown_fields;
 pub(crate) use open_v0::{
     OpenV0Adaptation, VerifiedV0Descriptor, adapt_open_v0_for_r3_tests, verified_v0_descriptor,
 };
+
+#[cfg(test)]
+pub(crate) use archive::decode_archived_for_r3_tests;
 
 #[cfg(test)]
 pub(crate) fn decode_v0_for_r3_tests(
