@@ -1659,10 +1659,11 @@ boundaries:
    strict one-pass YAML decoding, the v0–v4 header registry, production-v0
    dispatch, fail-closed open/archive/GC routing, and structured error context
    are installed and independently accepted with no P0–P3 finding. The v1
-   wire shapes and strict body decoder are now implemented under `cfg(test)`;
-   byte-only validation/canonical adaptation, archive projection,
-   unknown-field manifest, and test-only atomic upgrade remain before R3 is
-   complete.
+   wire shapes, strict body decoder, complete byte-only invariant validation,
+   and opaque canonical adapter are now implemented under `cfg(test)` and
+   independently accepted with no P0–P3 finding. Production remains v0-only.
+   The identity-aware unknown-field manifest, open-v0 adapter, archive
+   projection, and test-only atomic upgrade remain before R3 is complete.
 5. R4b, finalization owned, makes every finalization and recovery path consume
    persisted acceptance.
 6. M5b splits exact prepared-commit work between the Git backend owner and

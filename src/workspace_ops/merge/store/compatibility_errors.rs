@@ -33,6 +33,10 @@ pub(super) fn decode_error(
             format!("invalid record: {detail}"),
         )
         .with_record_context(record_context(merge_id, &header, None)),
+        #[cfg(test)]
+        RecordDecodeError::Validation { header, error } => {
+            error.with_record_context(record_context(merge_id, &header, None))
+        }
     }
 }
 

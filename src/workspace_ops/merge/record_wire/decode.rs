@@ -8,7 +8,9 @@ use super::header::{
 use super::raw_yaml::{StrictYamlError, parse_strict_yaml};
 
 #[cfg(test)]
-use super::super::model::v1::MergeOperationRecordV1;
+use super::super::model::v1::{CanonicalMergeRecord, MergeOperationRecordV1, validate_v1_record};
+#[cfg(test)]
+use crate::model::ModelError;
 
 #[derive(Debug)]
 pub(crate) struct DecodedV0Record {
@@ -22,7 +24,7 @@ pub(crate) struct DecodedV0Record {
 pub(crate) struct DecodedV1Record {
     pub(crate) raw: Value,
     pub(crate) header: MergeRecordHeader,
-    pub(crate) record: MergeOperationRecordV1,
+    pub(crate) canonical: CanonicalMergeRecord,
 }
 
 #[derive(Debug)]
@@ -32,6 +34,11 @@ pub(crate) enum RecordDecodeError {
     Body {
         header: MergeRecordHeader,
         detail: String,
+    },
+    #[cfg(test)]
+    Validation {
+        header: MergeRecordHeader,
+        error: ModelError,
     },
 }
 
@@ -79,13 +86,18 @@ pub(crate) fn decode_v1_for_r3_tests(bytes: &[u8]) -> Result<DecodedV1Record, Re
         }
     }
     let raw = document.into_root();
-    let record = serde_yaml::from_value(raw.clone()).map_err(|error| RecordDecodeError::Body {
+    let record: MergeOperationRecordV1 =
+        serde_yaml::from_value(raw.clone()).map_err(|error| RecordDecodeError::Body {
+            header: header.clone(),
+            detail: error.to_string(),
+        })?;
+    let validated = validate_v1_record(record).map_err(|error| RecordDecodeError::Validation {
         header: header.clone(),
-        detail: error.to_string(),
+        error,
     })?;
     Ok(DecodedV1Record {
         raw,
         header,
-        record,
+        canonical: CanonicalMergeRecord::from(validated),
     })
 }

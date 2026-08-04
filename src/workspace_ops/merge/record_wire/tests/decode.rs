@@ -1,11 +1,29 @@
 use super::super::decode::{RecordDecodeError, decode_production_v0, decode_v1_for_r3_tests};
 use super::super::header::HeaderClassificationError;
 use super::super::raw_yaml::StrictYamlErrorKind;
+use sha2::{Digest, Sha256};
 
 fn record(envelope: &str) -> String {
+    let manifest = "schema: gwz.workspace/v0\nworkspace:\n  id: ws_default\nmembers:\n- id: mem_a\n  path: members/a\n  type: git\n  source_id: src_a\n  active: true\n  remotes: []\n";
+    let lock = "schema: gwz.lock/v0\nworkspace_id: ws_default\nmanifest_schema: gwz.workspace/v0\nmembers: {}\n";
     format!(
-        "{envelope}\nwriter_version: 0.10.3\nworkspace_id: ws_default\nmerge_id: merge_1\noperation_id: op_1\nstate: executing\nsource_ref: feature/x\ncreated_at: now\nbaseline:\n  lock_sha256: lock\n  manifest_sha256: manifest\nselected_targets: []\nparticipants: {{}}\nfuture_record: retained\n"
+        "{envelope}\nwriter_version: 0.10.3\nworkspace_id: ws_default\nmerge_id: merge_1\noperation_id: op_1\nstate: executing\nsource_ref: feature/x\ncreated_at: now\nbaseline:\n  lock_sha256: '{}'\n  manifest_sha256: '{}'\n  lock_yaml: |\n{}  manifest_yaml: |\n{}  root_head: {}\n  root_branch: main\nselected_targets: [mem_a]\nparticipants:\n  mem_a:\n    path: members/a\n    target_kind: member\n    target_branch: main\n    before_commit: {}\n    source_commit: {}\n    commit_message: \"merge topic\\n\\nGWZ-Merge-ID: merge_1\\nGWZ-Operation-ID: op_1\"\n    state: planned\nfuture_record: retained\n",
+        digest(lock),
+        digest(manifest),
+        indent(lock),
+        indent(manifest),
+        "a".repeat(40),
+        "a".repeat(40),
+        "b".repeat(40),
     )
+}
+
+fn digest(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+fn indent(text: &str) -> String {
+    text.lines().map(|line| format!("    {line}\n")).collect()
 }
 
 #[test]
@@ -57,8 +75,11 @@ fn test_only_v1_decoder_uses_the_same_strict_tree_for_the_complete_body() {
     )
     .unwrap();
     assert_eq!(decoded.header.schema, "gwz.merge-operation/v1");
-    assert_eq!(decoded.record.merge_id, "merge_1");
-    assert!(decoded.record.accepted_workspace.is_none());
+    assert_eq!(decoded.canonical.common().merge_id(), "merge_1");
+    assert_eq!(
+        decoded.canonical.installed_kind(),
+        super::super::super::model::v1::CanonicalInstalledKind::V1
+    );
     assert_eq!(
         decoded
             .raw
@@ -80,5 +101,21 @@ fn test_only_v1_decoder_rejects_duplicates_inside_new_v1_containers() {
     assert!(matches!(
         error,
         RecordDecodeError::Raw(error) if error.kind == StrictYamlErrorKind::DuplicateKey
+    ));
+}
+
+#[test]
+fn test_only_v1_decoder_preserves_typed_post_body_validation_errors() {
+    let input = format!(
+        "{}publication:\n  step: preparing_candidate\n  composition_commit: '{}'\n",
+        record("schema: gwz.merge-operation/v1\nrecord_schema_version: 1"),
+        "a".repeat(40)
+    );
+    let error = decode_v1_for_r3_tests(input.as_bytes()).unwrap_err();
+    assert!(matches!(
+        error,
+        RecordDecodeError::Validation { header, error }
+            if header.schema == "gwz.merge-operation/v1"
+                && error.code == crate::model::ErrorCode::UnexpectedAcceptanceEvidence
     ));
 }

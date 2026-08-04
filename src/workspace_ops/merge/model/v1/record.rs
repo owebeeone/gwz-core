@@ -4,7 +4,8 @@ use serde::Deserialize;
 use serde_yaml::Value;
 
 use super::super::{
-    MergeBaseline, MergeExecutionMode, MergeParticipantRecord, OperationDrift, OperationState,
+    MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeBaseline, MergeExecutionMode,
+    MergeOperationRecordV0, MergeParticipantRecord, OperationDrift, OperationState,
     PublicationProgress,
 };
 use super::{
@@ -45,4 +46,27 @@ pub(crate) struct MergeOperationRecordV1 {
     pub(crate) pending_preservation: Option<PendingPreservationActionV1>,
     #[serde(default, flatten)]
     pub(crate) extensions: BTreeMap<String, Value>,
+}
+
+impl MergeOperationRecordV1 {
+    pub(crate) fn v0_common_view(&self) -> MergeOperationRecordV0 {
+        MergeOperationRecordV0 {
+            schema: MERGE_RECORD_SCHEMA.to_owned(),
+            record_schema_version: MERGE_RECORD_SCHEMA_VERSION,
+            writer_version: self.writer_version.clone(),
+            workspace_id: self.workspace_id.clone(),
+            merge_id: self.merge_id.clone(),
+            operation_id: self.operation_id.clone(),
+            state: self.state,
+            source_ref: self.source_ref.clone(),
+            mode: self.mode,
+            created_at: self.created_at.clone(),
+            baseline: self.baseline.clone(),
+            selected_targets: self.selected_targets.clone(),
+            participants: self.participants.clone(),
+            publication: self.publication.clone(),
+            operation_drift: self.operation_drift.clone(),
+            extensions: self.extensions.clone(),
+        }
+    }
 }
