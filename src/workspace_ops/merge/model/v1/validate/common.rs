@@ -10,6 +10,18 @@ use super::super::{
 };
 
 pub(crate) fn validate_common_v1_record(record: &MergeOperationRecordV1) -> ModelResult<()> {
+    validate_common_record(record, true)
+}
+
+#[cfg(test)]
+pub(crate) fn validate_common_v0_view(record: &MergeOperationRecordV1) -> ModelResult<()> {
+    validate_common_record(record, false)
+}
+
+fn validate_common_record(
+    record: &MergeOperationRecordV1,
+    require_complete_baseline: bool,
+) -> ModelResult<()> {
     if record.schema != MERGE_RECORD_SCHEMA_V1
         || record.record_schema_version != MERGE_RECORD_SCHEMA_VERSION_V1
     {
@@ -140,7 +152,9 @@ pub(crate) fn validate_common_v1_record(record: &MergeOperationRecordV1) -> Mode
         }
         validate_preservation_evidence(record, &participant.preservation)?;
     }
-    super::validate_v1_baseline(record)?;
+    if require_complete_baseline {
+        super::validate_v1_baseline(record)?;
+    }
     if let Some(accepted) = record.accepted_workspace.as_ref() {
         validate_sha256(
             record,

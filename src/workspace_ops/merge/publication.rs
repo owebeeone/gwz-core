@@ -8,8 +8,6 @@ use crate::git::{GitBackend, GitCandidateFile, GitScopedCommitResult};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::workspace_exclude_path;
 
-#[cfg(test)]
-use super::PublicationStep;
 pub(super) use super::acceptance::CandidatePublicationPrefix;
 use super::acceptance::{
     CandidatePublicationObservation,
@@ -87,24 +85,34 @@ pub(super) fn observe_root_evidence<B: GitBackend>(
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum I2RootObservationFailure {
+    AcceptanceInputDrift,
+    CandidateIntegrityMismatch,
+    AmbiguousEvidenceCommit,
+    RecordedEvidenceDrift,
+    PublicationPrefixMismatch,
+}
+
+#[cfg(test)]
 pub(crate) fn normalized_i2_root_observation<B: GitBackend>(
     backend: &B,
     root: &Path,
     record: &MergeOperationRecord,
-) -> ModelResult<&'static str> {
+) -> Result<&'static str, I2RootObservationFailure> {
     let publication = record.publication.as_ref();
     if publication
         .and_then(|value| value.candidate.as_ref())
         .is_none()
     {
-        let head = backend.head(root)?;
+        let head = backend
+            .head(root)
+            .map_err(|_| I2RootObservationFailure::AcceptanceInputDrift)?;
         if head.is_detached
             || head.commit != record.baseline.root_head
             || head.branch != record.baseline.root_branch
         {
-            return Err(unreadable(
-                "fixture root does not match the recorded baseline",
-            ));
+            return Err(I2RootObservationFailure::AcceptanceInputDrift);
         }
         let expected_files = [
             GitCandidateFile {
@@ -113,7 +121,7 @@ pub(crate) fn normalized_i2_root_observation<B: GitBackend>(
                     .baseline
                     .lock_yaml
                     .as_deref()
-                    .ok_or_else(|| unreadable("fixture baseline lock bytes are missing"))?
+                    .ok_or(I2RootObservationFailure::AcceptanceInputDrift)?
                     .as_bytes()
                     .to_vec(),
             },
@@ -123,59 +131,63 @@ pub(crate) fn normalized_i2_root_observation<B: GitBackend>(
                     .baseline
                     .manifest_yaml
                     .as_deref()
-                    .ok_or_else(|| unreadable("fixture baseline manifest bytes are missing"))?
+                    .ok_or(I2RootObservationFailure::AcceptanceInputDrift)?
                     .as_bytes()
                     .to_vec(),
             },
         ];
-        let exact_index = backend.index_matches_candidate_files(root, &expected_files, &[])?;
+        let exact_index = backend
+            .index_matches_candidate_files(root, &expected_files, &[])
+            .map_err(|_| I2RootObservationFailure::AcceptanceInputDrift)?;
         if !exact_index {
-            return Err(unreadable(
-                "fixture root index or worktree does not match the recorded baseline",
-            ));
+            return Err(I2RootObservationFailure::AcceptanceInputDrift);
         }
         return Ok("baseline_unborn");
     }
-    super::finalize::validate_candidate_for_i2_fixture(record)?;
-    let index_prefix =
-        super::classify_index_aligned_root_publication_for_i2(backend, root, record)?;
+    super::finalize::validate_candidate_for_i2_fixture(record)
+        .map_err(|_| I2RootObservationFailure::CandidateIntegrityMismatch)?;
+    let index_prefix = super::classify_index_aligned_root_publication_for_i2(backend, root, record)
+        .map_err(|_| I2RootObservationFailure::PublicationPrefixMismatch)?
+        .ok_or(I2RootObservationFailure::PublicationPrefixMismatch)?;
     let manifest_file = [GitCandidateFile {
         path: crate::workspace::WORKSPACE_MANIFEST.to_owned(),
         bytes: record
             .baseline
             .manifest_yaml
             .as_deref()
-            .ok_or_else(|| unreadable("fixture baseline manifest bytes are missing"))?
+            .ok_or(I2RootObservationFailure::AcceptanceInputDrift)?
             .as_bytes()
             .to_vec(),
     }];
-    if !backend.index_matches_candidate_files(root, &manifest_file, &[])? {
-        return Err(unreadable(
-            "fixture root manifest index or worktree differs from the recorded baseline",
-        ));
+    if !backend
+        .index_matches_candidate_files(root, &manifest_file, &[])
+        .map_err(|_| I2RootObservationFailure::AcceptanceInputDrift)?
+    {
+        return Err(I2RootObservationFailure::AcceptanceInputDrift);
     }
-    let step = progress(record)?.step;
-    match step {
-        PublicationStep::PreparingCandidate | PublicationStep::CommittingEvidence
-            if index_prefix != Some(CandidatePublicationPrefix::Baseline) =>
-        {
-            return Err(unreadable(
-                "fixture candidate has a non-baseline root publication prefix",
-            ));
-        }
-        PublicationStep::PublishingCandidate
-            if index_prefix != Some(CandidatePublicationPrefix::Boundary) =>
-        {
-            return Err(unreadable(
-                "fixture publication is not the exact boundary/index prefix",
-            ));
-        }
-        _ => {}
+    if !publication_prefix_allowed(record, index_prefix)
+        .map_err(|_| I2RootObservationFailure::PublicationPrefixMismatch)?
+    {
+        return Err(I2RootObservationFailure::PublicationPrefixMismatch);
     }
-    match observe_root_evidence(backend, root, record)? {
-        Some(RootEvidenceObservation::Baseline) => Ok("baseline_unborn"),
+    let recorded_composition = publication.and_then(|value| value.composition_commit.as_deref());
+    let evidence_failure = || {
+        if recorded_composition.is_some() {
+            I2RootObservationFailure::RecordedEvidenceDrift
+        } else {
+            I2RootObservationFailure::AmbiguousEvidenceCommit
+        }
+    };
+    match observe_root_evidence(backend, root, record).map_err(|_| evidence_failure())? {
+        Some(RootEvidenceObservation::Baseline) => {
+            if recorded_composition.is_some() {
+                Err(I2RootObservationFailure::RecordedEvidenceDrift)
+            } else {
+                Ok("baseline_unborn")
+            }
+        }
         Some(RootEvidenceObservation::Composition(observed)) => {
-            let publication = progress(record)?;
+            let publication = progress(record).map_err(|_| evidence_failure())?;
             if publication.composition_commit.is_none() {
                 return Ok("unrecorded_evidence");
             }
@@ -190,21 +202,15 @@ pub(crate) fn normalized_i2_root_observation<B: GitBackend>(
                         recorded.path == live.path && recorded.sha256 == live.sha256
                     })
             {
-                return Err(unreadable(
-                    "fixture composition evidence does not match the durable record",
-                ));
+                return Err(I2RootObservationFailure::RecordedEvidenceDrift);
             }
-            Ok(
-                if index_prefix == Some(CandidatePublicationPrefix::Boundary) {
-                    "prefix_boundary"
-                } else {
-                    "recorded_evidence"
-                },
-            )
+            Ok(if index_prefix == CandidatePublicationPrefix::Boundary {
+                "prefix_boundary"
+            } else {
+                "recorded_evidence"
+            })
         }
-        None => Err(unreadable(
-            "fixture root has no exact compatibility observation",
-        )),
+        None => Err(evidence_failure()),
     }
 }
 

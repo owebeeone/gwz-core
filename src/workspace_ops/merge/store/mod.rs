@@ -226,9 +226,7 @@ fn read_record(
         fs::read(path).map_err(|error| location_unreadable(path, merge_id, location, error))?;
     let decoded = decode_production_v0(&bytes)
         .map_err(|error| decode_error(path, merge_id, location, error))?;
-    let raw = decoded.raw;
-    let header = decoded.header;
-    let record = decoded.record;
+    let (raw, header, record) = decoded.into_production_parts();
     if let Err(error) = validate_record(&record, Some(path)) {
         return Err(match location {
             RecordLocation::Open => {

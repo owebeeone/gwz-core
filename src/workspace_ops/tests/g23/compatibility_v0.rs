@@ -1,30 +1,13 @@
 use std::collections::BTreeMap;
 
-use serde::Serialize;
 use serde_yaml::Value;
 
-use crate::git::{GitBackend, GitRepositoryState};
-use crate::workspace_ops::merge::{
-    MergeExecutionMode, MergeOperationRecord, MergeTargetKind, OperationState, ParticipantState,
-    PublicationStep,
-};
+use crate::git::GitBackend;
+use crate::workspace_ops::merge::{MergeExecutionMode, MergeOperationRecord, OperationState};
 
 use super::*;
 
 const REGISTRY: &str = include_str!("../../../../dev-docs/GwzM5-8I2CompatibilityPredicates.json");
-
-fn value<T: Serialize>(input: T) -> Value {
-    serde_yaml::to_value(input).unwrap()
-}
-
-fn object<const N: usize>(fields: [(&str, Value); N]) -> Value {
-    Value::Mapping(
-        fields
-            .into_iter()
-            .map(|(key, value)| (Value::String(key.to_owned()), value))
-            .collect(),
-    )
-}
 
 fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
     value
@@ -39,284 +22,12 @@ fn text_field<'a>(value: &'a Value, key: &str) -> &'a str {
         .unwrap_or_else(|| panic!("registry field {key:?} is not text"))
 }
 
-fn publication_step(step: PublicationStep) -> &'static str {
-    match step {
-        PublicationStep::NotStarted => "not_started",
-        PublicationStep::ValidatingResults => "validating_results",
-        PublicationStep::PreparingCandidate => "preparing_candidate",
-        PublicationStep::CommittingEvidence => "committing_evidence",
-        PublicationStep::PublishingCandidate => "publishing_candidate",
-        PublicationStep::VerifyingPublication => "verifying_publication",
-        PublicationStep::Complete => "complete",
-    }
-}
-
 fn normalize_descriptor<B: GitBackend>(
     backend: &B,
     root: &Path,
     record: &MergeOperationRecord,
-) -> Value {
-    assert_eq!(record.schema, "gwz.merge-operation/v0");
-    assert_eq!(record.record_schema_version, 0);
-    assert_eq!(record.mode, MergeExecutionMode::Normal);
-    assert_eq!(record.state, OperationState::Finalizing);
-    assert!(record.operation_drift.is_empty());
-    assert_eq!(record.selected_targets.len(), 1);
-    let selected = &record.selected_targets[0];
-    assert_ne!(selected, "@root");
-    assert_eq!(record.participants.len(), 1);
-    let participant = &record.participants[selected];
-    assert_eq!(participant.target_kind, MergeTargetKind::Member);
-    assert!(participant.pending_action.is_none());
-    assert!(participant.conflict_paths.is_empty());
-    assert!(participant.conflict_snapshot.is_empty());
-    assert!(participant.error.is_none());
-    assert!(participant.preservation.is_empty());
-    assert!(participant.drift.is_empty());
-
-    let result = participant.resulting_commit.as_deref().unwrap();
-    let (participant_state, result_relation) = match participant.state {
-        ParticipantState::FastForwarded => {
-            assert_ne!(result, participant.before_commit);
-            assert_eq!(result, participant.source_commit);
-            ("fast_forwarded", "changed_exact")
-        }
-        ParticipantState::UpToDate => {
-            assert_eq!(result, participant.before_commit);
-            ("up_to_date", "equals_before")
-        }
-        state => panic!("unlisted participant state in I2 fixture: {state:?}"),
-    };
-    let member_path = root.join(&participant.path);
-    let member_head = backend.head(&member_path).unwrap();
-    assert!(!member_head.is_detached);
-    assert_eq!(
-        member_head.branch.as_deref(),
-        Some(participant.target_branch.as_str())
-    );
-    assert_eq!(member_head.commit.as_deref(), Some(result));
-    assert_eq!(
-        backend
-            .read_ref(
-                &member_path,
-                &format!("refs/heads/{}", participant.target_branch),
-            )
-            .unwrap()
-            .as_deref(),
-        Some(result)
-    );
-    assert_eq!(
-        backend.repository_state(&member_path).unwrap(),
-        GitRepositoryState::Clean
-    );
-    assert!(!backend.status(&member_path).unwrap().is_dirty);
-
-    let lock_yaml = record.baseline.lock_yaml.as_deref().unwrap();
-    let manifest_yaml = record.baseline.manifest_yaml.as_deref().unwrap();
-    assert_eq!(
-        format!("{:x}", Sha256::digest(lock_yaml.as_bytes())),
-        record.baseline.lock_sha256
-    );
-    assert_eq!(
-        format!("{:x}", Sha256::digest(manifest_yaml.as_bytes())),
-        record.baseline.manifest_sha256
-    );
-    assert!(record.baseline.lock_commit_sha256.is_none());
-    assert!(record.baseline.manifest_commit_sha256.is_none());
-    assert!(record.baseline.root_head.is_none());
-    assert!(record.baseline.root_branch.is_some());
-    let baseline_manifest = crate::artifact::ManifestArtifact::from_yaml(manifest_yaml).unwrap();
-    let baseline_lock = crate::artifact::LockArtifact::from_yaml(lock_yaml).unwrap();
-    assert_eq!(baseline_manifest.workspace.id, record.workspace_id);
-    assert_eq!(baseline_lock.workspace_id, record.workspace_id);
-    assert_eq!(baseline_manifest.members.len(), 1);
-    assert_eq!(baseline_lock.members.len(), 1);
-    let manifest_member = &baseline_manifest.members[0];
-    let baseline_member = &baseline_lock.members[selected];
-    assert_eq!(manifest_member.id, *selected);
-    assert_eq!(manifest_member.path, participant.path);
-    assert!(manifest_member.active);
-    assert_eq!(baseline_member.path, participant.path);
-    assert_eq!(
-        baseline_member.source_id.as_ref(),
-        Some(&manifest_member.source_id)
-    );
-    assert_eq!(baseline_member.source_kind, manifest_member.source_kind);
-    assert_eq!(
-        baseline_member.commit.as_deref(),
-        Some(participant.before_commit.as_str())
-    );
-
-    let root_observation =
-        crate::workspace_ops::merge::normalized_i2_root_observation(backend, root, record).unwrap();
-    if root_observation != "prefix_boundary" {
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(fs::read(root.join(crate::artifact::LOCK_PATH)).unwrap())
-            ),
-            record.baseline.lock_sha256
-        );
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(fs::read(root.join(crate::workspace::WORKSPACE_MANIFEST)).unwrap())
-            ),
-            record.baseline.manifest_sha256
-        );
-    }
-
-    let (publication_presence, step, candidate, composition, hashes) =
-        if let Some(publication) = record.publication.as_ref() {
-            assert!(publication.root_merge_commit.is_none());
-            assert!(!publication.evidence_rolled_back);
-            assert!(publication.root_preservation.is_empty());
-            assert!(publication.preservation_prefix.is_none());
-            let candidate = if let Some(candidate) = publication.candidate.as_ref() {
-                crate::workspace_ops::merge::validate_candidate_for_i2_fixture(record).unwrap();
-                assert_eq!(
-                    Some(candidate.baseline_lock_yaml.as_str()),
-                    record.baseline.lock_yaml.as_deref()
-                );
-                let candidate_lock =
-                    crate::artifact::LockArtifact::from_yaml(&candidate.lock_yaml).unwrap();
-                assert_eq!(candidate_lock.members.len(), 1);
-                for target_id in &record.selected_targets {
-                    let participant = &record.participants[target_id];
-                    let baseline_member = &baseline_lock.members[target_id];
-                    let candidate_member = &candidate_lock.members[target_id];
-                    assert_eq!(baseline_member.path, participant.path);
-                    assert_eq!(
-                        baseline_member.commit.as_deref(),
-                        Some(participant.before_commit.as_str())
-                    );
-                    assert_eq!(candidate_member.path, participant.path);
-                    assert_eq!(candidate_member.source_id, baseline_member.source_id);
-                    assert_eq!(candidate_member.source_kind, baseline_member.source_kind);
-                    assert_eq!(candidate_member.upstream, baseline_member.upstream);
-                    assert_eq!(
-                        candidate_member.commit.as_deref(),
-                        participant.resulting_commit.as_deref()
-                    );
-                    assert_eq!(
-                        candidate_member.branch.as_deref(),
-                        Some(participant.target_branch.as_str())
-                    );
-                    assert_eq!(candidate_member.detached, Some(false));
-                    assert_eq!(candidate_member.dirty, Some(false));
-                    assert_eq!(candidate_member.materialized, Some(true));
-                }
-                "complete_valid"
-            } else {
-                assert!(publication.candidate_lock_sha256.is_none());
-                assert!(publication.candidate_marker_path.is_none());
-                "absent"
-            };
-            let (composition, hashes) = match (
-                publication.composition_commit.as_ref(),
-                publication.composition_tree.as_ref(),
-                publication.candidate_hashes.is_empty(),
-            ) {
-                (None, None, true) => ("absent", "empty"),
-                (Some(_), Some(_), false) => ("complete_valid", "canonical_valid"),
-                shape => panic!("partial composition fixture shape: {shape:?}"),
-            };
-            (
-                "present",
-                publication_step(publication.step),
-                candidate,
-                composition,
-                hashes,
-            )
-        } else {
-            ("absent", "absent", "absent", "absent", "empty")
-        };
-
-    object([
-        ("location", value("open")),
-        ("mode", value("normal")),
-        (
-            "operation",
-            object([
-                ("state", value("finalizing")),
-                ("drift", value(Vec::<String>::new())),
-            ]),
-        ),
-        (
-            "selection",
-            object([
-                ("ordered_ids", value(["p0"])),
-                ("root_selected", value(false)),
-            ]),
-        ),
-        (
-            "participants",
-            value([object([
-                ("id", value("p0")),
-                ("path", value("selected_path")),
-                ("target_kind", value("member")),
-                ("target_branch", value("attached_live_branch")),
-                ("state", value(participant_state)),
-                ("result", value(result_relation)),
-                (
-                    "pending",
-                    object([
-                        ("kind", value("absent")),
-                        ("expected", value("absent")),
-                        ("commit_spec", value("absent")),
-                    ]),
-                ),
-                ("conflict", value("absent")),
-                ("error", value("absent")),
-                ("preservation", value("absent")),
-                ("drift", value(Vec::<String>::new())),
-            ])]),
-        ),
-        (
-            "baseline",
-            object([
-                ("lock_yaml", value("present_digest_valid")),
-                ("manifest_yaml", value("present_digest_valid")),
-                ("lock_commit_hash", value("absent")),
-                ("manifest_commit_hash", value("absent")),
-                ("root_checkout", value("unborn_attached")),
-                ("root_commit_hash", value("absent")),
-            ]),
-        ),
-        (
-            "publication",
-            object([
-                ("presence", value(publication_presence)),
-                ("step", value(step)),
-                ("candidate", value(candidate)),
-                ("composition", value(composition)),
-                ("hashes", value(hashes)),
-                ("root_merge", value("absent")),
-                ("evidence_rolled_back", value(false)),
-                ("root_preservation", value("absent")),
-                ("preservation_prefix", value("absent")),
-            ]),
-        ),
-        (
-            "observation",
-            object([
-                (
-                    "participants",
-                    value([object([
-                        ("id", value("p0")),
-                        ("action", value("none")),
-                        ("head", value("equals_result")),
-                        ("target_ref", value("equals_result")),
-                        ("index", value("clean")),
-                        ("worktree", value("clean")),
-                    ])]),
-                ),
-                ("root", value(root_observation)),
-                ("preservation", value("none")),
-                ("rollback", value("none")),
-            ]),
-        ),
-    ])
+) -> crate::workspace_ops::merge::VerifiedV0Descriptor {
+    crate::workspace_ops::merge::verified_v0_descriptor(backend, root, record).unwrap()
 }
 
 fn write_json_string(value: &str, output: &mut String) {
@@ -369,6 +80,238 @@ fn canonical_json(value: &Value, output: &mut String) {
             output.push('}');
         }
         other => panic!("unsupported canonical JSON value: {other:?}"),
+    }
+}
+
+fn assert_adapter_guards<B: GitBackend>(backend: &B, root: &Path, record: &MergeOperationRecord) {
+    let raw = serde_yaml::to_value(record).unwrap();
+    let baseline_decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        serde_yaml::to_string(record).unwrap().as_bytes(),
+    )
+    .unwrap();
+
+    let mut no_ff = record.clone();
+    no_ff.mode = MergeExecutionMode::NoFf;
+    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        serde_yaml::to_string(&no_ff).unwrap().as_bytes(),
+    )
+    .unwrap();
+    let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+        backend,
+        root,
+        &decoded,
+        "r3-test-writer",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::UnsupportedLegacyMode);
+
+    super::compatibility_v0_edges::assert_legacy_v0_compatibility_edges(backend, root, record);
+
+    let member_drift = root
+        .join(&record.participants[&record.selected_targets[0]].path)
+        .join("i2-untracked-drift.txt");
+    fs::write(&member_drift, "drift\n").unwrap();
+    let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+        backend,
+        root,
+        &baseline_decoded,
+        "r3-test-writer",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::AcceptanceInputDrift);
+    fs::remove_file(member_drift).unwrap();
+
+    for field_name in [
+        "accepted_workspace",
+        "recovery_context",
+        "pending_rollback",
+        "pending_preservation",
+    ] {
+        let mut colliding = raw.clone();
+        colliding.as_mapping_mut().unwrap().insert(
+            Value::String(field_name.to_owned()),
+            Value::String("future-v0-value".to_owned()),
+        );
+        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+            serde_yaml::to_string(&colliding).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+            backend,
+            root,
+            &decoded,
+            "r3-test-writer",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::MergeRecordUnreadable, "{field_name}");
+        assert!(error.message.contains("collides"), "{field_name}");
+    }
+
+    let mut future = raw;
+    future.as_mapping_mut().unwrap().insert(
+        Value::String("future_record".to_owned()),
+        Value::String("retained".to_owned()),
+    );
+    future["baseline"].as_mapping_mut().unwrap().insert(
+        Value::String("future_baseline".to_owned()),
+        Value::Bool(true),
+    );
+    let selected = &record.selected_targets[0];
+    future["participants"][selected]
+        .as_mapping_mut()
+        .unwrap()
+        .insert(
+            Value::String("future_participant".to_owned()),
+            Value::Number(7.into()),
+        );
+    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        serde_yaml::to_string(&future).unwrap().as_bytes(),
+    )
+    .unwrap();
+    match crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+        backend,
+        root,
+        &decoded,
+        "r3-test-writer",
+    )
+    .unwrap()
+    {
+        crate::workspace_ops::merge::OpenV0Adaptation::Eligible {
+            record,
+            unknown_fields,
+            ..
+        } => {
+            assert_eq!(unknown_fields.entries().len(), 3);
+            assert_eq!(record.extensions["future_record"], "retained");
+            assert_eq!(record.baseline.extensions["future_baseline"], true);
+            assert_eq!(
+                record.participants[selected].extensions["future_participant"],
+                7
+            );
+        }
+        crate::workspace_ops::merge::OpenV0Adaptation::ValidUnlisted => {
+            panic!("eligible record with additive unknowns became unlisted")
+        }
+    }
+}
+
+fn assert_root_drift_taxonomy<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &MergeOperationRecord,
+    rule_id: &str,
+) {
+    let manifest_path = root.join(crate::workspace::WORKSPACE_MANIFEST);
+    let original = fs::read(&manifest_path).unwrap();
+    fs::write(&manifest_path, b"root drift\n").unwrap();
+    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        serde_yaml::to_string(record).unwrap().as_bytes(),
+    )
+    .unwrap();
+    let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+        backend,
+        root,
+        &decoded,
+        "r3-test-writer",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::AcceptanceInputDrift, "{rule_id}");
+    fs::write(manifest_path, original).unwrap();
+
+    if record
+        .publication
+        .as_ref()
+        .and_then(|publication| publication.candidate.as_ref())
+        .is_some()
+    {
+        let lock_path = root.join(crate::artifact::LOCK_PATH);
+        let original = fs::read(&lock_path).unwrap();
+        fs::write(&lock_path, "illegal publication prefix\n").unwrap();
+        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+            serde_yaml::to_string(record).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+            backend,
+            root,
+            &decoded,
+            "r3-test-writer",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::PublicationPrefixMismatch,
+            "{rule_id}"
+        );
+        fs::write(lock_path, original).unwrap();
+    }
+
+    if record
+        .publication
+        .as_ref()
+        .and_then(|publication| publication.composition_commit.as_ref())
+        .is_some()
+    {
+        let mut mismatched = record.clone();
+        mismatched.publication.as_mut().unwrap().composition_commit = Some("f".repeat(40));
+        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+            serde_yaml::to_string(&mismatched).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+            backend,
+            root,
+            &decoded,
+            "r3-test-writer",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::RecordedEvidenceDrift, "{rule_id}");
+    } else if record
+        .publication
+        .as_ref()
+        .and_then(|publication| publication.candidate.as_ref())
+        .is_some()
+    {
+        let original_branch = backend.head(root).unwrap().branch.unwrap();
+        super::compatibility_v0_edges::set_symbolic_head(root, "i2-ambiguous-root");
+        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+            serde_yaml::to_string(record).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+            backend,
+            root,
+            &decoded,
+            "r3-test-writer",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::AmbiguousEvidenceCommit, "{rule_id}");
+        super::compatibility_v0_edges::set_symbolic_head(root, &original_branch);
+    }
+
+    if rule_id == "candidate-persisted-before-evidence" {
+        let mut corrupt = record.clone();
+        corrupt
+            .publication
+            .as_mut()
+            .unwrap()
+            .candidate
+            .as_mut()
+            .unwrap()
+            .lock_yaml
+            .push_str("# corrupt\n");
+        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+            serde_yaml::to_string(&corrupt).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+            backend,
+            root,
+            &decoded,
+            "r3-test-writer",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::CandidateIntegrityMismatch);
     }
 }
 
@@ -454,9 +397,12 @@ pub(super) fn assert_i2_compatibility_fixture<B: GitBackend>(
         .find(|row| text_field(row, "id") == rule_id)
         .unwrap_or_else(|| panic!("migration whitelist is missing {rule_id:?}"));
     let descriptor = normalize_descriptor(backend, root, record);
-    assert_eq!(&descriptor, field(rule, "descriptor"), "{case_id}");
+    if case_id == "changed/finalizing-before-publication-record" {
+        assert_adapter_guards(backend, root, record);
+    }
+    assert_eq!(descriptor.value(), field(rule, "descriptor"), "{case_id}");
     let mut canonical = String::new();
-    canonical_json(&descriptor, &mut canonical);
+    canonical_json(descriptor.value(), &mut canonical);
     assert_eq!(
         format!("{:x}", Sha256::digest(canonical.as_bytes())),
         text_field(rule, "descriptor_sha256"),
@@ -467,9 +413,64 @@ pub(super) fn assert_i2_compatibility_fixture<B: GitBackend>(
         text_field(field(rule, "classification"), "next_action"),
         "{case_id}"
     );
+    super::compatibility_v0_edges::assert_exact_baseline_recovery(backend, root, record);
+    assert_root_drift_taxonomy(backend, root, record, rule_id);
+    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        serde_yaml::to_string(record).unwrap().as_bytes(),
+    )
+    .unwrap();
+    match crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+        backend,
+        root,
+        &decoded,
+        "r3-test-writer",
+    )
+    .unwrap()
+    {
+        crate::workspace_ops::merge::OpenV0Adaptation::Eligible {
+            rule_id: adapted_rule,
+            next_action,
+            record: adapted,
+            canonical,
+            unknown_fields,
+        } => {
+            assert_eq!(adapted_rule, rule_id, "{case_id}");
+            assert_eq!(
+                next_action,
+                text_field(field(rule, "classification"), "next_action"),
+                "{case_id}"
+            );
+            assert!(adapted.accepted_workspace.is_some(), "{case_id}");
+            let accepted = adapted.accepted_workspace.as_ref().unwrap();
+            if let Some(candidate) = record
+                .publication
+                .as_ref()
+                .and_then(|publication| publication.candidate.as_ref())
+            {
+                assert_eq!(accepted.lock.exact_yaml, candidate.lock_yaml, "{case_id}");
+                assert_eq!(
+                    accepted.lock.sha256,
+                    format!("{:x}", Sha256::digest(candidate.lock_yaml.as_bytes())),
+                    "{case_id}"
+                );
+            }
+            assert_eq!(adapted.writer_version, "r3-test-writer", "{case_id}");
+            assert_eq!(
+                canonical.installed_kind(),
+                crate::workspace_ops::merge::v1::CanonicalInstalledKind::V1,
+                "{case_id}"
+            );
+            assert!(unknown_fields.entries().is_empty(), "{case_id}");
+        }
+        crate::workspace_ops::merge::OpenV0Adaptation::ValidUnlisted => {
+            panic!("registered case {case_id} was not adapted")
+        }
+    }
 }
 
-pub(super) fn assert_i2_valid_unlisted_fixture(
+pub(super) fn assert_i2_valid_unlisted_fixture<B: GitBackend>(
+    backend: &B,
+    root: &Path,
     record: &MergeOperationRecord,
     case_id: &str,
     subcase: &str,
@@ -496,6 +497,38 @@ pub(super) fn assert_i2_valid_unlisted_fixture(
             && text_field(field(field(rule, "descriptor"), "operation"), "state") == "finalizing"
     }));
     assert_ne!(record.state, OperationState::Finalizing);
+    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        serde_yaml::to_string(record).unwrap().as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+            backend,
+            root,
+            &decoded,
+            "r3-test-writer",
+        )
+        .unwrap(),
+        crate::workspace_ops::merge::OpenV0Adaptation::ValidUnlisted,
+        "{case_id}"
+    );
+
+    let mut malformed = record.clone();
+    malformed
+        .participants
+        .remove(&malformed.selected_targets[0]);
+    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        serde_yaml::to_string(&malformed).unwrap().as_bytes(),
+    )
+    .unwrap();
+    let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+        backend,
+        root,
+        &decoded,
+        "r3-test-writer",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeRecordUnreadable, "{case_id}");
 }
 
 fn operation_state(state: OperationState) -> &'static str {
@@ -564,6 +597,20 @@ fn i2_runtime_binding_inventories_equal_the_registry() {
             ),
         ]
     );
+    let rules = field(&registry, "migration_whitelist")
+        .as_sequence()
+        .unwrap();
+    let rule_ids = rules
+        .iter()
+        .map(|rule| text_field(rule, "id"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let bound_rule_ids = migration
+        .iter()
+        .map(|(_, _, rule)| *rule)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(rule_ids, bound_rule_ids);
+    assert_eq!(rules.len(), rule_ids.len());
+    assert_eq!(migration.len(), bound_rule_ids.len());
     let unlisted = field(&registry, "valid_unlisted_corpus")
         .as_sequence()
         .unwrap()

@@ -245,7 +245,11 @@ fn v0_changed_merge_windows_have_named_exact_durable_shapes() {
             }
             CompatibilityBinding::ValidUnlisted(case_id, subcase) => {
                 super::compatibility_v0::assert_i2_valid_unlisted_fixture(
-                    &record, case_id, subcase,
+                    &backend,
+                    temp.path(),
+                    &record,
+                    case_id,
+                    subcase,
                 );
             }
         }
@@ -275,6 +279,8 @@ fn v0_terminal_completed_before_archive_is_read_only_and_closes_byte_exactly() {
     let record = store.discover_open(temp.path()).unwrap().unwrap();
     assert_eq!(record.state, OperationState::Completed);
     super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+        &backend,
+        temp.path(),
         &record,
         "terminal/completed",
         "single",
@@ -349,6 +355,8 @@ fn v0_terminal_aborted_before_archive_is_read_only_and_closes_byte_exactly() {
     let record = store.discover_open(temp.path()).unwrap().unwrap();
     assert_eq!(record.state, OperationState::Aborted);
     super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+        &backend,
+        temp.path(),
         &record,
         "terminal/aborted",
         "single",
@@ -607,7 +615,9 @@ fn assert_recovery_required_status_is_read_only(
 ) {
     record.state = OperationState::RecoveryRequired;
     FileMergeStore.write_open(root, record).unwrap();
-    super::compatibility_v0::assert_i2_valid_unlisted_fixture(record, case_id, subcase);
+    super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+        backend, root, record, case_id, subcase,
+    );
     let path = root.join(format!(".gwz/merge/{}.yaml", record.merge_id));
     let before = fs::read(&path).unwrap();
 

@@ -32,17 +32,17 @@ fn production_decoder_uses_the_strict_tree_for_v0_body_decode() {
         record("schema: gwz.merge-operation/v0\nrecord_schema_version: 0").as_bytes(),
     )
     .unwrap();
-    assert_eq!(decoded.record.merge_id, "merge_1");
+    assert_eq!(decoded.record().merge_id, "merge_1");
     assert!(
         decoded
-            .unknown_fields
+            .unknown_fields()
             .entries()
             .keys()
             .any(|locator| locator.field == "future_record")
     );
     assert_eq!(
         decoded
-            .raw
+            .raw()
             .as_mapping()
             .unwrap()
             .get("future_record")

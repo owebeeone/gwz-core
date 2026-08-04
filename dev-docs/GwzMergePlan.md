@@ -1,10 +1,10 @@
 # GWZ Merge Implementation Plan
 
 Status: **active** (revised 2026-08-04). Owner: Gianni. M2b through M4, the
-god-file refactor, R0, R1, R2a, M5a, I1/I2, and R4a are complete. The first R3
-checkpoint—strict envelope decoding, version allocation, location-aware store
-rejection, and structured cross-driver error context—is implemented with only
-the v0 body decoder installed in production. M5a custom
+god-file refactor, R0, R1, R2a, M5a, I1/I2, and R4a are complete. The R3
+envelope, validated-model, unknown-field, and open-v0 adapter checkpoints are
+implemented and independently accepted, with only the v0 body decoder
+installed in production. M5a custom
 messages have green local technical, compatibility, and cross-driver gates.
 The corrected I1/I2 durability contracts and R4a acceptance/finalization
 semantics each have two independent GO verdicts. R3 is the next active package,
@@ -1664,9 +1664,12 @@ boundaries:
    independently accepted with no P0–P3 finding. The identity-aware v0/v1
    unknown-field manifest, semantic overlay/retirement verifier, and closed
    v0-to-v1 collision map are now also implemented under `cfg(test)` and
-   independently accepted with no P0–P3 finding. Production remains v0-only.
-   The open-v0 adapter, archive projection, and test-only atomic upgrade remain
-   before R3 is complete.
+   independently accepted with no P0–P3 finding. The exact seven-rule open-v0
+   adapter, closed-source baseline recovery, invariant-specific live evidence,
+   raw/typed unknown-field binding, valid-unlisted boundary, and canonical v1
+   validation are now implemented under `cfg(test)` and independently accepted
+   with no P0–P3 finding. Production remains v0-only. Archive projection and
+   the test-only atomic upgrade remain before R3 is complete.
 5. R4b, finalization owned, makes every finalization and recovery path consume
    persisted acceptance.
 6. M5b splits exact prepared-commit work between the Git backend owner and

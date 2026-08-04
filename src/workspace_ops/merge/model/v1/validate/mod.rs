@@ -10,6 +10,8 @@ mod publication;
 pub(crate) use acceptance::validate_v1_acceptance;
 pub(crate) use action::validate_v1_actions;
 pub(crate) use baseline::validate_v1_baseline;
+#[cfg(test)]
+pub(crate) use common::validate_common_v0_view;
 pub(crate) use common::validate_common_v1_record;
 pub(crate) use journal::validate_v1_journal;
 pub(crate) use lifecycle::validate_v1_lifecycle;

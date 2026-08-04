@@ -16,11 +16,32 @@ use crate::model::ModelError;
 
 #[derive(Debug)]
 pub(crate) struct DecodedV0Record {
-    pub(crate) raw: Value,
-    pub(crate) header: MergeRecordHeader,
-    pub(crate) record: MergeOperationRecord,
+    raw: Value,
+    header: MergeRecordHeader,
+    record: MergeOperationRecord,
     #[cfg(test)]
-    pub(crate) unknown_fields: UnknownFieldManifest,
+    unknown_fields: UnknownFieldManifest,
+}
+
+impl DecodedV0Record {
+    pub(crate) fn into_production_parts(self) -> (Value, MergeRecordHeader, MergeOperationRecord) {
+        (self.raw, self.header, self.record)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record(&self) -> &MergeOperationRecord {
+        &self.record
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unknown_fields(&self) -> &UnknownFieldManifest {
+        &self.unknown_fields
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw(&self) -> &Value {
+        &self.raw
+    }
 }
 
 #[cfg(test)]

@@ -34,13 +34,14 @@ pub(crate) use abort::{EvidenceRollbackMutation, fail_next_evidence_rollback_aft
 #[cfg(test)]
 pub(crate) use acceptance::finalization_next_action_for_i2;
 #[cfg(test)]
-pub(crate) use finalize::validate_candidate_for_i2_fixture;
-#[cfg(test)]
 pub(crate) use finalize::{CandidatePublicationMutation, fail_next_candidate_publication_after};
 #[cfg(test)]
 use preserve::classify_index_aligned_root_publication_for_i2;
 #[cfg(test)]
-pub(crate) use publication::normalized_i2_root_observation;
+pub(crate) use record_wire::{
+    OpenV0Adaptation, VerifiedV0Descriptor, adapt_open_v0_for_r3_tests, decode_v0_for_r3_tests,
+    verified_v0_descriptor,
+};
 
 pub(crate) use model::*;
 pub(crate) use recovery::*;

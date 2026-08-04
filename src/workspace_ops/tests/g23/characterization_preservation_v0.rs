@@ -210,6 +210,8 @@ fn v0_participant_rollback_has_restartable_durable_reverse_prefixes() {
         assert_eq!(interrupted.state, OperationState::RollingBack);
         if terminal_rows == 0 {
             super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+                &backend,
+                temp.path(),
                 &interrupted,
                 "rollback/participant",
                 "0",
@@ -407,6 +409,8 @@ fn v0_preservation_restart_rebuilds_missing_stash_bundle_from_recorded_evidence(
     }];
     FileMergeStore.write_open(temp.path(), &record).unwrap();
     super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+        &backend,
+        temp.path(),
         &record,
         "preserving/stash",
         "single",
