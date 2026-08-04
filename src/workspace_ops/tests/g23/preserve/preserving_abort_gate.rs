@@ -5,10 +5,12 @@ fn plain_abort_rejects_interrupted_preservation_before_rollback() {
     let temp = TempDir::new("merge-preserve-plain-abort-gate");
     let backend = crate::git::Git2Backend::new();
     let fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let mut start = request(false);
+    start.message = Some("Preserve this merge\r\n".to_owned());
     let started = handle_merge(
         &backend,
         temp.path(),
-        request(false),
+        start,
         "op_preserve_plain_abort_start",
     )
     .unwrap();
@@ -93,4 +95,16 @@ fn plain_abort_rejects_interrupted_preservation_before_rollback() {
         evidence.target_id == "mem_lib"
             && evidence.stash_object_id.as_deref() == Some(stash_object.as_str())
     }));
+    let archived = FileMergeStore
+        .load_archived(temp.path(), &merge_id)
+        .unwrap();
+    let expected = format!(
+        "Preserve this merge\n\nGWZ-Merge-ID: {merge_id}\nGWZ-Operation-ID: op_preserve_plain_abort_start"
+    );
+    assert!(
+        archived
+            .participants
+            .values()
+            .all(|participant| participant.commit_message == expected)
+    );
 }

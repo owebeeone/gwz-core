@@ -172,6 +172,74 @@ fn mixed_merge_continue_resolves_conflict_and_preserves_prior_result() {
 }
 
 #[test]
+fn custom_message_is_frozen_across_immediate_merge_restart_and_resolution() {
+    use crate::workspace_ops::merge::{FileMergeStore, MergeStore};
+
+    let temp = TempDir::new("merge-custom-message-recovery");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let mut start = request(false);
+    start.message = Some("Coordinated merge\r\n\r\nKeep this body\r\n".to_owned());
+
+    let started = handle_merge(&backend, temp.path(), start, "op_custom_start").unwrap();
+    let merge_id = started.merge_id.clone().unwrap();
+    let expected = format!(
+        "Coordinated merge\n\nKeep this body\n\nGWZ-Merge-ID: {merge_id}\nGWZ-Operation-ID: op_custom_start"
+    );
+    let lib_oid = git2::Oid::from_str(
+        merge_repo(&started, "mem_lib")
+            .resulting_commit
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    let lib_repo = git2::Repository::open(temp.path().join("lib")).unwrap();
+    assert_eq!(
+        lib_repo.find_commit(lib_oid).unwrap().message(),
+        Ok(expected.as_str())
+    );
+
+    let docs = temp.path().join("docs");
+    fs::write(docs.join("README.md"), "resolved\n").unwrap();
+    backend
+        .stage_paths_allowing_other_conflicts(&docs, &["README.md"])
+        .unwrap();
+    let continued = handle_merge(
+        &backend,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(merge_id.clone())),
+        "op_custom_continue",
+    )
+    .unwrap();
+    let docs_oid = git2::Oid::from_str(
+        merge_repo(&continued, "mem_docs")
+            .resulting_commit
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    let docs_repo = git2::Repository::open(&docs).unwrap();
+    assert_eq!(
+        docs_repo.find_commit(docs_oid).unwrap().message(),
+        Ok(expected.as_str())
+    );
+
+    let archived = FileMergeStore
+        .load_archived(temp.path(), &merge_id)
+        .unwrap();
+    assert!(
+        archived
+            .participants
+            .values()
+            .all(|participant| participant.commit_message == expected)
+    );
+    let root_repo = git2::Repository::open(temp.path()).unwrap();
+    let root_message = root_repo.head().unwrap().peel_to_commit().unwrap();
+    assert!(root_message.message().unwrap().starts_with("gwz merge: "));
+    assert_ne!(root_message.message(), Ok(expected.as_str()));
+}
+
+#[test]
 fn failed_and_unattempted_rows_retry_only_after_whole_operation_preflight() {
     use crate::workspace_ops::merge::{
         FileMergeStore, MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeBaseline,

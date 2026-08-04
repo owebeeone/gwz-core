@@ -270,13 +270,9 @@ fn explicit_root_clean_merge_records_merge_result_before_evidence() {
     )
     .unwrap();
 
-    let response = handle_merge(
-        &backend,
-        temp.path(),
-        root_request(false),
-        "op_root_true_merge",
-    )
-    .unwrap();
+    let mut start = root_request(false);
+    start.message = Some("Root coordinated merge\r\n".to_owned());
+    let response = handle_merge(&backend, temp.path(), start, "op_root_true_merge").unwrap();
 
     assert_eq!(response.state, crate::MergeOperationState::Completed);
     assert_eq!(
@@ -294,6 +290,12 @@ fn explicit_root_clean_merge_records_merge_result_before_evidence() {
     assert_eq!(merge_commit.parent_count(), 2);
     assert_eq!(merge_commit.parent_id(0).unwrap().to_string(), before);
     assert_eq!(merge_commit.parent_id(1).unwrap().to_string(), source);
+    assert_eq!(
+        merge_commit.message(),
+        Ok(
+            "Root coordinated merge\n\nGWZ-Merge-ID: merge_op_root_true_merge_0001\nGWZ-Operation-ID: op_root_true_merge"
+        )
+    );
     assert_ne!(
         backend.head(temp.path()).unwrap().commit.as_deref(),
         Some(root_result)

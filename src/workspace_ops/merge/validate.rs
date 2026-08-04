@@ -12,8 +12,8 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
             if request.mode == Some(crate::MergeMode::NoFf) {
                 return phase("no_ff requires the v1 record lifecycle and is not yet activated");
             }
-            if request.message.is_some() {
-                return phase("custom merge messages are not available");
+            if let Some(message) = request.message.as_deref() {
+                super::integration::validate_custom_commit_message(message)?;
             }
         }
         crate::MergeOp::Resume => {
@@ -198,12 +198,18 @@ mod tests {
     }
 
     #[test]
-    fn reserved_features_return_specific_typed_errors_and_root_defers_to_planning() {
+    fn custom_messages_validate_while_no_ff_remains_reserved() {
         let mut message = request(crate::MergeOp::Start);
         message.message = Some("custom".to_owned());
-        let error = validate_merge_request(&message).unwrap_err();
-        assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
-        assert_eq!(error.message, "custom merge messages are not available");
+        assert!(validate_merge_request(&message).is_ok());
+
+        for body in ["", " \t\n", "\u{2003}\r\n", "subject\0body"] {
+            message.message = Some(body.to_owned());
+            assert_eq!(
+                validate_merge_request(&message).unwrap_err().code,
+                ErrorCode::MergeValidationFailed
+            );
+        }
 
         let mut ff_only = request(crate::MergeOp::Start);
         ff_only.mode = Some(crate::MergeMode::FfOnly);

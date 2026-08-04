@@ -112,6 +112,12 @@ where
     );
     emitter.operation_started();
     let result = (|| {
+        if request.op == crate::MergeOp::Start
+            && request.mode != Some(crate::MergeMode::NoFf)
+            && let Some(message) = request.message.as_deref()
+        {
+            super::super::integration::validate_custom_commit_message(message)?;
+        }
         let context = OperationRequest::Merge(request.clone()).context(operation_id)?;
         let (_start_guard, effective_start) =
             if enforce_start_gate && request.op == crate::MergeOp::Start {

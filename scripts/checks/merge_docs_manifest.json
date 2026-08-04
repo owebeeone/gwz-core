@@ -69,7 +69,7 @@
       "required": [
         {
           "id": "plan_m5a_custom_only",
-          "value": "The next release slice is M5a custom messages only. `--no-ff` is not writable or releasable under record v0"
+          "value": "The current release slice is M5a custom messages only. `--no-ff` is not writable or releasable under record v0"
         },
         {
           "id": "plan_m5b_disabled_v1",
@@ -146,20 +146,20 @@
       "path": "gwz-cli/docs/commands/merge.md",
       "required": [
         {
-          "id": "merge_command_ff_only_current",
-          "value": "gwz merge <source> [--dry-run] [--ff-only]"
+          "id": "merge_command_ff_only_and_message_current",
+          "value": "gwz merge <source> [--dry-run] [--ff-only] [-m <message>]"
         },
         {
           "id": "merge_command_deferred_heading",
           "value": "## Features not yet available"
         },
         {
-          "id": "merge_command_no_ff_and_message_deferred",
-          "value": "`--no-ff` and custom merge messages are not yet available."
+          "id": "merge_command_no_ff_deferred",
+          "value": "`--no-ff` is not yet available."
         },
         {
-          "id": "merge_command_unsupported_is_typed",
-          "value": "These forms remain hidden and return typed unsupported errors if submitted directly."
+          "id": "merge_command_no_ff_unsupported_is_typed",
+          "value": "It remains hidden and returns a typed unsupported error if submitted directly."
         }
       ],
       "forbidden": []
@@ -179,6 +179,10 @@
         {
           "id": "releases_recovery_guidance",
           "value": "Recovery must not substitute raw `git merge --abort` for the coordinated operation."
+        },
+        {
+          "id": "releases_custom_message_current",
+          "value": "or the body supplied with `-m`"
         }
       ],
       "forbidden": [
@@ -222,11 +226,15 @@
         },
         {
           "id": "generated_cli_current_usage",
-          "value": "Usage: gwz merge [source] [--dry-run]"
+          "value": "Usage: gwz merge [source] [--dry-run] [--ff-only] [-m <message>]"
         },
         {
           "id": "generated_cli_ff_only",
           "value": "--ff-only Require every selected repository to merge by fast-forward"
+        },
+        {
+          "id": "generated_cli_custom_message",
+          "value": "--message <message> Use a custom merge commit-message body"
         }
       ],
       "forbidden": [

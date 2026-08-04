@@ -18,20 +18,21 @@ use std::path::Path;
 
 pub(super) fn freeze_merge_messages(
     participants: &mut [MergeParticipantPlan],
+    custom_body: Option<&str>,
     source_ref: &str,
     merge_id: &str,
     context: &OperationContext,
-) {
+) -> ModelResult<()> {
     for participant in participants {
         participant.commit_message = super::super::integration::final_member_commit_message(
-            None,
+            custom_body,
             source_ref,
             &participant.target_branch,
             merge_id,
             &context.operation_id,
-        )
-        .expect("internally generated merge message is always valid");
+        )?;
     }
+    Ok(())
 }
 
 pub(super) fn create_record<C: Clock>(

@@ -135,6 +135,8 @@ gwz merge <source> --dry-run
 gwz merge --continue
 gwz merge --abort
 gwz merge --status [<merge-id>]
+gwz merge <source> --ff-only
+gwz merge <source> -m <message>
 ```
 
 Preserving post-merge work before an abort is explicit:
@@ -147,9 +149,7 @@ gwz merge --gc [<merge-id>]
 Later compatible additions:
 
 ```text
-gwz merge <source> --ff-only
 gwz merge <source> --no-ff
-gwz merge <source> -m <message>
 gwz merge <source> --into <branch>
 gwz merge +<snapshot>
 ```
@@ -560,9 +560,11 @@ GWZ-Operation-ID: <operation-id>
 ```
 
 For a true member merge, start records the exact member commit message before
-mutation. Unless `-m` overrides it in a later phase, the default is
-`Merge '<source-ref>' into '<target-branch>'` with the same two GWZ trailers.
-Immediate clean merges and resolution commits use that recorded message.
+mutation. The default is `Merge '<source-ref>' into '<target-branch>'`; `-m`
+replaces that body after deterministic line-ending and trailing-newline
+normalization. The same two mandatory GWZ identity lines are appended in both
+cases. Immediate clean merges and resolution commits use that recorded
+message.
 Before durable action intent, GWZ resolves author and committer identity from
 the request attribution or member repository and freezes the complete
 signatures. Immediate and recovered execution use those exact signatures; they

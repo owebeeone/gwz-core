@@ -213,6 +213,48 @@ fn first_class_merge_dry_run_does_not_change_head_lock_or_merge_state() {
 }
 
 #[test]
+fn invalid_custom_message_rejects_dry_run_and_real_start_without_mutation() {
+    let temp = TempDir::new("merge-invalid-custom-message");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-invalid-message-source");
+    let member = temp.path().join("remote");
+    feature_commit(&backend, &member, "README.md", "source\n");
+    let mutator_locks = temp.path().join(".gwz/locks");
+    fs::remove_dir_all(&mutator_locks).unwrap();
+    let root_head = backend.head(temp.path()).unwrap();
+    let member_head = backend.head(&member).unwrap();
+    let member_index = fs::read(member.join(".git/index")).unwrap();
+    let lock = fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap();
+    let mut invalid = request(true);
+    invalid.message = Some(" \t\r\n".to_owned());
+
+    let error = handle_merge(
+        &backend,
+        temp.path(),
+        invalid.clone(),
+        "op_invalid_message_dry",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeValidationFailed);
+
+    invalid.meta.dry_run = Some(false);
+    let error =
+        handle_merge(&backend, temp.path(), invalid, "op_invalid_message_real").unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::MergeValidationFailed);
+    assert_eq!(backend.head(temp.path()).unwrap(), root_head);
+    assert_eq!(backend.head(&member).unwrap(), member_head);
+    assert_eq!(fs::read(member.join(".git/index")).unwrap(), member_index);
+    assert_eq!(
+        fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
+        lock
+    );
+    assert!(backend.merge_state(&member).unwrap().is_none());
+    assert!(!temp.path().join(".gwz/merge").exists());
+    assert!(!mutator_locks.exists());
+}
+
+#[test]
 fn dry_run_predicts_conflicts_without_changing_git_or_gwz_state() {
     let temp = TempDir::new("merge-dry-conflict-prediction");
     let backend = crate::git::Git2Backend::new();

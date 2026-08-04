@@ -1,19 +1,14 @@
 # GWZ Merge Implementation Plan
 
-Status: **active** (revised 2026-07-30; the corrected M2b and first public
-member-merge release gate are complete, and the god-file refactor prerequisite
-has passed its full technical gate and is committed). Owner: Gianni. M2c
-explicit workspace-root participation and M3 preservation, retention, and GC
-are implemented; their combined local release gate and independent re-reviews
-are complete, and the accepted change set is committed. M4 conflict prediction
-and selection-wide `--ff-only` are implementation-complete with green local
-technical and independent remediation re-review gates. All original and
-follow-up findings are closed, and the completed release builds provide the
-Windows, macOS, Linux x86, and Linux arm64 platform evidence. The uncommitted
-change set is ready for the normal commit recorded in
-`../../dev-docs/GwzMergeM4-RemPlan.md`.
+Status: **active** (revised 2026-08-04). Owner: Gianni. M2b through M4, the
+god-file refactor, R0, R1, and R2a are complete and committed. M5a custom
+messages are complete with green local technical, compatibility, and
+cross-driver gates; two independent post-implementation reviews report no
+P0–P3 finding. The next checkpoint is the lead-owned I1 direction memo.
+Completed release builds remain the Windows, macOS, Linux x86, and Linux arm64
+platform evidence for the preceding release baseline.
 
-The next release slice is M5a custom messages only. `--no-ff` is not writable
+The current release slice is M5a custom messages only. `--no-ff` is not writable
 or releasable under record v0; it is implemented as M5b behind the disabled v1
 writer and activates only with A1 after the I1/I2 and R4a/R3/R4b sequence.
 
@@ -1580,6 +1575,8 @@ diff-hygiene gates apply.
 
 ### Wave M5a — v0-safe custom messages
 
+Status: **complete; local release gate and independent reviews green**
+
 M5a follows the M4 release and contains only `-m`/custom merge messages.
 Existing `participant.commit_message` bytes remain the v0 recovery authority;
 R2a alone freezes the exact per-participant message, separator/normalization,
@@ -1617,6 +1614,13 @@ technical gate. It also runs the
 document-consistency check proving that this plan, `GwzMergeDesign.md`,
 `../../dev-docs/GwzM5-8Refactor.md`, and public capability/deferred-feature
 text do not make no-ff writable or releasable in v0.
+
+The completed gate proves exact bytes through restart, continuation,
+interrupted preserve-abort, and root finalization; actual Rust and Python
+drivers match in human, JSON, and JSONL modes. Full Rust, Python/native,
+protocol/reference, document-consistency, retained-reader, strict Clippy,
+formatting, Bazel, and diff-hygiene checks pass. Two independent reviews found
+no remaining P0–P3 defect.
 
 ### V1/A1 durability boundary and M5b no-ff
 

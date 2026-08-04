@@ -72,7 +72,13 @@ where
     }
     let mut plan = plan_merge(backend, root, request)?;
     let merge_id = ids.next_id("merge").to_string();
-    freeze_merge_messages(&mut plan.participants, &plan.source_ref, &merge_id, context);
+    freeze_merge_messages(
+        &mut plan.participants,
+        request.message.as_deref(),
+        &plan.source_ref,
+        &merge_id,
+        context,
+    )?;
     let mut record = create_record(root, &plan, &merge_id, clock, context)?;
     super::persist_merge_record(store, root, &record, emitter)?;
     emitter.operation_state_changed(record.state.into());

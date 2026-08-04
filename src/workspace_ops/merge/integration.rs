@@ -206,6 +206,10 @@ pub(crate) fn final_member_commit_message(
     ))
 }
 
+pub(crate) fn validate_custom_commit_message(body: &str) -> ModelResult<()> {
+    normalize_custom_body(body).map(|_| ())
+}
+
 fn normalize_custom_body(body: &str) -> ModelResult<String> {
     if body.contains('\0') {
         return Err(invalid_message("merge commit message contains a NUL byte"));
