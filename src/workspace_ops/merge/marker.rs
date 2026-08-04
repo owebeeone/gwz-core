@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::artifact::{MarkerMergeArtifact, MarkerMergeParticipantArtifact, MarkerMergeTargetKind};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-use super::{MergeOperationRecord, MergeTargetKind, OperationState, ParticipantState};
+use super::{MergeOperationRecord, MergeTargetKind, OperationState};
 
 /// Live result already re-observed and accepted by finalization.
 ///
@@ -88,13 +88,7 @@ pub(crate) fn marker_merge_from_verified(
             return Err(drift("participant has unresolved merge state")
                 .with_member(target_id, &durable.path));
         }
-        if !matches!(
-            durable.state,
-            ParticipantState::UpToDate
-                | ParticipantState::FastForwarded
-                | ParticipantState::Merged
-                | ParticipantState::Continued
-        ) {
+        if !super::participant_semantics::result::is_successful_result(durable.state) {
             return Err(recovery(format!(
                 "participant is in non-success state {:?}",
                 durable.state

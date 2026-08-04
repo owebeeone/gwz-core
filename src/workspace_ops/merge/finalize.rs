@@ -16,8 +16,8 @@ use super::marker::{VerifiedMergeParticipant, marker_merge_from_verified};
 use super::publication::{candidate_files, classify_candidate_publication, composition_message};
 use super::{
     MergeOperationRecord, MergeStore, MergeTargetKind, OperationDrift, OperationDriftKind,
-    OperationState, ParticipantState, PublicationCandidate, PublicationCandidateHash,
-    PublicationProgress, PublicationStep,
+    OperationState, PublicationCandidate, PublicationCandidateHash, PublicationProgress,
+    PublicationStep,
 };
 
 #[cfg(test)]
@@ -713,14 +713,10 @@ fn clear_root_recovery_drift(record: &mut MergeOperationRecord) {
 }
 
 fn has_changed_participant(record: &MergeOperationRecord) -> bool {
-    record.participants.values().any(|participant| {
-        matches!(
-            participant.state,
-            ParticipantState::FastForwarded
-                | ParticipantState::Merged
-                | ParticipantState::Continued
-        ) && participant.resulting_commit.as_deref() != Some(participant.before_commit.as_str())
-    })
+    record
+        .participants
+        .values()
+        .any(super::participant_semantics::result::has_changed_result)
 }
 
 fn progress(record: &MergeOperationRecord) -> ModelResult<&PublicationProgress> {

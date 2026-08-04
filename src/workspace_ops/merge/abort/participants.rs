@@ -1,5 +1,8 @@
 use super::{
-    super::{MergeOperationRecord, MergeStore, ParticipantState},
+    super::{
+        MergeOperationRecord, MergeStore,
+        participant_semantics::rollback::{RollbackGitAction, participant_rollback_decision},
+    },
     preflight::AbortPreflight,
     runtime::AbortRuntime,
 };
@@ -26,16 +29,15 @@ pub(super) fn rollback_participants<A: AbortRuntime, S: MergeStore>(
             let path =
                 super::super::status::validated_participant_path(root, &target_id, participant)?;
             let prior = participant.state;
-            if matches!(
-                prior,
-                ParticipantState::Aborted | ParticipantState::RolledBack
-            ) {
+            let decision =
+                participant_rollback_decision(prior, preflight.no_op_targets.contains(&target_id));
+            let Some(next) = decision.terminal_state else {
                 continue;
-            }
+            };
             emitter.member_started(&target_id, &participant.path);
-            match (preflight.no_op_targets.contains(&target_id), prior) {
-                (true, _) => {}
-                (false, ParticipantState::Conflicted) => runtime.abort_merge(
+            match decision.git_action {
+                RollbackGitAction::None => {}
+                RollbackGitAction::AbortConflict => runtime.abort_merge(
                     &path,
                     &participant.before_commit,
                     participant
@@ -43,12 +45,7 @@ pub(super) fn rollback_participants<A: AbortRuntime, S: MergeStore>(
                         .as_deref()
                         .unwrap_or(&participant.source_commit),
                 )?,
-                (
-                    false,
-                    ParticipantState::FastForwarded
-                    | ParticipantState::Merged
-                    | ParticipantState::Continued,
-                ) => runtime.reset_branch(
+                RollbackGitAction::ResetIntegrated => runtime.reset_branch(
                     &path,
                     &participant.target_branch,
                     participant.resulting_commit.as_deref().ok_or_else(|| {
@@ -59,25 +56,7 @@ pub(super) fn rollback_participants<A: AbortRuntime, S: MergeStore>(
                     })?,
                     &participant.before_commit,
                 )?,
-                (
-                    false,
-                    ParticipantState::Planned
-                    | ParticipantState::UpToDate
-                    | ParticipantState::Failed
-                    | ParticipantState::Unattempted,
-                ) => {}
-                (false, ParticipantState::Aborted | ParticipantState::RolledBack) => unreachable!(),
             }
-            let next = if matches!(
-                prior,
-                ParticipantState::FastForwarded
-                    | ParticipantState::Merged
-                    | ParticipantState::Continued
-            ) {
-                ParticipantState::RolledBack
-            } else {
-                ParticipantState::Aborted
-            };
             (prior, next)
         };
         record.participants.get_mut(&target_id).unwrap().state = prior.transition(next)?;

@@ -13,7 +13,7 @@ use super::super::publication::{
 };
 use super::super::{
     MergeOperationRecord, MergeStatusSnapshot, MergeStore, MergeTargetKind, OperationDriftKind,
-    OperationState, ParticipantState,
+    OperationState, participant_semantics,
 };
 use super::*;
 
@@ -61,10 +61,8 @@ pub(crate) fn snapshot_status<B: GitBackend>(
 
     let root_attempted = record.participants.values().any(|participant| {
         participant.target_kind == MergeTargetKind::Root
-            && !matches!(
-                participant.state,
-                ParticipantState::Planned | ParticipantState::Unattempted
-            )
+            && participant_semantics::status::status_policy(participant.state).root_attempted_role
+                == participant_semantics::status::RootAttemptedRole::Attempted
     });
     let mut operation_drift = record.operation_drift.clone();
     match record
@@ -141,18 +139,10 @@ pub(crate) fn snapshot_status<B: GitBackend>(
     if super::super::root::root_finalization_is_exact(backend, root, &record)?
         && let Some(root) = participants.get_mut("@root")
     {
-        root.conflict_paths.clear();
-        root.drift.clear();
-        root.continue_eligibility.eligible = true;
-        root.continue_eligibility.blockers.clear();
-        root.abort_eligibility.eligible = true;
-        root.abort_eligibility.blockers.clear();
+        participant_semantics::status::apply_exact_root_finalization_override(root);
     }
     let interrupted_root_rollback =
         super::super::root::interrupted_evidence_rollback_is_exact(backend, root, &record)?;
-    if interrupted_root_rollback {
-        operation_drift.retain(|drift| drift.kind != OperationDriftKind::RootCandidateStateChanged);
-    }
     let mut snapshot = MergeStatusSnapshot {
         record,
         participants,

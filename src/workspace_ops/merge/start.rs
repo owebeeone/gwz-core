@@ -1,4 +1,4 @@
-use super::{MergeStore, OperationState, ParticipantState, plan::plan_merge};
+use super::{MergeStore, OperationState, plan::plan_merge};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext};
@@ -11,14 +11,15 @@ mod prepared;
 mod record;
 mod response;
 
+use super::participant_semantics::continue_eligibility::post_start_state;
 use execution::execute_durable;
 use record::{create_record, freeze_merge_messages};
 use response::{decorate_start_response, handle_dry_run, start_response};
 
 #[cfg(test)]
 use super::{
-    MergeOperationRecord, MergeParticipantPlan, PendingMergeAction, PendingMergeActionKind,
-    PendingMergeExpectedResult,
+    MergeOperationRecord, MergeParticipantPlan, ParticipantState, PendingMergeAction,
+    PendingMergeActionKind, PendingMergeExpectedResult,
 };
 #[cfg(test)]
 use crate::artifact;
@@ -85,21 +86,12 @@ where
         emitter,
     )?;
 
-    let next = if record
-        .participants
-        .values()
-        .any(|participant| participant.state == ParticipantState::Failed)
-    {
-        OperationState::Halted
-    } else if record
-        .participants
-        .values()
-        .any(|participant| participant.state == ParticipantState::Conflicted)
-    {
-        OperationState::AwaitingResolution
-    } else {
-        OperationState::Finalizing
-    };
+    let next = post_start_state(
+        record
+            .participants
+            .values()
+            .map(|participant| participant.state),
+    );
     if next == OperationState::Finalizing {
         super::enter_finalizing(store, root, &mut record, emitter)?;
         let completed =

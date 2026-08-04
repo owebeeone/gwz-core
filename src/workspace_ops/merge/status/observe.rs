@@ -6,7 +6,7 @@ use crate::workspace::MemberPath;
 
 use super::super::{
     MergeParticipantObservation, MergeParticipantRecord, MergeTargetKind, ParticipantDriftKind,
-    ParticipantState, RetryEligibility, RollbackEligibility,
+    RetryEligibility, RollbackEligibility, participant_semantics,
 };
 use super::*;
 
@@ -27,13 +27,47 @@ pub(in crate::workspace_ops::merge) fn observe_participant<B: GitBackend>(
         let reconciliation =
             reconcile_pending_action_from_live(backend, &path, target_id, participant, &live)?;
         apply_pending_observation(participant, reconciliation, &mut observation);
-    } else if participant.state == ParticipantState::Conflicted && observation.drift.is_empty() {
-        deepen_conflict_eligibility(
-            backend,
+    } else if participant_semantics::status::status_policy(participant.state).conflict_role
+        == participant_semantics::status::ConflictRole::NativeMerge
+        && observation.drift.is_empty()
+    {
+        let merge_head = participant
+            .expected_merge_head
+            .as_deref()
+            .unwrap_or(&participant.source_commit);
+        let abort = match backend.validate_merge_recovery_state(
             &path,
+            &participant.before_commit,
+            merge_head,
+            false,
+        ) {
+            Ok(()) => participant_semantics::status::ConflictValidationOutcome::Valid,
+            Err(error) => {
+                participant_semantics::status::ConflictValidationOutcome::Invalid(error.message)
+            }
+        };
+        let resolution = if abort == participant_semantics::status::ConflictValidationOutcome::Valid
+            && observation.continue_eligibility.eligible
+        {
+            match backend.validate_merge_recovery_state(
+                &path,
+                &participant.before_commit,
+                merge_head,
+                true,
+            ) {
+                Ok(()) => participant_semantics::status::ConflictValidationOutcome::Valid,
+                Err(error) => {
+                    participant_semantics::status::ConflictValidationOutcome::Invalid(error.message)
+                }
+            }
+        } else {
+            participant_semantics::status::ConflictValidationOutcome::NotChecked
+        };
+        participant_semantics::status::apply_conflict_validation(
             target_id,
             participant,
             &live,
+            participant_semantics::status::ConflictValidationOutcomes { abort, resolution },
             &mut observation,
         );
     }

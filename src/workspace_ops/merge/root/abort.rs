@@ -1,12 +1,13 @@
 use super::super::{
-    MergeOperationRecord, MergeStatusSnapshot, MergeTargetKind, OperationState, ParticipantState,
+    MergeOperationRecord, MergeStatusSnapshot, MergeTargetKind, OperationState,
+    participant_semantics,
     publication::{
         RootEvidenceObservation, candidate_files, classify_candidate_publication,
         observe_root_evidence,
     },
 };
 use crate::git::{GitBackend, GitRepositoryState};
-use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::model::ModelResult;
 use std::path::Path;
 
 pub(in crate::workspace_ops::merge) fn interrupted_evidence_rollback_is_exact<B: GitBackend>(
@@ -30,13 +31,7 @@ pub(in crate::workspace_ops::merge) fn interrupted_evidence_rollback_is_exact<B:
             .selected_targets
             .iter()
             .any(|target| target == "@root")
-        || !matches!(
-            participant.state,
-            ParticipantState::UpToDate
-                | ParticipantState::FastForwarded
-                | ParticipantState::Merged
-                | ParticipantState::Continued
-        )
+        || !participant_semantics::result::is_successful_result(participant.state)
         || !matches!(
             observe_root_evidence(backend, root, record)?,
             Some(RootEvidenceObservation::Baseline)
@@ -64,28 +59,5 @@ pub(in crate::workspace_ops::merge) fn interrupted_evidence_rollback_is_exact<B:
 pub(in crate::workspace_ops::merge) fn normalize_evidence_observation(
     snapshot: &mut MergeStatusSnapshot,
 ) -> ModelResult<()> {
-    let participant = snapshot.record.participants.get("@root").ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::MergeRecordUnreadable,
-            "root evidence exists without a durable root participant",
-        )
-    })?;
-    if participant.target_kind != MergeTargetKind::Root || participant.path != "." {
-        return Err(ModelError::new(
-            ErrorCode::MergeRecordUnreadable,
-            "root evidence participant identity is inconsistent",
-        ));
-    }
-    let observation = snapshot.participants.get_mut("@root").ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::MergeRecordUnreadable,
-            "root evidence exists without a root status observation",
-        )
-    })?;
-    observation.live_commit = participant.resulting_commit.clone();
-    observation.conflict_paths.clear();
-    observation.drift.clear();
-    observation.abort_eligibility.eligible = true;
-    observation.abort_eligibility.blockers.clear();
-    Ok(())
+    participant_semantics::status::apply_interrupted_root_rollback_override(snapshot)
 }

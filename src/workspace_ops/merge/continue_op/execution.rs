@@ -1,3 +1,6 @@
+use super::super::participant_semantics::continue_eligibility::{
+    ContinueDisposition, continue_disposition, post_continue_state,
+};
 use super::*;
 
 pub(super) fn preflight<B: GitBackend>(
@@ -54,8 +57,8 @@ pub(super) fn preflight<B: GitBackend>(
             });
             continue;
         }
-        match participant.state {
-            ParticipantState::Conflicted => {
+        match continue_disposition(participant.state) {
+            ContinueDisposition::ResolveConflict => {
                 let merge_head = participant
                     .expected_merge_head
                     .as_deref()
@@ -77,9 +80,7 @@ pub(super) fn preflight<B: GitBackend>(
                     durable: false,
                 });
             }
-            ParticipantState::Planned
-            | ParticipantState::Failed
-            | ParticipantState::Unattempted => {
+            ContinueDisposition::RetryIntegration => {
                 let path = root.join(&participant.path);
                 if !backend
                     .commit_exists(&path, &participant.source_commit)
@@ -126,11 +127,8 @@ pub(super) fn preflight<B: GitBackend>(
                     durable: false,
                 });
             }
-            ParticipantState::UpToDate
-            | ParticipantState::FastForwarded
-            | ParticipantState::Merged
-            | ParticipantState::Continued => {}
-            ParticipantState::Aborted | ParticipantState::RolledBack => {
+            ContinueDisposition::Settled => {}
+            ContinueDisposition::RejectedTerminal => {
                 return Err(wrong_participant_state(target_id, participant));
             }
         }
@@ -142,16 +140,16 @@ fn durable_continue_action(
     participant: &MergeParticipantRecord,
     prepared: super::super::pending::DurablePreparedAction,
 ) -> ModelResult<(ContinueActionKind, ContinuePrepared)> {
-    match (participant.state, prepared) {
+    match (continue_disposition(participant.state), prepared) {
         (
-            ParticipantState::Conflicted,
+            ContinueDisposition::ResolveConflict,
             super::super::pending::DurablePreparedAction::Resolution(prepared),
         ) => Ok((
             ContinueActionKind::Resolve,
             ContinuePrepared::Resolution(prepared),
         )),
         (
-            ParticipantState::Planned | ParticipantState::Failed | ParticipantState::Unattempted,
+            ContinueDisposition::RetryIntegration,
             super::super::pending::DurablePreparedAction::Merge(prepared),
         ) => {
             let kind = match prepared {
@@ -324,7 +322,7 @@ pub(super) fn apply_failure(
     error: &ModelError,
 ) -> ModelResult<()> {
     let current = participant(record, target_id)?.state;
-    let state = if current == ParticipantState::Conflicted {
+    let state = if continue_disposition(current) == ContinueDisposition::ResolveConflict {
         ParticipantState::Conflicted
     } else {
         ParticipantState::Failed
@@ -388,24 +386,12 @@ pub(super) fn mark_later_planned_unattempted<S: MergeStore>(
 }
 
 pub(super) fn remaining_state(record: &MergeOperationRecord) -> OperationState {
-    if record
-        .participants
-        .values()
-        .any(|participant| participant.state == ParticipantState::Failed)
-    {
-        OperationState::Halted
-    } else if record.participants.values().any(|participant| {
-        matches!(
-            participant.state,
-            ParticipantState::Planned
-                | ParticipantState::Unattempted
-                | ParticipantState::Conflicted
-        )
-    }) {
-        OperationState::AwaitingResolution
-    } else {
-        OperationState::Finalizing
-    }
+    post_continue_state(
+        record
+            .participants
+            .values()
+            .map(|participant| participant.state),
+    )
 }
 
 pub(super) fn observed_response<B: GitBackend>(

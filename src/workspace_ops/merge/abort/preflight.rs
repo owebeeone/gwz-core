@@ -1,7 +1,9 @@
 use super::{
     super::{
-        MergeOperationRecord, MergeParticipantObservation, MergeParticipantRecord,
-        MergeStatusSnapshot, OperationState, ParticipantDriftKind, ParticipantState,
+        MergeOperationRecord, MergeStatusSnapshot,
+        participant_semantics::rollback::{
+            AbortPreflightDecision, RollbackClass, abort_preflight_decision, rollback_class,
+        },
         status::PendingActionReconciliation,
     },
     reconciliation::pending_reconciliation,
@@ -45,65 +47,27 @@ pub(super) fn preflight(snapshot: &MergeStatusSnapshot) -> ModelResult<AbortPref
             preflight.pending.insert(target_id.clone(), reconciliation);
             continue;
         }
-        if !observation.abort_eligibility.eligible {
-            let message = observation
-                .drift
-                .first()
-                .map(|drift| drift.message.clone())
-                .unwrap_or_else(|| "participant is not eligible for coordinated abort".to_owned());
-            let mut error = ModelError::new(ErrorCode::MergeDrift, message);
-            error.member_id = Some(target_id.clone());
-            error.member_path = Some(participant.path.clone());
-            return Err(error);
-        }
-        if verified_no_op(snapshot.record.state, participant, observation) {
-            preflight.no_op_targets.insert(target_id.clone());
+        match abort_preflight_decision(snapshot.record.state, participant, observation) {
+            AbortPreflightDecision::Reject => {
+                let message = observation
+                    .drift
+                    .first()
+                    .map(|drift| drift.message.clone())
+                    .unwrap_or_else(|| {
+                        "participant is not eligible for coordinated abort".to_owned()
+                    });
+                let mut error = ModelError::new(ErrorCode::MergeDrift, message);
+                error.member_id = Some(target_id.clone());
+                error.member_path = Some(participant.path.clone());
+                return Err(error);
+            }
+            AbortPreflightDecision::Proceed => {}
+            AbortPreflightDecision::AlreadyApplied => {
+                preflight.no_op_targets.insert(target_id.clone());
+            }
         }
     }
     Ok(preflight)
-}
-
-/// Select only no-ops already accepted by the shared status classifier. This
-/// function decides whether Git must be called; it never overrides an
-/// ineligible snapshot (in particular, foreign sequencer state).
-fn verified_no_op(
-    operation: OperationState,
-    participant: &MergeParticipantRecord,
-    observation: &MergeParticipantObservation,
-) -> bool {
-    if !observation.abort_eligibility.eligible {
-        return false;
-    }
-    if matches!(
-        participant.state,
-        ParticipantState::Aborted | ParticipantState::RolledBack
-    ) {
-        return true;
-    }
-    if observation.live_commit.as_deref() != Some(&participant.before_commit)
-        || observation.drift.is_empty()
-    {
-        return false;
-    }
-    match participant.state {
-        ParticipantState::Conflicted => observation
-            .drift
-            .iter()
-            .all(|drift| drift.kind == ParticipantDriftKind::MergeStateMissing),
-        ParticipantState::FastForwarded
-        | ParticipantState::Merged
-        | ParticipantState::Continued
-            if operation == OperationState::RollingBack =>
-        {
-            observation.drift.iter().all(|drift| {
-                matches!(
-                    drift.kind,
-                    ParticipantDriftKind::TargetRefChanged | ParticipantDriftKind::HeadRewound
-                )
-            })
-        }
-        _ => false,
-    }
 }
 
 pub(super) fn verify_baseline(root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
@@ -141,10 +105,7 @@ pub(super) fn restore_baseline(root: &Path, record: &MergeOperationRecord) -> Mo
     })?;
     if participant.target_kind != super::super::MergeTargetKind::Root
         || participant.path != "."
-        || !matches!(
-            participant.state,
-            ParticipantState::Aborted | ParticipantState::RolledBack
-        )
+        || rollback_class(participant.state) != RollbackClass::Complete
     {
         return Err(ModelError::new(
             ErrorCode::MergeRecordUnreadable,

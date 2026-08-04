@@ -12,9 +12,7 @@ use super::super::publication::{
     RootEvidenceObservation, candidate_files, classify_candidate_publication,
     observe_root_evidence, publication_prefix_allowed,
 };
-use super::super::{
-    MergeOperationRecord, MergeParticipantRecord, MergeTargetKind, ParticipantState,
-};
+use super::super::{MergeOperationRecord, MergeParticipantRecord, MergeTargetKind};
 
 pub(in crate::workspace_ops::merge) struct CandidateMetadata {
     pub(in crate::workspace_ops::merge) manifest: ManifestArtifact,
@@ -201,12 +199,8 @@ fn root_participant(record: &MergeOperationRecord) -> ModelResult<Option<&MergeP
         (true, Some(participant))
             if participant.target_kind == MergeTargetKind::Root
                 && participant.path == "."
-                && matches!(
+                && super::super::participant_semantics::result::is_successful_result(
                     participant.state,
-                    ParticipantState::UpToDate
-                        | ParticipantState::FastForwarded
-                        | ParticipantState::Merged
-                        | ParticipantState::Continued
                 ) =>
         {
             Ok(Some(participant))

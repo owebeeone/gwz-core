@@ -44,7 +44,7 @@ impl MergeOperationRecord {
                     format!("merge record is missing participant '{target_id}'"),
                 )
             })?;
-            increment_count(&mut counts, participant.state);
+            super::participant_semantics::result::increment_count(&mut counts, participant.state);
             preservation.extend(participant.preservation.iter().map(|evidence| {
                 crate::MergePreservation {
                     target_id: target_id.clone(),
@@ -141,21 +141,6 @@ fn aggregate_status(state: OperationState) -> crate::AggregateStatus {
     }
 }
 
-fn increment_count(counts: &mut crate::MergeParticipantCounts, state: ParticipantState) {
-    match state {
-        ParticipantState::Planned => counts.planned += 1,
-        ParticipantState::UpToDate => counts.up_to_date += 1,
-        ParticipantState::FastForwarded => counts.fast_forwarded += 1,
-        ParticipantState::Merged => counts.merged += 1,
-        ParticipantState::Conflicted => counts.conflicted += 1,
-        ParticipantState::Failed => counts.failed += 1,
-        ParticipantState::Unattempted => counts.unattempted += 1,
-        ParticipantState::Continued => counts.continued += 1,
-        ParticipantState::Aborted => counts.aborted += 1,
-        ParticipantState::RolledBack => counts.rolled_back += 1,
-    }
-}
-
 impl MergeParticipantRecord {
     pub(crate) fn to_protocol(&self, target_id: &str, source_ref: &str) -> crate::MergeRepoSummary {
         crate::MergeRepoSummary {
@@ -168,7 +153,7 @@ impl MergeParticipantRecord {
             before_commit: self.before_commit.clone(),
             resulting_commit: self.resulting_commit.clone(),
             live_commit: None,
-            state: self.state.into(),
+            state: super::participant_semantics::result::wire_state(self.state),
             predicted: None,
             prediction_complete: None,
             conflict_paths: self.conflict_paths.clone(),
@@ -221,23 +206,6 @@ impl From<MergeTargetKind> for crate::TargetKind {
         match value {
             MergeTargetKind::Member => Self::Member,
             MergeTargetKind::Root => Self::Root,
-        }
-    }
-}
-
-impl From<ParticipantState> for crate::MergeParticipantState {
-    fn from(value: ParticipantState) -> Self {
-        match value {
-            ParticipantState::Planned => Self::Planned,
-            ParticipantState::UpToDate => Self::UpToDate,
-            ParticipantState::FastForwarded => Self::FastForwarded,
-            ParticipantState::Merged => Self::Merged,
-            ParticipantState::Conflicted => Self::Conflicted,
-            ParticipantState::Failed => Self::Failed,
-            ParticipantState::Unattempted => Self::Unattempted,
-            ParticipantState::Continued => Self::Continued,
-            ParticipantState::Aborted => Self::Aborted,
-            ParticipantState::RolledBack => Self::RolledBack,
         }
     }
 }

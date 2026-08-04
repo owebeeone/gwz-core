@@ -10,7 +10,7 @@ use crate::stash::{
 
 use super::{
     MergeOperationRecord, MergeParticipantRecord, MergeStore, MergeTargetKind, OperationState,
-    ParticipantState, PreservationEvidence,
+    PreservationEvidence,
 };
 
 mod artifacts;
@@ -327,13 +327,8 @@ fn preflight<B: GitBackend>(
             )
             .with_member(target_id, &participant.path));
         }
-        if !matches!(
-            participant.state,
-            ParticipantState::FastForwarded
-                | ParticipantState::Merged
-                | ParticipantState::Continued
-        ) {
-            if participant.state == ParticipantState::Conflicted {
+        if !super::participant_semantics::result::is_integrated_result(participant.state) {
+            if super::participant_semantics::result::is_conflicted_result(participant.state) {
                 verify_pristine_conflict(backend, root, target_id, participant)?;
             }
             if !observation.abort_eligibility.eligible {
