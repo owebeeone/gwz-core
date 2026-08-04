@@ -1,328 +1,1535 @@
 {
-  "schema": "gwz.retained-reader-cases/v1",
   "cases": [
     {
+      "args": [
+        "--json",
+        "merge",
+        "--status"
+      ],
+      "command": "merge-status",
+      "expected": {
+        "exit_codes": [
+          1
+        ],
+        "mutation": {
+          "mode": "none"
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "Planned"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Halted"
+            ],
+            "shape": "merge"
+          }
+        }
+      },
+      "fixture": "custom-message-pending",
+      "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
       "id": "v0-custom-message-status-read-only",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
-      "command": "merge-status",
-      "args": ["--json", "merge", "--status"],
-      "fixture": "custom-message-pending",
-      "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
-      "expected": {
-        "exit_codes": [1],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Halted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Planned"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {"mode": "none"}
-      }
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
+      ]
     },
     {
-      "id": "v0-custom-message-pending-continue",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "args": [
+        "--json",
+        "merge",
+        "--continue"
+      ],
       "command": "merge-continue",
-      "args": ["--json", "merge", "--continue"],
-      "fixture": "custom-message-pending",
-      "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
       "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Completed"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Merged"]}},
-        "stderr": {"mode": "exact", "value": ""},
+        "exit_codes": [
+          0
+        ],
         "mutation": {
-          "mode": "contract",
+          "dynamic": [
+            {
+              "maximum": 6,
+              "minimum": 6,
+              "pattern": "text:.git/objects/??/??????????????????????????????????????"
+            },
+            {
+              "maximum": 1,
+              "minimum": 1,
+              "pattern": "text:gwz.conf/markers/????????-????-????-????-????????????.yaml"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "pattern": "text:.git/info/exclude"
+            }
+          ],
           "exact": [
-            "text:.git/index", "text:.git/logs/HEAD", "text:.git/logs/refs/heads/main", "text:.git/refs/heads/main",
-            "text:.gwz/merge/done", "text:.gwz/merge/done/merge_retained.yaml", "text:.gwz/merge/merge_retained.yaml",
-            "text:gwz.conf/gwz.lock.yml", "text:gwz.conf/markers",
-            "text:member/.git/index", "text:member/.git/logs/HEAD", "text:member/.git/logs/refs/heads/main",
+            "text:.git/index",
+            "text:.git/logs/HEAD",
+            "text:.git/logs/refs/heads/main",
+            "text:.git/refs/heads/main",
+            "text:.gwz/merge/done",
+            "text:.gwz/merge/done/merge_retained.yaml",
+            "text:.gwz/merge/merge_retained.yaml",
+            "text:gwz.conf/gwz.lock.yml",
+            "text:gwz.conf/markers",
+            "text:member/.git/index",
+            "text:member/.git/logs/HEAD",
+            "text:member/.git/logs/refs/heads/main",
             "text:member/.git/objects/74/30611636cbebd4ed75e8b889f43e0779cfe38f",
-            "text:member/.git/refs/heads/main", "text:member/feature.txt"
+            "text:member/.git/refs/heads/main",
+            "text:member/feature.txt"
           ],
-          "dynamic": [
-            {"pattern": "text:.git/objects/??/??????????????????????????????????????", "minimum": 6, "maximum": 6},
-            {"pattern": "text:gwz.conf/markers/????????-????-????-????-????????????.yaml", "minimum": 1, "maximum": 1},
-            {"pattern": "text:.git/info/exclude", "minimum": 0, "maximum": 1}
-          ]
+          "mode": "contract"
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "Merged"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Completed"
+            ],
+            "shape": "merge"
+          }
         }
       },
-      "postconditions": [
-        {"kind": "yaml-semantic", "path": "gwz.conf/gwz.lock.yml", "sha256": "1e2cb41233d591ced4b88b925c221dbfdad896f8d31a255b4c0b917a694d92a8", "required": {"schema": "gwz.lock/v0", "workspace_id": "ws_retained", "members.mem_member.path": "member", "members.mem_member.source_id": "src_member", "members.mem_member.source_kind": "git", "members.mem_member.commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f", "members.mem_member.branch": "main", "members.mem_member.detached": "false", "members.mem_member.dirty": "false", "members.mem_member.materialized": "true"}},
-        {"kind": "yaml-set-semantic", "pattern": "gwz.conf/markers/*.yaml", "count": 1, "sha256": ["2453398ae53832be4a63a664362035fe7bc7210fe414bbda0b97e1c3e0b5203d"]},
-        {"kind": "root-publication", "repository": ".", "branch": "refs/heads/main", "parent": "7f1a5b337244d3e7b0b4cff6952a530de07f99ff", "message": "gwz merge: feature/source\n\nGWZ-Merge-ID: merge_retained\nGWZ-Operation-ID: op_retained", "sha256": "c72c812071d01b5352fa25944e83b33302835d09bcb616f370cfbe1cc330c945"},
-        {"kind": "git-index-semantic", "repository": ".", "sha256": "402872888c81242de2573e233dda5a4c8279ac157e151cdd471a493eabb3c950"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "707d2eaebe3373a1ffea9aaa52b2de1a169f626aa3d9738ee75d991a2cbaa4f1", "required": {"schema": "gwz.merge-operation/v0", "state": "completed", "participants.mem_member.state": "merged", "participants.mem_member.resulting_commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f", "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
-        {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "refs/heads/main"},
-        {"kind": "git-commit-message", "repository": "member", "ref": "HEAD", "value": "custom retained-reader message"},
-        {"kind": "git-parent-count", "repository": "member", "ref": "HEAD", "count": 2},
-        {"kind": "path", "path": ".gwz/merge/merge_retained.yaml", "state": "absent"},
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "file"},
-        {"kind": "merge-record-baseline-preserved", "before": ".gwz/merge/merge_retained.yaml", "after": ".gwz/merge/done/merge_retained.yaml", "fields": ["lock_yaml", "manifest_yaml", "lock_commit_sha256", "manifest_commit_sha256"]}
-      ]
-    },
-    {
-      "id": "v0-custom-message-pending-abort-after-restart",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
-      "command": "merge-abort",
-      "args": ["--json", "merge", "--abort"],
       "fixture": "custom-message-pending",
       "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
-      "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Aborted"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {
-          "mode": "exact",
-          "paths": ["text:.gwz/merge/done", "text:.gwz/merge/done/merge_retained.yaml", "text:.gwz/merge/merge_retained.yaml"]
-        }
-      },
+      "id": "v0-custom-message-pending-continue",
       "postconditions": [
-        {"kind": "git-parent-count", "repository": "member", "ref": "HEAD", "count": 1},
-        {"kind": "path", "path": "member/main.txt", "state": "file"},
-        {"kind": "path", "path": "member/feature.txt", "state": "absent"},
-        {"kind": "path", "path": ".gwz/merge/merge_retained.yaml", "state": "absent"},
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "file"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "cca4a472624bca57b12b7012d71dca0b669466f94339d4fc11d998be02476a08", "required": {"schema": "gwz.merge-operation/v0", "state": "aborted", "participants.mem_member.state": "aborted", "participants.mem_member.commit_message": "custom retained-reader message", "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
-        {"kind": "merge-record-baseline-preserved", "before": ".gwz/merge/merge_retained.yaml", "after": ".gwz/merge/done/merge_retained.yaml", "fields": ["lock_yaml", "manifest_yaml", "lock_commit_sha256", "manifest_commit_sha256"]}
-      ]
-    },
-    {
-      "id": "v0-no-ff-fast-forwardable-status-read-only",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
-      "command": "merge-status",
-      "args": ["--json", "merge", "--status"],
-      "fixture": "no-ff-fast-forwardable",
-      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
-      "known_incompatibility": "The v0 record stores mode no_ff, but recovery can re-derive normal fast-forward behavior when no pending action exists.",
-      "expected": {
-        "exit_codes": [1],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Halted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Planned"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {"mode": "none"}
-      },
-      "postconditions": [
-        {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "feature/source^"}
-      ]
-    },
-    {
-      "id": "v0-no-ff-fast-forwardable-continue-known-failure",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
-      "command": "merge-continue",
-      "args": ["--json", "merge", "--continue"],
-      "fixture": "no-ff-fast-forwardable",
-      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
-      "known_incompatibility": "Legacy continuation ignores the stored no_ff authority and fast-forwards; the one-parent result below deliberately pins that defect.",
-      "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Completed"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["FastForwarded"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {
-          "mode": "contract",
-          "exact": [
-            "text:.git/index", "text:.git/logs/HEAD", "text:.git/logs/refs/heads/main", "text:.git/refs/heads/main",
-            "text:.gwz/merge/done", "text:.gwz/merge/done/merge_retained.yaml", "text:.gwz/merge/merge_retained.yaml",
-            "text:gwz.conf/gwz.lock.yml", "text:gwz.conf/markers",
-            "text:member/.git/index", "text:member/.git/logs/HEAD", "text:member/.git/logs/refs/heads/main",
-            "text:member/.git/refs/heads/main", "text:member/feature.txt"
-          ],
-          "dynamic": [
-            {"pattern": "text:.git/objects/??/??????????????????????????????????????", "minimum": 6, "maximum": 6},
-            {"pattern": "text:gwz.conf/markers/????????-????-????-????-????????????.yaml", "minimum": 1, "maximum": 1},
-            {"pattern": "text:.git/info/exclude", "minimum": 0, "maximum": 1}
+        {
+          "kind": "yaml-semantic",
+          "path": "gwz.conf/gwz.lock.yml",
+          "required": {
+            "members.mem_member.branch": "main",
+            "members.mem_member.commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f",
+            "members.mem_member.detached": "false",
+            "members.mem_member.dirty": "false",
+            "members.mem_member.materialized": "true",
+            "members.mem_member.path": "member",
+            "members.mem_member.source_id": "src_member",
+            "members.mem_member.source_kind": "git",
+            "schema": "gwz.lock/v0",
+            "workspace_id": "ws_retained"
+          },
+          "sha256": "1e2cb41233d591ced4b88b925c221dbfdad896f8d31a255b4c0b917a694d92a8"
+        },
+        {
+          "count": 1,
+          "kind": "yaml-set-semantic",
+          "pattern": "gwz.conf/markers/*.yaml",
+          "sha256": [
+            "2453398ae53832be4a63a664362035fe7bc7210fe414bbda0b97e1c3e0b5203d"
           ]
+        },
+        {
+          "branch": "refs/heads/main",
+          "kind": "root-publication",
+          "message": "gwz merge: feature/source\n\nGWZ-Merge-ID: merge_retained\nGWZ-Operation-ID: op_retained",
+          "parent": "7f1a5b337244d3e7b0b4cff6952a530de07f99ff",
+          "repository": ".",
+          "sha256": "c72c812071d01b5352fa25944e83b33302835d09bcb616f370cfbe1cc330c945"
+        },
+        {
+          "kind": "git-index-semantic",
+          "repository": ".",
+          "sha256": "402872888c81242de2573e233dda5a4c8279ac157e151cdd471a493eabb3c950"
+        },
+        {
+          "kind": "yaml-semantic",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "required": {
+            "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5",
+            "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f",
+            "participants.mem_member.resulting_commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f",
+            "participants.mem_member.state": "merged",
+            "schema": "gwz.merge-operation/v0",
+            "state": "completed"
+          },
+          "semantic": "merge-record",
+          "sha256": "707d2eaebe3373a1ffea9aaa52b2de1a169f626aa3d9738ee75d991a2cbaa4f1"
+        },
+        {
+          "kind": "git-ref-equals",
+          "left": "HEAD",
+          "repository": "member",
+          "right": "refs/heads/main"
+        },
+        {
+          "kind": "git-commit-message",
+          "ref": "HEAD",
+          "repository": "member",
+          "value": "custom retained-reader message"
+        },
+        {
+          "count": 2,
+          "kind": "git-parent-count",
+          "ref": "HEAD",
+          "repository": "member"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/merge_retained.yaml",
+          "state": "absent"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "after": ".gwz/merge/done/merge_retained.yaml",
+          "before": ".gwz/merge/merge_retained.yaml",
+          "fields": [
+            "lock_yaml",
+            "manifest_yaml",
+            "lock_commit_sha256",
+            "manifest_commit_sha256"
+          ],
+          "kind": "merge-record-baseline-preserved"
         }
-      },
-      "postconditions": [
-        {"kind": "yaml-semantic", "path": "gwz.conf/gwz.lock.yml", "sha256": "8f4ede4d6b5d538d86b304937a38621b4285a768f364088a7e19bc1069181417", "required": {"schema": "gwz.lock/v0", "workspace_id": "ws_retained", "members.mem_member.path": "member", "members.mem_member.source_id": "src_member", "members.mem_member.source_kind": "git", "members.mem_member.commit": "068bf19ed329e4a745cbc2e298e723698f3f80d3", "members.mem_member.branch": "main", "members.mem_member.detached": "false", "members.mem_member.dirty": "false", "members.mem_member.materialized": "true"}},
-        {"kind": "yaml-set-semantic", "pattern": "gwz.conf/markers/*.yaml", "count": 1, "sha256": ["470e7115a58ddcfe634081a92e32225fb2f35d4c25aa83b5d89a8d4c7c5e51a0"]},
-        {"kind": "root-publication", "repository": ".", "branch": "refs/heads/main", "parent": "e8878845dffb55a9b92f39bc906f6e1fd0df40b6", "message": "gwz merge: feature/source\n\nGWZ-Merge-ID: merge_retained\nGWZ-Operation-ID: op_retained", "sha256": "ca1d648ace27532ee59331aff98b068a999fd8170ef6168905034203357b9c90"},
-        {"kind": "git-index-semantic", "repository": ".", "sha256": "c3957fac4bb9beadc63fb1135764f444ff26bc36f5ef433ff6f7fae39bad5565"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "f4a57ec322c2bfc539a2ef90c5b778104719e9ac23a17daf30aa21f0fa20f12c", "required": {"schema": "gwz.merge-operation/v0", "state": "completed", "participants.mem_member.state": "fast_forwarded", "participants.mem_member.resulting_commit": "068bf19ed329e4a745cbc2e298e723698f3f80d3", "baseline.lock_commit_sha256": "794c82404fbac763673115c1062ed6384da6e711989c91661bb48945d6506d5c", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
-        {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "feature/source"},
-        {"kind": "git-parent-count", "repository": "member", "ref": "HEAD", "count": 1},
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "file"},
-        {"kind": "merge-record-baseline-preserved", "before": ".gwz/merge/merge_retained.yaml", "after": ".gwz/merge/done/merge_retained.yaml", "fields": ["lock_yaml", "manifest_yaml", "lock_commit_sha256", "manifest_commit_sha256"]}
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
       ]
     },
     {
-      "id": "v0-no-ff-fast-forwardable-abort",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "args": [
+        "--json",
+        "merge",
+        "--abort"
+      ],
       "command": "merge-abort",
-      "args": ["--json", "merge", "--abort"],
-      "fixture": "no-ff-fast-forwardable",
-      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
       "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Aborted"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {
-          "mode": "exact",
-          "paths": ["text:.gwz/merge/done", "text:.gwz/merge/done/merge_retained.yaml", "text:.gwz/merge/merge_retained.yaml"]
-        }
-      },
-      "postconditions": [
-        {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "feature/source^"},
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "file"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "9db71d16a8235b8e79b45bc47cc78007d11cdb251dbc5d955ae9000d9f9fade4", "required": {"schema": "gwz.merge-operation/v0", "state": "aborted", "participants.mem_member.state": "aborted", "participants.mem_member.commit_message": "frozen no-ff message", "baseline.lock_commit_sha256": "794c82404fbac763673115c1062ed6384da6e711989c91661bb48945d6506d5c", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
-        {"kind": "merge-record-baseline-preserved", "before": ".gwz/merge/merge_retained.yaml", "after": ".gwz/merge/done/merge_retained.yaml", "fields": ["lock_yaml", "manifest_yaml", "lock_commit_sha256", "manifest_commit_sha256"]}
-      ]
-    },
-    {
-      "id": "v0-custom-message-post-mutation-abort",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
-      "command": "merge-abort",
-      "args": ["--json", "merge", "--abort"],
-      "fixture": "custom-message-pending-completed",
-      "fixture_sha256": "d24e8b82a69d3be55107b0852b72f06e63ec37342ecb709c26ea1255f755c5ec",
-      "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["RolledBack"]}},
-        "stderr": {"mode": "exact", "value": ""},
+        "exit_codes": [
+          0
+        ],
         "mutation": {
           "mode": "exact",
           "paths": [
-            "text:.gwz/merge/done", "text:.gwz/merge/done/merge_retained.yaml", "text:.gwz/merge/merge_retained.yaml",
-            "text:member/.git/index", "text:member/.git/logs/HEAD", "text:member/.git/logs/refs/heads/main",
-            "text:member/.git/refs/heads/main", "text:member/feature.txt"
+            "text:.gwz/merge/done",
+            "text:.gwz/merge/done/merge_retained.yaml",
+            "text:.gwz/merge/merge_retained.yaml"
           ]
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "Aborted"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Aborted"
+            ],
+            "shape": "merge"
+          }
         }
       },
+      "fixture": "custom-message-pending",
+      "fixture_sha256": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
+      "id": "v0-custom-message-pending-abort-after-restart",
       "postconditions": [
-        {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "7430611636cbebd4ed75e8b889f43e0779cfe38f^1"},
-        {"kind": "git-parent-count", "repository": "member", "ref": "HEAD", "count": 1},
-        {"kind": "path", "path": "member/main.txt", "state": "file"},
-        {"kind": "path", "path": "member/feature.txt", "state": "absent"},
-        {"kind": "path", "path": ".gwz/merge/merge_retained.yaml", "state": "absent"},
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "file"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "821a2b8e7fab7eac18d6715dba4643851b369b781e46d4c769e6198ea700926b", "required": {"schema": "gwz.merge-operation/v0", "state": "aborted", "participants.mem_member.state": "rolled_back", "participants.mem_member.commit_message": "custom retained-reader message", "participants.mem_member.resulting_commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f", "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
-        {"kind": "merge-record-baseline-preserved", "before": ".gwz/merge/merge_retained.yaml", "after": ".gwz/merge/done/merge_retained.yaml", "fields": ["lock_yaml", "manifest_yaml", "lock_commit_sha256", "manifest_commit_sha256"]}
+        {
+          "count": 1,
+          "kind": "git-parent-count",
+          "ref": "HEAD",
+          "repository": "member"
+        },
+        {
+          "kind": "path",
+          "path": "member/main.txt",
+          "state": "file"
+        },
+        {
+          "kind": "path",
+          "path": "member/feature.txt",
+          "state": "absent"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/merge_retained.yaml",
+          "state": "absent"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "kind": "yaml-semantic",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "required": {
+            "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5",
+            "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f",
+            "participants.mem_member.commit_message": "custom retained-reader message",
+            "participants.mem_member.state": "aborted",
+            "schema": "gwz.merge-operation/v0",
+            "state": "aborted"
+          },
+          "semantic": "merge-record",
+          "sha256": "cca4a472624bca57b12b7012d71dca0b669466f94339d4fc11d998be02476a08"
+        },
+        {
+          "after": ".gwz/merge/done/merge_retained.yaml",
+          "before": ".gwz/merge/merge_retained.yaml",
+          "fields": [
+            "lock_yaml",
+            "manifest_yaml",
+            "lock_commit_sha256",
+            "manifest_commit_sha256"
+          ],
+          "kind": "merge-record-baseline-preserved"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
       ]
     },
     {
-      "id": "v0-custom-message-post-mutation-abort-wrong-message-rejected",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "args": [
+        "--json",
+        "merge",
+        "--status"
+      ],
+      "command": "merge-status",
+      "expected": {
+        "exit_codes": [
+          1
+        ],
+        "mutation": {
+          "mode": "none"
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "Planned"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Halted"
+            ],
+            "shape": "merge"
+          }
+        }
+      },
+      "fixture": "no-ff-fast-forwardable",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
+      "id": "v0-no-ff-fast-forwardable-status-read-only",
+      "known_incompatibility": "The v0 record stores mode no_ff, but recovery can re-derive normal fast-forward behavior when no pending action exists.",
+      "postconditions": [
+        {
+          "kind": "git-ref-equals",
+          "left": "HEAD",
+          "repository": "member",
+          "right": "feature/source^"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
+      ]
+    },
+    {
+      "args": [
+        "--json",
+        "merge",
+        "--continue"
+      ],
+      "command": "merge-continue",
+      "expected": {
+        "exit_codes": [
+          0
+        ],
+        "mutation": {
+          "dynamic": [
+            {
+              "maximum": 6,
+              "minimum": 6,
+              "pattern": "text:.git/objects/??/??????????????????????????????????????"
+            },
+            {
+              "maximum": 1,
+              "minimum": 1,
+              "pattern": "text:gwz.conf/markers/????????-????-????-????-????????????.yaml"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "pattern": "text:.git/info/exclude"
+            }
+          ],
+          "exact": [
+            "text:.git/index",
+            "text:.git/logs/HEAD",
+            "text:.git/logs/refs/heads/main",
+            "text:.git/refs/heads/main",
+            "text:.gwz/merge/done",
+            "text:.gwz/merge/done/merge_retained.yaml",
+            "text:.gwz/merge/merge_retained.yaml",
+            "text:gwz.conf/gwz.lock.yml",
+            "text:gwz.conf/markers",
+            "text:member/.git/index",
+            "text:member/.git/logs/HEAD",
+            "text:member/.git/logs/refs/heads/main",
+            "text:member/.git/refs/heads/main",
+            "text:member/feature.txt"
+          ],
+          "mode": "contract"
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "FastForwarded"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Completed"
+            ],
+            "shape": "merge"
+          }
+        }
+      },
+      "fixture": "no-ff-fast-forwardable",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
+      "id": "v0-no-ff-fast-forwardable-continue-known-failure",
+      "known_incompatibility": "Legacy continuation ignores the stored no_ff authority and fast-forwards; the one-parent result below deliberately pins that defect.",
+      "postconditions": [
+        {
+          "kind": "yaml-semantic",
+          "path": "gwz.conf/gwz.lock.yml",
+          "required": {
+            "members.mem_member.branch": "main",
+            "members.mem_member.commit": "068bf19ed329e4a745cbc2e298e723698f3f80d3",
+            "members.mem_member.detached": "false",
+            "members.mem_member.dirty": "false",
+            "members.mem_member.materialized": "true",
+            "members.mem_member.path": "member",
+            "members.mem_member.source_id": "src_member",
+            "members.mem_member.source_kind": "git",
+            "schema": "gwz.lock/v0",
+            "workspace_id": "ws_retained"
+          },
+          "sha256": "8f4ede4d6b5d538d86b304937a38621b4285a768f364088a7e19bc1069181417"
+        },
+        {
+          "count": 1,
+          "kind": "yaml-set-semantic",
+          "pattern": "gwz.conf/markers/*.yaml",
+          "sha256": [
+            "470e7115a58ddcfe634081a92e32225fb2f35d4c25aa83b5d89a8d4c7c5e51a0"
+          ]
+        },
+        {
+          "branch": "refs/heads/main",
+          "kind": "root-publication",
+          "message": "gwz merge: feature/source\n\nGWZ-Merge-ID: merge_retained\nGWZ-Operation-ID: op_retained",
+          "parent": "e8878845dffb55a9b92f39bc906f6e1fd0df40b6",
+          "repository": ".",
+          "sha256": "ca1d648ace27532ee59331aff98b068a999fd8170ef6168905034203357b9c90"
+        },
+        {
+          "kind": "git-index-semantic",
+          "repository": ".",
+          "sha256": "c3957fac4bb9beadc63fb1135764f444ff26bc36f5ef433ff6f7fae39bad5565"
+        },
+        {
+          "kind": "yaml-semantic",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "required": {
+            "baseline.lock_commit_sha256": "794c82404fbac763673115c1062ed6384da6e711989c91661bb48945d6506d5c",
+            "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f",
+            "participants.mem_member.resulting_commit": "068bf19ed329e4a745cbc2e298e723698f3f80d3",
+            "participants.mem_member.state": "fast_forwarded",
+            "schema": "gwz.merge-operation/v0",
+            "state": "completed"
+          },
+          "semantic": "merge-record",
+          "sha256": "f4a57ec322c2bfc539a2ef90c5b778104719e9ac23a17daf30aa21f0fa20f12c"
+        },
+        {
+          "kind": "git-ref-equals",
+          "left": "HEAD",
+          "repository": "member",
+          "right": "feature/source"
+        },
+        {
+          "count": 1,
+          "kind": "git-parent-count",
+          "ref": "HEAD",
+          "repository": "member"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "after": ".gwz/merge/done/merge_retained.yaml",
+          "before": ".gwz/merge/merge_retained.yaml",
+          "fields": [
+            "lock_yaml",
+            "manifest_yaml",
+            "lock_commit_sha256",
+            "manifest_commit_sha256"
+          ],
+          "kind": "merge-record-baseline-preserved"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
+      ]
+    },
+    {
+      "args": [
+        "--json",
+        "merge",
+        "--abort"
+      ],
       "command": "merge-abort",
-      "args": ["--json", "merge", "--abort"],
+      "expected": {
+        "exit_codes": [
+          0
+        ],
+        "mutation": {
+          "mode": "exact",
+          "paths": [
+            "text:.gwz/merge/done",
+            "text:.gwz/merge/done/merge_retained.yaml",
+            "text:.gwz/merge/merge_retained.yaml"
+          ]
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "Aborted"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Aborted"
+            ],
+            "shape": "merge"
+          }
+        }
+      },
+      "fixture": "no-ff-fast-forwardable",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
+      "id": "v0-no-ff-fast-forwardable-abort",
+      "postconditions": [
+        {
+          "kind": "git-ref-equals",
+          "left": "HEAD",
+          "repository": "member",
+          "right": "feature/source^"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "kind": "yaml-semantic",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "required": {
+            "baseline.lock_commit_sha256": "794c82404fbac763673115c1062ed6384da6e711989c91661bb48945d6506d5c",
+            "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f",
+            "participants.mem_member.commit_message": "frozen no-ff message",
+            "participants.mem_member.state": "aborted",
+            "schema": "gwz.merge-operation/v0",
+            "state": "aborted"
+          },
+          "semantic": "merge-record",
+          "sha256": "9db71d16a8235b8e79b45bc47cc78007d11cdb251dbc5d955ae9000d9f9fade4"
+        },
+        {
+          "after": ".gwz/merge/done/merge_retained.yaml",
+          "before": ".gwz/merge/merge_retained.yaml",
+          "fields": [
+            "lock_yaml",
+            "manifest_yaml",
+            "lock_commit_sha256",
+            "manifest_commit_sha256"
+          ],
+          "kind": "merge-record-baseline-preserved"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
+      ]
+    },
+    {
+      "args": [
+        "--json",
+        "merge",
+        "--abort"
+      ],
+      "command": "merge-abort",
+      "expected": {
+        "exit_codes": [
+          0
+        ],
+        "mutation": {
+          "mode": "exact",
+          "paths": [
+            "text:.gwz/merge/done",
+            "text:.gwz/merge/done/merge_retained.yaml",
+            "text:.gwz/merge/merge_retained.yaml",
+            "text:member/.git/index",
+            "text:member/.git/logs/HEAD",
+            "text:member/.git/logs/refs/heads/main",
+            "text:member/.git/refs/heads/main",
+            "text:member/feature.txt"
+          ]
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "RolledBack"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Aborted"
+            ],
+            "shape": "merge"
+          }
+        }
+      },
+      "fixture": "custom-message-pending-completed",
+      "fixture_sha256": "d24e8b82a69d3be55107b0852b72f06e63ec37342ecb709c26ea1255f755c5ec",
+      "id": "v0-custom-message-post-mutation-abort",
+      "postconditions": [
+        {
+          "kind": "git-ref-equals",
+          "left": "HEAD",
+          "repository": "member",
+          "right": "7430611636cbebd4ed75e8b889f43e0779cfe38f^1"
+        },
+        {
+          "count": 1,
+          "kind": "git-parent-count",
+          "ref": "HEAD",
+          "repository": "member"
+        },
+        {
+          "kind": "path",
+          "path": "member/main.txt",
+          "state": "file"
+        },
+        {
+          "kind": "path",
+          "path": "member/feature.txt",
+          "state": "absent"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/merge_retained.yaml",
+          "state": "absent"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "kind": "yaml-semantic",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "required": {
+            "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5",
+            "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f",
+            "participants.mem_member.commit_message": "custom retained-reader message",
+            "participants.mem_member.resulting_commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f",
+            "participants.mem_member.state": "rolled_back",
+            "schema": "gwz.merge-operation/v0",
+            "state": "aborted"
+          },
+          "semantic": "merge-record",
+          "sha256": "821a2b8e7fab7eac18d6715dba4643851b369b781e46d4c769e6198ea700926b"
+        },
+        {
+          "after": ".gwz/merge/done/merge_retained.yaml",
+          "before": ".gwz/merge/merge_retained.yaml",
+          "fields": [
+            "lock_yaml",
+            "manifest_yaml",
+            "lock_commit_sha256",
+            "manifest_commit_sha256"
+          ],
+          "kind": "merge-record-baseline-preserved"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
+      ]
+    },
+    {
+      "args": [
+        "--json",
+        "merge",
+        "--abort"
+      ],
+      "command": "merge-abort",
+      "expected": {
+        "exit_codes": [
+          1
+        ],
+        "mutation": {
+          "mode": "none"
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "outcomes": [
+              "MergeDrift"
+            ],
+            "shape": "error"
+          }
+        }
+      },
       "fixture": "custom-message-pending-wrong-message",
       "fixture_sha256": "4cf2a69a2b171447441c2a9c5b56b64d247edfb9aef95e11179e6a45881be79a",
-      "expected": {
-        "exit_codes": [1],
-        "stdout": {"mode": "json-contract", "value": {"shape": "error", "outcomes": ["MergeDrift"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {"mode": "none"}
-      },
+      "id": "v0-custom-message-post-mutation-abort-wrong-message-rejected",
       "postconditions": [
-        {"kind": "git-commit-message", "repository": "member", "ref": "HEAD", "value": "wrong retained-reader message"},
-        {"kind": "git-parent-count", "repository": "member", "ref": "HEAD", "count": 2},
-        {"kind": "path", "path": ".gwz/merge/merge_retained.yaml", "state": "file"},
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "absent"}
+        {
+          "kind": "git-commit-message",
+          "ref": "HEAD",
+          "repository": "member",
+          "value": "wrong retained-reader message"
+        },
+        {
+          "count": 2,
+          "kind": "git-parent-count",
+          "ref": "HEAD",
+          "repository": "member"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "absent"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
       ]
     },
     {
-      "id": "v0-custom-message-post-mutation-preserve-abort",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "args": [
+        "--json",
+        "merge",
+        "--abort",
+        "--preserve"
+      ],
       "command": "merge-preserve",
-      "args": ["--json", "merge", "--abort", "--preserve"],
+      "expected": {
+        "exit_codes": [
+          0
+        ],
+        "mutation": {
+          "mode": "exact",
+          "paths": [
+            "text:.gwz/merge/done",
+            "text:.gwz/merge/done/merge_retained.yaml",
+            "text:.gwz/merge/merge_retained.yaml",
+            "text:member/.git/index",
+            "text:member/.git/logs/HEAD",
+            "text:member/.git/logs/refs/heads/main",
+            "text:member/.git/refs/heads/main",
+            "text:member/feature.txt"
+          ]
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "RolledBack"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Aborted"
+            ],
+            "shape": "merge"
+          }
+        }
+      },
       "fixture": "custom-message-pending-completed",
       "fixture_sha256": "d24e8b82a69d3be55107b0852b72f06e63ec37342ecb709c26ea1255f755c5ec",
-      "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["RolledBack"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {
-          "mode": "exact",
-          "paths": [
-            "text:.gwz/merge/done", "text:.gwz/merge/done/merge_retained.yaml", "text:.gwz/merge/merge_retained.yaml",
-            "text:member/.git/index", "text:member/.git/logs/HEAD", "text:member/.git/logs/refs/heads/main",
-            "text:member/.git/refs/heads/main", "text:member/feature.txt"
-          ]
-        }
-      },
+      "id": "v0-custom-message-post-mutation-preserve-abort",
       "postconditions": [
-        {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "7430611636cbebd4ed75e8b889f43e0779cfe38f^1"},
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "file"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "821a2b8e7fab7eac18d6715dba4643851b369b781e46d4c769e6198ea700926b", "required": {"schema": "gwz.merge-operation/v0", "state": "aborted", "participants.mem_member.state": "rolled_back", "participants.mem_member.commit_message": "custom retained-reader message", "participants.mem_member.resulting_commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f", "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}},
-        {"kind": "merge-record-baseline-preserved", "before": ".gwz/merge/merge_retained.yaml", "after": ".gwz/merge/done/merge_retained.yaml", "fields": ["lock_yaml", "manifest_yaml", "lock_commit_sha256", "manifest_commit_sha256"]}
+        {
+          "kind": "git-ref-equals",
+          "left": "HEAD",
+          "repository": "member",
+          "right": "7430611636cbebd4ed75e8b889f43e0779cfe38f^1"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "kind": "yaml-semantic",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "required": {
+            "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5",
+            "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f",
+            "participants.mem_member.commit_message": "custom retained-reader message",
+            "participants.mem_member.resulting_commit": "7430611636cbebd4ed75e8b889f43e0779cfe38f",
+            "participants.mem_member.state": "rolled_back",
+            "schema": "gwz.merge-operation/v0",
+            "state": "aborted"
+          },
+          "semantic": "merge-record",
+          "sha256": "821a2b8e7fab7eac18d6715dba4643851b369b781e46d4c769e6198ea700926b"
+        },
+        {
+          "after": ".gwz/merge/done/merge_retained.yaml",
+          "before": ".gwz/merge/merge_retained.yaml",
+          "fields": [
+            "lock_yaml",
+            "manifest_yaml",
+            "lock_commit_sha256",
+            "manifest_commit_sha256"
+          ],
+          "kind": "merge-record-baseline-preserved"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
       ]
     },
     {
-      "id": "v0-archived-status-read-only",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "args": [
+        "--json",
+        "merge",
+        "--status",
+        "merge_retained"
+      ],
       "command": "merge-status",
-      "args": ["--json", "merge", "--status", "merge_retained"],
+      "expected": {
+        "exit_codes": [
+          0
+        ],
+        "mutation": {
+          "mode": "none"
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "Aborted"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Aborted"
+            ],
+            "shape": "merge"
+          }
+        }
+      },
       "fixture": "archived-v0",
       "fixture_sha256": "9cb06c1c459657ba02b2f8f4c53f01d802a45684dacb3521ab9a761aaa9a0757",
-      "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Aborted"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {"mode": "none"}
-      },
+      "id": "v0-archived-status-read-only",
       "postconditions": [
-        {"kind": "path", "path": ".gwz/merge/merge_retained.yaml", "state": "absent"},
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "file"},
-        {"kind": "yaml-semantic", "semantic": "merge-record", "path": ".gwz/merge/done/merge_retained.yaml", "sha256": "cca4a472624bca57b12b7012d71dca0b669466f94339d4fc11d998be02476a08", "required": {"schema": "gwz.merge-operation/v0", "state": "aborted", "participants.mem_member.state": "aborted", "participants.mem_member.commit_message": "custom retained-reader message", "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5", "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f"}}
+        {
+          "kind": "path",
+          "path": ".gwz/merge/merge_retained.yaml",
+          "state": "absent"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "kind": "yaml-semantic",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "required": {
+            "baseline.lock_commit_sha256": "c3108a2fff0d8ed708b04c9c467ee3973e15670ea0e7a5ddc617e411f5ca79f5",
+            "baseline.manifest_commit_sha256": "6e7384d7eaefac0dd741d4a6de18418c9b2e0001a473bb4d05b185e0c6f2eb1f",
+            "participants.mem_member.commit_message": "custom retained-reader message",
+            "participants.mem_member.state": "aborted",
+            "schema": "gwz.merge-operation/v0",
+            "state": "aborted"
+          },
+          "semantic": "merge-record",
+          "sha256": "cca4a472624bca57b12b7012d71dca0b669466f94339d4fc11d998be02476a08"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
       ]
     },
     {
-      "id": "v0-explicit-archived-record-gc",
-      "readers": ["rust-cli-v0.10.2", "gwz-py-v0.10.2"],
+      "args": [
+        "--json",
+        "merge",
+        "--gc",
+        "merge_retained"
+      ],
       "command": "merge-gc",
-      "args": ["--json", "merge", "--gc", "merge_retained"],
-      "fixture": "archived-v0",
-      "fixture_sha256": "9cb06c1c459657ba02b2f8f4c53f01d802a45684dacb3521ab9a761aaa9a0757",
       "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "merge", "outcomes": ["Aborted"], "merge_id": "merge_retained", "member_id": "mem_member", "member_outcomes": ["Aborted"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {"mode": "exact", "paths": ["text:.gwz/merge/done/merge_retained.yaml"]}
-      },
-      "postconditions": [
-        {"kind": "path", "path": ".gwz/merge/done/merge_retained.yaml", "state": "absent"}
-      ]
-    },
-    {
-      "id": "v0.9.2-pre-record-workspace-status-ignores-open-v0-record",
-      "readers": ["rust-cli-v0.9.2", "gwz-py-v0.9.2"],
-      "command": "workspace-status",
-      "args": ["--json", "status", "--combined"],
-      "fixture": "pre-record-open-v0",
-      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
-      "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "workspace-status", "outcomes": ["Ok", "ok"], "member_id": "mem_member", "member_outcomes": ["Ok", "ok"]}},
-        "stderr": {"mode": "exact", "value": ""},
-        "mutation": {"mode": "none"}
-      },
-      "postconditions": [
-        {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "feature/source^"},
-        {"kind": "path", "path": ".gwz/merge/merge_retained.yaml", "state": "file"}
-      ]
-    },
-    {
-      "id": "v0.9.2-pre-record-legacy-branch-merge-ignores-open-v0-record",
-      "readers": ["rust-cli-v0.9.2", "gwz-py-v0.9.2"],
-      "command": "legacy-branch-merge",
-      "args": ["--json", "branch", "--merge", "feature/source"],
-      "fixture": "pre-record-open-v0",
-      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
-      "expected": {
-        "exit_codes": [0],
-        "stdout": {"mode": "json-contract", "value": {"shape": "legacy-branch", "outcomes": ["Merged", "merged"], "member_id": "mem_member"}},
-        "stderr": {"mode": "exact", "value": ""},
+        "exit_codes": [
+          0
+        ],
         "mutation": {
           "mode": "exact",
           "paths": [
-            "text:.git/index", "text:.git/objects/44/c5113b7d54f59fc1e10e1f9646f09343d21936",
-            "text:gwz.conf/gwz.lock.yml", "text:member/.git/index", "text:member/.git/logs/HEAD",
-            "text:member/.git/logs/refs/heads/main", "text:member/.git/refs/heads/main", "text:member/feature.txt"
+            "text:.gwz/merge/done/merge_retained.yaml"
           ]
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "Aborted"
+            ],
+            "merge_id": "merge_retained",
+            "outcomes": [
+              "Aborted"
+            ],
+            "shape": "merge"
+          }
         }
       },
+      "fixture": "archived-v0",
+      "fixture_sha256": "9cb06c1c459657ba02b2f8f4c53f01d802a45684dacb3521ab9a761aaa9a0757",
+      "id": "v0-explicit-archived-record-gc",
       "postconditions": [
-        {"kind": "git-ref-equals", "repository": "member", "left": "HEAD", "right": "feature/source"},
-        {"kind": "git-parent-count", "repository": "member", "ref": "HEAD", "count": 1},
-        {"kind": "path", "path": ".gwz/merge/merge_retained.yaml", "state": "file"},
-        {"kind": "yaml-semantic", "path": "gwz.conf/gwz.lock.yml", "sha256": "8f4ede4d6b5d538d86b304937a38621b4285a768f364088a7e19bc1069181417", "required": {"schema": "gwz.lock/v0", "workspace_id": "ws_retained", "members.mem_member.path": "member", "members.mem_member.source_id": "src_member", "members.mem_member.source_kind": "git", "members.mem_member.commit": "068bf19ed329e4a745cbc2e298e723698f3f80d3", "members.mem_member.branch": "main", "members.mem_member.detached": "false", "members.mem_member.dirty": "false", "members.mem_member.materialized": "true"}},
-        {"kind": "git-index-semantic", "repository": ".", "sha256": "92b47217d51185ae4209ca26df10509c89716cdb5ee7b3fa6a27c567e14cf9d2"}
+        {
+          "kind": "path",
+          "path": ".gwz/merge/done/merge_retained.yaml",
+          "state": "absent"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.10.2",
+        "gwz-py-v0.10.2"
+      ]
+    },
+    {
+      "args": [
+        "--json",
+        "status",
+        "--combined"
+      ],
+      "command": "workspace-status",
+      "expected": {
+        "exit_codes": [
+          0
+        ],
+        "mutation": {
+          "mode": "none"
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "member_outcomes": [
+              "Ok",
+              "ok"
+            ],
+            "outcomes": [
+              "Ok",
+              "ok"
+            ],
+            "shape": "workspace-status"
+          }
+        }
+      },
+      "fixture": "pre-record-open-v0",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
+      "id": "v0.9.2-pre-record-workspace-status-ignores-open-v0-record",
+      "postconditions": [
+        {
+          "kind": "git-ref-equals",
+          "left": "HEAD",
+          "repository": "member",
+          "right": "feature/source^"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/merge_retained.yaml",
+          "state": "file"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.9.2",
+        "gwz-py-v0.9.2"
+      ]
+    },
+    {
+      "args": [
+        "--json",
+        "branch",
+        "--merge",
+        "feature/source"
+      ],
+      "command": "legacy-branch-merge",
+      "expected": {
+        "exit_codes": [
+          0
+        ],
+        "mutation": {
+          "mode": "exact",
+          "paths": [
+            "text:.git/index",
+            "text:.git/objects/44/c5113b7d54f59fc1e10e1f9646f09343d21936",
+            "text:gwz.conf/gwz.lock.yml",
+            "text:member/.git/index",
+            "text:member/.git/logs/HEAD",
+            "text:member/.git/logs/refs/heads/main",
+            "text:member/.git/refs/heads/main",
+            "text:member/feature.txt"
+          ]
+        },
+        "stderr": {
+          "mode": "exact",
+          "value": ""
+        },
+        "stdout": {
+          "mode": "json-contract",
+          "value": {
+            "member_id": "mem_member",
+            "outcomes": [
+              "Merged",
+              "merged"
+            ],
+            "shape": "legacy-branch"
+          }
+        }
+      },
+      "fixture": "pre-record-open-v0",
+      "fixture_sha256": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
+      "id": "v0.9.2-pre-record-legacy-branch-merge-ignores-open-v0-record",
+      "postconditions": [
+        {
+          "kind": "git-ref-equals",
+          "left": "HEAD",
+          "repository": "member",
+          "right": "feature/source"
+        },
+        {
+          "count": 1,
+          "kind": "git-parent-count",
+          "ref": "HEAD",
+          "repository": "member"
+        },
+        {
+          "kind": "path",
+          "path": ".gwz/merge/merge_retained.yaml",
+          "state": "file"
+        },
+        {
+          "kind": "yaml-semantic",
+          "path": "gwz.conf/gwz.lock.yml",
+          "required": {
+            "members.mem_member.branch": "main",
+            "members.mem_member.commit": "068bf19ed329e4a745cbc2e298e723698f3f80d3",
+            "members.mem_member.detached": "false",
+            "members.mem_member.dirty": "false",
+            "members.mem_member.materialized": "true",
+            "members.mem_member.path": "member",
+            "members.mem_member.source_id": "src_member",
+            "members.mem_member.source_kind": "git",
+            "schema": "gwz.lock/v0",
+            "workspace_id": "ws_retained"
+          },
+          "sha256": "8f4ede4d6b5d538d86b304937a38621b4285a768f364088a7e19bc1069181417"
+        },
+        {
+          "kind": "git-index-semantic",
+          "repository": ".",
+          "sha256": "92b47217d51185ae4209ca26df10509c89716cdb5ee7b3fa6a27c567e14cf9d2"
+        }
+      ],
+      "readers": [
+        "rust-cli-v0.9.2",
+        "gwz-py-v0.9.2"
+      ]
+    },
+    {
+      "envelopes": [
+        {
+          "archived_fixture": "archived-future-v1",
+          "archived_fixture_sha256": "3c03dff3cdb898ca3a8fb19d28bc0d3c679d71d50f9ad462d920a2e4b64830ed",
+          "open_fixture": "future-v1",
+          "open_fixture_sha256": "e1fc1460caa9f5eb4e499312d4f402e71e0f9307f38519c1645babc1e1c55633",
+          "record_schema_version": 1,
+          "schema": "gwz.merge-operation/v1"
+        },
+        {
+          "archived_fixture": "archived-future-v2",
+          "archived_fixture_sha256": "51c4b92bb1c1e49dd954b244c58058b942d0f30c0ddf2454eb7387de217ea592",
+          "open_fixture": "future-v2",
+          "open_fixture_sha256": "4798655604db95d1919bc50cb1df7d7c889ccc534b03d52606a09f5aa6df6ad7",
+          "record_schema_version": 2,
+          "schema": "gwz.merge-operation/v2"
+        },
+        {
+          "archived_fixture": "archived-future-v3",
+          "archived_fixture_sha256": "73aca737d12a244ef46529d89e2386c8b6d11f9e6807ac798502a7226c0a0c33",
+          "open_fixture": "future-v3",
+          "open_fixture_sha256": "69f187aae396fc3bfb3e35455c61c974a968d021ed02a0725b910db4a12a472d",
+          "record_schema_version": 3,
+          "schema": "gwz.merge-operation/v3"
+        },
+        {
+          "archived_fixture": "archived-future-v4",
+          "archived_fixture_sha256": "f6d026a7521f2ec8eb29c62899507916efe46d84df67d13948ab675c4a96edeb",
+          "open_fixture": "future-v4",
+          "open_fixture_sha256": "bf2bc996b2d181dae6ab3c1f78bf409cf770a2b9d58ab1433570f72c8c2c39b9",
+          "record_schema_version": 4,
+          "schema": "gwz.merge-operation/v4"
+        },
+        {
+          "archived_fixture": "archived-future-v0-mismatch",
+          "archived_fixture_sha256": "d8650c9c3f64e8dea6b68cf283ee4ae6e271ba2aab8b661b734f1e5ec6a0abd7",
+          "open_fixture": "future-v0-mismatch",
+          "open_fixture_sha256": "1b1adf669ac2aa02801deb841c0dab933c9e0bed1fe6c4961be4321a3cde17b7",
+          "record_schema_version": 1,
+          "schema": "gwz.merge-operation/v0"
+        },
+        {
+          "archived_fixture": "archived-future-unknown",
+          "archived_fixture_sha256": "c5a7d6a0f63f24b2b28bbffe32799559d4be96e7e13f1aa25566a4f51bc30edb",
+          "open_fixture": "future-unknown",
+          "open_fixture_sha256": "c987993fd93ef3d40a1f14d6b83a4ec1e0d2ab4cfe7e4a45ca7000dd21ff2c67",
+          "record_schema_version": 99,
+          "schema": "gwz.merge-operation/future"
+        }
+      ],
+      "expectations": {
+        "archived-record_unreadable-human": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": "gwz: MergeRecordUnreadable: merge record at '{workspace}/.gwz/merge/done/merge_retained.yaml' is unreadable: unsupported merge record schema\n"
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": ""
+          }
+        },
+        "archived-record_unreadable-json": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"errors\":[{\"code\":\"MergeRecordUnreadable\",\"detail\":null,\"member_id\":null,\"member_path\":null,\"message\":\"merge record at '{workspace}/.gwz/merge/done/merge_retained.yaml' is unreadable: unsupported merge record schema\",\"target_kind\":null}],\"kind\":\"response\",\"members\":[],\"meta\":null,\"workspace_git_status\":null}\n"
+          }
+        },
+        "archived-record_unreadable-jsonl": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"artifact_path\":null,\"attribution\":null,\"error\":null,\"event_kind\":\"OperationStarted\",\"kind\":\"event\",\"member\":null,\"member_id\":null,\"member_path\":null,\"merge_member\":null,\"merge_state\":null,\"message\":\"operation started\",\"operation_id\":\"{operation_id}\",\"progress\":null,\"request_id\":\"{request_id}\",\"sequence\":0,\"severity\":\"Info\",\"target_kind\":null,\"timestamp_ms\":\"{timestamp_ms_0}\"}\n{\"artifact_path\":null,\"attribution\":null,\"error\":null,\"event_kind\":\"OperationFinished\",\"kind\":\"event\",\"member\":null,\"member_id\":null,\"member_path\":null,\"merge_member\":null,\"merge_state\":null,\"message\":\"operation finished\",\"operation_id\":\"{operation_id}\",\"progress\":null,\"request_id\":\"{request_id}\",\"sequence\":1,\"severity\":\"Info\",\"target_kind\":null,\"timestamp_ms\":\"{timestamp_ms_1}\"}\n{\"errors\":[{\"code\":\"MergeRecordUnreadable\",\"detail\":null,\"member_id\":null,\"member_path\":null,\"message\":\"merge record at '{workspace}/.gwz/merge/done/merge_retained.yaml' is unreadable: unsupported merge record schema\",\"target_kind\":null}],\"kind\":\"response\",\"members\":[],\"meta\":null,\"workspace_git_status\":null}\n"
+          }
+        },
+        "archived-retention_noop-human": {
+          "exit_codes": [
+            0
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "action: merge\nstatus: Noop\nstate: idle\nNo coordinated merge is open.\n"
+          }
+        },
+        "archived-retention_noop-json": {
+          "exit_codes": [
+            0
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"branch_repos\":null,\"errors\":[],\"kind\":\"response\",\"members\":[],\"merge\":{\"merge_id\":null,\"open\":false,\"operation_drift\":[],\"participant_counts\":{\"aborted\":0,\"conflicted\":0,\"continued\":0,\"failed\":0,\"fast_forwarded\":0,\"merged\":0,\"planned\":0,\"rolled_back\":0,\"total\":0,\"unattempted\":0,\"up_to_date\":0},\"preservation\":null,\"publication_step\":null,\"repos\":[],\"state\":\"Idle\"},\"meta\":{\"action\":\"Merge\",\"aggregate_status\":\"Noop\",\"message\":null,\"operation_id\":\"{operation_id}\",\"request_id\":\"{request_id}\",\"schema_version\":\"gwz.protocol/v0\"},\"stash_bundles\":null,\"workspace_git_status\":null}\n"
+          }
+        },
+        "archived-retention_noop-jsonl": {
+          "exit_codes": [
+            0
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"artifact_path\":null,\"attribution\":null,\"error\":null,\"event_kind\":\"OperationStarted\",\"kind\":\"event\",\"member\":null,\"member_id\":null,\"member_path\":null,\"merge_member\":null,\"merge_state\":null,\"message\":\"operation started\",\"operation_id\":\"{operation_id}\",\"progress\":null,\"request_id\":\"{request_id}\",\"sequence\":0,\"severity\":\"Info\",\"target_kind\":null,\"timestamp_ms\":\"{timestamp_ms_0}\"}\n{\"artifact_path\":null,\"attribution\":null,\"error\":null,\"event_kind\":\"OperationFinished\",\"kind\":\"event\",\"member\":null,\"member_id\":null,\"member_path\":null,\"merge_member\":null,\"merge_state\":null,\"message\":\"operation finished\",\"operation_id\":\"{operation_id}\",\"progress\":null,\"request_id\":\"{request_id}\",\"sequence\":1,\"severity\":\"Info\",\"target_kind\":null,\"timestamp_ms\":\"{timestamp_ms_1}\"}\n{\"branch_repos\":null,\"errors\":[],\"kind\":\"response\",\"members\":[],\"merge\":{\"merge_id\":null,\"open\":false,\"operation_drift\":[],\"participant_counts\":{\"aborted\":0,\"conflicted\":0,\"continued\":0,\"failed\":0,\"fast_forwarded\":0,\"merged\":0,\"planned\":0,\"rolled_back\":0,\"total\":0,\"unattempted\":0,\"up_to_date\":0},\"preservation\":null,\"publication_step\":null,\"repos\":[],\"state\":\"Idle\"},\"meta\":{\"action\":\"Merge\",\"aggregate_status\":\"Noop\",\"message\":null,\"operation_id\":\"{operation_id}\",\"request_id\":\"{request_id}\",\"schema_version\":\"gwz.protocol/v0\"},\"stash_bundles\":null,\"workspace_git_status\":null}\n"
+          }
+        },
+        "open-record_unreadable-human": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": "gwz: MergeRecordUnreadable: merge record at '{workspace}/.gwz/merge/merge_retained.yaml' is unreadable: unsupported merge record schema\n"
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": ""
+          }
+        },
+        "open-record_unreadable-json": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"errors\":[{\"code\":\"MergeRecordUnreadable\",\"detail\":null,\"member_id\":null,\"member_path\":null,\"message\":\"merge record at '{workspace}/.gwz/merge/merge_retained.yaml' is unreadable: unsupported merge record schema\",\"target_kind\":null}],\"kind\":\"response\",\"members\":[],\"meta\":null,\"workspace_git_status\":null}\n"
+          }
+        },
+        "open-record_unreadable-jsonl": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"artifact_path\":null,\"attribution\":null,\"error\":null,\"event_kind\":\"OperationStarted\",\"kind\":\"event\",\"member\":null,\"member_id\":null,\"member_path\":null,\"merge_member\":null,\"merge_state\":null,\"message\":\"operation started\",\"operation_id\":\"{operation_id}\",\"progress\":null,\"request_id\":\"{request_id}\",\"sequence\":0,\"severity\":\"Info\",\"target_kind\":null,\"timestamp_ms\":\"{timestamp_ms_0}\"}\n{\"artifact_path\":null,\"attribution\":null,\"error\":null,\"event_kind\":\"OperationFinished\",\"kind\":\"event\",\"member\":null,\"member_id\":null,\"member_path\":null,\"merge_member\":null,\"merge_state\":null,\"message\":\"operation finished\",\"operation_id\":\"{operation_id}\",\"progress\":null,\"request_id\":\"{request_id}\",\"sequence\":1,\"severity\":\"Info\",\"target_kind\":null,\"timestamp_ms\":\"{timestamp_ms_1}\"}\n{\"errors\":[{\"code\":\"MergeRecordUnreadable\",\"detail\":null,\"member_id\":null,\"member_path\":null,\"message\":\"merge record at '{workspace}/.gwz/merge/merge_retained.yaml' is unreadable: unsupported merge record schema\",\"target_kind\":null}],\"kind\":\"response\",\"members\":[],\"meta\":null,\"workspace_git_status\":null}\n"
+          }
+        }
+      },
+      "id": "v0.10.2-unsupported-envelope-matrix-rust-cli",
+      "readers": [
+        "rust-cli-v0.10.2"
+      ]
+    },
+    {
+      "envelopes": [
+        {
+          "archived_fixture": "archived-future-v1",
+          "archived_fixture_sha256": "3c03dff3cdb898ca3a8fb19d28bc0d3c679d71d50f9ad462d920a2e4b64830ed",
+          "open_fixture": "future-v1",
+          "open_fixture_sha256": "e1fc1460caa9f5eb4e499312d4f402e71e0f9307f38519c1645babc1e1c55633",
+          "record_schema_version": 1,
+          "schema": "gwz.merge-operation/v1"
+        },
+        {
+          "archived_fixture": "archived-future-v2",
+          "archived_fixture_sha256": "51c4b92bb1c1e49dd954b244c58058b942d0f30c0ddf2454eb7387de217ea592",
+          "open_fixture": "future-v2",
+          "open_fixture_sha256": "4798655604db95d1919bc50cb1df7d7c889ccc534b03d52606a09f5aa6df6ad7",
+          "record_schema_version": 2,
+          "schema": "gwz.merge-operation/v2"
+        },
+        {
+          "archived_fixture": "archived-future-v3",
+          "archived_fixture_sha256": "73aca737d12a244ef46529d89e2386c8b6d11f9e6807ac798502a7226c0a0c33",
+          "open_fixture": "future-v3",
+          "open_fixture_sha256": "69f187aae396fc3bfb3e35455c61c974a968d021ed02a0725b910db4a12a472d",
+          "record_schema_version": 3,
+          "schema": "gwz.merge-operation/v3"
+        },
+        {
+          "archived_fixture": "archived-future-v4",
+          "archived_fixture_sha256": "f6d026a7521f2ec8eb29c62899507916efe46d84df67d13948ab675c4a96edeb",
+          "open_fixture": "future-v4",
+          "open_fixture_sha256": "bf2bc996b2d181dae6ab3c1f78bf409cf770a2b9d58ab1433570f72c8c2c39b9",
+          "record_schema_version": 4,
+          "schema": "gwz.merge-operation/v4"
+        },
+        {
+          "archived_fixture": "archived-future-v0-mismatch",
+          "archived_fixture_sha256": "d8650c9c3f64e8dea6b68cf283ee4ae6e271ba2aab8b661b734f1e5ec6a0abd7",
+          "open_fixture": "future-v0-mismatch",
+          "open_fixture_sha256": "1b1adf669ac2aa02801deb841c0dab933c9e0bed1fe6c4961be4321a3cde17b7",
+          "record_schema_version": 1,
+          "schema": "gwz.merge-operation/v0"
+        },
+        {
+          "archived_fixture": "archived-future-unknown",
+          "archived_fixture_sha256": "c5a7d6a0f63f24b2b28bbffe32799559d4be96e7e13f1aa25566a4f51bc30edb",
+          "open_fixture": "future-unknown",
+          "open_fixture_sha256": "c987993fd93ef3d40a1f14d6b83a4ec1e0d2ab4cfe7e4a45ca7000dd21ff2c67",
+          "record_schema_version": 99,
+          "schema": "gwz.merge-operation/future"
+        }
+      ],
+      "expectations": {
+        "archived-record_unreadable-human": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": "gwz: native bridge call failed for merge: MergeRecordUnreadable: merge record at '{workspace}/.gwz/merge/done/merge_retained.yaml' is unreadable: unsupported merge record schema\n"
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": ""
+          }
+        },
+        "archived-record_unreadable-json": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"errors\": [{\"code\": \"MergeRecordUnreadable\", \"detail\": null, \"member_id\": null, \"member_path\": null, \"message\": \"merge record at '{workspace}/.gwz/merge/done/merge_retained.yaml' is unreadable: unsupported merge record schema\", \"target_kind\": null}], \"kind\": \"response\", \"members\": [], \"meta\": null, \"workspace_git_status\": null}\n"
+          }
+        },
+        "archived-record_unreadable-jsonl": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"artifact_path\": null, \"attribution\": null, \"error\": null, \"event_kind\": \"OperationStarted\", \"kind\": \"event\", \"member\": null, \"member_id\": null, \"member_path\": null, \"merge_member\": null, \"merge_state\": null, \"message\": \"operation started\", \"operation_id\": \"{operation_id}\", \"progress\": null, \"request_id\": \"{request_id}\", \"sequence\": 0, \"severity\": \"Info\", \"target_kind\": null, \"timestamp_ms\": \"{timestamp_ms_0}\"}\n{\"artifact_path\": null, \"attribution\": null, \"error\": null, \"event_kind\": \"OperationFinished\", \"kind\": \"event\", \"member\": null, \"member_id\": null, \"member_path\": null, \"merge_member\": null, \"merge_state\": null, \"message\": \"operation finished\", \"operation_id\": \"{operation_id}\", \"progress\": null, \"request_id\": \"{request_id}\", \"sequence\": 1, \"severity\": \"Info\", \"target_kind\": null, \"timestamp_ms\": \"{timestamp_ms_1}\"}\n{\"errors\": [{\"code\": \"MergeRecordUnreadable\", \"detail\": null, \"member_id\": null, \"member_path\": null, \"message\": \"merge record at '{workspace}/.gwz/merge/done/merge_retained.yaml' is unreadable: unsupported merge record schema\", \"target_kind\": null}], \"kind\": \"response\", \"members\": [], \"meta\": null, \"workspace_git_status\": null}\n"
+          }
+        },
+        "archived-retention_noop-human": {
+          "exit_codes": [
+            0
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "action: merge\nstatus: Noop\nstate: idle\nNo coordinated merge is open.\n"
+          }
+        },
+        "archived-retention_noop-json": {
+          "exit_codes": [
+            0
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"branch_repos\": null, \"errors\": [], \"kind\": \"response\", \"members\": [], \"merge\": {\"merge_id\": null, \"open\": false, \"operation_drift\": [], \"participant_counts\": {\"aborted\": 0, \"conflicted\": 0, \"continued\": 0, \"failed\": 0, \"fast_forwarded\": 0, \"merged\": 0, \"planned\": 0, \"rolled_back\": 0, \"total\": 0, \"unattempted\": 0, \"up_to_date\": 0}, \"preservation\": null, \"publication_step\": null, \"repos\": [], \"state\": \"Idle\"}, \"meta\": {\"action\": \"Merge\", \"aggregate_status\": \"Noop\", \"message\": null, \"operation_id\": \"{operation_id}\", \"request_id\": \"{request_id}\", \"schema_version\": \"gwz.protocol/v0\"}, \"stash_bundles\": null, \"workspace_git_status\": null}\n"
+          }
+        },
+        "archived-retention_noop-jsonl": {
+          "exit_codes": [
+            0
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"artifact_path\": null, \"attribution\": null, \"error\": null, \"event_kind\": \"OperationStarted\", \"kind\": \"event\", \"member\": null, \"member_id\": null, \"member_path\": null, \"merge_member\": null, \"merge_state\": null, \"message\": \"operation started\", \"operation_id\": \"{operation_id}\", \"progress\": null, \"request_id\": \"{request_id}\", \"sequence\": 0, \"severity\": \"Info\", \"target_kind\": null, \"timestamp_ms\": \"{timestamp_ms_0}\"}\n{\"artifact_path\": null, \"attribution\": null, \"error\": null, \"event_kind\": \"OperationFinished\", \"kind\": \"event\", \"member\": null, \"member_id\": null, \"member_path\": null, \"merge_member\": null, \"merge_state\": null, \"message\": \"operation finished\", \"operation_id\": \"{operation_id}\", \"progress\": null, \"request_id\": \"{request_id}\", \"sequence\": 1, \"severity\": \"Info\", \"target_kind\": null, \"timestamp_ms\": \"{timestamp_ms_1}\"}\n{\"branch_repos\": null, \"errors\": [], \"kind\": \"response\", \"members\": [], \"merge\": {\"merge_id\": null, \"open\": false, \"operation_drift\": [], \"participant_counts\": {\"aborted\": 0, \"conflicted\": 0, \"continued\": 0, \"failed\": 0, \"fast_forwarded\": 0, \"merged\": 0, \"planned\": 0, \"rolled_back\": 0, \"total\": 0, \"unattempted\": 0, \"up_to_date\": 0}, \"preservation\": null, \"publication_step\": null, \"repos\": [], \"state\": \"Idle\"}, \"meta\": {\"action\": \"Merge\", \"aggregate_status\": \"Noop\", \"message\": null, \"operation_id\": \"{operation_id}\", \"request_id\": \"{request_id}\", \"schema_version\": \"gwz.protocol/v0\"}, \"stash_bundles\": null, \"workspace_git_status\": null}\n"
+          }
+        },
+        "open-record_unreadable-human": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": "gwz: native bridge call failed for merge: MergeRecordUnreadable: merge record at '{workspace}/.gwz/merge/merge_retained.yaml' is unreadable: unsupported merge record schema\n"
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": ""
+          }
+        },
+        "open-record_unreadable-json": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"errors\": [{\"code\": \"MergeRecordUnreadable\", \"detail\": null, \"member_id\": null, \"member_path\": null, \"message\": \"merge record at '{workspace}/.gwz/merge/merge_retained.yaml' is unreadable: unsupported merge record schema\", \"target_kind\": null}], \"kind\": \"response\", \"members\": [], \"meta\": null, \"workspace_git_status\": null}\n"
+          }
+        },
+        "open-record_unreadable-jsonl": {
+          "exit_codes": [
+            1
+          ],
+          "mutation": {
+            "mode": "none"
+          },
+          "stderr": {
+            "mode": "normalized-exact",
+            "value": ""
+          },
+          "stdout": {
+            "mode": "normalized-exact",
+            "value": "{\"artifact_path\": null, \"attribution\": null, \"error\": null, \"event_kind\": \"OperationStarted\", \"kind\": \"event\", \"member\": null, \"member_id\": null, \"member_path\": null, \"merge_member\": null, \"merge_state\": null, \"message\": \"operation started\", \"operation_id\": \"{operation_id}\", \"progress\": null, \"request_id\": \"{request_id}\", \"sequence\": 0, \"severity\": \"Info\", \"target_kind\": null, \"timestamp_ms\": \"{timestamp_ms_0}\"}\n{\"artifact_path\": null, \"attribution\": null, \"error\": null, \"event_kind\": \"OperationFinished\", \"kind\": \"event\", \"member\": null, \"member_id\": null, \"member_path\": null, \"merge_member\": null, \"merge_state\": null, \"message\": \"operation finished\", \"operation_id\": \"{operation_id}\", \"progress\": null, \"request_id\": \"{request_id}\", \"sequence\": 1, \"severity\": \"Info\", \"target_kind\": null, \"timestamp_ms\": \"{timestamp_ms_1}\"}\n{\"errors\": [{\"code\": \"MergeRecordUnreadable\", \"detail\": null, \"member_id\": null, \"member_path\": null, \"message\": \"merge record at '{workspace}/.gwz/merge/merge_retained.yaml' is unreadable: unsupported merge record schema\", \"target_kind\": null}], \"kind\": \"response\", \"members\": [], \"meta\": null, \"workspace_git_status\": null}\n"
+          }
+        }
+      },
+      "id": "v0.10.2-unsupported-envelope-matrix-gwz-py",
+      "readers": [
+        "gwz-py-v0.10.2"
       ]
     }
-  ]
+  ],
+  "schema": "gwz.retained-reader-cases/v1"
 }

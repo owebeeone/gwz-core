@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import subprocess
@@ -17,6 +18,7 @@ import retained_reader_fixture as fixture_tools
 import retained_reader_harness as harness
 import retained_reader_evidence as evidence
 import retained_reader_matrix as matrix
+import retained_reader_process as process
 import retained_reader_semantics as semantics
 
 
@@ -103,7 +105,7 @@ class RetainedReaderCaseTests(unittest.TestCase):
             )
             self.assertEqual(contract["fixtures"], fixture_tools.fixture_identities(fixtures))
             self.assertEqual(contract["fixture_set_sha256"], fixture_tools.fixture_set_identity(fixtures))
-        known_cases = {case["id"] for case in cases["cases"]}
+        known_cases = {case["id"] for case in matrix.validate_cases(cases, manifest)}
         self.assertEqual("passed", checked["status"])
         evidence.validate_result_set(manifest, cases, "macos-aarch64", checked["results"])
         self.assertEqual("sha1", checked["provenance"]["git"]["object_format"])
@@ -120,7 +122,7 @@ class RetainedReaderCaseTests(unittest.TestCase):
         self.assertNotIn("/private/", encoded)
         self.assertNotIn("stdout", encoded)
         self.assertEqual(
-            json.dumps(checked, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            evidence.render_checked_evidence(checked),
             evidence_path.read_text(encoding="utf-8"),
         )
 
@@ -137,6 +139,137 @@ class RetainedReaderCaseTests(unittest.TestCase):
             if any(artifact["support"] == "required" for artifact in reader["artifacts"])
         }
         self.assertEqual(runnable, covered)
+
+    def test_envelope_cases_pin_each_reader_exactly(self) -> None:
+        manifest = harness.load_manifest(HERE / "manifest.json")
+        document = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
+        cases = [
+            case
+            for case in matrix.validate_cases(document, manifest)
+            if "record_schema" in case
+        ]
+
+        self.assertTrue(all(len(case["readers"]) == 1 for case in cases))
+        for case in cases:
+            if case["projection"] != "human" or case["classification"] != "record_unreadable":
+                continue
+            stderr = case["expected"]["stderr"]["value"]
+            if case["readers"][0].startswith("gwz-py-"):
+                self.assertTrue(
+                    stderr.startswith("gwz: native bridge call failed for merge: "),
+                    case["id"],
+                )
+            else:
+                self.assertTrue(stderr.startswith("gwz: MergeRecordUnreadable:"), case["id"])
+
+    def test_envelope_classification_is_tied_to_exact_exit_and_stream(self) -> None:
+        manifest = harness.load_manifest(HERE / "manifest.json")
+        cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
+        cases["cases"] = matrix.validate_cases(cases, manifest)
+        document = copy.deepcopy(cases)
+        case = next(
+            item
+            for item in document["cases"]
+            if item.get("classification") == "record_unreadable"
+        )
+        case["expected"]["exit_codes"] = [0]
+        with self.assertRaisesRegex(matrix.MatrixError, "classification"):
+            matrix.validate_cases(document, manifest)
+
+        document = copy.deepcopy(cases)
+        case = next(
+            item
+            for item in document["cases"]
+            if item.get("classification") == "retention_noop"
+        )
+        case["expected"]["stdout"]["value"] = case["expected"]["stdout"][
+            "value"
+        ].replace("Noop", "Failed")
+        with self.assertRaisesRegex(matrix.MatrixError, "classification"):
+            matrix.validate_cases(document, manifest)
+
+    def test_normalized_stream_preserves_driver_text_and_rejects_blank_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            logical = str(Path(temp))
+            resolved = str(Path(temp).resolve())
+            actual = (
+                "gwz: native bridge call failed for merge: MergeRecordUnreadable: "
+                f"merge record at '{resolved}/record.yaml' is unreadable\n"
+            )
+            self.assertEqual(
+                "gwz: native bridge call failed for merge: MergeRecordUnreadable: "
+                "merge record at '{workspace}/record.yaml' is unreadable\n",
+                process.normalized_stream(actual, {"workspace": logical}),
+            )
+        with self.assertRaisesRegex(ValueError, "blank record"):
+            process.normalized_stream('{"kind":"event"}\n\n{"kind":"response"}\n', {})
+        for actual, message in (
+            ('{"operation_id":""}\n', "empty"),
+            ('{"timestamp_ms":-1}\n', "timestamp"),
+        ):
+            with self.subTest(actual=actual), self.assertRaisesRegex(ValueError, message):
+                process.normalized_stream(actual, {})
+        spaced = '{ "kind": "response" }\n'
+        self.assertEqual(spaced, process.normalized_stream(spaced, {}))
+        windows_line = '{"message":"C:\\\\temp\\\\ws\\\\.gwz\\\\merge\\\\record.yaml"}\n'
+        expected_line = '{"message":"{workspace}/.gwz/merge/record.yaml"}\n'
+        for actual, expected in (
+            (windows_line, expected_line),
+            (windows_line + windows_line, expected_line + expected_line),
+            (
+                "gwz: MergeRecordUnreadable: merge record at "
+                "'C:\\temp\\ws\\.gwz\\merge\\record.yaml' is unreadable\n",
+                "gwz: MergeRecordUnreadable: merge record at "
+                "'{workspace}/.gwz/merge/record.yaml' is unreadable\n",
+            ),
+        ):
+            self.assertEqual(
+                expected,
+                process.normalized_stream(actual, {"workspace": r"C:\temp\ws"}),
+            )
+        self.assertEqual(
+            "MergeRecordUnreadable",
+            evidence._outcome(
+                "",
+                "gwz: native bridge call failed for merge: MergeRecordUnreadable: failed\n",
+            ),
+        )
+
+    def test_case_matrix_expands_to_fixture_bound_commands(self) -> None:
+        expected = {
+            "exit_codes": [1],
+            "stdout": {"mode": "normalized-exact", "value": ""},
+            "stderr": {"mode": "normalized-exact", "value": "failure\n"},
+            "mutation": {"mode": "none"},
+        }
+        envelope = {
+            "schema": "gwz.merge-operation/v1",
+            "record_schema_version": 1,
+            "open_fixture": "future-v1",
+            "open_fixture_sha256": "0" * 64,
+            "archived_fixture": "archived-future-v1",
+            "archived_fixture_sha256": "1" * 64,
+        }
+        expectation_keys = {
+            f"{location}-{classification}-{projection}"
+            for _, _, location, classification in matrix.ENVELOPE_LIFECYCLES.values()
+            for projection in matrix.PROJECTION_ARGS
+        }
+        document = {
+            "schema": "gwz.retained-reader-cases/v1",
+            "cases": [{
+                "id": "future-v1", "readers": ["reader"],
+                "envelopes": [envelope],
+                "expectations": {key: expected for key in expectation_keys},
+            }],
+        }
+
+        expanded = matrix._validate_cases_shape(document, {"reader"})
+
+        self.assertEqual(24, len(expanded))
+        status = next(case for case in expanded if case["lifecycle"] == "open-status" and case["projection"] == "human")
+        self.assertEqual(["merge", "--status"], status["args"])
+        self.assertEqual(expected, status["expected"])
 
     def test_continue_cases_classify_optional_workspace_boundary_rewrite(self) -> None:
         document = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
@@ -219,6 +352,29 @@ class RetainedReaderCaseTests(unittest.TestCase):
             self.assertIn("commit_message: custom retained-reader message", archived)
             self.assertNotIn("pending_action:", archived)
             self.assertNotIn("mode: no_ff", archived)
+
+    def test_generation_includes_every_future_envelope_as_open_and_archived(self) -> None:
+        expected = {
+            "v1": ("gwz.merge-operation/v1", 1),
+            "v2": ("gwz.merge-operation/v2", 2),
+            "v3": ("gwz.merge-operation/v3", 3),
+            "v4": ("gwz.merge-operation/v4", 4),
+            "v0-mismatch": ("gwz.merge-operation/v0", 1),
+            "unknown": ("gwz.merge-operation/future", 99),
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "fixtures"
+            generator.generate(root)
+            for name, (schema, version) in expected.items():
+                for prefix, location in (
+                    ("future", ".gwz/merge/merge_retained.yaml"),
+                    ("archived-future", ".gwz/merge/done/merge_retained.yaml"),
+                ):
+                    record = (root / f"{prefix}-{name}" / location).read_text(
+                        encoding="utf-8"
+                    )
+                    self.assertTrue(record.startswith(f"schema: {schema}\n"))
+                    self.assertIn(f"record_schema_version: {version}\n", record)
 
     def test_normalized_evidence_keeps_digests_and_results_but_not_host_paths(self) -> None:
         manifest = harness.load_manifest(HERE / "manifest.json")

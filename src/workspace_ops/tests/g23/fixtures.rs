@@ -19,6 +19,7 @@ pub(super) enum FinalizationFault {
     AfterEvidenceCommit,
     AfterEvidencePersistence,
     AfterLockPublication,
+    AfterNoPublicationComplete,
     BeforeArchive,
 }
 
@@ -65,6 +66,14 @@ impl FaultingMergeStore {
                     && publication.composition_commit.is_some()
                     && actual.as_deref() == publication.candidate_lock_sha256.as_deref()
             }
+            FinalizationFault::AfterNoPublicationComplete => {
+                record.state == OperationState::Finalizing
+                    && publication.step == PublicationStep::Complete
+                    && publication.candidate.is_none()
+                    && publication.composition_commit.is_none()
+                    && publication.composition_tree.is_none()
+                    && publication.candidate_hashes.is_empty()
+            }
             FinalizationFault::BeforeArchive => false,
         }
     }
@@ -89,6 +98,9 @@ impl MergeStore for FaultingMergeStore {
 
     fn write_open(&self, root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
         if !self.fired.get() && self.should_fail_write(root, record) {
+            if matches!(self.fault, FinalizationFault::AfterNoPublicationComplete) {
+                FileMergeStore.write_open(root, record)?;
+            }
             return self.inject();
         }
         FileMergeStore.write_open(root, record)

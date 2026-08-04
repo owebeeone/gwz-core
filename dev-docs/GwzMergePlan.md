@@ -1,10 +1,11 @@
 # GWZ Merge Implementation Plan
 
 Status: **active** (revised 2026-08-04). Owner: Gianni. M2b through M4, the
-god-file refactor, R0, R1, R2a, M5a, and I1 are complete. M5a custom messages
-have green local technical, compatibility, and cross-driver gates. The I1
-direction memo is accepted after two independent reviews found no P0–P3
-issue; the next checkpoint is the lead-owned I2 durable record interface.
+god-file refactor, R0, R1, R2a, and M5a are complete. M5a custom messages have
+green local technical, compatibility, and cross-driver gates. I2 inventory
+reopened I1 narrowly for the selected-root metadata-base correction; I1/I2
+must now close together before the lead-owned durable record interface is
+accepted.
 Completed release builds remain the Windows, macOS, Linux x86, and Linux arm64
 platform evidence for the preceding release baseline.
 
@@ -1629,11 +1630,20 @@ boundaries:
 
 1. I1, lead owned, freezes only the M6 checkout-evidence and M8 lock-domain
    directions needed by v1 in
-   `../../dev-docs/GwzM5-8I1DirectionMemo.md`. **Complete:** two independent
-   reviews found no remaining P0–P3 issue; I2 is unblocked.
-2. I2, lead/interface owned, freezes the v1 envelope, adapters, accepted
-   workspace, append-only protocol codes, retained-reader contract, and
-   concrete v0/v1 archive projections.
+   `../../dev-docs/GwzM5-8I1DirectionMemo.md`. **Accepted:** I2 exposed that
+   selected-root metadata results must be distinct from the operation baseline
+   and publication output; the corrected I1/I2 boundary received two
+   independent GO verdicts with no remaining P0–P3 finding.
+2. I2, lead/interface owned, freezes the v1 envelope, accepted workspace and
+   metadata base, recovery origin, typed rollback/preservation journals,
+   conservative v0 migration whitelist and valid-unlisted fallback, codes 46–61 with structured record
+   context, retained-reader contract, and concrete v0/v1 archive plus checked
+   backup-ref cleanup projections. The exact independently reviewed slices are
+   `../../dev-docs/GwzM5-8I2RecordContract.md`,
+   `../../dev-docs/GwzM5-8I2ActionJournalContract.md`,
+   `../../dev-docs/GwzM5-8I2CompatibilityContract.md`,
+   `../../dev-docs/GwzM5-8I2ProtocolContract.md`, and the checked
+   `GwzM5-8I2CompatibilityPredicates.json` registry.
 3. R4a, finalization-semantics owned, extracts current
    acceptance/finalization decisions without changing behavior.
 4. R3, store/compatibility owned, implements v0/v1 record, archive,
@@ -1650,9 +1660,10 @@ boundaries:
 
 M5b has no independently releasable v0 path. A1 is the v1 release gate and
 must prove every v0 reader fails closed on v1, the installed finalizer can
-resume every v1 state it writes, `RecoveryRequired`/operation-drift migration
-is representation-only, and ordinary/custom/no-ff new operations all use the
-v1 writer floor.
+resume every v1 state it writes, every valid-unlisted v0 recovery, drift,
+preservation, rollback, and terminal row remains on its existing v0 lifecycle
+without migration, and ordinary/custom/no-ff new operations all use the v1
+writer floor.
 
 ### Wave M6 — explicit target branch
 
@@ -1702,7 +1713,10 @@ Cover:
 - the retained `BranchOp.merge` numeric value and a direct protocol request
   returning `deprecated_operation` without invoking the merge handler;
 - pinned append-only v1 compatibility/recovery error codes and identical
-  human/JSON/JSONL projection; and
+  structured context plus human/JSON/JSONL projection;
+- discriminant-exact accepted metadata/member/root and recovery projections;
+- the normative v0 migration descriptor/hash/next-action whitelist plus
+  valid-unlisted fallback corpus; and
 - only the archive projection discriminants approved for the active semantic
   wave—V1 at A1, V2 at A2, V3 at A3, and V4 at A4.
 
@@ -1717,6 +1731,9 @@ Use an in-memory/fake backend and temporary record store for:
 - expected-conflict continuation versus unexpected-failure stop;
 - continue and abort eligibility;
 - reverse rollback planning;
+- every v1 rollback/preservation journal legality and ordered step;
+- valid-unlisted v0 recovery/preservation/rollback zero-match behavior on the
+  existing v0 lifecycle;
 - drift conversion;
 - state-to-response conversion;
 - idempotent retry/close behavior.
@@ -1732,6 +1749,10 @@ Use temporary repositories for:
 - exact abort and checked ref updates;
 - dirty/index/untracked/unresolved distinctions;
 - backup refs and stashes;
+- stash preimage framing, including non-UTF-8 paths and exact decoded content;
+- after-mutation/before-record faults for every rollback/preservation step;
+- partial multi-ref cleanup with absent, exact, mismatched, and unavailable
+  repository observations;
 - scoped root commits and unrelated index preservation;
 - unborn root evidence commit;
 - simulated concurrent ref movement.

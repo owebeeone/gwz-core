@@ -12,7 +12,9 @@ on:
       - ".github/workflows/retained-readers.yml"
       - "dev-docs/GwzMergeDesign.md"
       - "dev-docs/GwzMergePlan.md"
+      - "dev-docs/GwzM5-8I2CompatibilityPredicates.json"
       - "protocol/**"
+      - "scripts/checks/**"
       - "scripts/retained_readers/**"
       - "src/workspace_ops/merge/**"
       - "src/workspace_ops/tests/g23/**"
@@ -23,7 +25,9 @@ on:
       - ".github/workflows/retained-readers.yml"
       - "dev-docs/GwzMergeDesign.md"
       - "dev-docs/GwzMergePlan.md"
+      - "dev-docs/GwzM5-8I2CompatibilityPredicates.json"
       - "protocol/**"
+      - "scripts/checks/**"
       - "scripts/retained_readers/**"
       - "src/workspace_ops/merge/**"
       - "src/workspace_ops/tests/g23/**"
@@ -46,6 +50,9 @@ jobs:
       - name: Test and validate retained-reader inputs
         shell: bash
         run: |
+          python scripts/checks/check_merge_compatibility_predicates.py \
+            dev-docs/GwzM5-8I2CompatibilityPredicates.json --core .
+          python -m unittest scripts/checks/test_merge_compatibility_predicates.py -v
           python -m unittest discover -s scripts/retained_readers -p 'test_*.py' -v
           python scripts/retained_readers/retained_reader_harness.py validate scripts/retained_readers/manifest.json
           python scripts/retained_readers/retained_reader_harness.py gate-ready scripts/retained_readers/manifest.json

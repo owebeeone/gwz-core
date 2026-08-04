@@ -19,6 +19,15 @@ mod plan;
 use artifacts::*;
 use plan::*;
 
+#[cfg(test)]
+pub(super) fn classify_index_aligned_root_publication_for_i2<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &MergeOperationRecord,
+) -> ModelResult<Option<super::publication::CandidatePublicationPrefix>> {
+    artifacts::classify_index_aligned_root_publication(backend, root, record)
+}
+
 struct PreservationPlan {
     target_id: String,
     path: PathBuf,

@@ -1,10 +1,22 @@
 {
-  "fixture_set_sha256": "bbbf6892988a969627e76b3244f2e872410a53927c792668d51ece0f8806d28b",
+  "fixture_set_sha256": "2d1764e25c62e2f4c3547e5e4b6c7e4b9b34b45b5d58541f0b9ed328191e6f7b",
   "fixtures": {
+    "archived-future-unknown": "c5a7d6a0f63f24b2b28bbffe32799559d4be96e7e13f1aa25566a4f51bc30edb",
+    "archived-future-v0-mismatch": "d8650c9c3f64e8dea6b68cf283ee4ae6e271ba2aab8b661b734f1e5ec6a0abd7",
+    "archived-future-v1": "3c03dff3cdb898ca3a8fb19d28bc0d3c679d71d50f9ad462d920a2e4b64830ed",
+    "archived-future-v2": "51c4b92bb1c1e49dd954b244c58058b942d0f30c0ddf2454eb7387de217ea592",
+    "archived-future-v3": "73aca737d12a244ef46529d89e2386c8b6d11f9e6807ac798502a7226c0a0c33",
+    "archived-future-v4": "f6d026a7521f2ec8eb29c62899507916efe46d84df67d13948ab675c4a96edeb",
     "archived-v0": "9cb06c1c459657ba02b2f8f4c53f01d802a45684dacb3521ab9a761aaa9a0757",
     "custom-message-pending": "7d21be4f4f66c8c7b62cfd9108a5537fd49ae1473973f76ee34cf1e5d465f08b",
     "custom-message-pending-completed": "d24e8b82a69d3be55107b0852b72f06e63ec37342ecb709c26ea1255f755c5ec",
     "custom-message-pending-wrong-message": "4cf2a69a2b171447441c2a9c5b56b64d247edfb9aef95e11179e6a45881be79a",
+    "future-unknown": "c987993fd93ef3d40a1f14d6b83a4ec1e0d2ab4cfe7e4a45ca7000dd21ff2c67",
+    "future-v0-mismatch": "1b1adf669ac2aa02801deb841c0dab933c9e0bed1fe6c4961be4321a3cde17b7",
+    "future-v1": "e1fc1460caa9f5eb4e499312d4f402e71e0f9307f38519c1645babc1e1c55633",
+    "future-v2": "4798655604db95d1919bc50cb1df7d7c889ccc534b03d52606a09f5aa6df6ad7",
+    "future-v3": "69f187aae396fc3bfb3e35455c61c974a968d021ed02a0725b910db4a12a472d",
+    "future-v4": "bf2bc996b2d181dae6ab3c1f78bf409cf770a2b9d58ab1433570f72c8c2c39b9",
     "no-ff-fast-forwardable": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296",
     "pre-record-open-v0": "031d00eaadc5353db02af5e9603bb7563c39869da33505e80bc5447ffe26e296"
   },

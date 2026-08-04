@@ -315,6 +315,20 @@ def _archive_fixture(root: Path) -> None:
     source.unlink()
 
 
+def _rewrite_record_envelope(root: Path, *, archived: bool, schema: str, version: int) -> None:
+    directory = ".gwz/merge/done" if archived else ".gwz/merge"
+    record = root / directory / f"{MERGE_ID}.yaml"
+    text = record.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    if len(lines) < 2 or not lines[0].startswith("schema: ") or not lines[1].startswith(
+        "record_schema_version: "
+    ):
+        raise GenerationError(f"record envelope is not canonical: {record}")
+    lines[0] = f"schema: {schema}\n"
+    lines[1] = f"record_schema_version: {version}\n"
+    _write(record, "".join(lines))
+
+
 def generate(destination: Path) -> None:
     """Atomically create ``destination`` with all canonical workspaces."""
 
@@ -336,6 +350,25 @@ def generate(destination: Path) -> None:
         )
         shutil.copytree(temporary / "custom-message-pending", temporary / "archived-v0")
         _archive_fixture(temporary / "archived-v0")
+        future_envelopes = {
+            "v1": ("gwz.merge-operation/v1", 1),
+            "v2": ("gwz.merge-operation/v2", 2),
+            "v3": ("gwz.merge-operation/v3", 3),
+            "v4": ("gwz.merge-operation/v4", 4),
+            "v0-mismatch": ("gwz.merge-operation/v0", 1),
+            "unknown": ("gwz.merge-operation/future", 99),
+        }
+        for name, (schema, version) in future_envelopes.items():
+            open_fixture = temporary / f"future-{name}"
+            shutil.copytree(temporary / "custom-message-pending", open_fixture)
+            _rewrite_record_envelope(
+                open_fixture, archived=False, schema=schema, version=version
+            )
+            archived_fixture = temporary / f"archived-future-{name}"
+            shutil.copytree(temporary / "archived-v0", archived_fixture)
+            _rewrite_record_envelope(
+                archived_fixture, archived=True, schema=schema, version=version
+            )
         os.replace(temporary, destination)
         temporary = Path()
     finally:

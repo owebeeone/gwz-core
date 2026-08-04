@@ -10,6 +10,13 @@ struct ChangedMergeWindow {
     has_recorded_evidence: bool,
     candidate_is_published: bool,
     state: OperationState,
+    compatibility: CompatibilityBinding,
+}
+
+#[derive(Clone, Copy)]
+enum CompatibilityBinding {
+    Whitelist(&'static str, &'static str),
+    ValidUnlisted(&'static str, &'static str),
 }
 
 const CHANGED_MERGE_WINDOWS: &[ChangedMergeWindow] = &[
@@ -21,6 +28,10 @@ const CHANGED_MERGE_WINDOWS: &[ChangedMergeWindow] = &[
         has_recorded_evidence: false,
         candidate_is_published: false,
         state: OperationState::Finalizing,
+        compatibility: CompatibilityBinding::Whitelist(
+            "changed/finalizing-before-publication-record",
+            "finalizing-before-publication-record",
+        ),
     },
     ChangedMergeWindow {
         name: "validating_before_candidate",
@@ -30,6 +41,10 @@ const CHANGED_MERGE_WINDOWS: &[ChangedMergeWindow] = &[
         has_recorded_evidence: false,
         candidate_is_published: false,
         state: OperationState::Finalizing,
+        compatibility: CompatibilityBinding::Whitelist(
+            "changed/validating-before-candidate",
+            "validating-before-candidate",
+        ),
     },
     ChangedMergeWindow {
         name: "candidate_persisted_before_evidence",
@@ -39,6 +54,10 @@ const CHANGED_MERGE_WINDOWS: &[ChangedMergeWindow] = &[
         has_recorded_evidence: false,
         candidate_is_published: false,
         state: OperationState::Finalizing,
+        compatibility: CompatibilityBinding::Whitelist(
+            "changed/candidate-persisted",
+            "candidate-persisted-before-evidence",
+        ),
     },
     ChangedMergeWindow {
         name: "evidence_created_before_recording",
@@ -48,6 +67,10 @@ const CHANGED_MERGE_WINDOWS: &[ChangedMergeWindow] = &[
         has_recorded_evidence: false,
         candidate_is_published: false,
         state: OperationState::Finalizing,
+        compatibility: CompatibilityBinding::Whitelist(
+            "changed/evidence-unrecorded",
+            "evidence-created-before-recording",
+        ),
     },
     ChangedMergeWindow {
         name: "evidence_recorded_before_publication",
@@ -57,6 +80,10 @@ const CHANGED_MERGE_WINDOWS: &[ChangedMergeWindow] = &[
         has_recorded_evidence: true,
         candidate_is_published: false,
         state: OperationState::Finalizing,
+        compatibility: CompatibilityBinding::Whitelist(
+            "changed/evidence-recorded",
+            "evidence-recorded-before-publication",
+        ),
     },
     ChangedMergeWindow {
         name: "candidate_published_before_recording",
@@ -66,6 +93,10 @@ const CHANGED_MERGE_WINDOWS: &[ChangedMergeWindow] = &[
         has_recorded_evidence: true,
         candidate_is_published: true,
         state: OperationState::Finalizing,
+        compatibility: CompatibilityBinding::Whitelist(
+            "changed/prefix-boundary",
+            "candidate-published-before-recording",
+        ),
     },
     ChangedMergeWindow {
         name: "completed_before_archive",
@@ -75,6 +106,7 @@ const CHANGED_MERGE_WINDOWS: &[ChangedMergeWindow] = &[
         has_recorded_evidence: true,
         candidate_is_published: true,
         state: OperationState::Completed,
+        compatibility: CompatibilityBinding::ValidUnlisted("terminal/completed", "single"),
     },
 ];
 
@@ -200,6 +232,23 @@ fn v0_changed_merge_windows_have_named_exact_durable_shapes() {
             "{}",
             window.name
         );
+        match window.compatibility {
+            CompatibilityBinding::Whitelist(case_id, rule_id) => {
+                super::compatibility_v0::assert_i2_compatibility_fixture(
+                    &backend,
+                    temp.path(),
+                    &record,
+                    case_id,
+                    window.name,
+                    rule_id,
+                );
+            }
+            CompatibilityBinding::ValidUnlisted(case_id, subcase) => {
+                super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+                    &record, case_id, subcase,
+                );
+            }
+        }
     }
 }
 
@@ -225,6 +274,11 @@ fn v0_terminal_completed_before_archive_is_read_only_and_closes_byte_exactly() {
     .unwrap_err();
     let record = store.discover_open(temp.path()).unwrap().unwrap();
     assert_eq!(record.state, OperationState::Completed);
+    super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+        &record,
+        "terminal/completed",
+        "single",
+    );
     let open_path = temp
         .path()
         .join(format!(".gwz/merge/{}.yaml", record.merge_id));
@@ -294,6 +348,11 @@ fn v0_terminal_aborted_before_archive_is_read_only_and_closes_byte_exactly() {
     assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     let record = store.discover_open(temp.path()).unwrap().unwrap();
     assert_eq!(record.state, OperationState::Aborted);
+    super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+        &record,
+        "terminal/aborted",
+        "single",
+    );
     let open_path = temp.path().join(format!(".gwz/merge/{merge_id}.yaml"));
     let before = fs::read(&open_path).unwrap();
 
@@ -387,6 +446,82 @@ fn v0_no_publication_completion_preserves_born_and_unborn_root_inputs() {
 }
 
 #[test]
+fn v0_no_publication_complete_before_terminal_write_is_read_only() {
+    let temp = TempDir::new("v0-no-publication-before-terminal");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture =
+        init_one_member_workspace(temp.path(), &backend, "v0-no-publication-before-terminal");
+    let member = temp.path().join("remote");
+    backend
+        .branch_create(&member, "feature/source", "HEAD")
+        .unwrap();
+    let root_before = backend.head(temp.path()).unwrap();
+    let store = FaultingMergeStore::new(FinalizationFault::AfterNoPublicationComplete);
+
+    let error = invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        request(false),
+        "op_v0_no_publication_before_terminal",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
+
+    let record = store.discover_open(temp.path()).unwrap().unwrap();
+    assert_eq!(record.state, OperationState::Finalizing);
+    let publication = record.publication.as_ref().unwrap();
+    assert_eq!(publication.step, PublicationStep::Complete);
+    assert!(publication.candidate.is_none());
+    assert!(publication.composition_commit.is_none());
+    assert!(publication.composition_tree.is_none());
+    assert!(publication.candidate_hashes.is_empty());
+    assert_eq!(
+        record.participants["mem_remote"].state,
+        ParticipantState::UpToDate
+    );
+    assert_eq!(backend.head(temp.path()).unwrap(), root_before);
+
+    super::compatibility_v0::assert_i2_compatibility_fixture(
+        &backend,
+        temp.path(),
+        &record,
+        "unchanged/no-publication-finalizing",
+        "single",
+        "no-publication-complete-before-terminal",
+    );
+
+    let open_path = temp
+        .path()
+        .join(format!(".gwz/merge/{}.yaml", record.merge_id));
+    let before = fs::read(&open_path).unwrap();
+    let status = invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        recovery_request(crate::MergeOp::Status, Some(record.merge_id.clone())),
+        "op_v0_no_publication_before_terminal_status",
+    )
+    .unwrap();
+    assert_eq!(status.state, crate::MergeOperationState::Finalizing);
+    assert!(status.open);
+    assert_eq!(fs::read(&open_path).unwrap(), before);
+    assert_eq!(backend.head(temp.path()).unwrap(), root_before);
+
+    let completed = invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(record.merge_id.clone())),
+        "op_v0_no_publication_before_terminal_resume",
+    )
+    .unwrap();
+    assert_eq!(completed.state, crate::MergeOperationState::Completed);
+    assert!(!completed.open);
+    assert_eq!(backend.head(temp.path()).unwrap(), root_before);
+}
+
+#[test]
 fn v0_recovery_required_overlays_preserve_candidate_and_no_publication_evidence() {
     let candidate_temp = TempDir::new("v0-recovery-candidate");
     let backend = crate::git::Git2Backend::new();
@@ -416,6 +551,8 @@ fn v0_recovery_required_overlays_preserve_candidate_and_no_publication_evidence(
         candidate_temp.path(),
         &mut candidate_record,
         crate::MergePublicationStep::PreparingCandidate,
+        "recovery/candidate",
+        "candidate",
     );
 
     let no_publication_temp = TempDir::new("v0-recovery-no-publication");
@@ -455,6 +592,8 @@ fn v0_recovery_required_overlays_preserve_candidate_and_no_publication_evidence(
         no_publication_temp.path(),
         &mut no_publication_record,
         crate::MergePublicationStep::Complete,
+        "recovery/no-publication",
+        "no_publication",
     );
 }
 
@@ -463,9 +602,12 @@ fn assert_recovery_required_status_is_read_only(
     root: &Path,
     record: &mut MergeOperationRecord,
     expected_step: crate::MergePublicationStep,
+    case_id: &str,
+    subcase: &str,
 ) {
     record.state = OperationState::RecoveryRequired;
     FileMergeStore.write_open(root, record).unwrap();
+    super::compatibility_v0::assert_i2_valid_unlisted_fixture(record, case_id, subcase);
     let path = root.join(format!(".gwz/merge/{}.yaml", record.merge_id));
     let before = fs::read(&path).unwrap();
 

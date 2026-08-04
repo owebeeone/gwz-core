@@ -40,6 +40,27 @@ class EvidenceError(RuntimeError):
     """A matrix result cannot be promoted to successful evidence."""
 
 
+def render_checked_evidence(document: Mapping[str, Any]) -> str:
+    """Render canonical evidence with one reviewable matrix result per line."""
+
+    marker = "__GWZ_RETAINED_RESULTS__"
+    rendered = copy.deepcopy(dict(document))
+    results = rendered.get("results")
+    if not isinstance(results, list):
+        raise EvidenceError("evidence results must be an array")
+    rendered["results"] = [marker]
+    text = json.dumps(rendered, ensure_ascii=True, indent=2, sort_keys=True)
+    placeholder = f'  "results": [\n    "{marker}"\n  ]'
+    result_lines = [
+        "    " + json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        for result in results
+    ]
+    replacement = '  "results": [\n' + ",\n".join(result_lines) + "\n  ]"
+    if placeholder not in text:
+        raise EvidenceError("canonical evidence results placeholder is missing")
+    return text.replace(placeholder, replacement) + "\n"
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -158,16 +179,22 @@ def _validate_provenance(provenance: object) -> Mapping[str, Any]:
 def expected_result_keys(
     manifest: Mapping[str, Any], cases: Mapping[str, Any], platform: str
 ) -> set[tuple[str, str | None]]:
+    expanded = list(cases["cases"])
+    if cases.get("schema") == "gwz.retained-reader-cases/v1":
+        from retained_reader_matrix import validate_cases
+
+        expanded = list(validate_cases(cases, manifest))
     result: set[tuple[str, str | None]] = set()
     for reader in manifest["readers"]:
         artifact = next(item for item in reader["artifacts"] if item["platform"] == platform)
         if artifact["support"] == "unsupported":
             result.add((reader["id"], None))
             continue
-        selected = [
-            case["id"] for case in cases["cases"]
-            if "*" in case["readers"] or reader["id"] in case["readers"]
-        ]
+        selected: list[str] = []
+        for case in expanded:
+            if "*" not in case["readers"] and reader["id"] not in case["readers"]:
+                continue
+            selected.append(case["id"])
         result.update((reader["id"], case_id) for case_id in selected)
     return result
 
@@ -235,13 +262,26 @@ def validate_evidence_document(
         raise EvidenceError("evidence fixture provenance is stale")
 
 
-def _outcome(stdout: object) -> str | None:
+def _outcome(stdout: object, stderr: object = "") -> str | None:
     if not isinstance(stdout, str):
         return None
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError:
-        return None
+    lines = [line for line in stdout.splitlines() if line]
+    payload: object = None
+    if lines:
+        try:
+            payload = json.loads(lines[-1])
+        except json.JSONDecodeError:
+            pass
+    if payload is None:
+        if isinstance(stderr, str):
+            match = re.match(
+                r"gwz: (?:native bridge call failed for merge: )?([A-Za-z0-9_]+):",
+                stderr,
+            )
+            if match:
+                return match.group(1)
+        match = re.search(r"(?m)^status: ([A-Za-z0-9_]+)$", stdout)
+        return match.group(1) if match else None
     if not isinstance(payload, dict):
         return None
     errors = payload.get("errors")
@@ -308,7 +348,7 @@ def build_evidence(
         if "case" in result:
             if result.get("postconditions", {}).get("status") != "passed":
                 raise EvidenceError(f"case {result.get('case')!r} has failing postconditions")
-            outcome = _outcome(result.get("stdout"))
+            outcome = _outcome(result.get("stdout"), result.get("stderr"))
             if outcome is None:
                 raise EvidenceError(f"case {result.get('case')!r} has no parsed typed JSON outcome")
             before = result.get("before_sha256")

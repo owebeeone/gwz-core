@@ -107,9 +107,11 @@ Generation requires Git with `merge-tree --write-tree` and explicit SHA-1
 object-format support. It uses a minimal Git environment, canonicalizes config
 and indexes, is deterministic across repeated runs, and does not write an
 absolute source or destination path into a fixture. `fixture-contract.json`
-freezes portable logical identities for all six fixtures: pending custom
-message, the exact already-created commit, its wrong-message negative twin,
-fast-forwardable `mode: no_ff`, an archived record, and the pre-record view.
+freezes portable logical identities for the six lifecycle fixtures plus open
+and archived copies of exact v1–v4, recognized-schema/version-mismatch, and
+unknown-future envelopes. The lifecycle set covers pending custom message, the
+exact already-created commit, its wrong-message negative twin, fast-forwardable
+`mode: no_ff`, an archived record, and the pre-record view.
 Each identity retains the durable non-Git tree plus storage-independent Git
 HEAD, refs, pseudorefs, index tuples, and the complete validated object set.
 Config and workspace-boundary content remain authoritative; only explicitly
@@ -153,8 +155,8 @@ python3 scripts/retained_readers/retained_reader_matrix.py \
 valid only with `--evidence-out`.
 
 `evidence-macos-aarch64.json` is the checked result of the full behavioral
-case set against the actual macOS arm64 release artifacts: all 26 executable
-reader/case results passed. CI repeats the complete behavioral matrix on
+case set against the actual macOS arm64 release artifacts: every required
+executable reader/case result passed. CI repeats the complete behavioral matrix on
 Linux x86_64, Linux arm64, Windows x86_64, and both macOS architectures.
 Windows arm64 is historically undistributed and remains explicit substitute
 evidence rather than a skip.

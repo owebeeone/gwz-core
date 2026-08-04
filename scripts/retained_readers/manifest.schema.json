@@ -166,6 +166,41 @@
         }
       }
     },
+    "supportedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "record_schema_version"],
+      "properties": {
+        "schema": { "type": "string", "minLength": 1 },
+        "record_schema_version": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      }
+    },
+    "unsupportedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "record_schema_version", "classification"],
+      "properties": {
+        "schema": { "type": "string", "minLength": 1 },
+        "record_schema_version": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "classification": { "enum": ["unsupported_record_version", "record_unreadable"] }
+      }
+    },
+    "recordEnvelopes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatcher", "supported", "unsupported"],
+      "properties": {
+        "dispatcher": { "enum": ["none", "header_guarded"] },
+        "supported": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/supportedEnvelope" }
+        },
+        "unsupported": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/unsupportedEnvelope" }
+        }
+      }
+    },
     "reader": {
       "type": "object",
       "additionalProperties": false,
@@ -177,6 +212,7 @@
         "runtime",
         "supported_record_versions",
         "envelope_behavior",
+        "record_envelopes",
         "commands",
         "projections",
         "invocation",
@@ -199,6 +235,7 @@
           "minProperties": 1,
           "additionalProperties": { "type": "string", "minLength": 1 }
         },
+        "record_envelopes": { "$ref": "#/$defs/recordEnvelopes" },
         "commands": {
           "type": "object",
           "minProperties": 1,

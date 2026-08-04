@@ -208,6 +208,13 @@ fn v0_participant_rollback_has_restartable_durable_reverse_prefixes() {
         assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
         let interrupted = store.discover_open(temp.path()).unwrap().unwrap();
         assert_eq!(interrupted.state, OperationState::RollingBack);
+        if terminal_rows == 0 {
+            super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+                &interrupted,
+                "rollback/participant",
+                "0",
+            );
+        }
         let reversed = interrupted
             .selected_targets
             .iter()
@@ -399,6 +406,11 @@ fn v0_preservation_restart_rebuilds_missing_stash_bundle_from_recorded_evidence(
         stash_object_id: Some(stash.object_id.clone()),
     }];
     FileMergeStore.write_open(temp.path(), &record).unwrap();
+    super::compatibility_v0::assert_i2_valid_unlisted_fixture(
+        &record,
+        "preserving/stash",
+        "single",
+    );
     assert!(!crate::stash::bundle_path(temp.path(), &stash_id).exists());
     let mut abort = recovery_request(crate::MergeOp::Abort, Some(merge_id));
     abort.preserve = Some(true);

@@ -1,0 +1,192 @@
+{
+  "schema": "gwz.merge-i2-compatibility-predicates/v2",
+  "normalization": {
+    "identity": "Canonical JSON of descriptor only: UTF-8, keys sorted recursively, no insignificant whitespace. Fixture address and classification are excluded. Selected non-root identities are alpha-normalized in selection order to p0, p1, ...; their paths normalize to selected_path and branch names to attached_live_branch only after duplicate/collision and exact record-to-live relations are validated. @root remains @root.",
+    "definitions": {
+      "present_digest_valid": "Bytes are present and their SHA-256 equals the paired recorded digest.",
+      "complete_valid_candidate": "Candidate bytes, marker/path identities, baseline bytes, all internal SHA-256 values, workspace/root identities, and accepted-workspace relations are complete and mutually exact.",
+      "complete_valid_composition": "Composition commit and tree are both present; parent, tree, message, candidate files, root merge input, and recorded candidate hashes cross-check exactly.",
+      "canonical_valid_hashes": "The nonempty path/hash list is sorted, unique, complete for the candidate files, and every digest matches bytes and composition tree.",
+      "result_changed_exact": "resulting_commit is present, differs from before_commit, equals the recorded source/result semantics for the participant state, and all three object ids are canonical and available.",
+      "result_equals_before": "resulting_commit is present and equals before_commit; source/result/state are the exact durable unchanged-success relation and all object ids are canonical and available.",
+      "attached_live_branch": "The recorded target branch is an existing attached local branch and the live symbolic HEAD names that exact branch.",
+      "participant_live_exact": "No native action is active; HEAD and target ref equal the normalized recorded result; index and worktree are clean.",
+      "baseline_unborn": "The root is unborn on the recorded attached branch and the recorded metadata files plus their index entries equal the pre-publication baseline form; unrelated pre-existing root state is outside this descriptor.",
+      "unrecorded_evidence": "The root is one exact evidence commit derived from the accepted base, but that commit/tree has not yet been persisted in the record.",
+      "recorded_evidence": "The live root exactly equals the persisted composition commit/tree and pre-publication candidate artifacts remain at baseline.",
+      "prefix_boundary": "The persisted composition checkout has exact candidate marker, lock, boundary, and index publication entries; no other change to those publication paths exists.",
+      "no_reverse_owner": "No preservation or rollback owner, artifact, prefix, ref, stash, bundle, or reverse mutation exists."
+    },
+    "enums": {
+      "location": ["open"],
+      "mode": ["normal"],
+      "operation_state": ["finalizing"],
+      "target_kind": ["member"],
+      "participant_state": ["fast_forwarded", "up_to_date"],
+      "result_relation": ["changed_exact", "equals_before"],
+      "presence_relation": ["absent", "present_digest_valid"],
+      "root_checkout": ["unborn_attached"],
+      "publication_presence": ["absent", "present"],
+      "publication_step": ["absent", "validating_results", "preparing_candidate", "committing_evidence", "publishing_candidate", "complete"],
+      "candidate_relation": ["absent", "complete_valid"],
+      "composition_relation": ["absent", "complete_valid"],
+      "hash_relation": ["empty", "canonical_valid"],
+      "root_observation": ["baseline_unborn", "unrecorded_evidence", "recorded_evidence", "prefix_boundary"],
+      "base_phase": ["pre_candidate", "candidate_persisted", "evidence_unrecorded", "evidence_recorded", "publishing_prefix", "no_publication_complete"],
+      "acceptance": ["construct_operation_baseline", "recover_candidate"],
+      "metadata_source": ["operation_baseline"],
+      "next_action": ["validate_results", "create_or_adopt_evidence", "publish_candidate", "complete_no_publication"]
+    }
+  },
+  "migration_policy": {
+    "match": "After complete structural validation, normalize record plus live observation and require byte-for-byte canonical descriptor equality with exactly one whitelist rule.",
+    "valid_unlisted": "A structurally valid v0 descriptor not listed here is not corrupt and is never staged for migration. Open read-only status remains byte-exact and projects source/version with acceptance and recovery absent. Mutating commands remain on the existing v0 lifecycle and may write v0 only when that released path's existing preflight authorizes the mutation. Archived v0 uses only the separately frozen archive decoder and legacy projection.",
+    "recovery_required": "No v0 recovery_required, preserving, or rolling_back descriptor is migration-eligible in A1. Origin/owner ambiguity is therefore outside the matcher and cannot be manufactured away by whitelist membership.",
+    "terminal": "Completed and aborted v0 records remain v0 and use the existing byte-preserving archive path.",
+    "no_match": "Zero matches means valid-unlisted v0, not a compatibility error. Multiple matches is a registry defect and fails the build/checker."
+  },
+  "descriptor_schema": {
+    "top_level": ["location", "mode", "operation", "selection", "participants", "baseline", "publication", "observation"],
+    "operation": ["state", "drift"],
+    "selection": ["ordered_ids", "root_selected"],
+    "participant": ["id", "path", "target_kind", "target_branch", "state", "result", "pending", "conflict", "error", "preservation", "drift"],
+    "pending": ["kind", "expected", "commit_spec"],
+    "baseline": ["lock_yaml", "manifest_yaml", "lock_commit_hash", "manifest_commit_hash", "root_checkout", "root_commit_hash"],
+    "publication": ["presence", "step", "candidate", "composition", "hashes", "root_merge", "evidence_rolled_back", "root_preservation", "preservation_prefix"],
+    "observation": ["participants", "root", "preservation", "rollback"],
+    "participant_observation": ["id", "action", "head", "target_ref", "index", "worktree"]
+  },
+  "migration_whitelist": [
+    {
+      "id": "finalizing-before-publication-record",
+      "descriptor_sha256": "0367d5e848fccd67209b19c21c853c507fa3a0b806c669772d055b733b46fd8b",
+      "descriptor": {
+        "location": "open", "mode": "normal",
+        "operation": {"state": "finalizing", "drift": []},
+        "selection": {"ordered_ids": ["p0"], "root_selected": false},
+        "participants": [{"id": "p0", "path": "selected_path", "target_kind": "member", "target_branch": "attached_live_branch", "state": "fast_forwarded", "result": "changed_exact", "pending": {"kind": "absent", "expected": "absent", "commit_spec": "absent"}, "conflict": "absent", "error": "absent", "preservation": "absent", "drift": []}],
+        "baseline": {"lock_yaml": "present_digest_valid", "manifest_yaml": "present_digest_valid", "lock_commit_hash": "absent", "manifest_commit_hash": "absent", "root_checkout": "unborn_attached", "root_commit_hash": "absent"},
+        "publication": {"presence": "absent", "step": "absent", "candidate": "absent", "composition": "absent", "hashes": "empty", "root_merge": "absent", "evidence_rolled_back": false, "root_preservation": "absent", "preservation_prefix": "absent"},
+        "observation": {"participants": [{"id": "p0", "action": "none", "head": "equals_result", "target_ref": "equals_result", "index": "clean", "worktree": "clean"}], "root": "baseline_unborn", "preservation": "none", "rollback": "none"}
+      },
+      "classification": {"base_phase": "pre_candidate", "acceptance": "construct_operation_baseline", "metadata_source": "operation_baseline", "next_action": "validate_results"}
+    },
+    {
+      "id": "validating-before-candidate",
+      "descriptor_sha256": "f499067c4933415bba6698580ebc72ed803de0f8127e209123b7bf20afe05500",
+      "descriptor": {
+        "location": "open", "mode": "normal",
+        "operation": {"state": "finalizing", "drift": []},
+        "selection": {"ordered_ids": ["p0"], "root_selected": false},
+        "participants": [{"id": "p0", "path": "selected_path", "target_kind": "member", "target_branch": "attached_live_branch", "state": "fast_forwarded", "result": "changed_exact", "pending": {"kind": "absent", "expected": "absent", "commit_spec": "absent"}, "conflict": "absent", "error": "absent", "preservation": "absent", "drift": []}],
+        "baseline": {"lock_yaml": "present_digest_valid", "manifest_yaml": "present_digest_valid", "lock_commit_hash": "absent", "manifest_commit_hash": "absent", "root_checkout": "unborn_attached", "root_commit_hash": "absent"},
+        "publication": {"presence": "present", "step": "validating_results", "candidate": "absent", "composition": "absent", "hashes": "empty", "root_merge": "absent", "evidence_rolled_back": false, "root_preservation": "absent", "preservation_prefix": "absent"},
+        "observation": {"participants": [{"id": "p0", "action": "none", "head": "equals_result", "target_ref": "equals_result", "index": "clean", "worktree": "clean"}], "root": "baseline_unborn", "preservation": "none", "rollback": "none"}
+      },
+      "classification": {"base_phase": "pre_candidate", "acceptance": "construct_operation_baseline", "metadata_source": "operation_baseline", "next_action": "validate_results"}
+    },
+    {
+      "id": "candidate-persisted-before-evidence",
+      "descriptor_sha256": "c8ec81f816e27fc21ed8ac2feffc97df5791b1de4a5493da81517399e873b067",
+      "descriptor": {
+        "location": "open", "mode": "normal",
+        "operation": {"state": "finalizing", "drift": []},
+        "selection": {"ordered_ids": ["p0"], "root_selected": false},
+        "participants": [{"id": "p0", "path": "selected_path", "target_kind": "member", "target_branch": "attached_live_branch", "state": "fast_forwarded", "result": "changed_exact", "pending": {"kind": "absent", "expected": "absent", "commit_spec": "absent"}, "conflict": "absent", "error": "absent", "preservation": "absent", "drift": []}],
+        "baseline": {"lock_yaml": "present_digest_valid", "manifest_yaml": "present_digest_valid", "lock_commit_hash": "absent", "manifest_commit_hash": "absent", "root_checkout": "unborn_attached", "root_commit_hash": "absent"},
+        "publication": {"presence": "present", "step": "preparing_candidate", "candidate": "complete_valid", "composition": "absent", "hashes": "empty", "root_merge": "absent", "evidence_rolled_back": false, "root_preservation": "absent", "preservation_prefix": "absent"},
+        "observation": {"participants": [{"id": "p0", "action": "none", "head": "equals_result", "target_ref": "equals_result", "index": "clean", "worktree": "clean"}], "root": "baseline_unborn", "preservation": "none", "rollback": "none"}
+      },
+      "classification": {"base_phase": "candidate_persisted", "acceptance": "recover_candidate", "metadata_source": "operation_baseline", "next_action": "create_or_adopt_evidence"}
+    },
+    {
+      "id": "evidence-created-before-recording",
+      "descriptor_sha256": "7521caad94b5adf12807dabe7a6a48396afca106a9c6c691e37532fa0835c07c",
+      "descriptor": {
+        "location": "open", "mode": "normal",
+        "operation": {"state": "finalizing", "drift": []},
+        "selection": {"ordered_ids": ["p0"], "root_selected": false},
+        "participants": [{"id": "p0", "path": "selected_path", "target_kind": "member", "target_branch": "attached_live_branch", "state": "fast_forwarded", "result": "changed_exact", "pending": {"kind": "absent", "expected": "absent", "commit_spec": "absent"}, "conflict": "absent", "error": "absent", "preservation": "absent", "drift": []}],
+        "baseline": {"lock_yaml": "present_digest_valid", "manifest_yaml": "present_digest_valid", "lock_commit_hash": "absent", "manifest_commit_hash": "absent", "root_checkout": "unborn_attached", "root_commit_hash": "absent"},
+        "publication": {"presence": "present", "step": "committing_evidence", "candidate": "complete_valid", "composition": "absent", "hashes": "empty", "root_merge": "absent", "evidence_rolled_back": false, "root_preservation": "absent", "preservation_prefix": "absent"},
+        "observation": {"participants": [{"id": "p0", "action": "none", "head": "equals_result", "target_ref": "equals_result", "index": "clean", "worktree": "clean"}], "root": "unrecorded_evidence", "preservation": "none", "rollback": "none"}
+      },
+      "classification": {"base_phase": "evidence_unrecorded", "acceptance": "recover_candidate", "metadata_source": "operation_baseline", "next_action": "create_or_adopt_evidence"}
+    },
+    {
+      "id": "evidence-recorded-before-publication",
+      "descriptor_sha256": "88f6349bf8befa2a3c24bac21cdb880bff12ce9045f939409a43c32b918d27cb",
+      "descriptor": {
+        "location": "open", "mode": "normal",
+        "operation": {"state": "finalizing", "drift": []},
+        "selection": {"ordered_ids": ["p0"], "root_selected": false},
+        "participants": [{"id": "p0", "path": "selected_path", "target_kind": "member", "target_branch": "attached_live_branch", "state": "fast_forwarded", "result": "changed_exact", "pending": {"kind": "absent", "expected": "absent", "commit_spec": "absent"}, "conflict": "absent", "error": "absent", "preservation": "absent", "drift": []}],
+        "baseline": {"lock_yaml": "present_digest_valid", "manifest_yaml": "present_digest_valid", "lock_commit_hash": "absent", "manifest_commit_hash": "absent", "root_checkout": "unborn_attached", "root_commit_hash": "absent"},
+        "publication": {"presence": "present", "step": "committing_evidence", "candidate": "complete_valid", "composition": "complete_valid", "hashes": "canonical_valid", "root_merge": "absent", "evidence_rolled_back": false, "root_preservation": "absent", "preservation_prefix": "absent"},
+        "observation": {"participants": [{"id": "p0", "action": "none", "head": "equals_result", "target_ref": "equals_result", "index": "clean", "worktree": "clean"}], "root": "recorded_evidence", "preservation": "none", "rollback": "none"}
+      },
+      "classification": {"base_phase": "evidence_recorded", "acceptance": "recover_candidate", "metadata_source": "operation_baseline", "next_action": "publish_candidate"}
+    },
+    {
+      "id": "candidate-published-before-recording",
+      "descriptor_sha256": "29a1acb3ea21d89d48f26d73fe5c9bd3a4a6ffb3700e43a6a0ed58577a17d30f",
+      "descriptor": {
+        "location": "open", "mode": "normal",
+        "operation": {"state": "finalizing", "drift": []},
+        "selection": {"ordered_ids": ["p0"], "root_selected": false},
+        "participants": [{"id": "p0", "path": "selected_path", "target_kind": "member", "target_branch": "attached_live_branch", "state": "fast_forwarded", "result": "changed_exact", "pending": {"kind": "absent", "expected": "absent", "commit_spec": "absent"}, "conflict": "absent", "error": "absent", "preservation": "absent", "drift": []}],
+        "baseline": {"lock_yaml": "present_digest_valid", "manifest_yaml": "present_digest_valid", "lock_commit_hash": "absent", "manifest_commit_hash": "absent", "root_checkout": "unborn_attached", "root_commit_hash": "absent"},
+        "publication": {"presence": "present", "step": "publishing_candidate", "candidate": "complete_valid", "composition": "complete_valid", "hashes": "canonical_valid", "root_merge": "absent", "evidence_rolled_back": false, "root_preservation": "absent", "preservation_prefix": "absent"},
+        "observation": {"participants": [{"id": "p0", "action": "none", "head": "equals_result", "target_ref": "equals_result", "index": "clean", "worktree": "clean"}], "root": "prefix_boundary", "preservation": "none", "rollback": "none"}
+      },
+      "classification": {"base_phase": "publishing_prefix", "acceptance": "recover_candidate", "metadata_source": "operation_baseline", "next_action": "publish_candidate"}
+    },
+    {
+      "id": "no-publication-complete-before-terminal",
+      "descriptor_sha256": "81175a033655dec13a5274a42bf8738e814c7f383cc9f7e1e65a9712c8bddacc",
+      "descriptor": {
+        "location": "open", "mode": "normal",
+        "operation": {"state": "finalizing", "drift": []},
+        "selection": {"ordered_ids": ["p0"], "root_selected": false},
+        "participants": [{"id": "p0", "path": "selected_path", "target_kind": "member", "target_branch": "attached_live_branch", "state": "up_to_date", "result": "equals_before", "pending": {"kind": "absent", "expected": "absent", "commit_spec": "absent"}, "conflict": "absent", "error": "absent", "preservation": "absent", "drift": []}],
+        "baseline": {"lock_yaml": "present_digest_valid", "manifest_yaml": "present_digest_valid", "lock_commit_hash": "absent", "manifest_commit_hash": "absent", "root_checkout": "unborn_attached", "root_commit_hash": "absent"},
+        "publication": {"presence": "present", "step": "complete", "candidate": "absent", "composition": "absent", "hashes": "empty", "root_merge": "absent", "evidence_rolled_back": false, "root_preservation": "absent", "preservation_prefix": "absent"},
+        "observation": {"participants": [{"id": "p0", "action": "none", "head": "equals_result", "target_ref": "equals_result", "index": "clean", "worktree": "clean"}], "root": "baseline_unborn", "preservation": "none", "rollback": "none"}
+      },
+      "classification": {"base_phase": "no_publication_complete", "acceptance": "construct_operation_baseline", "metadata_source": "operation_baseline", "next_action": "complete_no_publication"}
+    }
+  ],
+  "fixture_corpus": [
+    {"case_id": "changed/finalizing-before-publication-record", "test": "workspace_ops::tests::g23::characterization_v0::v0_changed_merge_windows_have_named_exact_durable_shapes", "subcase": "finalizing_before_publication_record", "rule": "finalizing-before-publication-record"},
+    {"case_id": "changed/validating-before-candidate", "test": "workspace_ops::tests::g23::characterization_v0::v0_changed_merge_windows_have_named_exact_durable_shapes", "subcase": "validating_before_candidate", "rule": "validating-before-candidate"},
+    {"case_id": "changed/candidate-persisted", "test": "workspace_ops::tests::g23::characterization_v0::v0_changed_merge_windows_have_named_exact_durable_shapes", "subcase": "candidate_persisted_before_evidence", "rule": "candidate-persisted-before-evidence"},
+    {"case_id": "changed/evidence-unrecorded", "test": "workspace_ops::tests::g23::characterization_v0::v0_changed_merge_windows_have_named_exact_durable_shapes", "subcase": "evidence_created_before_recording", "rule": "evidence-created-before-recording"},
+    {"case_id": "changed/evidence-recorded", "test": "workspace_ops::tests::g23::characterization_v0::v0_changed_merge_windows_have_named_exact_durable_shapes", "subcase": "evidence_recorded_before_publication", "rule": "evidence-recorded-before-publication"},
+    {"case_id": "changed/prefix-boundary", "test": "workspace_ops::tests::g23::characterization_v0::v0_changed_merge_windows_have_named_exact_durable_shapes", "subcase": "candidate_published_before_recording", "rule": "candidate-published-before-recording"},
+    {"case_id": "unchanged/no-publication-finalizing", "test": "workspace_ops::tests::g23::characterization_v0::v0_no_publication_complete_before_terminal_write_is_read_only", "subcase": "single", "rule": "no-publication-complete-before-terminal"}
+  ],
+  "valid_unlisted_corpus": [
+    {"case_id": "terminal/completed", "test": "workspace_ops::tests::g23::characterization_v0::v0_terminal_completed_before_archive_is_read_only_and_closes_byte_exactly", "subcase": "single", "operation_state": "completed", "reason": "terminal v0 archives byte-exact"},
+    {"case_id": "terminal/aborted", "test": "workspace_ops::tests::g23::characterization_v0::v0_terminal_aborted_before_archive_is_read_only_and_closes_byte_exactly", "subcase": "single", "operation_state": "aborted", "reason": "terminal v0 archives byte-exact"},
+    {"case_id": "recovery/candidate", "test": "workspace_ops::tests::g23::characterization_v0::v0_recovery_required_overlays_preserve_candidate_and_no_publication_evidence", "subcase": "candidate", "operation_state": "recovery_required", "reason": "recovery origin is not uniquely owned"},
+    {"case_id": "recovery/no-publication", "test": "workspace_ops::tests::g23::characterization_v0::v0_recovery_required_overlays_preserve_candidate_and_no_publication_evidence", "subcase": "no_publication", "operation_state": "recovery_required", "reason": "recovery origin is not uniquely owned"},
+    {"case_id": "preserving/stash", "test": "workspace_ops::tests::g23::characterization_preservation_v0::v0_preservation_restart_rebuilds_missing_stash_bundle_from_recorded_evidence", "subcase": "single", "operation_state": "preserving", "reason": "v0 has no lossless write-ahead reverse owner"},
+    {"case_id": "rollback/participant", "test": "workspace_ops::tests::g23::characterization_preservation_v0::v0_participant_rollback_has_restartable_durable_reverse_prefixes", "subcase": "0", "operation_state": "rolling_back", "reason": "v0 has no lossless write-ahead reverse owner"}
+  ],
+  "rejection_reasons": {
+    "UnexpectedAcceptanceEvidence": ["accepted workspace is present before complete participant validation", "publication evidence exists without accepted workspace"],
+    "AcceptanceInputDrift": ["a selected participant result no longer matches its durable result", "the accepted metadata base cannot be verified from its recorded source", "the live root no longer matches the accepted pre-evidence checkout"],
+    "CandidateIntegrityMismatch": ["candidate bytes or digest do not match accepted workspace", "candidate metadata base does not match accepted metadata base", "candidate cross-field identity or hash validation failed"],
+    "AmbiguousEvidenceCommit": ["live root is neither the accepted base nor one exact unrecorded evidence commit", "more than one evidence-commit interpretation is valid"],
+    "RecordedEvidenceDrift": ["recorded composition commit, tree, parent, message, files, or hashes changed"],
+    "PublicationPrefixMismatch": ["filesystem or index does not match one legal recorded publication prefix"],
+    "PublishedCandidateMismatch": ["published marker, lock, boundary, index, or evidence does not match the candidate"],
+    "PreservationEvidenceMismatch": ["preservation evidence has no unique owner or action step", "preservation ref, stash, root prefix, bundle, or branch result is not exact"],
+    "RollbackEvidenceMismatch": ["rollback evidence has no unique owner or action step", "participant, evidence, or selected-root rollback result is not exact"],
+    "UnexpectedPublicationEvidence": ["no-publication completion contains candidate, composition, hash, or published-prefix evidence"],
+    "TerminalEvidenceMismatch": ["completed record is not published or no-publication-complete"],
+    "RecoveryEvidenceMismatch": ["recovery evidence does not match any legal origin", "recovery evidence matches more than one legal origin"],
+    "TerminalRollbackMismatch": ["aborted record retains an incomplete or contradictory rollback action"],
+    "ArchivedRecordUnreadable": ["archive envelope or terminal state is contradictory", "archive preservation ref is outside the canonical merge-owned namespace", "archive contains duplicate or colliding preservation owners"]
+  }
+}

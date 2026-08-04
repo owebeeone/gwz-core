@@ -42,7 +42,7 @@
         },
         {
           "id": "proposal_v1_scope",
-          "value": "| v1 | v0 semantics plus executable `--no-ff`, persisted `AcceptedWorkspace`, born/unborn acceptance, and publication/no-publication consumption | A1 after R4b |"
+          "value": "| v1 | v0 semantics plus executable `--no-ff`, persisted `AcceptedWorkspace`, born/unborn acceptance, publication/no-publication consumption, typed reverse/preservation journals, and recovery origin | A1 after R4b |"
         },
         {
           "id": "proposal_v2_scope",

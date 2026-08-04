@@ -23,6 +23,7 @@ mod characterization_preservation_v0;
 mod characterization_publication_prefix_v0;
 mod characterization_publication_v0;
 mod characterization_v0;
+mod compatibility_v0;
 mod continue_merge;
 mod drift;
 mod finalization;

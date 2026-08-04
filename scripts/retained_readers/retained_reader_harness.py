@@ -83,6 +83,23 @@ def _unique_ids(items: list[Any], path: str) -> set[str]:
     return result
 
 
+def _validate_record_envelopes(value: object, path: str) -> None:
+    record = _object(value, path)
+    _require(record.get("dispatcher") in {"none", "header_guarded"}, f"{path}.dispatcher is invalid")
+    groups: dict[str, set[tuple[str, int]]] = {"supported": set(), "unsupported": set()}
+    for group, pairs in groups.items():
+        for index, raw in enumerate(_list(record.get(group), f"{path}.{group}")):
+            row = _object(raw, f"{path}.{group}[{index}]")
+            pair = (_text(row.get("schema"), f"{path}.{group}[{index}].schema"), row.get("record_schema_version"))
+            _require(isinstance(pair[1], int) and not isinstance(pair[1], bool) and 0 <= pair[1] <= 0xFFFF_FFFF, f"{path}.{group}[{index}].record_schema_version must be a u32")
+            _require(pair not in pairs and not (group == "unsupported" and pair in groups["supported"]), f"duplicate or conflicting {group} envelope {pair!r}")
+            if group == "unsupported":
+                _require(row.get("classification") in {"unsupported_record_version", "record_unreadable"}, f"{path}.{group}[{index}].classification is invalid")
+            pairs.add(pair)
+    _require(record["dispatcher"] != "none" or not any(groups.values()), f"{path} without a dispatcher cannot classify envelopes")
+    _require(record["dispatcher"] != "header_guarded" or bool(groups["supported"]), f"{path} guarded dispatcher must support an envelope")
+
+
 def load_manifest(path: Path | str) -> dict[str, Any]:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -189,6 +206,10 @@ def _validate_manifest(
         for key, value in envelope.items():
             _text(key, f"{reader_path}.envelope_behavior key")
             _text(value, f"{reader_path}.envelope_behavior[{key!r}]")
+
+        _validate_record_envelopes(
+            reader.get("record_envelopes"), f"{reader_path}.record_envelopes"
+        )
 
         commands = _object(reader.get("commands"), f"{reader_path}.commands")
         _require(bool(commands), f"{reader_path}.commands must not be empty")

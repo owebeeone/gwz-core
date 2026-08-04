@@ -119,6 +119,128 @@ pub(super) fn observe_root_evidence<B: GitBackend>(
     Ok(result.ok().map(RootEvidenceObservation::Composition))
 }
 
+#[cfg(test)]
+pub(crate) fn normalized_i2_root_observation<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &MergeOperationRecord,
+) -> ModelResult<&'static str> {
+    let publication = record.publication.as_ref();
+    if publication
+        .and_then(|value| value.candidate.as_ref())
+        .is_none()
+    {
+        let head = backend.head(root)?;
+        if head.is_detached
+            || head.commit != record.baseline.root_head
+            || head.branch != record.baseline.root_branch
+        {
+            return Err(unreadable(
+                "fixture root does not match the recorded baseline",
+            ));
+        }
+        let expected_files = [
+            GitCandidateFile {
+                path: artifact::LOCK_PATH.to_owned(),
+                bytes: record
+                    .baseline
+                    .lock_yaml
+                    .as_deref()
+                    .ok_or_else(|| unreadable("fixture baseline lock bytes are missing"))?
+                    .as_bytes()
+                    .to_vec(),
+            },
+            GitCandidateFile {
+                path: crate::workspace::WORKSPACE_MANIFEST.to_owned(),
+                bytes: record
+                    .baseline
+                    .manifest_yaml
+                    .as_deref()
+                    .ok_or_else(|| unreadable("fixture baseline manifest bytes are missing"))?
+                    .as_bytes()
+                    .to_vec(),
+            },
+        ];
+        let exact_index = backend.index_matches_candidate_files(root, &expected_files, &[])?;
+        if !exact_index {
+            return Err(unreadable(
+                "fixture root index or worktree does not match the recorded baseline",
+            ));
+        }
+        return Ok("baseline_unborn");
+    }
+    super::finalize::validate_candidate_for_i2_fixture(record)?;
+    let index_prefix =
+        super::classify_index_aligned_root_publication_for_i2(backend, root, record)?;
+    let manifest_file = [GitCandidateFile {
+        path: crate::workspace::WORKSPACE_MANIFEST.to_owned(),
+        bytes: record
+            .baseline
+            .manifest_yaml
+            .as_deref()
+            .ok_or_else(|| unreadable("fixture baseline manifest bytes are missing"))?
+            .as_bytes()
+            .to_vec(),
+    }];
+    if !backend.index_matches_candidate_files(root, &manifest_file, &[])? {
+        return Err(unreadable(
+            "fixture root manifest index or worktree differs from the recorded baseline",
+        ));
+    }
+    let step = progress(record)?.step;
+    match step {
+        PublicationStep::PreparingCandidate | PublicationStep::CommittingEvidence
+            if index_prefix != Some(CandidatePublicationPrefix::Baseline) =>
+        {
+            return Err(unreadable(
+                "fixture candidate has a non-baseline root publication prefix",
+            ));
+        }
+        PublicationStep::PublishingCandidate
+            if index_prefix != Some(CandidatePublicationPrefix::Boundary) =>
+        {
+            return Err(unreadable(
+                "fixture publication is not the exact boundary/index prefix",
+            ));
+        }
+        _ => {}
+    }
+    match observe_root_evidence(backend, root, record)? {
+        Some(RootEvidenceObservation::Baseline) => Ok("baseline_unborn"),
+        Some(RootEvidenceObservation::Composition(observed)) => {
+            let publication = progress(record)?;
+            if publication.composition_commit.is_none() {
+                return Ok("unrecorded_evidence");
+            }
+            if publication.composition_commit.as_deref() != Some(observed.commit.as_str())
+                || publication.composition_tree.as_deref() != Some(observed.tree.as_str())
+                || publication.candidate_hashes.len() != observed.candidate_hashes.len()
+                || !publication
+                    .candidate_hashes
+                    .iter()
+                    .zip(&observed.candidate_hashes)
+                    .all(|(recorded, live)| {
+                        recorded.path == live.path && recorded.sha256 == live.sha256
+                    })
+            {
+                return Err(unreadable(
+                    "fixture composition evidence does not match the durable record",
+                ));
+            }
+            Ok(
+                if index_prefix == Some(CandidatePublicationPrefix::Boundary) {
+                    "prefix_boundary"
+                } else {
+                    "recorded_evidence"
+                },
+            )
+        }
+        None => Err(unreadable(
+            "fixture root has no exact compatibility observation",
+        )),
+    }
+}
+
 pub(super) fn candidate_files(record: &MergeOperationRecord) -> ModelResult<Vec<GitCandidateFile>> {
     let candidate = candidate(record)?;
     Ok(vec![

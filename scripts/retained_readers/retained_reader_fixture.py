@@ -22,7 +22,7 @@ from retained_reader_semantics import (
     yaml_observation,
     yaml_set_observation,
 )
-from retained_reader_process import is_regular_file, read_regular_text
+from retained_reader_process import is_regular_file, normalized_stream, read_regular_text
 
 
 class FixtureError(RuntimeError):
@@ -217,12 +217,19 @@ def _json_contract_errors(label: str, contract: object, actual: str) -> list[str
     return [f"{label} JSON contract has unsupported shape {shape!r}"]
 
 
-def _stream_errors(label: str, specification: Mapping[str, Any], actual: str) -> list[str]:
+def _stream_errors(
+    label: str,
+    specification: Mapping[str, Any],
+    actual: str,
+    variables: Mapping[str, str],
+) -> list[str]:
     mode = specification.get("mode")
     expected = specification.get("value")
     try:
         if mode == "exact":
             matches = actual == expected
+        elif mode == "normalized-exact":
+            matches = normalized_stream(actual, variables) == expected
         elif mode == "contains":
             needles = expected if isinstance(expected, list) else [expected]
             matches = all(isinstance(item, str) and item in actual for item in needles)
@@ -234,7 +241,7 @@ def _stream_errors(label: str, specification: Mapping[str, Any], actual: str) ->
             return _json_contract_errors(label, expected, actual)
         else:
             return [f"{label} expectation has unsupported mode {mode!r}"]
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, ValueError) as error:
         return [f"{label} is not valid {mode}: {error}"]
     return [] if matches else [f"{label} did not match {mode} expectation"]
 
@@ -244,6 +251,7 @@ def evaluate_expectation(
     completed: Any,
     before: TreeSnapshot,
     after: TreeSnapshot,
+    variables: Mapping[str, str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     exit_codes = expected.get("exit_codes")
@@ -251,7 +259,14 @@ def evaluate_expectation(
         errors.append(f"exit code {completed.returncode} not in expected {exit_codes!r}")
     for label in ("stdout", "stderr"):
         if label in expected:
-            errors.extend(_stream_errors(label, expected[label], getattr(completed, label)))
+            errors.extend(
+                _stream_errors(
+                    label,
+                    expected[label],
+                    getattr(completed, label),
+                    variables or {},
+                )
+            )
     changes = changed_paths(before, after)
     mutation = expected.get("mutation")
     if not isinstance(mutation, dict):

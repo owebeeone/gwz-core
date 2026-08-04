@@ -25,7 +25,13 @@ mod transition_matrix_v0;
 #[cfg(test)]
 pub(crate) use abort::{EvidenceRollbackMutation, fail_next_evidence_rollback_after};
 #[cfg(test)]
+pub(crate) use finalize::validate_candidate_for_i2_fixture;
+#[cfg(test)]
 pub(crate) use finalize::{CandidatePublicationMutation, fail_next_candidate_publication_after};
+#[cfg(test)]
+use preserve::classify_index_aligned_root_publication_for_i2;
+#[cfg(test)]
+pub(crate) use publication::normalized_i2_root_observation;
 
 pub(crate) use model::*;
 pub(crate) use recovery::*;

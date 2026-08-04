@@ -18,7 +18,7 @@
       "additionalProperties": false,
       "required": ["mode", "value"],
       "properties": {
-        "mode": { "enum": ["exact", "contains", "json", "jsonl", "json-contract"] },
+        "mode": { "enum": ["exact", "normalized-exact", "contains", "json", "jsonl", "json-contract"] },
         "value": {}
       },
       "allOf": [
@@ -295,7 +295,20 @@
         }
       ]
     },
-    "case": {
+    "envelopeDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "record_schema_version", "open_fixture", "open_fixture_sha256", "archived_fixture", "archived_fixture_sha256"],
+      "properties": {
+        "schema": { "type": "string", "minLength": 1 },
+        "record_schema_version": { "type": "integer", "minimum": 0 },
+        "open_fixture": { "type": "string", "minLength": 1 },
+        "open_fixture_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "archived_fixture": { "type": "string", "minLength": 1 },
+        "archived_fixture_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "ordinaryCase": {
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "readers", "command", "args", "fixture", "expected"],
@@ -314,6 +327,11 @@
         },
         "fixture": { "type": "string", "minLength": 1 },
         "fixture_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "projection": { "enum": ["human", "json", "jsonl"] },
+        "lifecycle": { "enum": ["open-start", "open-status", "open-continue", "open-abort", "open-preserve", "archived-status", "archived-targeted-gc", "archived-retention-gc"] },
+        "record_schema": { "type": "string", "minLength": 1 },
+        "record_schema_version": { "type": "integer", "minimum": 0 },
+        "classification": { "enum": ["record_unreadable", "retention_noop"] },
         "known_incompatibility": { "type": "string", "minLength": 1 },
         "expected": { "$ref": "#/$defs/expected" },
         "postconditions": {
@@ -321,6 +339,36 @@
           "items": { "$ref": "#/$defs/postcondition" }
         }
       }
+    },
+    "envelopeMatrixCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "readers", "envelopes", "expectations"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "readers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "envelopes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/envelopeDescriptor" }
+        },
+        "expectations": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/expected" }
+        }
+      }
+    },
+    "case": {
+      "oneOf": [
+        { "$ref": "#/$defs/ordinaryCase" },
+        { "$ref": "#/$defs/envelopeMatrixCase" }
+      ]
     }
   }
 }

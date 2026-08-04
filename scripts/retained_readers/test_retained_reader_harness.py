@@ -53,6 +53,11 @@ def complete_manifest() -> dict[str, object]:
                     "gwz.merge-operation/v0@0": "not decoded",
                     "unsupported": "no durable-record dispatcher",
                 },
+                "record_envelopes": {
+                    "dispatcher": "none",
+                    "supported": [],
+                    "unsupported": [],
+                },
                 "commands": {"workspace-status": "available"},
                 "projections": ["human"],
                 "invocation": ["{executable}", "--root", "{workspace}"],
@@ -100,9 +105,48 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(24, len(tuple_ids))
         self.assertEqual([], harness.gate_readiness_errors(manifest))
 
+    def test_repository_manifest_pins_exact_record_envelope_pairs(self) -> None:
+        manifest = harness.load_manifest(MANIFEST)
+        harness.validate_manifest(manifest)
+        readers = {reader["id"]: reader for reader in manifest["readers"]}
+
+        for reader_id in ("rust-cli-v0.9.2", "gwz-py-v0.9.2"):
+            envelopes = readers[reader_id]["record_envelopes"]
+            self.assertEqual("none", envelopes["dispatcher"])
+            self.assertEqual([], envelopes["supported"])
+            self.assertEqual([], envelopes["unsupported"])
+
+        expected_unsupported = {
+            ("gwz.merge-operation/v1", 1, "record_unreadable"),
+            ("gwz.merge-operation/v2", 2, "record_unreadable"),
+            ("gwz.merge-operation/v3", 3, "record_unreadable"),
+            ("gwz.merge-operation/v4", 4, "record_unreadable"),
+            ("gwz.merge-operation/v0", 1, "record_unreadable"),
+            ("gwz.merge-operation/future", 99, "record_unreadable"),
+        }
+        for reader_id in ("rust-cli-v0.10.2", "gwz-py-v0.10.2"):
+            envelopes = readers[reader_id]["record_envelopes"]
+            self.assertEqual("header_guarded", envelopes["dispatcher"])
+            self.assertEqual(
+                [{"schema": "gwz.merge-operation/v0", "record_schema_version": 0}],
+                envelopes["supported"],
+            )
+            self.assertEqual(
+                expected_unsupported,
+                {
+                    (
+                        pair["schema"],
+                        pair["record_schema_version"],
+                        pair["classification"],
+                    )
+                    for pair in envelopes["unsupported"]
+                },
+            )
+
     def test_frozen_r0_contract_cannot_be_bypassed_by_renaming_every_reader(self) -> None:
         manifest = harness.load_manifest(MANIFEST)
         cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
+        cases["cases"] = matrix.validate_cases(cases, manifest)
         renamed = {
             reader["id"]: f"renamed-reader-{index}"
             for index, reader in enumerate(manifest["readers"])

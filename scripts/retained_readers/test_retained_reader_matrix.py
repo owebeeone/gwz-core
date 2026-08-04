@@ -244,6 +244,16 @@ class MatrixTests(unittest.TestCase):
                     "runtime": "native",
                     "supported_record_versions": [0],
                     "envelope_behavior": {"v0": "test"},
+                    "record_envelopes": {
+                        "dispatcher": "header_guarded",
+                        "supported": [
+                            {
+                                "schema": "gwz.merge-operation/v0",
+                                "record_schema_version": 0,
+                            }
+                        ],
+                        "unsupported": [],
+                    },
                     "commands": {"probe": "available"},
                     "projections": ["human"],
                     "invocation": [sys.executable, "{executable}", "--root", "{workspace}"],

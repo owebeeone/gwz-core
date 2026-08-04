@@ -27,8 +27,6 @@ from test_retained_reader_matrix import write_zip
 
 
 HERE = Path(__file__).resolve().parent
-
-
 class ManifestAdversarialTests(unittest.TestCase):
     def test_reader_must_declare_exact_platform_cross_product(self) -> None:
         manifest = complete_manifest()
@@ -63,12 +61,11 @@ class ManifestAdversarialTests(unittest.TestCase):
         artifact["url"] = "https://example.invalid/releases/download/v0.9.2/gwz-linux.tar.xz"
         with self.assertRaisesRegex(harness.ManifestError, "immutable"):
             harness._validate_manifest_shape(manifest)
-
-
 class CaseAdversarialTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest = harness.load_manifest(MANIFEST)
         self.cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
+        self.cases["cases"] = matrix.validate_cases(self.cases, self.manifest)
 
     def test_misspelled_postconditions_fails_before_execution(self) -> None:
         case = self.cases["cases"][0]
@@ -130,7 +127,11 @@ class CaseAdversarialTests(unittest.TestCase):
 
     def test_checked_machine_cases_and_mutations_are_strict(self) -> None:
         for case in self.cases["cases"]:
-            self.assertEqual("json-contract", case["expected"]["stdout"]["mode"], case["id"])
+            self.assertIn(
+                case["expected"]["stdout"]["mode"],
+                {"json-contract", "normalized-exact"},
+                case["id"],
+            )
             self.assertNotEqual("allow", case["expected"]["mutation"]["mode"], case["id"])
             self.assertRegex(case["fixture_sha256"], r"^[0-9a-f]{64}$")
 
@@ -144,8 +145,6 @@ class CaseAdversarialTests(unittest.TestCase):
             if archives and case["command"] != "merge-gc":
                 checks = [item for item in case.get("postconditions", []) if item["kind"] == "merge-record-baseline-preserved"]
                 self.assertEqual([fields], [set(item["fields"]) for item in checks], case["id"])
-
-
 class FixtureAdversarialTests(unittest.TestCase):
     def test_git_object_payload_uses_binary_stdin_without_newline_translation(self) -> None:
         payload = "tree deadbeef\nparent cafe1234\n\nmessage\n"
