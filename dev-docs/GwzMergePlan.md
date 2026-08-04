@@ -1,11 +1,12 @@
 # GWZ Merge Implementation Plan
 
 Status: **active** (revised 2026-08-04). Owner: Gianni. M2b through M4, the
-god-file refactor, R0, R1, R2a, and M5a are complete. M5a custom messages have
-green local technical, compatibility, and cross-driver gates. I2 inventory
-reopened I1 narrowly for the selected-root metadata-base correction; I1/I2
-must now close together before the lead-owned durable record interface is
-accepted.
+god-file refactor, R0, R1, R2a, M5a, I1/I2, and R4a are complete. M5a custom
+messages have green local technical, compatibility, and cross-driver gates.
+The corrected I1/I2 durability contracts and R4a acceptance/finalization
+semantics each have two independent GO verdicts. R3 is the next active package,
+with its production v1 writer and migration dispatch required to remain
+unreachable.
 Completed release builds remain the Windows, macOS, Linux x86, and Linux arm64
 platform evidence for the preceding release baseline.
 
@@ -1645,7 +1646,10 @@ boundaries:
    `../../dev-docs/GwzM5-8I2ProtocolContract.md`, and the checked
    `GwzM5-8I2CompatibilityPredicates.json` registry.
 3. R4a, finalization-semantics owned, extracts current
-   acceptance/finalization decisions without changing behavior.
+   acceptance/finalization decisions without changing behavior. **Complete:**
+   the production dispatcher, exact v0 resume ordering, bounded owner split,
+   nested-fault recovery, and compatibility binding received two independent
+   GO verdicts with no remaining P0–P3 finding.
 4. R3, store/compatibility owned, implements v0/v1 record, archive,
    unknown-field, and atomic migration machinery with the production v1 writer
    and migration dispatch unreachable.

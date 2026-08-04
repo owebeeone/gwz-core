@@ -88,6 +88,143 @@ fn finalization_faults_report_status_and_resume_without_duplicate_evidence() {
 }
 
 #[test]
+fn resumed_finalization_persists_each_phase_before_a_nested_mutation_fault() {
+    let evidence_temp = TempDir::new("merge-resumed-evidence-phase");
+    let backend = crate::git::Git2Backend::new();
+    let _evidence_fixture = init_one_member_workspace(
+        evidence_temp.path(),
+        &backend,
+        "merge-resumed-evidence-phase",
+    );
+    feature_commit(
+        &backend,
+        &evidence_temp.path().join("remote"),
+        "README.md",
+        "source\n",
+    );
+    let candidate_store = FaultingMergeStore::new(FinalizationFault::AfterCandidatePersistence);
+    invoke_with_store(
+        &backend,
+        &candidate_store,
+        evidence_temp.path(),
+        request(false),
+        "op_resumed_evidence_candidate",
+    )
+    .unwrap_err();
+    let candidate_record = FileMergeStore
+        .discover_open(evidence_temp.path())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        candidate_record.publication.as_ref().unwrap().step,
+        PublicationStep::PreparingCandidate
+    );
+
+    let evidence_store = FaultingMergeStore::new(FinalizationFault::AfterEvidenceCommit);
+    invoke_with_store(
+        &backend,
+        &evidence_store,
+        evidence_temp.path(),
+        recovery_request(
+            crate::MergeOp::Resume,
+            Some(candidate_record.merge_id.clone()),
+        ),
+        "op_resumed_evidence_fault",
+    )
+    .unwrap_err();
+    let evidence_record = FileMergeStore
+        .discover_open(evidence_temp.path())
+        .unwrap()
+        .unwrap();
+    let evidence_publication = evidence_record.publication.as_ref().unwrap();
+    assert_eq!(
+        evidence_publication.step,
+        PublicationStep::CommittingEvidence
+    );
+    assert!(evidence_publication.composition_commit.is_none());
+    let evidence_completed = handle_merge(
+        &backend,
+        evidence_temp.path(),
+        recovery_request(
+            crate::MergeOp::Resume,
+            Some(evidence_record.merge_id.clone()),
+        ),
+        "op_resumed_evidence_complete",
+    )
+    .unwrap();
+    assert_eq!(
+        evidence_completed.state,
+        crate::MergeOperationState::Completed
+    );
+
+    let publication_temp = TempDir::new("merge-resumed-publication-phase");
+    let _publication_fixture = init_one_member_workspace(
+        publication_temp.path(),
+        &backend,
+        "merge-resumed-publication-phase",
+    );
+    feature_commit(
+        &backend,
+        &publication_temp.path().join("remote"),
+        "README.md",
+        "source\n",
+    );
+    let composition_store = FaultingMergeStore::new(FinalizationFault::AfterEvidencePersistence);
+    invoke_with_store(
+        &backend,
+        &composition_store,
+        publication_temp.path(),
+        request(false),
+        "op_resumed_publication_composition",
+    )
+    .unwrap_err();
+    let composition_record = FileMergeStore
+        .discover_open(publication_temp.path())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        composition_record.publication.as_ref().unwrap().step,
+        PublicationStep::CommittingEvidence
+    );
+
+    crate::workspace_ops::merge::fail_next_candidate_publication_after(
+        crate::workspace_ops::merge::CandidatePublicationMutation::Marker,
+    );
+    handle_merge(
+        &backend,
+        publication_temp.path(),
+        recovery_request(
+            crate::MergeOp::Resume,
+            Some(composition_record.merge_id.clone()),
+        ),
+        "op_resumed_publication_fault",
+    )
+    .unwrap_err();
+    let publication_record = FileMergeStore
+        .discover_open(publication_temp.path())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        publication_record.publication.as_ref().unwrap().step,
+        PublicationStep::PublishingCandidate
+    );
+    let publication_completed = handle_merge(
+        &backend,
+        publication_temp.path(),
+        recovery_request(
+            crate::MergeOp::Resume,
+            Some(publication_record.merge_id.clone()),
+        ),
+        "op_resumed_publication_complete",
+    )
+    .unwrap();
+    assert_eq!(
+        publication_completed.state,
+        crate::MergeOperationState::Completed
+    );
+}
+
+#[test]
 fn repaired_candidate_prefix_resumes_to_one_evidence_commit() {
     let temp = TempDir::new("merge-finalize-repaired-prefix");
     let backend = crate::git::Git2Backend::new();

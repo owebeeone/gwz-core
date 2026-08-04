@@ -1,6 +1,9 @@
 mod abort;
+mod acceptance;
 mod continue_op;
 mod finalize;
+mod finalize_dispatch;
+mod finalize_support;
 mod gc;
 mod integration;
 pub(crate) mod marker;
@@ -19,11 +22,16 @@ mod store;
 mod validate;
 
 #[cfg(test)]
+#[path = "tests/acceptance_v0/mod.rs"]
+mod acceptance_v0;
+#[cfg(test)]
 #[path = "tests/transition_matrix_v0.rs"]
 mod transition_matrix_v0;
 
 #[cfg(test)]
 pub(crate) use abort::{EvidenceRollbackMutation, fail_next_evidence_rollback_after};
+#[cfg(test)]
+pub(crate) use acceptance::finalization_next_action_for_i2;
 #[cfg(test)]
 pub(crate) use finalize::validate_candidate_for_i2_fixture;
 #[cfg(test)]

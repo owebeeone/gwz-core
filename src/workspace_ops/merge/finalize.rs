@@ -1,24 +1,22 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
-
-use sha2::{Digest, Sha256};
 
 use crate::artifact::{self, CreatedByArtifact, MarkerArtifact, MarkerRootArtifact};
 use crate::git::{GitBackend, GitScopedCommitResult};
-use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::model::{ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext};
 use crate::workspace_ops::{
     publish_workspace_exclude_candidate, workspace_exclude_candidate, workspace_exclude_path,
 };
 
+use super::acceptance::{CompleteLockErrorKind, construct_complete_lock};
+pub(super) use super::finalize_dispatch::finalize;
+use super::finalize_support::{
+    block_root, candidate, clear_root_drift, file_sha256, progress, root_drift, sha256, unreadable,
+};
 use super::marker::{VerifiedMergeParticipant, marker_merge_from_verified};
 use super::publication::{candidate_files, classify_candidate_publication, composition_message};
-use super::{
-    MergeOperationRecord, MergeStore, MergeTargetKind, OperationDrift, OperationDriftKind,
-    OperationState, PublicationCandidate, PublicationCandidateHash, PublicationProgress,
-    PublicationStep,
-};
+use super::{MergeOperationRecord, MergeStore, PublicationCandidate, PublicationCandidateHash};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,7 +43,7 @@ fn fail_candidate_publication_after(mutation: CandidatePublicationMutation) -> M
     FAIL_NEXT_CANDIDATE_PUBLICATION_AFTER.with(|next| {
         if next.get() == Some(mutation) {
             next.set(None);
-            return Err(recovery(format!(
+            return Err(super::finalize_support::recovery(format!(
                 "injected failure after candidate {mutation:?} publication"
             )));
         }
@@ -53,208 +51,12 @@ fn fail_candidate_publication_after(mutation: CandidatePublicationMutation) -> M
     })
 }
 
-pub(super) fn finalize<B: GitBackend, S: MergeStore>(
-    backend: &B,
-    store: &S,
-    root: &Path,
-    record: &mut MergeOperationRecord,
-    context: &OperationContext,
-    emitter: &EventEmitter<'_>,
-) -> ModelResult<bool> {
-    if record.state == OperationState::Completed {
-        super::archive_merge_record(store, root, &record.merge_id, emitter)?;
-        return Ok(true);
-    }
-    if record.state != OperationState::Finalizing {
-        return Err(recovery(format!(
-            "merge '{}' is not ready for finalization",
-            record.merge_id
-        )));
-    }
-    if record.publication.is_none() {
-        record.publication = Some(PublicationProgress {
-            step: PublicationStep::NotStarted,
-            candidate_lock_sha256: None,
-            candidate_marker_path: None,
-            root_merge_commit: None,
-            composition_commit: None,
-            composition_tree: None,
-            candidate_hashes: Vec::new(),
-            candidate: None,
-            evidence_rolled_back: false,
-            root_preservation: Vec::new(),
-            preservation_prefix: None,
-        });
-        super::persist_merge_record(store, root, record, emitter)?;
-    }
-
-    set_step(
-        store,
-        root,
-        record,
-        PublicationStep::ValidatingResults,
-        emitter,
-    )?;
-    let Some(verified) = verified_participants(backend, store, root, record, emitter)? else {
-        return Ok(false);
-    };
-    if !has_changed_participant(record) {
-        set_step(store, root, record, PublicationStep::Complete, emitter)?;
-        complete_and_archive(store, root, record, emitter)?;
-        return Ok(true);
-    }
-
-    set_step(
-        store,
-        root,
-        record,
-        PublicationStep::PreparingCandidate,
-        emitter,
-    )?;
-    if progress(record)?.candidate.is_none() {
-        let prepared = match prepare_candidate(backend, root, record, context, &verified) {
-            Ok(prepared) => prepared,
-            Err(CandidatePreparationError::Other(error)) if error.code == ErrorCode::MergeDrift => {
-                return block_root(store, root, record, emitter, &error.message);
-            }
-            Err(CandidatePreparationError::Metadata(error)) => {
-                record_root_metadata_invalid(store, root, record, emitter, &error.message)?;
-                return Err(error);
-            }
-            Err(CandidatePreparationError::Other(error)) => return Err(error),
-        };
-        clear_root_metadata_drift(record);
-        let root_merge_commit = super::root::root_merge_commit(record)?.map(str::to_owned);
-        let publication = progress_mut(record)?;
-        publication.candidate_lock_sha256 = Some(sha256(prepared.lock_yaml.as_bytes()));
-        publication.candidate_marker_path = Some(format!(
-            "{}/{}.yaml",
-            artifact::MARKER_DIR,
-            prepared.marker_id
-        ));
-        publication.root_merge_commit = root_merge_commit;
-        publication.candidate = Some(prepared);
-        super::persist_merge_record(store, root, record, emitter)?;
-    }
-    validate_candidate(record)?;
-
-    set_step(
-        store,
-        root,
-        record,
-        PublicationStep::CommittingEvidence,
-        emitter,
-    )?;
-    let Some(verified) = verified_participants(backend, store, root, record, emitter)? else {
-        return Ok(false);
-    };
-    marker_merge_from_verified(record, &verified)?;
-    if !ensure_composition_commit(backend, store, root, record, emitter)? {
-        return Ok(false);
-    }
-
-    set_step(
-        store,
-        root,
-        record,
-        PublicationStep::PublishingCandidate,
-        emitter,
-    )?;
-    let Some(verified) = verified_participants(backend, store, root, record, emitter)? else {
-        return Ok(false);
-    };
-    marker_merge_from_verified(record, &verified)?;
-    if !publish_candidate(backend, store, root, record, emitter)? {
-        return Ok(false);
-    }
-
-    set_step(
-        store,
-        root,
-        record,
-        PublicationStep::VerifyingPublication,
-        emitter,
-    )?;
-    let Some(verified) = verified_participants(backend, store, root, record, emitter)? else {
-        return Ok(false);
-    };
-    marker_merge_from_verified(record, &verified)?;
-    if !verify_publication(backend, store, root, record, emitter)? {
-        return Ok(false);
-    }
-
-    set_step(store, root, record, PublicationStep::Complete, emitter)?;
-    complete_and_archive(store, root, record, emitter)?;
-    Ok(true)
-}
-
-fn verified_participants<B: GitBackend, S: MergeStore>(
-    backend: &B,
-    store: &S,
-    root: &Path,
-    record: &mut MergeOperationRecord,
-    emitter: &EventEmitter<'_>,
-) -> ModelResult<Option<Vec<VerifiedMergeParticipant>>> {
-    let mut observed_record = record.clone();
-    clear_root_recovery_drift(&mut observed_record);
-    let snapshot = super::status::snapshot_status(backend, root, observed_record)?;
-    let root_finalization_exact = super::root::root_finalization_is_exact(backend, root, record)?;
-    if !snapshot.operation_drift.is_empty()
-        || snapshot
-            .participants
-            .iter()
-            .any(|(target_id, participant)| {
-                !(participant.drift.is_empty() || target_id == "@root" && root_finalization_exact)
-            })
-    {
-        return Ok(None);
-    }
-    if record
-        .operation_drift
-        .iter()
-        .any(|drift| drift.kind == OperationDriftKind::RootCandidateStateChanged)
-    {
-        clear_root_drift(record);
-        super::persist_merge_record(store, root, record, emitter)?;
-    }
-    record
-        .selected_targets
-        .iter()
-        .map(|target_id| {
-            let durable = record
-                .participants
-                .get(target_id)
-                .ok_or_else(|| unreadable(format!("merge participant '{target_id}' is missing")))?;
-            let observed = snapshot
-                .participants
-                .get(target_id)
-                .ok_or_else(|| unreadable(format!("merge observation '{target_id}' is missing")))?;
-            let resulting_commit = if target_id == "@root" && root_finalization_exact {
-                durable.resulting_commit.clone()
-            } else {
-                observed.live_commit.clone()
-            }
-            .ok_or_else(|| {
-                recovery(format!(
-                    "verified participant '{target_id}' has no live commit"
-                ))
-            })?;
-            Ok(VerifiedMergeParticipant {
-                target_id: target_id.clone(),
-                target_branch: durable.target_branch.clone(),
-                resulting_commit,
-            })
-        })
-        .collect::<ModelResult<Vec<_>>>()
-        .map(Some)
-}
-
-enum CandidatePreparationError {
+pub(super) enum CandidatePreparationError {
     Metadata(ModelError),
     Other(ModelError),
 }
 
-fn prepare_candidate<B: GitBackend>(
+pub(super) fn prepare_candidate<B: GitBackend>(
     backend: &B,
     root: &Path,
     record: &MergeOperationRecord,
@@ -264,62 +66,13 @@ fn prepare_candidate<B: GitBackend>(
     let root_metadata = super::root::candidate_metadata(backend, root, record)
         .map_err(CandidatePreparationError::Metadata)?;
     let manifest = root_metadata.manifest;
-    let mut lock = root_metadata.lock;
+    let lock = root_metadata.lock;
     let baseline_lock_yaml = root_metadata.baseline_lock_yaml;
-    for target_id in &record.selected_targets {
-        let participant = record.participants.get(target_id).ok_or_else(|| {
-            CandidatePreparationError::Other(unreadable(format!(
-                "participant '{target_id}' is missing"
-            )))
+    let lock =
+        construct_complete_lock(record, &manifest, lock).map_err(|error| match error.kind {
+            CompleteLockErrorKind::Metadata => CandidatePreparationError::Metadata(error.error),
+            CompleteLockErrorKind::Record => CandidatePreparationError::Other(error.error),
         })?;
-        if participant.target_kind == MergeTargetKind::Root {
-            if target_id != "@root" || participant.path != "." {
-                return Err(CandidatePreparationError::Other(unreadable(
-                    "root participant identity is inconsistent",
-                )));
-            }
-            continue;
-        }
-        let member = manifest
-            .members
-            .iter()
-            .find(|member| member.id == *target_id && member.active)
-            .ok_or_else(|| {
-                CandidatePreparationError::Metadata(
-                    metadata(format!("active member '{target_id}' is missing"))
-                        .with_member(target_id, &participant.path),
-                )
-            })?;
-        let locked = lock.members.get_mut(target_id).ok_or_else(|| {
-            CandidatePreparationError::Metadata(
-                metadata(format!("lock member '{target_id}' is missing"))
-                    .with_member(target_id, &participant.path),
-            )
-        })?;
-        if locked.path != participant.path
-            || locked.path != member.path
-            || locked.source_id.as_deref() != Some(member.source_id.as_str())
-            || locked.source_kind != member.source_kind
-        {
-            return Err(CandidatePreparationError::Metadata(
-                metadata(format!(
-                    "member '{target_id}' identity changed before finalization"
-                ))
-                .with_member(target_id, &participant.path),
-            ));
-        }
-        let result = participant.resulting_commit.clone().ok_or_else(|| {
-            CandidatePreparationError::Other(
-                unreadable(format!("participant '{target_id}' has no resulting commit"))
-                    .with_member(target_id, &participant.path),
-            )
-        })?;
-        locked.commit = Some(result);
-        locked.branch = Some(participant.target_branch.clone());
-        locked.detached = Some(false);
-        locked.dirty = Some(false);
-        locked.materialized = Some(true);
-    }
     let lock_yaml = lock
         .to_yaml()
         .map_err(CandidatePreparationError::Metadata)?;
@@ -401,7 +154,7 @@ fn prepare_candidate<B: GitBackend>(
     })
 }
 
-fn ensure_composition_commit<B: GitBackend, S: MergeStore>(
+pub(super) fn ensure_composition_commit<B: GitBackend, S: MergeStore>(
     backend: &B,
     store: &S,
     root: &Path,
@@ -471,7 +224,7 @@ fn ensure_composition_commit<B: GitBackend, S: MergeStore>(
     Ok(true)
 }
 
-fn publish_candidate<B: GitBackend, S: MergeStore>(
+pub(super) fn publish_candidate<B: GitBackend, S: MergeStore>(
     backend: &B,
     store: &S,
     root: &Path,
@@ -515,7 +268,7 @@ fn publish_candidate<B: GitBackend, S: MergeStore>(
     Ok(true)
 }
 
-fn verify_publication<B: GitBackend, S: MergeStore>(
+pub(super) fn verify_publication<B: GitBackend, S: MergeStore>(
     backend: &B,
     store: &S,
     root: &Path,
@@ -563,7 +316,7 @@ fn verify_publication<B: GitBackend, S: MergeStore>(
     Ok(true)
 }
 
-fn validate_candidate(record: &MergeOperationRecord) -> ModelResult<()> {
+pub(super) fn validate_candidate(record: &MergeOperationRecord) -> ModelResult<()> {
     let candidate = candidate(record)?;
     let publication = progress(record)?;
     let lock_sha256 = sha256(candidate.lock_yaml.as_bytes());
@@ -642,129 +395,4 @@ fn recorded_composition_matches(
                     recorded.path == observed.path && recorded.sha256 == observed.sha256
                 }),
     )
-}
-
-fn set_step<S: MergeStore>(
-    store: &S,
-    root: &Path,
-    record: &mut MergeOperationRecord,
-    next: PublicationStep,
-    emitter: &EventEmitter<'_>,
-) -> ModelResult<()> {
-    let publication = progress_mut(record)?;
-    if publication.step < next {
-        publication.step = publication.step.transition(next)?;
-        super::persist_merge_record(store, root, record, emitter)?;
-    }
-    Ok(())
-}
-
-fn complete_and_archive<S: MergeStore>(
-    store: &S,
-    root: &Path,
-    record: &mut MergeOperationRecord,
-    emitter: &EventEmitter<'_>,
-) -> ModelResult<()> {
-    super::persist_operation_transition(store, root, record, OperationState::Completed, emitter)?;
-    super::archive_merge_record(store, root, &record.merge_id, emitter)
-}
-
-fn block_root<S: MergeStore>(
-    store: &S,
-    root: &Path,
-    record: &mut MergeOperationRecord,
-    emitter: &EventEmitter<'_>,
-    message: &str,
-) -> ModelResult<bool> {
-    clear_root_drift(record);
-    record.operation_drift.push(OperationDrift {
-        kind: OperationDriftKind::RootCandidateStateChanged,
-        message: message.to_owned(),
-    });
-    super::persist_merge_record(store, root, record, emitter)?;
-    Ok(false)
-}
-
-fn record_root_metadata_invalid<S: MergeStore>(
-    store: &S,
-    root: &Path,
-    record: &mut MergeOperationRecord,
-    emitter: &EventEmitter<'_>,
-    message: &str,
-) -> ModelResult<()> {
-    clear_root_metadata_drift(record);
-    record.operation_drift.push(OperationDrift {
-        kind: OperationDriftKind::RootCandidateMetadataInvalid,
-        message: message.to_owned(),
-    });
-    super::persist_merge_record(store, root, record, emitter)
-}
-
-fn clear_root_drift(record: &mut MergeOperationRecord) {
-    record
-        .operation_drift
-        .retain(|drift| drift.kind != OperationDriftKind::RootCandidateStateChanged);
-}
-
-fn clear_root_metadata_drift(record: &mut MergeOperationRecord) {
-    record
-        .operation_drift
-        .retain(|drift| drift.kind != OperationDriftKind::RootCandidateMetadataInvalid);
-}
-
-fn clear_root_recovery_drift(record: &mut MergeOperationRecord) {
-    clear_root_drift(record);
-    clear_root_metadata_drift(record);
-}
-
-fn has_changed_participant(record: &MergeOperationRecord) -> bool {
-    record
-        .participants
-        .values()
-        .any(super::participant_semantics::result::has_changed_result)
-}
-
-fn progress(record: &MergeOperationRecord) -> ModelResult<&PublicationProgress> {
-    record
-        .publication
-        .as_ref()
-        .ok_or_else(|| unreadable("publication progress is missing"))
-}
-
-fn progress_mut(record: &mut MergeOperationRecord) -> ModelResult<&mut PublicationProgress> {
-    record
-        .publication
-        .as_mut()
-        .ok_or_else(|| unreadable("publication progress is missing"))
-}
-
-fn candidate(record: &MergeOperationRecord) -> ModelResult<&PublicationCandidate> {
-    progress(record)?
-        .candidate
-        .as_ref()
-        .ok_or_else(|| unreadable("publication candidate is missing"))
-}
-
-fn file_sha256(path: &Path) -> Option<String> {
-    fs::read(path).ok().map(|bytes| sha256(&bytes))
-}
-
-fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
-fn unreadable(message: impl Into<String>) -> ModelError {
-    ModelError::new(ErrorCode::MergeRecordUnreadable, message)
-}
-
-fn recovery(message: impl Into<String>) -> ModelError {
-    ModelError::new(ErrorCode::MergeRecoveryRequired, message)
-}
-
-fn metadata(message: impl Into<String>) -> ModelError {
-    ModelError::new(ErrorCode::ManifestInvalid, message)
-}
-
-fn root_drift(message: impl Into<String>) -> ModelError {
-    ModelError::new(ErrorCode::MergeDrift, message).with_member("@root", ".")
 }

@@ -462,6 +462,11 @@ pub(super) fn assert_i2_compatibility_fixture<B: GitBackend>(
         text_field(rule, "descriptor_sha256"),
         "{case_id}"
     );
+    assert_eq!(
+        crate::workspace_ops::merge::finalization_next_action_for_i2(record).unwrap(),
+        text_field(field(rule, "classification"), "next_action"),
+        "{case_id}"
+    );
 }
 
 pub(super) fn assert_i2_valid_unlisted_fixture(

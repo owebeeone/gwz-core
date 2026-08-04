@@ -8,11 +8,14 @@ use crate::git::{GitBackend, GitRepositoryState};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
 
+use super::super::MergeOperationRecord;
+use super::super::acceptance::{
+    AcceptedRootBase, accepted_root_checkout_with_observation, selected_root_participant,
+};
 use super::super::publication::{
     RootEvidenceObservation, candidate_files, classify_candidate_publication,
     observe_root_evidence, publication_prefix_allowed,
 };
-use super::super::{MergeOperationRecord, MergeParticipantRecord, MergeTargetKind};
 
 pub(in crate::workspace_ops::merge) struct CandidateMetadata {
     pub(in crate::workspace_ops::merge) manifest: ManifestArtifact,
@@ -35,7 +38,24 @@ fn candidate_metadata_inner<B: GitBackend>(
     root: &Path,
     record: &MergeOperationRecord,
 ) -> ModelResult<CandidateMetadata> {
-    let root_participant = root_participant(record)?;
+    let root_participant = selected_root_participant(record)?;
+    let unselected_root_head = if root_participant.is_none() {
+        Some(backend.head(root)?)
+    } else {
+        None
+    };
+    if record.baseline.root_head.is_none()
+        && record.baseline.root_branch.is_none()
+        && unselected_root_head
+            .as_ref()
+            .is_some_and(|head| head.is_detached || head.commit.is_some() || head.branch.is_none())
+    {
+        return Err(root_drift(
+            "workspace root changed before candidate metadata was read",
+        ));
+    }
+    let accepted_root =
+        accepted_root_checkout_with_observation(record, unselected_root_head.as_ref())?;
     let (baseline_manifest_bytes, baseline_lock_bytes, evidence_parent, root_branch) =
         if let Some(participant) = root_participant {
             (
@@ -51,19 +71,31 @@ fn candidate_metadata_inner<B: GitBackend>(
                     &participant.before_commit,
                     artifact::LOCK_PATH,
                 )?,
-                participant.resulting_commit.clone(),
-                participant.target_branch.clone(),
+                accepted_root.evidence_parent().map(str::to_owned),
+                accepted_root
+                    .publication_branch()
+                    .expect("selected root is attached")
+                    .to_owned(),
             )
         } else {
-            let root_head = backend.head(root)?;
-            if root_head.is_detached
-                || root_head.commit != record.baseline.root_head
-                || record
-                    .baseline
-                    .root_branch
-                    .as_deref()
-                    .is_some_and(|branch| root_head.branch.as_deref() != Some(branch))
-            {
+            let root_head = unselected_root_head.expect("unselected root was observed");
+            let root_is_exact = match &accepted_root.base {
+                AcceptedRootBase::BornAttached {
+                    commit,
+                    symbolic_branch,
+                } => {
+                    !root_head.is_detached
+                        && root_head.commit.as_deref() == Some(commit.as_str())
+                        && root_head.branch.as_deref() == Some(symbolic_branch.as_str())
+                }
+                AcceptedRootBase::BornDetached { .. } => false,
+                AcceptedRootBase::UnbornAttached { symbolic_branch } => {
+                    !root_head.is_detached
+                        && root_head.commit.is_none()
+                        && root_head.branch.as_deref() == Some(symbolic_branch.as_str())
+                }
+            };
+            if !root_is_exact {
                 return Err(root_drift(
                     "workspace root changed before candidate metadata was read",
                 ));
@@ -71,12 +103,10 @@ fn candidate_metadata_inner<B: GitBackend>(
             (
                 fs::read(root.join(WORKSPACE_MANIFEST)).map_err(io_error)?,
                 fs::read(root.join(artifact::LOCK_PATH)).map_err(io_error)?,
-                record.baseline.root_head.clone(),
-                record
-                    .baseline
-                    .root_branch
-                    .clone()
-                    .or(root_head.branch)
+                accepted_root.evidence_parent().map(str::to_owned),
+                accepted_root
+                    .publication_branch()
+                    .map(str::to_owned)
                     .ok_or_else(|| root_drift("workspace root branch is missing"))?,
             )
         };
@@ -122,7 +152,7 @@ fn candidate_metadata_inner<B: GitBackend>(
 pub(in crate::workspace_ops::merge) fn evidence_parent(
     record: &MergeOperationRecord,
 ) -> ModelResult<Option<&str>> {
-    Ok(match root_participant(record)? {
+    Ok(match selected_root_participant(record)? {
         Some(participant) => Some(
             participant
                 .resulting_commit
@@ -136,7 +166,7 @@ pub(in crate::workspace_ops::merge) fn evidence_parent(
 pub(in crate::workspace_ops::merge) fn root_merge_commit(
     record: &MergeOperationRecord,
 ) -> ModelResult<Option<&str>> {
-    root_participant(record)?
+    selected_root_participant(record)?
         .map(|participant| {
             participant
                 .resulting_commit
@@ -159,7 +189,7 @@ pub(in crate::workspace_ops::merge) fn root_finalization_is_exact<B: GitBackend>
     {
         return Ok(false);
     }
-    if root_participant(record)?.is_none() {
+    if selected_root_participant(record)?.is_none() {
         return Ok(false);
     }
     if !matches!(
@@ -186,29 +216,6 @@ pub(in crate::workspace_ops::merge) fn root_finalization_is_exact<B: GitBackend>
             .files
             .iter()
             .all(|file| allowed.iter().any(|path| path == &file.path)))
-}
-
-fn root_participant(record: &MergeOperationRecord) -> ModelResult<Option<&MergeParticipantRecord>> {
-    let participant = record.participants.get("@root");
-    let selected = record
-        .selected_targets
-        .iter()
-        .any(|target| target == "@root");
-    match (selected, participant) {
-        (false, None) => Ok(None),
-        (true, Some(participant))
-            if participant.target_kind == MergeTargetKind::Root
-                && participant.path == "."
-                && super::super::participant_semantics::result::is_successful_result(
-                    participant.state,
-                ) =>
-        {
-            Ok(Some(participant))
-        }
-        _ => Err(unreadable(
-            "selected root participant identity or successful state is inconsistent",
-        )),
-    }
 }
 
 fn committed_file<B: GitBackend>(

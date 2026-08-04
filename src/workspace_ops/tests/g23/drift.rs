@@ -55,16 +55,13 @@ fn post_candidate_manifest_drift_blocks_until_exact_repair() {
     .unwrap();
     assert_eq!(continued.state, crate::MergeOperationState::Finalizing);
     assert_eq!(backend.head(temp.path()).unwrap(), root_before);
-    assert!(
-        store
-            .discover_open(temp.path())
-            .unwrap()
-            .unwrap()
-            .publication
-            .unwrap()
-            .composition_commit
-            .is_none()
+    let blocked_record = store.discover_open(temp.path()).unwrap().unwrap();
+    let blocked_publication = blocked_record.publication.as_ref().unwrap();
+    assert_eq!(
+        blocked_publication.step,
+        PublicationStep::PreparingCandidate
     );
+    assert!(blocked_publication.composition_commit.is_none());
 
     fs::write(&manifest_path, manifest_before).unwrap();
     let completed = invoke_with_store(
@@ -82,6 +79,59 @@ fn post_candidate_manifest_drift_blocks_until_exact_repair() {
         backend.head(temp.path()).unwrap().commit.as_deref(),
         Some(composition.as_str())
     );
+}
+
+#[test]
+fn post_candidate_participant_drift_does_not_advance_the_durable_phase() {
+    let temp = TempDir::new("merge-finalize-participant-drift");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-participant-drift");
+    let member = temp.path().join("remote");
+    feature_commit(&backend, &member, "README.md", "source\n");
+    let store = FaultingMergeStore::new(FinalizationFault::AfterCandidatePersistence);
+    invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        request(false),
+        "op_participant_drift",
+    )
+    .unwrap_err();
+    let record = store.discover_open(temp.path()).unwrap().unwrap();
+    assert_eq!(
+        record.publication.as_ref().unwrap().step,
+        PublicationStep::PreparingCandidate
+    );
+
+    let drift_path = member.join("untracked-after-candidate.txt");
+    fs::write(&drift_path, "drift\n").unwrap();
+    let blocked = invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(record.merge_id.clone())),
+        "op_participant_drift_blocked",
+    )
+    .unwrap();
+    assert_eq!(blocked.state, crate::MergeOperationState::Finalizing);
+    let blocked_record = store.discover_open(temp.path()).unwrap().unwrap();
+    let blocked_publication = blocked_record.publication.as_ref().unwrap();
+    assert_eq!(
+        blocked_publication.step,
+        PublicationStep::PreparingCandidate
+    );
+    assert!(blocked_publication.composition_commit.is_none());
+
+    fs::remove_file(drift_path).unwrap();
+    let completed = invoke_with_store(
+        &backend,
+        &store,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(record.merge_id.clone())),
+        "op_participant_drift_repaired",
+    )
+    .unwrap();
+    assert_eq!(completed.state, crate::MergeOperationState::Completed);
 }
 
 #[test]

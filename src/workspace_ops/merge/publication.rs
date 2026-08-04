@@ -8,15 +8,15 @@ use crate::git::{GitBackend, GitCandidateFile, GitScopedCommitResult};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::workspace_exclude_path;
 
-use super::{MergeOperationRecord, PublicationCandidate, PublicationProgress, PublicationStep};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(super) enum CandidatePublicationPrefix {
-    Baseline,
-    Marker,
-    Lock,
-    Boundary,
-}
+#[cfg(test)]
+use super::PublicationStep;
+pub(super) use super::acceptance::CandidatePublicationPrefix;
+use super::acceptance::{
+    CandidatePublicationObservation,
+    classify_candidate_publication as classify_observed_candidate_publication,
+    publication_prefix_allowed as observed_publication_prefix_allowed,
+};
+use super::{MergeOperationRecord, PublicationCandidate, PublicationProgress};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum RootEvidenceObservation {
@@ -29,52 +29,19 @@ pub(super) fn classify_candidate_publication(
     record: &MergeOperationRecord,
 ) -> ModelResult<Option<CandidatePublicationPrefix>> {
     let candidate = candidate(record)?;
-    let publication = progress(record)?;
-    let lock = file_sha256(&root.join(artifact::LOCK_PATH));
-    let marker = file_sha256(&artifact::marker_path(root, &candidate.marker_id));
-    let boundary = file_sha256(&workspace_exclude_path(root));
-    let baseline_lock_sha256 = sha256(candidate.baseline_lock_yaml.as_bytes());
-    let baseline_lock = lock.as_deref() == Some(baseline_lock_sha256.as_str());
-    let candidate_lock = lock.as_deref() == publication.candidate_lock_sha256.as_deref();
-    let marker_absent = marker.is_none();
-    let candidate_marker = marker.as_deref() == Some(candidate.marker_sha256.as_str());
-    let baseline_boundary = boundary.as_deref()
-        == Some(candidate.baseline_boundary_sha256.as_str())
-        || (boundary.is_none() && candidate.baseline_boundary_text.is_empty());
-    let candidate_boundary = boundary.as_deref() == Some(candidate.boundary_sha256.as_str());
-
-    Ok(if baseline_lock && marker_absent && baseline_boundary {
-        Some(CandidatePublicationPrefix::Baseline)
-    } else if baseline_lock && candidate_marker && baseline_boundary {
-        Some(CandidatePublicationPrefix::Marker)
-    } else if candidate_lock && candidate_marker && candidate_boundary {
-        Some(CandidatePublicationPrefix::Boundary)
-    } else if candidate_lock && candidate_marker && baseline_boundary {
-        Some(CandidatePublicationPrefix::Lock)
-    } else {
-        None
-    })
+    let observation = CandidatePublicationObservation::new(
+        file_sha256(&root.join(artifact::LOCK_PATH)),
+        file_sha256(&artifact::marker_path(root, &candidate.marker_id)),
+        file_sha256(&workspace_exclude_path(root)),
+    );
+    classify_observed_candidate_publication(record, &observation)
 }
 
 pub(super) fn publication_prefix_allowed(
     record: &MergeOperationRecord,
     prefix: CandidatePublicationPrefix,
 ) -> ModelResult<bool> {
-    Ok(match progress(record)?.step {
-        PublicationStep::NotStarted
-        | PublicationStep::ValidatingResults
-        | PublicationStep::PreparingCandidate
-        | PublicationStep::CommittingEvidence => prefix == CandidatePublicationPrefix::Baseline,
-        PublicationStep::PublishingCandidate => true,
-        PublicationStep::VerifyingPublication | PublicationStep::Complete => {
-            prefix == CandidatePublicationPrefix::Boundary
-                || (prefix == CandidatePublicationPrefix::Marker
-                    && progress(record)?.candidate_lock_sha256.as_deref()
-                        == Some(sha256(candidate(record)?.baseline_lock_yaml.as_bytes()).as_str())
-                    && candidate(record)?.boundary_sha256
-                        == candidate(record)?.baseline_boundary_sha256)
-        }
-    })
+    observed_publication_prefix_allowed(record, prefix)
 }
 
 pub(super) fn observe_root_evidence<B: GitBackend>(
