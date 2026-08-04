@@ -24,6 +24,35 @@ fn record(id: &str, state: OperationState) -> MergeOperationRecord {
     record
 }
 
+fn write_raw_open(temp: &TempDir, merge_id: &str, yaml: &str) -> PathBuf {
+    let path = open_path(&temp.path, merge_id);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, yaml).unwrap();
+    path
+}
+
+fn write_raw_archived(temp: &TempDir, merge_id: &str, yaml: &str) -> PathBuf {
+    let path = done_path(&temp.path, merge_id);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, yaml).unwrap();
+    path
+}
+
+fn assert_record_context(
+    error: &ModelError,
+    merge_id: &str,
+    schema: &str,
+    version: i64,
+    required_wave: Option<crate::MergeRecordRequiredWave>,
+) {
+    let context = error.record_context.as_ref().unwrap();
+    assert_eq!(context.merge_id, merge_id);
+    assert_eq!(context.schema.as_deref(), Some(schema));
+    assert_eq!(context.record_schema_version, Some(version));
+    assert_eq!(context.required_wave, required_wave);
+    assert_eq!(context.legacy_mode, None);
+}
+
 fn preservation_participant() -> MergeParticipantRecord {
     serde_yaml::from_str(
             r#"{path: app, target_kind: member, target_branch: main, before_commit: '111', source_commit: '222', commit_message: merge, state: aborted, preservation: [{backup_ref: refs/gwz/merge/kept/app/head, backup_commit: '333'}]}"#,
@@ -79,6 +108,189 @@ fn corrupt_open_records_fail_closed() {
         FileMergeStore.discover_open(&temp.path).unwrap_err().code,
         ErrorCode::MergeRecordUnreadable
     );
+}
+
+#[test]
+fn installed_but_disabled_v1_reports_a1_compatibility_context() {
+    let temp = temp("merge-store-v1-disabled");
+    write_raw_open(
+        &temp,
+        "merge_v1",
+        "schema: gwz.merge-operation/v1\nrecord_schema_version: 1\n",
+    );
+
+    let error = FileMergeStore.discover_open(&temp.path).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::UnsupportedRecordVersion);
+    assert_eq!(
+        error.message,
+        "merge record 'merge_v1' uses schema 'gwz.merge-operation/v1' version 1, which requires A1 (v1 integration/acceptance/no-ff); use a compatible newer GWZ"
+    );
+    assert_record_context(
+        &error,
+        "merge_v1",
+        "gwz.merge-operation/v1",
+        1,
+        Some(crate::MergeRecordRequiredWave::A1),
+    );
+}
+
+#[test]
+fn allocated_archived_v2_reports_a2_compatibility_context() {
+    let temp = temp("merge-store-v2-archived");
+    write_raw_archived(
+        &temp,
+        "merge_v2",
+        "schema: gwz.merge-operation/v2\nrecord_schema_version: 2\n",
+    );
+
+    let error = FileMergeStore
+        .load_archived(&temp.path, "merge_v2")
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::UnsupportedRecordVersion);
+    assert_record_context(
+        &error,
+        "merge_v2",
+        "gwz.merge-operation/v2",
+        2,
+        Some(crate::MergeRecordRequiredWave::A2),
+    );
+}
+
+#[test]
+fn unknown_schema_reports_compatibility_context_without_a_wave() {
+    let temp = temp("merge-store-unknown-schema");
+    write_raw_open(
+        &temp,
+        "merge_future",
+        "schema: example.merge-operation/future\nrecord_schema_version: 42\n",
+    );
+
+    let error = FileMergeStore.discover_open(&temp.path).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::UnsupportedRecordVersion);
+    assert_record_context(
+        &error,
+        "merge_future",
+        "example.merge-operation/future",
+        42,
+        None,
+    );
+}
+
+#[test]
+fn recognized_schema_version_mismatch_is_unreadable_with_header_context() {
+    let temp = temp("merge-store-version-mismatch");
+    write_raw_open(
+        &temp,
+        "merge_mismatch",
+        "schema: gwz.merge-operation/v1\nrecord_schema_version: 2\n",
+    );
+
+    let error = FileMergeStore.discover_open(&temp.path).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::MergeRecordUnreadable);
+    assert_record_context(&error, "merge_mismatch", "gwz.merge-operation/v1", 2, None);
+}
+
+#[test]
+fn malformed_envelopes_are_unreadable_without_invented_header_context() {
+    for (name, yaml) in [
+        (
+            "anchor",
+            "schema: gwz.merge-operation/v0\nrecord_schema_version: &version 0\n",
+        ),
+        (
+            "duplicate",
+            "schema: gwz.merge-operation/v0\nschema: gwz.merge-operation/v0\nrecord_schema_version: 0\n",
+        ),
+    ] {
+        let temp = temp(&format!("merge-store-malformed-{name}"));
+        write_raw_open(&temp, &format!("merge_{name}"), yaml);
+
+        let error = FileMergeStore.discover_open(&temp.path).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::MergeRecordUnreadable);
+        assert_eq!(error.record_context, None);
+    }
+}
+
+#[test]
+fn multiple_open_records_are_validated_before_the_multiple_record_error() {
+    let temp = temp("merge-store-multiple-with-unsupported");
+    write_raw_open(
+        &temp,
+        "merge_a",
+        &serde_yaml::to_string(&record("merge_a", OperationState::Executing)).unwrap(),
+    );
+    write_raw_open(
+        &temp,
+        "merge_z",
+        "schema: gwz.merge-operation/v1\nrecord_schema_version: 1\n",
+    );
+
+    let error = FileMergeStore.discover_open(&temp.path).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::UnsupportedRecordVersion);
+    assert_record_context(
+        &error,
+        "merge_z",
+        "gwz.merge-operation/v1",
+        1,
+        Some(crate::MergeRecordRequiredWave::A1),
+    );
+}
+
+#[test]
+fn targeted_gc_retains_an_unreadable_archived_record() {
+    let temp = temp("merge-store-gc-unreadable-archive");
+    let path = write_raw_archived(&temp, "merge_bad", "not: [valid");
+
+    let error = FileMergeStore
+        .gc(&temp.path, Some("merge_bad"))
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
+    assert!(path.is_file());
+}
+
+#[test]
+fn archived_post_decode_contradictions_use_the_archive_error_contract() {
+    let temp = temp("merge-store-archive-post-decode");
+    let mut invalid_id = record("../invalid", OperationState::Completed);
+    invalid_id.writer_version = "test-invalid-id".to_owned();
+    let path = write_raw_archived(
+        &temp,
+        "merge_expected",
+        &serde_yaml::to_string(&invalid_id).unwrap(),
+    );
+
+    let error = FileMergeStore
+        .load_archived(&temp.path, "merge_expected")
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
+    assert_record_context(&error, "merge_expected", "gwz.merge-operation/v0", 0, None);
+    assert!(path.is_file());
+}
+
+#[test]
+fn archived_non_file_record_path_is_unreadable_and_retained() {
+    let temp = temp("merge-store-archive-non-file");
+    let path = done_path(&temp.path, "merge_directory");
+    fs::create_dir_all(&path).unwrap();
+
+    let error = FileMergeStore
+        .load_archived(&temp.path, "merge_directory")
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
+    assert_eq!(error.record_context, None);
+    assert!(path.is_dir());
+
+    FileMergeStore.gc(&temp.path, None).unwrap();
+    assert!(path.is_dir());
 }
 
 #[test]
@@ -161,10 +373,9 @@ fn archive_retry_rejects_nonterminal_destination_only_record() {
     )
     .unwrap();
 
-    assert_eq!(
-        store.archive(&temp.path, &open.merge_id).unwrap_err().code,
-        ErrorCode::MergeRecoveryRequired
-    );
+    let error = store.archive(&temp.path, &open.merge_id).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
+    assert_record_context(&error, "merge_open", "gwz.merge-operation/v0", 0, None);
     assert!(done_path(&temp.path, &open.merge_id).exists());
 }
 

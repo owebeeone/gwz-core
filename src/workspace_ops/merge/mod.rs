@@ -12,6 +12,7 @@ mod participant_semantics;
 mod plan;
 mod preserve;
 mod publication;
+mod record_wire;
 mod recovery;
 mod response;
 pub(crate) mod root;

@@ -9,13 +9,14 @@ use gwz_core::{
     DetachRepoMemberResponse, EventKind, GitBranchDifference, GitBranchGroup, GitFileChange,
     GitMemberBranchStatus, GitObjectIdentity, GwzError, GwzErrorCode, ListSnapshotsResponse,
     MaterializeRequest, MaterializeTarget, MaterializeTargetKind, MemberResponse, MemberStatus,
-    OperationActor, OperationAttribution, OperationEvent, PlannedAction, RepoSyncRequest,
-    RepoSyncResponse, RequestMeta, ResponseEnvelope, ResponseMeta, Severity, SnapshotInfo,
-    SnapshotRequest, SnapshotSource, SnapshotSourceKind, SourceKind, SourceUrl, StashBundle,
-    StashBundleMember, StashDirtySummary, StashDrift, StashErrorDetail, StashOp,
-    StashParticipation, StashPushLifecycle, StashRequest, StashResponse, StashRestoreState,
-    StashWarning, StatusMode, StatusPathStyle, StatusRequest, StatusResponse, WorkspaceGitStatus,
-    WorkspaceRootFileChange, WorkspaceRootGitStatus, decode, encode,
+    MergeRecordCompatibilityContext, MergeRecordRequiredWave, OperationActor, OperationAttribution,
+    OperationEvent, PlannedAction, RepoSyncRequest, RepoSyncResponse, RequestMeta,
+    ResponseEnvelope, ResponseMeta, Severity, SnapshotInfo, SnapshotRequest, SnapshotSource,
+    SnapshotSourceKind, SourceKind, SourceUrl, StashBundle, StashBundleMember, StashDirtySummary,
+    StashDrift, StashErrorDetail, StashOp, StashParticipation, StashPushLifecycle, StashRequest,
+    StashResponse, StashRestoreState, StashWarning, StatusMode, StatusPathStyle, StatusRequest,
+    StatusResponse, WorkspaceGitStatus, WorkspaceRootFileChange, WorkspaceRootGitStatus, decode,
+    encode,
 };
 
 fn round_trip<T>(
@@ -694,6 +695,50 @@ fn error_code_wire_values_are_pinned() {
     assert_eq!(GwzErrorCode::MergePhaseUnsupported.wire(), 43);
     assert_eq!(GwzErrorCode::RootMergeNotYetSupported.wire(), 44);
     assert_eq!(GwzErrorCode::MergeRecordUnreadable.wire(), 45);
+    assert_eq!(GwzErrorCode::UnsupportedRecordVersion.wire(), 46);
+    assert_eq!(GwzErrorCode::UnsupportedLegacyMode.wire(), 47);
+    assert_eq!(GwzErrorCode::ArchivedRecordUnreadable.wire(), 48);
+    assert_eq!(GwzErrorCode::UnexpectedAcceptanceEvidence.wire(), 49);
+    assert_eq!(GwzErrorCode::AcceptanceInputDrift.wire(), 50);
+    assert_eq!(GwzErrorCode::CandidateIntegrityMismatch.wire(), 51);
+    assert_eq!(GwzErrorCode::AmbiguousEvidenceCommit.wire(), 52);
+    assert_eq!(GwzErrorCode::RecordedEvidenceDrift.wire(), 53);
+    assert_eq!(GwzErrorCode::PublicationPrefixMismatch.wire(), 54);
+    assert_eq!(GwzErrorCode::PublishedCandidateMismatch.wire(), 55);
+    assert_eq!(GwzErrorCode::PreservationEvidenceMismatch.wire(), 56);
+    assert_eq!(GwzErrorCode::RollbackEvidenceMismatch.wire(), 57);
+    assert_eq!(GwzErrorCode::UnexpectedPublicationEvidence.wire(), 58);
+    assert_eq!(GwzErrorCode::TerminalEvidenceMismatch.wire(), 59);
+    assert_eq!(GwzErrorCode::RecoveryEvidenceMismatch.wire(), 60);
+    assert_eq!(GwzErrorCode::TerminalRollbackMismatch.wire(), 61);
+}
+
+#[test]
+fn merge_record_error_context_round_trips_exact_header_and_wave() {
+    assert_eq!(MergeRecordRequiredWave::A1.wire(), 0);
+    assert_eq!(MergeRecordRequiredWave::A2.wire(), 1);
+    assert_eq!(MergeRecordRequiredWave::A3.wire(), 2);
+    assert_eq!(MergeRecordRequiredWave::A4.wire(), 3);
+
+    let error = GwzError {
+        code: GwzErrorCode::UnsupportedRecordVersion,
+        message: "requires A2".to_owned(),
+        member_id: None,
+        member_path: None,
+        detail: None,
+        target_kind: None,
+        record_context: Some(MergeRecordCompatibilityContext {
+            merge_id: "merge_1".to_owned(),
+            schema: Some("gwz.merge-operation/v2".to_owned()),
+            record_schema_version: Some(2),
+            required_wave: Some(MergeRecordRequiredWave::A2),
+            legacy_mode: None,
+        }),
+    };
+    assert_eq!(
+        round_trip(&error, GwzError::to_cbor, GwzError::from_cbor),
+        error
+    );
 }
 
 #[test]
@@ -996,6 +1041,7 @@ fn member_error() -> GwzError {
         member_path: Some("libs/core".to_owned()),
         target_kind: Some(gwz_core::TargetKind::Member),
         detail: Some("HEAD and upstream have distinct commits".to_owned()),
+        record_context: None,
     }
 }
 

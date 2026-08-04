@@ -4,7 +4,8 @@ load("@crates//:defs.bzl", "aliases", "all_crate_deps")
 exports_files(["Cargo.toml"])  # crate_universe reads this
 
 # gwz-core — the GWZ workspace library.
-# Deps: git2 (native: libgit2-sys/libssh2-sys/libz-sys/openssl-sys), serde, serde_yaml, url.
+# Deps: git2 (native: libgit2-sys/libssh2-sys/libz-sys/openssl-sys), serde,
+# serde_yaml, yaml-rust2, url.
 rust_library(
     name = "gwz_core",
     srcs = glob(["src/**/*.rs"]),

@@ -1097,6 +1097,22 @@ pub enum GwzErrorCode {
     MergePhaseUnsupported,
     RootMergeNotYetSupported,
     MergeRecordUnreadable,
+    UnsupportedRecordVersion,
+    UnsupportedLegacyMode,
+    ArchivedRecordUnreadable,
+    UnexpectedAcceptanceEvidence,
+    AcceptanceInputDrift,
+    CandidateIntegrityMismatch,
+    AmbiguousEvidenceCommit,
+    RecordedEvidenceDrift,
+    PublicationPrefixMismatch,
+    PublishedCandidateMismatch,
+    PreservationEvidenceMismatch,
+    RollbackEvidenceMismatch,
+    UnexpectedPublicationEvidence,
+    TerminalEvidenceMismatch,
+    RecoveryEvidenceMismatch,
+    TerminalRollbackMismatch,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1146,6 +1162,22 @@ impl GwzErrorCode {
         Self::MergePhaseUnsupported => 43,
         Self::RootMergeNotYetSupported => 44,
         Self::MergeRecordUnreadable => 45,
+        Self::UnsupportedRecordVersion => 46,
+        Self::UnsupportedLegacyMode => 47,
+        Self::ArchivedRecordUnreadable => 48,
+        Self::UnexpectedAcceptanceEvidence => 49,
+        Self::AcceptanceInputDrift => 50,
+        Self::CandidateIntegrityMismatch => 51,
+        Self::AmbiguousEvidenceCommit => 52,
+        Self::RecordedEvidenceDrift => 53,
+        Self::PublicationPrefixMismatch => 54,
+        Self::PublishedCandidateMismatch => 55,
+        Self::PreservationEvidenceMismatch => 56,
+        Self::RollbackEvidenceMismatch => 57,
+        Self::UnexpectedPublicationEvidence => 58,
+        Self::TerminalEvidenceMismatch => 59,
+        Self::RecoveryEvidenceMismatch => 60,
+        Self::TerminalRollbackMismatch => 61,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1194,7 +1226,46 @@ impl GwzErrorCode {
         43 => Self::MergePhaseUnsupported,
         44 => Self::RootMergeNotYetSupported,
         45 => Self::MergeRecordUnreadable,
+        46 => Self::UnsupportedRecordVersion,
+        47 => Self::UnsupportedLegacyMode,
+        48 => Self::ArchivedRecordUnreadable,
+        49 => Self::UnexpectedAcceptanceEvidence,
+        50 => Self::AcceptanceInputDrift,
+        51 => Self::CandidateIntegrityMismatch,
+        52 => Self::AmbiguousEvidenceCommit,
+        53 => Self::RecordedEvidenceDrift,
+        54 => Self::PublicationPrefixMismatch,
+        55 => Self::PublishedCandidateMismatch,
+        56 => Self::PreservationEvidenceMismatch,
+        57 => Self::RollbackEvidenceMismatch,
+        58 => Self::UnexpectedPublicationEvidence,
+        59 => Self::TerminalEvidenceMismatch,
+        60 => Self::RecoveryEvidenceMismatch,
+        61 => Self::TerminalRollbackMismatch,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeRecordRequiredWave {
+    #[default] A1,
+    A2,
+    A3,
+    A4,
+}
+impl MergeRecordRequiredWave {
+    pub fn wire(self) -> i64 { match self {
+        Self::A1 => 0,
+        Self::A2 => 1,
+        Self::A3 => 2,
+        Self::A4 => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::A1,
+        1 => Self::A2,
+        2 => Self::A3,
+        3 => Self::A4,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeRecordRequiredWave", value: v }),
     }) }
 }
 
@@ -1665,6 +1736,35 @@ impl ResponseMeta {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeRecordCompatibilityContext {
+    pub merge_id: String,
+    pub schema: Option<String>,
+    pub record_schema_version: Option<i64>,
+    pub required_wave: Option<MergeRecordRequiredWave>,
+    pub legacy_mode: Option<String>,
+}
+impl MergeRecordCompatibilityContext {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.merge_id.clone())),
+            (2, match &self.schema { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, match &self.record_schema_version { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (4, match &self.required_wave { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (5, match &self.legacy_mode { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            merge_id: c.try_get(1)?.try_text()?,
+            schema: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            record_schema_version: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            required_wave: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(MergeRecordRequiredWave::from_wire(v.try_int()?)?) } },
+            legacy_mode: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct GwzError {
     pub code: GwzErrorCode,
     pub message: String,
@@ -1672,6 +1772,7 @@ pub struct GwzError {
     pub member_path: Option<String>,
     pub detail: Option<String>,
     pub target_kind: Option<TargetKind>,
+    pub record_context: Option<MergeRecordCompatibilityContext>,
 }
 impl GwzError {
     pub fn to_cbor(&self) -> Cbor {
@@ -1682,6 +1783,7 @@ impl GwzError {
             (4, match &self.member_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (5, match &self.detail { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (6, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (7, match &self.record_context { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -1692,6 +1794,7 @@ impl GwzError {
             member_path: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             detail: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             target_kind: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
+            record_context: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(MergeRecordCompatibilityContext::from_cbor(v)?) } },
         })
     }
 }

@@ -57,6 +57,22 @@ pub enum ErrorCode {
     MergePhaseUnsupported,
     RootMergeNotYetSupported,
     MergeRecordUnreadable,
+    UnsupportedRecordVersion,
+    UnsupportedLegacyMode,
+    ArchivedRecordUnreadable,
+    UnexpectedAcceptanceEvidence,
+    AcceptanceInputDrift,
+    CandidateIntegrityMismatch,
+    AmbiguousEvidenceCommit,
+    RecordedEvidenceDrift,
+    PublicationPrefixMismatch,
+    PublishedCandidateMismatch,
+    PreservationEvidenceMismatch,
+    RollbackEvidenceMismatch,
+    UnexpectedPublicationEvidence,
+    TerminalEvidenceMismatch,
+    RecoveryEvidenceMismatch,
+    TerminalRollbackMismatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,6 +81,7 @@ pub struct ModelError {
     pub message: String,
     pub member_id: Option<String>,
     pub member_path: Option<String>,
+    pub record_context: Option<Box<crate::MergeRecordCompatibilityContext>>,
 }
 
 impl ModelError {
@@ -74,6 +91,7 @@ impl ModelError {
             message: message.into(),
             member_id: None,
             member_path: None,
+            record_context: None,
         }
     }
 
@@ -92,6 +110,14 @@ impl ModelError {
         self.message = format!("{target}: {}", self.message);
         self.member_id = Some(member_id);
         self.member_path = Some(member_path);
+        self
+    }
+
+    pub fn with_record_context(
+        mut self,
+        record_context: crate::MergeRecordCompatibilityContext,
+    ) -> Self {
+        self.record_context = Some(Box::new(record_context));
         self
     }
 }

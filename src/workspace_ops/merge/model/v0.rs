@@ -1,0 +1,259 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use serde_yaml::Value;
+
+use super::{
+    MergeExecutionMode, MergeTargetKind, OperationState, ParticipantState, PublicationStep,
+};
+use crate::model::ErrorCode;
+
+pub(crate) const MERGE_RECORD_SCHEMA: &str = "gwz.merge-operation/v0";
+pub(crate) const MERGE_RECORD_SCHEMA_VERSION: u32 = 0;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct MergeBaseline {
+    pub lock_sha256: String,
+    pub manifest_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_yaml: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_yaml: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_commit_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_commit_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_branch: Option<String>,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct MergeOperationRecordV0 {
+    pub schema: String,
+    pub record_schema_version: u32,
+    pub writer_version: String,
+    pub workspace_id: String,
+    pub merge_id: String,
+    pub operation_id: String,
+    pub state: OperationState,
+    pub source_ref: String,
+    #[serde(default, skip_serializing_if = "MergeExecutionMode::is_normal")]
+    pub mode: MergeExecutionMode,
+    pub created_at: String,
+    pub baseline: MergeBaseline,
+    pub selected_targets: Vec<String>,
+    pub participants: BTreeMap<String, MergeParticipantRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<PublicationProgress>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operation_drift: Vec<OperationDrift>,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct MergeParticipantRecord {
+    pub path: String,
+    pub target_kind: MergeTargetKind,
+    pub target_branch: String,
+    pub before_commit: String,
+    pub source_commit: String,
+    pub commit_message: String,
+    pub state: ParticipantState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resulting_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_merge_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflict_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflict_snapshot: Vec<ConflictFileEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<MergeRecordError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_action: Option<PendingMergeAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preservation: Vec<PreservationEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drift: Vec<ParticipantDrift>,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ConflictFileEvidence {
+    pub path: String,
+    pub sha256: String,
+}
+
+/// Durable intent written before an individual participant Git action.
+///
+/// Presence means the action may not have started, may have completed without
+/// its outcome row, or may have stopped in an ambiguous intermediate state.
+/// Recovery must reconcile the live repository against these exact inputs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PendingMergeAction {
+    pub kind: PendingMergeActionKind,
+    pub target_branch: String,
+    pub before_commit: String,
+    pub source_commit: String,
+    pub commit_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_result: Option<PendingMergeExpectedResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_spec: Option<PendingCommitSpec>,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PendingMergeExpectedResult {
+    Unchanged,
+    FastForward,
+    ExpectedConflict,
+    Commit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PendingCommitSpec {
+    pub tree_oid: String,
+    pub author: PendingGitSignature,
+    pub committer: PendingGitSignature,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PendingGitSignature {
+    pub name: String,
+    pub email: String,
+    pub time_seconds: i64,
+    pub timezone_offset_minutes: i32,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PendingMergeActionKind {
+    VerifyUpToDate,
+    FastForward,
+    TrueMerge,
+    ResolveConflict,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct MergeRecordError {
+    pub code: ErrorCode,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PreservationEvidence {
+    pub backup_ref: Option<String>,
+    pub backup_commit: Option<String>,
+    pub stash_id: Option<String>,
+    pub stash_object_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PublicationProgress {
+    pub step: PublicationStep,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_lock_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_marker_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_merge_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_tree: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_hashes: Vec<PublicationCandidateHash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<PublicationCandidate>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub evidence_rolled_back: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub root_preservation: Vec<PreservationEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preservation_prefix: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PublicationCandidate {
+    pub marker_id: String,
+    pub root_branch: String,
+    pub actor_id: String,
+    pub baseline_lock_yaml: String,
+    pub lock_yaml: String,
+    pub marker_yaml: String,
+    pub baseline_boundary_text: String,
+    pub boundary_text: String,
+    pub baseline_boundary_sha256: String,
+    pub marker_sha256: String,
+    pub boundary_sha256: String,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PublicationCandidateHash {
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ParticipantDrift {
+    pub kind: ParticipantDriftKind,
+    pub message: String,
+    pub expected_branch: Option<String>,
+    pub live_branch: Option<String>,
+    pub expected_head: Option<String>,
+    pub live_head: Option<String>,
+    pub expected_merge_head: Option<String>,
+    pub live_merge_head: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ParticipantDriftKind {
+    BranchChanged,
+    HeadAdvanced,
+    HeadRewound,
+    HeadDiverged,
+    ObjectMissing,
+    TargetRefChanged,
+    WorktreeModified,
+    IndexModified,
+    MergeStateMissing,
+    MergeHeadChanged,
+    NewIntegrationState,
+    ForeignIntegrationState,
+    PendingActionAmbiguous,
+    RepositoryMissing,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct OperationDrift {
+    pub kind: OperationDriftKind,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OperationDriftKind {
+    BaselineLockChanged,
+    BaselineManifestChanged,
+    RootCandidateMetadataInvalid,
+    RootCandidateStateChanged,
+    RecordUnreadable,
+}

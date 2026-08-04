@@ -91,6 +91,7 @@ pub(crate) fn member_error(
             member_path: Some(member.path.clone()),
             target_kind: Some(crate::TargetKind::Member),
             detail: None,
+            record_context: None,
         }),
         planned: None,
         state: None,

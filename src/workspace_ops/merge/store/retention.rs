@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn enforce(root: &Path) -> ModelResult<()> {
     let mut ordinary = Vec::new();
     for path in record_files(&root.join(DONE_DIR))? {
-        let Ok((_, record)) = read_record(&path) else {
+        let Ok((_, record)) = read_record(&path, RecordLocation::Archived) else {
             continue; // Unknown/corrupt archives may own evidence: fail safe by retaining them.
         };
         if record

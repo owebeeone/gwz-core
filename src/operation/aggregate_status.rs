@@ -116,6 +116,7 @@ pub(crate) fn operation_error_to_protocol(error: &OperationError) -> crate::GwzE
         member_path: error.member_path.clone(),
         target_kind: Some(crate::TargetKind::Member),
         detail: None,
+        record_context: None,
     }
 }
 

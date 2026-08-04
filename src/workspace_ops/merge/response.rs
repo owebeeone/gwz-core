@@ -167,6 +167,7 @@ impl MergeParticipantRecord {
                 member_path: Some(self.path.clone()),
                 detail: error.detail.clone(),
                 target_kind: Some(self.target_kind.into()),
+                record_context: None,
             }),
             pending_action: None,
         }

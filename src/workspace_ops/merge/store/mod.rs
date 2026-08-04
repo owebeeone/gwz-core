@@ -5,17 +5,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_yaml::Value;
 
+use super::record_wire::decode_production_v0;
 use super::{MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord};
 use crate::durable_fs::{rename_durable, sync_dir};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 mod archived;
+mod compatibility_errors;
 mod gc;
 mod persistence;
 mod retention;
 
 pub(crate) use persistence::{
     archive_merge_record, enter_finalizing, persist_merge_record, persist_operation_transition,
+};
+
+use compatibility_errors::{
+    archived_contradiction, decode_error, location_unreadable, record_context,
 };
 
 const MERGE_DIR: &str = ".gwz/merge";
@@ -59,10 +65,14 @@ pub(crate) struct FileMergeStore;
 
 impl MergeStore for FileMergeStore {
     fn discover_open(&self, root: &Path) -> ModelResult<Option<MergeOperationRecord>> {
-        let records = record_files(&root.join(MERGE_DIR))?;
-        match records.as_slice() {
-            [] => Ok(None),
-            [path] => read_record(path).map(|(_, record)| Some(record)),
+        let paths = record_files(&root.join(MERGE_DIR))?;
+        let mut records = Vec::with_capacity(paths.len());
+        for path in paths {
+            records.push(read_record(&path, RecordLocation::Open)?.1);
+        }
+        match records.len() {
+            0 => Ok(None),
+            1 => Ok(records.pop()),
             _ => Err(ModelError::new(
                 ErrorCode::MergeRecoveryRequired,
                 format!(
@@ -75,9 +85,12 @@ impl MergeStore for FileMergeStore {
 
     fn load(&self, root: &Path, merge_id: &str) -> ModelResult<MergeOperationRecord> {
         validate_merge_id(merge_id)?;
-        for path in [open_path(root, merge_id), done_path(root, merge_id)] {
+        for (path, location) in [
+            (open_path(root, merge_id), RecordLocation::Open),
+            (done_path(root, merge_id), RecordLocation::Archived),
+        ] {
             if path_exists(&path)? {
-                return read_record(&path).map(|(_, record)| record);
+                return read_record(&path, location).map(|(_, record)| record);
             }
         }
         Err(ModelError::new(
@@ -107,13 +120,13 @@ impl MergeStore for FileMergeStore {
 
         let mut next = serde_yaml::to_value(record).map_err(encode_error)?;
         if path_exists(&path)? {
-            let (old_raw, old_record) = read_record(&path)?;
+            let (old_raw, old_record) = read_record(&path, RecordLocation::Open)?;
             let old_known = serde_yaml::to_value(old_record).map_err(encode_error)?;
             carry_unknown(&old_raw, &old_known, &mut next);
         }
         let encoded = serde_yaml::to_string(&next).map_err(encode_error)?;
         write_atomic_verified(&path, encoded.as_bytes())?;
-        let (_, verified) = read_record(&path)?;
+        let (_, verified) = read_record(&path, RecordLocation::Open)?;
         if verified != *record {
             return Err(recovery_error(format!(
                 "merge record verification failed at '{}'",
@@ -183,20 +196,50 @@ fn validate_record(record: &MergeOperationRecord, path: Option<&Path>) -> ModelR
     Ok(())
 }
 
-fn read_record(path: &Path) -> ModelResult<(Value, MergeOperationRecord)> {
+#[derive(Clone, Copy)]
+enum RecordLocation {
+    Open,
+    Archived,
+}
+
+fn read_record(
+    path: &Path,
+    location: RecordLocation,
+) -> ModelResult<(Value, MergeOperationRecord)> {
+    let merge_id = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| unreadable(Some(path), "record file name is not valid UTF-8"))?;
     if !fs::symlink_metadata(path)
-        .map_err(|error| unreadable(Some(path), error))?
+        .map_err(|error| location_unreadable(path, merge_id, location, error))?
         .file_type()
         .is_file()
     {
-        return Err(unreadable(Some(path), "record path is not a regular file"));
+        return Err(location_unreadable(
+            path,
+            merge_id,
+            location,
+            "record path is not a regular file",
+        ));
     }
-    let bytes = fs::read(path).map_err(|error| unreadable(Some(path), error))?;
-    let raw: Value = serde_yaml::from_slice(&bytes)
-        .map_err(|error| unreadable(Some(path), format!("invalid YAML: {error}")))?;
-    let record: MergeOperationRecord = serde_yaml::from_value(raw.clone())
-        .map_err(|error| unreadable(Some(path), format!("invalid record: {error}")))?;
-    validate_record(&record, Some(path))?;
+    let bytes =
+        fs::read(path).map_err(|error| location_unreadable(path, merge_id, location, error))?;
+    let decoded = decode_production_v0(&bytes)
+        .map_err(|error| decode_error(path, merge_id, location, error))?;
+    let raw = decoded.raw;
+    let header = decoded.header;
+    let record = decoded.record;
+    if let Err(error) = validate_record(&record, Some(path)) {
+        return Err(match location {
+            RecordLocation::Open => {
+                error.with_record_context(record_context(merge_id, &header, None))
+            }
+            RecordLocation::Archived => archived_contradiction(merge_id, &header),
+        });
+    }
+    if matches!(location, RecordLocation::Archived) && record.state.is_open() {
+        return Err(archived_contradiction(merge_id, &header));
+    }
     Ok((raw, record))
 }
 
@@ -219,13 +262,6 @@ fn record_files(directory: &Path) -> ModelResult<Vec<PathBuf>> {
         let entry = entry.map_err(|error| unreadable(Some(directory), error))?;
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) == Some("yaml") {
-            if !entry
-                .file_type()
-                .map_err(|error| unreadable(Some(&path), error))?
-                .is_file()
-            {
-                return Err(unreadable(Some(&path), "record path is not a regular file"));
-            }
             records.push(path);
         }
     }

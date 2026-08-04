@@ -33,6 +33,7 @@ pub(super) fn stash_target_response(
             member_path: Some(target_path.to_owned()),
             target_kind: Some(target_kind),
             detail: None,
+            record_context: None,
         }),
         planned: None,
         state: None,

@@ -342,9 +342,18 @@ fn archived_v0_missing_optional_evidence_is_not_an_unreadable_contradiction() {
         });
 
         let error = archived_status(archive_only.path(), &merge_id).unwrap_err();
+        let expected = if contradiction == "schema" {
+            ErrorCode::UnsupportedRecordVersion
+        } else {
+            ErrorCode::ArchivedRecordUnreadable
+        };
+        assert_eq!(error.code, expected, "{contradiction}");
         assert_eq!(
-            error.code,
-            ErrorCode::MergeRecordUnreadable,
+            error
+                .record_context
+                .as_deref()
+                .map(|context| context.merge_id.as_str()),
+            Some(merge_id.as_str()),
             "{contradiction}"
         );
         assert!(archive_path(archive_only.path(), &merge_id).is_file());

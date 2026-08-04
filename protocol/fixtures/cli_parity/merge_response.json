@@ -7,6 +7,7 @@
       "member_id": "mem_worker",
       "member_path": "worker",
       "message": "member 'mem_worker' at 'worker': revspec 'feature/x' not found",
+      "record_context": null,
       "target_kind": "Member"
     }
   ],
@@ -177,6 +178,7 @@
           "member_id": "mem_worker",
           "member_path": "worker",
           "message": "member 'mem_worker' at 'worker': revspec 'feature/x' not found",
+          "record_context": null,
           "target_kind": "Member"
         },
         "live_commit": null,

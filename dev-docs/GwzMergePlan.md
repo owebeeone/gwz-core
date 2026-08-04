@@ -1,7 +1,10 @@
 # GWZ Merge Implementation Plan
 
 Status: **active** (revised 2026-08-04). Owner: Gianni. M2b through M4, the
-god-file refactor, R0, R1, R2a, M5a, I1/I2, and R4a are complete. M5a custom
+god-file refactor, R0, R1, R2a, M5a, I1/I2, and R4a are complete. The first R3
+checkpoint—strict envelope decoding, version allocation, location-aware store
+rejection, and structured cross-driver error context—is implemented with only
+the v0 body decoder installed in production. M5a custom
 messages have green local technical, compatibility, and cross-driver gates.
 The corrected I1/I2 durability contracts and R4a acceptance/finalization
 semantics each have two independent GO verdicts. R3 is the next active package,
@@ -1652,7 +1655,12 @@ boundaries:
    GO verdicts with no remaining P0–P3 finding.
 4. R3, store/compatibility owned, implements v0/v1 record, archive,
    unknown-field, and atomic migration machinery with the production v1 writer
-   and migration dispatch unreachable.
+   and migration dispatch unreachable. **Envelope checkpoint implemented:**
+   strict one-pass YAML decoding, the v0–v4 header registry, production-v0
+   dispatch, fail-closed open/archive/GC routing, and structured error context
+   are installed and independently accepted with no P0–P3 finding. The v1
+   model/adapter, archive projection, unknown-field manifest, and test-only
+   atomic upgrade remain before R3 is complete.
 5. R4b, finalization owned, makes every finalization and recovery path consume
    persisted acceptance.
 6. M5b splits exact prepared-commit work between the Git backend owner and

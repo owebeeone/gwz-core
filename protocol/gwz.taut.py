@@ -501,7 +501,30 @@ SCHEMA = schema(
          merge_recovery_required=42,
          merge_phase_unsupported=43,
          root_merge_not_yet_supported=44,
-         merge_record_unreadable=45),
+         merge_record_unreadable=45,
+         unsupported_record_version=46,
+         unsupported_legacy_mode=47,
+         archived_record_unreadable=48,
+         unexpected_acceptance_evidence=49,
+         acceptance_input_drift=50,
+         candidate_integrity_mismatch=51,
+         ambiguous_evidence_commit=52,
+         recorded_evidence_drift=53,
+         publication_prefix_mismatch=54,
+         published_candidate_mismatch=55,
+         preservation_evidence_mismatch=56,
+         rollback_evidence_mismatch=57,
+         unexpected_publication_evidence=58,
+         terminal_evidence_mismatch=59,
+         recovery_evidence_mismatch=60,
+         terminal_rollback_mismatch=61),
+
+    # Compatibility wave required to execute an allocated durable merge record.
+    MergeRecordRequiredWave=Enum(
+         a1=0,
+         a2=1,
+         a3=2,
+         a4=3),
 
     # ---- diff enums -------------------------------------------------------
     # Which two sides libgit2 compares, resolved per target repo from operands
@@ -708,7 +731,15 @@ SCHEMA = schema(
         message=F(6, STR, optional=True),
         attribution=F(7, Ref.OperationAttribution, optional=True)),
 
-    # Typed error with optional member context.
+    # Durable merge-record header context for compatibility and recovery errors.
+    MergeRecordCompatibilityContext=Msg(
+        merge_id=F(1, STR),
+        schema=F(2, STR, optional=True),
+        record_schema_version=F(3, INT, optional=True),
+        required_wave=F(4, Ref.MergeRecordRequiredWave, optional=True),
+        legacy_mode=F(5, STR, optional=True)),
+
+    # Typed error with optional member or durable-record context.
     GwzError=Msg(
         code=F(1, Ref.GwzErrorCode),
         # Human-readable diagnostic.
@@ -718,7 +749,8 @@ SCHEMA = schema(
         # Optional implementation detail for logs/debugging.
         detail=F(5, STR, optional=True),
         # Concrete target kind for member_id/member_path when present.
-        target_kind=F(6, Ref.TargetKind, optional=True)),
+        target_kind=F(6, Ref.TargetKind, optional=True),
+        record_context=F(7, Ref.MergeRecordCompatibilityContext, optional=True)),
 
     # ---- model projections ------------------------------------------------
     # Remote declaration recorded for a member.

@@ -2,6 +2,9 @@ use crate::model;
 
 use super::generated;
 
+impl Eq for generated::MergeRecordRequiredWave {}
+impl Eq for generated::MergeRecordCompatibilityContext {}
+
 impl From<model::ErrorCode> for generated::GwzErrorCode {
     fn from(value: model::ErrorCode) -> Self {
         match value {
@@ -51,6 +54,22 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::MergePhaseUnsupported => Self::MergePhaseUnsupported,
             model::ErrorCode::RootMergeNotYetSupported => Self::RootMergeNotYetSupported,
             model::ErrorCode::MergeRecordUnreadable => Self::MergeRecordUnreadable,
+            model::ErrorCode::UnsupportedRecordVersion => Self::UnsupportedRecordVersion,
+            model::ErrorCode::UnsupportedLegacyMode => Self::UnsupportedLegacyMode,
+            model::ErrorCode::ArchivedRecordUnreadable => Self::ArchivedRecordUnreadable,
+            model::ErrorCode::UnexpectedAcceptanceEvidence => Self::UnexpectedAcceptanceEvidence,
+            model::ErrorCode::AcceptanceInputDrift => Self::AcceptanceInputDrift,
+            model::ErrorCode::CandidateIntegrityMismatch => Self::CandidateIntegrityMismatch,
+            model::ErrorCode::AmbiguousEvidenceCommit => Self::AmbiguousEvidenceCommit,
+            model::ErrorCode::RecordedEvidenceDrift => Self::RecordedEvidenceDrift,
+            model::ErrorCode::PublicationPrefixMismatch => Self::PublicationPrefixMismatch,
+            model::ErrorCode::PublishedCandidateMismatch => Self::PublishedCandidateMismatch,
+            model::ErrorCode::PreservationEvidenceMismatch => Self::PreservationEvidenceMismatch,
+            model::ErrorCode::RollbackEvidenceMismatch => Self::RollbackEvidenceMismatch,
+            model::ErrorCode::UnexpectedPublicationEvidence => Self::UnexpectedPublicationEvidence,
+            model::ErrorCode::TerminalEvidenceMismatch => Self::TerminalEvidenceMismatch,
+            model::ErrorCode::RecoveryEvidenceMismatch => Self::RecoveryEvidenceMismatch,
+            model::ErrorCode::TerminalRollbackMismatch => Self::TerminalRollbackMismatch,
         }
     }
 }
@@ -187,6 +206,7 @@ impl From<&model::ModelError> for generated::GwzError {
             member_path: value.member_path.clone(),
             target_kind,
             detail: None,
+            record_context: value.record_context.as_deref().cloned(),
         }
     }
 }
