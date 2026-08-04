@@ -111,7 +111,7 @@ pub(crate) fn adapt_open_v0_for_r3_tests<B: GitBackend>(
         return Ok(OpenV0Adaptation::ValidUnlisted);
     }
     let descriptor = super::descriptor::verified_v0_descriptor(backend, root, record)?;
-    let unknown_fields = decoded
+    let mut unknown_fields = decoded
         .unknown_fields()
         .map_v0_to_v1()
         .map_err(|error| unreadable(record, error.detail))?;
@@ -149,6 +149,17 @@ pub(crate) fn adapt_open_v0_for_r3_tests<B: GitBackend>(
     }
 
     let adapted = adapted_record(record, writer_version)?;
+    let adapted_raw = serde_yaml::to_value(&adapted)
+        .map_err(|error| internal(format!("cannot inspect adapted v1 record: {error}")))?;
+    let adapted_unknowns = UnknownFieldManifest::extract_v1(&adapted_raw).map_err(|error| {
+        internal(format!(
+            "cannot inspect adapted v1 unknowns: {}",
+            error.detail
+        ))
+    })?;
+    unknown_fields
+        .authorize_derived_accepted_lock_members(&adapted_unknowns)
+        .map_err(|error| unreadable(record, error.detail))?;
     let canonical = CanonicalMergeRecord::from(validate_v1_record(adapted.clone())?);
     Ok(OpenV0Adaptation::Eligible {
         rule_id,

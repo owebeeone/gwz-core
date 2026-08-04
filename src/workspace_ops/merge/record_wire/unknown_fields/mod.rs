@@ -79,6 +79,31 @@ impl UnknownFieldManifest {
         Ok(self.clone())
     }
 
+    pub(crate) fn authorize_derived_accepted_lock_members(
+        &mut self,
+        replacement: &Self,
+    ) -> Result<(), UnknownFieldManifestError> {
+        for (locator, value) in replacement.entries() {
+            if let Some(source) = self.entries.get(locator) {
+                if source != value {
+                    return Err(error(format!(
+                        "unknown field '{}' changed while deriving accepted lock audit",
+                        locator.field
+                    )));
+                }
+                continue;
+            }
+            if !is_accepted_lock_member(locator) {
+                return Err(error(format!(
+                    "derived v1 record introduced unauthorized unknown field '{}'",
+                    locator.field
+                )));
+            }
+            self.entries.insert(locator.clone(), value.clone());
+        }
+        Ok(())
+    }
+
     pub(crate) fn entries(&self) -> &BTreeMap<UnknownFieldLocator, Value> {
         &self.entries
     }
@@ -93,6 +118,20 @@ impl UnknownFieldManifest {
         }
         Ok(())
     }
+}
+
+fn is_accepted_lock_member(locator: &UnknownFieldLocator) -> bool {
+    matches!(
+        locator.container.as_slice(),
+        [
+            ContainerSegment::Field(accepted),
+            ContainerSegment::Field(audit),
+            ContainerSegment::MapKey(_),
+            ContainerSegment::Field(lock_member),
+        ] if accepted == "accepted_workspace"
+            && audit == "member_audit"
+            && lock_member == "lock_member"
+    )
 }
 
 fn error(detail: impl Into<String>) -> UnknownFieldManifestError {

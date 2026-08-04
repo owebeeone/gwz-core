@@ -49,6 +49,7 @@ impl DecodedV0Record {
 pub(crate) struct DecodedV1Record {
     pub(crate) raw: Value,
     pub(crate) header: MergeRecordHeader,
+    pub(crate) record: MergeOperationRecordV1,
     pub(crate) canonical: CanonicalMergeRecord,
     pub(crate) unknown_fields: UnknownFieldManifest,
 }
@@ -131,10 +132,11 @@ pub(crate) fn decode_v1_for_r3_tests(bytes: &[u8]) -> Result<DecodedV1Record, Re
             header: header.clone(),
             detail: error.to_string(),
         })?;
-    let validated = validate_v1_record(record).map_err(|error| RecordDecodeError::Validation {
-        header: header.clone(),
-        error,
-    })?;
+    let validated =
+        validate_v1_record(record.clone()).map_err(|error| RecordDecodeError::Validation {
+            header: header.clone(),
+            error,
+        })?;
     let unknown_fields = UnknownFieldManifest::extract_v1(&raw).map_err(|error| {
         RecordDecodeError::UnknownFields {
             header: header.clone(),
@@ -144,6 +146,7 @@ pub(crate) fn decode_v1_for_r3_tests(bytes: &[u8]) -> Result<DecodedV1Record, Re
     Ok(DecodedV1Record {
         raw,
         header,
+        record,
         canonical: CanonicalMergeRecord::from(validated),
         unknown_fields,
     })

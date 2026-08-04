@@ -39,9 +39,11 @@ pub(crate) use finalize::{CandidatePublicationMutation, fail_next_candidate_publ
 use preserve::classify_index_aligned_root_publication_for_i2;
 #[cfg(test)]
 pub(crate) use record_wire::{
-    OpenV0Adaptation, VerifiedV0Descriptor, adapt_open_v0_for_r3_tests, decode_v0_for_r3_tests,
-    verified_v0_descriptor,
+    OpenV0Adaptation, PreparedOpenV0Upgrade, VerifiedV0Descriptor, adapt_open_v0_for_r3_tests,
+    decode_v0_for_r3_tests, decode_v1_for_r3_tests, prepare_upgrade, verified_v0_descriptor,
 };
+#[cfg(test)]
+pub(crate) use store::{AtomicUpgradeFault, AtomicUpgradeOutcome, upgrade_open_v0_for_r3_tests};
 
 pub(crate) use model::*;
 pub(crate) use recovery::*;

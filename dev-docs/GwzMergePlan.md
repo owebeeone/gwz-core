@@ -1,16 +1,15 @@
 # GWZ Merge Implementation Plan
 
 Status: **active** (revised 2026-08-04). Owner: Gianni. M2b through M4, the
-god-file refactor, R0, R1, R2a, M5a, I1/I2, and R4a are complete. The R3
-envelope, validated-model, unknown-field, open-v0 adapter, and
-archive-projection checkpoints are implemented and independently accepted,
-with only the v0 body decoder
-installed in production. M5a custom
-messages have green local technical, compatibility, and cross-driver gates.
+god-file refactor, R0, R1, R2a, M5a, I1/I2, R4a, and production-disabled R3
+are complete. R3's envelope, validated model, unknown-field policy, open-v0
+adapter, archive projection, and atomic-upgrade harness are implemented and
+independently accepted, with only the v0 body decoder installed in production.
+M5a custom messages have green local technical, compatibility, and cross-driver
+gates.
 The corrected I1/I2 durability contracts and R4a acceptance/finalization
-semantics each have two independent GO verdicts. R3 is the next active package,
-with its production v1 writer and migration dispatch required to remain
-unreachable.
+semantics each have two independent GO verdicts. R4b is the next active
+package; R3's production v1 writer and migration dispatch remain unreachable.
 Completed release builds remain the Windows, macOS, Linux x86, and Linux arm64
 platform evidence for the preceding release baseline.
 
@@ -1673,8 +1672,15 @@ boundaries:
    cleanup-worklist seam are also implemented under `cfg(test)` and accepted by
    two independent settled-tree reviews with no P0–P3 finding; focused archive
    tests pass 17/17 and the full core gate passes 801 with 1 ignored plus every
-   integration suite. Production remains v0-only. The test-only atomic upgrade
-   remains before R3 is complete.
+   integration suite. The test-only atomic upgrade is also complete: it
+   requires one sole named open v0 record, preserves rejected and unlisted
+   sources without staging, verifies staged and published v1 bytes/models,
+   retains exact accepted-lock audit extensions, and proves all four crash
+   boundaries. Its 106-line preparer, 187-line store owner, and 411-line test
+   owner remain below 500 lines; the compatibility binder is 644/650. G23 and
+   the full core/integration gates are green, and both independent re-reviews
+   returned GO with no P0–P3 finding. Production remains v0-only; R3 is
+   complete at its disabled-writer boundary.
 5. R4b, finalization owned, makes every finalization and recovery path consume
    persisted acceptance.
 6. M5b splits exact prepared-commit work between the Git backend owner and

@@ -84,6 +84,7 @@ fn canonical_json(value: &Value, output: &mut String) {
 }
 
 fn assert_adapter_guards<B: GitBackend>(backend: &B, root: &Path, record: &MergeOperationRecord) {
+    super::atomic_upgrade_v0::assert_rejection_guards(backend, root, record);
     let raw = serde_yaml::to_value(record).unwrap();
     let baseline_decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
         serde_yaml::to_string(record).unwrap().as_bytes(),
@@ -466,6 +467,7 @@ pub(super) fn assert_i2_compatibility_fixture<B: GitBackend>(
             panic!("registered case {case_id} was not adapted")
         }
     }
+    super::atomic_upgrade_v0::assert_upgrade_fixture(backend, root, record, rule_id, case_id);
 }
 
 pub(super) fn assert_i2_valid_unlisted_fixture<B: GitBackend>(
@@ -512,6 +514,7 @@ pub(super) fn assert_i2_valid_unlisted_fixture<B: GitBackend>(
         crate::workspace_ops::merge::OpenV0Adaptation::ValidUnlisted,
         "{case_id}"
     );
+    super::atomic_upgrade_v0::assert_valid_unlisted(backend, root, record);
 
     let mut malformed = record.clone();
     malformed

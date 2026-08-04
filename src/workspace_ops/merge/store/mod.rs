@@ -11,6 +11,8 @@ use crate::durable_fs::{rename_durable, sync_dir};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 mod archived;
+#[cfg(test)]
+mod atomic_upgrade;
 mod compatibility_errors;
 mod gc;
 mod persistence;
@@ -18,6 +20,11 @@ mod retention;
 
 pub(crate) use persistence::{
     archive_merge_record, enter_finalizing, persist_merge_record, persist_operation_transition,
+};
+
+#[cfg(test)]
+pub(crate) use atomic_upgrade::{
+    AtomicUpgradeFault, AtomicUpgradeOutcome, upgrade_open_v0_for_r3_tests,
 };
 
 use compatibility_errors::{
