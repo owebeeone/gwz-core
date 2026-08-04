@@ -240,17 +240,19 @@ fn invalid_durable_true_merge_evidence_is_ambiguous_and_blocks_recovery() {
                 spec.committer.timezone_offset_minutes = 1_441;
             }
         }
-        let super::super::pending::DurablePreparedAction::Merge(durable_prepared) =
-            super::super::pending::decode_durable_prepared_action(
+        let super::super::integration::PreparedIntegrationAction::TrueMergeCommit(durable_commit) =
+            super::super::integration::decode_pending(
                 record.participants["mem_app"]
                     .pending_action
                     .as_ref()
                     .unwrap(),
             )
             .unwrap()
+            .action
         else {
             panic!("true-merge intent must decode as a prepared merge")
         };
+        let durable_prepared = GitPreparedMerge::Commit(durable_commit);
         let durable_before = record.clone();
         store.write_open(root.path(), &record).unwrap();
         let repository_before = file_snapshot(&app);
@@ -429,6 +431,73 @@ fn pending_resolution_exact_retry_uses_frozen_signatures() {
             .as_ref()
             .is_none_or(|pending| pending == &frozen_pending)
     }));
+}
+
+#[test]
+fn contradictory_resolution_parent_blocks_continue_before_git_or_record_mutation() {
+    let root = TempDir::new("merge-pending-resolution-parent-mismatch");
+    let backend = Git2Backend::new();
+    let plan = single_real_plan(root.path(), &backend, ActionFixture::Conflict);
+    let app = root.path().join("app");
+    let conflict = backend
+        .prepare_merge_upstream_checked(
+            &app,
+            &plan.participants[0].target_branch,
+            &plan.participants[0].before_commit,
+            &plan.participants[0].source_commit,
+            None,
+        )
+        .unwrap();
+    backend
+        .execute_prepared_merge_upstream_checked(
+            &app,
+            &plan.participants[0].target_branch,
+            &plan.participants[0].before_commit,
+            &plan.participants[0].source_commit,
+            &plan.participants[0].commit_message,
+            &conflict,
+        )
+        .unwrap();
+    std::fs::write(app.join("README.md"), "resolved\n").unwrap();
+    backend.stage_paths(&app, &["README.md"]).unwrap();
+    let prepared = backend
+        .prepare_merge_resolution_checked(
+            &app,
+            &plan.participants[0].target_branch,
+            &plan.participants[0].before_commit,
+            &plan.participants[0].source_commit,
+            None,
+        )
+        .unwrap();
+    let store = MemoryStore::default();
+    let mut record = durable_record(root.path(), &plan);
+    record.state = OperationState::AwaitingResolution;
+    let participant = record.participants.get_mut("mem_app").unwrap();
+    participant.state = ParticipantState::Conflicted;
+    participant.expected_merge_head = Some(plan.participants[0].before_commit.clone());
+    participant.pending_action = Some(PendingMergeAction {
+        kind: PendingMergeActionKind::ResolveConflict,
+        target_branch: plan.participants[0].target_branch.clone(),
+        before_commit: plan.participants[0].before_commit.clone(),
+        source_commit: plan.participants[0].source_commit.clone(),
+        commit_message: plan.participants[0].commit_message.clone(),
+        expected_result: Some(PendingMergeExpectedResult::Commit),
+        commit_spec: pending_commit_spec(&GitPreparedMerge::Commit(prepared)),
+        extensions: BTreeMap::new(),
+    });
+    store.write_open(root.path(), &record).unwrap();
+    let repository_before = file_snapshot(&app);
+    let durable_before = record.clone();
+    Git2Backend::reset_preparation_call_count();
+
+    let error = resume(&backend, &store, root.path()).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
+    assert!(error.message.contains("expected merge head"));
+    assert_eq!(Git2Backend::preparation_call_count(), 0);
+    assert_eq!(*store.writes.lock().unwrap(), 1);
+    assert_eq!(store.records.lock().unwrap().as_slice(), &[durable_before]);
+    assert_eq!(file_snapshot(&app), repository_before);
 }
 
 #[test]

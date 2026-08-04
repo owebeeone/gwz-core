@@ -144,7 +144,7 @@ fn v0_pending_action_decode_matrix_is_closed() {
                         | (K::TrueMerge | K::ResolveConflict, Some(R::Commit), true)
                 );
                 assert_eq!(
-                    super::pending::decode_durable_prepared_action(&action).is_ok(),
+                    super::integration::decode_pending(&action).is_ok(),
                     legal,
                     "kind={kind:?} result={expected_result:?} with_spec={with_spec}"
                 );

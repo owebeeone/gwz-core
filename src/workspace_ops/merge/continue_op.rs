@@ -1,17 +1,14 @@
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::git::{
     GitBackend, GitIntegrateResult, GitMergeAnalysisKind, GitPreparedCommit, GitPreparedMerge,
-    GitPreparedSignature,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext, WorkspaceMutatorLock};
 
 use super::{
     ConflictFileEvidence, MergeOperationRecord, MergeParticipantRecord, MergeRecordError,
-    MergeStore, OperationState, ParticipantState, PendingCommitSpec, PendingGitSignature,
-    PendingMergeAction, PendingMergeActionKind, PendingMergeExpectedResult,
+    MergeStore, OperationState, ParticipantState, PendingMergeActionKind,
 };
 
 mod coordinator;

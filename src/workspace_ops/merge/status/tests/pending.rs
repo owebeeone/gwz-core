@@ -381,6 +381,74 @@ fn pending_resolution_tree_change_is_ambiguous_without_mutation() {
 }
 
 #[test]
+fn contradictory_resolution_parent_is_ambiguous_and_status_is_read_only() {
+    let root = test_root("pending-resolution-parent-mismatch");
+    let repo = root.join("repos/app");
+    let backend = Git2Backend::new();
+    backend.create_repo(&repo).unwrap();
+    commit(&repo, "conflict.txt", "base\n", "base");
+    run_git(&repo, &["branch", "feature"]);
+    run_git(&repo, &["checkout", "feature"]);
+    let source = commit(&repo, "conflict.txt", "source\n", "source");
+    run_git(&repo, &["checkout", "main"]);
+    let before = commit(&repo, "conflict.txt", "main\n", "main");
+    let conflict = backend
+        .prepare_merge_upstream_checked(&repo, "main", &before, &source, None)
+        .unwrap();
+    backend
+        .execute_prepared_merge_upstream_checked(
+            &repo,
+            "main",
+            &before,
+            &source,
+            "frozen resolution",
+            &conflict,
+        )
+        .unwrap();
+    fs::write(repo.join("conflict.txt"), "resolved\n").unwrap();
+    run_git(&repo, &["add", "conflict.txt"]);
+    let prepared = backend
+        .prepare_merge_resolution_checked(&repo, "main", &before, &source, None)
+        .unwrap();
+    let mut record = pending_record(
+        ParticipantState::Conflicted,
+        &before,
+        &source,
+        "frozen resolution",
+        PendingMergeActionKind::ResolveConflict,
+    );
+    record.expected_merge_head = Some(before.clone());
+    set_prepared_commit(&mut record, &prepared);
+    let head_before = backend.head(&repo).unwrap();
+    let index_before = fs::read(repo.join(".git/index")).unwrap();
+    let worktree_before = fs::read(repo.join("conflict.txt")).unwrap();
+    let native_before = backend.merge_state(&repo).unwrap();
+
+    let reconciliation = reconcile_pending_action(&backend, &root, "mem_app", &record).unwrap();
+    let observed = observe_participant(&backend, &root, "mem_app", &record).unwrap();
+
+    assert!(matches!(
+        reconciliation,
+        PendingActionReconciliation::Ambiguous { ref reason, .. }
+            if reason.contains("expected merge head")
+    ));
+    assert_eq!(
+        observed.pending_action.unwrap().state,
+        super::super::super::PendingActionObservationState::Ambiguous
+    );
+    assert!(!observed.continue_eligibility.eligible);
+    assert!(!observed.abort_eligibility.eligible);
+    assert_eq!(backend.head(&repo).unwrap(), head_before);
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index_before);
+    assert_eq!(
+        fs::read(repo.join("conflict.txt")).unwrap(),
+        worktree_before
+    );
+    assert_eq!(backend.merge_state(&repo).unwrap(), native_before);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn resolution_candidate_with_different_tree_is_never_adopted_or_rollback_eligible() {
     let root = test_root("reconcile-resolution-different-tree");
     let repo = root.join("repos/app");

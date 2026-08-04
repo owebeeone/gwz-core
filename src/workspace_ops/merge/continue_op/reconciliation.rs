@@ -140,62 +140,22 @@ pub(super) fn set_pending_action(
                 format!("merge record is missing participant '{}'", action.target_id),
             )
         })?;
-    let kind = match action.kind {
-        ContinueActionKind::Resolve => PendingMergeActionKind::ResolveConflict,
-        ContinueActionKind::Retry(GitMergeAnalysisKind::UpToDate) => {
-            PendingMergeActionKind::VerifyUpToDate
+    let intent = super::super::integration::IntegrationIntent::from_record(participant);
+    let integration = match (action.kind, &action.prepared) {
+        (ContinueActionKind::Resolve, ContinuePrepared::Resolution(prepared)) => {
+            super::super::integration::PreparedIntegration::resolution(intent, prepared)
         }
-        ContinueActionKind::Retry(GitMergeAnalysisKind::FastForward) => {
-            PendingMergeActionKind::FastForward
+        (ContinueActionKind::Retry(kind), ContinuePrepared::Merge(prepared)) => {
+            super::super::integration::PreparedIntegration::from_merge(intent, kind, prepared)
+                .map_err(invariant)?
         }
-        ContinueActionKind::Retry(GitMergeAnalysisKind::TrueMerge) => {
-            PendingMergeActionKind::TrueMerge
+        (ContinueActionKind::Resolve, ContinuePrepared::Merge(_))
+        | (ContinueActionKind::Retry(_), ContinuePrepared::Resolution(_)) => {
+            return Err(invariant(
+                "continue action kind does not match its prepared integration",
+            ));
         }
     };
-    participant.pending_action = Some(PendingMergeAction {
-        kind,
-        target_branch: participant.target_branch.clone(),
-        before_commit: participant.before_commit.clone(),
-        source_commit: participant.source_commit.clone(),
-        commit_message: participant.commit_message.clone(),
-        expected_result: Some(match &action.prepared {
-            ContinuePrepared::Merge(prepared) => pending_expected_result(prepared),
-            ContinuePrepared::Resolution(_) => PendingMergeExpectedResult::Commit,
-        }),
-        commit_spec: match &action.prepared {
-            ContinuePrepared::Merge(GitPreparedMerge::Commit(spec))
-            | ContinuePrepared::Resolution(spec) => Some(pending_commit_spec(spec)),
-            _ => None,
-        },
-        extensions: BTreeMap::new(),
-    });
+    participant.pending_action = Some(integration.to_pending());
     Ok(())
-}
-
-fn pending_expected_result(result: &GitPreparedMerge) -> PendingMergeExpectedResult {
-    match result {
-        GitPreparedMerge::Unchanged => PendingMergeExpectedResult::Unchanged,
-        GitPreparedMerge::FastForward => PendingMergeExpectedResult::FastForward,
-        GitPreparedMerge::ExpectedConflict => PendingMergeExpectedResult::ExpectedConflict,
-        GitPreparedMerge::Commit(_) => PendingMergeExpectedResult::Commit,
-    }
-}
-
-fn pending_commit_spec(spec: &GitPreparedCommit) -> PendingCommitSpec {
-    PendingCommitSpec {
-        tree_oid: spec.tree_oid.clone(),
-        author: pending_signature(&spec.author),
-        committer: pending_signature(&spec.committer),
-        extensions: BTreeMap::new(),
-    }
-}
-
-fn pending_signature(signature: &GitPreparedSignature) -> PendingGitSignature {
-    PendingGitSignature {
-        name: signature.name.clone(),
-        email: signature.email.clone(),
-        time_seconds: signature.time_seconds,
-        timezone_offset_minutes: signature.timezone_offset_minutes,
-        extensions: BTreeMap::new(),
-    }
 }

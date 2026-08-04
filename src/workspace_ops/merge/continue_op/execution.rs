@@ -40,12 +40,11 @@ pub(super) fn preflight<B: GitBackend>(
                 .with_member(target_id, &participant.path));
         }
         if let Some(pending) = participant.pending_action.as_ref() {
-            let prepared = super::super::pending::decode_durable_prepared_action(pending).map_err(
-                |reason| {
+            let prepared = super::super::integration::decode_for_participant(pending, participant)
+                .map_err(|reason| {
                     ModelError::new(ErrorCode::MergeRecoveryRequired, reason)
                         .with_member(target_id, &participant.path)
-                },
-            )?;
+                })?;
             let (kind, prepared) = durable_continue_action(participant, prepared)
                 .map_err(|error| error.with_member(target_id, &participant.path))?;
             actions.push(ContinueAction {
@@ -138,25 +137,44 @@ pub(super) fn preflight<B: GitBackend>(
 
 fn durable_continue_action(
     participant: &MergeParticipantRecord,
-    prepared: super::super::pending::DurablePreparedAction,
+    prepared: super::super::integration::PreparedIntegration,
 ) -> ModelResult<(ContinueActionKind, ContinuePrepared)> {
-    match (continue_disposition(participant.state), prepared) {
-        (
-            ContinueDisposition::ResolveConflict,
-            super::super::pending::DurablePreparedAction::Resolution(prepared),
-        ) => Ok((
-            ContinueActionKind::Resolve,
-            ContinuePrepared::Resolution(prepared),
-        )),
-        (
-            ContinueDisposition::RetryIntegration,
-            super::super::pending::DurablePreparedAction::Merge(prepared),
-        ) => {
-            let kind = match prepared {
-                GitPreparedMerge::Unchanged => GitMergeAnalysisKind::UpToDate,
-                GitPreparedMerge::FastForward => GitMergeAnalysisKind::FastForward,
-                GitPreparedMerge::ExpectedConflict | GitPreparedMerge::Commit(_) => {
-                    GitMergeAnalysisKind::TrueMerge
+    use super::super::integration::PreparedIntegrationAction as Action;
+
+    match continue_disposition(participant.state) {
+        ContinueDisposition::ResolveConflict => match prepared.action {
+            Action::ResolveConflict(prepared) => Ok((
+                ContinueActionKind::Resolve,
+                ContinuePrepared::Resolution(prepared),
+            )),
+            Action::VerifyUpToDate
+            | Action::FastForward
+            | Action::TrueMergeExpectedConflict
+            | Action::TrueMergeCommit(_) => Err(invariant(
+                "pending action kind does not match the participant recovery state",
+            )),
+        },
+        ContinueDisposition::RetryIntegration => {
+            let (kind, prepared) = match prepared.action {
+                Action::VerifyUpToDate => {
+                    (GitMergeAnalysisKind::UpToDate, GitPreparedMerge::Unchanged)
+                }
+                Action::FastForward => (
+                    GitMergeAnalysisKind::FastForward,
+                    GitPreparedMerge::FastForward,
+                ),
+                Action::TrueMergeExpectedConflict => (
+                    GitMergeAnalysisKind::TrueMerge,
+                    GitPreparedMerge::ExpectedConflict,
+                ),
+                Action::TrueMergeCommit(prepared) => (
+                    GitMergeAnalysisKind::TrueMerge,
+                    GitPreparedMerge::Commit(prepared),
+                ),
+                Action::ResolveConflict(_) => {
+                    return Err(invariant(
+                        "pending action kind does not match the participant recovery state",
+                    ));
                 }
             };
             Ok((
@@ -164,7 +182,7 @@ fn durable_continue_action(
                 ContinuePrepared::Merge(prepared),
             ))
         }
-        _ => Err(invariant(
+        ContinueDisposition::Settled | ContinueDisposition::RejectedTerminal => Err(invariant(
             "pending action kind does not match the participant recovery state",
         )),
     }
