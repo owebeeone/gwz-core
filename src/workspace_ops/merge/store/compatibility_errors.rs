@@ -34,9 +34,23 @@ pub(super) fn decode_error(
         )
         .with_record_context(record_context(merge_id, &header, None)),
         #[cfg(test)]
-        RecordDecodeError::Validation { header, error } => {
-            error.with_record_context(record_context(merge_id, &header, None))
-        }
+        RecordDecodeError::Validation { header, error } => match location {
+            RecordLocation::Open => {
+                error.with_record_context(record_context(merge_id, &header, None))
+            }
+            RecordLocation::Archived => archived_contradiction(merge_id, &header),
+        },
+        #[cfg(test)]
+        RecordDecodeError::UnknownFields { header, error } => match location {
+            RecordLocation::Open => location_unreadable(
+                path,
+                merge_id,
+                location,
+                format!("invalid unknown-field manifest: {}", error.detail),
+            )
+            .with_record_context(record_context(merge_id, &header, None)),
+            RecordLocation::Archived => archived_contradiction(merge_id, &header),
+        },
     }
 }
 
@@ -157,5 +171,44 @@ fn required_wave_display(wave: crate::MergeRecordRequiredWave) -> &'static str {
         crate::MergeRecordRequiredWave::A2 => "A2 (v2 branch lifecycle)",
         crate::MergeRecordRequiredWave::A3 => "A3 (v3 snapshot source)",
         crate::MergeRecordRequiredWave::A4 => "A4 (v4 partial composition)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn validation_error() -> RecordDecodeError {
+        RecordDecodeError::Validation {
+            header: MergeRecordHeader {
+                schema: "gwz.merge-operation/v1".to_owned(),
+                record_schema_version: 1,
+            },
+            error: ModelError::new(
+                ErrorCode::UnexpectedAcceptanceEvidence,
+                "accepted evidence is contradictory",
+            ),
+        }
+    }
+
+    #[test]
+    fn v1_validation_error_projection_depends_on_record_location() {
+        let path = Path::new(".gwz/merge/merge_1.yaml");
+        let open = decode_error(path, "merge_1", RecordLocation::Open, validation_error());
+        let archived = decode_error(
+            path,
+            "merge_1",
+            RecordLocation::Archived,
+            validation_error(),
+        );
+
+        assert_eq!(open.code, ErrorCode::UnexpectedAcceptanceEvidence);
+        assert_eq!(archived.code, ErrorCode::ArchivedRecordUnreadable);
+        for error in [&open, &archived] {
+            let context = error.record_context.as_ref().unwrap();
+            assert_eq!(context.merge_id, "merge_1");
+            assert_eq!(context.schema.as_deref(), Some("gwz.merge-operation/v1"));
+            assert_eq!(context.record_schema_version, Some(1));
+        }
     }
 }

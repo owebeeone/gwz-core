@@ -33,6 +33,13 @@ fn production_decoder_uses_the_strict_tree_for_v0_body_decode() {
     )
     .unwrap();
     assert_eq!(decoded.record.merge_id, "merge_1");
+    assert!(
+        decoded
+            .unknown_fields
+            .entries()
+            .keys()
+            .any(|locator| locator.field == "future_record")
+    );
     assert_eq!(
         decoded
             .raw
@@ -88,6 +95,13 @@ fn test_only_v1_decoder_uses_the_same_strict_tree_for_the_complete_body() {
             .get("future_record")
             .and_then(serde_yaml::Value::as_str),
         Some("retained")
+    );
+    assert!(
+        decoded
+            .unknown_fields
+            .entries()
+            .keys()
+            .any(|locator| locator.field == "future_record")
     );
 }
 

@@ -10,6 +10,8 @@ use super::raw_yaml::{StrictYamlError, parse_strict_yaml};
 #[cfg(test)]
 use super::super::model::v1::{CanonicalMergeRecord, MergeOperationRecordV1, validate_v1_record};
 #[cfg(test)]
+use super::unknown_fields::{UnknownFieldManifest, UnknownFieldManifestError};
+#[cfg(test)]
 use crate::model::ModelError;
 
 #[derive(Debug)]
@@ -17,6 +19,8 @@ pub(crate) struct DecodedV0Record {
     pub(crate) raw: Value,
     pub(crate) header: MergeRecordHeader,
     pub(crate) record: MergeOperationRecord,
+    #[cfg(test)]
+    pub(crate) unknown_fields: UnknownFieldManifest,
 }
 
 #[cfg(test)]
@@ -25,6 +29,7 @@ pub(crate) struct DecodedV1Record {
     pub(crate) raw: Value,
     pub(crate) header: MergeRecordHeader,
     pub(crate) canonical: CanonicalMergeRecord,
+    pub(crate) unknown_fields: UnknownFieldManifest,
 }
 
 #[derive(Debug)]
@@ -39,6 +44,11 @@ pub(crate) enum RecordDecodeError {
     Validation {
         header: MergeRecordHeader,
         error: ModelError,
+    },
+    #[cfg(test)]
+    UnknownFields {
+        header: MergeRecordHeader,
+        error: UnknownFieldManifestError,
     },
 }
 
@@ -58,10 +68,19 @@ pub(crate) fn decode_production_v0(bytes: &[u8]) -> Result<DecodedV0Record, Reco
         header: header.clone(),
         detail: error.to_string(),
     })?;
+    #[cfg(test)]
+    let unknown_fields = UnknownFieldManifest::extract_v0(&raw).map_err(|error| {
+        RecordDecodeError::UnknownFields {
+            header: header.clone(),
+            error,
+        }
+    })?;
     Ok(DecodedV0Record {
         raw,
         header,
         record,
+        #[cfg(test)]
+        unknown_fields,
     })
 }
 
@@ -95,9 +114,16 @@ pub(crate) fn decode_v1_for_r3_tests(bytes: &[u8]) -> Result<DecodedV1Record, Re
         header: header.clone(),
         error,
     })?;
+    let unknown_fields = UnknownFieldManifest::extract_v1(&raw).map_err(|error| {
+        RecordDecodeError::UnknownFields {
+            header: header.clone(),
+            error,
+        }
+    })?;
     Ok(DecodedV1Record {
         raw,
         header,
         canonical: CanonicalMergeRecord::from(validated),
+        unknown_fields,
     })
 }
