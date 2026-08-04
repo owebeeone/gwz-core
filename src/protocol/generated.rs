@@ -1411,17 +1411,20 @@ pub enum DiffTargetExclusionReason {
     #[default] SnapshotMissing,
     SnapshotMissingCommit,
     RootNotInSnapshot,
+    TagMissing,
 }
 impl DiffTargetExclusionReason {
     pub fn wire(self) -> i64 { match self {
         Self::SnapshotMissing => 0,
         Self::SnapshotMissingCommit => 1,
         Self::RootNotInSnapshot => 2,
+        Self::TagMissing => 3,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::SnapshotMissing,
         1 => Self::SnapshotMissingCommit,
         2 => Self::RootNotInSnapshot,
+        3 => Self::TagMissing,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffTargetExclusionReason", value: v }),
     }) }
 }
@@ -4192,6 +4195,7 @@ pub struct DiffRequest {
     pub options: Option<DiffOptions>,
     pub cached: Option<bool>,
     pub merge_base: Option<bool>,
+    pub tagged: Option<bool>,
 }
 impl DiffRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -4203,6 +4207,7 @@ impl DiffRequest {
             (5, match &self.options { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (6, match &self.cached { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (7, match &self.merge_base { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (8, match &self.tagged { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4214,6 +4219,7 @@ impl DiffRequest {
             options: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(DiffOptions::from_cbor(v)?) } },
             cached: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             merge_base: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            tagged: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
         })
     }
 }

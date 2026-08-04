@@ -9,6 +9,7 @@ use crate::diff::{DiffLogRegistry, LogReadRequest, LogReadState, decode_record, 
 use crate::git::{Git2Backend, GitBackend};
 use crate::protocol::generated::{
     DiffManifestMode, DiffOptions, DiffOutputFormat, DiffOutputRecordKind, DiffStatus,
+    DiffTargetExclusionReason,
 };
 use std::process::Command;
 
@@ -129,6 +130,133 @@ fn manifest_order_is_root_first_then_members() {
         .map(|r| r.file_id.clone().unwrap())
         .collect();
     assert_eq!(started, vec!["@root#0", "mem_a#0", "mem_b#0"]);
+}
+
+#[test]
+fn tagged_mode_keeps_only_repositories_containing_every_tag() {
+    let ws = Workspace::new("tagged-intersection");
+    let app = ws.add_member("mem_app", "app");
+    let only_old = ws.add_member("mem_old", "old");
+    let only_new = ws.add_member("mem_new", "new");
+
+    Workspace::write(&app, "app.txt", b"app v1\n");
+    Workspace::commit(&app, "app v1");
+    Workspace::write(ws.root(), "root.txt", b"root v1\n");
+    Workspace::commit(ws.root(), "root v1");
+
+    for repo in [ws.root(), app.as_path(), only_old.as_path()] {
+        super::workspace_fixture::run_git(repo, &["tag", "v1"]);
+    }
+
+    Workspace::write(&app, "app.txt", b"app v2\n");
+    Workspace::commit(&app, "app v2");
+    Workspace::write(ws.root(), "root.txt", b"root v2\n");
+    Workspace::commit(ws.root(), "root v2");
+
+    for repo in [ws.root(), app.as_path(), only_new.as_path()] {
+        super::workspace_fixture::run_git(repo, &["tag", "v2"]);
+    }
+
+    let registry = DiffLogRegistry::new();
+    let mut request = ws.request_operands(&["v1", "v2"], &[], "");
+    request.tagged = Some(true);
+    request.options = Some(DiffOptions {
+        output_format: Some(DiffOutputFormat::NoPatch),
+        ..Default::default()
+    });
+    let outcome = handle_diff(ws.root(), request, "op_tagged", &registry).unwrap();
+
+    let targets: Vec<&str> = outcome
+        .response
+        .targets
+        .iter()
+        .map(|target| target.scope.member_id.as_deref().unwrap_or("@root"))
+        .collect();
+    assert_eq!(targets, vec!["@root", "mem_app"]);
+
+    let excluded: Vec<(&str, DiffTargetExclusionReason)> = outcome
+        .response
+        .excluded_targets
+        .iter()
+        .map(|target| {
+            (
+                target.scope.member_id.as_deref().unwrap_or("@root"),
+                target.reason,
+            )
+        })
+        .collect();
+    assert_eq!(
+        excluded,
+        vec![
+            ("mem_old", DiffTargetExclusionReason::TagMissing),
+            ("mem_new", DiffTargetExclusionReason::TagMissing),
+        ]
+    );
+    assert!(
+        outcome.response.excluded_targets[0]
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("v2"))
+    );
+    assert!(
+        outcome.response.excluded_targets[1]
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("v1"))
+    );
+}
+
+#[test]
+fn tagged_mode_requires_a_nonempty_tag_intersection() {
+    let ws = Workspace::new("tagged-empty-intersection");
+    let member = ws.add_member("mem_app", "app");
+
+    Workspace::write(ws.root(), "root.txt", b"root\n");
+    Workspace::commit(ws.root(), "root");
+    Workspace::write(&member, "app.txt", b"app\n");
+    Workspace::commit(&member, "app");
+    super::workspace_fixture::run_git(ws.root(), &["tag", "v1"]);
+    super::workspace_fixture::run_git(&member, &["tag", "v2"]);
+
+    let registry = DiffLogRegistry::new();
+    let mut request = ws.request_operands(&["v1", "v2"], &[], "");
+    request.tagged = Some(true);
+    let err = expect_err(handle_diff(
+        ws.root(),
+        request,
+        "op_tagged_empty",
+        &registry,
+    ));
+    assert_eq!(err.code, crate::model::ErrorCode::TagNotFound);
+    assert!(err.message.contains("contains all requested local tags"));
+}
+
+#[test]
+fn tagged_mode_does_not_accept_a_same_named_branch_as_a_tag() {
+    let ws = Workspace::new("tagged-exact-ref");
+    let member = ws.add_member("mem_app", "app");
+
+    Workspace::write(ws.root(), "root.txt", b"root\n");
+    Workspace::commit(ws.root(), "root");
+    super::workspace_fixture::run_git(ws.root(), &["tag", "release"]);
+    super::workspace_fixture::run_git(&member, &["branch", "release"]);
+
+    let registry = DiffLogRegistry::new();
+    let mut request = ws.request_operands(&["release"], &[], "");
+    request.tagged = Some(true);
+    request.options = Some(DiffOptions {
+        output_format: Some(DiffOutputFormat::NoPatch),
+        ..Default::default()
+    });
+    let outcome = handle_diff(ws.root(), request, "op_tagged_exact", &registry).unwrap();
+
+    assert_eq!(outcome.response.targets.len(), 1);
+    assert_eq!(outcome.response.targets[0].scope.root, Some(true));
+    assert_eq!(outcome.response.excluded_targets.len(), 1);
+    assert_eq!(
+        outcome.response.excluded_targets[0].reason,
+        DiffTargetExclusionReason::TagMissing
+    );
 }
 
 #[test]

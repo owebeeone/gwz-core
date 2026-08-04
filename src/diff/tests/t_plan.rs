@@ -12,7 +12,8 @@ use crate::artifact::{
     ResolvedMemberArtifact, SNAPSHOT_SCHEMA, SnapshotArtifact, WORKSPACE_SCHEMA, WorkspaceHeader,
 };
 use crate::diff::{
-    Endpoint, ParsedComparison, PlanScope, RepoDiffComparisonKind, parse_comparison, plan_diff,
+    Endpoint, ParsedComparison, PlanScope, RepoDiffComparisonKind, parse_comparison,
+    parse_tagged_comparison, plan_diff,
 };
 use crate::model::ErrorCode;
 use crate::protocol::generated::DiffTargetExclusionReason;
@@ -492,6 +493,35 @@ fn three_dot_range_lowers_to_merge_base() {
     assert!(comparison.merge_base);
     assert_eq!(comparison.left, Some(Endpoint::Snapshot("base".to_owned())));
     assert_eq!(comparison.right, Some(Endpoint::Snapshot("tip".to_owned())));
+}
+
+#[test]
+fn tagged_comparison_qualifies_exact_local_tag_refs() {
+    let (comparison, tags) =
+        parse_tagged_comparison(&["v1...v2".to_owned()], false, false).unwrap();
+    assert_eq!(tags, vec!["v1", "v2"]);
+    assert_eq!(
+        comparison.left,
+        Some(Endpoint::Revision("refs/tags/v1".to_owned()))
+    );
+    assert_eq!(
+        comparison.right,
+        Some(Endpoint::Revision("refs/tags/v2".to_owned()))
+    );
+    assert!(comparison.merge_base);
+}
+
+#[test]
+fn tagged_comparison_rejects_missing_snapshot_and_open_range_operands() {
+    for operands in [
+        vec![],
+        vec!["+snapshot".to_owned()],
+        vec!["v1..".to_owned()],
+        vec!["..v2".to_owned()],
+    ] {
+        let err = parse_tagged_comparison(&operands, false, false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidRequest, "{operands:?}");
+    }
 }
 
 /// An unmaterialized member reached implicitly (default selection) is silently

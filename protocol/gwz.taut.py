@@ -592,10 +592,9 @@ SCHEMA = schema(
          stale_file=3,
          diagnostic=4),
 
-    # Why a candidate target was excluded before diff execution (snapshot
-    # narrowing). Reported in DiffManifestResponse.excluded_targets so a member
-    # added after a snapshot was captured is explained rather than silently
-    # dropped.
+    # Why a candidate target was excluded before diff execution (snapshot or
+    # exact-tag narrowing). Reported in DiffManifestResponse.excluded_targets so
+    # a target is explained rather than silently dropped.
     DiffTargetExclusionReason=Enum(
          # Snapshot operand does not contain this member (commonly: member added
          # after the snapshot was captured).
@@ -603,7 +602,9 @@ SCHEMA = schema(
          # Snapshot contains this member but records no Git commit for it.
          snapshot_missing_commit=1,
          # v0 snapshots do not record a workspace-root commit.
-         root_not_in_snapshot=2),
+         root_not_in_snapshot=2,
+         # --tagged candidate does not contain every requested local tag.
+         tag_missing=3),
 
 
     # ---- common request/response values ----------------------------------
@@ -1532,9 +1533,10 @@ SCHEMA = schema(
         # manifest bytes on the wire.
         echo_manifest_entries=F(23, BOOL, optional=True)),
 
-    # The diff planning request. Parsed comparison flags are FIRST-CLASS fields
-    # (cached, merge_base); raw ambiguous operands stay in operands for per-repo
-    # core classification; explicit pathspecs after `--` stay separate.
+    # The diff planning request. Parsed comparison/selection flags are
+    # FIRST-CLASS fields; raw ambiguous operands stay in operands for per-repo
+    # core classification unless tagged is true; explicit pathspecs after `--`
+    # stay separate.
     DiffRequest=Msg(
         meta=F(1, Ref.RequestMeta),
         # Workspace-relative logical cwd: "", "gwz-core", "gwz-core/src".
@@ -1553,7 +1555,10 @@ SCHEMA = schema(
         cached=F(6, BOOL, optional=True),
         # --merge-base. First-class. The A...B syntax is still parsed from
         # operands and lowered to DiffComparison.merge_base per repo.
-        merge_base=F(7, BOOL, optional=True)),
+        merge_base=F(7, BOOL, optional=True),
+        # --tagged. Every comparison endpoint is an exact local tag name;
+        # candidates lacking any requested tag are reported and excluded.
+        tagged=F(8, BOOL, optional=True)),
 
     # ---- diff manifest / summary / output messages ------------------------
     # Which repo an entry/target/record belongs to. root xor (member_id +

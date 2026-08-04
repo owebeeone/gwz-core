@@ -17,6 +17,7 @@ mod operands;
 mod output;
 mod plan;
 pub mod render;
+mod tagged;
 
 #[cfg(test)]
 mod tests;
@@ -34,7 +35,7 @@ pub use model::{
     RepoDiffAlgorithm, RepoDiffComparison, RepoDiffComparisonKind, RepoDiffEntry, RepoDiffManifest,
     RepoDiffOptions, RepoDiffStatus, RepoDiffWhitespace,
 };
-pub use operands::{Endpoint, ParsedComparison, parse_comparison};
+pub use operands::{Endpoint, ParsedComparison, parse_comparison, parse_tagged_comparison};
 pub use output::{decode_record, encode_record};
 pub use plan::{
     DiffPlan, ExcludedTarget, MaterializationOracle, PlanScope, PlannedTarget, ROOT_EXCLUDE_FIXED,

@@ -80,6 +80,51 @@ impl ParsedComparison {
     }
 }
 
+/// Parse an exact-local-tag comparison for `DiffRequest.tagged`.
+///
+/// Unlike ordinary diff operands, tagged operands are never classified as
+/// paths or generic commit-ish names. Each endpoint is qualified to
+/// `refs/tags/<name>` so a same-named branch cannot satisfy or alter the
+/// comparison. At least one tag is required; snapshots and open ranges are
+/// rejected because they do not consist solely of explicit tag endpoints.
+pub fn parse_tagged_comparison(
+    operands: &[String],
+    cached: bool,
+    merge_base: bool,
+) -> ModelResult<(ParsedComparison, Vec<String>)> {
+    if operands.is_empty() {
+        return Err(invalid("--tagged requires at least one tag operand"));
+    }
+    if let Some(first) = operands.first()
+        && let Some((left, right, _)) = split_range(first)
+        && (left.is_empty() || right.is_empty())
+    {
+        return Err(invalid(
+            "--tagged requires both sides of a range to name a tag",
+        ));
+    }
+
+    let mut comparison = parse_comparison(operands, cached, merge_base)?;
+    let mut tags = Vec::new();
+    for endpoint in [&mut comparison.left, &mut comparison.right]
+        .into_iter()
+        .flatten()
+    {
+        let Endpoint::Revision(name) = endpoint else {
+            return Err(invalid("--tagged does not accept GWZ snapshot operands"));
+        };
+        if !tags.contains(name) {
+            tags.push(name.clone());
+        }
+        *name = format!("refs/tags/{name}");
+    }
+
+    if tags.is_empty() {
+        return Err(invalid("--tagged requires at least one tag operand"));
+    }
+    Ok((comparison, tags))
+}
+
 /// Lower parsed CLI operands + flags into a [`ParsedComparison`] (D0 §7.1).
 ///
 /// `operands` are the raw positional tokens before `--`. `cached` is

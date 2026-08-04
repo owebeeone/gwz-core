@@ -1394,6 +1394,9 @@ gwz stash <push|list|apply|pop|drop> [stash-id]
 gwz status
   -> StatusRequest
 
+gwz diff [--tagged] [<revision>...]
+  -> DiffRequest
+
 gwz forall [projects...] -- <cmd>
   -> CLI-local ExecRequest/ExecResponse; member resolution uses LsRequest
 ```
@@ -1694,6 +1697,31 @@ Flow:
 
 Stash push excludes the workspace root. Clean selected members are retained in
 the bundle as noops so the coordinated selection remains auditable.
+
+### Diff
+
+`gwz diff` resolves the workspace root and active Git members through the
+shared selection machinery, then compares each selected repository using the
+same workspace-level comparison form. The root is first and members retain
+manifest order. Revision names normally resolve independently in each selected
+repository; a missing revision therefore remains an error rather than silently
+removing that repository.
+
+`DiffRequest.tagged=true` is an explicit target-narrowing mode, exposed by the
+CLI as `gwz diff --tagged`. Every supplied comparison endpoint is interpreted as
+an exact local tag name (`refs/tags/<name>`), not as a branch, path, snapshot, or
+other commit-ish. One tag compares that tag with the normal worktree or index
+side; two tags, or a closed `A..B`/`A...B` range, compare the tags. The mode
+requires at least one tag and rejects snapshot endpoints and open ranges.
+
+The normal selection (including an explicit `--target` selection),
+materialization rules, and pathspec routing establish the candidate set.
+Tagged mode then retains only candidates that contain every requested local
+tag. A removed candidate is represented in `DiffManifestResponse.excluded_targets`
+with reason `tag_missing` and a diagnostic naming its missing tags. The
+operation returns `TagNotFound` when any requested tag occurs in no candidate,
+or when no candidate contains their intersection. This opt-in behavior does not
+change ordinary diff's strict per-repository revision resolution.
 
 ## Error Model
 

@@ -5,7 +5,7 @@
 //!
 //! 1. **Plan (D2).** [`parse_comparison`] lowers the operands + `cached` /
 //!    `merge_base` flags; [`plan_diff`] resolves the per-repo target set and the
-//!    snapshot-narrowed [`ExcludedTarget`]s.
+//!    narrowed [`crate::diff::ExcludedTarget`]s.
 //! 2. **Manifest (D1).** For each planned target, [`resolve_comparison`] peels
 //!    the comparison to tree sides and [`diff_repo`] builds the repo-scoped
 //!    manifest. Root deltas under member paths / `.gwz/` / `gwz.conf/.tmp/` are
@@ -40,10 +40,11 @@ use super::log_service::DiffLogRegistry;
 use super::output::{ProducerEntry, ProducerOptions, ProducerTarget, run_producer};
 use super::plan::{DiffPlan, PlanScope, PlannedTarget};
 use super::render::{PrefixPolicy, RenderOptions, ScopeRender};
+use super::tagged::narrow_plan_to_exact_tags;
 use super::{
     RepoDiffAlgorithm, RepoDiffComparison, RepoDiffEntry, RepoDiffManifest, RepoDiffOptions,
-    RepoDiffStatus, RepoDiffWhitespace, diff_repo, parse_comparison, plan_diff,
-    reject_unsupported_options, resolve_comparison,
+    RepoDiffStatus, RepoDiffWhitespace, diff_repo, parse_comparison, parse_tagged_comparison,
+    plan_diff, reject_unsupported_options, resolve_comparison,
 };
 
 /// The outcome of a `diff` planning call: the wire response plus, when patch
@@ -88,21 +89,34 @@ pub fn handle_diff(
     // cannot be expressed under `root`.
     let cwd_rel = resolved_cwd_rel(start, &root)
         .unwrap_or_else(|| request.workspace_cwd.clone().unwrap_or_default());
-    let classified = {
-        let ctx = super::RevContext {
-            repos: super::candidate_repos(&root, &manifest),
-            cwd: root.join(&cwd_rel),
-            workspace_root: root.clone(),
-            resolve: &super::default_rev_resolver,
+    let tagged = request.tagged.unwrap_or(false);
+    let (comparison, tag_names, classified_pathspecs) = if tagged {
+        let (comparison, tag_names) = parse_tagged_comparison(
+            &request.operands,
+            request.cached.unwrap_or(false),
+            request.merge_base.unwrap_or(false),
+        )?;
+        (comparison, tag_names, Vec::new())
+    } else {
+        let classified = {
+            let ctx = super::RevContext {
+                repos: super::candidate_repos(&root, &manifest),
+                cwd: root.join(&cwd_rel),
+                workspace_root: root.clone(),
+                resolve: &super::default_rev_resolver,
+            };
+            super::classify_operands(&request.operands, &manifest, &ctx)?
         };
-        super::classify_operands(&request.operands, &manifest, &ctx)?
+        (
+            parse_comparison(
+                &classified.revisions,
+                request.cached.unwrap_or(false),
+                request.merge_base.unwrap_or(false),
+            )?,
+            Vec::new(),
+            classified.pathspecs,
+        )
     };
-
-    let comparison = parse_comparison(
-        &classified.revisions,
-        request.cached.unwrap_or(false),
-        request.merge_base.unwrap_or(false),
-    )?;
 
     // Snapshots referenced by the comparison, read once for planning.
     let snapshots = read_referenced_snapshots(&root, &comparison_snapshot_ids(&comparison))?;
@@ -110,10 +124,10 @@ pub fn handle_diff(
     // Pathspecs derived from bare operands precede the explicit (`--`) ones, so a
     // routing that intersects them keeps operand-order intent (git resolves both
     // against the cwd identically).
-    let mut pathspecs = classified.pathspecs.clone();
+    let mut pathspecs = classified_pathspecs;
     pathspecs.extend(request.explicit_pathspecs.iter().cloned());
     let oracle = FsMaterializationOracle { root: root.clone() };
-    let plan = plan_diff(
+    let mut plan = plan_diff(
         &manifest,
         request.meta.selection.as_ref(),
         &comparison,
@@ -122,6 +136,9 @@ pub fn handle_diff(
         &snapshots,
         &oracle,
     )?;
+    if tagged {
+        plan = narrow_plan_to_exact_tags(&root, plan, &tag_names)?;
+    }
 
     let backend_options = build_backend_options(&options);
     let format = options.output_format.unwrap_or(DiffOutputFormat::Patch);
