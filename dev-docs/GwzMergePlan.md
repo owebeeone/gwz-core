@@ -1,10 +1,10 @@
 # GWZ Merge Implementation Plan
 
 Status: **active** (revised 2026-08-04). Owner: Gianni. M2b through M4, the
-god-file refactor, R0, R1, and R2a are complete and committed. M5a custom
-messages are complete with green local technical, compatibility, and
-cross-driver gates; two independent post-implementation reviews report no
-P0–P3 finding. The next checkpoint is the lead-owned I1 direction memo.
+god-file refactor, R0, R1, R2a, M5a, and I1 are complete. M5a custom messages
+have green local technical, compatibility, and cross-driver gates. The I1
+direction memo is accepted after two independent reviews found no P0–P3
+issue; the next checkpoint is the lead-owned I2 durable record interface.
 Completed release builds remain the Windows, macOS, Linux x86, and Linux arm64
 platform evidence for the preceding release baseline.
 
@@ -1628,7 +1628,9 @@ After the M5a release gate, work is strictly sequential at the shared
 boundaries:
 
 1. I1, lead owned, freezes only the M6 checkout-evidence and M8 lock-domain
-   directions needed by v1.
+   directions needed by v1 in
+   `../../dev-docs/GwzM5-8I1DirectionMemo.md`. **Complete:** two independent
+   reviews found no remaining P0–P3 issue; I2 is unblocked.
 2. I2, lead/interface owned, freezes the v1 envelope, adapters, accepted
    workspace, append-only protocol codes, retained-reader contract, and
    concrete v0/v1 archive projections.
