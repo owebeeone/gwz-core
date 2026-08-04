@@ -2,6 +2,8 @@ mod lifecycle;
 mod plan;
 mod status;
 mod v0;
+#[cfg(test)]
+pub(crate) mod v1;
 
 pub(crate) use lifecycle::*;
 pub(crate) use plan::*;

@@ -1,5 +1,6 @@
-use super::super::decode::{RecordDecodeError, decode_production_v0};
+use super::super::decode::{RecordDecodeError, decode_production_v0, decode_v1_for_r3_tests};
 use super::super::header::HeaderClassificationError;
+use super::super::raw_yaml::StrictYamlErrorKind;
 
 fn record(envelope: &str) -> String {
     format!(
@@ -47,4 +48,37 @@ fn exact_v0_header_precedes_typed_body_failure() {
     )
     .unwrap_err();
     assert!(matches!(error, RecordDecodeError::Body { .. }));
+}
+
+#[test]
+fn test_only_v1_decoder_uses_the_same_strict_tree_for_the_complete_body() {
+    let decoded = decode_v1_for_r3_tests(
+        record("schema: gwz.merge-operation/v1\nrecord_schema_version: 1").as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(decoded.header.schema, "gwz.merge-operation/v1");
+    assert_eq!(decoded.record.merge_id, "merge_1");
+    assert!(decoded.record.accepted_workspace.is_none());
+    assert_eq!(
+        decoded
+            .raw
+            .as_mapping()
+            .unwrap()
+            .get("future_record")
+            .and_then(serde_yaml::Value::as_str),
+        Some("retained")
+    );
+}
+
+#[test]
+fn test_only_v1_decoder_rejects_duplicates_inside_new_v1_containers() {
+    let input = format!(
+        "{}accepted_workspace:\n  operation_baseline_lock_sha256: first\n  operation_baseline_lock_sha256: second\n",
+        record("schema: gwz.merge-operation/v1\nrecord_schema_version: 1")
+    );
+    let error = decode_v1_for_r3_tests(input.as_bytes()).unwrap_err();
+    assert!(matches!(
+        error,
+        RecordDecodeError::Raw(error) if error.kind == StrictYamlErrorKind::DuplicateKey
+    ));
 }
