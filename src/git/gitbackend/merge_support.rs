@@ -96,8 +96,20 @@ pub(super) fn validate_prepared_merge_upstream_in_repo(
     repo.find_commit(source).map_err(git_error)?;
     let kind = classify_merge(repo, expected, source)?;
     match (kind, prepared) {
-        (GitMergeAnalysisKind::UpToDate, GitPreparedMerge::Unchanged)
-        | (GitMergeAnalysisKind::FastForward, GitPreparedMerge::FastForward) => {}
+        (GitMergeAnalysisKind::UpToDate, GitPreparedMerge::Unchanged) => {}
+        (GitMergeAnalysisKind::FastForward, GitPreparedMerge::FastForward) => {}
+        (GitMergeAnalysisKind::FastForward, GitPreparedMerge::Commit(prepared_commit)) => {
+            validate_prepared_commit(prepared_commit)?;
+            let source_tree = repo
+                .find_commit(source)
+                .and_then(|commit| commit.tree())
+                .map_err(git_error)?;
+            if source_tree.id().to_string() != prepared_commit.tree_oid {
+                return Err(prepared_merge_mismatch(
+                    "forced merge-commit tree does not match the source tree",
+                ));
+            }
+        }
         (GitMergeAnalysisKind::TrueMerge, GitPreparedMerge::ExpectedConflict) => {
             if !in_memory_merge_index(repo, expected, source)?.has_conflicts() {
                 return Err(prepared_merge_mismatch(
@@ -106,8 +118,7 @@ pub(super) fn validate_prepared_merge_upstream_in_repo(
             }
         }
         (GitMergeAnalysisKind::TrueMerge, GitPreparedMerge::Commit(prepared_commit)) => {
-            signature_from_prepared(&prepared_commit.author)?;
-            signature_from_prepared(&prepared_commit.committer)?;
+            validate_prepared_commit(prepared_commit)?;
             let tree_oid = git2::Oid::from_str(&prepared_commit.tree_oid)
                 .map_err(|_| prepared_merge_mismatch("recorded tree object id is malformed"))?;
             let tree = repo
@@ -139,6 +150,12 @@ pub(super) fn validate_prepared_merge_upstream_in_repo(
         }
     }
     Ok(kind)
+}
+
+fn validate_prepared_commit(prepared: &GitPreparedCommit) -> ModelResult<()> {
+    signature_from_prepared(&prepared.author)?;
+    signature_from_prepared(&prepared.committer)?;
+    Ok(())
 }
 
 pub(super) fn prepared_merge_mismatch(detail: &str) -> ModelError {

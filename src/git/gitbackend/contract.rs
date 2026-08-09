@@ -1,5 +1,13 @@
 use super::*;
 
+/// Whether a prepared merge may publish a fast-forward or must create a
+/// two-parent merge commit when the source is strictly ahead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitPreparedMergeMode {
+    AllowFastForward,
+    ForceMergeCommit,
+}
+
 pub trait GitBackend {
     fn is_repository(&self, path: &Path) -> ModelResult<bool>;
     /// Return whether `oid` exists locally and resolves to a commit object.
@@ -110,6 +118,30 @@ pub trait GitBackend {
     ) -> ModelResult<GitPreparedMerge> {
         unsupported_backend("prepare_merge_upstream_checked")
     }
+    /// Mode-aware form of `prepare_merge_upstream_checked`. Backends that do
+    /// not implement forced merge commits retain the released normal behavior.
+    fn prepare_merge_upstream_mode_checked(
+        &self,
+        path: &Path,
+        branch: &str,
+        expected_before: &str,
+        source_commit: &str,
+        mode: GitPreparedMergeMode,
+        attribution: Option<&crate::model::OperationAttribution>,
+    ) -> ModelResult<GitPreparedMerge> {
+        match mode {
+            GitPreparedMergeMode::AllowFastForward => self.prepare_merge_upstream_checked(
+                path,
+                branch,
+                expected_before,
+                source_commit,
+                attribution,
+            ),
+            GitPreparedMergeMode::ForceMergeCommit => {
+                unsupported_backend("prepare_merge_upstream_mode_checked")
+            }
+        }
+    }
     /// Read-only verification that a prepared merge still exactly matches the
     /// attached branch, before/source commits, result class, and (for a clean
     /// true merge) existing tree and frozen signatures. Implementations must
@@ -126,6 +158,8 @@ pub trait GitBackend {
         unsupported_backend("validate_prepared_merge_upstream_state")
     }
     /// Execute a merge using only its already frozen content and signatures.
+    /// The prepared variant is the authority for whether a fast-forward graph
+    /// advances directly or publishes the frozen two-parent commit.
     fn execute_prepared_merge_upstream_checked(
         &self,
         _path: &Path,
@@ -276,6 +310,18 @@ pub trait GitBackend {
         _absent_paths: &[String],
     ) -> ModelResult<bool> {
         unsupported_backend("index_matches_candidate_files")
+    }
+    /// Verify only the raw index entries for exact stage-0 regular files and
+    /// exact index absence. Worktree existence and bytes are deliberately not
+    /// inspected, so callers can classify ordered write-then-stage protocols.
+    /// Unrelated index entries are ignored and this method never mutates Git.
+    fn index_entries_match_candidate_files(
+        &self,
+        _path: &Path,
+        _expected_files: &[GitCandidateFile],
+        _absent_paths: &[String],
+    ) -> ModelResult<bool> {
+        unsupported_backend("index_entries_match_candidate_files")
     }
     /// Commit only the supplied GWZ-owned candidate files through an isolated
     /// index and checked attached-root-ref update.

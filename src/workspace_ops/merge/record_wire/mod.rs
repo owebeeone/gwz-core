@@ -11,6 +11,11 @@ mod open_v0;
 mod unknown_fields;
 
 #[cfg(test)]
+pub(in crate::workspace_ops::merge) use unknown_fields::{
+    ContainerSegment, IdentityValue, SemanticIdentity, UnknownFieldLocator, UnknownFieldManifest,
+};
+
+#[cfg(test)]
 pub(crate) use open_v0::{
     OpenV0Adaptation, PreparedOpenV0Upgrade, PreparedV1Upgrade, VerifiedV0Descriptor,
     adapt_open_v0_for_r3_tests, prepare_upgrade, verified_v0_descriptor,

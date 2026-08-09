@@ -191,6 +191,83 @@ fn prepared_clean_merge_freezes_exact_content_without_observable_mutation() {
 }
 
 #[test]
+fn forced_fast_forward_prepares_and_publishes_an_exact_two_parent_commit() {
+    let temp = TempDir::new("merge-prepared-forced-commit");
+    let repo = temp.path().join("repo");
+    let backend = Git2Backend::new();
+    backend.create_repo(&repo).unwrap();
+    let before = commit_file(&repo, "base.txt", "base\n", "base", &[]).unwrap();
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    let source = commit_file(
+        &repo,
+        "feature.txt",
+        "source\n",
+        "source",
+        &[git2::Oid::from_str(&before).unwrap()],
+    )
+    .unwrap();
+    run_git(&repo, &["checkout", "main"]);
+
+    let prepared = backend
+        .prepare_merge_upstream_mode_checked(
+            &repo,
+            "main",
+            &before,
+            &source,
+            GitPreparedMergeMode::ForceMergeCommit,
+            None,
+        )
+        .unwrap();
+    let GitPreparedMerge::Commit(spec) = &prepared else {
+        panic!("forced fast-forward must freeze a merge commit")
+    };
+    let repository = git2::Repository::open(&repo).unwrap();
+    assert_eq!(
+        spec.tree_oid,
+        repository
+            .find_commit(git2::Oid::from_str(&source).unwrap())
+            .unwrap()
+            .tree_id()
+            .to_string()
+    );
+    backend
+        .validate_prepared_merge_upstream_state(&repo, "main", &before, &source, &prepared)
+        .unwrap();
+
+    let result = backend
+        .execute_prepared_merge_upstream_checked(
+            &repo,
+            "main",
+            &before,
+            &source,
+            "forced merge",
+            &prepared,
+        )
+        .unwrap();
+    let commit_id = result.commit.unwrap();
+    assert_ne!(commit_id, source);
+    let commit = repository
+        .find_commit(git2::Oid::from_str(&commit_id).unwrap())
+        .unwrap();
+    assert_eq!(commit.parent_count(), 2);
+    assert_eq!(commit.parent_id(0).unwrap().to_string(), before);
+    assert_eq!(commit.parent_id(1).unwrap().to_string(), source);
+    assert_eq!(commit.tree_id().to_string(), spec.tree_oid);
+    assert!(
+        backend
+            .commit_matches_prepared_merge(
+                &repo,
+                &commit_id,
+                &before,
+                &source,
+                "forced merge",
+                spec,
+            )
+            .unwrap()
+    );
+}
+
+#[test]
 fn prepared_conflict_prediction_does_not_enter_native_merge_state() {
     let temp = TempDir::new("merge-prepared-conflict");
     let repo = temp.path().join("repo");

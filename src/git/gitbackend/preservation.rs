@@ -221,6 +221,39 @@ pub(super) fn index_matches_candidate_files(
     Ok(true)
 }
 
+pub(super) fn index_entries_match_candidate_files(
+    _backend: &Git2Backend,
+    path: &Path,
+    expected_files: &[GitCandidateFile],
+    absent_paths: &[String],
+) -> ModelResult<bool> {
+    let repo = open_repo(path)?;
+    let index = repo.index().map_err(git_error)?;
+    for file in expected_files {
+        let entries = index
+            .iter()
+            .filter(|entry| entry.path == file.path.as_bytes())
+            .collect::<Vec<_>>();
+        let Some(entry) = entries.as_slice().first() else {
+            return Ok(false);
+        };
+        let expected_blob =
+            git2::Oid::hash_object(git2::ObjectType::Blob, &file.bytes).map_err(git_error)?;
+        if entries.len() != 1
+            || (entry.flags >> 12) & 3 != 0
+            || entry.flags & 0xc000 != 0
+            || entry.flags_extended != 0
+            || entry.mode != 0o100644
+            || entry.id != expected_blob
+        {
+            return Ok(false);
+        }
+    }
+    Ok(!absent_paths
+        .iter()
+        .any(|absent| index.iter().any(|entry| entry.path == absent.as_bytes())))
+}
+
 fn parse_commit(repo: &git2::Repository, target: &str) -> ModelResult<git2::Oid> {
     let oid = git2::Oid::from_str(target).map_err(|error| {
         ModelError::new(

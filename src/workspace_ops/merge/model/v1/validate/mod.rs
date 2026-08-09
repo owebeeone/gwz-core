@@ -14,6 +14,7 @@ pub(crate) use baseline::validate_v1_baseline;
 pub(crate) use common::validate_common_v0_view;
 pub(crate) use common::validate_common_v1_record;
 pub(crate) use journal::validate_v1_journal;
+pub(in crate::workspace_ops::merge) use journal::{RollbackCursor, rollback_cursor};
 pub(crate) use lifecycle::validate_v1_lifecycle;
 pub(crate) use preservation::validate_v1_preservation;
 pub(crate) use publication::validate_v1_publication;
@@ -26,6 +27,10 @@ use super::MergeOperationRecordV1;
 pub(crate) struct ValidatedV1Record(MergeOperationRecordV1);
 
 impl ValidatedV1Record {
+    pub(in crate::workspace_ops::merge) fn record(&self) -> &MergeOperationRecordV1 {
+        &self.0
+    }
+
     pub(crate) fn into_record(self) -> MergeOperationRecordV1 {
         self.0
     }
@@ -58,4 +63,4 @@ mod preservation_tests;
 #[cfg(test)]
 mod publication_tests;
 #[cfg(test)]
-mod tests;
+pub(in crate::workspace_ops::merge) mod tests;

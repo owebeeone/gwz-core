@@ -250,23 +250,46 @@ pub(in crate::workspace_ops::merge) fn validated_participant_path(
     target_id: &str,
     participant: &MergeParticipantRecord,
 ) -> ModelResult<PathBuf> {
-    let valid = match participant.target_kind {
+    let path = match participant.target_kind {
         MergeTargetKind::Root if participant.path == "." => return Ok(root.to_path_buf()),
         MergeTargetKind::Root => Err(ModelError::new(
-            ErrorCode::PathEscape,
+            ErrorCode::MergeRecordUnreadable,
             "root participant path must be '.'",
         )),
-        MergeTargetKind::Member => {
-            MemberPath::parse(&participant.path).map(|path| path.to_string())
-        }
-    };
-    valid.map(|path| root.join(path)).map_err(|error| {
+        MergeTargetKind::Member => MemberPath::parse(&participant.path)
+            .map(|path| path.to_string())
+            .map_err(|error| ModelError::new(ErrorCode::MergeRecordUnreadable, error.message)),
+    }
+    .map_err(|error| {
         ModelError::new(
-            ErrorCode::MergeRecordUnreadable,
+            error.code,
             format!("invalid durable participant path: {}", error.message),
         )
         .with_member(target_id, &participant.path)
-    })
+    })?;
+    let mut candidate = root.to_path_buf();
+    for component in Path::new(&path).components() {
+        candidate.push(component);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => {
+                return Err(ModelError::new(
+                    ErrorCode::PathEscape,
+                    "invalid durable participant path: durable participant path crosses a symlink or non-directory",
+                )
+                .with_member(target_id, &participant.path));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(ModelError::new(
+                    ErrorCode::IoError,
+                    format!("invalid durable participant path: {error}"),
+                )
+                .with_member(target_id, &participant.path));
+            }
+        }
+    }
+    Ok(root.join(path))
 }
 
 pub(super) fn member_result<T>(

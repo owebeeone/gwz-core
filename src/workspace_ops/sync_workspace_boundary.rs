@@ -72,9 +72,6 @@ pub(crate) fn workspace_exclude_candidate<B: GitBackend>(
     let block = lines.join("\n");
 
     let exclude_path = workspace_exclude_path(root);
-    if let Some(parent) = exclude_path.parent() {
-        fs::create_dir_all(parent).map_err(io_error)?;
-    }
     let existing = match fs::read_to_string(&exclude_path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),

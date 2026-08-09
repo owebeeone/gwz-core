@@ -13,10 +13,11 @@ pub(crate) fn validate_v1_lifecycle(record: &MergeOperationRecordV1) -> ModelRes
         .values()
         .map(|participant| participant.state)
         .collect::<Vec<_>>();
-    let forward_pending = record
+    let forward_pending_count = record
         .participants
         .values()
-        .any(|participant| participant.pending_action.is_some());
+        .filter(|participant| participant.pending_action.is_some())
+        .count();
 
     let participant_states_are_legal = match effective {
         OperationState::Executing | OperationState::Preserving => {
@@ -59,11 +60,12 @@ pub(crate) fn validate_v1_lifecycle(record: &MergeOperationRecordV1) -> ModelRes
         return Err(lifecycle_error(record));
     }
 
-    let forward_pending_is_legal = !forward_pending
-        || matches!(
-            effective,
-            OperationState::Executing | OperationState::Halted | OperationState::Preserving
-        );
+    let forward_pending_is_legal = forward_pending_count <= 1
+        && (forward_pending_count == 0
+            || matches!(
+                effective,
+                OperationState::Executing | OperationState::Halted
+            ));
     if !forward_pending_is_legal {
         return Err(lifecycle_error(record));
     }

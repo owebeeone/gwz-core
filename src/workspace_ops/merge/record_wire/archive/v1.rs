@@ -30,8 +30,8 @@ pub(super) fn project(record: &MergeOperationRecordV1) -> Result<ArchivedMergePr
             &publication.candidate.as_ref().ok_or(())?.lock_yaml,
         )
         .map_err(|_| ())?;
-        super::v0_evidence::validate_marker_merge(
-            &record.v0_common_view(),
+        super::v0_evidence::validate_marker_merge_v1(
+            record,
             publication,
             &marker,
             &candidate_lock,

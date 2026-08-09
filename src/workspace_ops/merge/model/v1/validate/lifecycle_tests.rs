@@ -118,7 +118,7 @@ fn recovery_uses_the_recorded_origin_matrix() {
 }
 
 #[test]
-fn forward_actions_exist_only_in_execution_halt_or_preservation_windows() {
+fn forward_actions_exist_only_in_execution_or_halt_windows() {
     let mut case = record();
     case.participants.get_mut("mem_a").unwrap().pending_action =
         Some(super::action_tests::pending(
@@ -140,13 +140,45 @@ fn forward_actions_exist_only_in_execution_halt_or_preservation_windows() {
     validate_v1_lifecycle(&case).unwrap();
 
     case.state = OperationState::Preserving;
-    validate_v1_lifecycle(&case).unwrap();
+    assert_eq!(
+        validate_v1_lifecycle(&case).unwrap_err().code,
+        ErrorCode::MergeRecordUnreadable
+    );
 
     case.state = OperationState::RecoveryRequired;
     case.recovery_context = Some(RecoveryContextV1 {
         origin_state: RecoveryOriginStateV1::Halted,
     });
     validate_v1_lifecycle(&case).unwrap();
+
+    case.recovery_context = Some(RecoveryContextV1 {
+        origin_state: RecoveryOriginStateV1::Preserving,
+    });
+    assert_eq!(
+        validate_v1_lifecycle(&case).unwrap_err().code,
+        ErrorCode::RecoveryEvidenceMismatch
+    );
+}
+
+#[test]
+fn at_most_one_forward_action_is_legal_record_wide() {
+    let mut case = record();
+    let pending = super::action_tests::pending(
+        PendingMergeActionKind::FastForward,
+        PendingMergeExpectedResult::FastForward,
+        false,
+    );
+    case.participants.get_mut("mem_a").unwrap().pending_action = Some(pending.clone());
+    let mut second = case.participants["mem_a"].clone();
+    second.path = "members/b".to_owned();
+    second.pending_action = Some(pending);
+    case.selected_targets.push("mem_b".to_owned());
+    case.participants.insert("mem_b".to_owned(), second);
+
+    assert_eq!(
+        validate_v1_lifecycle(&case).unwrap_err().code,
+        ErrorCode::MergeRecordUnreadable
+    );
 }
 
 #[test]

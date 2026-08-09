@@ -117,6 +117,71 @@ fn scoped_commit_is_exact_recoverable_and_preserves_user_state() {
 }
 
 #[test]
+fn raw_index_candidate_check_does_not_conflate_worktree_publication() {
+    let temp = TempDir::new("raw-index-candidate-check");
+    let root = temp.path().join("repo");
+    seed(&root, &[("gwz.conf/gwz.lock", "baseline\n")]);
+    let backend = Git2Backend::new();
+    let baseline = candidate("gwz.conf/gwz.lock", "baseline\n");
+    let marker = candidate("gwz.conf/markers/marker.yaml", "marker\n");
+    fs::create_dir_all(root.join("gwz.conf/markers")).unwrap();
+    fs::write(root.join(&marker.path), &marker.bytes).unwrap();
+
+    assert!(
+        backend
+            .index_entries_match_candidate_files(
+                &root,
+                std::slice::from_ref(&baseline),
+                std::slice::from_ref(&marker.path),
+            )
+            .unwrap()
+    );
+    assert!(
+        !backend
+            .index_matches_candidate_files(
+                &root,
+                std::slice::from_ref(&baseline),
+                std::slice::from_ref(&marker.path),
+            )
+            .unwrap()
+    );
+
+    fs::write(root.join(&baseline.path), b"candidate\n").unwrap();
+    backend
+        .stage_paths(&root, &[baseline.path.as_str(), marker.path.as_str()])
+        .unwrap();
+    let staged = [candidate(&baseline.path, "candidate\n"), marker.clone()];
+    assert!(
+        backend
+            .index_entries_match_candidate_files(&root, &staged, &[])
+            .unwrap()
+    );
+    fs::write(root.join(&marker.path), b"later worktree edit\n").unwrap();
+    assert!(
+        backend
+            .index_entries_match_candidate_files(&root, &staged, &[])
+            .unwrap()
+    );
+    assert!(
+        !backend
+            .index_matches_candidate_files(&root, &staged, &[])
+            .unwrap()
+    );
+
+    let repo = git2::Repository::open(&root).unwrap();
+    let mut index = repo.index().unwrap();
+    let mut entry = index.get_path(Path::new(&marker.path), 0).unwrap();
+    entry.flags |= 0x8000;
+    index.add(&entry).unwrap();
+    index.write().unwrap();
+    assert!(
+        !backend
+            .index_entries_match_candidate_files(&root, &staged, &[])
+            .unwrap()
+    );
+}
+
+#[test]
 fn scoped_commit_supports_unborn_root_without_creating_a_real_index() {
     let temp = TempDir::new("scoped-unborn");
     let root = temp.path().join("repo");

@@ -126,6 +126,26 @@ pub(super) fn prepare_merge_upstream_checked(
     source_commit: &str,
     attribution: Option<&crate::model::OperationAttribution>,
 ) -> ModelResult<GitPreparedMerge> {
+    prepare_merge_upstream_mode_checked(
+        backend,
+        path,
+        branch,
+        expected_before,
+        source_commit,
+        GitPreparedMergeMode::AllowFastForward,
+        attribution,
+    )
+}
+
+pub(super) fn prepare_merge_upstream_mode_checked(
+    backend: &Git2Backend,
+    path: &Path,
+    branch: &str,
+    expected_before: &str,
+    source_commit: &str,
+    mode: GitPreparedMergeMode,
+    attribution: Option<&crate::model::OperationAttribution>,
+) -> ModelResult<GitPreparedMerge> {
     record_preparation_call();
     let expected = git2::Oid::from_str(expected_before).map_err(git_error)?;
     let source = git2::Oid::from_str(source_commit).map_err(git_error)?;
@@ -142,7 +162,22 @@ pub(super) fn prepare_merge_upstream_checked(
     repo.find_commit(source).map_err(git_error)?;
     match classify_merge(&repo, expected, source)? {
         GitMergeAnalysisKind::UpToDate => Ok(GitPreparedMerge::Unchanged),
-        GitMergeAnalysisKind::FastForward => Ok(GitPreparedMerge::FastForward),
+        GitMergeAnalysisKind::FastForward if mode == GitPreparedMergeMode::AllowFastForward => {
+            Ok(GitPreparedMerge::FastForward)
+        }
+        GitMergeAnalysisKind::FastForward => {
+            let tree_oid = repo
+                .find_commit(source)
+                .and_then(|commit| commit.tree())
+                .map_err(git_error)?
+                .id();
+            let (author, committer) = merge_signatures(&repo, attribution)?;
+            Ok(GitPreparedMerge::Commit(GitPreparedCommit {
+                tree_oid: tree_oid.to_string(),
+                author: prepared_signature(&author)?,
+                committer: prepared_signature(&committer)?,
+            }))
+        }
         GitMergeAnalysisKind::TrueMerge => {
             let mut index = in_memory_merge_index(&repo, expected, source)?;
             if index.has_conflicts() {
@@ -213,7 +248,7 @@ pub(super) fn execute_prepared_merge_upstream_checked(
         verify_merge_result(backend, path, branch, &expected_text)?;
         return Ok(GitIntegrateResult::clean(expected_text));
     }
-    if kind == GitMergeAnalysisKind::FastForward {
+    if kind == GitMergeAnalysisKind::FastForward && prepared == &GitPreparedMerge::FastForward {
         let target_object = repo.find_object(source, None).map_err(git_error)?;
         let mut checkout = git2::build::CheckoutBuilder::new();
         checkout.safe();

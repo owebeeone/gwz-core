@@ -11,6 +11,9 @@ use super::super::{
     AcceptedLockMemberV1, AcceptedMetadataSourceV1, AcceptedRootBaseV1, AcceptedWorkspaceV1,
     MemberAcceptanceV1, MergeOperationRecordV1,
 };
+pub(super) use crate::workspace_ops::merge::acceptance::{
+    publication_required_for_v1, validate_candidate_semantics_for_v1,
+};
 
 pub(crate) fn validate_v1_acceptance(record: &MergeOperationRecordV1) -> ModelResult<()> {
     validate_lifetime(record)?;
@@ -297,7 +300,7 @@ fn validate_root(
                 if record.baseline.root_head.as_deref() != Some(commit.as_str())
                     || record.baseline.root_branch.is_some()
                     || accepted.root.publication_branch.is_some()
-                    || publication_required_for_v1(record)
+                    || crate::workspace_ops::merge::acceptance::publication_required_for_v1(record)
                 {
                     return Err(acceptance_input_error(record));
                 }
@@ -329,7 +332,8 @@ fn validate_candidate(
         || publication.candidate_lock_sha256.as_deref() != Some(accepted.lock.sha256.as_str())
         || candidate.baseline_lock_yaml != accepted.metadata_base.lock_exact_yaml
         || accepted.root.publication_branch.as_deref() != Some(candidate.root_branch.as_str())
-        || validate_candidate_semantics_for_v1(record).is_err()
+        || crate::workspace_ops::merge::acceptance::validate_candidate_semantics_for_v1(record)
+            .is_err()
     {
         return Err(candidate_error(record));
     }
@@ -345,34 +349,6 @@ fn selected_root(
         .any(|target| target == "@root")
         .then(|| record.participants.get("@root"))
         .flatten()
-}
-
-pub(crate) fn publication_required_for_v1(record: &MergeOperationRecordV1) -> bool {
-    crate::workspace_ops::merge::acceptance::publication_required(&accepted_semantic_view(record))
-}
-
-pub(crate) fn validate_candidate_semantics_for_v1(
-    record: &MergeOperationRecordV1,
-) -> ModelResult<()> {
-    crate::workspace_ops::merge::finalize::validate_candidate_for_i2_fixture(
-        &accepted_semantic_view(record),
-    )
-}
-
-fn accepted_semantic_view(
-    record: &MergeOperationRecordV1,
-) -> super::super::super::MergeOperationRecordV0 {
-    let mut view = record.v0_common_view();
-    if record.accepted_workspace.is_some() {
-        for participant in view.participants.values_mut() {
-            participant.state = match participant.state {
-                ParticipantState::Aborted => ParticipantState::UpToDate,
-                ParticipantState::RolledBack => ParticipantState::Merged,
-                state => state,
-            };
-        }
-    }
-    view
 }
 
 fn accepted_result_state_is_legal(

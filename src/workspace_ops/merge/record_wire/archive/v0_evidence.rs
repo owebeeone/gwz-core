@@ -241,6 +241,58 @@ pub(super) fn validate_marker_merge(
     marker: &MarkerArtifact,
     candidate_lock: &LockArtifact,
 ) -> Result<(), ()> {
+    validate_marker_merge_view(marker_view_v0(record), publication, marker, candidate_lock)
+}
+
+pub(super) fn validate_marker_merge_v1(
+    record: &MergeOperationRecordV1,
+    publication: &PublicationProgress,
+    marker: &MarkerArtifact,
+    candidate_lock: &LockArtifact,
+) -> Result<(), ()> {
+    validate_marker_merge_view(marker_view_v1(record), publication, marker, candidate_lock)
+}
+
+struct MarkerMergeView<'a> {
+    created_at: &'a str,
+    merge_id: &'a str,
+    operation_id: &'a str,
+    source_ref: &'a str,
+    selected_targets: &'a [String],
+    participants: &'a BTreeMap<String, super::super::super::MergeParticipantRecord>,
+    baseline: &'a super::super::super::MergeBaseline,
+}
+
+fn marker_view_v0(record: &MergeOperationRecord) -> MarkerMergeView<'_> {
+    MarkerMergeView {
+        created_at: &record.created_at,
+        merge_id: &record.merge_id,
+        operation_id: &record.operation_id,
+        source_ref: &record.source_ref,
+        selected_targets: &record.selected_targets,
+        participants: &record.participants,
+        baseline: &record.baseline,
+    }
+}
+
+fn marker_view_v1(record: &MergeOperationRecordV1) -> MarkerMergeView<'_> {
+    MarkerMergeView {
+        created_at: &record.created_at,
+        merge_id: &record.merge_id,
+        operation_id: &record.operation_id,
+        source_ref: &record.source_ref,
+        selected_targets: &record.selected_targets,
+        participants: &record.participants,
+        baseline: &record.baseline,
+    }
+}
+
+fn validate_marker_merge_view(
+    record: MarkerMergeView<'_>,
+    publication: &PublicationProgress,
+    marker: &MarkerArtifact,
+    candidate_lock: &LockArtifact,
+) -> Result<(), ()> {
     let merge = marker.merge.as_ref().ok_or(())?;
     if marker.created_at != record.created_at
         || merge.merge_id != record.merge_id
@@ -252,7 +304,7 @@ pub(super) fn validate_marker_merge(
     {
         return Err(());
     }
-    for (target_id, participant) in &record.participants {
+    for (target_id, participant) in record.participants {
         let row = merge.participants.get(target_id).ok_or(())?;
         let expected_kind = match participant.target_kind {
             super::super::super::MergeTargetKind::Member => {

@@ -14,15 +14,18 @@ use crate::artifact::{
 };
 use crate::model::ErrorCode;
 
-pub(super) fn oid(byte: char) -> String {
+pub(in crate::workspace_ops::merge) fn oid(byte: char) -> String {
     byte.to_string().repeat(40)
 }
 
-pub(super) fn sha(byte: char) -> String {
+pub(in crate::workspace_ops::merge) fn sha(byte: char) -> String {
     byte.to_string().repeat(64)
 }
 
-pub(super) fn participant(path: &str, kind: MergeTargetKind) -> MergeParticipantRecord {
+pub(in crate::workspace_ops::merge) fn participant(
+    path: &str,
+    kind: MergeTargetKind,
+) -> MergeParticipantRecord {
     MergeParticipantRecord {
         path: path.to_owned(),
         target_kind: kind,
@@ -43,7 +46,7 @@ pub(super) fn participant(path: &str, kind: MergeTargetKind) -> MergeParticipant
     }
 }
 
-pub(super) fn record() -> MergeOperationRecordV1 {
+pub(in crate::workspace_ops::merge) fn record() -> MergeOperationRecordV1 {
     let manifest_yaml = ManifestArtifact {
         schema: WORKSPACE_SCHEMA.to_owned(),
         workspace: WorkspaceHeader {
@@ -72,7 +75,7 @@ pub(super) fn record() -> MergeOperationRecordV1 {
     MergeOperationRecordV1 {
         schema: MERGE_RECORD_SCHEMA_V1.to_owned(),
         record_schema_version: MERGE_RECORD_SCHEMA_VERSION_V1,
-        writer_version: "0.11.0".to_owned(),
+        writer_version: crate::VERSION.to_owned(),
         workspace_id: "ws_test".to_owned(),
         merge_id: "merge_1".to_owned(),
         operation_id: "op_1".to_owned(),

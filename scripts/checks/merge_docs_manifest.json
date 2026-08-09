@@ -113,7 +113,7 @@
         },
         {
           "id": "r4b_exact_dependency_dag",
-          "value": "R4b-T + R4b-S + R4b-A -> R4b-X"
+          "value": "R4b-TI + R4b-TR + R4b-S + R4b-A -> R4b-X"
         },
         {
           "id": "r4b_a1_only_activation",

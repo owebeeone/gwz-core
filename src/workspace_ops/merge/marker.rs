@@ -5,6 +5,11 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::{MergeOperationRecord, MergeTargetKind, OperationState};
 
+#[cfg(test)]
+use super::model::v1::{
+    AcceptedMetadataSourceV1, AcceptedRootBaseV1, MemberAcceptanceV1, MergeOperationRecordV1,
+};
+
 /// Live result already re-observed and accepted by finalization.
 ///
 /// Marker conversion must compare these values with the durable participant
@@ -23,13 +28,41 @@ pub(crate) fn marker_merge_from_verified(
     record: &MergeOperationRecord,
     verified: &[VerifiedMergeParticipant],
 ) -> ModelResult<MarkerMergeArtifact> {
+    marker_merge_from_view(
+        MarkerMergeRecordView {
+            state: record.state,
+            has_operation_drift: !record.operation_drift.is_empty(),
+            merge_id: &record.merge_id,
+            operation_id: &record.operation_id,
+            source_ref: &record.source_ref,
+            selected_targets: &record.selected_targets,
+            participants: &record.participants,
+        },
+        verified,
+    )
+}
+
+struct MarkerMergeRecordView<'a> {
+    state: OperationState,
+    has_operation_drift: bool,
+    merge_id: &'a str,
+    operation_id: &'a str,
+    source_ref: &'a str,
+    selected_targets: &'a [String],
+    participants: &'a BTreeMap<String, super::MergeParticipantRecord>,
+}
+
+fn marker_merge_from_view(
+    record: MarkerMergeRecordView<'_>,
+    verified: &[VerifiedMergeParticipant],
+) -> ModelResult<MarkerMergeArtifact> {
     if record.state != OperationState::Finalizing {
         return Err(recovery(format!(
             "merge '{}' must be finalizing before marker conversion",
             record.merge_id
         )));
     }
-    if !record.operation_drift.is_empty() {
+    if record.has_operation_drift {
         return Err(drift("merge operation has unresolved drift"));
     }
     let selected: BTreeSet<_> = record.selected_targets.iter().map(String::as_str).collect();
@@ -70,7 +103,7 @@ pub(crate) fn marker_merge_from_verified(
 
     let mut participants = BTreeMap::new();
     let mut root_merge_commit = None;
-    for target_id in &record.selected_targets {
+    for target_id in record.selected_targets {
         let durable = record
             .participants
             .get(target_id)
@@ -132,15 +165,146 @@ pub(crate) fn marker_merge_from_verified(
         return Err(recovery("verified participant set is incomplete"));
     }
     let artifact = MarkerMergeArtifact {
-        merge_id: record.merge_id.clone(),
-        operation_id: record.operation_id.clone(),
-        source_ref: record.source_ref.clone(),
-        selected_targets: record.selected_targets.clone(),
+        merge_id: record.merge_id.to_owned(),
+        operation_id: record.operation_id.to_owned(),
+        source_ref: record.source_ref.to_owned(),
+        selected_targets: record.selected_targets.to_vec(),
         participants,
         root_merge_commit,
     };
     artifact.validate()?;
     Ok(artifact)
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) fn marker_merge_from_v1_acceptance(
+    record: &MergeOperationRecordV1,
+) -> ModelResult<MarkerMergeArtifact> {
+    let accepted = record
+        .accepted_workspace
+        .as_ref()
+        .ok_or_else(|| unreadable("accepted workspace is missing"))?;
+    let mut verified = Vec::with_capacity(record.selected_targets.len());
+    for target_id in &record.selected_targets {
+        let durable = record
+            .participants
+            .get(target_id)
+            .ok_or_else(|| unreadable(format!("participant '{target_id}' is missing")))?;
+        if target_id == "@root" {
+            let AcceptedMetadataSourceV1::SelectedRootResult { commit } =
+                &accepted.metadata_base.source
+            else {
+                return Err(unreadable(
+                    "selected root acceptance metadata source is inconsistent",
+                ));
+            };
+            let AcceptedRootBaseV1::BornAttached {
+                commit: accepted_commit,
+                symbolic_branch,
+            } = &accepted.root.base
+            else {
+                return Err(unreadable("selected root acceptance base is inconsistent"));
+            };
+            if commit != accepted_commit
+                || durable.target_branch != *symbolic_branch
+                || accepted.root.publication_branch.as_deref() != Some(symbolic_branch.as_str())
+                || durable.resulting_commit.as_deref() != Some(commit.as_str())
+            {
+                return Err(drift("accepted root differs from its durable result")
+                    .with_member(target_id, &durable.path));
+            }
+            verified.push(VerifiedMergeParticipant {
+                target_id: target_id.clone(),
+                target_branch: symbolic_branch.clone(),
+                resulting_commit: commit.clone(),
+            });
+            continue;
+        }
+        let MemberAcceptanceV1::Selected {
+            integration,
+            final_checkout,
+            ..
+        } = accepted
+            .member_audit
+            .get(target_id)
+            .ok_or_else(|| unreadable(format!("acceptance row '{target_id}' is missing")))?
+        else {
+            return Err(unreadable(format!(
+                "acceptance row '{target_id}' is not selected"
+            )));
+        };
+        if integration.branch != durable.target_branch
+            || integration.before_commit != durable.before_commit
+            || Some(integration.resulting_commit.as_str()) != durable.resulting_commit.as_deref()
+            || final_checkout.branch != integration.branch
+            || final_checkout.commit != integration.resulting_commit
+        {
+            return Err(
+                drift("accepted participant differs from its durable result")
+                    .with_member(target_id, &durable.path),
+            );
+        }
+        verified.push(VerifiedMergeParticipant {
+            target_id: target_id.clone(),
+            target_branch: integration.branch.clone(),
+            resulting_commit: integration.resulting_commit.clone(),
+        });
+    }
+    marker_merge_from_view(
+        MarkerMergeRecordView {
+            // Candidate creation checks the Finalizing predecessor. Frozen
+            // marker semantics remain valid after later lifecycle advances.
+            state: OperationState::Finalizing,
+            has_operation_drift: false,
+            merge_id: &record.merge_id,
+            operation_id: &record.operation_id,
+            source_ref: &record.source_ref,
+            selected_targets: &record.selected_targets,
+            participants: &record.participants,
+        },
+        &verified,
+    )
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) fn selected_v1_result_changed(
+    record: &MergeOperationRecordV1,
+    target_id: &str,
+) -> ModelResult<bool> {
+    if target_id == "@root" {
+        let record_root = record
+            .participants
+            .get(target_id)
+            .ok_or_else(|| unreadable("selected root participant is missing"))?;
+        let AcceptedMetadataSourceV1::SelectedRootResult { commit } = &record
+            .accepted_workspace
+            .as_ref()
+            .ok_or_else(|| unreadable("accepted workspace is missing"))?
+            .metadata_base
+            .source
+        else {
+            return Err(unreadable(
+                "selected root acceptance metadata source is inconsistent",
+            ));
+        };
+        if record_root.resulting_commit.as_deref() != Some(commit.as_str()) {
+            return Err(unreadable(
+                "selected root acceptance differs from its durable result",
+            ));
+        }
+        return Ok(commit != &record_root.before_commit);
+    }
+    let MemberAcceptanceV1::Selected { integration, .. } = record
+        .accepted_workspace
+        .as_ref()
+        .and_then(|accepted| accepted.member_audit.get(target_id))
+        .ok_or_else(|| unreadable(format!("selected acceptance row '{target_id}' is missing")))?
+    else {
+        return Err(unreadable(format!(
+            "acceptance row '{target_id}' is not selected"
+        )));
+    };
+    Ok(integration.resulting_commit != integration.before_commit)
 }
 
 fn unreadable(message: impl Into<String>) -> ModelError {

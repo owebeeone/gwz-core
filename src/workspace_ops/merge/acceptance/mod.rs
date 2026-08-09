@@ -1,11 +1,29 @@
 mod publication;
+#[cfg(test)]
+mod v1;
+#[cfg(test)]
+mod v1_candidate;
 mod workspace;
 
 #[cfg(test)]
-pub(crate) use publication::finalization_next_action_for_i2;
+pub(in crate::workspace_ops::merge) use publication::classify_candidate_publication_for_v1;
 pub(super) use publication::{
     CandidatePublicationObservation, CandidatePublicationPrefix, FinalizationNextAction,
     classify_candidate_publication, finalization_next_action, publication_prefix_allowed,
+};
+#[cfg(test)]
+pub(crate) use publication::{finalization_next_action_for_i2, finalization_next_action_for_v1};
+#[cfg(test)]
+pub(super) use publication::{publication_required_for_v1, validate_candidate_semantics_for_v1};
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) use v1::{
+    V1AcceptanceMetadata, V1AcceptanceRecord, build_v1_acceptance, classify_frozen_v1_publication,
+};
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) use v1_candidate::{
+    V1CandidateBuildInput, build_v1_candidate, candidate_artifacts,
+    candidate_files as v1_candidate_files, composition_message as v1_composition_message,
+    publication_base as v1_publication_base,
 };
 #[cfg(test)]
 pub(super) use workspace::accepted_root_checkout;

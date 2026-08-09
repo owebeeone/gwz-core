@@ -99,10 +99,8 @@ fn finalization_resume_is_unique(record: &MergeOperationRecordV1) -> bool {
                 | PublicationStep::Complete
         ),
     };
-    let mut view = record.v0_common_view();
-    view.state = OperationState::Finalizing;
     base_phase_is_exact
-        && crate::workspace_ops::merge::acceptance::finalization_next_action_for_i2(&view).is_ok()
+        && crate::workspace_ops::merge::acceptance::finalization_next_action_for_v1(record).is_ok()
 }
 
 fn validate_pending_legality(record: &MergeOperationRecordV1) -> ModelResult<()> {
@@ -143,6 +141,7 @@ fn validate_rollback(
     record: &MergeOperationRecordV1,
     action: &PendingRollbackActionV1,
 ) -> ModelResult<()> {
+    validate_rollback_cursor(record, action)?;
     match action {
         PendingRollbackActionV1::Participant {
             member_id,
@@ -155,6 +154,110 @@ fn validate_rollback(
         PendingRollbackActionV1::SelectedRootMetadata { next_step } => {
             validate_root_metadata_rollback(record, *next_step)
         }
+    }
+}
+
+fn validate_rollback_cursor(
+    record: &MergeOperationRecordV1,
+    action: &PendingRollbackActionV1,
+) -> ModelResult<()> {
+    let matches_cursor = match (rollback_cursor(record), action) {
+        (
+            RollbackCursor::Participant {
+                member_id,
+                action: expected_action,
+                terminal_state,
+            },
+            PendingRollbackActionV1::Participant {
+                member_id: actual_id,
+                action: actual_action,
+                terminal_state: actual_terminal,
+            },
+        ) => {
+            member_id == actual_id
+                && expected_action == *actual_action
+                && terminal_state == *actual_terminal
+        }
+        (
+            RollbackCursor::PublicationEvidence,
+            PendingRollbackActionV1::PublicationEvidence { .. },
+        )
+        | (
+            RollbackCursor::SelectedRootMetadata,
+            PendingRollbackActionV1::SelectedRootMetadata { .. },
+        ) => true,
+        (RollbackCursor::NoMutationParticipant { .. } | RollbackCursor::Complete, _) => false,
+        _ => false,
+    };
+    if matches_cursor {
+        Ok(())
+    } else {
+        Err(rollback_error(record))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::workspace_ops::merge) enum RollbackCursor<'a> {
+    PublicationEvidence,
+    Participant {
+        member_id: &'a str,
+        action: ParticipantRollbackKindV1,
+        terminal_state: ParticipantState,
+    },
+    NoMutationParticipant {
+        member_id: &'a str,
+    },
+    SelectedRootMetadata,
+    Complete,
+}
+
+pub(in crate::workspace_ops::merge) fn rollback_cursor(
+    record: &MergeOperationRecordV1,
+) -> RollbackCursor<'_> {
+    if record.publication.as_ref().is_some_and(|publication| {
+        publication.candidate.is_some()
+            && publication.composition_commit.is_some()
+            && !publication.evidence_rolled_back
+    }) {
+        return RollbackCursor::PublicationEvidence;
+    }
+    for member_id in record.selected_targets.iter().rev() {
+        let Some(participant) = record.participants.get(member_id) else {
+            return RollbackCursor::NoMutationParticipant { member_id };
+        };
+        let cursor = match participant.state {
+            ParticipantState::Conflicted => Some(RollbackCursor::Participant {
+                member_id,
+                action: ParticipantRollbackKindV1::AbortConflict,
+                terminal_state: ParticipantState::Aborted,
+            }),
+            ParticipantState::FastForwarded
+            | ParticipantState::Merged
+            | ParticipantState::Continued => Some(RollbackCursor::Participant {
+                member_id,
+                action: ParticipantRollbackKindV1::ResetIntegrated,
+                terminal_state: ParticipantState::RolledBack,
+            }),
+            ParticipantState::Planned
+            | ParticipantState::UpToDate
+            | ParticipantState::Failed
+            | ParticipantState::Unattempted => {
+                Some(RollbackCursor::NoMutationParticipant { member_id })
+            }
+            ParticipantState::Aborted | ParticipantState::RolledBack => None,
+        };
+        if let Some(cursor) = cursor {
+            return cursor;
+        }
+    }
+    if record
+        .selected_targets
+        .iter()
+        .any(|target| target == "@root")
+    {
+        RollbackCursor::SelectedRootMetadata
+    } else {
+        RollbackCursor::Complete
     }
 }
 
@@ -202,18 +305,19 @@ fn validate_evidence_rollback(
         && publication.composition_tree.is_some()
         && !publication.candidate_hashes.is_empty()
         && !publication.evidence_rolled_back;
-    let phase_owns_evidence = match next_step {
-        EvidenceRollbackStepV1::EvidenceCommit => {
-            publication.step >= PublicationStep::CommittingEvidence
-        }
-        EvidenceRollbackStepV1::Boundary
+    let phase_owns_evidence = matches!(
+        publication.step,
+        PublicationStep::CommittingEvidence
+            | PublicationStep::PublishingCandidate
+            | PublicationStep::VerifyingPublication
+            | PublicationStep::Complete
+    ) && match next_step {
+        EvidenceRollbackStepV1::EvidenceCommit
+        | EvidenceRollbackStepV1::Boundary
         | EvidenceRollbackStepV1::Lock
         | EvidenceRollbackStepV1::Marker
         | EvidenceRollbackStepV1::Index
-        | EvidenceRollbackStepV1::Complete => {
-            publication.step >= PublicationStep::CommittingEvidence
-                && publication.composition_commit.is_some()
-        }
+        | EvidenceRollbackStepV1::Complete => true,
     };
     if complete_evidence && phase_owns_evidence {
         Ok(())
@@ -231,13 +335,12 @@ fn validate_root_metadata_rollback(
         .iter()
         .any(|target| target == "@root")
         && record.participants.contains_key("@root");
-    let Some(accepted) = record.accepted_workspace.as_ref() else {
-        return Err(rollback_error(record));
-    };
-    let selected_source = matches!(
-        accepted.metadata_base.source,
-        AcceptedMetadataSourceV1::SelectedRootResult { .. }
-    );
+    let selected_source = record.accepted_workspace.as_ref().is_none_or(|accepted| {
+        matches!(
+            accepted.metadata_base.source,
+            AcceptedMetadataSourceV1::SelectedRootResult { .. }
+        )
+    });
     let baseline_manifest = record.baseline.manifest_yaml.as_deref();
     let baseline_lock = record.baseline.lock_yaml.as_deref();
     let exact_baseline = baseline_manifest
@@ -246,12 +349,14 @@ fn validate_root_metadata_rollback(
     let prior_evidence_complete = record.publication.as_ref().is_none_or(|publication| {
         publication.candidate.is_none() || publication.evidence_rolled_back
     });
-    let phase_has_input = match next_step {
-        RootMetadataRollbackStepV1::Manifest => baseline_manifest.is_some(),
-        RootMetadataRollbackStepV1::Lock | RootMetadataRollbackStepV1::Complete => {
-            baseline_manifest.is_some() && baseline_lock.is_some()
-        }
-    };
+    let phase_has_input = baseline_manifest.is_some()
+        && baseline_lock.is_some()
+        && matches!(
+            next_step,
+            RootMetadataRollbackStepV1::Manifest
+                | RootMetadataRollbackStepV1::Lock
+                | RootMetadataRollbackStepV1::Complete
+        );
     if selected_root
         && selected_source
         && exact_baseline

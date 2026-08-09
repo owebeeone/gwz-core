@@ -20,6 +20,8 @@ mod runtime;
 mod start;
 mod status;
 mod store;
+#[cfg(test)]
+mod v1_lifecycle;
 mod validate;
 
 #[cfg(test)]
@@ -32,7 +34,7 @@ mod transition_matrix_v0;
 #[cfg(test)]
 pub(crate) use abort::{EvidenceRollbackMutation, fail_next_evidence_rollback_after};
 #[cfg(test)]
-pub(crate) use acceptance::finalization_next_action_for_i2;
+pub(crate) use acceptance::{finalization_next_action_for_i2, finalization_next_action_for_v1};
 #[cfg(test)]
 pub(crate) use finalize::{CandidatePublicationMutation, fail_next_candidate_publication_after};
 #[cfg(test)]

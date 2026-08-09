@@ -70,6 +70,7 @@ impl GitBackend for Git2Backend {
     delegate!(merge_upstream(path: &Path, branch: &str, upstream_ref: &str,) -> ModelResult<GitIntegrateResult> => merge_prepared::merge_upstream);
     delegate!(merge_upstream_checked(path: &Path, branch: &str, expected_before: &str, source_commit: &str, message: &str, attribution: Option<&crate::model::OperationAttribution>,) -> ModelResult<GitIntegrateResult> => merge_prepared::merge_upstream_checked);
     delegate!(prepare_merge_upstream_checked(path: &Path, branch: &str, expected_before: &str, source_commit: &str, attribution: Option<&crate::model::OperationAttribution>,) -> ModelResult<GitPreparedMerge> => merge_prepared::prepare_merge_upstream_checked);
+    delegate!(prepare_merge_upstream_mode_checked(path: &Path, branch: &str, expected_before: &str, source_commit: &str, mode: GitPreparedMergeMode, attribution: Option<&crate::model::OperationAttribution>,) -> ModelResult<GitPreparedMerge> => merge_prepared::prepare_merge_upstream_mode_checked);
     delegate!(validate_prepared_merge_upstream_state(path: &Path, branch: &str, expected_before: &str, source_commit: &str, prepared: &GitPreparedMerge,) -> ModelResult<()> => merge_prepared::validate_prepared_merge_upstream_state);
     delegate!(execute_prepared_merge_upstream_checked(path: &Path, branch: &str, expected_before: &str, source_commit: &str, message: &str, prepared: &GitPreparedMerge,) -> ModelResult<GitIntegrateResult> => merge_prepared::execute_prepared_merge_upstream_checked);
     delegate!(merge_analysis(path: &Path, target_branch: &str, source: &str,) -> ModelResult<GitMergeAnalysis> => merge_prepared::merge_analysis);
@@ -85,6 +86,7 @@ impl GitBackend for Git2Backend {
     delegate!(delete_backup_ref_checked(path: &Path, name: &str, expected_target: &str,) -> ModelResult<()> => preservation::delete_backup_ref_checked);
     delegate!(stash_for_merge_preservation(path: &Path, merge_id: &str, include_untracked: bool,) -> ModelResult<GitStashPushResult> => preservation::stash_for_merge_preservation);
     delegate!(index_matches_candidate_files(path: &Path, expected_files: &[GitCandidateFile], absent_paths: &[String],) -> ModelResult<bool> => preservation::index_matches_candidate_files);
+    delegate!(index_entries_match_candidate_files(path: &Path, expected_files: &[GitCandidateFile], absent_paths: &[String],) -> ModelResult<bool> => preservation::index_entries_match_candidate_files);
     delegate!(commit_gwz_paths_checked(root: &Path, expected_head: Option<&str>, candidate_files: &[GitCandidateFile], message: &str,) -> ModelResult<GitScopedCommitResult> => scoped_evidence::commit_gwz_paths_checked);
     delegate!(verify_gwz_paths_commit(root: &Path, commit: &str, expected_parent: Option<&str>, candidate_files: &[GitCandidateFile], message: &str,) -> ModelResult<GitScopedCommitResult> => scoped_evidence::verify_gwz_paths_commit);
     delegate!(rollback_gwz_paths_commit_checked(root: &Path, branch: &str, commit: &str, expected_parent: Option<&str>, candidate_files: &[GitCandidateFile], message: &str,) -> ModelResult<()> => scoped_evidence::rollback_gwz_paths_commit_checked);

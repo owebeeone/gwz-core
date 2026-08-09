@@ -342,10 +342,7 @@ fn assert_v1_restart(bytes: &[u8], merge_id: &str, expected_next_action: &str) {
     let decoded = crate::workspace_ops::merge::decode_v1_for_r3_tests(bytes).unwrap();
     assert_eq!(decoded.record.merge_id, merge_id);
     assert_eq!(
-        crate::workspace_ops::merge::finalization_next_action_for_i2(
-            &decoded.record.v0_common_view()
-        )
-        .unwrap(),
+        crate::workspace_ops::merge::finalization_next_action_for_v1(&decoded.record).unwrap(),
         expected_next_action
     );
 }

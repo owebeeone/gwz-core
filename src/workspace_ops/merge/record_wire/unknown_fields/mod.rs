@@ -108,6 +108,29 @@ impl UnknownFieldManifest {
         &self.entries
     }
 
+    pub(crate) fn after_participant_drift_retirement(
+        &self,
+        member_id: &str,
+        retired: &SemanticIdentity,
+    ) -> Result<Self, UnknownFieldManifestError> {
+        let mut next = Self::default();
+        for (locator, value) in &self.entries {
+            let mut locator = locator.clone();
+            if let Some(identity) = participant_drift_identity(&mut locator, member_id)
+                && same_identity_key(identity, retired)
+            {
+                if identity.occurrence == retired.occurrence {
+                    continue;
+                }
+                if identity.occurrence > retired.occurrence {
+                    identity.occurrence -= 1;
+                }
+            }
+            next.insert(locator, value.clone())?;
+        }
+        Ok(next)
+    }
+
     fn insert(
         &mut self,
         locator: UnknownFieldLocator,
@@ -118,6 +141,32 @@ impl UnknownFieldManifest {
         }
         Ok(())
     }
+}
+
+fn participant_drift_identity<'a>(
+    locator: &'a mut UnknownFieldLocator,
+    member_id: &str,
+) -> Option<&'a mut SemanticIdentity> {
+    match locator.container.as_mut_slice() {
+        [
+            ContainerSegment::Field(participants),
+            ContainerSegment::MapKey(actual_member),
+            ContainerSegment::Field(drift),
+            ContainerSegment::Identity(identity),
+            ..,
+        ] if participants == "participants"
+            && actual_member == member_id
+            && drift == "drift"
+            && identity.kind == "participant_drift" =>
+        {
+            Some(identity)
+        }
+        _ => None,
+    }
+}
+
+fn same_identity_key(left: &SemanticIdentity, right: &SemanticIdentity) -> bool {
+    left.kind == right.kind && left.fields == right.fields
 }
 
 fn is_accepted_lock_member(locator: &UnknownFieldLocator) -> bool {

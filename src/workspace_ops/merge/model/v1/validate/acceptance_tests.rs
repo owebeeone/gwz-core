@@ -172,6 +172,23 @@ pub(super) fn valid_candidate_publication_for_tests(
 ) -> PublicationProgress {
     let accepted = record.accepted_workspace.as_ref().unwrap();
     let marker_id = "01987b0c-2f75-7c4a-9a32-8fd22f7d7c91";
+    let root_branch = accepted.root.publication_branch.clone().unwrap();
+    let root_before = match &accepted.root.base {
+        AcceptedRootBaseV1::BornAttached { commit, .. }
+        | AcceptedRootBaseV1::BornDetached { commit } => Some(commit.clone()),
+        AcceptedRootBaseV1::UnbornAttached { .. } => None,
+    };
+    let mut committed_targets = record
+        .selected_targets
+        .iter()
+        .filter(|target| {
+            crate::workspace_ops::merge::marker::selected_v1_result_changed(record, target).unwrap()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !committed_targets.iter().any(|target| target == "@root") {
+        committed_targets.push("@root".to_owned());
+    }
     let marker_yaml = MarkerArtifact {
         schema: MARKER_SCHEMA.to_owned(),
         gwz_commit_id: marker_id.to_owned(),
@@ -183,15 +200,17 @@ pub(super) fn valid_candidate_publication_for_tests(
         },
         root: MarkerRootArtifact {
             path: ".".to_owned(),
-            before_commit: record.baseline.root_head.clone(),
-            branch: Some("main".to_owned()),
+            before_commit: root_before,
+            branch: Some(root_branch.clone()),
         },
         selected_targets: record.selected_targets.clone(),
-        committed_targets: vec!["mem_a".to_owned(), "@root".to_owned()],
+        committed_targets,
         members: LockArtifact::from_yaml(&accepted.lock.exact_yaml)
             .unwrap()
             .members,
-        merge: None,
+        merge: Some(
+            crate::workspace_ops::merge::marker::marker_merge_from_v1_acceptance(record).unwrap(),
+        ),
     }
     .to_yaml()
     .unwrap();
@@ -206,7 +225,7 @@ pub(super) fn valid_candidate_publication_for_tests(
         candidate_hashes: Vec::new(),
         candidate: Some(PublicationCandidate {
             marker_id: marker_id.to_owned(),
-            root_branch: "main".to_owned(),
+            root_branch,
             actor_id: "agent_test".to_owned(),
             baseline_lock_yaml: accepted.metadata_base.lock_exact_yaml.clone(),
             lock_yaml: accepted.lock.exact_yaml.clone(),
@@ -391,6 +410,27 @@ fn candidate_bytes_must_equal_persisted_acceptance_before_r4a_validation() {
 
 #[test]
 fn selected_root_metadata_uses_frozen_baseline_member_identity_as_fallback() {
+    let mut record = selected_root_acceptance_record_for_tests();
+    validate_v1_acceptance(&record).unwrap();
+
+    let MemberAcceptanceV1::Selected { lock_member, .. } = record
+        .accepted_workspace
+        .as_mut()
+        .unwrap()
+        .member_audit
+        .get_mut("mem_a")
+        .unwrap()
+    else {
+        panic!("selected audit missing")
+    };
+    lock_member.source_id = "src_other".to_owned();
+    assert_eq!(
+        validate_v1_acceptance(&record).unwrap_err().code,
+        ErrorCode::AcceptanceInputDrift
+    );
+}
+
+pub(super) fn selected_root_acceptance_record_for_tests() -> MergeOperationRecordV1 {
     let mut record = selected_acceptance_record();
     let mut root = record.participants["mem_a"].clone();
     root.path = ".".to_owned();
@@ -423,23 +463,7 @@ fn selected_root_metadata_uses_frozen_baseline_member_identity_as_fallback() {
         .root
         .baseline_artifact_hashes
         .manifest_commit_sha256 = record.baseline.manifest_commit_sha256.clone();
-    validate_v1_acceptance(&record).unwrap();
-
-    let MemberAcceptanceV1::Selected { lock_member, .. } = record
-        .accepted_workspace
-        .as_mut()
-        .unwrap()
-        .member_audit
-        .get_mut("mem_a")
-        .unwrap()
-    else {
-        panic!("selected audit missing")
-    };
-    lock_member.source_id = "src_other".to_owned();
-    assert_eq!(
-        validate_v1_acceptance(&record).unwrap_err().code,
-        ErrorCode::AcceptanceInputDrift
-    );
+    record
 }
 
 #[test]

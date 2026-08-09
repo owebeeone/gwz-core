@@ -142,6 +142,9 @@ fn every_publication_rollback_step_requires_complete_unretired_evidence() {
 #[test]
 fn every_selected_root_metadata_step_requires_selected_root_baseline_ownership() {
     let mut case = super::acceptance_tests::selected_acceptance_record_for_tests();
+    let participant = case.participants.get_mut("mem_a").unwrap();
+    participant.state = ParticipantState::RolledBack;
+    participant.resulting_commit = Some(oid('d'));
     let mut root = case.participants["mem_a"].clone();
     root.path = ".".to_owned();
     root.target_kind = MergeTargetKind::Root;
@@ -164,6 +167,11 @@ fn every_selected_root_metadata_step_requires_selected_root_baseline_ownership()
         case.pending_rollback = Some(PendingRollbackActionV1::SelectedRootMetadata { next_step });
         validate_v1_journal(&case).unwrap();
     }
+
+    let mut pre_acceptance = case.clone();
+    pre_acceptance.accepted_workspace = None;
+    validate_v1_journal(&pre_acceptance).unwrap();
+
     case.accepted_workspace
         .as_mut()
         .unwrap()

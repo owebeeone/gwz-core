@@ -75,7 +75,7 @@ fn decode_v1(
         .into_record();
     let projection =
         v1::project(&record).map_err(|_| archived_unreadable(expected_merge_id, Some(header)))?;
-    let cleanup = cleanup::from_v0(&record.v0_common_view())
+    let cleanup = cleanup::from_v1(&record)
         .map_err(|error| cleanup_unreadable(expected_merge_id, header, error))?;
     Ok(ValidatedArchivedRecord {
         projection,

@@ -37,8 +37,8 @@ impl PreparedV1Upgrade {
                 "v1 canonical model or unknown-field manifest changed",
             ));
         }
-        let next_action = crate::workspace_ops::merge::acceptance::finalization_next_action_for_i2(
-            &decoded.record.v0_common_view(),
+        let next_action = crate::workspace_ops::merge::acceptance::finalization_next_action_for_v1(
+            &decoded.record,
         )?;
         if next_action != self.next_action {
             return Err(verification_error(format!(

@@ -1,22 +1,17 @@
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde::Deserialize;
 use serde_yaml::Value;
-use sha2::{Digest, Sha256};
 
 use super::super::decode::DecodedV0Record;
 use super::super::unknown_fields::UnknownFieldManifest;
-use crate::artifact::{LockArtifact, ManifestArtifact};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::workspace_ops::merge::acceptance::construct_complete_lock;
+use crate::workspace_ops::merge::acceptance::{
+    V1AcceptanceMetadata, V1AcceptanceRecord, build_v1_acceptance,
+};
 use crate::workspace_ops::merge::model::v1::{
-    AcceptedAttachedCheckoutV1, AcceptedIntegrationRefV1, AcceptedLockMemberV1, AcceptedLockV1,
-    AcceptedMetadataBaseV1, AcceptedMetadataSourceV1, AcceptedRootBaseV1, AcceptedWorkspaceV1,
     CanonicalMergeRecord, MERGE_RECORD_SCHEMA_V1, MERGE_RECORD_SCHEMA_VERSION_V1,
-    MemberAcceptanceV1, MergeOperationRecordV1, RootArtifactHashesV1, RootPublicationInputV1,
-    validate_v1_record,
+    MergeOperationRecordV1, validate_v1_record,
 };
 use crate::workspace_ops::merge::{
     MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeExecutionMode, MergeOperationRecord,
@@ -174,7 +169,18 @@ fn adapted_record(
     record: &MergeOperationRecord,
     writer_version: &str,
 ) -> ModelResult<MergeOperationRecordV1> {
-    let accepted_workspace = accepted_workspace(record)?;
+    let accepted = build_v1_acceptance(
+        V1AcceptanceRecord::V0(record),
+        V1AcceptanceMetadata::OperationBaseline,
+    )?;
+    if accepted.publication_required()
+        != crate::workspace_ops::merge::acceptance::publication_required(record)
+    {
+        return Err(internal(
+            "shared v1 acceptance publication classification differs from R4a",
+        ));
+    }
+    let accepted_workspace = accepted.into_accepted_workspace();
     Ok(MergeOperationRecordV1 {
         schema: MERGE_RECORD_SCHEMA_V1.to_owned(),
         record_schema_version: MERGE_RECORD_SCHEMA_VERSION_V1,
@@ -199,116 +205,6 @@ fn adapted_record(
     })
 }
 
-fn accepted_workspace(record: &MergeOperationRecord) -> ModelResult<AcceptedWorkspaceV1> {
-    let manifest_yaml = record
-        .baseline
-        .manifest_yaml
-        .as_deref()
-        .ok_or_else(|| acceptance_error(record, "baseline manifest bytes are missing"))?;
-    let baseline_lock_yaml = record
-        .baseline
-        .lock_yaml
-        .as_deref()
-        .ok_or_else(|| acceptance_error(record, "baseline lock bytes are missing"))?;
-    let manifest = ManifestArtifact::from_yaml(manifest_yaml)
-        .map_err(|_| acceptance_error(record, "baseline manifest bytes are invalid"))?;
-    let baseline_lock = LockArtifact::from_yaml(baseline_lock_yaml)
-        .map_err(|_| acceptance_error(record, "baseline lock bytes are invalid"))?;
-    let accepted_lock_yaml = record
-        .publication
-        .as_ref()
-        .and_then(|publication| publication.candidate.as_ref())
-        .map(|candidate| Ok(candidate.lock_yaml.clone()))
-        .unwrap_or_else(|| {
-            construct_complete_lock(record, &manifest, baseline_lock)
-                .map_err(|error| error.error)?
-                .to_yaml()
-        })?;
-    let accepted_rows: AcceptedLockRows = serde_yaml::from_str(&accepted_lock_yaml)
-        .map_err(|_| acceptance_error(record, "accepted lock rows are invalid"))?;
-    let member_audit = member_audit(record, accepted_rows.members)?;
-    let root_branch = record
-        .baseline
-        .root_branch
-        .as_ref()
-        .ok_or_else(|| acceptance_error(record, "accepted unborn root branch is missing"))?;
-
-    Ok(AcceptedWorkspaceV1 {
-        operation_baseline_lock_sha256: record.baseline.lock_sha256.clone(),
-        metadata_base: AcceptedMetadataBaseV1 {
-            source: AcceptedMetadataSourceV1::OperationBaseline,
-            manifest_exact_yaml: manifest_yaml.to_owned(),
-            manifest_sha256: record.baseline.manifest_sha256.clone(),
-            lock_exact_yaml: baseline_lock_yaml.to_owned(),
-            lock_sha256: record.baseline.lock_sha256.clone(),
-        },
-        lock: AcceptedLockV1 {
-            sha256: digest(&accepted_lock_yaml),
-            exact_yaml: accepted_lock_yaml,
-        },
-        member_audit,
-        root: RootPublicationInputV1 {
-            base: AcceptedRootBaseV1::UnbornAttached {
-                symbolic_branch: root_branch.clone(),
-            },
-            publication_branch: Some(root_branch.clone()),
-            baseline_artifact_hashes: RootArtifactHashesV1 {
-                lock_worktree_sha256: record.baseline.lock_sha256.clone(),
-                manifest_worktree_sha256: record.baseline.manifest_sha256.clone(),
-                lock_commit_sha256: record.baseline.lock_commit_sha256.clone(),
-                manifest_commit_sha256: record.baseline.manifest_commit_sha256.clone(),
-            },
-        },
-    })
-}
-
-fn member_audit(
-    record: &MergeOperationRecord,
-    mut accepted_rows: BTreeMap<String, AcceptedLockMemberV1>,
-) -> ModelResult<BTreeMap<String, MemberAcceptanceV1>> {
-    let selected = record
-        .selected_targets
-        .first()
-        .ok_or_else(|| acceptance_error(record, "selected member is missing"))?;
-    let participant = record
-        .participants
-        .get(selected)
-        .ok_or_else(|| acceptance_error(record, "selected participant is missing"))?;
-    let resulting_commit = participant
-        .resulting_commit
-        .as_ref()
-        .ok_or_else(|| acceptance_error(record, "selected result is missing"))?;
-    let lock_member = accepted_rows
-        .remove(selected)
-        .ok_or_else(|| acceptance_error(record, "accepted selected lock row is missing"))?;
-    if !accepted_rows.is_empty() {
-        return Err(acceptance_error(
-            record,
-            "accepted lock contains an unclassified member",
-        ));
-    }
-    Ok(BTreeMap::from([(
-        selected.clone(),
-        MemberAcceptanceV1::Selected {
-            integration: AcceptedIntegrationRefV1 {
-                branch: participant.target_branch.clone(),
-                before_commit: participant.before_commit.clone(),
-                resulting_commit: resulting_commit.clone(),
-            },
-            final_checkout: AcceptedAttachedCheckoutV1 {
-                branch: participant.target_branch.clone(),
-                commit: resulting_commit.clone(),
-            },
-            lock_member,
-        },
-    )]))
-}
-
-#[derive(Deserialize)]
-struct AcceptedLockRows {
-    members: BTreeMap<String, AcceptedLockMemberV1>,
-}
-
 fn validate_envelope(record: &MergeOperationRecord) -> ModelResult<()> {
     if record.schema != MERGE_RECORD_SCHEMA
         || record.record_schema_version != MERGE_RECORD_SCHEMA_VERSION
@@ -330,10 +226,6 @@ fn text_field<'a>(value: &'a Value, name: &str) -> ModelResult<&'a str> {
         .ok_or_else(|| internal(format!("I2 registry field '{name}' is missing")))
 }
 
-fn digest(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
-}
-
 fn unreadable(record: &MergeOperationRecord, detail: impl Into<String>) -> ModelError {
     ModelError::new(
         ErrorCode::MergeRecordUnreadable,
@@ -341,16 +233,6 @@ fn unreadable(record: &MergeOperationRecord, detail: impl Into<String>) -> Model
             "merge record '{}' cannot be adapted: {}",
             record.merge_id,
             detail.into()
-        ),
-    )
-}
-
-fn acceptance_error(record: &MergeOperationRecord, detail: &str) -> ModelError {
-    ModelError::new(
-        ErrorCode::AcceptanceInputDrift,
-        format!(
-            "merge record '{}' acceptance input is incomplete: {detail}",
-            record.merge_id
         ),
     )
 }
