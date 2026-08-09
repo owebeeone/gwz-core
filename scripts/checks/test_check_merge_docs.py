@@ -22,7 +22,7 @@ class MergeDocumentConsistencyTests(unittest.TestCase):
         result = check_manifest(manifest, WORKSPACE_ROOT)
 
         self.assertEqual((), result.findings)
-        self.assertEqual(7, result.source_count)
+        self.assertEqual(8, result.source_count)
         self.assertGreaterEqual(result.assertion_count, 30)
 
     def test_deliberate_v0_no_ff_claim_fails_the_real_gate(self) -> None:

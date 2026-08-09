@@ -64,6 +64,65 @@
       "forbidden": []
     },
     {
+      "id": "r4b_transition_design",
+      "path": "dev-docs/GwzM5-8R4bTransitionDesign.md",
+      "required": [
+        {
+          "id": "r4b_no_mutable_record_authority",
+          "value": "no lifecycle module receives mutable access to a v1 record;"
+        },
+        {
+          "id": "r4b_only_kernel_prepares_rewrite",
+          "value": "only the transition kernel can construct a persistable v1 rewrite;"
+        },
+        {
+          "id": "r4b_mutation_requires_owner",
+          "value": "every physical Git or filesystem mutation has a persisted typed owner before it begins;"
+        },
+        {
+          "id": "r4b_v0_v1_isolation",
+          "value": "v0 remains on its released lifecycle and store; v1 does not execute through `v0_common_view`;"
+        },
+        {
+          "id": "r4b_no_generic_writer",
+          "value": "There is no `write_v1(record)`, `persist_v1(record)`, `update_v1(fn)`, public `validate_transition(old, new)`, or public constructor for a prepared rewrite."
+        },
+        {
+          "id": "r4b_mutation_lease",
+          "value": "The lease is retained from before the first open-record read through every observation,"
+        },
+        {
+          "id": "r4b_observation_resolver",
+          "value": "fn resolve_observation("
+        },
+        {
+          "id": "r4b_proof_binding",
+          "value": "struct ProofBinding {"
+        },
+        {
+          "id": "r4b_single_forward_owner",
+          "value": "at most one forward `pending_action`"
+        },
+        {
+          "id": "r4b_preservation_exhaustion",
+          "value": "VerifiedPreservationExhausted"
+        },
+        {
+          "id": "r4b_preservation_cursor_prefix",
+          "value": "VerifiedPreservationCursorPrefix"
+        },
+        {
+          "id": "r4b_exact_dependency_dag",
+          "value": "R4b-T + R4b-S + R4b-A -> R4b-X"
+        },
+        {
+          "id": "r4b_a1_only_activation",
+          "value": "A1 remains a separate, small, reviewed runtime-dispatch change after R4b and M5b meet their gates."
+        }
+      ],
+      "forbidden": []
+    },
+    {
       "id": "merge_plan",
       "path": "gwz-core/dev-docs/GwzMergePlan.md",
       "required": [
