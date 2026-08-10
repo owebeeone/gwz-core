@@ -134,6 +134,7 @@ pub(super) fn merge_response(
         operation_drift: Vec::new(),
         preservation: None,
         publication_step: None,
+        record: None,
     })
 }
 #[cfg(test)]

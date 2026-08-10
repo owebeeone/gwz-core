@@ -74,6 +74,11 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum ExactObservationFact {
     NotStarted(NotStartedObservation),
     Abandon(B<VerifiedParticipantNotStarted>, EntryFact),
     Completed(CompletedObservation),
+    PreservationDurabilityPending {
+        completion: PreservationObservation,
+        prefix: VerifiedPreservationCursorPrefix,
+        action: PendingPreservationActionV1,
+    },
     Ambiguous(BoundAmbiguityEvidence),
     PreservationAmbiguous(BoundAmbiguityEvidence, VerifiedPreservationCursorPrefix),
 }
@@ -187,6 +192,9 @@ fn observed_physical(
             NotStartedObservation::Rollback(action) => PhysicalActionKind::Rollback(action.clone()),
             NotStartedObservation::Archive => PhysicalActionKind::Archive,
         }),
+        ExactObservationFact::PreservationDurabilityPending { action, .. } => {
+            Some(PhysicalActionKind::Preservation(action.clone()))
+        }
         ExactObservationFact::Abandon(..)
         | ExactObservationFact::Completed(_)
         | ExactObservationFact::Ambiguous(_)

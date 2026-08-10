@@ -200,10 +200,7 @@ pub(super) fn pending_preservation(
                 "pending preservation",
                 &["message", "head_commit", "preimage_sha256"],
             )?);
-            fields.push((
-                "root_publication_prefix",
-                optional_identity(row, "root_publication_prefix", "pending preservation")?,
-            ));
+            append_root_handoff(&mut fields, row)?;
         }
         "reset_attached_ref" => {
             fields.extend(required_scalars(
@@ -211,14 +208,38 @@ pub(super) fn pending_preservation(
                 "pending preservation",
                 &["branch", "expected_commit", "restore_commit"],
             )?);
-            fields.push((
-                "root_publication_prefix",
-                optional_identity(row, "root_publication_prefix", "pending preservation")?,
-            ));
+            append_root_handoff(&mut fields, row)?;
         }
         _ => return Err(error("pending preservation kind is unknown")),
     }
     Ok(identity("pending_preservation", fields, 0))
+}
+
+fn append_root_handoff(
+    fields: &mut Vec<(&'static str, IdentityValue)>,
+    row: &Mapping,
+) -> Result<(), UnknownFieldManifestError> {
+    let Some(value) = field(row, "root_publication_handoff").filter(|value| !value.is_null())
+    else {
+        fields.push(("root_publication_handoff", IdentityValue::Null));
+        return Ok(());
+    };
+    let handoff = mapping(value, "pending preservation.root_publication_handoff")?;
+    fields.push((
+        "root_publication_handoff.prefix",
+        scalar_identity(
+            required_field(handoff, "prefix", "root publication handoff")?,
+            "root publication handoff.prefix",
+        )?,
+    ));
+    fields.push((
+        "root_publication_handoff.index",
+        scalar_identity(
+            required_field(handoff, "index", "root publication handoff")?,
+            "root publication handoff.index",
+        )?,
+    ));
+    Ok(())
 }
 
 pub(super) fn recovery_context(

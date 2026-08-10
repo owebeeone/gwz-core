@@ -300,6 +300,94 @@ SCHEMA = schema(
          verifying_publication=5,
          complete=6),
 
+    # Durable merge-record version represented by MergeRecordProjection.
+    MergeRecordVersion=Enum(
+         v0=0,
+         v1=1),
+
+    # Terminal outcome reported for an archived merge record.
+    MergeTerminalOutcome=Enum(
+         completed=0,
+         aborted=1),
+
+    # Acceptance evidence available in one durable merge record.
+    MergeAcceptanceKind=Enum(
+         supported_persisted=0,
+         legacy_complete=1,
+         legacy_unavailable=2,
+         not_accepted=3),
+
+    # Installed accepted-workspace representation.
+    MergeInstalledAcceptedWorkspaceKind=Enum(
+         v1=0),
+
+    # Authoritative source used to recover complete legacy acceptance.
+    MergeLegacyAcceptanceSource=Enum(
+         candidate=0,
+         baseline_no_publication=1),
+
+    # Evidence missing from an incomplete legacy acceptance projection.
+    MergeLegacyAcceptanceGap=Enum(
+         exact_lock_bytes=0,
+         complete_member_audit=1,
+         accepted_root_input=2,
+         publication_evidence=3),
+
+    # Membership class in an accepted workspace.
+    MergeAcceptedMemberKind=Enum(
+         selected=0,
+         unselected_present=1,
+         absent=2),
+
+    # Root state at the accepted workspace boundary.
+    MergeAcceptedRootKind=Enum(
+         born_attached=0,
+         born_detached=1,
+         unborn_attached=2),
+
+    # Exact metadata source used by accepted workspace construction.
+    MergeAcceptedMetadataSource=Enum(
+         operation_baseline=0,
+         selected_root_result=1),
+
+    # Literal durable state from which recovery was entered.
+    MergeRecoveryOriginState=Enum(
+         executing=0,
+         awaiting_resolution=1,
+         halted=2,
+         finalizing=3,
+         preserving=4,
+         rolling_back=5),
+
+    # Stable compatibility phase for recovery/status projection.
+    MergeCompatibilityBasePhase=Enum(
+         pre_acceptance=0,
+         pre_candidate=1,
+         candidate_persisted=2,
+         evidence_unrecorded=3,
+         evidence_recorded=4,
+         publishing_prefix=5,
+         published=6,
+         no_publication_complete=7),
+
+    # Stable next-action vocabulary for recovery/status projection.
+    MergeCompatibilityNextAction=Enum(
+         reconcile_pending_participant=0,
+         execute_next_participant=1,
+         await_resolution=2,
+         validate_results=3,
+         persist_acceptance=4,
+         prepare_candidate=5,
+         create_or_adopt_evidence=6,
+         publish_candidate=7,
+         verify_publication=8,
+         complete_no_publication=9,
+         resume_preservation=10,
+         resume_rollback=11,
+         archive_completed=12,
+         archive_aborted=13,
+         report_recovery_required=14),
+
     # Per-repository branch action result. Merge-only values are appended by B5a.
     BranchActionResult=Enum(
          listed=0,
@@ -1071,6 +1159,112 @@ SCHEMA = schema(
         state=F(2, Ref.MergePendingActionState),
         message=F(3, STR, optional=True)),
 
+    # Durable record projection attached to successful merge responses.
+    MergeRecordProjection=Msg(
+        source_version=F(1, Ref.MergeRecordVersion),
+        archived=F(2, BOOL),
+        terminal_outcome=F(3, Ref.MergeTerminalOutcome, optional=True),
+        acceptance=F(4, Ref.MergeAcceptanceProjection, optional=True),
+        recovery=F(5, Ref.MergeRecoveryProjection, optional=True)),
+
+    MergeAcceptanceProjection=Msg(
+        kind=F(1, Ref.MergeAcceptanceKind),
+        supported_persisted=F(2, Ref.MergeInstalledAcceptedWorkspaceProjection, optional=True),
+        legacy_complete=F(3, Ref.MergeLegacyAcceptedWorkspace, optional=True),
+        legacy_source=F(4, Ref.MergeLegacyAcceptanceSource, optional=True),
+        legacy_evidence=F(5, Ref.MergeLegacyAcceptanceEvidence, optional=True),
+        missing_gaps=F(6, List(Ref.MergeLegacyAcceptanceGap))),
+
+    MergeInstalledAcceptedWorkspaceProjection=Msg(
+        kind=F(1, Ref.MergeInstalledAcceptedWorkspaceKind),
+        v1=F(2, Ref.MergeAcceptedWorkspaceV1Projection, optional=True)),
+
+    MergeRecoveryProjection=Msg(
+        origin_state=F(1, Ref.MergeRecoveryOriginState),
+        base_phase=F(2, Ref.MergeCompatibilityBasePhase),
+        next_action=F(3, Ref.MergeCompatibilityNextAction),
+        resume_action=F(4, Ref.MergeCompatibilityNextAction)),
+
+    MergeAcceptedWorkspaceV1Projection=Msg(
+        operation_baseline_lock_sha256=F(1, STR),
+        metadata_base=F(2, Ref.MergeAcceptedMetadataBaseProjection),
+        lock_yaml=F(3, STR),
+        lock_sha256=F(4, STR),
+        members=F(5, List(Ref.MergeAcceptedMemberV1Projection)),
+        root=F(6, Ref.MergeAcceptedRootProjection)),
+
+    MergeAcceptedMetadataBaseProjection=Msg(
+        source=F(1, Ref.MergeAcceptedMetadataSource),
+        source_commit=F(2, STR, optional=True),
+        manifest_yaml=F(3, STR),
+        manifest_sha256=F(4, STR),
+        lock_yaml=F(5, STR),
+        lock_sha256=F(6, STR)),
+
+    MergeAcceptedMemberV1Projection=Msg(
+        member_id=F(1, STR),
+        kind=F(2, Ref.MergeAcceptedMemberKind),
+        integration=F(3, Ref.MergeAcceptedIntegrationProjection, optional=True),
+        final_checkout=F(4, Ref.MergeAcceptedCheckoutProjection, optional=True),
+        lock_member=F(5, Ref.MergeAcceptedLockMemberProjection, optional=True)),
+
+    MergeAcceptedIntegrationProjection=Msg(
+        branch=F(1, STR),
+        before_commit=F(2, STR),
+        resulting_commit=F(3, STR)),
+
+    MergeAcceptedCheckoutProjection=Msg(
+        branch=F(1, STR),
+        commit=F(2, STR)),
+
+    MergeAcceptedLockMemberProjection=Msg(
+        path=F(1, STR),
+        source_id=F(2, STR),
+        source_kind=F(3, Ref.SourceKind),
+        commit=F(4, STR, optional=True),
+        branch=F(5, STR, optional=True),
+        detached=F(6, BOOL, optional=True),
+        upstream=F(7, STR, optional=True),
+        dirty=F(8, BOOL, optional=True),
+        materialized=F(9, BOOL, optional=True)),
+
+    MergeAcceptedRootProjection=Msg(
+        kind=F(1, Ref.MergeAcceptedRootKind),
+        commit=F(2, STR, optional=True),
+        symbolic_branch=F(3, STR, optional=True),
+        publication_branch=F(4, STR, optional=True),
+        lock_worktree_sha256=F(5, STR),
+        manifest_worktree_sha256=F(6, STR),
+        lock_commit_sha256=F(7, STR, optional=True),
+        manifest_commit_sha256=F(8, STR, optional=True)),
+
+    MergeLegacyAcceptedWorkspace=Msg(
+        baseline_lock_sha256=F(1, STR),
+        lock_yaml=F(2, STR),
+        lock_sha256=F(3, STR),
+        members=F(4, List(Ref.MergeAcceptedMemberV1Projection)),
+        root=F(5, Ref.MergeAcceptedRootProjection)),
+
+    MergeLegacyAcceptanceEvidence=Msg(
+        lock_yaml=F(1, STR, optional=True),
+        lock_sha256=F(2, STR, optional=True),
+        members=F(3, List(Ref.MergeLegacyMemberEvidence)),
+        root=F(4, Ref.MergeAcceptedRootProjection, optional=True),
+        composition_commit=F(5, STR, optional=True),
+        composition_tree=F(6, STR, optional=True),
+        candidate_hashes=F(7, List(Ref.MergeAcceptedCandidateHashProjection))),
+
+    MergeLegacyMemberEvidence=Msg(
+        member_id=F(1, STR),
+        selected=F(2, BOOL),
+        state=F(3, Ref.MergeParticipantState, optional=True),
+        integration=F(4, Ref.MergeAcceptedIntegrationProjection, optional=True),
+        lock_member=F(5, Ref.MergeAcceptedLockMemberProjection, optional=True)),
+
+    MergeAcceptedCandidateHashProjection=Msg(
+        path=F(1, STR),
+        sha256=F(2, STR)),
+
     # Plan, result, and live recovery projection for one merge participant.
     MergeRepoSummary=Msg(
         target_id=F(1, STR),
@@ -1509,7 +1703,8 @@ SCHEMA = schema(
         repos=F(6, List(Ref.MergeRepoSummary)),
         operation_drift=F(7, List(Ref.MergeOperationDrift)),
         preservation=F(8, List(Ref.MergePreservation), optional=True),
-        publication_step=F(9, Ref.MergePublicationStep, optional=True)),
+        publication_step=F(9, Ref.MergePublicationStep, optional=True),
+        record=F(10, Ref.MergeRecordProjection, optional=True)),
 
     # ---- diff request messages --------------------------------------------
     # One resolved comparison for one target repo: kind + resolved endpoints.

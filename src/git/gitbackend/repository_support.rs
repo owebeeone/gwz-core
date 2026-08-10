@@ -33,7 +33,21 @@ pub(super) fn parse_existing_commit(
     repo: &git2::Repository,
     value: &str,
 ) -> ModelResult<git2::Oid> {
-    let oid = git2::Oid::from_str(value).map_err(git_error)?;
+    let width = match repo.object_format() {
+        git2::ObjectFormat::Sha1 => 40,
+        git2::ObjectFormat::Sha256 => 64,
+    };
+    if value.len() != width
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "commit id is not a complete lowercase id in the repository object format",
+        ));
+    }
+    let oid = git2::Oid::from_str_ext(value, repo.object_format()).map_err(git_error)?;
     repo.find_commit(oid).map_err(git_error)?;
     Ok(oid)
 }

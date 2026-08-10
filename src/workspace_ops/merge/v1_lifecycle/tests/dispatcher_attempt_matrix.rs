@@ -9,6 +9,7 @@ use super::super::authority::{
     VerifiedPublicationHandoff, next_action, resolve_observation,
 };
 use super::super::checked::{StoredV1Record, V1MutationLease};
+use super::super::transition::ReverseEntryKind;
 use super::super::transition::prepare;
 use super::fixtures::{
     backup_action, evidence_payload, evidence_rollback_record, preservation_evidence,
@@ -263,14 +264,13 @@ fn abort_and_preserve_abandon_only_their_bound_not_started_owner() {
             "mem_a".into(),
         )
         .unwrap();
-        let handoff = VerifiedPublicationHandoff::for_test(
-            &current,
-            "@publication",
-            "handoff",
-            "verified",
-            (),
-        )
-        .unwrap();
+        let kind = match request {
+            V1LifecycleRequest::Abort => ReverseEntryKind::DirectRollback,
+            V1LifecycleRequest::Preserve => ReverseEntryKind::Preservation,
+            _ => unreachable!(),
+        };
+        let handoff =
+            VerifiedPublicationHandoff::for_entry_test(&current, kind, &anticipated).unwrap();
         let entry = match request {
             V1LifecycleRequest::Abort => EntryFact::Rollback(Box::new(
                 super::super::authority::PreparedRollbackEntry::direct_for_test(

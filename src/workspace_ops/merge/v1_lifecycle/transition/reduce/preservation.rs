@@ -87,7 +87,7 @@ fn begin(
         "cursor_checked",
     )?;
     next.pending_preservation = Some(pending.clone());
-    install_prefix(next, payload)
+    Ok(())
 }
 
 fn advance(
@@ -106,10 +106,18 @@ fn advance(
     require(
         action_matches(old, &payload.owner, action) && action_matches(new, &payload.owner, action),
     )?;
+    require(progress_matches(old, new, action))?;
     require(current_position(old, action) == Some(payload.observed_position))?;
     require(match action {
-        Action::Stash => next_stash(stash_phase(old)?, has_prefix(old)) == Some(stash_phase(new)?),
-        Action::Reset => next_reset(reset_phase(old)?, has_prefix(old)) == Some(reset_phase(new)?),
+        Action::Stash => {
+            next_stash(stash_phase(old)?, has_root_handoff(old)) == Some(stash_phase(new)?)
+                && payload.evidence.is_some()
+                    == (stash_phase(old)? == PreservationStashPhaseV1::CreateStash)
+        }
+        Action::Reset => {
+            next_reset(reset_phase(old)?, has_root_handoff(old)) == Some(reset_phase(new)?)
+                && payload.evidence.is_none()
+        }
         Action::Backup => false,
     })?;
     let name = match action {
@@ -123,6 +131,72 @@ fn advance(
         set_evidence(next, &payload.owner, evidence)?;
     }
     Ok(())
+}
+
+fn progress_matches(
+    old: &PendingPreservationActionV1,
+    new: &PendingPreservationActionV1,
+    expected: Action,
+) -> bool {
+    match (old, new, expected) {
+        (
+            PendingPreservationActionV1::Stash {
+                owner: old_owner,
+                phase: old_phase,
+                stash_id: old_stash_id,
+                stash_object_id: old_object_id,
+                message: old_message,
+                head_commit: old_head,
+                preimage_sha256: old_preimage,
+                root_publication_handoff: old_handoff,
+            },
+            PendingPreservationActionV1::Stash {
+                owner: new_owner,
+                stash_id: new_stash_id,
+                stash_object_id: new_object_id,
+                message: new_message,
+                head_commit: new_head,
+                preimage_sha256: new_preimage,
+                root_publication_handoff: new_handoff,
+                ..
+            },
+            Action::Stash,
+        ) => {
+            old_owner == new_owner
+                && old_message == new_message
+                && old_head == new_head
+                && old_preimage == new_preimage
+                && old_handoff == new_handoff
+                && (*old_phase == PreservationStashPhaseV1::CreateStash
+                    || old_stash_id == new_stash_id && old_object_id == new_object_id)
+        }
+        (
+            PendingPreservationActionV1::ResetAttachedRef {
+                owner: old_owner,
+                branch: old_branch,
+                expected_commit: old_expected,
+                restore_commit: old_restore,
+                root_publication_handoff: old_handoff,
+                ..
+            },
+            PendingPreservationActionV1::ResetAttachedRef {
+                owner: new_owner,
+                branch: new_branch,
+                expected_commit: new_expected,
+                restore_commit: new_restore,
+                root_publication_handoff: new_handoff,
+                ..
+            },
+            Action::Reset,
+        ) => {
+            old_owner == new_owner
+                && old_branch == new_branch
+                && old_expected == new_expected
+                && old_restore == new_restore
+                && old_handoff == new_handoff
+        }
+        _ => false,
+    }
 }
 
 fn finish(
@@ -191,24 +265,6 @@ fn set_evidence(
     Ok(())
 }
 
-fn install_prefix(
-    record: &mut MergeOperationRecordV1,
-    payload: &PreservationPayload,
-) -> ModelResult<()> {
-    let Some(prefix) = payload.publication_prefix.as_ref() else {
-        return Ok(());
-    };
-    let publication = record.publication.as_mut().ok_or_else(rejected)?;
-    require(
-        publication
-            .preservation_prefix
-            .as_ref()
-            .is_none_or(|old| old == prefix),
-    )?;
-    publication.preservation_prefix = Some(prefix.clone());
-    Ok(())
-}
-
 fn action_matches(
     action: &PendingPreservationActionV1,
     owner: &PreservationOwnerV1,
@@ -234,18 +290,18 @@ fn begin_position(
         }
         (
             PendingPreservationActionV1::Stash {
-                phase: PreservationStashPhaseV1::NormalizeRoot,
-                root_publication_prefix: Some(_),
+                phase: PreservationStashPhaseV1::NormalizeParent,
+                root_publication_handoff: Some(_),
                 ..
             },
             Action::Stash,
         ) => Some(PreservationCursorPosition::Stash(
-            PreservationStashPhaseV1::NormalizeRoot,
+            PreservationStashPhaseV1::NormalizeParent,
         )),
         (
             PendingPreservationActionV1::Stash {
                 phase: PreservationStashPhaseV1::CreateStash,
-                root_publication_prefix: None,
+                root_publication_handoff: None,
                 ..
             },
             Action::Stash,
@@ -254,7 +310,18 @@ fn begin_position(
         )),
         (
             PendingPreservationActionV1::ResetAttachedRef {
+                phase: PreservationRefResetPhaseV1::PrepareParent,
+                root_publication_handoff: Some(_),
+                ..
+            },
+            Action::Reset,
+        ) => Some(PreservationCursorPosition::ResetAttachedRef(
+            PreservationRefResetPhaseV1::PrepareParent,
+        )),
+        (
+            PendingPreservationActionV1::ResetAttachedRef {
                 phase: PreservationRefResetPhaseV1::ResetRef,
+                root_publication_handoff: None,
                 ..
             },
             Action::Reset,
@@ -297,41 +364,108 @@ fn reset_phase(action: &PendingPreservationActionV1) -> ModelResult<Preservation
     }
 }
 
-fn has_prefix(action: &PendingPreservationActionV1) -> bool {
+fn has_root_handoff(action: &PendingPreservationActionV1) -> bool {
     match action {
         PendingPreservationActionV1::Stash {
-            root_publication_prefix,
+            root_publication_handoff,
             ..
         }
         | PendingPreservationActionV1::ResetAttachedRef {
-            root_publication_prefix,
+            root_publication_handoff,
             ..
-        } => root_publication_prefix.is_some(),
+        } => root_publication_handoff.is_some(),
         PendingPreservationActionV1::BackupRef { .. } => false,
     }
 }
 
-fn next_stash(phase: PreservationStashPhaseV1, prefix: bool) -> Option<PreservationStashPhaseV1> {
+fn next_stash(
+    phase: PreservationStashPhaseV1,
+    root_handoff: bool,
+) -> Option<PreservationStashPhaseV1> {
     Some(match phase {
-        PreservationStashPhaseV1::NormalizeRoot => PreservationStashPhaseV1::CreateStash,
-        PreservationStashPhaseV1::CreateStash if prefix => PreservationStashPhaseV1::RestoreRoot,
+        PreservationStashPhaseV1::NormalizeParent if root_handoff => {
+            PreservationStashPhaseV1::NormalizeMarker
+        }
+        PreservationStashPhaseV1::NormalizeMarker if root_handoff => {
+            PreservationStashPhaseV1::NormalizeLock
+        }
+        PreservationStashPhaseV1::NormalizeLock if root_handoff => {
+            PreservationStashPhaseV1::NormalizeIndex
+        }
+        PreservationStashPhaseV1::NormalizeIndex if root_handoff => {
+            PreservationStashPhaseV1::CreateStash
+        }
+        PreservationStashPhaseV1::CreateStash if root_handoff => {
+            PreservationStashPhaseV1::RestoreIndex
+        }
         PreservationStashPhaseV1::CreateStash => PreservationStashPhaseV1::WriteBundle,
-        PreservationStashPhaseV1::RestoreRoot => PreservationStashPhaseV1::WriteBundle,
+        PreservationStashPhaseV1::RestoreIndex if root_handoff => {
+            PreservationStashPhaseV1::RestoreLock
+        }
+        PreservationStashPhaseV1::RestoreLock if root_handoff => {
+            PreservationStashPhaseV1::RestoreParent
+        }
+        PreservationStashPhaseV1::RestoreParent if root_handoff => {
+            PreservationStashPhaseV1::RestoreMarker
+        }
+        PreservationStashPhaseV1::RestoreMarker if root_handoff => {
+            PreservationStashPhaseV1::WriteBundle
+        }
         PreservationStashPhaseV1::WriteBundle => PreservationStashPhaseV1::Complete,
         PreservationStashPhaseV1::Complete => return None,
+        PreservationStashPhaseV1::NormalizeParent
+        | PreservationStashPhaseV1::NormalizeMarker
+        | PreservationStashPhaseV1::NormalizeLock
+        | PreservationStashPhaseV1::NormalizeIndex
+        | PreservationStashPhaseV1::RestoreIndex
+        | PreservationStashPhaseV1::RestoreLock
+        | PreservationStashPhaseV1::RestoreParent
+        | PreservationStashPhaseV1::RestoreMarker => return None,
     })
 }
 
 fn next_reset(
     phase: PreservationRefResetPhaseV1,
-    prefix: bool,
+    root_handoff: bool,
 ) -> Option<PreservationRefResetPhaseV1> {
     Some(match phase {
-        PreservationRefResetPhaseV1::ResetRef if prefix => PreservationRefResetPhaseV1::RestoreRoot,
-        PreservationRefResetPhaseV1::ResetRef | PreservationRefResetPhaseV1::RestoreRoot => {
+        PreservationRefResetPhaseV1::PrepareParent if root_handoff => {
+            PreservationRefResetPhaseV1::PrepareMarker
+        }
+        PreservationRefResetPhaseV1::PrepareMarker if root_handoff => {
+            PreservationRefResetPhaseV1::PrepareLock
+        }
+        PreservationRefResetPhaseV1::PrepareLock if root_handoff => {
+            PreservationRefResetPhaseV1::PrepareIndex
+        }
+        PreservationRefResetPhaseV1::PrepareIndex if root_handoff => {
+            PreservationRefResetPhaseV1::ResetRef
+        }
+        PreservationRefResetPhaseV1::ResetRef if root_handoff => {
+            PreservationRefResetPhaseV1::RestoreIndex
+        }
+        PreservationRefResetPhaseV1::ResetRef => PreservationRefResetPhaseV1::Complete,
+        PreservationRefResetPhaseV1::RestoreIndex if root_handoff => {
+            PreservationRefResetPhaseV1::RestoreLock
+        }
+        PreservationRefResetPhaseV1::RestoreLock if root_handoff => {
+            PreservationRefResetPhaseV1::RestoreParent
+        }
+        PreservationRefResetPhaseV1::RestoreParent if root_handoff => {
+            PreservationRefResetPhaseV1::RestoreMarker
+        }
+        PreservationRefResetPhaseV1::RestoreMarker if root_handoff => {
             PreservationRefResetPhaseV1::Complete
         }
         PreservationRefResetPhaseV1::Complete => return None,
+        PreservationRefResetPhaseV1::PrepareParent
+        | PreservationRefResetPhaseV1::PrepareMarker
+        | PreservationRefResetPhaseV1::PrepareLock
+        | PreservationRefResetPhaseV1::PrepareIndex
+        | PreservationRefResetPhaseV1::RestoreIndex
+        | PreservationRefResetPhaseV1::RestoreLock
+        | PreservationRefResetPhaseV1::RestoreParent
+        | PreservationRefResetPhaseV1::RestoreMarker => return None,
     })
 }
 

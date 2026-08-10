@@ -3,8 +3,8 @@ mod header;
 mod raw_yaml;
 mod scalar;
 
-#[cfg(test)]
 mod archive;
+mod location;
 #[cfg(test)]
 mod open_v0;
 #[cfg(test)]
@@ -21,8 +21,29 @@ pub(crate) use open_v0::{
     adapt_open_v0_for_r3_tests, prepare_upgrade, verified_v0_descriptor,
 };
 
+#[allow(
+    unused_imports,
+    reason = "P4 consumes cleanup only through the test-gated archive/GC lifecycle"
+)]
+pub(crate) use archive::{ArchivedCleanupWorklist, ValidatedArchivedRecord, decode_archived_v0};
+#[allow(
+    unused_imports,
+    reason = "opaque physical types are named by test-gated v1 authority consumers"
+)]
+pub(crate) use location::{
+    CanonicalMergeLocations, CanonicalRecordKind, CanonicalRecordLeaf, CanonicalRecordPath,
+    ImmutableBytes, Sha256Digest, acquire_canonical_merge_locations,
+};
+
 #[cfg(test)]
-pub(crate) use archive::decode_archived_for_r3_tests;
+pub(crate) use archive::decode_archived_for_r3_tests as decode_archived;
+#[cfg(test)]
+pub(crate) use archive::{archived_fixture_for_test, decode_archived_for_r3_tests};
+#[cfg(test)]
+pub(crate) use location::{
+    appear_archived_before_final_check_for_test, appear_open_before_final_check_for_test,
+    replace_open_before_final_check_for_test, replace_parent_before_final_check_for_test,
+};
 
 #[cfg(test)]
 pub(crate) fn decode_v0_for_r3_tests(

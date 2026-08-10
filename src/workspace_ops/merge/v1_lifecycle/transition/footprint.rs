@@ -37,6 +37,7 @@ enum KnownField {
     Acceptance,
     PendingRollback,
     PendingPreservation,
+    PreservationPublicationHandoff,
     Participant {
         member_id: String,
         field: ParticipantField,
@@ -51,6 +52,11 @@ pub(super) fn verify(
     new: &MergeOperationRecordV1,
 ) -> ModelResult<()> {
     let mut actual = known_diff(old, new)?;
+    mark(
+        &mut actual,
+        old.preservation_publication_handoff != new.preservation_publication_handoff,
+        KnownField::PreservationPublicationHandoff,
+    );
     actual.remove(&KnownField::WriterVersion);
     let expected = expected_diff(effect.kind, &effect.subject, old, new)?;
     if actual == expected {
@@ -78,12 +84,15 @@ fn expected_diff(
             | K::AwaitResolution
             | K::Halt
             | K::EnterFinalizing
-            | K::BeginPreservation
             | K::BeginRollback
             | K::CompleteOperation
             | K::AbortOperation,
             EffectSubject::None,
         ) => Ok(fields([F::OperationState])),
+        (K::BeginPreservation, EffectSubject::None) => Ok(fields([
+            F::OperationState,
+            F::PreservationPublicationHandoff,
+        ])),
         (K::PrepareParticipant, EffectSubject::Participant(member_id)) => {
             Ok(fields([participant(member_id, P::PendingAction)]))
         }
@@ -95,14 +104,23 @@ fn expected_diff(
             | K::RecordHaltedOutcomeAndBeginRollback
             | K::RecordHaltedOutcomeAndBeginPreservation,
             EffectSubject::Participant(member_id),
-        ) => participant_result_with_error_retirement(old, new, member_id),
+        ) => {
+            let mut fields = participant_result_with_error_retirement(old, new, member_id)?;
+            if kind == K::RecordHaltedOutcomeAndBeginPreservation {
+                fields.insert(F::PreservationPublicationHandoff);
+            }
+            Ok(fields)
+        }
         (
             K::AbandonNotStartedAndBeginRollback | K::AbandonNotStartedAndBeginPreservation,
             EffectSubject::Participant(member_id),
-        ) => Ok(fields([
-            participant(member_id, P::PendingAction),
-            F::OperationState,
-        ])),
+        ) => {
+            let mut fields = fields([participant(member_id, P::PendingAction), F::OperationState]);
+            if kind == K::AbandonNotStartedAndBeginPreservation {
+                fields.insert(F::PreservationPublicationHandoff);
+            }
+            Ok(fields)
+        }
         (
             K::RecordPreparationFailureAndHalt | K::RecordOwnedRetryFailureAndHalt,
             EffectSubject::Failure {
@@ -185,7 +203,6 @@ fn preservation_diff(
 ) -> ModelResult<BTreeSet<KnownField>> {
     use EffectKind as K;
     use KnownField as F;
-    use PublicationField as U;
     let mut expected = fields([F::PendingPreservation]);
     let before = old.pending_preservation.as_ref();
     let after = new.pending_preservation.as_ref();
@@ -200,17 +217,8 @@ fn preservation_diff(
                 && after.is_none()
         }
         K::BeginStash => {
-            let valid = before.is_none()
-                && matches!(after, Some(PendingPreservationActionV1::Stash { owner: actual, .. }) if actual == owner);
-            if let Some(PendingPreservationActionV1::Stash {
-                root_publication_prefix: Some(_),
-                ..
-            }) = after
-            {
-                require_root_owner(owner)?;
-                expected.insert(F::Publication(U::Preservation));
-            }
-            valid
+            before.is_none()
+                && matches!(after, Some(PendingPreservationActionV1::Stash { owner: actual, .. }) if actual == owner)
         }
         K::AdvanceStash => {
             if matches!(
@@ -232,17 +240,8 @@ fn preservation_diff(
                 && after.is_none()
         }
         K::BeginResetAttachedRef => {
-            let valid = before.is_none()
-                && matches!(after, Some(PendingPreservationActionV1::ResetAttachedRef { owner: actual, .. }) if actual == owner);
-            if let Some(PendingPreservationActionV1::ResetAttachedRef {
-                root_publication_prefix: Some(_),
-                ..
-            }) = after
-            {
-                require_root_owner(owner)?;
-                expected.insert(F::Publication(U::Preservation));
-            }
-            valid
+            before.is_none()
+                && matches!(after, Some(PendingPreservationActionV1::ResetAttachedRef { owner: actual, .. }) if actual == owner)
         }
         K::AdvanceResetAttachedRef => matches!((before, after),
             (Some(PendingPreservationActionV1::ResetAttachedRef { owner: prior, .. }), Some(PendingPreservationActionV1::ResetAttachedRef { owner: next, .. }))
@@ -259,18 +258,6 @@ fn preservation_diff(
     } else {
         Err(rejected(
             "preservation effect does not match its typed owner or phase",
-        ))
-    }
-}
-
-fn require_root_owner(owner: &PreservationOwnerV1) -> ModelResult<()> {
-    let is_root = matches!(owner, PreservationOwnerV1::PublicationRoot)
-        || matches!(owner, PreservationOwnerV1::Participant { member_id } if member_id == "@root");
-    if is_root {
-        Ok(())
-    } else {
-        Err(rejected(
-            "only a root preservation owner may write a publication prefix",
         ))
     }
 }

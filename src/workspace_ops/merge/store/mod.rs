@@ -45,6 +45,13 @@ pub(crate) trait MergeStore {
     fn load(&self, _root: &Path, _merge_id: &str) -> ModelResult<MergeOperationRecord> {
         unsupported_store("load")
     }
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "R1-frozen archived-load compatibility seam remains until the A1 activation review"
+        )
+    )]
     fn load_archived(&self, _root: &Path, _merge_id: &str) -> ModelResult<MergeOperationRecord> {
         unsupported_store("load_archived")
     }

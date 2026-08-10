@@ -42,12 +42,28 @@ impl CandidatePublicationObservation {
     }
 }
 
+#[allow(dead_code, reason = "retained v0 wrapper over the shared view")]
 pub(in crate::workspace_ops::merge) fn classify_candidate_publication(
     record: &MergeOperationRecord,
     observation: &CandidatePublicationObservation,
 ) -> ModelResult<Option<CandidatePublicationPrefix>> {
-    let candidate = candidate(record)?;
-    let publication = progress(record)?;
+    classify_candidate_publication_view(
+        super::super::status::MergeStatusRecordView::from_v0(record),
+        observation,
+    )
+}
+
+pub(in crate::workspace_ops::merge) fn classify_candidate_publication_view(
+    view: super::super::status::MergeStatusRecordView<'_>,
+    observation: &CandidatePublicationObservation,
+) -> ModelResult<Option<CandidatePublicationPrefix>> {
+    let publication = view
+        .publication()
+        .ok_or_else(|| unreadable("publication progress is missing"))?;
+    let candidate = publication
+        .candidate
+        .as_ref()
+        .ok_or_else(|| unreadable("publication candidate is missing"))?;
     Ok(classify_candidate_parts(
         candidate,
         publication.candidate_lock_sha256.as_deref(),
@@ -60,19 +76,10 @@ pub(in crate::workspace_ops::merge) fn classify_candidate_publication_for_v1(
     record: &MergeOperationRecordV1,
     observation: &CandidatePublicationObservation,
 ) -> ModelResult<Option<CandidatePublicationPrefix>> {
-    let publication = record
-        .publication
-        .as_ref()
-        .ok_or_else(|| candidate_error(record))?;
-    let candidate = publication
-        .candidate
-        .as_ref()
-        .ok_or_else(|| candidate_error(record))?;
-    Ok(classify_candidate_parts(
-        candidate,
-        publication.candidate_lock_sha256.as_deref(),
+    classify_candidate_publication_view(
+        super::super::status::MergeStatusRecordView::from_v1(record),
         observation,
-    ))
+    )
 }
 
 fn classify_candidate_parts(
@@ -106,11 +113,31 @@ fn classify_candidate_parts(
     }
 }
 
+#[allow(dead_code, reason = "retained v0 wrapper over the shared view")]
 pub(in crate::workspace_ops::merge) fn publication_prefix_allowed(
     record: &MergeOperationRecord,
     prefix: CandidatePublicationPrefix,
 ) -> ModelResult<bool> {
-    Ok(match progress(record)?.step {
+    publication_prefix_allowed_view(
+        super::super::status::MergeStatusRecordView::from_v0(record),
+        prefix,
+    )
+}
+
+pub(in crate::workspace_ops::merge) fn publication_prefix_allowed_view(
+    view: super::super::status::MergeStatusRecordView<'_>,
+    prefix: CandidatePublicationPrefix,
+) -> ModelResult<bool> {
+    let publication = view
+        .publication()
+        .ok_or_else(|| unreadable("publication progress is missing"))?;
+    let candidate = || {
+        publication
+            .candidate
+            .as_ref()
+            .ok_or_else(|| unreadable("publication candidate is missing"))
+    };
+    Ok(match publication.step {
         PublicationStep::NotStarted
         | PublicationStep::ValidatingResults
         | PublicationStep::PreparingCandidate
@@ -119,15 +146,14 @@ pub(in crate::workspace_ops::merge) fn publication_prefix_allowed(
         PublicationStep::VerifyingPublication | PublicationStep::Complete => {
             prefix == CandidatePublicationPrefix::Boundary
                 || (prefix == CandidatePublicationPrefix::Marker
-                    && progress(record)?.candidate_lock_sha256.as_deref()
+                    && publication.candidate_lock_sha256.as_deref()
                         == Some(
                             super::super::publication::sha256(
-                                candidate(record)?.baseline_lock_yaml.as_bytes(),
+                                candidate()?.baseline_lock_yaml.as_bytes(),
                             )
                             .as_str(),
                         )
-                    && candidate(record)?.boundary_sha256
-                        == candidate(record)?.baseline_boundary_sha256)
+                    && candidate()?.boundary_sha256 == candidate()?.baseline_boundary_sha256)
         }
     })
 }
@@ -409,20 +435,6 @@ fn action_name(action: FinalizationNextAction) -> &'static str {
         FinalizationNextAction::CompleteNoPublication => "complete_no_publication",
         FinalizationNextAction::ArchiveCompleted => "archive_completed",
     }
-}
-
-fn progress(record: &MergeOperationRecord) -> ModelResult<&PublicationProgress> {
-    record
-        .publication
-        .as_ref()
-        .ok_or_else(|| unreadable("publication progress is missing"))
-}
-
-fn candidate(record: &MergeOperationRecord) -> ModelResult<&PublicationCandidate> {
-    progress(record)?
-        .candidate
-        .as_ref()
-        .ok_or_else(|| unreadable("publication candidate is missing"))
 }
 
 fn unreadable(message: impl Into<String>) -> ModelError {

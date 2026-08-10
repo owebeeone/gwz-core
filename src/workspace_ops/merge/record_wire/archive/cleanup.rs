@@ -1,20 +1,58 @@
 use std::collections::BTreeSet;
 
+#[cfg(test)]
 use super::super::super::model::v1::MergeOperationRecordV1;
 use super::super::super::{MergeOperationRecord, PreservationEvidence};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ArchivedCleanupWorklist {
-    pub(crate) backup_refs: Vec<ArchivedBackupRefOwner>,
-    pub(crate) has_stash_evidence: bool,
+    pub(super) backup_refs: Vec<ArchivedBackupRefOwner>,
+    pub(super) has_stash_evidence: bool,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct ArchivedBackupRefOwner {
-    pub(crate) target_id: String,
-    pub(crate) path: String,
-    pub(crate) name: String,
-    pub(crate) target_commit: String,
+    pub(super) target_id: String,
+    pub(super) path: String,
+    pub(super) name: String,
+    pub(super) target_commit: String,
+}
+
+impl ArchivedCleanupWorklist {
+    #[allow(
+        dead_code,
+        reason = "P4 consumes cleanup behind the disabled lifecycle"
+    )]
+    pub(crate) fn backup_refs(&self) -> &[ArchivedBackupRefOwner] {
+        &self.backup_refs
+    }
+
+    #[allow(
+        dead_code,
+        reason = "P4 consumes cleanup behind the disabled lifecycle"
+    )]
+    pub(crate) fn has_stash_evidence(&self) -> bool {
+        self.has_stash_evidence
+    }
+}
+
+#[allow(dead_code, reason = "P4 consumes the read-only cleanup owner view")]
+impl ArchivedBackupRefOwner {
+    pub(crate) fn target_id(&self) -> &str {
+        &self.target_id
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn target_commit(&self) -> &str {
+        &self.target_commit
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,11 +69,16 @@ pub(super) fn from_v0(
     let mut seen = BTreeSet::new();
     let mut has_stash_evidence = false;
     for (target_id, participant) in &record.participants {
+        let key = if participant.target_kind == super::super::super::MergeTargetKind::Root {
+            "root"
+        } else {
+            target_id
+        };
         collect_owner(
             &record.merge_id,
             target_id,
             &participant.path,
-            owner_key(target_id),
+            key,
             &participant.preservation,
             &mut owners,
             &mut seen,
@@ -60,6 +103,7 @@ pub(super) fn from_v0(
     })
 }
 
+#[cfg(test)]
 pub(super) fn from_v1(
     record: &MergeOperationRecordV1,
 ) -> Result<ArchivedCleanupWorklist, CleanupError> {
@@ -67,11 +111,16 @@ pub(super) fn from_v1(
     let mut seen = BTreeSet::new();
     let mut has_stash_evidence = false;
     for (target_id, participant) in &record.participants {
+        let key = if participant.target_kind == super::super::super::MergeTargetKind::Root {
+            "root"
+        } else {
+            target_id
+        };
         collect_owner(
             &record.merge_id,
             target_id,
             &participant.path,
-            owner_key(target_id),
+            key,
             &participant.preservation,
             &mut owners,
             &mut seen,
@@ -145,14 +194,6 @@ fn collect_owner(
         }
     }
     Ok(())
-}
-
-fn owner_key(target_id: &str) -> &str {
-    if target_id == "@root" {
-        "root"
-    } else {
-        target_id
-    }
 }
 
 fn is_oid(value: &str) -> bool {

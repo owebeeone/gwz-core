@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::git::GitBackend;
+use crate::git::{GitBackend, GitDirectRefObservation};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OperationContext, WorkspaceMutatorLock};
 
@@ -13,6 +13,150 @@ struct BackupArtifact {
     path: PathBuf,
     name: String,
     commit: String,
+}
+
+#[cfg(test)]
+pub(super) struct PreparedArchivedCleanup {
+    artifacts: Vec<ArchivedBackupArtifact>,
+}
+
+#[cfg(test)]
+struct ArchivedBackupArtifact {
+    target_id: String,
+    relative_path: String,
+    path: PathBuf,
+    name: String,
+    commit: String,
+    delete: bool,
+}
+
+#[cfg(test)]
+pub(super) fn preflight_archived_cleanup<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    merge_id: &str,
+    cleanup: &super::record_wire::ArchivedCleanupWorklist,
+) -> ModelResult<PreparedArchivedCleanup> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string()))?;
+    let mut artifacts = Vec::with_capacity(cleanup.backup_refs().len());
+    let mut seen = BTreeSet::new();
+    for owner in cleanup.backup_refs() {
+        let relative = Path::new(owner.path());
+        let is_root = relative == Path::new(".");
+        let path = if is_root {
+            root.clone()
+        } else {
+            let member_path = crate::workspace::MemberPath::parse(owner.path()).map_err(|_| {
+                cleanup_error(
+                    owner.target_id(),
+                    owner.path(),
+                    ErrorCode::ArchivedRecordUnreadable,
+                    "archive cleanup owner path is not canonical",
+                )
+            })?;
+            root.join(member_path.as_str())
+        };
+        let canonical = path.canonicalize().map_err(|error| {
+            attach_member(
+                ModelError::new(ErrorCode::IoError, error.to_string()),
+                owner.target_id(),
+                owner.path(),
+            )
+        })?;
+        if canonical != path || !canonical.starts_with(&root) {
+            return Err(cleanup_error(
+                owner.target_id(),
+                owner.path(),
+                ErrorCode::ArchivedRecordUnreadable,
+                "archive cleanup owner repository is not a canonical workspace path",
+            ));
+        }
+        let key = if is_root { "root" } else { owner.target_id() };
+        let expected_name = format!("refs/gwz/merge/{merge_id}/{key}/head");
+        if owner.name() != expected_name
+            || !matches!(owner.target_commit().len(), 40 | 64)
+            || !owner
+                .target_commit()
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !seen.insert((path.clone(), owner.name().to_owned()))
+        {
+            return Err(cleanup_error(
+                owner.target_id(),
+                owner.path(),
+                ErrorCode::ArchivedRecordUnreadable,
+                "archive cleanup ref identity is not canonical and unique",
+            ));
+        }
+        let delete = preflight_direct_ref(
+            backend,
+            &path,
+            owner.name(),
+            owner.target_commit(),
+            owner.target_id(),
+            owner.path(),
+        )?;
+        artifacts.push(ArchivedBackupArtifact {
+            target_id: owner.target_id().to_owned(),
+            relative_path: owner.path().to_owned(),
+            path,
+            name: owner.name().to_owned(),
+            commit: owner.target_commit().to_owned(),
+            delete,
+        });
+    }
+    Ok(PreparedArchivedCleanup { artifacts })
+}
+
+#[cfg(test)]
+pub(super) fn delete_preflighted_backup_refs<B: GitBackend>(
+    backend: &B,
+    prepared: &PreparedArchivedCleanup,
+) -> ModelResult<()> {
+    for artifact in prepared.artifacts.iter().filter(|artifact| artifact.delete) {
+        backend
+            .delete_backup_ref_checked(&artifact.path, &artifact.name, &artifact.commit)
+            .map_err(|error| attach_member(error, &artifact.target_id, &artifact.relative_path))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn require_backup_refs_absent<B: GitBackend>(
+    backend: &B,
+    prepared: &PreparedArchivedCleanup,
+) -> ModelResult<()> {
+    for artifact in &prepared.artifacts {
+        match backend
+            .observe_direct_ref(&artifact.path, &artifact.name)
+            .map_err(|error| attach_member(error, &artifact.target_id, &artifact.relative_path))?
+        {
+            GitDirectRefObservation::Absent => {}
+            GitDirectRefObservation::Direct { .. } | GitDirectRefObservation::NonDirect => {
+                return Err(ModelError::new(
+                    ErrorCode::MergeDrift,
+                    format!(
+                        "preservation ref '{}' reappeared during archive cleanup",
+                        artifact.name
+                    ),
+                )
+                .with_member(&artifact.target_id, &artifact.relative_path));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn cleanup_error(
+    target_id: &str,
+    path: &str,
+    code: ErrorCode,
+    detail: impl Into<String>,
+) -> ModelError {
+    ModelError::new(code, detail).with_member(target_id, path)
 }
 
 pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
@@ -36,9 +180,23 @@ pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
         store.gc(root, None)?;
         return super::response::idle_status_response(context);
     };
-    let record = store.load_archived(root, merge_id)?;
+    let locations = super::record_wire::acquire_canonical_merge_locations(root, merge_id)?;
+    let (_, bytes, _) = locations.archived().exact().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::OperationNotFound,
+            format!("archived merge record '{merge_id}' was not found"),
+        )
+    })?;
+    let (_, _, record) = super::record_wire::decode_production_v0(bytes.as_slice())
+        .map_err(|_| archived_record_unreadable(merge_id))?
+        .into_production_parts();
     let artifacts = preflight_backup_artifacts(backend, root, &record)?;
-    let response = post_gc_record(record).to_response(context)?;
+    let archived = super::record_wire::decode_archived_v0(bytes.as_slice(), merge_id)?;
+    let response = super::response::attach_archived_record_projection(
+        post_gc_record(record).to_response(context)?,
+        merge_id,
+        archived.projection(),
+    )?;
     for artifact in artifacts {
         backend
             .delete_backup_ref_checked(&artifact.path, &artifact.name, &artifact.commit)
@@ -163,16 +321,7 @@ fn preflight_owner_evidence<B: GitBackend>(
             )
             .with_member(target_id, relative_path));
         }
-        let observed = backend
-            .read_ref(path, name)
-            .map_err(|error| attach_member(error, target_id, relative_path))?;
-        if observed.as_deref().is_some_and(|actual| actual != commit) {
-            return Err(ModelError::new(
-                ErrorCode::MergeDrift,
-                format!("preservation ref '{name}' no longer points to recorded commit '{commit}'"),
-            )
-            .with_member(target_id, relative_path));
-        }
+        preflight_direct_ref(backend, path, name, commit, target_id, relative_path)?;
         artifacts.push(BackupArtifact {
             target_id: target_id.to_owned(),
             relative_path: relative_path.to_owned(),
@@ -182,6 +331,35 @@ fn preflight_owner_evidence<B: GitBackend>(
         });
     }
     Ok(())
+}
+
+fn preflight_direct_ref<B: GitBackend>(
+    backend: &B,
+    path: &Path,
+    name: &str,
+    expected_target: &str,
+    target_id: &str,
+    relative_path: &str,
+) -> ModelResult<bool> {
+    let observation = backend
+        .observe_direct_ref(path, name)
+        .map_err(|error| attach_member(error, target_id, relative_path))?;
+    match observation {
+        GitDirectRefObservation::Absent => Ok(false),
+        GitDirectRefObservation::Direct { target } if target == expected_target => Ok(true),
+        GitDirectRefObservation::Direct { .. } => Err(ModelError::new(
+            ErrorCode::MergeDrift,
+            format!(
+                "preservation ref '{name}' no longer points to recorded commit '{expected_target}'"
+            ),
+        )
+        .with_member(target_id, relative_path)),
+        GitDirectRefObservation::NonDirect => Err(ModelError::new(
+            ErrorCode::MergeDrift,
+            format!("preservation ref '{name}' is not a direct ref"),
+        )
+        .with_member(target_id, relative_path)),
+    }
 }
 
 fn post_gc_record(mut record: MergeOperationRecord) -> MergeOperationRecord {
@@ -208,4 +386,11 @@ fn attach_member(mut error: ModelError, target_id: &str, path: &str) -> ModelErr
         error.member_path = Some(path.to_owned());
     }
     error
+}
+
+fn archived_record_unreadable(merge_id: &str) -> ModelError {
+    ModelError::new(
+        ErrorCode::ArchivedRecordUnreadable,
+        format!("archived merge record '{merge_id}' is unreadable"),
+    )
 }

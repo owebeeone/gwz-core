@@ -1,16 +1,20 @@
 mod journal;
-mod participant;
+pub(in crate::workspace_ops::merge::v1_lifecycle::transition) mod participant;
 mod preservation;
 mod publication;
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::merge::model::v1::{
-    MergeOperationRecordV1, RecoveryContextV1, RecoveryOriginStateV1, ValidatedV1Record,
+    MergeOperationRecordV1, PreservationPublicationHandoffV1, PublicationIndexFormV1,
+    PublicationPrefixV1, RecoveryContextV1, RecoveryOriginStateV1, ValidatedV1Record,
     validate_v1_record,
 };
 use crate::workspace_ops::merge::{OperationState, ParticipantState};
 
-use super::super::authority::{BoundAuthority, ParticipantDriftIdentity, RollbackEntryOrigin};
+use super::super::authority::{
+    BoundAuthority, ParticipantDriftIdentity, PublicationHandoffFact, PublicationHandoffIndex,
+    PublicationHandoffPrefix, RollbackEntryOrigin,
+};
 use super::super::checked::StoredV1Record;
 use super::effect::{EffectKind, TransitionEffect};
 use super::{
@@ -102,6 +106,7 @@ fn operation(
                 "preflight",
             )?;
             require(entry.anticipated_model_matches(record))?;
+            install_preservation_handoff(next, entry.publication_handoff())?;
             next.state = S::Preserving;
         }
         OperationTransition::BeginRollback(entry) => {
@@ -128,6 +133,15 @@ fn operation(
                 (record.state == S::Preserving)
                     == (entry.origin() == RollbackEntryOrigin::FromPreserving),
             )?;
+            match entry.origin() {
+                RollbackEntryOrigin::Direct => {
+                    require(record.preservation_publication_handoff.is_none())?;
+                }
+                RollbackEntryOrigin::FromPreserving => require(
+                    record.preservation_publication_handoff
+                        == Some(model_handoff(entry.publication_handoff())),
+                )?,
+            }
             next.state = S::RollingBack;
         }
         OperationTransition::CompleteOperation(proof) => {
@@ -158,6 +172,42 @@ fn operation(
         }
     }
     Ok(TransitionEffect::operation(kind))
+}
+
+pub(super) fn install_preservation_handoff(
+    record: &mut MergeOperationRecordV1,
+    handoff: PublicationHandoffFact,
+) -> ModelResult<()> {
+    let handoff = model_handoff(handoff);
+    require(record.preservation_publication_handoff.is_none())?;
+    require(
+        crate::workspace_ops::merge::model::v1::preservation_handoff_is_compatible(record, handoff),
+    )?;
+    record.preservation_publication_handoff = Some(handoff);
+    Ok(())
+}
+
+fn model_handoff(handoff: PublicationHandoffFact) -> PreservationPublicationHandoffV1 {
+    match handoff {
+        PublicationHandoffFact::NoCandidate => PreservationPublicationHandoffV1::NoCandidate,
+        PublicationHandoffFact::EvidencePending => {
+            PreservationPublicationHandoffV1::EvidencePending
+        }
+        PublicationHandoffFact::Candidate { prefix, index } => {
+            PreservationPublicationHandoffV1::Candidate {
+                prefix: match prefix {
+                    PublicationHandoffPrefix::Baseline => PublicationPrefixV1::Baseline,
+                    PublicationHandoffPrefix::Marker => PublicationPrefixV1::Marker,
+                    PublicationHandoffPrefix::Lock => PublicationPrefixV1::Lock,
+                    PublicationHandoffPrefix::Boundary => PublicationPrefixV1::Boundary,
+                },
+                index: match index {
+                    PublicationHandoffIndex::Pre => PublicationIndexFormV1::Pre,
+                    PublicationHandoffIndex::Staged => PublicationIndexFormV1::Staged,
+                },
+            }
+        }
+    }
 }
 
 fn acceptance(

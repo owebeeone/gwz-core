@@ -1,13 +1,28 @@
+#![allow(
+    dead_code,
+    reason = "the neutral model includes test-gated v1 archive variants"
+)]
+
 use std::collections::BTreeSet;
 
 use crate::artifact::ArtifactSourceKind;
 
 use super::ParticipantState;
-use super::v1::RecordVersion;
+
+/// Wire version of the checked archive source.
+///
+/// This discriminator is intentionally independent of the disabled v1 model so
+/// archived v0 records can be decoded and projected by ordinary builds without
+/// making the v1 body reader reachable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ArchiveSourceVersion {
+    V0,
+    V1,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ArchivedMergeProjection {
-    pub(crate) source_version: RecordVersion,
+    pub(crate) source_version: ArchiveSourceVersion,
     pub(crate) terminal_outcome: ArchivedTerminalOutcome,
     pub(crate) acceptance: ArchivedAcceptanceProjection,
 }
@@ -199,6 +214,7 @@ macro_rules! pinned_value {
 }
 
 pinned_value!(ArchivedTerminalOutcome { Completed = 0, Aborted = 1 });
+pinned_value!(ArchiveSourceVersion { V0 = 0, V1 = 1 });
 pinned_value!(ArchivedAcceptanceKind {
     SupportedPersisted = 0,
     LegacyComplete = 1,
@@ -225,8 +241,8 @@ mod tests {
     fn i2_archive_discriminants_are_pinned() {
         assert_eq!(
             [
-                RecordVersion::V0.archive_pinned_value(),
-                RecordVersion::V1.archive_pinned_value()
+                ArchiveSourceVersion::V0.pinned_value(),
+                ArchiveSourceVersion::V1.pinned_value()
             ],
             [0, 1]
         );

@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
 use super::super::super::model::archive_projection::*;
-use super::super::super::model::v1::RecordVersion;
 use super::super::super::{
     MergeOperationRecord, OperationState, PublicationProgress, PublicationStep,
 };
@@ -31,7 +30,7 @@ pub(super) fn project(record: &MergeOperationRecord) -> Result<ArchivedMergeProj
         None => project_baseline(record, &baseline)?,
     };
     Ok(ArchivedMergeProjection {
-        source_version: RecordVersion::V0,
+        source_version: ArchiveSourceVersion::V0,
         terminal_outcome,
         acceptance,
     })
@@ -157,12 +156,18 @@ fn validate_candidate_terminal(
     publication: &PublicationProgress,
     composition_complete: bool,
 ) -> Result<(), ()> {
+    let composition_absent = publication.composition_commit.is_none()
+        && publication.composition_tree.is_none()
+        && publication.candidate_hashes.is_empty();
     let phase_valid = match publication.step {
         PublicationStep::PreparingCandidate => !composition_complete,
         PublicationStep::CommittingEvidence => true,
-        PublicationStep::PublishingCandidate
-        | PublicationStep::VerifyingPublication
-        | PublicationStep::Complete => composition_complete,
+        PublicationStep::PublishingCandidate | PublicationStep::VerifyingPublication => {
+            composition_complete
+        }
+        PublicationStep::Complete => {
+            composition_complete || record.state == OperationState::Completed && composition_absent
+        }
         PublicationStep::NotStarted | PublicationStep::ValidatingResults => false,
     };
     if !phase_valid {

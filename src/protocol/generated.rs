@@ -550,6 +550,294 @@ impl MergePublicationStep {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeRecordVersion {
+    #[default] V0,
+    V1,
+}
+impl MergeRecordVersion {
+    pub fn wire(self) -> i64 { match self {
+        Self::V0 => 0,
+        Self::V1 => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::V0,
+        1 => Self::V1,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeRecordVersion", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeTerminalOutcome {
+    #[default] Completed,
+    Aborted,
+}
+impl MergeTerminalOutcome {
+    pub fn wire(self) -> i64 { match self {
+        Self::Completed => 0,
+        Self::Aborted => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Completed,
+        1 => Self::Aborted,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeTerminalOutcome", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeAcceptanceKind {
+    #[default] SupportedPersisted,
+    LegacyComplete,
+    LegacyUnavailable,
+    NotAccepted,
+}
+impl MergeAcceptanceKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::SupportedPersisted => 0,
+        Self::LegacyComplete => 1,
+        Self::LegacyUnavailable => 2,
+        Self::NotAccepted => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::SupportedPersisted,
+        1 => Self::LegacyComplete,
+        2 => Self::LegacyUnavailable,
+        3 => Self::NotAccepted,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeAcceptanceKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeInstalledAcceptedWorkspaceKind {
+    #[default] V1,
+}
+impl MergeInstalledAcceptedWorkspaceKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::V1 => 0,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::V1,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeInstalledAcceptedWorkspaceKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeLegacyAcceptanceSource {
+    #[default] Candidate,
+    BaselineNoPublication,
+}
+impl MergeLegacyAcceptanceSource {
+    pub fn wire(self) -> i64 { match self {
+        Self::Candidate => 0,
+        Self::BaselineNoPublication => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Candidate,
+        1 => Self::BaselineNoPublication,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeLegacyAcceptanceSource", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeLegacyAcceptanceGap {
+    #[default] ExactLockBytes,
+    CompleteMemberAudit,
+    AcceptedRootInput,
+    PublicationEvidence,
+}
+impl MergeLegacyAcceptanceGap {
+    pub fn wire(self) -> i64 { match self {
+        Self::ExactLockBytes => 0,
+        Self::CompleteMemberAudit => 1,
+        Self::AcceptedRootInput => 2,
+        Self::PublicationEvidence => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::ExactLockBytes,
+        1 => Self::CompleteMemberAudit,
+        2 => Self::AcceptedRootInput,
+        3 => Self::PublicationEvidence,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeLegacyAcceptanceGap", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeAcceptedMemberKind {
+    #[default] Selected,
+    UnselectedPresent,
+    Absent,
+}
+impl MergeAcceptedMemberKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::Selected => 0,
+        Self::UnselectedPresent => 1,
+        Self::Absent => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Selected,
+        1 => Self::UnselectedPresent,
+        2 => Self::Absent,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeAcceptedMemberKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeAcceptedRootKind {
+    #[default] BornAttached,
+    BornDetached,
+    UnbornAttached,
+}
+impl MergeAcceptedRootKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::BornAttached => 0,
+        Self::BornDetached => 1,
+        Self::UnbornAttached => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::BornAttached,
+        1 => Self::BornDetached,
+        2 => Self::UnbornAttached,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeAcceptedRootKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeAcceptedMetadataSource {
+    #[default] OperationBaseline,
+    SelectedRootResult,
+}
+impl MergeAcceptedMetadataSource {
+    pub fn wire(self) -> i64 { match self {
+        Self::OperationBaseline => 0,
+        Self::SelectedRootResult => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::OperationBaseline,
+        1 => Self::SelectedRootResult,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeAcceptedMetadataSource", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeRecoveryOriginState {
+    #[default] Executing,
+    AwaitingResolution,
+    Halted,
+    Finalizing,
+    Preserving,
+    RollingBack,
+}
+impl MergeRecoveryOriginState {
+    pub fn wire(self) -> i64 { match self {
+        Self::Executing => 0,
+        Self::AwaitingResolution => 1,
+        Self::Halted => 2,
+        Self::Finalizing => 3,
+        Self::Preserving => 4,
+        Self::RollingBack => 5,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Executing,
+        1 => Self::AwaitingResolution,
+        2 => Self::Halted,
+        3 => Self::Finalizing,
+        4 => Self::Preserving,
+        5 => Self::RollingBack,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeRecoveryOriginState", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeCompatibilityBasePhase {
+    #[default] PreAcceptance,
+    PreCandidate,
+    CandidatePersisted,
+    EvidenceUnrecorded,
+    EvidenceRecorded,
+    PublishingPrefix,
+    Published,
+    NoPublicationComplete,
+}
+impl MergeCompatibilityBasePhase {
+    pub fn wire(self) -> i64 { match self {
+        Self::PreAcceptance => 0,
+        Self::PreCandidate => 1,
+        Self::CandidatePersisted => 2,
+        Self::EvidenceUnrecorded => 3,
+        Self::EvidenceRecorded => 4,
+        Self::PublishingPrefix => 5,
+        Self::Published => 6,
+        Self::NoPublicationComplete => 7,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::PreAcceptance,
+        1 => Self::PreCandidate,
+        2 => Self::CandidatePersisted,
+        3 => Self::EvidenceUnrecorded,
+        4 => Self::EvidenceRecorded,
+        5 => Self::PublishingPrefix,
+        6 => Self::Published,
+        7 => Self::NoPublicationComplete,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeCompatibilityBasePhase", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeCompatibilityNextAction {
+    #[default] ReconcilePendingParticipant,
+    ExecuteNextParticipant,
+    AwaitResolution,
+    ValidateResults,
+    PersistAcceptance,
+    PrepareCandidate,
+    CreateOrAdoptEvidence,
+    PublishCandidate,
+    VerifyPublication,
+    CompleteNoPublication,
+    ResumePreservation,
+    ResumeRollback,
+    ArchiveCompleted,
+    ArchiveAborted,
+    ReportRecoveryRequired,
+}
+impl MergeCompatibilityNextAction {
+    pub fn wire(self) -> i64 { match self {
+        Self::ReconcilePendingParticipant => 0,
+        Self::ExecuteNextParticipant => 1,
+        Self::AwaitResolution => 2,
+        Self::ValidateResults => 3,
+        Self::PersistAcceptance => 4,
+        Self::PrepareCandidate => 5,
+        Self::CreateOrAdoptEvidence => 6,
+        Self::PublishCandidate => 7,
+        Self::VerifyPublication => 8,
+        Self::CompleteNoPublication => 9,
+        Self::ResumePreservation => 10,
+        Self::ResumeRollback => 11,
+        Self::ArchiveCompleted => 12,
+        Self::ArchiveAborted => 13,
+        Self::ReportRecoveryRequired => 14,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::ReconcilePendingParticipant,
+        1 => Self::ExecuteNextParticipant,
+        2 => Self::AwaitResolution,
+        3 => Self::ValidateResults,
+        4 => Self::PersistAcceptance,
+        5 => Self::PrepareCandidate,
+        6 => Self::CreateOrAdoptEvidence,
+        7 => Self::PublishCandidate,
+        8 => Self::VerifyPublication,
+        9 => Self::CompleteNoPublication,
+        10 => Self::ResumePreservation,
+        11 => Self::ResumeRollback,
+        12 => Self::ArchiveCompleted,
+        13 => Self::ArchiveAborted,
+        14 => Self::ReportRecoveryRequired,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeCompatibilityNextAction", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum BranchActionResult {
     #[default] Listed,
     Created,
@@ -2726,6 +3014,441 @@ impl MergePendingActionSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeRecordProjection {
+    pub source_version: MergeRecordVersion,
+    pub archived: bool,
+    pub terminal_outcome: Option<MergeTerminalOutcome>,
+    pub acceptance: Option<MergeAcceptanceProjection>,
+    pub recovery: Option<MergeRecoveryProjection>,
+}
+impl MergeRecordProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.source_version.wire())),
+            (2, Cbor::Bool(self.archived)),
+            (3, match &self.terminal_outcome { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (4, match &self.acceptance { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (5, match &self.recovery { Some(v) => v.to_cbor(), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            source_version: MergeRecordVersion::from_wire(c.try_get(1)?.try_int()?)?,
+            archived: c.try_get(2)?.try_bool()?,
+            terminal_outcome: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(MergeTerminalOutcome::from_wire(v.try_int()?)?) } },
+            acceptance: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(MergeAcceptanceProjection::from_cbor(v)?) } },
+            recovery: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(MergeRecoveryProjection::from_cbor(v)?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptanceProjection {
+    pub kind: MergeAcceptanceKind,
+    pub supported_persisted: Option<MergeInstalledAcceptedWorkspaceProjection>,
+    pub legacy_complete: Option<MergeLegacyAcceptedWorkspace>,
+    pub legacy_source: Option<MergeLegacyAcceptanceSource>,
+    pub legacy_evidence: Option<MergeLegacyAcceptanceEvidence>,
+    pub missing_gaps: Vec<MergeLegacyAcceptanceGap>,
+}
+impl MergeAcceptanceProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, match &self.supported_persisted { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (3, match &self.legacy_complete { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (4, match &self.legacy_source { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (5, match &self.legacy_evidence { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (6, Cbor::Array(self.missing_gaps.iter().map(|x| Cbor::Int(x.wire())).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: MergeAcceptanceKind::from_wire(c.try_get(1)?.try_int()?)?,
+            supported_persisted: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(MergeInstalledAcceptedWorkspaceProjection::from_cbor(v)?) } },
+            legacy_complete: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(MergeLegacyAcceptedWorkspace::from_cbor(v)?) } },
+            legacy_source: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(MergeLegacyAcceptanceSource::from_wire(v.try_int()?)?) } },
+            legacy_evidence: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(MergeLegacyAcceptanceEvidence::from_cbor(v)?) } },
+            missing_gaps: c.try_get(6)?.try_array()?.iter().map(|x| Ok(MergeLegacyAcceptanceGap::from_wire(x.try_int()?)?)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeInstalledAcceptedWorkspaceProjection {
+    pub kind: MergeInstalledAcceptedWorkspaceKind,
+    pub v1: Option<MergeAcceptedWorkspaceV1Projection>,
+}
+impl MergeInstalledAcceptedWorkspaceProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, match &self.v1 { Some(v) => v.to_cbor(), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: MergeInstalledAcceptedWorkspaceKind::from_wire(c.try_get(1)?.try_int()?)?,
+            v1: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(MergeAcceptedWorkspaceV1Projection::from_cbor(v)?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeRecoveryProjection {
+    pub origin_state: MergeRecoveryOriginState,
+    pub base_phase: MergeCompatibilityBasePhase,
+    pub next_action: MergeCompatibilityNextAction,
+    pub resume_action: MergeCompatibilityNextAction,
+}
+impl MergeRecoveryProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.origin_state.wire())),
+            (2, Cbor::Int(self.base_phase.wire())),
+            (3, Cbor::Int(self.next_action.wire())),
+            (4, Cbor::Int(self.resume_action.wire())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            origin_state: MergeRecoveryOriginState::from_wire(c.try_get(1)?.try_int()?)?,
+            base_phase: MergeCompatibilityBasePhase::from_wire(c.try_get(2)?.try_int()?)?,
+            next_action: MergeCompatibilityNextAction::from_wire(c.try_get(3)?.try_int()?)?,
+            resume_action: MergeCompatibilityNextAction::from_wire(c.try_get(4)?.try_int()?)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptedWorkspaceV1Projection {
+    pub operation_baseline_lock_sha256: String,
+    pub metadata_base: MergeAcceptedMetadataBaseProjection,
+    pub lock_yaml: String,
+    pub lock_sha256: String,
+    pub members: Vec<MergeAcceptedMemberV1Projection>,
+    pub root: MergeAcceptedRootProjection,
+}
+impl MergeAcceptedWorkspaceV1Projection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.operation_baseline_lock_sha256.clone())),
+            (2, self.metadata_base.to_cbor()),
+            (3, Cbor::Text(self.lock_yaml.clone())),
+            (4, Cbor::Text(self.lock_sha256.clone())),
+            (5, Cbor::Array(self.members.iter().map(|x| x.to_cbor()).collect())),
+            (6, self.root.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            operation_baseline_lock_sha256: c.try_get(1)?.try_text()?,
+            metadata_base: MergeAcceptedMetadataBaseProjection::from_cbor(c.try_get(2)?)?,
+            lock_yaml: c.try_get(3)?.try_text()?,
+            lock_sha256: c.try_get(4)?.try_text()?,
+            members: c.try_get(5)?.try_array()?.iter().map(|x| MergeAcceptedMemberV1Projection::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            root: MergeAcceptedRootProjection::from_cbor(c.try_get(6)?)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptedMetadataBaseProjection {
+    pub source: MergeAcceptedMetadataSource,
+    pub source_commit: Option<String>,
+    pub manifest_yaml: String,
+    pub manifest_sha256: String,
+    pub lock_yaml: String,
+    pub lock_sha256: String,
+}
+impl MergeAcceptedMetadataBaseProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.source.wire())),
+            (2, match &self.source_commit { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, Cbor::Text(self.manifest_yaml.clone())),
+            (4, Cbor::Text(self.manifest_sha256.clone())),
+            (5, Cbor::Text(self.lock_yaml.clone())),
+            (6, Cbor::Text(self.lock_sha256.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            source: MergeAcceptedMetadataSource::from_wire(c.try_get(1)?.try_int()?)?,
+            source_commit: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            manifest_yaml: c.try_get(3)?.try_text()?,
+            manifest_sha256: c.try_get(4)?.try_text()?,
+            lock_yaml: c.try_get(5)?.try_text()?,
+            lock_sha256: c.try_get(6)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptedMemberV1Projection {
+    pub member_id: String,
+    pub kind: MergeAcceptedMemberKind,
+    pub integration: Option<MergeAcceptedIntegrationProjection>,
+    pub final_checkout: Option<MergeAcceptedCheckoutProjection>,
+    pub lock_member: Option<MergeAcceptedLockMemberProjection>,
+}
+impl MergeAcceptedMemberV1Projection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.member_id.clone())),
+            (2, Cbor::Int(self.kind.wire())),
+            (3, match &self.integration { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (4, match &self.final_checkout { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (5, match &self.lock_member { Some(v) => v.to_cbor(), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            kind: MergeAcceptedMemberKind::from_wire(c.try_get(2)?.try_int()?)?,
+            integration: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(MergeAcceptedIntegrationProjection::from_cbor(v)?) } },
+            final_checkout: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(MergeAcceptedCheckoutProjection::from_cbor(v)?) } },
+            lock_member: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(MergeAcceptedLockMemberProjection::from_cbor(v)?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptedIntegrationProjection {
+    pub branch: String,
+    pub before_commit: String,
+    pub resulting_commit: String,
+}
+impl MergeAcceptedIntegrationProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.branch.clone())),
+            (2, Cbor::Text(self.before_commit.clone())),
+            (3, Cbor::Text(self.resulting_commit.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            branch: c.try_get(1)?.try_text()?,
+            before_commit: c.try_get(2)?.try_text()?,
+            resulting_commit: c.try_get(3)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptedCheckoutProjection {
+    pub branch: String,
+    pub commit: String,
+}
+impl MergeAcceptedCheckoutProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.branch.clone())),
+            (2, Cbor::Text(self.commit.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            branch: c.try_get(1)?.try_text()?,
+            commit: c.try_get(2)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptedLockMemberProjection {
+    pub path: String,
+    pub source_id: String,
+    pub source_kind: SourceKind,
+    pub commit: Option<String>,
+    pub branch: Option<String>,
+    pub detached: Option<bool>,
+    pub upstream: Option<String>,
+    pub dirty: Option<bool>,
+    pub materialized: Option<bool>,
+}
+impl MergeAcceptedLockMemberProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.path.clone())),
+            (2, Cbor::Text(self.source_id.clone())),
+            (3, Cbor::Int(self.source_kind.wire())),
+            (4, match &self.commit { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.detached { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (7, match &self.upstream { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (8, match &self.dirty { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (9, match &self.materialized { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            path: c.try_get(1)?.try_text()?,
+            source_id: c.try_get(2)?.try_text()?,
+            source_kind: SourceKind::from_wire(c.try_get(3)?.try_int()?)?,
+            commit: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            branch: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            detached: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            upstream: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            dirty: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            materialized: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptedRootProjection {
+    pub kind: MergeAcceptedRootKind,
+    pub commit: Option<String>,
+    pub symbolic_branch: Option<String>,
+    pub publication_branch: Option<String>,
+    pub lock_worktree_sha256: String,
+    pub manifest_worktree_sha256: String,
+    pub lock_commit_sha256: Option<String>,
+    pub manifest_commit_sha256: Option<String>,
+}
+impl MergeAcceptedRootProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, match &self.commit { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, match &self.symbolic_branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.publication_branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, Cbor::Text(self.lock_worktree_sha256.clone())),
+            (6, Cbor::Text(self.manifest_worktree_sha256.clone())),
+            (7, match &self.lock_commit_sha256 { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (8, match &self.manifest_commit_sha256 { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: MergeAcceptedRootKind::from_wire(c.try_get(1)?.try_int()?)?,
+            commit: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            symbolic_branch: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            publication_branch: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            lock_worktree_sha256: c.try_get(5)?.try_text()?,
+            manifest_worktree_sha256: c.try_get(6)?.try_text()?,
+            lock_commit_sha256: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            manifest_commit_sha256: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeLegacyAcceptedWorkspace {
+    pub baseline_lock_sha256: String,
+    pub lock_yaml: String,
+    pub lock_sha256: String,
+    pub members: Vec<MergeAcceptedMemberV1Projection>,
+    pub root: MergeAcceptedRootProjection,
+}
+impl MergeLegacyAcceptedWorkspace {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.baseline_lock_sha256.clone())),
+            (2, Cbor::Text(self.lock_yaml.clone())),
+            (3, Cbor::Text(self.lock_sha256.clone())),
+            (4, Cbor::Array(self.members.iter().map(|x| x.to_cbor()).collect())),
+            (5, self.root.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            baseline_lock_sha256: c.try_get(1)?.try_text()?,
+            lock_yaml: c.try_get(2)?.try_text()?,
+            lock_sha256: c.try_get(3)?.try_text()?,
+            members: c.try_get(4)?.try_array()?.iter().map(|x| MergeAcceptedMemberV1Projection::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            root: MergeAcceptedRootProjection::from_cbor(c.try_get(5)?)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeLegacyAcceptanceEvidence {
+    pub lock_yaml: Option<String>,
+    pub lock_sha256: Option<String>,
+    pub members: Vec<MergeLegacyMemberEvidence>,
+    pub root: Option<MergeAcceptedRootProjection>,
+    pub composition_commit: Option<String>,
+    pub composition_tree: Option<String>,
+    pub candidate_hashes: Vec<MergeAcceptedCandidateHashProjection>,
+}
+impl MergeLegacyAcceptanceEvidence {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, match &self.lock_yaml { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (2, match &self.lock_sha256 { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, Cbor::Array(self.members.iter().map(|x| x.to_cbor()).collect())),
+            (4, match &self.root { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (5, match &self.composition_commit { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.composition_tree { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (7, Cbor::Array(self.candidate_hashes.iter().map(|x| x.to_cbor()).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            lock_yaml: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            lock_sha256: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            members: c.try_get(3)?.try_array()?.iter().map(|x| MergeLegacyMemberEvidence::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            root: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(MergeAcceptedRootProjection::from_cbor(v)?) } },
+            composition_commit: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            composition_tree: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            candidate_hashes: c.try_get(7)?.try_array()?.iter().map(|x| MergeAcceptedCandidateHashProjection::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeLegacyMemberEvidence {
+    pub member_id: String,
+    pub selected: bool,
+    pub state: Option<MergeParticipantState>,
+    pub integration: Option<MergeAcceptedIntegrationProjection>,
+    pub lock_member: Option<MergeAcceptedLockMemberProjection>,
+}
+impl MergeLegacyMemberEvidence {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.member_id.clone())),
+            (2, Cbor::Bool(self.selected)),
+            (3, match &self.state { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (4, match &self.integration { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (5, match &self.lock_member { Some(v) => v.to_cbor(), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            selected: c.try_get(2)?.try_bool()?,
+            state: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(MergeParticipantState::from_wire(v.try_int()?)?) } },
+            integration: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(MergeAcceptedIntegrationProjection::from_cbor(v)?) } },
+            lock_member: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(MergeAcceptedLockMemberProjection::from_cbor(v)?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeAcceptedCandidateHashProjection {
+    pub path: String,
+    pub sha256: String,
+}
+impl MergeAcceptedCandidateHashProjection {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.path.clone())),
+            (2, Cbor::Text(self.sha256.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            path: c.try_get(1)?.try_text()?,
+            sha256: c.try_get(2)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct MergeRepoSummary {
     pub target_id: String,
     pub target_kind: TargetKind,
@@ -4150,6 +4873,7 @@ pub struct MergeResponse {
     pub operation_drift: Vec<MergeOperationDrift>,
     pub preservation: Option<Vec<MergePreservation>>,
     pub publication_step: Option<MergePublicationStep>,
+    pub record: Option<MergeRecordProjection>,
 }
 impl MergeResponse {
     pub fn to_cbor(&self) -> Cbor {
@@ -4163,6 +4887,7 @@ impl MergeResponse {
             (7, Cbor::Array(self.operation_drift.iter().map(|x| x.to_cbor()).collect())),
             (8, match &self.preservation { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
             (9, match &self.publication_step { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (10, match &self.record { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4176,6 +4901,7 @@ impl MergeResponse {
             operation_drift: c.try_get(7)?.try_array()?.iter().map(|x| MergeOperationDrift::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
             preservation: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| MergePreservation::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
             publication_step: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(MergePublicationStep::from_wire(v.try_int()?)?) } },
+            record: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(MergeRecordProjection::from_cbor(v)?) } },
         })
     }
 }

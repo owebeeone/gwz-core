@@ -63,6 +63,7 @@ pub(super) fn extract_v1(raw: &Value) -> Result<UnknownFieldManifest, UnknownFie
             "recovery_context",
             "pending_rollback",
             "pending_preservation",
+            "preservation_publication_handoff",
         ],
         &path,
         &mut manifest,

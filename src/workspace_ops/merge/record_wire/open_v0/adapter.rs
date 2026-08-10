@@ -201,6 +201,7 @@ fn adapted_record(
         recovery_context: None,
         pending_rollback: None,
         pending_preservation: None,
+        preservation_publication_handoff: None,
         extensions: record.extensions.clone(),
     })
 }

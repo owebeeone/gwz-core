@@ -4,6 +4,7 @@ use super::{ContainerSegment, UnknownFieldManifest};
 
 mod nulls;
 mod overlay_regressions;
+mod preservation;
 mod v0;
 
 fn raw(yaml: &str) -> Value {
@@ -223,50 +224,6 @@ participants:
 }
 
 #[test]
-fn pending_preservation_progress_keeps_unknowns_but_a_new_action_does_not() {
-    let source = raw(r#"
-pending_preservation:
-  kind: stash
-  owner: {kind: participant, member_id: mem_a}
-  phase: create_stash
-  stash_id: null
-  stash_object_id: null
-  message: preserve
-  head_commit: before
-  preimage_sha256: image
-  root_publication_prefix: null
-  future_action: retained
-"#);
-    let manifest = UnknownFieldManifest::extract_v1(&source).unwrap();
-    let mut progressed = raw(r#"
-pending_preservation:
-  kind: stash
-  owner: {kind: participant, member_id: mem_a}
-  phase: write_bundle
-  stash_id: stash@{0}
-  stash_object_id: {algorithm: sha1, digest_hex: abc}
-  message: preserve
-  head_commit: before
-  preimage_sha256: image
-  root_publication_prefix: null
-"#);
-    manifest.apply_surviving(&mut progressed).unwrap();
-    assert_eq!(
-        progressed["pending_preservation"]["future_action"],
-        "retained"
-    );
-
-    let mut replacement = progressed.clone();
-    replacement["pending_preservation"]["head_commit"] = Value::String("different".into());
-    replacement["pending_preservation"]
-        .as_mapping_mut()
-        .unwrap()
-        .remove("future_action");
-    let result = manifest.apply_surviving(&mut replacement).unwrap();
-    assert!(result.entries().is_empty());
-}
-
-#[test]
 fn duplicate_unique_sequence_identities_are_rejected() {
     for value in [
         raw(r#"
@@ -438,7 +395,7 @@ pending_preservation:
   message: preserve
   head_commit: before
   preimage_sha256: digest
-  root_publication_prefix: baseline
+  root_publication_handoff: {prefix: baseline, index: pre}
   future_pending_preservation: pending-preservation
 "#);
     let manifest = UnknownFieldManifest::extract_v1(&value).unwrap();

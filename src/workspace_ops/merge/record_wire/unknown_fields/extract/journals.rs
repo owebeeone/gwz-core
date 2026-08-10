@@ -13,7 +13,8 @@ pub(super) fn extract(
 ) -> Result<(), UnknownFieldManifestError> {
     extract_recovery(root, path, manifest)?;
     extract_rollback(root, path, manifest)?;
-    extract_preservation(root, path, manifest)
+    extract_preservation(root, path, manifest)?;
+    extract_preservation_handoff(root, path, manifest)
 }
 
 fn extract_recovery(
@@ -82,7 +83,7 @@ fn extract_preservation(
             "message",
             "head_commit",
             "preimage_sha256",
-            "root_publication_prefix",
+            "root_publication_handoff",
         ],
         "reset_attached_ref" => vec![
             "kind",
@@ -91,7 +92,7 @@ fn extract_preservation(
             "expected_commit",
             "restore_commit",
             "phase",
-            "root_publication_prefix",
+            "root_publication_handoff",
         ],
         _ => return Err(error("pending preservation kind is unknown")),
     };
@@ -118,5 +119,39 @@ fn extract_preservation(
             manifest,
         )?;
     }
+    if let Some(handoff) =
+        field(preservation, "root_publication_handoff").filter(|value| !value.is_null())
+    {
+        collect_unknown(
+            mapping(handoff, "root publication handoff")?,
+            &["prefix", "index"],
+            &child(&preservation_path, "root_publication_handoff"),
+            manifest,
+        )?;
+    }
     Ok(())
+}
+
+fn extract_preservation_handoff(
+    root: &Mapping,
+    path: &Path,
+    manifest: &mut UnknownFieldManifest,
+) -> Result<(), UnknownFieldManifestError> {
+    let Some(value) =
+        field(root, "preservation_publication_handoff").filter(|value| !value.is_null())
+    else {
+        return Ok(());
+    };
+    let handoff = mapping(value, "preservation publication handoff")?;
+    let known = match string_field(handoff, "kind", "preservation publication handoff")?.as_str() {
+        "no_candidate" | "evidence_pending" => vec!["kind"],
+        "candidate" => vec!["kind", "prefix", "index"],
+        _ => return Err(error("preservation publication handoff kind is unknown")),
+    };
+    collect_unknown(
+        handoff,
+        &known,
+        &child(path, "preservation_publication_handoff"),
+        manifest,
+    )
 }

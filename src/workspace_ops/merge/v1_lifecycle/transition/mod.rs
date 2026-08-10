@@ -1,8 +1,13 @@
 mod effect;
 mod footprint;
 mod reduce;
+mod reverse_entry;
 
 pub(super) use effect::{EFFECT_VARIANT_COUNT, EffectKind, RetiredContainer, TransitionEffect};
+pub(super) use reverse_entry::{
+    PreparedReverseEntryView, ReverseEntryKind, ReverseEntryPredecessor, preview_reverse_entry,
+    reverse_entry_kind, visit_reverse_entry,
+};
 
 #[cfg(test)]
 pub(super) const TRANSITION_VARIANT_COUNT: usize = 53;

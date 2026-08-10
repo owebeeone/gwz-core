@@ -8,7 +8,7 @@ mod resolver;
 pub(super) use dispatcher::*;
 pub(super) use resolver::*;
 
-use binding::{AuthorityIssuer, BoundValue, payload_hash};
+use binding::{AuthorityIssuer, BoundValue};
 pub(super) use drift::{ParticipantDriftIdentity, ParticipantDriftPayload};
 
 use super::super::model::v1::{
@@ -21,6 +21,7 @@ use super::super::{
     PublicationCandidateHash,
 };
 use super::checked::StoredV1Record;
+use super::transition::ReverseEntryKind;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 pub(super) trait BoundAuthority {
@@ -84,7 +85,6 @@ macro_rules! token {
 }
 
 token!(VerifiedParticipants, ());
-token!(VerifiedPublicationHandoff, ());
 token!(VerifiedPublicationCompletion, ());
 #[derive(Debug, Serialize)]
 pub(super) struct RollbackExhaustedPayload {
@@ -105,6 +105,138 @@ impl RollbackExhaustedPayload {
 token!(VerifiedRollbackExhausted, RollbackExhaustedPayload);
 token!(VerifiedPreservationExhausted, ());
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(super) struct ReverseEntryAuthorityPayload {
+    pub(super) request: V1LifecycleRequest,
+    pub(super) kind: ReverseEntryKind,
+    pub(super) anticipated_model_sha256: [u8; 32],
+    pub(super) publication: PublicationHandoffFact,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub(super) enum PublicationHandoffPrefix {
+    Baseline,
+    Marker,
+    Lock,
+    Boundary,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub(super) enum PublicationHandoffIndex {
+    Pre,
+    Staged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub(super) enum PublicationHandoffFact {
+    NoCandidate,
+    EvidencePending,
+    Candidate {
+        prefix: PublicationHandoffPrefix,
+        index: PublicationHandoffIndex,
+    },
+}
+
+token!(VerifiedPublicationHandoff, ReverseEntryAuthorityPayload);
+token!(
+    VerifiedPreservationEntryPreflight,
+    ReverseEntryAuthorityPayload
+);
+token!(VerifiedRollbackEntryPreflight, ReverseEntryAuthorityPayload);
+
+#[cfg(test)]
+impl VerifiedPublicationHandoff {
+    pub(super) fn for_entry_test(
+        current: &StoredV1Record,
+        kind: ReverseEntryKind,
+        anticipated: &MergeOperationRecordV1,
+    ) -> ModelResult<Self> {
+        let request = match kind {
+            ReverseEntryKind::Preservation => V1LifecycleRequest::Preserve,
+            ReverseEntryKind::DirectRollback | ReverseEntryKind::ExhaustedRollback => {
+                V1LifecycleRequest::Abort
+            }
+        };
+        Self::for_entry_request_test(
+            current,
+            request,
+            kind,
+            anticipated,
+            PublicationHandoffFact::NoCandidate,
+        )
+    }
+
+    pub(super) fn for_entry_request_test(
+        current: &StoredV1Record,
+        request: V1LifecycleRequest,
+        kind: ReverseEntryKind,
+        anticipated: &MergeOperationRecordV1,
+        publication: PublicationHandoffFact,
+    ) -> ModelResult<Self> {
+        Self::issue(
+            &AuthorityIssuer::for_observer(current),
+            "@publication",
+            "handoff",
+            "verified",
+            ReverseEntryAuthorityPayload {
+                request,
+                kind,
+                anticipated_model_sha256: payload_hash(anticipated)?,
+                publication,
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+macro_rules! reverse_entry_preflight_fixture {
+    ($name:ident, $action:literal) => {
+        impl $name {
+            pub(super) fn for_entry_test(
+                current: &StoredV1Record,
+                handoff: &VerifiedPublicationHandoff,
+            ) -> ModelResult<Self> {
+                Self::issue(
+                    &AuthorityIssuer::for_observer(current),
+                    "@operation",
+                    $action,
+                    "verified",
+                    handoff.value().clone(),
+                )
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+reverse_entry_preflight_fixture!(
+    VerifiedPreservationEntryPreflight,
+    "preservation_entry_preflight"
+);
+#[cfg(test)]
+reverse_entry_preflight_fixture!(VerifiedRollbackEntryPreflight, "rollback_entry_preflight");
+
+pub(super) fn payload_hash<T: Serialize>(value: &T) -> ModelResult<[u8; 32]> {
+    binding::payload_hash(value)
+}
+
+pub(super) struct ReverseEntryInspectionPermit {
+    bound: BoundValue<()>,
+}
+
+impl ReverseEntryInspectionPermit {
+    fn issue(issuer: &AuthorityIssuer<'_>) -> ModelResult<Self> {
+        Ok(Self {
+            bound: issuer.bind("@operation", "inspect_reverse_entry", "authorized", ())?,
+        })
+    }
+
+    pub(super) fn matches(&self, current: &StoredV1Record) -> bool {
+        self.bound
+            .matches(current, "@operation", "inspect_reverse_entry", "authorized")
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(super) enum RollbackEntryOrigin {
     Direct,
@@ -114,19 +246,21 @@ pub(super) enum RollbackEntryOrigin {
 #[derive(Debug, Serialize)]
 struct EntryPayload {
     origin: RollbackEntryOrigin,
-    anticipated_model_sha256: [u8; 32],
+    authority: ReverseEntryAuthorityPayload,
 }
 
 #[derive(Debug)]
 pub(super) struct PreparedPreservationEntry {
     bound: BoundValue<EntryPayload>,
     handoff: VerifiedPublicationHandoff,
+    preflight: VerifiedPreservationEntryPreflight,
 }
 
 #[derive(Debug)]
 pub(super) struct PreparedRollbackEntry {
     bound: BoundValue<EntryPayload>,
     handoff: VerifiedPublicationHandoff,
+    preflight: VerifiedRollbackEntryPreflight,
     preservation_exhausted: Option<VerifiedPreservationExhausted>,
 }
 
@@ -135,7 +269,7 @@ macro_rules! entry_authority {
         impl $name {
             pub(super) fn anticipated_model_matches(&self, model: &MergeOperationRecordV1) -> bool {
                 payload_hash(model)
-                    .is_ok_and(|hash| self.bound.value.anticipated_model_sha256 == hash)
+                    .is_ok_and(|hash| self.bound.value.authority.anticipated_model_sha256 == hash)
             }
         }
 
@@ -151,6 +285,14 @@ macro_rules! entry_authority {
                     && self
                         .handoff
                         .matches(current, "@publication", "handoff", "verified")
+                    && self.preflight.matches(
+                        current,
+                        "@operation",
+                        "preservation_entry_preflight",
+                        "verified",
+                    )
+                    && &self.bound.value.authority == self.handoff.value()
+                    && self.handoff.value() == self.preflight.value()
             }
         }
     };
@@ -160,7 +302,8 @@ entry_authority!(PreparedPreservationEntry);
 
 impl PreparedRollbackEntry {
     pub(super) fn anticipated_model_matches(&self, model: &MergeOperationRecordV1) -> bool {
-        payload_hash(model).is_ok_and(|hash| self.bound.value.anticipated_model_sha256 == hash)
+        payload_hash(model)
+            .is_ok_and(|hash| self.bound.value.authority.anticipated_model_sha256 == hash)
     }
 }
 
@@ -169,11 +312,20 @@ impl BoundAuthority for PreparedRollbackEntry {
         let handoff = self
             .handoff
             .matches(current, "@publication", "handoff", "verified");
+        let preflight = self.preflight.matches(
+            current,
+            "@operation",
+            "rollback_entry_preflight",
+            "verified",
+        );
         let exhaustion = self.preservation_exhausted.as_ref().is_some_and(|proof| {
             proof.matches(current, "@operation", "preservation_exhausted", "verified")
         });
         self.bound.matches(current, owner, action, phase)
             && handoff
+            && preflight
+            && &self.bound.value.authority == self.handoff.value()
+            && self.handoff.value() == self.preflight.value()
             && match self.bound.value.origin {
                 RollbackEntryOrigin::Direct => self.preservation_exhausted.is_none(),
                 RollbackEntryOrigin::FromPreserving => exhaustion,
@@ -182,12 +334,34 @@ impl BoundAuthority for PreparedRollbackEntry {
 }
 
 impl PreparedPreservationEntry {
+    pub(super) fn publication_handoff(&self) -> PublicationHandoffFact {
+        self.bound.value.authority.publication
+    }
+
     #[cfg(test)]
     pub(super) fn for_test(
         current: &StoredV1Record,
         anticipated: &MergeOperationRecordV1,
         handoff: VerifiedPublicationHandoff,
     ) -> ModelResult<Self> {
+        let authority = ReverseEntryAuthorityPayload {
+            request: V1LifecycleRequest::Preserve,
+            kind: ReverseEntryKind::Preservation,
+            anticipated_model_sha256: payload_hash(anticipated)?,
+            publication: handoff.value().publication,
+        };
+        if handoff.value() != &authority {
+            return Err(authority_error(
+                "preservation handoff does not match the anticipated model",
+            ));
+        }
+        let preflight = VerifiedPreservationEntryPreflight::issue(
+            &AuthorityIssuer::for_observer(current),
+            "@operation",
+            "preservation_entry_preflight",
+            "verified",
+            authority.clone(),
+        )?;
         Ok(Self {
             bound: BoundValue::new(
                 current,
@@ -196,15 +370,20 @@ impl PreparedPreservationEntry {
                 "preflight",
                 EntryPayload {
                     origin: RollbackEntryOrigin::Direct,
-                    anticipated_model_sha256: payload_hash(anticipated)?,
+                    authority,
                 },
             )?,
             handoff,
+            preflight,
         })
     }
 }
 
 impl PreparedRollbackEntry {
+    pub(super) fn publication_handoff(&self) -> PublicationHandoffFact {
+        self.bound.value.authority.publication
+    }
+
     #[cfg(test)]
     pub(super) fn direct_for_test(
         current: &StoredV1Record,
@@ -236,18 +415,38 @@ impl PreparedRollbackEntry {
         } else {
             RollbackEntryOrigin::Direct
         };
+        let authority = ReverseEntryAuthorityPayload {
+            request: V1LifecycleRequest::Abort,
+            kind: if origin == RollbackEntryOrigin::FromPreserving {
+                ReverseEntryKind::ExhaustedRollback
+            } else {
+                ReverseEntryKind::DirectRollback
+            },
+            anticipated_model_sha256: payload_hash(anticipated)?,
+            publication: handoff.value().publication,
+        };
+        if handoff.value() != &authority {
+            return Err(authority_error(
+                "rollback handoff does not match the anticipated model",
+            ));
+        }
+        let preflight = VerifiedRollbackEntryPreflight::issue(
+            &AuthorityIssuer::for_observer(current),
+            "@operation",
+            "rollback_entry_preflight",
+            "verified",
+            authority.clone(),
+        )?;
         Ok(Self {
             bound: BoundValue::new(
                 current,
                 "@operation",
                 "begin_rollback",
                 "preflight",
-                EntryPayload {
-                    origin,
-                    anticipated_model_sha256: payload_hash(anticipated)?,
-                },
+                EntryPayload { origin, authority },
             )?,
             handoff,
+            preflight,
             preservation_exhausted,
         })
     }
@@ -416,8 +615,12 @@ token!(VerifiedOperationDriftClear, OperationDrift);
 mod observe;
 
 pub(super) use observe::{
-    no_mutation_abort, observe_finalization, observe_forward, rollback_exhausted,
-    verify_finalization_action, verify_participant_action,
+    RecordEvidenceOr, SealedReverseEntryVisitor, no_mutation_abort, observe_archive,
+    observe_finalization, observe_forward, observe_preservation,
+    observe_reverse_publication_handoff, observe_rollback, prepare_direct_rollback_entry,
+    prepare_exhausted_rollback_entry, prepare_preservation_entry, preservation_durability_fact,
+    rollback_exhausted, rolling_back_verify_recovery_origin, verify_finalization_action,
+    verify_participant_action,
 };
 
 fn authority_error(detail: impl Into<String>) -> ModelError {

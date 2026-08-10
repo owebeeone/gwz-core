@@ -1,5 +1,131 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GitPreservationDirtySummary {
+    pub staged: bool,
+    pub unstaged: bool,
+    pub untracked: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitPreservationImage {
+    pub preimage_sha256: String,
+    pub dirty: GitPreservationDirtySummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitPreservationStashEvidence {
+    pub object_id: String,
+    pub message: String,
+    pub head_commit: String,
+    pub image: GitPreservationImage,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitDirectRefObservation {
+    Absent,
+    Direct { target: String },
+    NonDirect,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitRootManagedObject {
+    MarkerWorktree,
+    LockWorktree,
+    Index,
+    MarkerParentDirectory,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitRootManagedIndexEntry {
+    pub path: Vec<u8>,
+    pub object_id: String,
+    pub mode: u32,
+    pub stage: u8,
+    pub assume_valid: bool,
+    pub skip_worktree: bool,
+    pub intent_to_add: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitRootManagedIndexFact {
+    Absent { path: Vec<u8> },
+    Present(GitRootManagedIndexEntry),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitRootManagedIndexForm {
+    pub marker: GitRootManagedIndexFact,
+    pub lock: GitRootManagedIndexFact,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitRootManagedForm {
+    pub marker: Option<GitCandidateFile>,
+    pub lock: GitCandidateFile,
+    pub index: GitRootManagedIndexForm,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitRootPreservationSpec {
+    pub attached_branch: String,
+    pub attached_commit: String,
+    pub restore_commit: String,
+    pub managed_marker_path: String,
+    pub attached_clean_form: GitRootManagedForm,
+    pub restore_clean_form: GitRootManagedForm,
+    pub handoff_form: GitRootManagedForm,
+    pub handoff_boundary: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitRootManagedFormName {
+    AttachedClean,
+    RestoreClean,
+    Handoff,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitRootManagedTransition {
+    pub object: GitRootManagedObject,
+    pub source: GitRootManagedFormName,
+    pub goal: GitRootManagedFormName,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitRootPreservationPhysicalStep {
+    Managed(GitRootManagedTransition),
+    CreateStash { merge_id: String },
+    ResetAttachedRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitRootPreservationGuard {
+    NormalizedPreimage { sha256: String },
+    OtherwiseClean,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitRootPreservationStepObservation {
+    Before,
+    After,
+    AfterNeedsDurability,
+    Ambiguous,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitCheckedPreservationMutation {
+    Applied,
+    AlreadyComplete,
+    StashCreated(GitStashPushResult),
+    RefReset(GitUpdateResult),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitPreparedRootStash {
+    pub normalized_image: GitPreservationImage,
+}
+
 /// Whether a prepared merge may publish a fast-forward or must create a
 /// two-parent merge commit when the source is strictly ahead.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -296,6 +422,65 @@ pub trait GitBackend {
         _include_untracked: bool,
     ) -> ModelResult<GitStashPushResult> {
         unsupported_backend("stash_for_merge_preservation")
+    }
+    /// Capture the canonical I2 index/worktree image without decoding Git
+    /// paths as UTF-8. Forbidden index flags are rejected rather than omitted.
+    fn preservation_image(
+        &self,
+        _path: &Path,
+        _include_untracked: bool,
+    ) -> ModelResult<GitPreservationImage> {
+        unsupported_backend("preservation_image")
+    }
+    /// Decode every native stash carrying this merge's stable preservation id.
+    fn preservation_stashes(
+        &self,
+        _path: &Path,
+        _merge_id: &str,
+    ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
+        unsupported_backend("preservation_stashes")
+    }
+    /// Inspect the named reference itself without peeling or resolving it.
+    fn observe_direct_ref(
+        &self,
+        _path: &Path,
+        _name: &str,
+    ) -> ModelResult<GitDirectRefObservation> {
+        unsupported_backend("observe_direct_ref")
+    }
+    /// Require an attached branch and exact clean index/worktree at `commit`.
+    fn checkout_matches_commit(
+        &self,
+        _path: &Path,
+        _branch: &str,
+        _commit: &str,
+    ) -> ModelResult<bool> {
+        unsupported_backend("checkout_matches_commit")
+    }
+    fn prepare_root_preservation_stash(
+        &self,
+        _root: &Path,
+        _spec: &GitRootPreservationSpec,
+    ) -> ModelResult<GitPreparedRootStash> {
+        unsupported_backend("prepare_root_preservation_stash")
+    }
+    fn observe_root_preservation_step(
+        &self,
+        _root: &Path,
+        _spec: &GitRootPreservationSpec,
+        _step: &GitRootPreservationPhysicalStep,
+        _guard: &GitRootPreservationGuard,
+    ) -> ModelResult<GitRootPreservationStepObservation> {
+        unsupported_backend("observe_root_preservation_step")
+    }
+    fn execute_root_preservation_step_checked(
+        &self,
+        _root: &Path,
+        _spec: &GitRootPreservationSpec,
+        _step: &GitRootPreservationPhysicalStep,
+        _guard: &GitRootPreservationGuard,
+    ) -> ModelResult<GitCheckedPreservationMutation> {
+        unsupported_backend("execute_root_preservation_step_checked")
     }
     /// Verify exact stage-0 regular-file entries for `expected_files` and the
     /// complete absence of every `absent_path`.

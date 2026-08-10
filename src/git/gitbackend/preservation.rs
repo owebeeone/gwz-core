@@ -1,5 +1,4 @@
 use super::repository_support::open_repo;
-use super::stash_support::stash_message_matches_gwz_prefix;
 use super::*;
 
 const MERGE_REF_PREFIX: &str = "refs/gwz/merge/";
@@ -53,12 +52,14 @@ pub(super) fn delete_backup_ref_checked(
 ) -> ModelResult<()> {
     validate_backup_ref_name(name)?;
     let repo = open_repo(path)?;
-    let expected = git2::Oid::from_str(expected_target).map_err(|error| {
-        ModelError::new(
-            ErrorCode::InvalidRequest,
-            format!("invalid preservation target '{expected_target}': {error}"),
-        )
-    })?;
+    let expected =
+        preservation_root::index::parse_exact_oid(&repo, expected_target, "preservation target")
+            .map_err(|error| {
+                ModelError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("invalid preservation target '{expected_target}': {error}"),
+                )
+            })?;
     let mut reference = match repo.find_reference(name) {
         Ok(reference) => reference,
         Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(()),
@@ -83,6 +84,26 @@ pub(super) fn delete_backup_ref_checked(
     }
 }
 
+pub(super) fn observe_direct_ref(
+    _backend: &Git2Backend,
+    path: &Path,
+    name: &str,
+) -> ModelResult<GitDirectRefObservation> {
+    let repo = open_repo(path)?;
+    match repo.find_reference(name) {
+        Ok(reference) => Ok(match reference.target() {
+            Some(target) => GitDirectRefObservation::Direct {
+                target: target.to_string(),
+            },
+            None => GitDirectRefObservation::NonDirect,
+        }),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => {
+            Ok(GitDirectRefObservation::Absent)
+        }
+        Err(error) => Err(git_error(error)),
+    }
+}
+
 pub(super) fn stash_for_merge_preservation(
     backend: &Git2Backend,
     path: &Path,
@@ -91,8 +112,7 @@ pub(super) fn stash_for_merge_preservation(
 ) -> ModelResult<GitStashPushResult> {
     validate_merge_id(merge_id)?;
     let stash_id = format!("stash_{merge_id}");
-    let prefix = format!("gwz:{stash_id}:");
-    let message = format!("{prefix} merge preservation");
+    let message = format!("gwz:{stash_id}: merge preservation");
     let status = backend.status(path)?;
     if status.unresolved > 0 || backend.repository_state(path)? != GitRepositoryState::Clean {
         return Err(ModelError::new(
@@ -104,7 +124,7 @@ pub(super) fn stash_for_merge_preservation(
     let matching = backend
         .stash_list(path)?
         .into_iter()
-        .filter(|entry| stash_message_matches_gwz_prefix(&entry.message, &prefix))
+        .filter(|entry| canonical_preservation_stash_message(&entry.message, &message).is_some())
         .collect::<Vec<_>>();
     match matching.as_slice() {
         [existing] if status.is_dirty => {
@@ -151,7 +171,7 @@ pub(super) fn stash_for_merge_preservation(
     )?;
     if !backend.stash_list(path)?.iter().any(|entry| {
         entry.object_id == result.object_id
-            && stash_message_matches_gwz_prefix(&entry.message, &prefix)
+            && canonical_preservation_stash_message(&entry.message, &message).is_some()
     }) {
         return Err(ModelError::new(
             ErrorCode::StashIncomplete,
@@ -162,6 +182,60 @@ pub(super) fn stash_for_merge_preservation(
         ));
     }
     Ok(result)
+}
+
+pub(super) fn preservation_image(
+    _backend: &Git2Backend,
+    path: &Path,
+    include_untracked: bool,
+) -> ModelResult<GitPreservationImage> {
+    preservation_image::capture(path, include_untracked)
+}
+
+pub(super) fn preservation_stashes(
+    backend: &Git2Backend,
+    path: &Path,
+    merge_id: &str,
+) -> ModelResult<Vec<GitPreservationStashEvidence>> {
+    validate_merge_id(merge_id)?;
+    preservation_image::decode_stashes(backend, path, merge_id)
+}
+
+fn canonical_preservation_stash_message<'a>(
+    native_message: &str,
+    expected_message: &'a str,
+) -> Option<&'a str> {
+    preservation_image::canonical_stash_message(native_message, expected_message)
+        .then_some(expected_message)
+}
+
+pub(super) fn checkout_matches_commit(
+    backend: &Git2Backend,
+    path: &Path,
+    branch: &str,
+    commit: &str,
+) -> ModelResult<bool> {
+    if backend.repository_state(path)? != GitRepositoryState::Clean {
+        return Ok(false);
+    }
+    let head = backend.head(path)?;
+    if head.is_detached
+        || head.branch.as_deref() != Some(branch)
+        || head.commit.as_deref() != Some(commit)
+        || backend
+            .read_ref(path, &format!("refs/heads/{branch}"))?
+            .as_deref()
+            != Some(commit)
+    {
+        return Ok(false);
+    }
+    let status = backend.status_with_options(
+        path,
+        GitStatusOptions {
+            include_ignored: false,
+        },
+    )?;
+    Ok(!status.is_dirty && status.unresolved == 0)
 }
 
 pub(super) fn index_matches_candidate_files(
@@ -181,7 +255,8 @@ pub(super) fn index_matches_candidate_files(
             return Ok(false);
         };
         let expected_blob =
-            git2::Oid::hash_object(git2::ObjectType::Blob, &file.bytes).map_err(git_error)?;
+            git2::Oid::hash_object_ext(git2::ObjectType::Blob, &file.bytes, repo.object_format())
+                .map_err(git_error)?;
         if entries.len() != 1
             || (entry.flags >> 12) & 3 != 0
             || entry.mode != 0o100644
@@ -238,7 +313,8 @@ pub(super) fn index_entries_match_candidate_files(
             return Ok(false);
         };
         let expected_blob =
-            git2::Oid::hash_object(git2::ObjectType::Blob, &file.bytes).map_err(git_error)?;
+            git2::Oid::hash_object_ext(git2::ObjectType::Blob, &file.bytes, repo.object_format())
+                .map_err(git_error)?;
         if entries.len() != 1
             || (entry.flags >> 12) & 3 != 0
             || entry.flags & 0xc000 != 0
@@ -255,12 +331,13 @@ pub(super) fn index_entries_match_candidate_files(
 }
 
 fn parse_commit(repo: &git2::Repository, target: &str) -> ModelResult<git2::Oid> {
-    let oid = git2::Oid::from_str(target).map_err(|error| {
-        ModelError::new(
-            ErrorCode::InvalidRequest,
-            format!("invalid preservation target '{target}': {error}"),
-        )
-    })?;
+    let oid = preservation_root::index::parse_exact_oid(repo, target, "preservation target")
+        .map_err(|error| {
+            ModelError::new(
+                ErrorCode::InvalidRequest,
+                format!("invalid preservation target '{target}': {error}"),
+            )
+        })?;
     repo.find_commit(oid).map_err(git_error)?;
     Ok(oid)
 }
@@ -302,5 +379,77 @@ fn verify_backup_ref(repo: &git2::Repository, name: &str, target: git2::Oid) -> 
             format!("preservation ref '{name}' failed post-creation verification"),
         ));
     }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FaultBoundary {
+    Before,
+    After,
+    BeforeLeafRename,
+    AfterLeafRename,
+    BeforeLeafUnlink,
+    AfterLeafUnlink,
+    BeforeIndexCommit,
+    AfterIndexCommit,
+    BeforeParentStageCreate,
+    AfterParentStageCreate,
+    BeforeParentPublish,
+    AfterParentPublish,
+    #[cfg(unix)]
+    BeforeUnixParentSync,
+    #[cfg(unix)]
+    AfterUnixParentSync,
+    #[cfg(windows)]
+    BeforeWindowsFirstBarrierRename,
+    #[cfg(windows)]
+    AfterWindowsFirstBarrierRename,
+    #[cfg(windows)]
+    BeforeWindowsSecondBarrierRename,
+    #[cfg(windows)]
+    AfterWindowsSecondBarrierRename,
+}
+
+#[cfg(test)]
+type FaultHook = (FaultBoundary, Box<dyn FnOnce()>);
+
+#[cfg(test)]
+thread_local! {
+    static NEXT_FAULT: std::cell::Cell<Option<FaultBoundary>> = const { std::cell::Cell::new(None) };
+    static NEXT_HOOK: std::cell::RefCell<Option<FaultHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_at(boundary: FaultBoundary) {
+    NEXT_FAULT.set(Some(boundary));
+}
+
+#[cfg(test)]
+pub(crate) fn run_next_at(boundary: FaultBoundary, hook: impl FnOnce() + 'static) {
+    NEXT_HOOK.with_borrow_mut(|next| *next = Some((boundary, Box::new(hook))));
+}
+
+#[cfg(test)]
+pub(super) fn fault(boundary: FaultBoundary) -> ModelResult<()> {
+    let hook = NEXT_HOOK.with_borrow_mut(|next| {
+        (next.as_ref().map(|(at, _)| *at) == Some(boundary))
+            .then(|| next.take().expect("matching hook exists").1)
+    });
+    if let Some(hook) = hook {
+        hook();
+    }
+    if NEXT_FAULT.get() == Some(boundary) {
+        NEXT_FAULT.set(None);
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "injected root-preservation fault",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+pub(super) fn fault(_boundary: FaultBoundary) -> ModelResult<()> {
     Ok(())
 }

@@ -16,7 +16,8 @@ pub(crate) use common::validate_common_v1_record;
 pub(crate) use journal::validate_v1_journal;
 pub(in crate::workspace_ops::merge) use journal::{RollbackCursor, rollback_cursor};
 pub(crate) use lifecycle::validate_v1_lifecycle;
-pub(crate) use preservation::validate_v1_preservation;
+pub(crate) use preservation::{validate_v0_preservation_view, validate_v1_preservation};
+pub(crate) use publication::preservation_handoff_is_compatible;
 pub(crate) use publication::validate_v1_publication;
 
 use crate::model::ModelResult;

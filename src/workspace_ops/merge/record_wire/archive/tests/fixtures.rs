@@ -11,11 +11,11 @@ use crate::artifact::{
     ResolvedMemberArtifact, WORKSPACE_SCHEMA, WorkspaceHeader,
 };
 
-pub(super) const MERGE_ID: &str = "merge_archive";
+pub(in crate::workspace_ops::merge::record_wire::archive) const MERGE_ID: &str = "merge_archive";
 const MARKER_ID: &str = "01987b0c-2f75-7c4a-9a32-8fd22f7d7c91";
 
 #[derive(Clone, Copy)]
-pub(super) enum Shape {
+pub(in crate::workspace_ops::merge::record_wire::archive) enum Shape {
     CompletedCandidate,
     CompletedNoPublication,
     AbortedPreAcceptance,
@@ -212,7 +212,9 @@ fn candidate_publication(
     }
 }
 
-pub(super) fn v0_record(shape: Shape) -> MergeOperationRecord {
+pub(in crate::workspace_ops::merge::record_wire::archive) fn v0_record(
+    shape: Shape,
+) -> MergeOperationRecord {
     let manifest = manifest_yaml();
     let baseline_lock = lock_yaml(&oid('a'));
     let (state, participant_state, result) = match shape {
@@ -385,7 +387,9 @@ fn accepted_lock_member(commit: &str) -> AcceptedLockMemberV1 {
     }
 }
 
-pub(super) fn v1_record(shape: Shape) -> MergeOperationRecordV1 {
+pub(in crate::workspace_ops::merge::record_wire::archive) fn v1_record(
+    shape: Shape,
+) -> MergeOperationRecordV1 {
     let v0 = v0_record(shape);
     let accepted = (!matches!(shape, Shape::AbortedPreAcceptance)).then(|| {
         let result = oid('d');
@@ -453,6 +457,7 @@ pub(super) fn v1_record(shape: Shape) -> MergeOperationRecordV1 {
         recovery_context: None,
         pending_rollback: None,
         pending_preservation: None,
+        preservation_publication_handoff: None,
         extensions: BTreeMap::new(),
     }
 }

@@ -12,10 +12,7 @@ use super::super::MergeOperationRecord;
 use super::super::acceptance::{
     AcceptedRootBase, accepted_root_checkout_with_observation, selected_root_participant,
 };
-use super::super::publication::{
-    RootEvidenceObservation, candidate_files, classify_candidate_publication,
-    observe_root_evidence, publication_prefix_allowed,
-};
+use super::super::publication::RootEvidenceObservation;
 
 pub(in crate::workspace_ops::merge) struct CandidateMetadata {
     pub(in crate::workspace_ops::merge) manifest: ManifestArtifact,
@@ -152,14 +149,20 @@ fn candidate_metadata_inner<B: GitBackend>(
 pub(in crate::workspace_ops::merge) fn evidence_parent(
     record: &MergeOperationRecord,
 ) -> ModelResult<Option<&str>> {
-    Ok(match selected_root_participant(record)? {
+    evidence_parent_view(super::super::status::MergeStatusRecordView::from_v0(record))
+}
+
+pub(in crate::workspace_ops::merge) fn evidence_parent_view(
+    view: super::super::status::MergeStatusRecordView<'_>,
+) -> ModelResult<Option<&str>> {
+    Ok(match view.selected_root_participant()? {
         Some(participant) => Some(
             participant
                 .resulting_commit
                 .as_deref()
                 .ok_or_else(|| unreadable("root participant has no resulting commit"))?,
         ),
-        None => record.baseline.root_head.as_deref(),
+        None => view.baseline().root_head.as_deref(),
     })
 }
 
@@ -181,32 +184,44 @@ pub(in crate::workspace_ops::merge) fn root_finalization_is_exact<B: GitBackend>
     root: &Path,
     record: &MergeOperationRecord,
 ) -> ModelResult<bool> {
-    if record
-        .publication
-        .as_ref()
+    root_finalization_is_exact_view(
+        backend,
+        root,
+        super::super::status::MergeStatusRecordView::from_v0(record),
+    )
+}
+
+pub(in crate::workspace_ops::merge) fn root_finalization_is_exact_view<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    view: super::super::status::MergeStatusRecordView<'_>,
+) -> ModelResult<bool> {
+    if view
+        .publication()
         .and_then(|publication| publication.candidate.as_ref())
         .is_none()
     {
         return Ok(false);
     }
-    if selected_root_participant(record)?.is_none() {
+    if view.selected_root_participant()?.is_none() {
         return Ok(false);
     }
     if !matches!(
-        observe_root_evidence(backend, root, record)?,
+        super::super::publication::observe_root_evidence_view(backend, root, view)?,
         Some(RootEvidenceObservation::Composition(_))
     ) {
         return Ok(false);
     }
-    let Some(prefix) = classify_candidate_publication(root, record)? else {
+    let Some(prefix) = super::super::publication::classify_candidate_publication_view(root, view)?
+    else {
         return Ok(false);
     };
-    if !publication_prefix_allowed(record, prefix)?
+    if !super::super::publication::publication_prefix_allowed_view(view, prefix)?
         || backend.repository_state(root)? != GitRepositoryState::Clean
     {
         return Ok(false);
     }
-    let allowed = candidate_files(record)?
+    let allowed = super::super::publication::candidate_files_view(view)?
         .into_iter()
         .map(|file| file.path)
         .collect::<Vec<_>>();

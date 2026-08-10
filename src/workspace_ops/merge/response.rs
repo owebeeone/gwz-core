@@ -23,71 +23,170 @@ pub(crate) fn idle_status_response(
         operation_drift: Vec::new(),
         preservation: None,
         publication_step: None,
+        record: None,
     })
 }
 
-impl MergeOperationRecord {
-    pub(crate) fn to_response(
-        &self,
-        context: &OperationContext,
-    ) -> ModelResult<crate::MergeResponse> {
-        let mut counts = crate::MergeParticipantCounts {
-            total: self.selected_targets.len() as i64,
-            ..crate::MergeParticipantCounts::default()
-        };
-        let mut repos = Vec::with_capacity(self.selected_targets.len());
-        let mut preservation = Vec::new();
-        for target_id in &self.selected_targets {
-            let participant = self.participants.get(target_id).ok_or_else(|| {
-                ModelError::new(
-                    ErrorCode::MergeRecordUnreadable,
-                    format!("merge record is missing participant '{target_id}'"),
-                )
-            })?;
-            super::participant_semantics::result::increment_count(&mut counts, participant.state);
-            preservation.extend(participant.preservation.iter().map(|evidence| {
-                crate::MergePreservation {
-                    target_id: target_id.clone(),
-                    path: participant.path.clone(),
-                    backup_ref: evidence.backup_ref.clone(),
-                    backup_commit: evidence.backup_commit.clone(),
-                    stash_id: evidence.stash_id.clone(),
-                    stash_object_id: evidence.stash_object_id.clone(),
-                }
-            }));
-            repos.push(participant.to_protocol(target_id, &self.source_ref));
-        }
-        if let Some(publication) = self.publication.as_ref() {
-            preservation.extend(publication.root_preservation.iter().map(|evidence| {
-                crate::MergePreservation {
-                    target_id: "@root".to_owned(),
-                    path: ".".to_owned(),
-                    backup_ref: evidence.backup_ref.clone(),
-                    backup_commit: evidence.backup_commit.clone(),
-                    stash_id: evidence.stash_id.clone(),
-                    stash_object_id: evidence.stash_object_id.clone(),
-                }
-            }));
-        }
-        Ok(crate::MergeResponse {
+/// Build a read-only response from an immutable, already validated archive
+/// projection. Archived status has no live repository observation: its stable
+/// protocol evidence is the terminal outcome and acceptance carried by field
+/// 10.
+pub(in crate::workspace_ops::merge) fn archived_status_response(
+    merge_id: &str,
+    archived: &super::model::archive_projection::ArchivedMergeProjection,
+    context: &OperationContext,
+) -> ModelResult<crate::MergeResponse> {
+    use super::model::archive_projection::ArchivedTerminalOutcome;
+
+    let (state, aggregate) = match archived.terminal_outcome {
+        ArchivedTerminalOutcome::Completed => (
+            crate::MergeOperationState::Completed,
+            crate::AggregateStatus::Ok,
+        ),
+        ArchivedTerminalOutcome::Aborted => (
+            crate::MergeOperationState::Aborted,
+            crate::AggregateStatus::Noop,
+        ),
+    };
+    attach_archived_record_projection(
+        crate::MergeResponse {
             response: crate::operation::response_envelope_for(
                 &context_meta(context),
                 crate::operation::ActionKind::Merge,
                 context.operation_id.clone(),
-                aggregate_status(self.state),
+                aggregate,
                 Vec::new(),
             )?,
-            merge_id: Some(self.merge_id.clone()),
-            state: self.state.into(),
-            open: self.state.is_open(),
-            participant_counts: counts,
-            repos,
-            operation_drift: self.operation_drift.iter().map(Into::into).collect(),
-            preservation: (!preservation.is_empty()).then_some(preservation),
-            publication_step: self.publication.as_ref().map(|value| value.step.into()),
-        })
-    }
+            merge_id: Some(merge_id.to_owned()),
+            state,
+            open: false,
+            participant_counts: crate::MergeParticipantCounts::default(),
+            repos: Vec::new(),
+            operation_drift: Vec::new(),
+            preservation: None,
+            publication_step: None,
+            record: None,
+        },
+        merge_id,
+        archived,
+    )
 }
+
+/// Attach immutable archive history to an existing terminal response without
+/// discarding command-specific summaries such as post-GC preservation rows.
+/// The caller must derive both inputs from the same canonical archive bytes.
+pub(in crate::workspace_ops::merge) fn attach_archived_record_projection(
+    mut response: crate::MergeResponse,
+    merge_id: &str,
+    archived: &super::model::archive_projection::ArchivedMergeProjection,
+) -> ModelResult<crate::MergeResponse> {
+    use super::model::archive_projection::ArchivedTerminalOutcome;
+
+    let expected_state = match archived.terminal_outcome {
+        ArchivedTerminalOutcome::Completed => crate::MergeOperationState::Completed,
+        ArchivedTerminalOutcome::Aborted => crate::MergeOperationState::Aborted,
+    };
+    if response.merge_id.as_deref() != Some(merge_id)
+        || response.state != expected_state
+        || response.open
+    {
+        return Err(ModelError::new(
+            ErrorCode::InternalError,
+            "terminal response does not match the validated archived merge record",
+        ));
+    }
+    response.record = Some(super::model::project_archived(archived));
+    Ok(response)
+}
+
+macro_rules! impl_record_response {
+    (@open $record:ident, from_state) => { $record.state.is_open() };
+    (@open $record:ident, always) => { true };
+    ($record:ty, $method:ident, $visibility:vis, $projector:path, $open:ident) => {
+        impl $record {
+            $visibility fn $method(
+                &self,
+                context: &OperationContext,
+            ) -> ModelResult<crate::MergeResponse> {
+                let mut counts = crate::MergeParticipantCounts {
+                    total: self.selected_targets.len() as i64,
+                    ..Default::default()
+                };
+                let mut repos = Vec::with_capacity(self.selected_targets.len());
+                let mut preservation = Vec::new();
+                for target_id in &self.selected_targets {
+                    let participant = self.participants.get(target_id).ok_or_else(|| {
+                        ModelError::new(
+                            ErrorCode::MergeRecordUnreadable,
+                            format!("merge record is missing participant '{target_id}'"),
+                        )
+                    })?;
+                    super::participant_semantics::result::increment_count(
+                        &mut counts,
+                        participant.state,
+                    );
+                    preservation.extend(participant.preservation.iter().map(|value| {
+                        crate::MergePreservation {
+                            target_id: target_id.clone(),
+                            path: participant.path.clone(),
+                            backup_ref: value.backup_ref.clone(),
+                            backup_commit: value.backup_commit.clone(),
+                            stash_id: value.stash_id.clone(),
+                            stash_object_id: value.stash_object_id.clone(),
+                        }
+                    }));
+                    repos.push(participant.to_protocol(target_id, &self.source_ref));
+                }
+                if let Some(publication) = self.publication.as_ref() {
+                    preservation.extend(publication.root_preservation.iter().map(|value| {
+                        crate::MergePreservation {
+                            target_id: "@root".to_owned(),
+                            path: ".".to_owned(),
+                            backup_ref: value.backup_ref.clone(),
+                            backup_commit: value.backup_commit.clone(),
+                            stash_id: value.stash_id.clone(),
+                            stash_object_id: value.stash_object_id.clone(),
+                        }
+                    }));
+                }
+                Ok(crate::MergeResponse {
+                    response: crate::operation::response_envelope_for(
+                        &context_meta(context),
+                        crate::operation::ActionKind::Merge,
+                        context.operation_id.clone(),
+                        aggregate_status(self.state),
+                        Vec::new(),
+                    )?,
+                    merge_id: Some(self.merge_id.clone()),
+                    state: self.state.into(),
+                    open: impl_record_response!(@open self, $open),
+                    participant_counts: counts,
+                    repos,
+                    operation_drift: self.operation_drift.iter().map(Into::into).collect(),
+                    preservation: (!preservation.is_empty()).then_some(preservation),
+                    publication_step: self.publication.as_ref().map(|value| value.step.into()),
+                    record: Some($projector(self)),
+                })
+            }
+        }
+    };
+}
+
+impl_record_response!(
+    MergeOperationRecord,
+    to_response,
+    pub(crate),
+    project_open_v0,
+    from_state
+);
+#[cfg(test)]
+impl_record_response!(
+    super::model::v1::MergeOperationRecordV1,
+    to_v1_response,
+    pub(in crate::workspace_ops::merge),
+    project_open_v1,
+    always
+);
 
 impl MergeStatusSnapshot {
     pub(crate) fn to_response(

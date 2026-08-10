@@ -12,6 +12,165 @@ mod live;
 
 use live::*;
 
+pub(super) enum ReversePublicationHandoffObservation {
+    RecordEvidence(Box<VerifiedEvidenceResult>),
+    Ready(PublicationHandoffFact),
+}
+
+pub(super) fn observe_reverse_handoff<B: GitBackend>(
+    backend: &B,
+    current: &StoredV1Record,
+) -> ModelResult<ReversePublicationHandoffObservation> {
+    let Some(progress) = current.record().publication.as_ref() else {
+        require_handoff_exact(verification_is_exact(verify_accepted_inputs(
+            backend, current,
+        ))?)?;
+        return Ok(ReversePublicationHandoffObservation::Ready(
+            PublicationHandoffFact::NoCandidate,
+        ));
+    };
+    match progress.step {
+        PublicationStep::NotStarted | PublicationStep::ValidatingResults => {
+            require_handoff_exact(verification_is_exact(verify_accepted_inputs(
+                backend, current,
+            ))?)?;
+            Ok(ReversePublicationHandoffObservation::Ready(
+                PublicationHandoffFact::NoCandidate,
+            ))
+        }
+        PublicationStep::PreparingCandidate if progress.candidate.is_none() => {
+            require_handoff_exact(verification_is_exact(verify_accepted_inputs(
+                backend, current,
+            ))?)?;
+            Ok(ReversePublicationHandoffObservation::Ready(
+                PublicationHandoffFact::NoCandidate,
+            ))
+        }
+        PublicationStep::PreparingCandidate => {
+            require_handoff_exact(verification_is_exact(verify_accepted_inputs(
+                backend, current,
+            ))?)?;
+            let observed = snapshot(backend, current)?;
+            require_handoff_exact(
+                observed == Some((CandidatePublicationPrefix::Baseline, IndexForm::Pre)),
+            )?;
+            Ok(ReversePublicationHandoffObservation::Ready(
+                candidate_handoff_fact(observed.expect("exact candidate snapshot")),
+            ))
+        }
+        PublicationStep::CommittingEvidence if progress.composition_commit.is_none() => {
+            if evidence_base_is_live(backend, current)? {
+                return Ok(ReversePublicationHandoffObservation::Ready(
+                    PublicationHandoffFact::EvidencePending,
+                ));
+            }
+            require_handoff_exact(verification_is_exact(verify_post_evidence_inputs(
+                backend, current,
+            ))?)?;
+            let Some(result) = observed_evidence(backend, current)? else {
+                return Err(reverse_handoff_error());
+            };
+            let proof = VerifiedEvidenceResult::issue(
+                &AuthorityIssuer::for_observer(current),
+                "@publication",
+                "record_evidence",
+                "completed",
+                evidence_payload(current.record(), result),
+            )?;
+            Ok(ReversePublicationHandoffObservation::RecordEvidence(
+                Box::new(proof),
+            ))
+        }
+        PublicationStep::CommittingEvidence => {
+            require_post_evidence_handoff(backend, current)?;
+            let observed = snapshot(backend, current)?;
+            require_handoff_exact(
+                observed == Some((CandidatePublicationPrefix::Baseline, IndexForm::Pre)),
+            )?;
+            Ok(ReversePublicationHandoffObservation::Ready(
+                candidate_handoff_fact(observed.expect("exact candidate snapshot")),
+            ))
+        }
+        PublicationStep::PublishingCandidate => {
+            require_post_evidence_handoff(backend, current)?;
+            let Some(observed) = snapshot(backend, current)? else {
+                return Err(reverse_handoff_error());
+            };
+            require_handoff_exact(
+                publication_resolution(current, Some(observed))?
+                    != PublicationResolution::Ambiguous,
+            )?;
+            Ok(ReversePublicationHandoffObservation::Ready(
+                candidate_handoff_fact(observed),
+            ))
+        }
+        PublicationStep::VerifyingPublication | PublicationStep::Complete
+            if progress.candidate.is_none() =>
+        {
+            require_handoff_exact(verification_is_exact(verify_accepted_inputs(
+                backend, current,
+            ))?)?;
+            Ok(ReversePublicationHandoffObservation::Ready(
+                PublicationHandoffFact::NoCandidate,
+            ))
+        }
+        PublicationStep::VerifyingPublication | PublicationStep::Complete => {
+            require_post_evidence_handoff(backend, current)?;
+            let Some(observed) = snapshot(backend, current)? else {
+                return Err(reverse_handoff_error());
+            };
+            require_handoff_exact(
+                publication_resolution(current, Some(observed))? == PublicationResolution::Complete,
+            )?;
+            Ok(ReversePublicationHandoffObservation::Ready(
+                candidate_handoff_fact(observed),
+            ))
+        }
+    }
+}
+
+fn require_post_evidence_handoff<B: GitBackend>(
+    backend: &B,
+    current: &StoredV1Record,
+) -> ModelResult<()> {
+    require_handoff_exact(verification_is_exact(verify_post_evidence_inputs(
+        backend, current,
+    ))?)?;
+    require_handoff_exact(recorded_evidence_is_live(backend, current)?)
+}
+
+fn require_handoff_exact(exact: bool) -> ModelResult<()> {
+    if exact {
+        Ok(())
+    } else {
+        Err(reverse_handoff_error())
+    }
+}
+
+fn reverse_handoff_error() -> ModelError {
+    ModelError::new(
+        ErrorCode::MergeRecoveryRequired,
+        "publication state is not an exact reversible handoff",
+    )
+}
+
+fn candidate_handoff_fact(
+    (prefix, index): (CandidatePublicationPrefix, IndexForm),
+) -> PublicationHandoffFact {
+    PublicationHandoffFact::Candidate {
+        prefix: match prefix {
+            CandidatePublicationPrefix::Baseline => PublicationHandoffPrefix::Baseline,
+            CandidatePublicationPrefix::Marker => PublicationHandoffPrefix::Marker,
+            CandidatePublicationPrefix::Lock => PublicationHandoffPrefix::Lock,
+            CandidatePublicationPrefix::Boundary => PublicationHandoffPrefix::Boundary,
+        },
+        index: match index {
+            IndexForm::Pre => PublicationHandoffIndex::Pre,
+            IndexForm::Staged => PublicationHandoffIndex::Staged,
+        },
+    }
+}
+
 pub(super) fn observe<B: GitBackend>(
     backend: &B,
     context: &OperationContext,

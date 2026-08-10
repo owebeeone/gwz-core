@@ -316,6 +316,18 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
         operation_drift: Vec::new(),
         preservation: Some(Vec::new()),
         publication_step: None,
+        record: Some(gwz_core::MergeRecordProjection {
+            source_version: gwz_core::MergeRecordVersion::V1,
+            archived: false,
+            terminal_outcome: None,
+            acceptance: None,
+            recovery: Some(gwz_core::MergeRecoveryProjection {
+                origin_state: gwz_core::MergeRecoveryOriginState::Executing,
+                base_phase: gwz_core::MergeCompatibilityBasePhase::PreAcceptance,
+                next_action: gwz_core::MergeCompatibilityNextAction::ReportRecoveryRequired,
+                resume_action: gwz_core::MergeCompatibilityNextAction::ReconcilePendingParticipant,
+            }),
+        }),
     };
     assert_eq!(
         round_trip(
@@ -324,6 +336,115 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
             gwz_core::MergeResponse::from_cbor,
         ),
         response
+    );
+}
+
+#[test]
+fn merge_record_projection_discriminants_are_pinned() {
+    use gwz_core::*;
+    assert_eq!(
+        [MergeRecordVersion::V0.wire(), MergeRecordVersion::V1.wire()],
+        [0, 1]
+    );
+    assert_eq!(
+        [
+            MergeTerminalOutcome::Completed.wire(),
+            MergeTerminalOutcome::Aborted.wire()
+        ],
+        [0, 1]
+    );
+    assert_eq!(
+        [
+            MergeAcceptanceKind::SupportedPersisted.wire(),
+            MergeAcceptanceKind::LegacyComplete.wire(),
+            MergeAcceptanceKind::LegacyUnavailable.wire(),
+            MergeAcceptanceKind::NotAccepted.wire(),
+        ],
+        [0, 1, 2, 3]
+    );
+    assert_eq!(MergeInstalledAcceptedWorkspaceKind::V1.wire(), 0);
+    assert_eq!(
+        [
+            MergeLegacyAcceptanceSource::Candidate.wire(),
+            MergeLegacyAcceptanceSource::BaselineNoPublication.wire(),
+        ],
+        [0, 1]
+    );
+    assert_eq!(
+        [
+            MergeLegacyAcceptanceGap::ExactLockBytes.wire(),
+            MergeLegacyAcceptanceGap::CompleteMemberAudit.wire(),
+            MergeLegacyAcceptanceGap::AcceptedRootInput.wire(),
+            MergeLegacyAcceptanceGap::PublicationEvidence.wire(),
+        ],
+        [0, 1, 2, 3]
+    );
+    assert_eq!(
+        [
+            MergeAcceptedMemberKind::Selected.wire(),
+            MergeAcceptedMemberKind::UnselectedPresent.wire(),
+            MergeAcceptedMemberKind::Absent.wire(),
+        ],
+        [0, 1, 2]
+    );
+    assert_eq!(
+        [
+            MergeAcceptedRootKind::BornAttached.wire(),
+            MergeAcceptedRootKind::BornDetached.wire(),
+            MergeAcceptedRootKind::UnbornAttached.wire(),
+        ],
+        [0, 1, 2]
+    );
+    assert_eq!(
+        [
+            MergeAcceptedMetadataSource::OperationBaseline.wire(),
+            MergeAcceptedMetadataSource::SelectedRootResult.wire(),
+        ],
+        [0, 1]
+    );
+    assert_eq!(
+        [
+            MergeRecoveryOriginState::Executing.wire(),
+            MergeRecoveryOriginState::AwaitingResolution.wire(),
+            MergeRecoveryOriginState::Halted.wire(),
+            MergeRecoveryOriginState::Finalizing.wire(),
+            MergeRecoveryOriginState::Preserving.wire(),
+            MergeRecoveryOriginState::RollingBack.wire(),
+        ],
+        [0, 1, 2, 3, 4, 5]
+    );
+    assert_eq!(
+        [
+            MergeCompatibilityBasePhase::PreAcceptance.wire(),
+            MergeCompatibilityBasePhase::PreCandidate.wire(),
+            MergeCompatibilityBasePhase::CandidatePersisted.wire(),
+            MergeCompatibilityBasePhase::EvidenceUnrecorded.wire(),
+            MergeCompatibilityBasePhase::EvidenceRecorded.wire(),
+            MergeCompatibilityBasePhase::PublishingPrefix.wire(),
+            MergeCompatibilityBasePhase::Published.wire(),
+            MergeCompatibilityBasePhase::NoPublicationComplete.wire(),
+        ],
+        [0, 1, 2, 3, 4, 5, 6, 7]
+    );
+    assert_eq!(
+        [
+            MergeCompatibilityNextAction::ReconcilePendingParticipant.wire(),
+            MergeCompatibilityNextAction::ExecuteNextParticipant.wire(),
+            MergeCompatibilityNextAction::AwaitResolution.wire(),
+            MergeCompatibilityNextAction::ValidateResults.wire(),
+            MergeCompatibilityNextAction::PersistAcceptance.wire(),
+            MergeCompatibilityNextAction::PrepareCandidate.wire(),
+            MergeCompatibilityNextAction::CreateOrAdoptEvidence.wire(),
+            MergeCompatibilityNextAction::PublishCandidate.wire(),
+            MergeCompatibilityNextAction::VerifyPublication.wire(),
+            MergeCompatibilityNextAction::CompleteNoPublication.wire(),
+            MergeCompatibilityNextAction::ResumePreservation.wire(),
+            MergeCompatibilityNextAction::ResumeRollback.wire(),
+            MergeCompatibilityNextAction::ArchiveCompleted.wire(),
+            MergeCompatibilityNextAction::ArchiveAborted.wire(),
+            MergeCompatibilityNextAction::ReportRecoveryRequired.wire(),
+        ],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     );
 }
 

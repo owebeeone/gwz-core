@@ -174,7 +174,7 @@ fn journal_object_id_algorithm_length_is_checked() {
         message: "gwz:stash_merge_1: merge preservation".to_owned(),
         head_commit: oid('a'),
         preimage_sha256: sha('1'),
-        root_publication_prefix: None,
+        root_publication_handoff: None,
     });
     validate_common_v1_record(&case).unwrap();
     let Some(PendingPreservationActionV1::Stash {

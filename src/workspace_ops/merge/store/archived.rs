@@ -1,5 +1,12 @@
 use super::*;
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "R1-frozen archived-load implementation remains until the A1 activation review"
+    )
+)]
 pub(super) fn load(root: &Path, merge_id: &str) -> ModelResult<MergeOperationRecord> {
     validate_merge_id(merge_id)?;
     let path = done_path(root, merge_id);

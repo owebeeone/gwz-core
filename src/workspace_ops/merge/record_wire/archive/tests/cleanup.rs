@@ -116,3 +116,27 @@ fn cleanup_rejects_empty_or_noncanonical_stash_evidence() {
         );
     }
 }
+
+#[test]
+fn selected_root_participant_uses_the_single_root_owner_key() {
+    let mut record = v0_record(Shape::CompletedCandidate);
+    let mut root = record.participants.remove("mem_a").unwrap();
+    root.path = ".".to_owned();
+    root.target_kind = crate::workspace_ops::merge::MergeTargetKind::Root;
+    root.preservation = vec![PreservationEvidence {
+        backup_ref: Some(format!("refs/gwz/merge/{MERGE_ID}/root/head")),
+        backup_commit: Some(oid('d')),
+        stash_id: None,
+        stash_object_id: None,
+    }];
+    record.participants.insert("mem_root".to_owned(), root);
+
+    let cleanup = super::super::cleanup::from_v0(&record).unwrap();
+
+    assert_eq!(cleanup.backup_refs.len(), 1);
+    assert_eq!(cleanup.backup_refs[0].target_id, "mem_root");
+    assert_eq!(
+        cleanup.backup_refs[0].name,
+        format!("refs/gwz/merge/{MERGE_ID}/root/head")
+    );
+}

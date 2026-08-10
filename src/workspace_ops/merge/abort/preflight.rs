@@ -9,14 +9,203 @@ use super::{
     reconciliation::pending_reconciliation,
 };
 use crate::artifact;
+#[cfg(test)]
+use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
+#[cfg(test)]
+use crate::workspace_ops::merge::ParticipantState;
+#[cfg(test)]
+use crate::workspace_ops::merge::model::v1::{MergeOperationRecordV1, ParticipantRollbackKindV1};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
 };
+
+#[cfg(test)]
+use super::super::root::artifact_facts;
+
+#[cfg(test)]
+mod v1_rollback {
+    use super::*;
+
+    pub(in crate::workspace_ops::merge) fn preflight_v1_rollback<B: GitBackend>(
+        backend: &B,
+        root: &Path,
+        record: &MergeOperationRecordV1,
+    ) -> ModelResult<()> {
+        if !record.operation_drift.is_empty() {
+            return Err(ModelError::new(
+                ErrorCode::MergeDrift,
+                "operation drift prevents coordinated rollback entry",
+            ));
+        }
+        validate_v1_baseline(record)?;
+        for member_id in &record.selected_targets {
+            let row = record.participants.get(member_id).ok_or_else(|| {
+                ModelError::new(
+                    ErrorCode::MergeRecordUnreadable,
+                    format!("selected rollback participant '{member_id}' is missing"),
+                )
+            })?;
+            if member_id == "@root"
+                && record.publication.as_ref().is_some_and(|publication| {
+                    publication.candidate.is_some()
+                        && publication.composition_commit.is_some()
+                        && !publication.evidence_rolled_back
+                })
+            {
+                // Publication evidence owns the root checkout first. Its complete
+                // classifier is run by the caller before rollback entry; the root
+                // participant becomes observable at its result commit only after
+                // that evidence owner is durably completed.
+                continue;
+            }
+            match row.state {
+                ParticipantState::Conflicted => require_rollback_form(
+                    crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
+                        backend,
+                        root,
+                        member_id,
+                        row,
+                        ParticipantRollbackKindV1::AbortConflict,
+                    )?,
+                    member_id,
+                    &row.path,
+                )?,
+                ParticipantState::FastForwarded
+                | ParticipantState::Merged
+                | ParticipantState::Continued => require_rollback_form(
+                    crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
+                        backend,
+                        root,
+                        member_id,
+                        row,
+                        ParticipantRollbackKindV1::ResetIntegrated,
+                    )?,
+                    member_id,
+                    &row.path,
+                )?,
+                ParticipantState::Planned
+                | ParticipantState::UpToDate
+                | ParticipantState::Failed
+                | ParticipantState::Unattempted => {
+                    crate::workspace_ops::merge::abort::verify_v1_no_mutation_participant(
+                        backend, root, member_id, row,
+                    )?;
+                }
+                ParticipantState::Aborted | ParticipantState::RolledBack => {
+                    if !exact_clean_before(backend, root, member_id, row)? {
+                        return Err(member_preflight_error(
+                            member_id,
+                            &row.path,
+                            "completed rollback participant no longer matches its before commit",
+                        ));
+                    }
+                }
+            }
+        }
+        if record.selected_targets.iter().any(|id| id == "@root") {
+            for relative in [WORKSPACE_MANIFEST, artifact::LOCK_PATH] {
+                if !matches!(
+                    artifact_facts::observe(root, relative)?,
+                    artifact_facts::RegularFileFact::Bytes(_)
+                ) {
+                    return Err(ModelError::new(
+                        ErrorCode::MergeRecoveryRequired,
+                        format!(
+                            "selected-root artifact '{relative}' is not a canonical regular file"
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn require_rollback_form(
+        observed: crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation,
+        member_id: &str,
+        path: &str,
+    ) -> ModelResult<()> {
+        if observed
+            == crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::Ambiguous
+        {
+            Err(member_preflight_error(
+                member_id,
+                path,
+                "participant is neither at the exact rollback before nor after state",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn exact_clean_before<B: GitBackend>(
+        backend: &B,
+        root: &Path,
+        member_id: &str,
+        row: &crate::workspace_ops::merge::MergeParticipantRecord,
+    ) -> ModelResult<bool> {
+        let path =
+            crate::workspace_ops::merge::status::validated_participant_path(root, member_id, row)?;
+        let head = backend.head(&path)?;
+        let status = backend.status(&path)?;
+        Ok(
+            backend.repository_state(&path)? == crate::git::GitRepositoryState::Clean
+                && !head.is_detached
+                && head.branch.as_deref() == Some(row.target_branch.as_str())
+                && head.commit.as_deref() == Some(row.before_commit.as_str())
+                && !status.is_dirty
+                && status.unresolved == 0,
+        )
+    }
+
+    fn validate_v1_baseline(record: &MergeOperationRecordV1) -> ModelResult<()> {
+        let selected_root = record.selected_targets.iter().any(|id| id == "@root");
+        let (manifest, lock) = (
+            record.baseline.manifest_yaml.as_deref(),
+            record.baseline.lock_yaml.as_deref(),
+        );
+        if selected_root && (manifest.is_none() || lock.is_none()) {
+            return Err(ModelError::new(
+                ErrorCode::MergeRecordUnreadable,
+                "selected-root rollback requires exact operation-baseline manifest and lock bytes",
+            ));
+        }
+        for (relative, value, digest) in [
+            (
+                WORKSPACE_MANIFEST,
+                manifest,
+                record.baseline.manifest_sha256.as_str(),
+            ),
+            (
+                artifact::LOCK_PATH,
+                lock,
+                record.baseline.lock_sha256.as_str(),
+            ),
+        ] {
+            if let Some(value) = value
+                && format!("{:x}", Sha256::digest(value.as_bytes())) != digest
+            {
+                return Err(ModelError::new(
+                    ErrorCode::MergeRecordUnreadable,
+                    format!("operation-baseline '{relative}' bytes do not match their digest"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn member_preflight_error(member_id: &str, path: &str, detail: &str) -> ModelError {
+        ModelError::new(ErrorCode::MergeRecoveryRequired, detail).with_member(member_id, path)
+    }
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) use v1_rollback::preflight_v1_rollback;
 
 #[derive(Default)]
 pub(super) struct AbortPreflight {

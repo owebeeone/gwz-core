@@ -1,7 +1,8 @@
 use super::super::super::{OperationState, ParticipantState, PublicationProgress, PublicationStep};
 use super::super::{
     CanonicalInstalledKind, CanonicalMergeRecord, ParticipantRollbackKindV1,
-    PendingRollbackActionV1, RecordVersion,
+    PendingRollbackActionV1, PreservationPublicationHandoffV1, PublicationIndexFormV1,
+    PublicationPrefixV1, RecordVersion,
 };
 use super::tests::{record, sha};
 use super::{validate_v1_publication, validate_v1_record};
@@ -21,6 +22,44 @@ fn opaque_validation_is_the_only_canonical_v1_adapter_input() {
     // compiled by the I2 model.
     let _ = RecordVersion::V0;
     let _ = CanonicalInstalledKind::V0;
+}
+
+#[test]
+fn canonical_v1_state_distinguishes_every_durable_handoff_variant() {
+    let mut no_candidate = record();
+    no_candidate.state = OperationState::Preserving;
+    no_candidate.preservation_publication_handoff =
+        Some(PreservationPublicationHandoffV1::NoCandidate);
+
+    let mut evidence_pending = super::acceptance_tests::selected_acceptance_record_for_tests();
+    evidence_pending.state = OperationState::Preserving;
+    evidence_pending.publication =
+        Some(super::acceptance_tests::valid_candidate_publication_for_tests(&evidence_pending));
+    evidence_pending.publication.as_mut().unwrap().step =
+        super::super::super::PublicationStep::CommittingEvidence;
+    evidence_pending.preservation_publication_handoff =
+        Some(PreservationPublicationHandoffV1::EvidencePending);
+
+    let mut candidate = super::acceptance_tests::selected_acceptance_record_for_tests();
+    candidate.state = OperationState::Preserving;
+    candidate.publication =
+        Some(super::acceptance_tests::valid_candidate_publication_for_tests(&candidate));
+    candidate.preservation_publication_handoff =
+        Some(PreservationPublicationHandoffV1::Candidate {
+            prefix: PublicationPrefixV1::Baseline,
+            index: PublicationIndexFormV1::Pre,
+        });
+
+    let canonical = [no_candidate, evidence_pending, candidate]
+        .map(|record| CanonicalMergeRecord::from(validate_v1_record(record).unwrap()));
+    assert!(
+        canonical
+            .iter()
+            .all(|record| !record.v1_state().unwrap().is_empty())
+    );
+    assert_ne!(canonical[0], canonical[1]);
+    assert_ne!(canonical[1], canonical[2]);
+    assert_ne!(canonical[0], canonical[2]);
 }
 
 #[test]

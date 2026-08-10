@@ -5,8 +5,8 @@ use super::fixtures::{
 };
 use crate::model::ErrorCode;
 use crate::workspace_ops::merge::model::v1::{
-    PendingPreservationActionV1, PreservationOwnerV1, PreservationStashPhaseV1,
-    PublicationPrefixV1, test_record as record,
+    PendingPreservationActionV1, PreservationOwnerV1, PreservationPublicationCandidateV1,
+    PreservationPublicationHandoffV1, PreservationStashPhaseV1, test_record as record,
 };
 use crate::workspace_ops::merge::{
     MergeRecordError, OperationState, ParticipantState, PreservationEvidence, PublicationProgress,
@@ -93,6 +93,35 @@ fn exact_effect_verifier_accepts_owned_change_and_rejects_immutable_change() {
     wrong_writer.state = OperationState::Halted;
     wrong_writer.writer_version = "unexpected".into();
     assert!(effect.verify_known_diff(&old, &wrong_writer).is_err());
+}
+
+#[test]
+fn preservation_entry_is_the_only_effect_that_installs_the_durable_handoff() {
+    let old = record();
+    let mut preserving = old.clone();
+    preserving.state = OperationState::Preserving;
+    preserving.preservation_publication_handoff =
+        Some(PreservationPublicationHandoffV1::NoCandidate);
+    TransitionEffect::operation_for_test(EffectKind::BeginPreservation)
+        .verify_known_diff(&old, &preserving)
+        .unwrap();
+
+    let mut missing = preserving.clone();
+    missing.preservation_publication_handoff = None;
+    assert!(
+        TransitionEffect::operation_for_test(EffectKind::BeginPreservation)
+            .verify_known_diff(&old, &missing)
+            .is_err()
+    );
+
+    let mut direct = old.clone();
+    direct.state = OperationState::RollingBack;
+    direct.preservation_publication_handoff = Some(PreservationPublicationHandoffV1::NoCandidate);
+    assert!(
+        TransitionEffect::operation_for_test(EffectKind::BeginRollback)
+            .verify_known_diff(&old, &direct)
+            .is_err()
+    );
 }
 
 #[test]
@@ -207,8 +236,9 @@ fn stash_effect_requires_evidence_only_after_create_stash() {
     polluted.pending_preservation = Some(stash_action(
         owner.clone(),
         PreservationStashPhaseV1::CreateStash,
-        Some(PublicationPrefixV1::Baseline),
+        None,
     ));
+    polluted.preservation_publication_handoff = Some(PreservationPublicationHandoffV1::NoCandidate);
     let begin = TransitionEffect::preservation_for_test(EffectKind::BeginStash, owner);
     assert!(begin.verify_known_diff(&record(), &polluted).is_err());
 }
@@ -461,7 +491,7 @@ fn empty_publication(step: PublicationStep) -> PublicationProgress {
 fn stash_action(
     owner: PreservationOwnerV1,
     phase: PreservationStashPhaseV1,
-    root_publication_prefix: Option<PublicationPrefixV1>,
+    root_publication_handoff: Option<PreservationPublicationCandidateV1>,
 ) -> PendingPreservationActionV1 {
     PendingPreservationActionV1::Stash {
         owner,
@@ -471,6 +501,6 @@ fn stash_action(
         message: "preserve merge_1".into(),
         head_commit: "a".repeat(40),
         preimage_sha256: "b".repeat(64),
-        root_publication_prefix,
+        root_publication_handoff,
     }
 }

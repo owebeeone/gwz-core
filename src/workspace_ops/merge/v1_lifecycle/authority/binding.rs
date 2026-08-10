@@ -4,11 +4,12 @@ use sha2::{Digest, Sha256};
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-use super::super::checked::{RecordDigest, StoredV1Record};
+use super::super::checked::{OpenRecordLocation, RecordDigest, StoredV1Record};
 
 #[derive(Debug, Eq, PartialEq)]
 struct ProofBinding {
     source_digest: RecordDigest,
+    source_location: OpenRecordLocation,
     workspace_id: String,
     merge_id: String,
     operation_id: String,
@@ -29,6 +30,7 @@ impl ProofBinding {
         let record = current.record();
         Ok(Self {
             source_digest: current.source_digest(),
+            source_location: current.location().clone(),
             workspace_id: record.workspace_id.clone(),
             merge_id: record.merge_id.clone(),
             operation_id: record.operation_id.clone(),
@@ -42,6 +44,7 @@ impl ProofBinding {
     fn same_record(&self, current: &StoredV1Record) -> bool {
         let record = current.record();
         self.source_digest == current.source_digest()
+            && self.source_location == *current.location()
             && self.workspace_id == record.workspace_id
             && self.merge_id == record.merge_id
             && self.operation_id == record.operation_id

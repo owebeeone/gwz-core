@@ -82,6 +82,19 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn resolve_observation(
         ExactObservationFact::Completed(fact) => {
             completed(current, request, observation_request.kind(), fact)
         }
+        ExactObservationFact::PreservationDurabilityPending {
+            completion,
+            prefix,
+            action,
+        } => durability_pending(
+            current,
+            request,
+            observation_request,
+            completion,
+            prefix,
+            action,
+            attempt,
+        ),
         ExactObservationFact::Ambiguous(proof) => {
             require(
                 !matches!(
@@ -92,12 +105,24 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn resolve_observation(
             ambiguous(current, proof)
         }
         ExactObservationFact::PreservationAmbiguous(proof, prefix) => {
+            require(matches!(
+                observation_request.kind(),
+                ObservationKind::PreservationCursor
+            ))?;
             let action = current
                 .record()
                 .pending_preservation
                 .as_ref()
                 .ok_or_else(rejected)?;
             require(preservation_prefix_authorizes(current, action, &prefix))?;
+            require(physical_matches(
+                current,
+                observation_request.kind(),
+                &PhysicalActionKind::Preservation(action.clone()),
+            ))?;
+            if let Some(result) = preservation_attempt_without_pending_goal(attempt.as_ref()) {
+                return Ok(result);
+            }
             ambiguous(current, proof)
         }
         ExactObservationFact::NotStarted(observed) => {
@@ -107,6 +132,57 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn resolve_observation(
             abandon(request, observation_request.kind(), proof, entry, attempt)
         }
     }
+}
+
+fn durability_pending(
+    current: &StoredV1Record,
+    request: V1LifecycleRequest,
+    observation: BoundObservationRequest,
+    completion: PreservationObservation,
+    prefix: VerifiedPreservationCursorPrefix,
+    action: PendingPreservationActionV1,
+    attempt: Option<BoundExecutionAttempt>,
+) -> ModelResult<ResolvedV1Action> {
+    require(matches!(
+        observation.kind(),
+        ObservationKind::PreservationCursor
+    ))?;
+    require(preservation_prefix_authorizes(current, &action, &prefix))?;
+    require(physical_matches(
+        current,
+        observation.kind(),
+        &PhysicalActionKind::Preservation(action.clone()),
+    ))?;
+    match attempt {
+        None => not_started(
+            current,
+            request,
+            observation,
+            NotStartedObservation::Preservation { action, prefix },
+            None,
+        ),
+        Some(value) if attempt_succeeded(&value) => completed(
+            current,
+            request,
+            observation.kind(),
+            CompletedObservation::Preservation(completion),
+        ),
+        Some(value) => Ok(ResolvedV1Action::Reject(
+            attempt_failure(&value).ok_or_else(rejected)?,
+        )),
+    }
+}
+
+fn preservation_attempt_without_pending_goal(
+    attempt: Option<&BoundExecutionAttempt>,
+) -> Option<ResolvedV1Action> {
+    let attempt = attempt?;
+    Some(match attempt_failure(attempt) {
+        Some(error) => ResolvedV1Action::Reject(error),
+        None => ResolvedV1Action::Reject(dispatch_error(
+            "preservation success lacks a fresh durability-pending goal",
+        )),
+    })
 }
 
 fn not_started(

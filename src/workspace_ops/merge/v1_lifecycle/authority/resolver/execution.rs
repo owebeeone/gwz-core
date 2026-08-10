@@ -14,6 +14,9 @@ pub(super) fn no_progress(
         return reject("owned action reported success without progress");
     };
     let PhysicalActionKind::Participant { member_id, .. } = key.action else {
+        if matches!(key.action, PhysicalActionKind::Preservation(_)) {
+            return Ok(ResolvedV1Action::Reject(ModelError::new(code, message)));
+        }
         return reject("owned non-participant action made no progress");
     };
     let row = current
@@ -56,6 +59,17 @@ pub(super) fn no_progress(
         ))
     };
     part(value)
+}
+
+pub(super) fn attempt_succeeded(attempt: &BoundExecutionAttempt) -> bool {
+    matches!(attempt.0.value.1, ExecutionDiagnostic::Success)
+}
+
+pub(super) fn attempt_failure(attempt: &BoundExecutionAttempt) -> Option<ModelError> {
+    let ExecutionDiagnostic::Failed { code, message, .. } = &attempt.0.value.1 else {
+        return None;
+    };
+    Some(ModelError::new(*code, message.clone()))
 }
 
 pub(super) fn physical_matches(

@@ -199,6 +199,8 @@ pub(super) fn evidence_payload(current: &StoredV1Record) -> EvidencePayload {
 pub(super) fn preserving_record() -> MergeOperationRecordV1 {
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     model.state = OperationState::Preserving;
+    model.preservation_publication_handoff =
+        Some(crate::workspace_ops::merge::model::v1::PreservationPublicationHandoffV1::NoCandidate);
     let row = model.participants.get_mut("mem_a").unwrap();
     row.state = ParticipantState::UpToDate;
     row.resulting_commit = Some(row.before_commit.clone());
@@ -222,7 +224,11 @@ pub(super) fn backup_action() -> PendingPreservationActionV1 {
 pub(super) fn stash_action(phase: PreservationStashPhaseV1) -> PendingPreservationActionV1 {
     let ids = !matches!(
         phase,
-        PreservationStashPhaseV1::NormalizeRoot | PreservationStashPhaseV1::CreateStash
+        PreservationStashPhaseV1::NormalizeParent
+            | PreservationStashPhaseV1::NormalizeMarker
+            | PreservationStashPhaseV1::NormalizeLock
+            | PreservationStashPhaseV1::NormalizeIndex
+            | PreservationStashPhaseV1::CreateStash
     );
     PendingPreservationActionV1::Stash {
         owner: preservation_owner(),
@@ -235,7 +241,7 @@ pub(super) fn stash_action(phase: PreservationStashPhaseV1) -> PendingPreservati
         message: "gwz:stash_merge_1: merge preservation".into(),
         head_commit: oid('a'),
         preimage_sha256: "1".repeat(64),
-        root_publication_prefix: None,
+        root_publication_handoff: None,
     }
 }
 
@@ -246,7 +252,7 @@ pub(super) fn reset_action(phase: PreservationRefResetPhaseV1) -> PendingPreserv
         expected_commit: oid('a'),
         restore_commit: oid('a'),
         phase,
-        root_publication_prefix: None,
+        root_publication_handoff: None,
     }
 }
 

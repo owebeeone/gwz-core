@@ -6,23 +6,14 @@ use super::super::{
 };
 use super::validate::ValidatedV1Record;
 use super::{
-    AcceptedWorkspaceV1, PendingPreservationActionV1, PendingRollbackActionV1, RecoveryContextV1,
+    AcceptedWorkspaceV1, PendingPreservationActionV1, PendingRollbackActionV1,
+    PreservationPublicationHandoffV1, RecoveryContextV1,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RecordVersion {
     V0,
     V1,
-}
-
-#[cfg(test)]
-impl RecordVersion {
-    pub(crate) const fn archive_pinned_value(self) -> u32 {
-        match self {
-            Self::V0 => 0,
-            Self::V1 => 1,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +55,7 @@ pub(crate) struct CanonicalV1State {
     recovery_context: Option<RecoveryContextV1>,
     pending_rollback: Option<PendingRollbackActionV1>,
     pending_preservation: Option<PendingPreservationActionV1>,
+    preservation_publication_handoff: Option<PreservationPublicationHandoffV1>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,6 +104,7 @@ impl CanonicalV1State {
             && self.recovery_context.is_none()
             && self.pending_rollback.is_none()
             && self.pending_preservation.is_none()
+            && self.preservation_publication_handoff.is_none()
     }
 }
 
@@ -140,6 +133,7 @@ impl From<ValidatedV1Record> for CanonicalMergeRecord {
                 recovery_context: record.recovery_context,
                 pending_rollback: record.pending_rollback,
                 pending_preservation: record.pending_preservation,
+                preservation_publication_handoff: record.preservation_publication_handoff,
             })),
         }
     }

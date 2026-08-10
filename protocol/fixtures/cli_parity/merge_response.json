@@ -46,6 +46,76 @@
       }
     ],
     "publication_step": "VerifyingPublication",
+    "record": {
+      "acceptance": {
+        "kind": "SupportedPersisted",
+        "legacy_complete": null,
+        "legacy_evidence": null,
+        "legacy_source": null,
+        "missing_gaps": [],
+        "supported_persisted": {
+          "kind": "V1",
+          "v1": {
+            "lock_sha256": "accepted-lock-sha",
+            "lock_yaml": "schema: gwz.lock/v0\n",
+            "members": [
+              {
+                "final_checkout": {
+                  "branch": "main",
+                  "commit": "result123"
+                },
+                "integration": {
+                  "before_commit": "before123",
+                  "branch": "main",
+                  "resulting_commit": "result123"
+                },
+                "kind": "Selected",
+                "lock_member": {
+                  "branch": "main",
+                  "commit": "result123",
+                  "detached": false,
+                  "dirty": false,
+                  "materialized": true,
+                  "path": "docs",
+                  "source_id": "src_docs",
+                  "source_kind": "Git",
+                  "upstream": null
+                },
+                "member_id": "mem_docs"
+              }
+            ],
+            "metadata_base": {
+              "lock_sha256": "baseline-lock-sha",
+              "lock_yaml": "schema: gwz.lock/v0\n",
+              "manifest_sha256": "manifest-sha",
+              "manifest_yaml": "schema: gwz.workspace/v0\n",
+              "source": "OperationBaseline",
+              "source_commit": null
+            },
+            "operation_baseline_lock_sha256": "baseline-lock-sha",
+            "root": {
+              "commit": "root123",
+              "kind": "BornAttached",
+              "lock_commit_sha256": null,
+              "lock_worktree_sha256": "root-lock-sha",
+              "manifest_commit_sha256": null,
+              "manifest_worktree_sha256": "root-manifest-sha",
+              "publication_branch": "main",
+              "symbolic_branch": "main"
+            }
+          }
+        }
+      },
+      "archived": false,
+      "recovery": {
+        "base_phase": "PublishingPrefix",
+        "next_action": "ReportRecoveryRequired",
+        "origin_state": "Finalizing",
+        "resume_action": "PublishCandidate"
+      },
+      "source_version": "V1",
+      "terminal_outcome": null
+    },
     "repos": [
       {
         "abort_eligible": null,

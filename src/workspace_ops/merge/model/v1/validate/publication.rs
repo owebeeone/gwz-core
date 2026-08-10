@@ -3,7 +3,10 @@ use sha2::{Digest, Sha256};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::super::super::{OperationState, PublicationProgress, PublicationStep};
-use super::super::MergeOperationRecordV1;
+use super::super::{
+    MergeOperationRecordV1, PreservationPublicationHandoffV1, PublicationIndexFormV1,
+    PublicationPrefixV1,
+};
 
 pub(crate) fn validate_v1_publication(record: &MergeOperationRecordV1) -> ModelResult<()> {
     if record.state == OperationState::Aborted
@@ -17,6 +20,9 @@ pub(crate) fn validate_v1_publication(record: &MergeOperationRecordV1) -> ModelR
         }
         return Ok(());
     };
+    if publication.preservation_prefix.is_some() {
+        return Err(unexpected_publication(record));
+    }
 
     match publication.candidate.as_ref() {
         None => validate_no_candidate(record, publication)?,
@@ -61,17 +67,12 @@ fn validate_candidate_progress(
     record: &MergeOperationRecordV1,
     publication: &PublicationProgress,
 ) -> ModelResult<()> {
-    let preservation_prefix_valid = publication
-        .preservation_prefix
-        .as_deref()
-        .is_none_or(|prefix| matches!(prefix, "baseline" | "marker" | "lock" | "boundary"));
     if !publication_required(record)
         || matches!(
             publication.step,
             PublicationStep::NotStarted | PublicationStep::ValidatingResults
         )
         || super::acceptance::validate_candidate_semantics_for_v1(record).is_err()
-        || !preservation_prefix_valid
     {
         return Err(candidate_error(record));
     }
@@ -89,6 +90,95 @@ fn validate_candidate_progress(
         return Err(recorded_evidence_error(record));
     }
     Ok(())
+}
+
+pub(crate) fn preservation_handoff_is_compatible(
+    record: &MergeOperationRecordV1,
+    handoff: PreservationPublicationHandoffV1,
+) -> bool {
+    let Some(publication) = record.publication.as_ref() else {
+        return handoff == PreservationPublicationHandoffV1::NoCandidate;
+    };
+    match publication.step {
+        PublicationStep::NotStarted | PublicationStep::ValidatingResults => {
+            handoff == PreservationPublicationHandoffV1::NoCandidate
+        }
+        PublicationStep::PreparingCandidate if publication.candidate.is_none() => {
+            handoff == PreservationPublicationHandoffV1::NoCandidate
+        }
+        PublicationStep::PreparingCandidate => {
+            handoff
+                == PreservationPublicationHandoffV1::Candidate {
+                    prefix: PublicationPrefixV1::Baseline,
+                    index: PublicationIndexFormV1::Pre,
+                }
+        }
+        PublicationStep::CommittingEvidence if composition_is_absent(publication) => {
+            handoff == PreservationPublicationHandoffV1::EvidencePending
+        }
+        PublicationStep::CommittingEvidence if composition_is_complete(publication) => {
+            handoff
+                == PreservationPublicationHandoffV1::Candidate {
+                    prefix: PublicationPrefixV1::Baseline,
+                    index: PublicationIndexFormV1::Pre,
+                }
+        }
+        PublicationStep::PublishingCandidate if publication.candidate.is_some() => {
+            candidate_pair_is_compatible(publication, handoff, false)
+        }
+        PublicationStep::VerifyingPublication | PublicationStep::Complete
+            if publication.candidate.is_none() =>
+        {
+            handoff == PreservationPublicationHandoffV1::NoCandidate
+        }
+        PublicationStep::VerifyingPublication | PublicationStep::Complete => {
+            candidate_pair_is_compatible(publication, handoff, true)
+        }
+        PublicationStep::CommittingEvidence | PublicationStep::PublishingCandidate => false,
+    }
+}
+
+fn candidate_pair_is_compatible(
+    publication: &PublicationProgress,
+    handoff: PreservationPublicationHandoffV1,
+    complete_only: bool,
+) -> bool {
+    let PreservationPublicationHandoffV1::Candidate { prefix, index } = handoff else {
+        return false;
+    };
+    let Some(candidate) = publication.candidate.as_ref() else {
+        return false;
+    };
+    match (prefix, index) {
+        (PublicationPrefixV1::Marker, PublicationIndexFormV1::Staged) => {
+            candidate.lock_yaml == candidate.baseline_lock_yaml
+                && candidate.boundary_text == candidate.baseline_boundary_text
+        }
+        (PublicationPrefixV1::Boundary, PublicationIndexFormV1::Staged) => true,
+        (
+            PublicationPrefixV1::Baseline
+            | PublicationPrefixV1::Marker
+            | PublicationPrefixV1::Lock
+            | PublicationPrefixV1::Boundary,
+            PublicationIndexFormV1::Pre,
+        ) => !complete_only,
+        (
+            PublicationPrefixV1::Baseline | PublicationPrefixV1::Lock,
+            PublicationIndexFormV1::Staged,
+        ) => false,
+    }
+}
+
+fn composition_is_absent(publication: &PublicationProgress) -> bool {
+    publication.composition_commit.is_none()
+        && publication.composition_tree.is_none()
+        && publication.candidate_hashes.is_empty()
+}
+
+fn composition_is_complete(publication: &PublicationProgress) -> bool {
+    publication.composition_commit.is_some()
+        && publication.composition_tree.is_some()
+        && !publication.candidate_hashes.is_empty()
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

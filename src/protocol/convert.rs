@@ -86,6 +86,18 @@ impl From<model::SourceKind> for generated::SourceKind {
     }
 }
 
+impl From<crate::artifact::ArtifactSourceKind> for generated::SourceKind {
+    fn from(value: crate::artifact::ArtifactSourceKind) -> Self {
+        match value {
+            crate::artifact::ArtifactSourceKind::Git => Self::Git,
+            crate::artifact::ArtifactSourceKind::Archive => Self::Archive,
+            crate::artifact::ArtifactSourceKind::Package => Self::Package,
+            crate::artifact::ArtifactSourceKind::Local => Self::Local,
+            crate::artifact::ArtifactSourceKind::Generated => Self::Generated,
+        }
+    }
+}
+
 impl From<model::SyncBehavior> for generated::SyncBehavior {
     fn from(value: model::SyncBehavior) -> Self {
         match value {

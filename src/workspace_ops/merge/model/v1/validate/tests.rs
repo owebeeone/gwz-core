@@ -105,6 +105,7 @@ pub(in crate::workspace_ops::merge) fn record() -> MergeOperationRecordV1 {
         recovery_context: None,
         pending_rollback: None,
         pending_preservation: None,
+        preservation_publication_handoff: None,
         extensions: BTreeMap::new(),
     }
 }
@@ -124,7 +125,10 @@ fn rollback_action() -> PendingRollbackActionV1 {
 fn preservation_action(phase: PreservationStashPhaseV1) -> PendingPreservationActionV1 {
     let ids_present = matches!(
         phase,
-        PreservationStashPhaseV1::RestoreRoot
+        PreservationStashPhaseV1::RestoreIndex
+            | PreservationStashPhaseV1::RestoreLock
+            | PreservationStashPhaseV1::RestoreParent
+            | PreservationStashPhaseV1::RestoreMarker
             | PreservationStashPhaseV1::WriteBundle
             | PreservationStashPhaseV1::Complete
     );
@@ -141,11 +145,7 @@ fn preservation_action(phase: PreservationStashPhaseV1) -> PendingPreservationAc
         message: "gwz:stash_merge_1: merge preservation".to_owned(),
         head_commit: oid('a'),
         preimage_sha256: sha('1'),
-        root_publication_prefix: matches!(
-            phase,
-            PreservationStashPhaseV1::NormalizeRoot | PreservationStashPhaseV1::RestoreRoot
-        )
-        .then_some(PublicationPrefixV1::Boundary),
+        root_publication_handoff: None,
     }
 }
 
@@ -199,6 +199,8 @@ fn journal_pending_kinds_are_legal_only_in_their_owned_phase() {
 
     let mut preserving = record();
     preserving.state = OperationState::Preserving;
+    preserving.preservation_publication_handoff =
+        Some(PreservationPublicationHandoffV1::NoCandidate);
     let participant = preserving.participants.get_mut("mem_a").unwrap();
     participant.state = ParticipantState::UpToDate;
     participant.resulting_commit = Some(oid('a'));
@@ -267,6 +269,7 @@ fn journal_rollback_participant_kind_and_terminal_state_are_cross_checked() {
 fn journal_backup_ref_and_stash_phase_fields_are_derived() {
     let mut case = record();
     case.state = OperationState::Preserving;
+    case.preservation_publication_handoff = Some(PreservationPublicationHandoffV1::NoCandidate);
     case.participants.get_mut("mem_a").unwrap().state = ParticipantState::UpToDate;
     case.participants.get_mut("mem_a").unwrap().resulting_commit = Some(oid('a'));
     case.pending_preservation = Some(PendingPreservationActionV1::BackupRef {
@@ -328,5 +331,35 @@ fn journal_backup_ref_and_stash_phase_fields_are_derived() {
         }
         case.pending_preservation = Some(preservation_action(phase));
         validate_v1_journal(&case).unwrap();
+    }
+
+    for phase in [
+        PreservationStashPhaseV1::NormalizeParent,
+        PreservationStashPhaseV1::RestoreParent,
+    ] {
+        case.pending_preservation = Some(preservation_action(phase));
+        assert_eq!(
+            validate_v1_journal(&case).unwrap_err().code,
+            ErrorCode::PreservationEvidenceMismatch
+        );
+    }
+    for phase in [
+        PreservationRefResetPhaseV1::PrepareParent,
+        PreservationRefResetPhaseV1::RestoreParent,
+    ] {
+        case.pending_preservation = Some(PendingPreservationActionV1::ResetAttachedRef {
+            owner: PreservationOwnerV1::Participant {
+                member_id: "mem_a".to_owned(),
+            },
+            branch: "main".to_owned(),
+            expected_commit: oid('a'),
+            restore_commit: oid('a'),
+            phase,
+            root_publication_handoff: None,
+        });
+        assert_eq!(
+            validate_v1_journal(&case).unwrap_err().code,
+            ErrorCode::PreservationEvidenceMismatch
+        );
     }
 }

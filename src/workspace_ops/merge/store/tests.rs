@@ -391,3 +391,73 @@ fn failed_atomic_publish_removes_its_temporary_file() {
     assert_eq!(fs::read_dir(&temp.path).unwrap().count(), 1);
     FileMergeStore.gc(&temp.path, None).unwrap();
 }
+
+#[test]
+fn retention_treats_stash_only_v0_and_no_ref_v1_as_ordinary() {
+    let temp = temp("merge-store-r3-retention-ordinary");
+    let (v1_bytes, v1_id) = crate::workspace_ops::merge::record_wire::archived_fixture_for_test(
+        crate::workspace_ops::merge::model::v1::RecordVersion::V1,
+    );
+    write_raw_archived(&temp, v1_id, std::str::from_utf8(&v1_bytes).unwrap());
+
+    let mut stash_only = record("merge_stash_only", OperationState::Aborted);
+    let mut participant = preservation_participant();
+    participant.preservation[0].backup_ref = None;
+    participant.preservation[0].backup_commit = None;
+    participant.preservation[0].stash_id = Some("stash_merge_stash_only".to_owned());
+    participant.preservation[0].stash_object_id = Some("d".repeat(40));
+    stash_only.selected_targets.push("mem_app".to_owned());
+    stash_only
+        .participants
+        .insert("mem_app".to_owned(), participant);
+    write_raw_archived(
+        &temp,
+        &stash_only.merge_id,
+        &serde_yaml::to_string(&stash_only).unwrap(),
+    );
+
+    for index in 0..20 {
+        let ordinary = record(&format!("merge_z{index:02}"), OperationState::Completed);
+        write_raw_archived(
+            &temp,
+            &ordinary.merge_id,
+            &serde_yaml::to_string(&ordinary).unwrap(),
+        );
+    }
+    FileMergeStore.gc(&temp.path, None).unwrap();
+
+    assert_eq!(record_files(&temp.path.join(DONE_DIR)).unwrap().len(), 20);
+    assert!(!done_path(&temp.path, v1_id).exists());
+    assert!(!done_path(&temp.path, &stash_only.merge_id).exists());
+}
+
+#[test]
+fn retention_exempts_a_valid_v1_archive_that_owns_a_backup_ref() {
+    let temp = temp("merge-store-r3-retention-owned");
+    let (bytes, merge_id) = crate::workspace_ops::merge::record_wire::archived_fixture_for_test(
+        crate::workspace_ops::merge::model::v1::RecordVersion::V1,
+    );
+    let mut raw: Value = serde_yaml::from_slice(&bytes).unwrap();
+    raw["participants"]["mem_a"]["preservation"] =
+        serde_yaml::to_value(vec![crate::workspace_ops::merge::PreservationEvidence {
+            backup_ref: Some(format!("refs/gwz/merge/{merge_id}/mem_a/head")),
+            backup_commit: Some("d".repeat(40)),
+            stash_id: None,
+            stash_object_id: None,
+        }])
+        .unwrap();
+    write_raw_archived(&temp, merge_id, &serde_yaml::to_string(&raw).unwrap());
+    for index in 0..21 {
+        let ordinary = record(&format!("merge_z{index:02}"), OperationState::Completed);
+        write_raw_archived(
+            &temp,
+            &ordinary.merge_id,
+            &serde_yaml::to_string(&ordinary).unwrap(),
+        );
+    }
+
+    FileMergeStore.gc(&temp.path, None).unwrap();
+
+    assert!(done_path(&temp.path, merge_id).is_file());
+    assert_eq!(record_files(&temp.path.join(DONE_DIR)).unwrap().len(), 21);
+}

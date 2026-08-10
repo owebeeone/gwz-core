@@ -214,8 +214,12 @@ fn transition(case: OperationCase, current: &StoredV1Record) -> V1Transition {
             .unwrap(),
         ),
         OperationCase::BeginPreservation => OperationTransition::BeginPreservation(Box::new(
-            PreparedPreservationEntry::for_test(current, current.record(), handoff(current))
-                .unwrap(),
+            PreparedPreservationEntry::for_test(
+                current,
+                current.record(),
+                handoff(current, ReverseEntryKind::Preservation, current.record()),
+            )
+            .unwrap(),
         )),
         OperationCase::BeginRollback if current.record().state == OperationState::Preserving => {
             let exhausted = VerifiedPreservationExhausted::for_test(
@@ -230,15 +234,23 @@ fn transition(case: OperationCase, current: &StoredV1Record) -> V1Transition {
                 PreparedRollbackEntry::from_preserving_for_test(
                     current,
                     current.record(),
-                    handoff(current),
+                    handoff(
+                        current,
+                        ReverseEntryKind::ExhaustedRollback,
+                        current.record(),
+                    ),
                     exhausted,
                 )
                 .unwrap(),
             ))
         }
         OperationCase::BeginRollback => OperationTransition::BeginRollback(Box::new(
-            PreparedRollbackEntry::direct_for_test(current, current.record(), handoff(current))
-                .unwrap(),
+            PreparedRollbackEntry::direct_for_test(
+                current,
+                current.record(),
+                handoff(current, ReverseEntryKind::DirectRollback, current.record()),
+            )
+            .unwrap(),
         )),
         OperationCase::Complete => OperationTransition::CompleteOperation(
             VerifiedPublicationCompletion::for_test(
@@ -298,7 +310,7 @@ fn model(case: OperationCase, state: OperationState) -> MergeOperationRecordV1 {
     model
 }
 
-fn record_for_state(state: OperationState) -> MergeOperationRecordV1 {
+pub(super) fn record_for_state(state: OperationState) -> MergeOperationRecordV1 {
     let mut model = record();
     model.state = state;
     match state {
@@ -371,7 +383,10 @@ fn fail(model: &mut MergeOperationRecordV1) {
     });
 }
 
-fn handoff(current: &StoredV1Record) -> VerifiedPublicationHandoff {
-    VerifiedPublicationHandoff::for_test(current, "@publication", "handoff", "verified", ())
-        .unwrap()
+fn handoff(
+    current: &StoredV1Record,
+    kind: ReverseEntryKind,
+    anticipated: &MergeOperationRecordV1,
+) -> VerifiedPublicationHandoff {
+    VerifiedPublicationHandoff::for_entry_test(current, kind, anticipated).unwrap()
 }

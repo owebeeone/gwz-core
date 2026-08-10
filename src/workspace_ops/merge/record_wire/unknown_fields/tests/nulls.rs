@@ -40,7 +40,7 @@ pending_preservation:
   message: preserve
   head_commit: before
   preimage_sha256: digest
-  root_publication_prefix: null
+  root_publication_handoff: null
 "#);
     assert!(
         UnknownFieldManifest::extract_v1(&value)

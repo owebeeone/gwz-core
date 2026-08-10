@@ -3,8 +3,8 @@ use sha2::{Digest, Sha256};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::merge::model::v1::{
     MERGE_RECORD_SCHEMA_V1, MERGE_RECORD_SCHEMA_VERSION_V1, MergeOperationRecordV1,
-    RecoveryContextV1, RecoveryOriginStateV1, validate_common_v0_view, validate_v1_lifecycle,
-    validate_v1_preservation,
+    RecoveryContextV1, RecoveryOriginStateV1, validate_common_v0_view,
+    validate_v0_preservation_view, validate_v1_lifecycle,
 };
 use crate::workspace_ops::merge::{
     MergeExecutionMode, MergeOperationRecord, OperationState, ParticipantState,
@@ -15,7 +15,7 @@ pub(super) fn validate_v0_structure(record: &MergeOperationRecord) -> ModelResul
     let view = common_view(record);
     validate_common_v0_view(&view)?;
     validate_v0_actions(record)?;
-    validate_v1_preservation(&view)?;
+    validate_v0_preservation_view(&view)?;
     validate_lifecycle(record, view)?;
     validate_publication(record)
 }
@@ -104,6 +104,7 @@ fn common_view(record: &MergeOperationRecord) -> MergeOperationRecordV1 {
         recovery_context: None,
         pending_rollback: None,
         pending_preservation: None,
+        preservation_publication_handoff: None,
         extensions: record.extensions.clone(),
     }
 }

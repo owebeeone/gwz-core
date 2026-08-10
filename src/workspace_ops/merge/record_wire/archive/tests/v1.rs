@@ -105,3 +105,18 @@ fn archive_header_and_filename_identity_fail_closed_before_projection() {
     let mismatch = decode_archived_for_r3_tests(&v1_bytes(&record), "merge_other").unwrap_err();
     assert_eq!(mismatch.code, ErrorCode::ArchivedRecordUnreadable);
 }
+
+#[test]
+fn production_archive_decoder_rejects_v1_without_entering_the_v1_body() {
+    let record = v1_record(Shape::CompletedCandidate);
+    let error = super::super::decode_archived_v0(&v1_bytes(&record), MERGE_ID).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::UnsupportedRecordVersion);
+    assert_eq!(
+        error
+            .record_context
+            .as_ref()
+            .and_then(|context| context.required_wave),
+        Some(crate::MergeRecordRequiredWave::A1)
+    );
+}

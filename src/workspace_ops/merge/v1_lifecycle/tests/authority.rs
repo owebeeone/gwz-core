@@ -1,18 +1,28 @@
+use super::super::authority::PreservationCursorPosition as P;
 use super::super::authority::*;
 use super::super::checked::{StoredV1Record, V1MutationLease};
-use super::super::transition::{DriftTransition, RecoveryTransition, V1Transition, prepare};
+use super::super::transition::{
+    DriftTransition, RecoveryTransition, ReverseEntryKind, V1Transition, prepare,
+};
+use super::fixtures::{oid, up_to_date_action};
 use crate::artifact::{LOCK_PATH, ManifestArtifact};
 use crate::workspace::WORKSPACE_MANIFEST;
 use crate::workspace_ops::merge::model::v1::{
-    PreservationOwnerV1, PreservationStashPhaseV1, test_record as record,
+    GitObjectAlgorithmV1, GitObjectIdV1, PendingPreservationActionV1, PreservationOwnerV1,
+    PreservationPublicationHandoffV1, PreservationStashPhaseV1 as S, PublicationIndexFormV1,
+    PublicationPrefixV1, RecoveryOriginStateV1 as Origin, test_record as record,
 };
 use crate::workspace_ops::merge::{
     MergeTargetKind, OperationDrift, OperationDriftKind, OperationState, ParticipantDrift,
-    ParticipantDriftKind, ParticipantState,
+    ParticipantDriftKind, ParticipantState, PendingMergeAction, PreservationEvidence,
 };
 use crate::workspace_ops::tests::TempDir;
+use V1LifecycleRequest::ResumeStart;
 use sha2::{Digest, Sha256};
 use std::fs;
+
+const PRESERVE: &str = "begin_preservation";
+const CURSOR_CHECKED: &str = "cursor_checked";
 
 fn checked(name: &str) -> (TempDir, StoredV1Record) {
     let root = TempDir::new(name);
@@ -45,19 +55,142 @@ fn bound_payload_rejects_stale_record_and_value_tampering() {
 }
 
 #[test]
+fn every_authority_binding_rejects_an_identical_record_from_another_root() {
+    let first_root = TempDir::new("merge-v1-binding-location-first");
+    let second_root = TempDir::new("merge-v1-binding-location-second");
+    let mut model = record();
+    let action = up_to_date_action();
+    model.participants.get_mut("mem_a").unwrap().pending_action = Some(action.clone());
+    let first = StoredV1Record::for_test(&first_root.path, model.clone()).unwrap();
+    let second = StoredV1Record::for_test(&second_root.path, model).unwrap();
+
+    let token =
+        VerifiedParticipants::for_test(&first, "@operation", "enter_finalizing", "executing", ())
+            .unwrap();
+    assert!(token.matches(&first, "@operation", "enter_finalizing", "executing"));
+    assert!(!token.matches(&second, "@operation", "enter_finalizing", "executing"));
+
+    let request_first = participant_request(&first);
+    let observation_first = not_started_participant_observation(&first, &request_first, &action);
+    assert!(
+        resolve_participant(&second, request_first, observation_first, None).is_err(),
+        "the request binding must reject the second root",
+    );
+
+    let request_first = participant_request(&first);
+    let observation_first = not_started_participant_observation(&first, &request_first, &action);
+    let request_second = participant_request(&second);
+    assert!(
+        resolve_participant(&second, request_second, observation_first, None).is_err(),
+        "the exact-observation binding must reject the second root",
+    );
+
+    let physical = prepared_participant_action(&first, &action);
+    assert!(physical.authorize(&first).is_ok());
+    assert!(physical.authorize(&second).is_err());
+
+    let attempt = prepared_participant_action(&first, &action)
+        .record_attempt(&first, ExecutionDiagnostic::Success)
+        .unwrap();
+    let request_second = participant_request(&second);
+    let observation_second = ambiguous_participant_observation(&second, &request_second);
+    assert!(
+        resolve_participant(&second, request_second, observation_second, Some(attempt)).is_err(),
+        "the execution-attempt binding must reject the second root",
+    );
+
+    let attempt = prepared_participant_action(&first, &action)
+        .record_attempt(&first, ExecutionDiagnostic::Success)
+        .unwrap();
+    let request_first = participant_request(&first);
+    let observation_first = ambiguous_participant_observation(&first, &request_first);
+    assert!(resolve_participant(&first, request_first, observation_first, Some(attempt)).is_ok());
+}
+
+fn resolve_participant(
+    current: &StoredV1Record,
+    request: BoundObservationRequest,
+    observation: BoundExactObservation,
+    attempt: Option<BoundExecutionAttempt>,
+) -> crate::model::ModelResult<ResolvedV1Action> {
+    resolve_observation(current, ResumeStart, request, observation, attempt)
+}
+
+fn participant_request(current: &StoredV1Record) -> BoundObservationRequest {
+    BoundObservationRequest::for_test(
+        current,
+        ResumeStart,
+        ObservationKind::ParticipantAction {
+            member_id: "mem_a".into(),
+        },
+    )
+    .unwrap()
+}
+
+fn not_started_participant_observation(
+    current: &StoredV1Record,
+    request: &BoundObservationRequest,
+    action: &PendingMergeAction,
+) -> BoundExactObservation {
+    BoundExactObservation::for_test(
+        current,
+        request,
+        ExactObservationFact::NotStarted(NotStartedObservation::Participant {
+            member_id: "mem_a".into(),
+            action: Box::new(action.clone()),
+        }),
+    )
+    .unwrap()
+}
+
+fn prepared_participant_action(
+    current: &StoredV1Record,
+    action: &PendingMergeAction,
+) -> Box<BoundPhysicalAction> {
+    let request = participant_request(current);
+    let observation = not_started_participant_observation(current, &request, action);
+    match resolve_participant(current, request, observation, None).unwrap() {
+        ResolvedV1Action::Execute(action) => action,
+        _ => panic!("participant observation did not produce a physical action"),
+    }
+}
+
+fn ambiguous_participant_observation(
+    current: &StoredV1Record,
+    request: &BoundObservationRequest,
+) -> BoundExactObservation {
+    let ambiguity = BoundAmbiguityEvidence::for_test(
+        current,
+        "@operation",
+        "enter_recovery",
+        "ambiguous",
+        Origin::Executing,
+    )
+    .unwrap();
+    BoundExactObservation::for_test(current, request, ExactObservationFact::Ambiguous(ambiguity))
+        .unwrap()
+}
+
+#[test]
 fn entries_bind_handoff_anticipated_model_and_preservation_exhaustion() {
     let (_root, stored) = checked("merge-v1-entry-binding");
-    let handoff = || {
-        VerifiedPublicationHandoff::for_test(&stored, "@publication", "handoff", "verified", ())
-            .unwrap()
-    };
-    let preservation =
-        PreparedPreservationEntry::for_test(&stored, stored.record(), handoff()).unwrap();
+    let handoff =
+        |kind| VerifiedPublicationHandoff::for_entry_test(&stored, kind, stored.record()).unwrap();
+    let preservation = PreparedPreservationEntry::for_test(
+        &stored,
+        stored.record(),
+        handoff(ReverseEntryKind::Preservation),
+    )
+    .unwrap();
     assert!(preservation.matches(&stored, "@operation", "begin_preservation", "preflight"));
     assert!(preservation.anticipated_model_matches(stored.record()));
 
-    let direct =
-        PreparedRollbackEntry::direct_for_test(&stored, stored.record(), handoff()).unwrap();
+    let direct = PreparedRollbackEntry::direct_for_test(
+        &stored,
+        stored.record(),
+        handoff(ReverseEntryKind::DirectRollback),
+    )
+    .unwrap();
     assert_eq!(direct.origin(), RollbackEntryOrigin::Direct);
     let exhausted = VerifiedPreservationExhausted::for_test(
         &stored,
@@ -71,7 +204,7 @@ fn entries_bind_handoff_anticipated_model_and_preservation_exhaustion() {
     let reverse = PreparedRollbackEntry::from_preserving_for_test(
         &stored,
         stored.record(),
-        handoff(),
+        handoff(ReverseEntryKind::ExhaustedRollback),
         exhausted,
     )
     .unwrap();
@@ -80,67 +213,68 @@ fn entries_bind_handoff_anticipated_model_and_preservation_exhaustion() {
 }
 
 #[test]
-fn preservation_action_proof_embeds_live_cursor_prefix() {
-    let (_root, stored) = checked("merge-v1-preservation-prefix");
-    let owner = PreservationOwnerV1::Participant {
-        member_id: "mem_a".into(),
-    };
-    let position = PreservationCursorPosition::Stash(PreservationStashPhaseV1::CreateStash);
-    let prefix = VerifiedPreservationCursorPrefix::for_test(
-        &stored,
-        "mem_a",
-        "preservation_cursor",
-        "prefix_verified",
-        PreservationCursorPrefix {
-            owner: owner.clone(),
-            position,
-        },
-    )
-    .unwrap();
-    let intent = PreparedStashIntent::for_test(
-        &stored,
-        "mem_a",
-        "begin_preservation",
-        "cursor_checked",
-        PreservationPayload {
-            owner: owner.clone(),
-            observed_position: position,
-            pending: None,
-            evidence: None,
-            publication_prefix: None,
-        },
-        prefix,
-    )
-    .unwrap();
-    assert!(intent.matches(&stored, "mem_a", "begin_preservation", "cursor_checked"));
+#[rustfmt::skip]
+fn root_preservation_owner_binding_matrix_is_closed() {
+    let (_root, stored) = checked("merge-v1-preservation-binding");
+    for (owner, owner_id) in [
+        (participant_owner("mem_a"), "mem_a"),
+        (participant_owner("@root"), "@root"),
+        (PreservationOwnerV1::PublicationRoot, "@publication-root"),
+    ] {
+        let exact = payload(owner.clone(), S::RestoreParent, true);
+        let intent = stash_intent(&stored, owner_id, exact.clone(), exact.observed_position);
+        assert!(intent.matches(&stored, owner_id, PRESERVE, CURSOR_CHECKED));
+        let wrong_prefix = stash_intent(&stored, owner_id, exact.clone(), P::BackupRef);
+        assert!(!wrong_prefix.matches(&stored, owner_id, PRESERVE, CURSOR_CHECKED));
+        assert!(!intent.matches(&stored, "wrong-owner", PRESERVE, CURSOR_CHECKED));
+        assert!(!intent.matches(&stored, owner_id, "wrong-action", CURSOR_CHECKED));
+        assert!(!intent.matches(&stored, owner_id, PRESERVE, "wrong-phase"));
+        assert_ne!(hash(&exact), hash(&payload(owner.clone(), S::RestoreMarker, true)));
+        assert_ne!(hash(&exact), hash(&payload(owner, S::RestoreParent, false)));
+    }
+}
 
-    let wrong_prefix = VerifiedPreservationCursorPrefix::for_test(
-        &stored,
-        "mem_a",
-        "preservation_cursor",
-        "prefix_verified",
-        PreservationCursorPrefix {
-            owner: owner.clone(),
-            position: PreservationCursorPosition::BackupRef,
-        },
-    )
-    .unwrap();
-    let mismatched = PreparedStashIntent::for_test(
-        &stored,
-        "mem_a",
-        "begin_preservation",
-        "cursor_checked",
-        PreservationPayload {
-            owner,
-            observed_position: position,
-            pending: None,
-            evidence: None,
-            publication_prefix: None,
-        },
-        wrong_prefix,
-    )
-    .unwrap();
-    assert!(!mismatched.matches(&stored, "mem_a", "begin_preservation", "cursor_checked"));
+#[rustfmt::skip]
+fn participant_owner(member_id: &str) -> PreservationOwnerV1 { PreservationOwnerV1::Participant { member_id: member_id.into() } }
+
+#[rustfmt::skip]
+fn hash(payload: &PreservationPayload) -> [u8; 32] { payload_hash(payload).unwrap() }
+
+#[rustfmt::skip]
+fn stash_intent(current: &StoredV1Record, owner: &str, payload: PreservationPayload,
+    prefix_position: P) -> PreparedStashIntent {
+    let prefix = VerifiedPreservationCursorPrefix::for_test(
+        current, owner, "preservation_cursor", "prefix_verified",
+        PreservationCursorPrefix { owner: payload.owner.clone(), position: prefix_position },
+    ).unwrap();
+    PreparedStashIntent::for_test(current, owner, PRESERVE, CURSOR_CHECKED, payload, prefix).unwrap()
+}
+
+#[rustfmt::skip]
+fn payload(owner: PreservationOwnerV1, phase: S, exact_goal: bool) -> PreservationPayload {
+    let position = P::Stash(phase);
+    let (prefix, index) = if exact_goal {
+        (PublicationPrefixV1::Boundary, PublicationIndexFormV1::Staged)
+    } else {
+        (PublicationPrefixV1::Baseline, PublicationIndexFormV1::Pre)
+    };
+    PreservationPayload {
+        owner: owner.clone(), observed_position: position,
+        pending: Some(PendingPreservationActionV1::Stash {
+            owner, phase, stash_id: Some("stash_merge_1".into()),
+            stash_object_id: Some(GitObjectIdV1 {
+                algorithm: GitObjectAlgorithmV1::Sha1, digest_hex: oid('b'),
+            }),
+            message: "gwz:stash_merge_1: merge preservation".into(), head_commit: oid('e'),
+            preimage_sha256: "1".repeat(64), root_publication_handoff:
+                PreservationPublicationHandoffV1::Candidate { prefix, index }.candidate(),
+        }),
+        evidence: Some(PreservationEvidence {
+            backup_ref: Some("refs/gwz/merge/merge_1/root/head".into()), backup_commit: Some(oid('e')),
+            stash_id: Some("stash_merge_1".into()), stash_object_id: Some(oid('b')),
+        }),
+        publication_prefix: Some("boundary".into()),
+    }
 }
 
 #[test]
@@ -214,6 +348,19 @@ fn selected_root_exhaustion_requires_the_exact_live_baseline() {
     fs::write(root.path.join(WORKSPACE_MANIFEST), &manifest).unwrap();
     fs::write(root.path.join(LOCK_PATH), "changed").unwrap();
     assert!(rollback_exhausted(&stored).is_err());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        fs::write(root.path.join(LOCK_PATH), &lock).unwrap();
+        fs::remove_file(root.path.join(WORKSPACE_MANIFEST)).unwrap();
+        let target = root.path.join("same-manifest-bytes");
+        fs::write(&target, &manifest).unwrap();
+        symlink(&target, root.path.join(WORKSPACE_MANIFEST)).unwrap();
+        assert!(rollback_exhausted(&stored).is_err());
+        assert_eq!(fs::read(target).unwrap(), manifest.as_bytes());
+    }
 }
 
 #[test]
@@ -226,7 +373,7 @@ pub(super) fn recovery_and_drift_proofs_drive_only_their_exact_reducers() {
         "@operation",
         "enter_recovery",
         "ambiguous",
-        crate::workspace_ops::merge::model::v1::RecoveryOriginStateV1::Executing,
+        Origin::Executing,
     )
     .unwrap();
     let recovery = prepare(
@@ -242,7 +389,7 @@ pub(super) fn recovery_and_drift_proofs_drive_only_their_exact_reducers() {
         "@operation",
         "resume_recovery",
         "verified",
-        crate::workspace_ops::merge::model::v1::RecoveryOriginStateV1::Executing,
+        Origin::Executing,
     )
     .unwrap();
     assert_eq!(

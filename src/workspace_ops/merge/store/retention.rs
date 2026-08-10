@@ -5,18 +5,24 @@ use super::*;
 pub(super) fn enforce(root: &Path) -> ModelResult<()> {
     let mut ordinary = Vec::new();
     for path in record_files(&root.join(DONE_DIR))? {
-        let Ok((_, record)) = read_record(&path, RecordLocation::Archived) else {
-            continue; // Unknown/corrupt archives may own evidence: fail safe by retaining them.
+        let owns_backup_ref = match read_record(&path, RecordLocation::Archived) {
+            Ok((_, record)) => record
+                .participants
+                .values()
+                .flat_map(|participant| &participant.preservation)
+                .chain(
+                    record
+                        .publication
+                        .iter()
+                        .flat_map(|publication| &publication.root_preservation),
+                )
+                .any(|row| row.backup_ref.is_some()),
+            Err(_) => match validated_future_cleanup(root, &path) {
+                Some(value) => value,
+                None => continue, // Unknown/corrupt archives may own evidence: retain them.
+            },
         };
-        if record
-            .participants
-            .values()
-            .any(|participant| !participant.preservation.is_empty())
-            || record
-                .publication
-                .as_ref()
-                .is_some_and(|publication| !publication.root_preservation.is_empty())
-        {
+        if owns_backup_ref {
             continue;
         }
         let modified = fs::metadata(&path)
@@ -36,4 +42,20 @@ pub(super) fn enforce(root: &Path) -> ModelResult<()> {
     } else {
         Ok(())
     }
+}
+
+#[cfg(test)]
+fn validated_future_cleanup(root: &Path, path: &Path) -> Option<bool> {
+    let merge_id = path.file_stem()?.to_str()?;
+    let locations =
+        super::super::record_wire::acquire_canonical_merge_locations(root, merge_id).ok()?;
+    let (_, bytes, _) = locations.archived().exact()?;
+    super::super::record_wire::decode_archived(bytes.as_slice(), merge_id)
+        .ok()
+        .map(|record| !record.cleanup().backup_refs().is_empty())
+}
+
+#[cfg(not(test))]
+fn validated_future_cleanup(_root: &Path, _path: &Path) -> Option<bool> {
+    None
 }

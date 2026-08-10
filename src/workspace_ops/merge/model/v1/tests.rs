@@ -265,10 +265,13 @@ target_commit: aaaa
             message: "gwz:stash_m1: merge preservation".to_owned(),
             head_commit: "aaaa".to_owned(),
             preimage_sha256: "22".repeat(32),
-            root_publication_prefix: Some(PublicationPrefixV1::Boundary),
+            root_publication_handoff: Some(PreservationPublicationCandidateV1 {
+                prefix: PublicationPrefixV1::Boundary,
+                index: PublicationIndexFormV1::Staged,
+            }),
         },
         &format!(
-            "kind: stash\nowner:\n  kind: publication_root\nphase: write_bundle\nstash_id: stash_m1\nstash_object_id:\n  algorithm: sha1\n  digest_hex: '{}'\nmessage: 'gwz:stash_m1: merge preservation'\nhead_commit: aaaa\npreimage_sha256: '{}'\nroot_publication_prefix: boundary\n",
+            "kind: stash\nowner:\n  kind: publication_root\nphase: write_bundle\nstash_id: stash_m1\nstash_object_id:\n  algorithm: sha1\n  digest_hex: '{}'\nmessage: 'gwz:stash_m1: merge preservation'\nhead_commit: aaaa\npreimage_sha256: '{}'\nroot_publication_handoff:\n  prefix: boundary\n  index: staged\n",
             "11".repeat(20),
             "22".repeat(32)
         ),
@@ -279,8 +282,11 @@ target_commit: aaaa
             branch: "main".to_owned(),
             expected_commit: "aaaa".to_owned(),
             restore_commit: "bbbb".to_owned(),
-            phase: PreservationRefResetPhaseV1::RestoreRoot,
-            root_publication_prefix: Some(PublicationPrefixV1::Lock),
+            phase: PreservationRefResetPhaseV1::RestoreParent,
+            root_publication_handoff: Some(PreservationPublicationCandidateV1 {
+                prefix: PublicationPrefixV1::Lock,
+                index: PublicationIndexFormV1::Pre,
+            }),
         },
         r#"
 kind: reset_attached_ref
@@ -290,8 +296,10 @@ owner:
 branch: main
 expected_commit: aaaa
 restore_commit: bbbb
-phase: restore_root
-root_publication_prefix: lock
+phase: restore_parent
+root_publication_handoff:
+  prefix: lock
+  index: pre
 "#,
     );
 }
@@ -341,6 +349,31 @@ fn every_journal_scalar_variant_has_the_frozen_spelling() {
         assert_yaml_shape(&value, expected);
     }
     for (value, expected) in [
+        (PublicationIndexFormV1::Pre, "pre"),
+        (PublicationIndexFormV1::Staged, "staged"),
+    ] {
+        assert_yaml_shape(&value, expected);
+    }
+    for (value, expected) in [
+        (
+            PreservationPublicationHandoffV1::NoCandidate,
+            "kind: no_candidate\n",
+        ),
+        (
+            PreservationPublicationHandoffV1::EvidencePending,
+            "kind: evidence_pending\n",
+        ),
+        (
+            PreservationPublicationHandoffV1::Candidate {
+                prefix: PublicationPrefixV1::Boundary,
+                index: PublicationIndexFormV1::Staged,
+            },
+            "kind: candidate\nprefix: boundary\nindex: staged\n",
+        ),
+    ] {
+        assert_yaml_shape(&value, expected);
+    }
+    for (value, expected) in [
         (RootMetadataRollbackStepV1::Manifest, "manifest"),
         (RootMetadataRollbackStepV1::Lock, "lock"),
         (RootMetadataRollbackStepV1::Complete, "complete"),
@@ -348,17 +381,36 @@ fn every_journal_scalar_variant_has_the_frozen_spelling() {
         assert_yaml_shape(&value, expected);
     }
     for (value, expected) in [
-        (PreservationStashPhaseV1::NormalizeRoot, "normalize_root"),
+        (
+            PreservationStashPhaseV1::NormalizeParent,
+            "normalize_parent",
+        ),
+        (
+            PreservationStashPhaseV1::NormalizeMarker,
+            "normalize_marker",
+        ),
+        (PreservationStashPhaseV1::NormalizeLock, "normalize_lock"),
+        (PreservationStashPhaseV1::NormalizeIndex, "normalize_index"),
         (PreservationStashPhaseV1::CreateStash, "create_stash"),
-        (PreservationStashPhaseV1::RestoreRoot, "restore_root"),
+        (PreservationStashPhaseV1::RestoreIndex, "restore_index"),
+        (PreservationStashPhaseV1::RestoreLock, "restore_lock"),
+        (PreservationStashPhaseV1::RestoreParent, "restore_parent"),
+        (PreservationStashPhaseV1::RestoreMarker, "restore_marker"),
         (PreservationStashPhaseV1::WriteBundle, "write_bundle"),
         (PreservationStashPhaseV1::Complete, "complete"),
     ] {
         assert_yaml_shape(&value, expected);
     }
     for (value, expected) in [
+        (PreservationRefResetPhaseV1::PrepareParent, "prepare_parent"),
+        (PreservationRefResetPhaseV1::PrepareMarker, "prepare_marker"),
+        (PreservationRefResetPhaseV1::PrepareLock, "prepare_lock"),
+        (PreservationRefResetPhaseV1::PrepareIndex, "prepare_index"),
         (PreservationRefResetPhaseV1::ResetRef, "reset_ref"),
-        (PreservationRefResetPhaseV1::RestoreRoot, "restore_root"),
+        (PreservationRefResetPhaseV1::RestoreIndex, "restore_index"),
+        (PreservationRefResetPhaseV1::RestoreLock, "restore_lock"),
+        (PreservationRefResetPhaseV1::RestoreParent, "restore_parent"),
+        (PreservationRefResetPhaseV1::RestoreMarker, "restore_marker"),
         (PreservationRefResetPhaseV1::Complete, "complete"),
     ] {
         assert_yaml_shape(&value, expected);
@@ -376,6 +428,14 @@ fn every_journal_scalar_variant_has_the_frozen_spelling() {
         (PublicationPrefixV1::Boundary, "boundary"),
     ] {
         assert_yaml_shape(&value, expected);
+    }
+}
+
+#[test]
+fn retired_compound_preservation_phase_spellings_are_rejected() {
+    for spelling in ["normalize_root", "restore_root"] {
+        assert!(serde_yaml::from_str::<PreservationStashPhaseV1>(spelling).is_err());
+        assert!(serde_yaml::from_str::<PreservationRefResetPhaseV1>(spelling).is_err());
     }
 }
 
@@ -411,6 +471,7 @@ fn complete_v1_record_keeps_v0_shape_and_omits_absent_v1_fields() {
         recovery_context: None,
         pending_rollback: None,
         pending_preservation: None,
+        preservation_publication_handoff: None,
         extensions: BTreeMap::from([("future".to_owned(), Value::String("kept".to_owned()))]),
     };
     let encoded = serde_yaml::to_value(&record).expect("v1 record must serialize in tests");
@@ -424,6 +485,7 @@ fn complete_v1_record_keeps_v0_shape_and_omits_absent_v1_fields() {
         "recovery_context",
         "pending_rollback",
         "pending_preservation",
+        "preservation_publication_handoff",
     ] {
         assert!(encoded.get(absent).is_none(), "{absent} must be omitted");
     }

@@ -1,4 +1,5 @@
 mod acceptance;
+mod archive_result;
 mod authority;
 mod checked;
 mod dispatcher;
@@ -15,5 +16,7 @@ mod prefixed_preservation;
 mod publication_attempt_sequence;
 mod reducer;
 mod retirement;
+mod reverse_entry;
+mod reverse_router;
 mod store;
 mod vocabulary;

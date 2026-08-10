@@ -10,14 +10,20 @@ repository = "https://github.com/owebeeone/gwz-core"
 path = "src/lib.rs"
 
 [dependencies]
-git2 = { version = "0.21", features = ["https", "ssh"] }
+cap-fs-ext = "4"
+cap-std = "4"
+git2 = { version = "0.21", features = ["https", "ssh", "unstable-sha256"] }
 taut-shape = { git = "https://github.com/owebeeone/taut-shape-rs", rev = "7fd171b737f25cb6c356845eb68164d35326ffb0", package = "taut-shape" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 yaml-rust2 = { version = "0.11", default-features = false }
+sha1 = "0.10"
 sha2 = "0.10"
 url = "2"
 getrandom = "0.3"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

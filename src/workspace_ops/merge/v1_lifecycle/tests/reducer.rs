@@ -164,21 +164,60 @@ pub(super) fn operation_reducers_cover_every_direct_state_edge() {
     assert_eq!(finalizing.record().state, OperationState::Finalizing);
 
     let base = stored(&root, record());
-    let handoff = || handoff(&base);
-    let preservation =
-        PreparedPreservationEntry::for_test(&base, base.record(), handoff()).unwrap();
-    assert_eq!(
-        operation(
-            &root,
-            &lease,
-            &base,
-            OperationTransition::BeginPreservation(Box::new(preservation)),
-        )
-        .record()
-        .state,
-        OperationState::Preserving
+    let preservation = PreparedPreservationEntry::for_test(
+        &base,
+        base.record(),
+        handoff(&base, ReverseEntryKind::Preservation, base.record()),
+    )
+    .unwrap();
+    let preserving = operation(
+        &root,
+        &lease,
+        &base,
+        OperationTransition::BeginPreservation(Box::new(preservation)),
     );
-    let rollback = PreparedRollbackEntry::direct_for_test(&base, base.record(), handoff()).unwrap();
+    assert_eq!(preserving.record().state, OperationState::Preserving);
+    assert_eq!(
+        preserving.record().preservation_publication_handoff,
+        Some(crate::workspace_ops::merge::model::v1::PreservationPublicationHandoffV1::NoCandidate)
+    );
+    let exhausted = VerifiedPreservationExhausted::for_test(
+        &preserving,
+        "@operation",
+        "preservation_exhausted",
+        "verified",
+        (),
+    )
+    .unwrap();
+    let preserving_handoff = handoff(
+        &preserving,
+        ReverseEntryKind::ExhaustedRollback,
+        preserving.record(),
+    );
+    let rollback_from_preserving = PreparedRollbackEntry::from_preserving_for_test(
+        &preserving,
+        preserving.record(),
+        preserving_handoff,
+        exhausted,
+    )
+    .unwrap();
+    let rolled_back = operation(
+        &root,
+        &lease,
+        &preserving,
+        OperationTransition::BeginRollback(Box::new(rollback_from_preserving)),
+    );
+    assert_eq!(rolled_back.record().state, OperationState::RollingBack);
+    assert_eq!(
+        rolled_back.record().preservation_publication_handoff,
+        preserving.record().preservation_publication_handoff
+    );
+    let rollback = PreparedRollbackEntry::direct_for_test(
+        &base,
+        base.record(),
+        handoff(&base, ReverseEntryKind::DirectRollback, base.record()),
+    )
+    .unwrap();
     assert_eq!(
         operation(
             &root,
@@ -282,7 +321,7 @@ pub(super) fn participant_compounds_preserve_write_ahead_ownership() {
                 let entry = PreparedRollbackEntry::direct_for_test(
                     &current,
                     &anticipated,
-                    handoff(&current),
+                    handoff(&current, ReverseEntryKind::DirectRollback, &anticipated),
                 )
                 .unwrap();
                 ParticipantTransition::RecordHaltedOutcomeAndBeginRollback(
@@ -292,9 +331,12 @@ pub(super) fn participant_compounds_preserve_write_ahead_ownership() {
             }
             OperationState::Preserving => {
                 let anticipated = anticipated_outcome(&current);
-                let entry =
-                    PreparedPreservationEntry::for_test(&current, &anticipated, handoff(&current))
-                        .unwrap();
+                let entry = PreparedPreservationEntry::for_test(
+                    &current,
+                    &anticipated,
+                    handoff(&current, ReverseEntryKind::Preservation, &anticipated),
+                )
+                .unwrap();
                 ParticipantTransition::RecordHaltedOutcomeAndBeginPreservation(
                     Box::new(proof),
                     Box::new(entry),
@@ -310,6 +352,10 @@ pub(super) fn participant_compounds_preserve_write_ahead_ownership() {
         );
         assert_eq!(next.record().state, destination);
         assert!(next.record().participants["mem_a"].pending_action.is_none());
+        assert_eq!(
+            next.record().preservation_publication_handoff.is_some(),
+            destination == OperationState::Preserving
+        );
     }
 
     for destination in [OperationState::RollingBack, OperationState::Preserving] {
@@ -337,7 +383,7 @@ pub(super) fn participant_compounds_preserve_write_ahead_ownership() {
                     PreparedRollbackEntry::direct_for_test(
                         &current,
                         &anticipated,
-                        handoff(&current),
+                        handoff(&current, ReverseEntryKind::DirectRollback, &anticipated),
                     )
                     .unwrap(),
                 ),
@@ -346,21 +392,25 @@ pub(super) fn participant_compounds_preserve_write_ahead_ownership() {
             ParticipantTransition::AbandonNotStartedAndBeginPreservation(
                 Box::new(proof),
                 Box::new(
-                    PreparedPreservationEntry::for_test(&current, &anticipated, handoff(&current))
-                        .unwrap(),
+                    PreparedPreservationEntry::for_test(
+                        &current,
+                        &anticipated,
+                        handoff(&current, ReverseEntryKind::Preservation, &anticipated),
+                    )
+                    .unwrap(),
                 ),
             )
         };
+        let next = apply(
+            &root,
+            &lease,
+            &current,
+            V1Transition::Participant(Box::new(transition)),
+        );
+        assert_eq!(next.record().state, destination);
         assert_eq!(
-            apply(
-                &root,
-                &lease,
-                &current,
-                V1Transition::Participant(Box::new(transition)),
-            )
-            .record()
-            .state,
-            destination
+            next.record().preservation_publication_handoff.is_some(),
+            destination == OperationState::Preserving
         );
     }
 }
@@ -413,11 +463,13 @@ fn fail(row: &mut crate::workspace_ops::merge::MergeParticipantRecord, message: 
     });
 }
 
-fn handoff(current: &StoredV1Record) -> VerifiedPublicationHandoff {
-    let proof =
-        VerifiedPublicationHandoff::for_test(current, "@publication", "handoff", "verified", ())
-            .unwrap();
-    assert_eq!(proof.value(), &());
+fn handoff(
+    current: &StoredV1Record,
+    kind: ReverseEntryKind,
+    anticipated: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+) -> VerifiedPublicationHandoff {
+    let proof = VerifiedPublicationHandoff::for_entry_test(current, kind, anticipated).unwrap();
+    assert_eq!(proof.value().kind, kind);
     proof
 }
 

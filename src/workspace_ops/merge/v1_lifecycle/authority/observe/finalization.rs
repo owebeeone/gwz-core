@@ -15,7 +15,12 @@ use crate::workspace_ops::merge::model::v1::{
 };
 use crate::workspace_ops::merge::{MergeTargetKind, OperationState, ParticipantState};
 
+mod handoff;
 mod publication;
+
+pub(in crate::workspace_ops::merge::v1_lifecycle) use handoff::{
+    RecordEvidenceOr, observe_reverse_publication_handoff,
+};
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_finalization<B: GitBackend>(
     backend: &B,

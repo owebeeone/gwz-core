@@ -62,11 +62,12 @@ impl UnknownFieldManifest {
     }
 
     pub(crate) fn map_v0_to_v1(&self) -> Result<Self, UnknownFieldManifestError> {
-        const V1_TOP_LEVEL: [&str; 4] = [
+        const V1_TOP_LEVEL: [&str; 5] = [
             "accepted_workspace",
             "recovery_context",
             "pending_rollback",
             "pending_preservation",
+            "preservation_publication_handoff",
         ];
         if let Some(locator) = self.entries.keys().find(|locator| {
             locator.container.is_empty() && V1_TOP_LEVEL.contains(&locator.field.as_str())

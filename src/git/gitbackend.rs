@@ -17,6 +17,8 @@ mod merge_prepared;
 mod merge_recovery;
 mod merge_support;
 mod preservation;
+mod preservation_image;
+mod preservation_root;
 mod recovery_support;
 mod refs;
 mod repository;
@@ -38,6 +40,10 @@ pub(crate) use repository_support::open_repo;
 
 #[cfg(test)]
 pub(crate) use merge_support::{conflict_paths, render_git_path};
+#[cfg(test)]
+pub(crate) use preservation_image::raw_path_preimage_for_test;
+#[cfg(test)]
+pub(crate) use preservation_root::{FaultBoundary, fail_next_at, run_next_at};
 #[cfg(test)]
 pub(crate) use stash_support::stash_message_matches_gwz_prefix;
 #[cfg(test)]
@@ -85,6 +91,13 @@ impl GitBackend for Git2Backend {
     delegate!(create_backup_ref(path: &Path, name: &str, target: &str,) -> ModelResult<GitBackupRefResult> => preservation::create_backup_ref);
     delegate!(delete_backup_ref_checked(path: &Path, name: &str, expected_target: &str,) -> ModelResult<()> => preservation::delete_backup_ref_checked);
     delegate!(stash_for_merge_preservation(path: &Path, merge_id: &str, include_untracked: bool,) -> ModelResult<GitStashPushResult> => preservation::stash_for_merge_preservation);
+    delegate!(preservation_image(path: &Path, include_untracked: bool,) -> ModelResult<GitPreservationImage> => preservation::preservation_image);
+    delegate!(preservation_stashes(path: &Path, merge_id: &str,) -> ModelResult<Vec<GitPreservationStashEvidence>> => preservation::preservation_stashes);
+    delegate!(observe_direct_ref(path: &Path, name: &str,) -> ModelResult<GitDirectRefObservation> => preservation::observe_direct_ref);
+    delegate!(checkout_matches_commit(path: &Path, branch: &str, commit: &str,) -> ModelResult<bool> => preservation::checkout_matches_commit);
+    delegate!(prepare_root_preservation_stash(root: &Path, spec: &GitRootPreservationSpec,) -> ModelResult<GitPreparedRootStash> => preservation_root::prepare_root_preservation_stash);
+    delegate!(observe_root_preservation_step(root: &Path, spec: &GitRootPreservationSpec, step: &GitRootPreservationPhysicalStep, guard: &GitRootPreservationGuard,) -> ModelResult<GitRootPreservationStepObservation> => preservation_root::observe_root_preservation_step);
+    delegate!(execute_root_preservation_step_checked(root: &Path, spec: &GitRootPreservationSpec, step: &GitRootPreservationPhysicalStep, guard: &GitRootPreservationGuard,) -> ModelResult<GitCheckedPreservationMutation> => preservation_root::execute_root_preservation_step_checked);
     delegate!(index_matches_candidate_files(path: &Path, expected_files: &[GitCandidateFile], absent_paths: &[String],) -> ModelResult<bool> => preservation::index_matches_candidate_files);
     delegate!(index_entries_match_candidate_files(path: &Path, expected_files: &[GitCandidateFile], absent_paths: &[String],) -> ModelResult<bool> => preservation::index_entries_match_candidate_files);
     delegate!(commit_gwz_paths_checked(root: &Path, expected_head: Option<&str>, candidate_files: &[GitCandidateFile], message: &str,) -> ModelResult<GitScopedCommitResult> => scoped_evidence::commit_gwz_paths_checked);

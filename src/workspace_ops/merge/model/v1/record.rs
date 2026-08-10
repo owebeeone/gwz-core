@@ -8,7 +8,8 @@ use super::super::{
     PublicationProgress,
 };
 use super::{
-    AcceptedWorkspaceV1, PendingPreservationActionV1, PendingRollbackActionV1, RecoveryContextV1,
+    AcceptedWorkspaceV1, PendingPreservationActionV1, PendingRollbackActionV1,
+    PreservationPublicationHandoffV1, RecoveryContextV1,
 };
 
 pub(crate) const MERGE_RECORD_SCHEMA_V1: &str = "gwz.merge-operation/v1";
@@ -43,6 +44,8 @@ pub(crate) struct MergeOperationRecordV1 {
     pub(crate) pending_rollback: Option<PendingRollbackActionV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pending_preservation: Option<PendingPreservationActionV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) preservation_publication_handoff: Option<PreservationPublicationHandoffV1>,
     #[serde(default, flatten)]
     pub(crate) extensions: BTreeMap<String, Value>,
 }

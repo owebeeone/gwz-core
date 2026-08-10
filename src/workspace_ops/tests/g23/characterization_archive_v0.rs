@@ -115,6 +115,20 @@ fn archived_status(root: &Path, merge_id: &str) -> ModelResult<crate::MergeRespo
     )
 }
 
+fn archived_gc(root: &Path, merge_id: &str) -> ModelResult<crate::MergeResponse> {
+    let mut request = recovery_request(crate::MergeOp::Gc, Some(merge_id.to_owned()));
+    request.meta.workspace = Some(crate::WorkspaceRef {
+        root: Some(root.to_string_lossy().into_owned()),
+        workspace_id: None,
+    });
+    handle_merge(
+        &crate::git::Git2Backend::new(),
+        root,
+        request,
+        "op_archive_v0_gc",
+    )
+}
+
 fn mutate_archive(root: &Path, merge_id: &str, mutate: impl FnOnce(&mut serde_yaml::Value)) {
     let path = archive_path(root, merge_id);
     let mut raw: serde_yaml::Value = serde_yaml::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -231,6 +245,23 @@ fn archived_v0_b_through_g_status_uses_only_archive_bytes() {
         let changed = archived_status(archive_only.path(), &merge_id).unwrap();
         assert_same_historical_status(&absent, &changed, name);
     }
+}
+
+#[test]
+fn id_qualified_gc_returns_the_validated_archived_record_projection() {
+    let (archive_only, merge_id) =
+        archived_shape("gc_projection", ArchiveShape::CompletedNoPublication);
+
+    let response = archived_gc(archive_only.path(), &merge_id).unwrap();
+
+    let record = response.record.expect("id-qualified GC returns field 10");
+    assert_eq!(record.source_version, crate::MergeRecordVersion::V0);
+    assert!(record.archived);
+    assert_eq!(
+        record.terminal_outcome,
+        Some(crate::MergeTerminalOutcome::Completed)
+    );
+    assert!(!archive_path(archive_only.path(), &merge_id).exists());
 }
 
 #[test]

@@ -83,7 +83,7 @@ pub(crate) enum PendingPreservationActionV1 {
         message: String,
         head_commit: String,
         preimage_sha256: String,
-        root_publication_prefix: Option<PublicationPrefixV1>,
+        root_publication_handoff: Option<PreservationPublicationCandidateV1>,
     },
     ResetAttachedRef {
         owner: PreservationOwnerV1,
@@ -91,7 +91,7 @@ pub(crate) enum PendingPreservationActionV1 {
         expected_commit: String,
         restore_commit: String,
         phase: PreservationRefResetPhaseV1,
-        root_publication_prefix: Option<PublicationPrefixV1>,
+        root_publication_handoff: Option<PreservationPublicationCandidateV1>,
     },
 }
 
@@ -107,9 +107,15 @@ pub(crate) enum PreservationOwnerV1 {
 #[cfg_attr(test, derive(serde::Serialize))]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PreservationStashPhaseV1 {
-    NormalizeRoot,
+    NormalizeParent,
+    NormalizeMarker,
+    NormalizeLock,
+    NormalizeIndex,
     CreateStash,
-    RestoreRoot,
+    RestoreIndex,
+    RestoreLock,
+    RestoreParent,
+    RestoreMarker,
     WriteBundle,
     Complete,
 }
@@ -118,8 +124,15 @@ pub(crate) enum PreservationStashPhaseV1 {
 #[cfg_attr(test, derive(serde::Serialize))]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PreservationRefResetPhaseV1 {
+    PrepareParent,
+    PrepareMarker,
+    PrepareLock,
+    PrepareIndex,
     ResetRef,
-    RestoreRoot,
+    RestoreIndex,
+    RestoreLock,
+    RestoreParent,
+    RestoreMarker,
     Complete,
 }
 
@@ -146,4 +159,42 @@ pub(crate) enum PublicationPrefixV1 {
     Marker,
     Lock,
     Boundary,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PublicationIndexFormV1 {
+    Pre,
+    Staged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub(crate) struct PreservationPublicationCandidateV1 {
+    pub(crate) prefix: PublicationPrefixV1,
+    pub(crate) index: PublicationIndexFormV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PreservationPublicationHandoffV1 {
+    NoCandidate,
+    EvidencePending,
+    Candidate {
+        prefix: PublicationPrefixV1,
+        index: PublicationIndexFormV1,
+    },
+}
+
+impl PreservationPublicationHandoffV1 {
+    pub(crate) fn candidate(self) -> Option<PreservationPublicationCandidateV1> {
+        match self {
+            Self::Candidate { prefix, index } => {
+                Some(PreservationPublicationCandidateV1 { prefix, index })
+            }
+            Self::NoCandidate | Self::EvidencePending => None,
+        }
+    }
 }

@@ -1,6 +1,7 @@
 use serde_yaml::Value;
 
 use super::super::model::MergeOperationRecord;
+#[cfg(test)]
 use super::super::model::v1::{MergeOperationRecordV1, validate_v1_record};
 use super::header::{
     HeaderClassificationError, HeaderMalformedReason, InstalledMergeRecordVersions,
@@ -14,14 +15,58 @@ mod cleanup;
 mod v0;
 mod v0_audit;
 mod v0_evidence;
+#[cfg(test)]
 mod v1;
+
+pub(crate) use cleanup::ArchivedCleanupWorklist;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ValidatedArchivedRecord {
-    pub(crate) projection: super::super::model::archive_projection::ArchivedMergeProjection,
-    pub(crate) cleanup: cleanup::ArchivedCleanupWorklist,
+    projection: super::super::model::archive_projection::ArchivedMergeProjection,
+    cleanup: ArchivedCleanupWorklist,
 }
 
+impl ValidatedArchivedRecord {
+    pub(crate) fn projection(
+        &self,
+    ) -> &super::super::model::archive_projection::ArchivedMergeProjection {
+        &self.projection
+    }
+
+    #[allow(
+        dead_code,
+        reason = "P4 consumes cleanup behind the disabled lifecycle"
+    )]
+    pub(crate) fn cleanup(&self) -> &ArchivedCleanupWorklist {
+        &self.cleanup
+    }
+}
+
+pub(crate) fn decode_archived_v0(
+    bytes: &[u8],
+    expected_merge_id: &str,
+) -> ModelResult<ValidatedArchivedRecord> {
+    let document =
+        parse_strict_yaml(bytes).map_err(|_| archived_unreadable(expected_merge_id, None))?;
+    let header = read_merge_record_header(&document).map_err(|reason| {
+        let context = mismatch_header(&reason);
+        archived_unreadable(expected_merge_id, context.as_ref())
+    })?;
+    let dispatch =
+        classify_merge_record_header(&header, InstalledMergeRecordVersions::PRODUCTION_R3)
+            .map_err(|error| classify_error(expected_merge_id, error))?;
+    let raw = document.into_root();
+    match dispatch {
+        MergeRecordDispatch::V0 => decode_v0(raw, expected_merge_id, &header),
+        MergeRecordDispatch::V1 => Err(unsupported(
+            expected_merge_id,
+            &header,
+            Some(MergeRecordRequiredWave::A1),
+        )),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn decode_archived_for_r3_tests(
     bytes: &[u8],
     expected_merge_id: &str,
@@ -62,6 +107,7 @@ fn decode_v0(
     })
 }
 
+#[cfg(test)]
 fn decode_v1(
     raw: Value,
     expected_merge_id: &str,
@@ -209,3 +255,22 @@ fn wave_display(wave: MergeRecordRequiredWave) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn archived_fixture_for_test(
+    version: super::super::model::v1::RecordVersion,
+) -> (Vec<u8>, &'static str) {
+    use tests::fixtures::{MERGE_ID, Shape, v0_record, v1_record};
+
+    let bytes = match version {
+        super::super::model::v1::RecordVersion::V0 => {
+            serde_yaml::to_string(&v0_record(Shape::CompletedCandidate))
+        }
+        super::super::model::v1::RecordVersion::V1 => {
+            serde_yaml::to_string(&v1_record(Shape::CompletedCandidate))
+        }
+    }
+    .expect("archive fixture serializes")
+    .into_bytes();
+    (bytes, MERGE_ID)
+}

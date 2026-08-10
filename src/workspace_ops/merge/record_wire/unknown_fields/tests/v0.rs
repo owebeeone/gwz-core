@@ -59,6 +59,7 @@ fn every_v1_top_level_collision_makes_v0_migration_ineligible() {
         "recovery_context",
         "pending_rollback",
         "pending_preservation",
+        "preservation_publication_handoff",
     ] {
         let value = raw(&format!("{field}: {{future: retained}}\n"));
         let manifest = UnknownFieldManifest::extract_v0(&value).unwrap();

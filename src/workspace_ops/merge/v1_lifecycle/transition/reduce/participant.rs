@@ -9,7 +9,10 @@ use super::super::super::authority::{
 use super::super::super::checked::StoredV1Record;
 use super::super::ParticipantTransition;
 use super::super::effect::{EffectKind, TransitionEffect};
-use super::{bound, has_halt_cause, no_forward, participant_row, rejected, require};
+use super::{
+    bound, has_halt_cause, install_preservation_handoff, no_forward, participant_row, rejected,
+    require,
+};
 
 pub(super) fn apply(
     current: &StoredV1Record,
@@ -92,6 +95,7 @@ pub(super) fn apply(
                 "begin_preservation",
                 "preflight",
             )?;
+            install_preservation_handoff(next, entry.publication_handoff())?;
             next.state = OperationState::Preserving;
             Ok(TransitionEffect::participant(
                 kind,
@@ -122,6 +126,7 @@ pub(super) fn apply(
                 "begin_preservation",
                 "preflight",
             )?;
+            install_preservation_handoff(next, entry.publication_handoff())?;
             next.state = OperationState::Preserving;
             Ok(TransitionEffect::participant(kind, proof.value()))
         }
@@ -182,7 +187,7 @@ pub(super) fn apply(
     }
 }
 
-fn record_outcome(
+pub(in crate::workspace_ops::merge::v1_lifecycle::transition) fn record_outcome(
     current: &StoredV1Record,
     next: &mut MergeOperationRecordV1,
     proof: &VerifiedParticipantOutcome,
@@ -212,7 +217,7 @@ fn record_outcome(
     Ok(())
 }
 
-fn abandon(
+pub(in crate::workspace_ops::merge::v1_lifecycle::transition) fn abandon(
     current: &StoredV1Record,
     next: &mut MergeOperationRecordV1,
     proof: &VerifiedParticipantNotStarted,

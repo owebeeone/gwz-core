@@ -11,8 +11,8 @@ use crate::workspace_ops::workspace_exclude_path;
 pub(super) use super::acceptance::CandidatePublicationPrefix;
 use super::acceptance::{
     CandidatePublicationObservation,
-    classify_candidate_publication as classify_observed_candidate_publication,
-    publication_prefix_allowed as observed_publication_prefix_allowed,
+    classify_candidate_publication_view as classify_observed_candidate_publication_view,
+    publication_prefix_allowed_view as observed_publication_prefix_allowed_view,
 };
 use super::{MergeOperationRecord, PublicationCandidate, PublicationProgress};
 
@@ -26,20 +26,37 @@ pub(super) fn classify_candidate_publication(
     root: &Path,
     record: &MergeOperationRecord,
 ) -> ModelResult<Option<CandidatePublicationPrefix>> {
-    let candidate = candidate(record)?;
+    classify_candidate_publication_view(root, super::status::MergeStatusRecordView::from_v0(record))
+}
+
+pub(in crate::workspace_ops::merge) fn classify_candidate_publication_view(
+    root: &Path,
+    view: super::status::MergeStatusRecordView<'_>,
+) -> ModelResult<Option<CandidatePublicationPrefix>> {
+    let candidate = candidate_view(view)?;
     let observation = CandidatePublicationObservation::new(
         file_sha256(&root.join(artifact::LOCK_PATH)),
         file_sha256(&artifact::marker_path(root, &candidate.marker_id)),
         file_sha256(&workspace_exclude_path(root)),
     );
-    classify_observed_candidate_publication(record, &observation)
+    classify_observed_candidate_publication_view(view, &observation)
 }
 
 pub(super) fn publication_prefix_allowed(
     record: &MergeOperationRecord,
     prefix: CandidatePublicationPrefix,
 ) -> ModelResult<bool> {
-    observed_publication_prefix_allowed(record, prefix)
+    publication_prefix_allowed_view(
+        super::status::MergeStatusRecordView::from_v0(record),
+        prefix,
+    )
+}
+
+pub(in crate::workspace_ops::merge) fn publication_prefix_allowed_view(
+    view: super::status::MergeStatusRecordView<'_>,
+    prefix: CandidatePublicationPrefix,
+) -> ModelResult<bool> {
+    observed_publication_prefix_allowed_view(view, prefix)
 }
 
 pub(super) fn observe_root_evidence<B: GitBackend>(
@@ -47,28 +64,38 @@ pub(super) fn observe_root_evidence<B: GitBackend>(
     root: &Path,
     record: &MergeOperationRecord,
 ) -> ModelResult<Option<RootEvidenceObservation>> {
+    observe_root_evidence_view(
+        backend,
+        root,
+        super::status::MergeStatusRecordView::from_v0(record),
+    )
+}
+
+pub(in crate::workspace_ops::merge) fn observe_root_evidence_view<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    view: super::status::MergeStatusRecordView<'_>,
+) -> ModelResult<Option<RootEvidenceObservation>> {
     let head = backend.head(root)?;
-    let expected_branch = record
-        .publication
-        .as_ref()
+    let expected_branch = view
+        .publication()
         .and_then(|publication| publication.candidate.as_ref())
         .map(|candidate| candidate.root_branch.as_str())
-        .or(record.baseline.root_branch.as_deref());
+        .or(view.baseline().root_branch.as_deref());
     if head.is_detached
         || expected_branch.is_some_and(|branch| head.branch.as_deref() != Some(branch))
     {
         return Ok(None);
     }
-    let expected_parent = super::root::evidence_parent(record)?;
+    let expected_parent = super::root::evidence_parent_view(view)?;
     if head.commit.as_deref() == expected_parent {
         return Ok(Some(RootEvidenceObservation::Baseline));
     }
     let Some(commit) = head.commit.as_deref() else {
         return Ok(None);
     };
-    if record
-        .publication
-        .as_ref()
+    if view
+        .publication()
         .and_then(|publication| publication.composition_commit.as_deref())
         .is_some_and(|recorded| recorded != commit)
     {
@@ -78,8 +105,8 @@ pub(super) fn observe_root_evidence<B: GitBackend>(
         root,
         commit,
         expected_parent,
-        &candidate_files(record)?,
-        &composition_message(record),
+        &candidate_files_view(view)?,
+        &composition_message_view(view),
     );
     Ok(result.ok().map(RootEvidenceObservation::Composition))
 }
@@ -187,7 +214,8 @@ pub(crate) fn normalized_i2_root_observation<B: GitBackend>(
             }
         }
         Some(RootEvidenceObservation::Composition(observed)) => {
-            let publication = progress(record).map_err(|_| evidence_failure())?;
+            let publication = progress_view(super::status::MergeStatusRecordView::from_v0(record))
+                .map_err(|_| evidence_failure())?;
             if publication.composition_commit.is_none() {
                 return Ok("unrecorded_evidence");
             }
@@ -215,14 +243,20 @@ pub(crate) fn normalized_i2_root_observation<B: GitBackend>(
 }
 
 pub(super) fn candidate_files(record: &MergeOperationRecord) -> ModelResult<Vec<GitCandidateFile>> {
-    let candidate = candidate(record)?;
+    candidate_files_view(super::status::MergeStatusRecordView::from_v0(record))
+}
+
+pub(in crate::workspace_ops::merge) fn candidate_files_view(
+    view: super::status::MergeStatusRecordView<'_>,
+) -> ModelResult<Vec<GitCandidateFile>> {
+    let candidate = candidate_view(view)?;
     Ok(vec![
         GitCandidateFile {
             path: artifact::LOCK_PATH.to_owned(),
             bytes: candidate.lock_yaml.as_bytes().to_vec(),
         },
         GitCandidateFile {
-            path: progress(record)?
+            path: progress_view(view)?
                 .candidate_marker_path
                 .clone()
                 .ok_or_else(|| unreadable("candidate marker path is missing"))?,
@@ -232,23 +266,37 @@ pub(super) fn candidate_files(record: &MergeOperationRecord) -> ModelResult<Vec<
 }
 
 pub(super) fn composition_message(record: &MergeOperationRecord) -> String {
+    composition_message_view(super::status::MergeStatusRecordView::from_v0(record))
+}
+
+pub(in crate::workspace_ops::merge) fn composition_message_view(
+    view: super::status::MergeStatusRecordView<'_>,
+) -> String {
     format!(
         "gwz merge: {}\n\nGWZ-Merge-ID: {}\nGWZ-Operation-ID: {}",
-        record.source_ref, record.merge_id, record.operation_id
+        view.source_ref(),
+        view.merge_id(),
+        view.operation_id()
     )
 }
 
 pub(super) fn candidate(record: &MergeOperationRecord) -> ModelResult<&PublicationCandidate> {
-    progress(record)?
+    candidate_view(super::status::MergeStatusRecordView::from_v0(record))
+}
+
+pub(in crate::workspace_ops::merge) fn candidate_view(
+    view: super::status::MergeStatusRecordView<'_>,
+) -> ModelResult<&PublicationCandidate> {
+    progress_view(view)?
         .candidate
         .as_ref()
         .ok_or_else(|| unreadable("publication candidate is missing"))
 }
 
-pub(super) fn progress(record: &MergeOperationRecord) -> ModelResult<&PublicationProgress> {
-    record
-        .publication
-        .as_ref()
+pub(in crate::workspace_ops::merge) fn progress_view(
+    view: super::status::MergeStatusRecordView<'_>,
+) -> ModelResult<&PublicationProgress> {
+    view.publication()
         .ok_or_else(|| unreadable("publication progress is missing"))
 }
 

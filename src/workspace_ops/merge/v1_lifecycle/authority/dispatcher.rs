@@ -41,12 +41,12 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum ObservationKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(super) struct ObservationKey {
     pub(super) request: V1LifecycleRequest,
-    pub(super) kind: ObservationKind,
+    pub(super) kind: Box<ObservationKind>,
     pub(super) owner: String,
 }
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) struct BoundObservationRequest(
-    pub(super) BoundValue<ObservationKey>,
+    pub(super) Box<BoundValue<ObservationKey>>,
 );
 
 impl BoundObservationRequest {
@@ -58,16 +58,16 @@ impl BoundObservationRequest {
         let owner = observation_owner(&kind);
         let key = ObservationKey {
             request,
-            kind,
+            kind: Box::new(kind),
             owner: owner.clone(),
         };
-        Ok(Self(BoundValue::new(
+        Ok(Self(Box::new(BoundValue::new(
             current,
             &owner,
             "observe",
             "requested",
             key,
-        )?))
+        )?)))
     }
 
     #[cfg(test)]
@@ -80,7 +80,11 @@ impl BoundObservationRequest {
     }
 
     pub(in crate::workspace_ops::merge::v1_lifecycle) fn kind(&self) -> &ObservationKind {
-        &self.0.value.kind
+        self.0.value.kind.as_ref()
+    }
+
+    pub(in crate::workspace_ops::merge::v1_lifecycle) fn lifecycle(&self) -> V1LifecycleRequest {
+        self.0.value.request
     }
 
     pub(super) fn matches(&self, current: &StoredV1Record, request: V1LifecycleRequest) -> bool {

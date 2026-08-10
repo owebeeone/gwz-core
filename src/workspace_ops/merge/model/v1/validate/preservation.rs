@@ -3,15 +3,52 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 use super::super::super::PreservationEvidence;
 use super::super::{
     GitObjectIdV1, MergeOperationRecordV1, PendingPreservationActionV1, PreservationOwnerV1,
-    PreservationRefResetPhaseV1, PreservationStashPhaseV1, PublicationPrefixV1,
+    PreservationPublicationCandidateV1, PreservationPublicationHandoffV1,
+    PreservationRefResetPhaseV1, PreservationStashPhaseV1, RecoveryOriginStateV1,
 };
 
 pub(crate) fn validate_v1_preservation(record: &MergeOperationRecordV1) -> ModelResult<()> {
+    validate_durable_handoff(record)?;
+    validate_preservation_evidence_and_action(record)
+}
+
+pub(crate) fn validate_v0_preservation_view(record: &MergeOperationRecordV1) -> ModelResult<()> {
+    validate_preservation_evidence_and_action(record)
+}
+
+fn validate_preservation_evidence_and_action(record: &MergeOperationRecordV1) -> ModelResult<()> {
     validate_all_evidence(record)?;
     if let Some(action) = record.pending_preservation.as_ref() {
         validate_action(record, action)?;
     }
     Ok(())
+}
+
+fn validate_durable_handoff(record: &MergeOperationRecordV1) -> ModelResult<()> {
+    let required = record.state == super::super::super::OperationState::Preserving
+        || record.state == super::super::super::OperationState::RecoveryRequired
+            && record
+                .recovery_context
+                .as_ref()
+                .is_some_and(|context| context.origin_state == RecoveryOriginStateV1::Preserving);
+    let permitted = required
+        || record.state == super::super::super::OperationState::RollingBack
+        || record.state == super::super::super::OperationState::Aborted
+        || record.state == super::super::super::OperationState::RecoveryRequired
+            && record
+                .recovery_context
+                .as_ref()
+                .is_some_and(|context| context.origin_state == RecoveryOriginStateV1::RollingBack);
+    match record.preservation_publication_handoff {
+        None if required => Err(preservation_exactness_error(record)),
+        Some(_) if !permitted => Err(preservation_exactness_error(record)),
+        Some(handoff)
+            if !super::publication::preservation_handoff_is_compatible(record, handoff) =>
+        {
+            Err(preservation_exactness_error(record))
+        }
+        None | Some(_) => Ok(()),
+    }
 }
 
 fn validate_all_evidence(record: &MergeOperationRecordV1) -> ModelResult<()> {
@@ -114,7 +151,7 @@ fn validate_action(
             message,
             head_commit,
             preimage_sha256,
-            root_publication_prefix,
+            root_publication_handoff,
         } => validate_stash(
             record,
             owner,
@@ -124,7 +161,7 @@ fn validate_action(
             message,
             head_commit,
             preimage_sha256,
-            root_publication_prefix.as_ref(),
+            root_publication_handoff.as_ref(),
         )?,
         PendingPreservationActionV1::ResetAttachedRef {
             owner,
@@ -132,21 +169,28 @@ fn validate_action(
             expected_commit,
             restore_commit,
             phase,
-            root_publication_prefix,
+            root_publication_handoff,
         } => {
-            let prefix_present = root_publication_prefix.is_some();
+            let handoff_present = root_publication_handoff.is_some();
             let phase_valid = match phase {
                 PreservationRefResetPhaseV1::ResetRef | PreservationRefResetPhaseV1::Complete => {
                     true
                 }
-                PreservationRefResetPhaseV1::RestoreRoot => prefix_present,
+                PreservationRefResetPhaseV1::PrepareParent
+                | PreservationRefResetPhaseV1::PrepareMarker
+                | PreservationRefResetPhaseV1::PrepareLock
+                | PreservationRefResetPhaseV1::PrepareIndex
+                | PreservationRefResetPhaseV1::RestoreIndex
+                | PreservationRefResetPhaseV1::RestoreLock
+                | PreservationRefResetPhaseV1::RestoreParent
+                | PreservationRefResetPhaseV1::RestoreMarker => handoff_present,
             };
             if !owner_is_valid(record, owner)
                 || owner_branch(record, owner) != Some(branch.as_str())
                 || recorded_backup_target(record, owner) != Some(expected_commit.as_str())
                 || owner_anchor(record, owner) != Some(restore_commit.as_str())
-                || (prefix_present && !owner_is_root(owner))
-                || !prefix_matches_record(record, root_publication_prefix.as_ref())
+                || root_publication_handoff.as_ref().copied()
+                    != expected_root_handoff(record, owner)
                 || !phase_valid
             {
                 return Err(preservation_exactness_error(record));
@@ -166,7 +210,7 @@ fn validate_stash(
     message: &str,
     head_commit: &str,
     preimage_sha256: &str,
-    prefix: Option<&PublicationPrefixV1>,
+    root_handoff: Option<&PreservationPublicationCandidateV1>,
 ) -> ModelResult<()> {
     let exact_id = format!("stash_{}", record.merge_id);
     let ids_absent = stash_id.is_none() && stash_object_id.is_none();
@@ -179,14 +223,20 @@ fn validate_stash(
             && evidence.stash_object_id.as_deref()
                 == stash_object_id.map(|object_id| object_id.digest_hex.as_str())
     });
-    let prefix_present = prefix.is_some();
+    let handoff_present = root_handoff.is_some();
     let phase_valid = match phase {
-        PreservationStashPhaseV1::NormalizeRoot => {
-            prefix_present && ids_absent && recorded_ids_absent
+        PreservationStashPhaseV1::NormalizeParent
+        | PreservationStashPhaseV1::NormalizeMarker
+        | PreservationStashPhaseV1::NormalizeLock
+        | PreservationStashPhaseV1::NormalizeIndex => {
+            handoff_present && ids_absent && recorded_ids_absent
         }
         PreservationStashPhaseV1::CreateStash => ids_absent && recorded_ids_absent,
-        PreservationStashPhaseV1::RestoreRoot => {
-            prefix_present && ids_present && recorded_ids_match
+        PreservationStashPhaseV1::RestoreIndex
+        | PreservationStashPhaseV1::RestoreLock
+        | PreservationStashPhaseV1::RestoreParent
+        | PreservationStashPhaseV1::RestoreMarker => {
+            handoff_present && ids_present && recorded_ids_match
         }
         PreservationStashPhaseV1::WriteBundle | PreservationStashPhaseV1::Complete => {
             ids_present && recorded_ids_match
@@ -198,8 +248,7 @@ fn validate_stash(
         || message != format!("gwz:{exact_id}: merge preservation")
         || !is_oid(head_commit)
         || !is_sha256(preimage_sha256)
-        || (prefix_present && !owner_is_root(owner))
-        || !prefix_matches_record(record, prefix)
+        || root_handoff.copied() != expected_root_handoff(record, owner)
         || !phase_valid
     {
         return Err(preservation_exactness_error(record));
@@ -224,29 +273,17 @@ fn owner_evidence<'a>(
     (rows.len() == 1).then(|| &rows[0])
 }
 
-fn prefix_matches_record(
+fn expected_root_handoff(
     record: &MergeOperationRecordV1,
-    prefix: Option<&PublicationPrefixV1>,
-) -> bool {
-    match prefix {
-        None => true,
-        Some(prefix) => {
+    owner: &PreservationOwnerV1,
+) -> Option<PreservationPublicationCandidateV1> {
+    owner_is_root(owner)
+        .then(|| {
             record
-                .publication
-                .as_ref()
-                .and_then(|publication| publication.preservation_prefix.as_deref())
-                == Some(prefix_name(*prefix))
-        }
-    }
-}
-
-fn prefix_name(prefix: PublicationPrefixV1) -> &'static str {
-    match prefix {
-        PublicationPrefixV1::Baseline => "baseline",
-        PublicationPrefixV1::Marker => "marker",
-        PublicationPrefixV1::Lock => "lock",
-        PublicationPrefixV1::Boundary => "boundary",
-    }
+                .preservation_publication_handoff
+                .and_then(PreservationPublicationHandoffV1::candidate)
+        })
+        .flatten()
 }
 
 fn owner_is_valid(record: &MergeOperationRecordV1, owner: &PreservationOwnerV1) -> bool {
@@ -366,7 +403,7 @@ fn preservation_error(record: &MergeOperationRecordV1) -> ModelError {
 fn preservation_exactness_error(record: &MergeOperationRecordV1) -> ModelError {
     typed_error(
         record,
-        "preservation ref, stash, root prefix, bundle, or branch result is not exact",
+        "preservation ref, stash, root handoff, bundle, or branch result is not exact",
     )
 }
 

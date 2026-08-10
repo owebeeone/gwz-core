@@ -34,6 +34,8 @@ fn recovery_origin_is_derived_from_one_exact_base_and_resume_action() {
     cases.push((finalizing, RecoveryOriginStateV1::Finalizing));
 
     let mut preserving = record();
+    preserving.preservation_publication_handoff =
+        Some(super::super::PreservationPublicationHandoffV1::NoCandidate);
     let participant = preserving.participants.get_mut("mem_a").unwrap();
     participant.state = ParticipantState::UpToDate;
     participant.resulting_commit = Some(oid('a'));

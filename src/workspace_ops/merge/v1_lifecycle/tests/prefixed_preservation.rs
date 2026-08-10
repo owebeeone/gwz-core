@@ -9,18 +9,49 @@ use super::fixtures::{
 use crate::workspace_ops::merge::PreservationEvidence;
 use crate::workspace_ops::merge::model::v1::{
     GitObjectAlgorithmV1, GitObjectIdV1, PendingPreservationActionV1, PreservationOwnerV1,
-    PreservationRefResetPhaseV1 as R, PreservationStashPhaseV1 as S, PublicationPrefixV1,
+    PreservationPublicationHandoffV1, PreservationRefResetPhaseV1 as R,
+    PreservationStashPhaseV1 as S, PublicationIndexFormV1, PublicationPrefixV1,
 };
 use crate::workspace_ops::tests::TempDir;
 
-const PHASES: [S; 5] = [
-    S::NormalizeRoot,
+const PHASES: [S; 11] = [
+    S::NormalizeParent,
+    S::NormalizeMarker,
+    S::NormalizeLock,
+    S::NormalizeIndex,
     S::CreateStash,
-    S::RestoreRoot,
+    S::RestoreIndex,
+    S::RestoreLock,
+    S::RestoreParent,
+    S::RestoreMarker,
     S::WriteBundle,
     S::Complete,
 ];
-const RESET_PHASES: [R; 3] = [R::ResetRef, R::RestoreRoot, R::Complete];
+const RESET_PHASES: [R; 10] = [
+    R::PrepareParent,
+    R::PrepareMarker,
+    R::PrepareLock,
+    R::PrepareIndex,
+    R::ResetRef,
+    R::RestoreIndex,
+    R::RestoreLock,
+    R::RestoreParent,
+    R::RestoreMarker,
+    R::Complete,
+];
+
+fn rejects(
+    lease: &V1MutationLease,
+    current: &StoredV1Record,
+    transition: PreservationTransition,
+) -> bool {
+    prepare(
+        lease,
+        current,
+        V1Transition::Preservation(Box::new(transition)),
+    )
+    .is_err()
+}
 
 #[test]
 fn prefixed_stash_accepts_only_each_exact_successor_and_owner_prefix() {
@@ -28,14 +59,30 @@ fn prefixed_stash_accepts_only_each_exact_successor_and_owner_prefix() {
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let mut model = evidence_rollback_record(&root);
     model.state = crate::workspace_ops::merge::OperationState::Preserving;
+    model.preservation_publication_handoff = Some(candidate_handoff());
     let current = StoredV1Record::for_test(&root.path, model).unwrap();
-    let position = PreservationCursorPosition::Stash(S::NormalizeRoot);
+    let wrong_position = PreservationCursorPosition::Stash(S::NormalizeLock);
+    let wrong_intent = PreparedStashIntent::for_test(
+        &current,
+        "@publication-root",
+        "begin_stash",
+        "cursor_checked",
+        payload(wrong_position, Some(action(S::NormalizeLock)), None),
+        prefix(&current, wrong_position),
+    )
+    .unwrap();
+    assert!(rejects(
+        &lease,
+        &current,
+        PreservationTransition::BeginStash(Box::new(wrong_intent)),
+    ));
+    let position = PreservationCursorPosition::Stash(S::NormalizeParent);
     let intent = PreparedStashIntent::for_test(
         &current,
         "@publication-root",
         "begin_stash",
         "cursor_checked",
-        payload(position, Some(action(S::NormalizeRoot)), None),
+        payload(position, Some(action(S::NormalizeParent)), None),
         prefix(&current, position),
     )
     .unwrap();
@@ -45,26 +92,49 @@ fn prefixed_stash_accepts_only_each_exact_successor_and_owner_prefix() {
         &current,
         PreservationTransition::BeginStash(Box::new(intent)),
     );
+    let position = PreservationCursorPosition::Stash(S::NormalizeParent);
+    let mut changed = action(S::NormalizeMarker);
+    if let PendingPreservationActionV1::Stash {
+        preimage_sha256, ..
+    } = &mut changed
+    {
+        *preimage_sha256 = "2".repeat(64);
+    }
+    let changed = VerifiedStashPhase::for_test(
+        &current,
+        "@publication-root",
+        "advance_stash",
+        "completed",
+        payload(position, Some(changed), None),
+        prefix(&current, position),
+    )
+    .unwrap();
+    assert!(rejects(
+        &lease,
+        &current,
+        PreservationTransition::AdvanceStash(Box::new(changed)),
+    ));
 
     for (old, next) in [
-        (S::NormalizeRoot, S::CreateStash),
-        (S::CreateStash, S::RestoreRoot),
-        (S::RestoreRoot, S::WriteBundle),
+        (S::NormalizeParent, S::NormalizeMarker),
+        (S::NormalizeMarker, S::NormalizeLock),
+        (S::NormalizeLock, S::NormalizeIndex),
+        (S::NormalizeIndex, S::CreateStash),
+        (S::CreateStash, S::RestoreIndex),
+        (S::RestoreIndex, S::RestoreLock),
+        (S::RestoreLock, S::RestoreParent),
+        (S::RestoreParent, S::RestoreMarker),
+        (S::RestoreMarker, S::WriteBundle),
         (S::WriteBundle, S::Complete),
     ] {
         let position = PreservationCursorPosition::Stash(old);
         for invalid in PHASES.into_iter().filter(|phase| *phase != next) {
             let proof = phase_proof(&current, position, invalid);
-            assert!(
-                prepare(
-                    &lease,
-                    &current,
-                    V1Transition::Preservation(Box::new(PreservationTransition::AdvanceStash(
-                        Box::new(proof),
-                    ))),
-                )
-                .is_err()
-            );
+            assert!(rejects(
+                &lease,
+                &current,
+                PreservationTransition::AdvanceStash(Box::new(proof)),
+            ));
         }
         let proof = phase_proof(&current, position, next);
         current = apply_preservation(
@@ -75,6 +145,15 @@ fn prefixed_stash_accepts_only_each_exact_successor_and_owner_prefix() {
         );
     }
     let position = PreservationCursorPosition::Stash(S::Complete);
+    assert!(rejects(
+        &lease,
+        &current,
+        PreservationTransition::AdvanceStash(Box::new(phase_proof(
+            &current,
+            position,
+            S::Complete,
+        ))),
+    ));
     let proof = VerifiedStashCompletion::for_test(
         &current,
         "@publication-root",
@@ -92,23 +171,18 @@ fn prefixed_stash_accepts_only_each_exact_successor_and_owner_prefix() {
     );
     assert!(finished.record().pending_preservation.is_none());
     assert_eq!(
-        finished
-            .record()
-            .publication
-            .as_ref()
-            .unwrap()
-            .preservation_prefix
-            .as_deref(),
-        Some("baseline")
+        finished.record().preservation_publication_handoff,
+        Some(candidate_handoff())
     );
 }
 
 #[test]
-fn prefixed_reset_accepts_only_restore_root_then_complete() {
+fn prefixed_reset_accepts_only_each_exact_successor() {
     let root = TempDir::new("merge-v1-prefixed-reset");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let mut model = evidence_rollback_record(&root);
     model.state = crate::workspace_ops::merge::OperationState::Preserving;
+    model.preservation_publication_handoff = Some(candidate_handoff());
     model
         .publication
         .as_mut()
@@ -121,13 +195,28 @@ fn prefixed_reset_accepts_only_restore_root_then_complete() {
             stash_object_id: None,
         });
     let current = StoredV1Record::for_test(&root.path, model).unwrap();
-    let position = PreservationCursorPosition::ResetAttachedRef(R::ResetRef);
+    let wrong_position = PreservationCursorPosition::ResetAttachedRef(R::PrepareLock);
+    let wrong_intent = PreparedRefResetIntent::for_test(
+        &current,
+        "@publication-root",
+        "begin_reset_attached_ref",
+        "cursor_checked",
+        payload(wrong_position, Some(reset_action(R::PrepareLock)), None),
+        prefix(&current, wrong_position),
+    )
+    .unwrap();
+    assert!(rejects(
+        &lease,
+        &current,
+        PreservationTransition::BeginResetAttachedRef(Box::new(wrong_intent)),
+    ));
+    let position = PreservationCursorPosition::ResetAttachedRef(R::PrepareParent);
     let intent = PreparedRefResetIntent::for_test(
         &current,
         "@publication-root",
         "begin_reset_attached_ref",
         "cursor_checked",
-        payload(position, Some(reset_action(R::ResetRef)), None),
+        payload(position, Some(reset_action(R::PrepareParent)), None),
         prefix(&current, position),
     )
     .unwrap();
@@ -138,20 +227,25 @@ fn prefixed_reset_accepts_only_restore_root_then_complete() {
         PreservationTransition::BeginResetAttachedRef(Box::new(intent)),
     );
 
-    for (old, next) in [(R::ResetRef, R::RestoreRoot), (R::RestoreRoot, R::Complete)] {
+    for (old, next) in [
+        (R::PrepareParent, R::PrepareMarker),
+        (R::PrepareMarker, R::PrepareLock),
+        (R::PrepareLock, R::PrepareIndex),
+        (R::PrepareIndex, R::ResetRef),
+        (R::ResetRef, R::RestoreIndex),
+        (R::RestoreIndex, R::RestoreLock),
+        (R::RestoreLock, R::RestoreParent),
+        (R::RestoreParent, R::RestoreMarker),
+        (R::RestoreMarker, R::Complete),
+    ] {
         let position = PreservationCursorPosition::ResetAttachedRef(old);
         for invalid in RESET_PHASES.into_iter().filter(|phase| *phase != next) {
             let proof = reset_phase_proof(&current, position, invalid);
-            assert!(
-                prepare(
-                    &lease,
-                    &current,
-                    V1Transition::Preservation(Box::new(
-                        PreservationTransition::AdvanceResetAttachedRef(Box::new(proof)),
-                    )),
-                )
-                .is_err()
-            );
+            assert!(rejects(
+                &lease,
+                &current,
+                PreservationTransition::AdvanceResetAttachedRef(Box::new(proof)),
+            ));
         }
         current = apply_preservation(
             &root,
@@ -163,6 +257,15 @@ fn prefixed_reset_accepts_only_restore_root_then_complete() {
         );
     }
     let position = PreservationCursorPosition::ResetAttachedRef(R::Complete);
+    assert!(rejects(
+        &lease,
+        &current,
+        PreservationTransition::AdvanceResetAttachedRef(Box::new(reset_phase_proof(
+            &current,
+            position,
+            R::Complete,
+        ))),
+    ));
     let proof = VerifiedRefResetCompletion::for_test(
         &current,
         "@publication-root",
@@ -217,14 +320,11 @@ fn no_prefix_stash_and_reset_reject_every_non_successor_phase() {
             )
             .unwrap();
             assert!(
-                prepare(
+                rejects(
                     &lease,
                     &current,
-                    V1Transition::Preservation(Box::new(PreservationTransition::AdvanceStash(
-                        Box::new(proof),
-                    ))),
-                )
-                .is_err(),
+                    PreservationTransition::AdvanceStash(Box::new(proof)),
+                ),
                 "stash {current_phase:?} accepted {invalid:?}"
             );
         }
@@ -254,14 +354,11 @@ fn no_prefix_stash_and_reset_reject_every_non_successor_phase() {
         )
         .unwrap();
         assert!(
-            prepare(
+            rejects(
                 &lease,
                 &current,
-                V1Transition::Preservation(Box::new(
-                    PreservationTransition::AdvanceResetAttachedRef(Box::new(proof)),
-                )),
-            )
-            .is_err(),
+                PreservationTransition::AdvanceResetAttachedRef(Box::new(proof)),
+            ),
             "reset accepted {invalid:?}"
         );
     }
@@ -307,8 +404,22 @@ fn owner() -> PreservationOwnerV1 {
     PreservationOwnerV1::PublicationRoot
 }
 
+fn candidate_handoff() -> PreservationPublicationHandoffV1 {
+    PreservationPublicationHandoffV1::Candidate {
+        prefix: PublicationPrefixV1::Baseline,
+        index: PublicationIndexFormV1::Pre,
+    }
+}
+
 fn action(phase: S) -> PendingPreservationActionV1 {
-    let ids = !matches!(phase, S::NormalizeRoot | S::CreateStash);
+    let ids = !matches!(
+        phase,
+        S::NormalizeParent
+            | S::NormalizeMarker
+            | S::NormalizeLock
+            | S::NormalizeIndex
+            | S::CreateStash
+    );
     PendingPreservationActionV1::Stash {
         owner: owner(),
         phase,
@@ -320,7 +431,7 @@ fn action(phase: S) -> PendingPreservationActionV1 {
         message: "gwz:stash_merge_1: merge preservation".into(),
         head_commit: oid('e'),
         preimage_sha256: "1".repeat(64),
-        root_publication_prefix: Some(PublicationPrefixV1::Baseline),
+        root_publication_handoff: candidate_handoff().candidate(),
     }
 }
 
@@ -331,7 +442,7 @@ fn reset_action(phase: R) -> PendingPreservationActionV1 {
         expected_commit: oid('d'),
         restore_commit: oid('e'),
         phase,
-        root_publication_prefix: Some(PublicationPrefixV1::Baseline),
+        root_publication_handoff: candidate_handoff().candidate(),
     }
 }
 

@@ -3,14 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 use super::super::super::model::archive_projection::*;
-use super::super::super::model::v1::{
-    MERGE_RECORD_SCHEMA_V1, MERGE_RECORD_SCHEMA_VERSION_V1, MergeOperationRecordV1,
-    validate_common_v0_view,
-};
+#[cfg(test)]
+use super::super::super::model::v1::MergeOperationRecordV1;
 use super::super::super::{
-    MergeOperationRecord, OperationState, ParticipantState, PublicationProgress,
+    MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord, MergeTargetKind,
+    OperationState, ParticipantState, PreservationEvidence, PublicationProgress,
 };
 use crate::artifact::{LOCK_PATH, LockArtifact, ManifestArtifact, MarkerArtifact};
+use crate::workspace::MemberPath;
 
 pub(super) struct BaselineEvidence {
     pub(super) manifest: Option<ManifestArtifact>,
@@ -26,7 +26,7 @@ pub(super) struct CandidateEvidence {
 }
 
 pub(super) fn validate_common(record: &MergeOperationRecord) -> Result<(), ()> {
-    validate_common_v0_view(&common_view(record)).map_err(|_| ())?;
+    validate_common_v0(record)?;
     if record.state.is_open() {
         return Err(());
     }
@@ -244,6 +244,7 @@ pub(super) fn validate_marker_merge(
     validate_marker_merge_view(marker_view_v0(record), publication, marker, candidate_lock)
 }
 
+#[cfg(test)]
 pub(super) fn validate_marker_merge_v1(
     record: &MergeOperationRecordV1,
     publication: &PublicationProgress,
@@ -275,6 +276,7 @@ fn marker_view_v0(record: &MergeOperationRecord) -> MarkerMergeView<'_> {
     }
 }
 
+#[cfg(test)]
 fn marker_view_v1(record: &MergeOperationRecordV1) -> MarkerMergeView<'_> {
     MarkerMergeView {
         created_at: &record.created_at,
@@ -441,29 +443,170 @@ pub(super) fn project_root(
     }))
 }
 
-fn common_view(record: &MergeOperationRecord) -> MergeOperationRecordV1 {
-    MergeOperationRecordV1 {
-        schema: MERGE_RECORD_SCHEMA_V1.to_owned(),
-        record_schema_version: MERGE_RECORD_SCHEMA_VERSION_V1,
-        writer_version: record.writer_version.clone(),
-        workspace_id: record.workspace_id.clone(),
-        merge_id: record.merge_id.clone(),
-        operation_id: record.operation_id.clone(),
-        state: record.state,
-        source_ref: record.source_ref.clone(),
-        mode: record.mode,
-        created_at: record.created_at.clone(),
-        baseline: record.baseline.clone(),
-        selected_targets: record.selected_targets.clone(),
-        participants: record.participants.clone(),
-        publication: record.publication.clone(),
-        operation_drift: record.operation_drift.clone(),
-        accepted_workspace: None,
-        recovery_context: None,
-        pending_rollback: None,
-        pending_preservation: None,
-        extensions: record.extensions.clone(),
+fn validate_common_v0(record: &MergeOperationRecord) -> Result<(), ()> {
+    if record.schema != MERGE_RECORD_SCHEMA
+        || record.record_schema_version != MERGE_RECORD_SCHEMA_VERSION
+        || !portable_id(&record.workspace_id, "ws_")
+        || !portable_id(&record.operation_id, "op_")
+        || !slug(&record.merge_id)
+        || !text(&record.writer_version)
+        || !text(&record.source_ref)
+        || !text(&record.created_at)
+        || !sha256_hex(&record.baseline.lock_sha256)
+        || !sha256_hex(&record.baseline.manifest_sha256)
+        || record
+            .baseline
+            .lock_commit_sha256
+            .as_deref()
+            .is_some_and(|value| !sha256_hex(value))
+        || record
+            .baseline
+            .manifest_commit_sha256
+            .as_deref()
+            .is_some_and(|value| !sha256_hex(value))
+        || record
+            .baseline
+            .root_head
+            .as_deref()
+            .is_some_and(|value| !is_oid(value))
+        || record
+            .baseline
+            .root_branch
+            .as_deref()
+            .is_some_and(|value| !short_branch(value))
+    {
+        return Err(());
     }
+    let mut selected = BTreeSet::new();
+    for target in &record.selected_targets {
+        if !target_id(target)
+            || !selected.insert(target.as_str())
+            || !record.participants.contains_key(target)
+        {
+            return Err(());
+        }
+    }
+    if selected.is_empty()
+        || record
+            .selected_targets
+            .iter()
+            .position(|target| target == "@root")
+            .is_some_and(|position| position + 1 != record.selected_targets.len())
+        || record.participants.len() != selected.len()
+    {
+        return Err(());
+    }
+    for (target, participant) in &record.participants {
+        let identity = match participant.target_kind {
+            MergeTargetKind::Root => target == "@root" && participant.path == ".",
+            MergeTargetKind::Member => {
+                target != "@root" && MemberPath::parse(&participant.path).is_ok()
+            }
+        };
+        if !target_id(target)
+            || !selected.contains(target.as_str())
+            || !identity
+            || !short_branch(&participant.target_branch)
+            || !is_oid(&participant.before_commit)
+            || !is_oid(&participant.source_commit)
+            || !commit_message(record, &participant.commit_message)
+            || participant
+                .resulting_commit
+                .as_deref()
+                .is_some_and(|value| !is_oid(value))
+            || participant
+                .expected_merge_head
+                .as_deref()
+                .is_some_and(|value| !is_oid(value))
+            || participant
+                .conflict_snapshot
+                .iter()
+                .any(|row| !text(&row.path) || !sha256_hex(&row.sha256))
+            || !preservation_rows(&participant.preservation)
+        {
+            return Err(());
+        }
+    }
+    if record
+        .publication
+        .as_ref()
+        .is_some_and(|publication| !preservation_rows(&publication.root_preservation))
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn preservation_rows(rows: &[PreservationEvidence]) -> bool {
+    rows.iter().all(|row| {
+        row.backup_ref.as_deref().is_none_or(text)
+            && row.backup_commit.as_deref().is_none_or(is_oid)
+            && row.stash_id.as_deref().is_none_or(text)
+            && row.stash_object_id.as_deref().is_none_or(is_oid)
+    })
+}
+
+fn commit_message(record: &MergeOperationRecord, message: &str) -> bool {
+    let trailer = format!(
+        "\n\nGWZ-Merge-ID: {}\nGWZ-Operation-ID: {}",
+        record.merge_id, record.operation_id
+    );
+    let body = message.strip_suffix(&trailer).unwrap_or_default();
+    !body.trim().is_empty() && !body.contains(['\0', '\r']) && !body.ends_with('\n')
+}
+
+fn target_id(value: &str) -> bool {
+    value == "@root" || portable_id(value, "mem_")
+}
+
+fn portable_id(value: &str, prefix: &str) -> bool {
+    value.starts_with(prefix)
+        && value.len() > prefix.len()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn slug(value: &str) -> bool {
+    !value.is_empty()
+        && !matches!(value, "." | "..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn text(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
+fn sha256_hex(value: &str) -> bool {
+    value.len() == 64 && lower_hex(value)
+}
+
+fn short_branch(branch: &str) -> bool {
+    let invalid_byte = branch.bytes().any(|byte| {
+        byte <= b' '
+            || byte == 0x7f
+            || matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
+    });
+    let invalid_component = branch
+        .split('/')
+        .any(|part| part.is_empty() || part.starts_with('.') || part.ends_with(".lock"));
+    !(branch.is_empty()
+        || branch.starts_with("refs/")
+        || branch.starts_with('-')
+        || branch.ends_with('/')
+        || branch.ends_with('.')
+        || branch.contains("..")
+        || branch.contains("@{")
+        || invalid_byte
+        || invalid_component)
+}
+
+fn lower_hex(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn digest(text: &str) -> String {

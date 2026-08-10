@@ -2,11 +2,15 @@
     dead_code,
     reason = "v1 lifecycle remains test-reachable until A1 activates production dispatch"
 )]
+mod archive;
+mod archive_result;
 mod authority;
 mod checked;
 mod finalization;
 mod forward;
+mod reverse;
 mod service;
+mod status;
 mod store;
 mod transition;
 

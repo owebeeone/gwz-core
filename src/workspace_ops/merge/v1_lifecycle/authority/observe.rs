@@ -1,19 +1,74 @@
-use std::fs;
-
 use super::super::super::model::v1::rollback_cursor;
 use super::*;
-use crate::artifact::LOCK_PATH;
-use crate::workspace::WORKSPACE_MANIFEST;
+use crate::git::GitBackend;
+use crate::operation::OperationContext;
 
+mod archive;
 mod finalization;
 mod forward;
+mod reverse;
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) use finalization::{
-    observe_finalization, verify_finalization_action, verify_finalization_recovery_origin,
+    RecordEvidenceOr, observe_finalization, observe_reverse_publication_handoff,
+    verify_finalization_action, verify_finalization_recovery_origin,
 };
 pub(in crate::workspace_ops::merge::v1_lifecycle) use forward::{
     observe_forward, verify_participant_action,
 };
+pub(in crate::workspace_ops::merge::v1_lifecycle) use reverse::{
+    prepare_direct_rollback_entry, prepare_exhausted_rollback_entry, prepare_preservation_entry,
+    preservation_durability_fact, rolling_back_verify_recovery_origin,
+};
+
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_preservation<B: GitBackend>(
+    backend: &B,
+    context: &OperationContext,
+    current: &StoredV1Record,
+    request: &BoundObservationRequest,
+) -> ModelResult<BoundExactObservation> {
+    reverse::observe_preservation(backend, context, current, request)
+}
+
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_rollback<B: GitBackend>(
+    backend: &B,
+    context: &OperationContext,
+    current: &StoredV1Record,
+    request: &BoundObservationRequest,
+) -> ModelResult<BoundExactObservation> {
+    reverse::observe_rollback(backend, context, current, request)
+}
+
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_archive(
+    current: &StoredV1Record,
+    request: &BoundObservationRequest,
+) -> ModelResult<BoundExactObservation> {
+    archive::observe(current, request)
+}
+
+mod reverse_entry_visitor_seal {
+    pub(super) trait Visitor {}
+    pub(super) trait AuthorityResult {}
+}
+
+impl reverse_entry_visitor_seal::AuthorityResult for RecordEvidenceOr<VerifiedPublicationHandoff> {}
+impl reverse_entry_visitor_seal::AuthorityResult for VerifiedPreservationEntryPreflight {}
+impl reverse_entry_visitor_seal::AuthorityResult for VerifiedRollbackEntryPreflight {}
+
+#[allow(private_bounds)]
+pub(in crate::workspace_ops::merge::v1_lifecycle) trait SealedReverseEntryVisitor:
+    reverse_entry_visitor_seal::Visitor
+{
+    type SealedAuthority: reverse_entry_visitor_seal::AuthorityResult;
+
+    fn inspect(
+        &mut self,
+        current: &StoredV1Record,
+        anticipated: &MergeOperationRecordV1,
+        request: V1LifecycleRequest,
+        kind: ReverseEntryKind,
+        anticipated_model_sha256: [u8; 32],
+    ) -> ModelResult<Self::SealedAuthority>;
+}
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn no_mutation_abort(
     current: &StoredV1Record,
@@ -54,28 +109,12 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn rollback_exhausted(
 }
 
 fn selected_root_baseline(current: &StoredV1Record) -> ModelResult<RollbackExhaustedPayload> {
-    let record = current.record();
-    let expected_manifest =
-        record.baseline.manifest_yaml.as_deref().ok_or_else(|| {
-            authority_error("selected-root baseline manifest bytes are unavailable")
-        })?;
-    let expected_lock = record
-        .baseline
-        .lock_yaml
-        .as_deref()
-        .ok_or_else(|| authority_error("selected-root baseline lock bytes are unavailable"))?;
-    let root = current.location().root();
-    let live_manifest = fs::read(root.join(WORKSPACE_MANIFEST))
-        .map_err(|error| authority_error(error.to_string()))?;
-    let live_lock =
-        fs::read(root.join(LOCK_PATH)).map_err(|error| authority_error(error.to_string()))?;
-    if live_manifest != expected_manifest.as_bytes() || live_lock != expected_lock.as_bytes() {
-        return Err(authority_error(
-            "selected-root manifest and lock do not exactly match the operation baseline",
-        ));
-    }
+    let fact = crate::workspace_ops::merge::root::observe_v1_selected_root_baseline(
+        current.location().root(),
+        current.record(),
+    )?;
     Ok(RollbackExhaustedPayload {
-        selected_root_manifest_sha256: Some(record.baseline.manifest_sha256.clone()),
-        selected_root_lock_sha256: Some(record.baseline.lock_sha256.clone()),
+        selected_root_manifest_sha256: Some(fact.0),
+        selected_root_lock_sha256: Some(fact.1),
     })
 }

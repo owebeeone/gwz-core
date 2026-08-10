@@ -38,7 +38,7 @@ pub(super) fn project(record: &MergeOperationRecordV1) -> Result<ArchivedMergePr
         )?;
     }
     Ok(ArchivedMergeProjection {
-        source_version: RecordVersion::V1,
+        source_version: ArchiveSourceVersion::V1,
         terminal_outcome,
         acceptance,
     })
