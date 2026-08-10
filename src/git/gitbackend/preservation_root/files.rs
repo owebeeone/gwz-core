@@ -1,9 +1,9 @@
 use super::super::*;
 use super::{FaultBoundary, fault};
 
-use cap_fs_ext::{
-    DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OsMetadataExt, ambient_authority,
-};
+#[cfg(unix)]
+use cap_fs_ext::OsMetadataExt;
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, ambient_authority};
 use cap_std::fs::{Dir, OpenOptions};
 use std::ffi::OsString;
 use std::io::{Read, Write};

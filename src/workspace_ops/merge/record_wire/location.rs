@@ -142,7 +142,7 @@ pub(crate) fn acquire_canonical_merge_locations(
     require_same_directory(&merge, &merge_identity)?;
     let final_done_identity = optional_archived_directory(&done)?;
     match (done_identity.as_ref(), final_done_identity.as_ref()) {
-        (Some(before), Some(after)) if same_file(before, after) => {}
+        (Some(before), Some(after)) if before == after => {}
         (None, None) => {}
         _ => return Err(changed_parent(&done)),
     }
@@ -169,17 +169,24 @@ fn absent_locations() -> CanonicalMergeLocations {
     }
 }
 
-fn optional_real_directory(path: &Path) -> ModelResult<Option<Metadata>> {
+fn optional_real_directory(path: &Path) -> ModelResult<Option<FileIdentity>> {
     optional_directory(path, ErrorCode::MergeRecordUnreadable)
 }
 
-fn optional_archived_directory(path: &Path) -> ModelResult<Option<Metadata>> {
+fn optional_archived_directory(path: &Path) -> ModelResult<Option<FileIdentity>> {
     optional_directory(path, ErrorCode::ArchivedRecordUnreadable)
 }
 
-fn optional_directory(path: &Path, code: ErrorCode) -> ModelResult<Option<Metadata>> {
+fn optional_directory(path: &Path, code: ErrorCode) -> ModelResult<Option<FileIdentity>> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_dir() => Ok(Some(metadata)),
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            match identity_at_named_path(path, &metadata)
+                .map_err(|error| location_error_with_code(path, error, code))?
+            {
+                Some(identity) => Ok(Some(identity)),
+                None => Err(changed_parent(path)),
+            }
+        }
         Ok(_) => Err(location_error_with_code(
             path,
             "path is not a real directory",
@@ -190,13 +197,13 @@ fn optional_directory(path: &Path, code: ErrorCode) -> ModelResult<Option<Metada
     }
 }
 
-fn require_real_directory(path: &Path) -> ModelResult<Metadata> {
+fn require_real_directory(path: &Path) -> ModelResult<FileIdentity> {
     optional_real_directory(path)?.ok_or_else(|| changed_parent(path))
 }
 
-fn require_same_directory(path: &Path, expected: &Metadata) -> ModelResult<()> {
+fn require_same_directory(path: &Path, expected: &FileIdentity) -> ModelResult<()> {
     let current = require_real_directory(path)?;
-    if same_file(expected, &current) {
+    if expected == &current {
         Ok(())
     } else {
         Err(changed_parent(path))
@@ -212,11 +219,18 @@ fn read_leaf(path: &Path, kind: CanonicalRecordKind) -> ModelResult<CanonicalRec
         }
         Err(reason) => return Err(leaf_error(path, kind, reason)),
     };
-    let mut file = File::open(path).map_err(|reason| leaf_error(path, kind, reason))?;
+    let Some(before_identity) =
+        identity_at_named_path(path, &before).map_err(|reason| leaf_error(path, kind, reason))?
+    else {
+        return Err(changed_leaf(path));
+    };
+    let mut file = open_named_path(path).map_err(|reason| leaf_error(path, kind, reason))?;
     let opened = file
         .metadata()
         .map_err(|reason| leaf_error(path, kind, reason))?;
-    if !opened.file_type().is_file() || !same_file(&before, &opened) {
+    let opened_identity =
+        identity_from_file(&file, &opened).map_err(|reason| leaf_error(path, kind, reason))?;
+    if !opened.file_type().is_file() || before_identity != opened_identity {
         return Err(changed_leaf(path));
     }
     let mut bytes = Vec::new();
@@ -229,9 +243,14 @@ fn read_leaf(path: &Path, kind: CanonicalRecordKind) -> ModelResult<CanonicalRec
             leaf_error(path, kind, reason)
         }
     })?;
+    let Some(after_identity) =
+        identity_at_named_path(path, &after).map_err(|reason| leaf_error(path, kind, reason))?
+    else {
+        return Err(changed_leaf(path));
+    };
     if !after.file_type().is_file()
-        || !same_file(&before, &after)
-        || !same_file(&opened, &after)
+        || before_identity != after_identity
+        || opened_identity != after_identity
         || opened.len() != bytes.len() as u64
     {
         return Err(changed_leaf(path));
@@ -241,7 +260,7 @@ fn read_leaf(path: &Path, kind: CanonicalRecordKind) -> ModelResult<CanonicalRec
         path: CanonicalRecordPath {
             kind,
             path: path.to_owned(),
-            identity: FileIdentity::from_metadata(&opened),
+            identity: opened_identity,
         },
         bytes: ImmutableBytes(Arc::from(bytes)),
         digest,
@@ -255,46 +274,79 @@ struct FileIdentity {
     #[cfg(unix)]
     inode: u64,
     #[cfg(windows)]
-    volume: Option<u32>,
+    volume: u32,
     #[cfg(windows)]
-    index: Option<u64>,
-}
-
-impl FileIdentity {
-    fn from_metadata(metadata: &Metadata) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Self {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            Self {
-                volume: metadata.volume_serial_number(),
-                index: metadata.file_index(),
-            }
-        }
-    }
+    index: u64,
 }
 
 #[cfg(unix)]
-fn same_file(left: &Metadata, right: &Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-
-    left.dev() == right.dev() && left.ino() == right.ino() && left.file_type() == right.file_type()
+fn identity_at_named_path(_path: &Path, metadata: &Metadata) -> io::Result<Option<FileIdentity>> {
+    Ok(Some(identity_from_metadata(metadata)))
 }
 
 #[cfg(windows)]
-fn same_file(left: &Metadata, right: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
+fn identity_at_named_path(path: &Path, metadata: &Metadata) -> io::Result<Option<FileIdentity>> {
+    let file = open_named_path(path)?;
+    let opened = file.metadata()?;
+    if metadata.file_type() != opened.file_type() {
+        return Ok(None);
+    }
+    identity_from_file(&file, &opened).map(Some)
+}
 
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index() == right.file_index()
-        && left.file_type() == right.file_type()
+#[cfg(unix)]
+fn open_named_path(path: &Path) -> io::Result<File> {
+    File::open(path)
+}
+
+#[cfg(windows)]
+fn open_named_path(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    options.open(path)
+}
+
+#[cfg(unix)]
+fn identity_from_file(_file: &File, metadata: &Metadata) -> io::Result<FileIdentity> {
+    Ok(identity_from_metadata(metadata))
+}
+
+#[cfg(unix)]
+fn identity_from_metadata(metadata: &Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt;
+
+    FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+#[cfg(windows)]
+fn identity_from_file(file: &File, _metadata: &Metadata) -> io::Result<FileIdentity> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` owns a valid handle for the duration of the synchronous
+    // call and `information` is a writable value of the required Win32 type.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(FileIdentity {
+        volume: information.dwVolumeSerialNumber,
+        index: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    })
 }
 
 fn validate_merge_id(merge_id: &str) -> ModelResult<()> {
