@@ -26,7 +26,9 @@ use crate::workspace_ops::merge::{
 };
 use crate::workspace_ops::tests::TempDir;
 
-pub(super) fn align_baseline_lock(record: &mut MergeOperationRecordV1) {
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn align_baseline_lock(
+    record: &mut MergeOperationRecordV1,
+) {
     let lock = accepted_lock_yaml(&record.workspace_id, &oid('a'));
     record.baseline.lock_sha256 = digest(&lock);
     record.baseline.lock_yaml = Some(lock);

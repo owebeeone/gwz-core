@@ -11,6 +11,7 @@ extern crate alloc;
 pub mod cbor;
 
 pub mod artifact;
+mod checked_artifact;
 pub mod diff;
 mod durable_fs;
 pub mod git;

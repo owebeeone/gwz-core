@@ -44,6 +44,65 @@ pub(super) fn create_backup_ref(
     })
 }
 
+pub(super) fn create_backup_ref_checked(
+    _backend: &Git2Backend,
+    path: &Path,
+    branch: &str,
+    expected_head: &str,
+    name: &str,
+    target: &str,
+) -> ModelResult<GitBackupRefResult> {
+    validate_backup_ref_name(name)?;
+    if target != expected_head {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "backup-ref target differs from its persisted attached HEAD",
+        ));
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    if !git2::Reference::is_valid_name(&branch_ref) {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            format!("invalid preservation branch '{branch}'"),
+        ));
+    }
+    let repo = open_repo(path)?;
+    let target = parse_commit(&repo, target)?;
+    let mut transaction = repo.transaction().map_err(git_error)?;
+    transaction.lock_ref("HEAD").map_err(git_error)?;
+    transaction.lock_ref(&branch_ref).map_err(git_error)?;
+    transaction.lock_ref(name).map_err(git_error)?;
+    require_attached_head(&repo, &branch_ref, target)?;
+    match repo.find_reference(name) {
+        Ok(reference) if reference.target() == Some(target) => {
+            drop(transaction);
+        }
+        Ok(reference) => {
+            return Err(ModelError::new(
+                ErrorCode::PreservationEvidenceMismatch,
+                format!(
+                    "preservation ref '{name}' points to '{}' instead of persisted target '{target}'",
+                    reference
+                        .target()
+                        .map_or_else(|| "a symbolic ref".to_owned(), |actual| actual.to_string())
+                ),
+            ));
+        }
+        Err(error) if error.code() == git2::ErrorCode::NotFound => {
+            transaction
+                .set_target(name, target, None, "gwz merge preservation")
+                .map_err(git_error)?;
+            transaction.commit().map_err(git_error)?;
+        }
+        Err(error) => return Err(git_error(error)),
+    }
+    verify_backup_ref(&repo, name, target)?;
+    Ok(GitBackupRefResult {
+        name: name.to_owned(),
+        target: target.to_string(),
+    })
+}
+
 pub(super) fn delete_backup_ref_checked(
     _backend: &Git2Backend,
     path: &Path,
@@ -179,6 +238,78 @@ pub(super) fn stash_for_merge_preservation(
                 "preservation stash '{}' was not verified after creation",
                 result.object_id
             ),
+        ));
+    }
+    Ok(result)
+}
+
+pub(super) fn stash_for_merge_preservation_checked(
+    backend: &Git2Backend,
+    path: &Path,
+    branch: &str,
+    expected_head: &str,
+    expected_preimage_sha256: &str,
+    merge_id: &str,
+    include_untracked: bool,
+) -> ModelResult<GitStashPushResult> {
+    validate_merge_id(merge_id)?;
+    let repo = open_repo(path)?;
+    let expected = parse_commit(&repo, expected_head)?;
+    let branch_ref = format!("refs/heads/{branch}");
+    require_attached_head(&repo, &branch_ref, expected)?;
+    if backend.repository_state(path)? != GitRepositoryState::Clean {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation stash no longer has a clean native Git state",
+        ));
+    }
+    let stash_id = format!("stash_{merge_id}");
+    let message = format!("gwz:{stash_id}: merge preservation");
+    let stashes = preservation_image::decode_stashes(backend, path, merge_id)?;
+    let current = preservation_image::capture(path, include_untracked)?;
+    match stashes.as_slice() {
+        [stash]
+            if stash.message == message
+                && stash.head_commit == expected_head
+                && stash.image.preimage_sha256 == expected_preimage_sha256
+                && current.dirty == GitPreservationDirtySummary::default() =>
+        {
+            return Ok(GitStashPushResult {
+                object_id: stash.object_id.clone(),
+                message,
+            });
+        }
+        [] => {}
+        _ => {
+            return Err(ModelError::new(
+                ErrorCode::PreservationEvidenceMismatch,
+                "native preservation stash is missing, duplicated, or disagrees with the persisted action",
+            ));
+        }
+    }
+    if current.preimage_sha256 != expected_preimage_sha256
+        || current.dirty == GitPreservationDirtySummary::default()
+    {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation checkout no longer matches the persisted stash preimage",
+        ));
+    }
+    // This is the final attached-HEAD check before the native stash mutation.
+    require_attached_head(&repo, &branch_ref, expected)?;
+    let result = stash_for_merge_preservation(backend, path, merge_id, include_untracked)?;
+    let verified = preservation_image::decode_stashes(backend, path, merge_id)?;
+    let postimage = preservation_image::capture(path, include_untracked)?;
+    if !matches!(verified.as_slice(), [stash]
+        if stash.object_id == result.object_id
+            && stash.message == message
+            && stash.head_commit == expected_head
+            && stash.image.preimage_sha256 == expected_preimage_sha256)
+        || postimage.dirty != GitPreservationDirtySummary::default()
+    {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation stash failed exact post-mutation verification",
         ));
     }
     Ok(result)
@@ -382,14 +513,30 @@ fn verify_backup_ref(repo: &git2::Repository, name: &str, target: git2::Oid) -> 
     Ok(())
 }
 
+fn require_attached_head(
+    repo: &git2::Repository,
+    branch_ref: &str,
+    expected: git2::Oid,
+) -> ModelResult<()> {
+    let head = repo.head().map_err(git_error)?;
+    let branch = repo.find_reference(branch_ref).map_err(git_error)?;
+    if !head.is_branch()
+        || head.name().ok() != Some(branch_ref)
+        || head.target() != Some(expected)
+        || branch.target() != Some(expected)
+    {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation action no longer has its persisted attached HEAD",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FaultBoundary {
     Before,
     After,
-    BeforeLeafRename,
-    AfterLeafRename,
-    BeforeLeafUnlink,
-    AfterLeafUnlink,
     BeforeIndexCommit,
     AfterIndexCommit,
     BeforeParentStageCreate,

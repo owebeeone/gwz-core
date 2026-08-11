@@ -100,7 +100,6 @@ fn evidence_rollback_steps_accept_only_their_exact_before_and_after_states() {
 #[test]
 fn every_evidence_phase_rejects_a_third_state() {
     use crate::artifact::LOCK_PATH;
-    const MARKER: &str = "gwz.conf/markers/rollback.yaml";
     const PRIOR: &[EvidenceRollbackStepV1] = &[
         EvidenceRollbackStepV1::EvidenceCommit,
         EvidenceRollbackStepV1::Boundary,
@@ -132,14 +131,25 @@ fn every_evidence_phase_rejects_a_third_state() {
             "{step:?} third state",
         );
     };
+    let marker_path = |fixture: &EvidenceFixture| {
+        fixture
+            .model
+            .publication
+            .as_ref()
+            .unwrap()
+            .candidate_marker_path
+            .as_deref()
+            .unwrap()
+            .to_owned()
+    };
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-head", true, true);
-    std::fs::write(fixture.root.path.join(MARKER), "foreign\n").unwrap();
+    std::fs::write(fixture.root.path.join(marker_path(&fixture)), "foreign\n").unwrap();
     assert_ambiguous(&fixture, EvidenceRollbackStepV1::EvidenceCommit);
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-boundary", true, true);
     advance(&fixture, 1);
-    std::fs::remove_file(fixture.root.path.join(MARKER)).unwrap();
+    std::fs::remove_file(fixture.root.path.join(marker_path(&fixture))).unwrap();
     assert_ambiguous(&fixture, EvidenceRollbackStepV1::Boundary);
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-lock", true, true);
@@ -183,7 +193,7 @@ fn every_evidence_phase_rejects_a_third_state() {
         .as_ref()
         .unwrap()
         .marker_yaml;
-    std::fs::write(fixture.root.path.join(MARKER), marker).unwrap();
+    std::fs::write(fixture.root.path.join(marker_path(&fixture)), marker).unwrap();
     assert_ambiguous(&fixture, EvidenceRollbackStepV1::Index);
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-complete", true, true);

@@ -32,7 +32,15 @@ pub(super) fn observe_pending<B: GitBackend>(
             target_commit,
             ..
         } => match backend.observe_direct_ref(&plan.path, name)? {
-            GitDirectRefObservation::Absent => not_started(action, prefix),
+            GitDirectRefObservation::Absent
+                if exact_attached_head(backend, plan, target_commit)? =>
+            {
+                not_started(action, prefix)
+            }
+            GitDirectRefObservation::Absent => Err(owner_error(
+                plan,
+                "persisted backup-ref action no longer has its recorded attached HEAD",
+            )),
             GitDirectRefObservation::Direct { target } if target == *target_commit => {
                 backup_done(current, plan, action, prefix)
             }
@@ -170,7 +178,9 @@ fn observe_plain_stash<B: GitBackend>(
     };
     let stashes = backend.preservation_stashes(&plan.path, &current.record().merge_id)?;
     let image = backend.preservation_image(&plan.path, true)?;
+    let attached = exact_attached_head(backend, plan, head_commit)?;
     if let [stash] = stashes.as_slice()
+        && attached
         && stash.message == *message
         && stash.head_commit == *head_commit
         && stash.image.preimage_sha256 == *preimage_sha256
@@ -178,13 +188,34 @@ fn observe_plain_stash<B: GitBackend>(
     {
         return Ok(GitRootPreservationStepObservation::After);
     }
-    if stashes.is_empty()
-        && image.preimage_sha256 == *preimage_sha256
-        && image.dirty != GitPreservationDirtySummary::default()
-    {
-        return Ok(GitRootPreservationStepObservation::Before);
+    if stashes.is_empty() {
+        if !attached || image.preimage_sha256 != *preimage_sha256 {
+            return Err(owner_error(
+                plan,
+                "persisted stash action no longer has its recorded HEAD and preimage",
+            ));
+        }
+        if image.dirty != GitPreservationDirtySummary::default() {
+            return Ok(GitRootPreservationStepObservation::Before);
+        }
     }
     Ok(GitRootPreservationStepObservation::Ambiguous)
+}
+
+fn exact_attached_head<B: GitBackend>(
+    backend: &B,
+    plan: &V1PreservationOwnerPlan,
+    commit: &str,
+) -> ModelResult<bool> {
+    if backend.repository_state(&plan.path)? != crate::git::GitRepositoryState::Clean {
+        return Ok(false);
+    }
+    let head = backend.head(&plan.path)?;
+    let branch = backend.read_ref(&plan.path, &format!("refs/heads/{}", plan.branch))?;
+    Ok(!head.is_detached
+        && head.branch.as_deref() == Some(plan.branch.as_str())
+        && head.commit.as_deref() == Some(commit)
+        && branch.as_deref() == Some(commit))
 }
 
 fn classify_phase<B: GitBackend>(

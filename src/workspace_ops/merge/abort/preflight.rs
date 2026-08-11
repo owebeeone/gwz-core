@@ -61,6 +61,7 @@ mod v1_rollback {
                 // classifier is run by the caller before rollback entry; the root
                 // participant becomes observable at its result commit only after
                 // that evidence owner is durably completed.
+                require_virtual_selected_root_after_evidence(backend, root, record, row)?;
                 continue;
             }
             match row.state {
@@ -121,6 +122,76 @@ mod v1_rollback {
                     ));
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn require_virtual_selected_root_after_evidence<B: GitBackend>(
+        backend: &B,
+        root: &Path,
+        record: &MergeOperationRecordV1,
+        row: &crate::workspace_ops::merge::MergeParticipantRecord,
+    ) -> ModelResult<()> {
+        use crate::workspace_ops::merge::model::v1::AcceptedRootBaseV1;
+
+        super::super::evidence::preflight_v1_evidence(backend, root, record)?;
+        let publication = record.publication.as_ref().ok_or_else(|| {
+            member_preflight_error("@root", ".", "publication evidence disappeared")
+        })?;
+        let candidate = publication.candidate.as_ref().ok_or_else(|| {
+            member_preflight_error("@root", ".", "publication candidate disappeared")
+        })?;
+        let result_commit = row.resulting_commit.as_deref().ok_or_else(|| {
+            member_preflight_error(
+                "@root",
+                ".",
+                "selected-root publication handoff has no participant result commit",
+            )
+        })?;
+        let accepted = record.accepted_workspace.as_ref().ok_or_else(|| {
+            member_preflight_error(
+                "@root",
+                ".",
+                "selected-root publication handoff has no accepted root base",
+            )
+        })?;
+        if !matches!(
+            &accepted.root.base,
+            AcceptedRootBaseV1::BornAttached { symbolic_branch, commit }
+                if symbolic_branch == &candidate.root_branch && commit == result_commit
+        ) {
+            return Err(member_preflight_error(
+                "@root",
+                ".",
+                "publication evidence does not retire to the selected-root participant result",
+            ));
+        }
+        if backend.repository_state(root)? != crate::git::GitRepositoryState::Clean {
+            return Err(member_preflight_error(
+                "@root",
+                ".",
+                "selected-root publication handoff has a foreign native Git state",
+            ));
+        }
+        let allowed = crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<BTreeSet<_>>();
+        let status = backend.status(root)?;
+        if status.unresolved > 0
+            || status.files.iter().any(|file| {
+                !allowed.contains(&file.path)
+                    || file
+                        .original_path
+                        .as_ref()
+                        .is_some_and(|path| !allowed.contains(path))
+            })
+        {
+            return Err(member_preflight_error(
+                "@root",
+                ".",
+                "selected-root checkout has unrelated dirt outside publication-owned paths",
+            ));
         }
         Ok(())
     }

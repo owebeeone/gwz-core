@@ -4,6 +4,7 @@ mod phases;
 mod real_git;
 mod recovery;
 mod root_artifacts;
+mod service_fault_matrix;
 
 use crate::git::{Git2Backend, GitBackend};
 use crate::workspace_ops::merge::model::v1::MergeOperationRecordV1;
@@ -65,22 +66,35 @@ fn staged_evidence_fixture(
     change_lock: bool,
 ) -> EvidenceFixture {
     use crate::artifact::LOCK_PATH;
-    use crate::workspace_ops::merge::model::v1::{
-        AcceptedLockV1, AcceptedMetadataBaseV1, AcceptedMetadataSourceV1, AcceptedRootBaseV1,
-        AcceptedWorkspaceV1, RootArtifactHashesV1, RootPublicationInputV1,
-    };
     use crate::workspace_ops::merge::{
-        PublicationCandidate, PublicationCandidateHash, PublicationProgress, PublicationStep,
+        PublicationCandidateHash, PublicationProgress, PublicationStep,
     };
     use sha2::{Digest, Sha256};
-    use std::collections::BTreeMap;
 
+    let mut model = crate::workspace_ops::merge::model::v1::test_record();
+    crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::align_baseline_lock(&mut model);
+    let baseline_manifest = model.baseline.manifest_yaml.clone().unwrap();
+    let baseline_lock = model.baseline.lock_yaml.clone().unwrap();
     let root = TempDir::new(name);
     let backend = Git2Backend::new();
     backend.create_repo(&root.path).unwrap();
     std::fs::create_dir_all(root.path.join("gwz.conf/markers")).unwrap();
-    let baseline_lock = "baseline lock\n";
-    let baseline = commit_file(&root.path, LOCK_PATH, baseline_lock, "baseline", &[]).unwrap();
+    let manifest_commit = commit_file(
+        &root.path,
+        crate::workspace::WORKSPACE_MANIFEST,
+        &baseline_manifest,
+        "manifest",
+        &[],
+    )
+    .unwrap();
+    let baseline = commit_file(
+        &root.path,
+        LOCK_PATH,
+        &baseline_lock,
+        "baseline",
+        &[manifest_commit.parse().unwrap()],
+    )
+    .unwrap();
     let boundary_path = crate::workspace_ops::workspace_exclude_path(&root.path);
     let baseline_boundary = std::fs::read_to_string(&boundary_path).unwrap();
     let candidate_boundary = if change_boundary {
@@ -88,67 +102,43 @@ fn staged_evidence_fixture(
     } else {
         baseline_boundary.clone()
     };
-    let marker_path = "gwz.conf/markers/rollback.yaml";
-    let candidate_lock = if change_lock {
-        "candidate lock\n"
-    } else {
-        baseline_lock
-    };
-    let marker = "candidate marker\n";
     let digest = |value: &str| format!("{:x}", Sha256::digest(value.as_bytes()));
 
-    let mut model = crate::workspace_ops::merge::model::v1::test_record();
     model.state = OperationState::RollingBack;
-    model.accepted_workspace = Some(AcceptedWorkspaceV1 {
-        operation_baseline_lock_sha256: digest(baseline_lock),
-        metadata_base: AcceptedMetadataBaseV1 {
-            source: AcceptedMetadataSourceV1::OperationBaseline,
-            manifest_exact_yaml: String::new(),
-            manifest_sha256: digest(""),
-            lock_exact_yaml: baseline_lock.into(),
-            lock_sha256: digest(baseline_lock),
-        },
-        lock: AcceptedLockV1 {
-            exact_yaml: candidate_lock.into(),
-            sha256: digest(candidate_lock),
-        },
-        member_audit: BTreeMap::new(),
-        root: RootPublicationInputV1 {
-            base: AcceptedRootBaseV1::BornAttached {
-                commit: baseline.clone(),
-                symbolic_branch: "main".into(),
-            },
-            publication_branch: Some("main".into()),
-            baseline_artifact_hashes: RootArtifactHashesV1 {
-                lock_worktree_sha256: digest(baseline_lock),
-                manifest_worktree_sha256: digest(""),
-                lock_commit_sha256: None,
-                manifest_commit_sha256: None,
-            },
-        },
-    });
+    model.baseline.root_head = Some(baseline.clone());
+    model.baseline.root_branch = Some("main".into());
+    let row = model.participants.get_mut("mem_a").unwrap();
+    if change_lock {
+        row.state = ParticipantState::FastForwarded;
+        row.resulting_commit = Some(row.source_commit.clone());
+    } else {
+        row.state = ParticipantState::UpToDate;
+        row.resulting_commit = Some(row.before_commit.clone());
+    }
+    let current = crate::workspace_ops::merge::v1_lifecycle::checked::StoredV1Record::for_test(
+        &root.path,
+        model.clone(),
+    )
+    .unwrap();
+    let accepted =
+        crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::accepted_workspace(&current);
+    let mut candidate =
+        crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::candidate_payload(&current);
+    candidate.candidate.baseline_boundary_text = baseline_boundary;
+    candidate.candidate.baseline_boundary_sha256 =
+        digest(&candidate.candidate.baseline_boundary_text);
+    candidate.candidate.boundary_text = candidate_boundary.clone();
+    candidate.candidate.boundary_sha256 = digest(&candidate_boundary);
+    model.accepted_workspace = Some(accepted);
     model.publication = Some(PublicationProgress {
         step: PublicationStep::CommittingEvidence,
-        candidate_lock_sha256: Some(digest(candidate_lock)),
-        candidate_marker_path: Some(marker_path.into()),
+        candidate_lock_sha256: Some(candidate.lock_sha256),
+        candidate_marker_path: Some(candidate.marker_path),
         root_merge_commit: None,
         composition_commit: None,
         composition_tree: None,
         candidate_hashes: Vec::new(),
-        candidate: Some(PublicationCandidate {
-            marker_id: "rollback".into(),
-            root_branch: "main".into(),
-            actor_id: "agent_test".into(),
-            baseline_lock_yaml: baseline_lock.into(),
-            lock_yaml: candidate_lock.into(),
-            marker_yaml: marker.into(),
-            baseline_boundary_sha256: digest(&baseline_boundary),
-            baseline_boundary_text: baseline_boundary,
-            boundary_sha256: digest(&candidate_boundary),
-            boundary_text: candidate_boundary.clone(),
-            marker_sha256: digest(marker),
-            extensions: BTreeMap::new(),
-        }),
+        candidate: Some(candidate.candidate),
         evidence_rolled_back: false,
         root_preservation: Vec::new(),
         preservation_prefix: None,
@@ -171,10 +161,13 @@ fn staged_evidence_fixture(
         .collect();
     crate::workspace_ops::publish_workspace_exclude_candidate(&root.path, &candidate_boundary)
         .unwrap();
-    std::fs::write(root.path.join(LOCK_PATH), candidate_lock).unwrap();
-    std::fs::write(root.path.join(marker_path), marker).unwrap();
+    let publication = model.publication.as_ref().unwrap();
+    let candidate = publication.candidate.as_ref().unwrap();
+    let marker_path = publication.candidate_marker_path.as_ref().unwrap();
+    std::fs::write(root.path.join(LOCK_PATH), &candidate.lock_yaml).unwrap();
+    std::fs::write(root.path.join(marker_path), &candidate.marker_yaml).unwrap();
     backend
-        .stage_paths(&root.path, &[LOCK_PATH, marker_path])
+        .stage_paths(&root.path, &[LOCK_PATH, marker_path.as_str()])
         .unwrap();
     EvidenceFixture {
         root,

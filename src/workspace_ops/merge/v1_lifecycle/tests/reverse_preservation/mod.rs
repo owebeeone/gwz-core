@@ -1,8 +1,11 @@
 mod entry;
 mod faults;
+mod invariants;
 mod phases;
 mod real_git;
 mod recovery;
+mod root_fault_matrix;
+mod root_successor_matrix;
 
 use std::fs;
 
@@ -62,6 +65,7 @@ impl PreservationFixture {
 
 fn integrated_fixture(name: &str) -> PreservationFixture {
     let root = TempDir::new(name);
+    fs::create_dir_all(root.path.join(crate::stash::STASH_BUNDLE_DIR)).unwrap();
     let backend = Git2Backend::new();
     let member = root.path.join("members/a");
     backend.create_repo(&member).unwrap();

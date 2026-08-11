@@ -102,6 +102,32 @@ fn direct_ref_observation_never_resolves_symbolic_references() {
 }
 
 #[test]
+fn checked_backup_ref_rejects_an_advanced_attached_head_without_creating_a_ref() {
+    let (_temp, backend, repo, first) = seeded_repo("merge-preservation-checked-ref");
+    let second = commit_file(
+        &repo,
+        "second.txt",
+        "second\n",
+        "second",
+        &[first.parse().unwrap()],
+    )
+    .unwrap();
+    let name = "refs/gwz/merge/merge_1/mem_app/head";
+    let error = backend
+        .create_backup_ref_checked(&repo, "main", &first, name, &first)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PreservationEvidenceMismatch);
+    assert_eq!(
+        backend.head(&repo).unwrap().commit.as_deref(),
+        Some(second.as_str())
+    );
+    assert_eq!(
+        backend.observe_direct_ref(&repo, name).unwrap(),
+        GitDirectRefObservation::Absent
+    );
+}
+
+#[test]
 fn merge_preservation_stash_is_verified_idempotent_and_excludes_ignored_files() {
     let (_temp, backend, repo, head) = seeded_repo("merge-preservation-stash");
     let head_oid = git2::Oid::from_str(&head).unwrap();
@@ -166,6 +192,59 @@ fn merge_preservation_stash_is_verified_idempotent_and_excludes_ignored_files() 
         !backend
             .checkout_matches_commit(&repo, "main", &decoded[0].head_commit)
             .unwrap()
+    );
+}
+
+#[test]
+fn checked_preservation_stash_binds_head_and_complete_preimage() {
+    let (_temp, backend, repo, head) = seeded_repo("merge-preservation-checked-stash");
+    fs::write(repo.join("tracked.txt"), "first pending value\n").unwrap();
+    fs::write(repo.join("untracked.txt"), "first untracked value\n").unwrap();
+    let expected = backend.preservation_image(&repo, true).unwrap();
+    fs::write(repo.join("tracked.txt"), "changed after intent\n").unwrap();
+    let error = backend
+        .stash_for_merge_preservation_checked(
+            &repo,
+            "main",
+            &head,
+            &expected.preimage_sha256,
+            "merge_1",
+            true,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PreservationEvidenceMismatch);
+    assert!(
+        backend
+            .preservation_stashes(&repo, "merge_1")
+            .unwrap()
+            .is_empty()
+    );
+    assert_text_eq(repo.join("tracked.txt"), "changed after intent\n");
+    assert_text_eq(repo.join("untracked.txt"), "first untracked value\n");
+
+    let exact = backend.preservation_image(&repo, true).unwrap();
+    let saved = backend
+        .stash_for_merge_preservation_checked(
+            &repo,
+            "main",
+            &head,
+            &exact.preimage_sha256,
+            "merge_1",
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        backend
+            .stash_for_merge_preservation_checked(
+                &repo,
+                "main",
+                &head,
+                &exact.preimage_sha256,
+                "merge_1",
+                true,
+            )
+            .unwrap(),
+        saved
     );
 }
 

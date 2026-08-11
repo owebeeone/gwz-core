@@ -405,6 +405,18 @@ pub trait GitBackend {
     ) -> ModelResult<GitBackupRefResult> {
         unsupported_backend("create_backup_ref")
     }
+    /// Create an exact preservation ref only while HEAD remains attached to
+    /// `branch` at the persisted `expected_head`.
+    fn create_backup_ref_checked(
+        &self,
+        _path: &Path,
+        _branch: &str,
+        _expected_head: &str,
+        _name: &str,
+        _target: &str,
+    ) -> ModelResult<GitBackupRefResult> {
+        unsupported_backend("create_backup_ref_checked")
+    }
     /// Delete an exact local preservation ref when it still has the recorded target.
     fn delete_backup_ref_checked(
         &self,
@@ -422,6 +434,19 @@ pub trait GitBackend {
         _include_untracked: bool,
     ) -> ModelResult<GitStashPushResult> {
         unsupported_backend("stash_for_merge_preservation")
+    }
+    /// Save work only while the attached branch, HEAD commit, and canonical
+    /// complete preimage still equal the persisted action values.
+    fn stash_for_merge_preservation_checked(
+        &self,
+        _path: &Path,
+        _branch: &str,
+        _expected_head: &str,
+        _expected_preimage_sha256: &str,
+        _merge_id: &str,
+        _include_untracked: bool,
+    ) -> ModelResult<GitStashPushResult> {
+        unsupported_backend("stash_for_merge_preservation_checked")
     }
     /// Capture the canonical I2 index/worktree image without decoding Git
     /// paths as UTF-8. Forbidden index flags are rejected rather than omitted.

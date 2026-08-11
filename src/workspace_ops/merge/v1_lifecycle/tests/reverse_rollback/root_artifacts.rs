@@ -128,6 +128,41 @@ fn selected_root_rejects_a_symlink_leaf() {
 }
 
 #[test]
+fn selected_root_checked_write_preserves_a_leaf_replaced_before_linearization() {
+    use crate::checked_artifact::{CheckedArtifactFault, run_next_checked_artifact_at};
+
+    let (root, backend, model) = root_fixture("v1-rollback-root-replaced-leaf");
+    let manifest = root.path.join(WORKSPACE_MANIFEST);
+    let replacement = manifest.clone();
+    run_next_checked_artifact_at(CheckedArtifactFault::BeforeFinalCheck, move || {
+        std::fs::remove_file(&replacement).unwrap();
+        std::fs::write(replacement, "foreign manifest\n").unwrap();
+    });
+    let error = execute_v1_root_metadata_rollback(
+        &backend,
+        &root.path,
+        &model,
+        RootMetadataRollbackStepV1::Manifest,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, crate::model::ErrorCode::MergeRecoveryRequired);
+    assert_eq!(
+        std::fs::read_to_string(manifest).unwrap(),
+        "foreign manifest\n"
+    );
+    assert_eq!(
+        observe_v1_root_metadata_rollback(
+            &backend,
+            &root.path,
+            &model,
+            RootMetadataRollbackStepV1::Manifest,
+        )
+        .unwrap(),
+        O::Ambiguous
+    );
+}
+
+#[test]
 fn selected_root_rejects_lock_restored_ahead_of_manifest() {
     let (root, backend, model) = root_fixture("v1-rollback-root-out-of-order");
     std::fs::write(

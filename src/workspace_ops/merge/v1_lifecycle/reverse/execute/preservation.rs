@@ -60,7 +60,13 @@ fn execute_checked<B: GitBackend>(
             target_commit,
             ..
         } => {
-            backend.create_backup_ref(&plan.path, name, target_commit)?;
+            backend.create_backup_ref_checked(
+                &plan.path,
+                &plan.branch,
+                target_commit,
+                name,
+                target_commit,
+            )?;
         }
         PendingPreservationActionV1::Stash {
             phase: S::WriteBundle,
@@ -97,8 +103,11 @@ fn execute_checked<B: GitBackend>(
                     ),
                 )?;
             } else if *phase == S::CreateStash {
-                backend.stash_for_merge_preservation(
+                backend.stash_for_merge_preservation_checked(
                     &plan.path,
+                    &plan.branch,
+                    head_commit,
+                    preimage_sha256,
                     &current.record().merge_id,
                     true,
                 )?;

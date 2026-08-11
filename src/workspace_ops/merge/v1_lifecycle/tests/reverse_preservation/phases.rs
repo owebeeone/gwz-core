@@ -66,7 +66,7 @@ fn clean_owner_at_anchor_creates_no_fake_preservation_artifact() {
 }
 
 #[test]
-fn changed_work_after_durable_stash_intent_enters_recovery_without_stashing() {
+fn changed_work_after_durable_stash_intent_is_rejected_without_stashing() {
     let fixture = dirty_anchor_fixture("v1-preservation-stale-preimage");
     fixture.seed_open();
     let context = fixture.context();
@@ -95,20 +95,25 @@ fn changed_work_after_durable_stash_intent_enters_recovery_without_stashing() {
     ));
 
     fs::write(fixture.member.join("README.md"), "changed after intent\n").unwrap();
+    let record_path = fixture
+        .root
+        .path
+        .join(format!(".gwz/merge/{}.yaml", fixture.model.merge_id));
+    let record_before = fs::read(&record_path).unwrap();
     let resume_context = fixture.context();
     let mut runtime = ReverseRuntime::new(&fixture.backend, &resume_context);
-    let response = run(
+    let error = match run(
         &CheckedV1Store::default(),
         &fixture.root.path,
         &fixture.model.merge_id,
         V1LifecycleRequest::Preserve,
         &mut runtime,
-    )
-    .unwrap();
-    assert_eq!(
-        response.disposition(),
-        V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
-    );
+    ) {
+        Ok(_) => panic!("changed stash preimage unexpectedly advanced"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, ErrorCode::PreservationEvidenceMismatch);
+    assert_eq!(fs::read(record_path).unwrap(), record_before);
     assert!(
         fixture
             .backend

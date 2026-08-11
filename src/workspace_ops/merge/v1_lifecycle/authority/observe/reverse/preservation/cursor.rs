@@ -26,11 +26,13 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBacken
     }
     verify_bundle_prefix(backend, current, &plans)?;
 
-    for plan in &plans {
+    for (index, plan) in plans.iter().enumerate() {
         if !backup_complete(current.record(), plan)? {
+            reject_later_durable_owner(current.record(), &plans, index, plan)?;
             return backup_intent(current, plan);
         }
         if !stash_complete(backend, current, &plans, plan)? {
+            reject_later_durable_owner(current.record(), &plans, index, plan)?;
             return stash_intent(backend, current, plan);
         }
     }
@@ -40,6 +42,23 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBacken
         }
     }
     exhausted(backend, context, current)
+}
+
+fn reject_later_durable_owner(
+    record: &MergeOperationRecordV1,
+    plans: &[V1PreservationOwnerPlan],
+    index: usize,
+    current: &V1PreservationOwnerPlan,
+) -> ModelResult<()> {
+    for later in &plans[index + 1..] {
+        if v1_owner_evidence(record, &later.owner)?.is_some() {
+            return Err(owner_error(
+                current,
+                "preservation owner acquired new work ahead of a later durable owner",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn pending_recovery_is_exact<B: GitBackend>(
@@ -232,24 +251,16 @@ fn backup_complete(
 pub(super) fn stash_complete<B: GitBackend>(
     backend: &B,
     current: &StoredV1Record,
-    plans: &[V1PreservationOwnerPlan],
+    _plans: &[V1PreservationOwnerPlan],
     plan: &V1PreservationOwnerPlan,
 ) -> ModelResult<bool> {
     let evidence = v1_owner_evidence(current.record(), &plan.owner)?;
     if evidence.is_some_and(|row| row.stash_id.is_some()) {
-        if v1_bundle_observation(
-            backend,
-            current.location().root(),
-            current.record(),
-            plans,
-            &plan.owner,
-        )? != V1BundleObservation::After
-        {
-            return Err(owner_error(
-                plan,
-                "durable stash evidence has no exact bundle row",
-            ));
-        }
+        // The caller has already proved either the exact action-free durable
+        // bundle cursor or the pending owner's exact before/after bundle row.
+        // Reclassifying an earlier owner against the complete durable set here
+        // would reject the legitimate prior prefix while a later WriteBundle
+        // action is pending.
         let image = v1_preservation_image(backend, current.record(), plan, &plan.live_commit)?;
         return Ok(image.dirty == GitPreservationDirtySummary::default());
     }

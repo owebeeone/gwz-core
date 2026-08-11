@@ -39,6 +39,8 @@ pub use types::*;
 pub(crate) use repository_support::open_repo;
 
 #[cfg(test)]
+pub(crate) use crate::checked_artifact::{CheckedArtifactFault, fail_next_checked_artifact_at};
+#[cfg(test)]
 pub(crate) use merge_support::{conflict_paths, render_git_path};
 #[cfg(test)]
 pub(crate) use preservation_image::raw_path_preimage_for_test;
@@ -89,8 +91,10 @@ impl GitBackend for Git2Backend {
     delegate!(set_branch_target_checked(path: &Path, branch: &str, expected_current: &str, target: &str,) -> ModelResult<GitUpdateResult> => merge_recovery::set_branch_target_checked);
     delegate!(delete_branch_target_checked(path: &Path, branch: &str, expected_current: &str,) -> ModelResult<()> => merge_recovery::delete_branch_target_checked);
     delegate!(create_backup_ref(path: &Path, name: &str, target: &str,) -> ModelResult<GitBackupRefResult> => preservation::create_backup_ref);
+    delegate!(create_backup_ref_checked(path: &Path, branch: &str, expected_head: &str, name: &str, target: &str,) -> ModelResult<GitBackupRefResult> => preservation::create_backup_ref_checked);
     delegate!(delete_backup_ref_checked(path: &Path, name: &str, expected_target: &str,) -> ModelResult<()> => preservation::delete_backup_ref_checked);
     delegate!(stash_for_merge_preservation(path: &Path, merge_id: &str, include_untracked: bool,) -> ModelResult<GitStashPushResult> => preservation::stash_for_merge_preservation);
+    delegate!(stash_for_merge_preservation_checked(path: &Path, branch: &str, expected_head: &str, expected_preimage_sha256: &str, merge_id: &str, include_untracked: bool,) -> ModelResult<GitStashPushResult> => preservation::stash_for_merge_preservation_checked);
     delegate!(preservation_image(path: &Path, include_untracked: bool,) -> ModelResult<GitPreservationImage> => preservation::preservation_image);
     delegate!(preservation_stashes(path: &Path, merge_id: &str,) -> ModelResult<Vec<GitPreservationStashEvidence>> => preservation::preservation_stashes);
     delegate!(observe_direct_ref(path: &Path, name: &str,) -> ModelResult<GitDirectRefObservation> => preservation::observe_direct_ref);
