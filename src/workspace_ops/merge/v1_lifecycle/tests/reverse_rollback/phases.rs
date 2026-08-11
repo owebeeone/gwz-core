@@ -13,6 +13,7 @@ fn integrated_participant_classifies_exact_before_after_and_ambiguous() {
         observe_v1_participant_rollback(
             &fixture.backend,
             &fixture.root.path,
+            &fixture.model,
             "mem_a",
             row,
             ParticipantRollbackKindV1::ResetIntegrated,
@@ -28,6 +29,7 @@ fn integrated_participant_classifies_exact_before_after_and_ambiguous() {
         observe_v1_participant_rollback(
             &fixture.backend,
             &fixture.root.path,
+            &fixture.model,
             "mem_a",
             row,
             ParticipantRollbackKindV1::ResetIntegrated,
@@ -40,6 +42,7 @@ fn integrated_participant_classifies_exact_before_after_and_ambiguous() {
         observe_v1_participant_rollback(
             &fixture.backend,
             &fixture.root.path,
+            &fixture.model,
             "mem_a",
             row,
             ParticipantRollbackKindV1::ResetIntegrated,

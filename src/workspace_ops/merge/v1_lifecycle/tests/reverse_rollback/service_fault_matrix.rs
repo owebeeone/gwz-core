@@ -1,11 +1,8 @@
 use super::*;
-use crate::artifact::LOCK_PATH;
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{ActionKind, OperationContext};
-use crate::workspace::WORKSPACE_MANIFEST;
 use crate::workspace_ops::merge::model::v1::{
     EvidenceRollbackStepV1 as E, ParticipantRollbackKindV1 as P, PendingRollbackActionV1,
-    RecoveryContextV1, RecoveryOriginStateV1, RootMetadataRollbackStepV1 as R,
+    RootMetadataRollbackStepV1 as R,
 };
 use crate::workspace_ops::merge::v1_lifecycle::authority::{
     BoundExactObservation, BoundObservationRequest, ExecutionDiagnostic, PhysicalActionKind,
@@ -15,11 +12,18 @@ use crate::workspace_ops::merge::v1_lifecycle::checked::{StoredV1Record, V1Mutat
 use crate::workspace_ops::merge::v1_lifecycle::reverse::ReverseRuntime;
 use crate::workspace_ops::merge::v1_lifecycle::service::{ExactObserver, PhysicalExecutor, run};
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
-use sha2::{Digest, Sha256};
+
+mod fixtures;
+pub(super) use fixtures::{Lane, MatrixFixture, context, fixture, seed_open, seed_recovery};
 
 #[test]
 fn every_emitted_rollback_physical_and_successor_boundary_recovers_exactly_once() {
-    for lane in [Lane::Participant, Lane::Evidence, Lane::SelectedRoot] {
+    for lane in [
+        Lane::AbortConflict,
+        Lane::ResetIntegrated,
+        Lane::Evidence,
+        Lane::SelectedRoot,
+    ] {
         let targets = emitted_targets(lane);
         assert_eq!(
             targets,
@@ -27,106 +31,112 @@ fn every_emitted_rollback_physical_and_successor_boundary_recovers_exactly_once(
             "{lane:?} action set drifted"
         );
         for (target_index, target) in targets.into_iter().enumerate() {
-            for (boundary_index, boundary) in [
-                Boundary::BeforePhysical,
-                Boundary::AfterPhysical,
-                Boundary::AfterDurableSuccessor,
-            ]
-            .into_iter()
-            .enumerate()
+            for (request_index, request) in
+                [V1LifecycleRequest::Abort, V1LifecycleRequest::Preserve]
+                    .into_iter()
+                    .enumerate()
             {
-                let fixture = fixture(
-                    lane,
-                    &format!("v1-rollback-matrix-{lane:?}-{target_index}-{boundary_index}"),
-                );
-                seed_open(&fixture.root.path, &fixture.model);
-                let operation_context = context(&fixture.model);
-                let mut interrupt = InterruptRuntime {
-                    inner: ReverseRuntime::new(&fixture.backend, &operation_context),
-                    target,
-                    boundary,
-                    physical_complete: false,
-                    interrupted: false,
-                };
-                let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run(
-                        &CheckedV1Store::default(),
+                for (boundary_index, boundary) in [
+                    Boundary::BeforePhysical,
+                    Boundary::AfterPhysical,
+                    Boundary::AfterDurableSuccessor,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let fixture = fixture(
+                        lane,
+                        &format!(
+                            "v1-rollback-matrix-{lane:?}-{target_index}-{request_index}-{boundary_index}"
+                        ),
+                    );
+                    seed_open(&fixture.root.path, &fixture.model);
+                    let operation_context = context(&fixture.model);
+                    let mut interrupt = InterruptRuntime {
+                        inner: ReverseRuntime::new(&fixture.backend, &operation_context),
+                        target,
+                        boundary,
+                        physical_complete: false,
+                        interrupted: false,
+                    };
+                    let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run(
+                            &CheckedV1Store::default(),
+                            &fixture.root.path,
+                            &fixture.model.merge_id,
+                            request,
+                            &mut interrupt,
+                        )
+                    }));
+                    assert!(interrupt.interrupted, "{lane:?} {target:?} was not issued");
+                    match boundary {
+                        Boundary::BeforePhysical => assert!(
+                            matches!(first, Ok(Err(_))),
+                            "{lane:?} {target:?} did not stop before observation"
+                        ),
+                        Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => assert!(
+                            first.is_err(),
+                            "{lane:?} {target:?} {boundary:?} did not interrupt"
+                        ),
+                    }
+
+                    let store = CheckedV1Store::default();
+                    let interrupted = store
+                        .load_open(&fixture.root.path, &fixture.model.merge_id)
+                        .unwrap();
+                    assert_eq!(interrupted.record().state, OperationState::RollingBack);
+                    assert!(
+                        interrupted
+                            .record()
+                            .pending_rollback
+                            .as_ref()
+                            .is_some_and(|action| target.matches(action))
+                            || boundary == Boundary::AfterDurableSuccessor
+                    );
+
+                    if interrupted.record().pending_rollback.is_some() {
+                        seed_recovery(&fixture.root.path, interrupted.record());
+                    }
+                    let operation_context = context(&fixture.model);
+                    let mut resume = CountingRuntime {
+                        inner: ReverseRuntime::new(&fixture.backend, &operation_context),
+                        target,
+                        executions: 0,
+                    };
+                    let response = run(
+                        &store,
                         &fixture.root.path,
                         &fixture.model.merge_id,
-                        V1LifecycleRequest::Abort,
-                        &mut interrupt,
+                        if request == V1LifecycleRequest::Abort {
+                            V1LifecycleRequest::Preserve
+                        } else {
+                            V1LifecycleRequest::Abort
+                        },
+                        &mut resume,
                     )
-                }));
-                assert!(interrupt.interrupted, "{lane:?} {target:?} was not issued");
-                match boundary {
-                    Boundary::BeforePhysical => assert!(
-                        matches!(first, Ok(Err(_))),
-                        "{lane:?} {target:?} did not stop before observation"
-                    ),
-                    Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => assert!(
-                        first.is_err(),
-                        "{lane:?} {target:?} {boundary:?} did not interrupt"
-                    ),
-                }
-
-                let store = CheckedV1Store::default();
-                let interrupted = store
-                    .load_open(&fixture.root.path, &fixture.model.merge_id)
                     .unwrap();
-                assert_eq!(interrupted.record().state, OperationState::RollingBack);
-                assert!(
-                    interrupted
-                        .record()
-                        .pending_rollback
-                        .as_ref()
-                        .is_some_and(|action| target.matches(action))
-                        || boundary == Boundary::AfterDurableSuccessor
-                );
-
-                if interrupted.record().pending_rollback.is_some() {
-                    seed_recovery(&fixture.root.path, interrupted.record());
+                    assert_eq!(
+                        response.disposition(),
+                        V1ResponseDisposition::Terminal(OperationState::Aborted),
+                        "{lane:?} {target:?} {boundary:?}"
+                    );
+                    assert_eq!(
+                        resume.executions,
+                        usize::from(boundary == Boundary::BeforePhysical),
+                        "{lane:?} {target:?} {boundary:?}"
+                    );
+                    assert!(response.current().record().pending_rollback.is_none());
+                    assert!(response.current().record().recovery_context.is_none());
                 }
-                let operation_context = context(&fixture.model);
-                let mut resume = CountingRuntime {
-                    inner: ReverseRuntime::new(&fixture.backend, &operation_context),
-                    target,
-                    executions: 0,
-                };
-                let response = run(
-                    &store,
-                    &fixture.root.path,
-                    &fixture.model.merge_id,
-                    V1LifecycleRequest::Abort,
-                    &mut resume,
-                )
-                .unwrap();
-                assert_eq!(
-                    response.disposition(),
-                    V1ResponseDisposition::Terminal(OperationState::Aborted),
-                    "{lane:?} {target:?} {boundary:?}"
-                );
-                assert_eq!(
-                    resume.executions,
-                    usize::from(boundary == Boundary::BeforePhysical),
-                    "{lane:?} {target:?} {boundary:?}"
-                );
-                assert!(response.current().record().pending_rollback.is_none());
-                assert!(response.current().record().recovery_context.is_none());
             }
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Lane {
-    Participant,
-    Evidence,
-    SelectedRoot,
-}
-
-fn expected_targets(lane: Lane) -> Vec<Target> {
+pub(super) fn expected_targets(lane: Lane) -> Vec<Target> {
     match lane {
-        Lane::Participant => vec![Target::Participant(P::ResetIntegrated)],
+        Lane::AbortConflict => vec![Target::Participant(P::AbortConflict)],
+        Lane::ResetIntegrated => vec![Target::Participant(P::ResetIntegrated)],
         Lane::Evidence => vec![
             Target::Evidence(E::EvidenceCommit),
             Target::Evidence(E::Boundary),
@@ -138,155 +148,15 @@ fn expected_targets(lane: Lane) -> Vec<Target> {
     }
 }
 
-struct MatrixFixture {
-    root: TempDir,
-    backend: Git2Backend,
-    model: MergeOperationRecordV1,
-}
-
-fn fixture(lane: Lane, name: &str) -> MatrixFixture {
-    match lane {
-        Lane::Participant => {
-            let value = integrated_fixture(name);
-            MatrixFixture {
-                root: value.root,
-                backend: value.backend,
-                model: value.model,
-            }
-        }
-        Lane::Evidence => {
-            let mut value = staged_evidence_fixture(name, true, true);
-            let row = value.model.participants.get_mut("mem_a").unwrap();
-            row.state = if row.resulting_commit.as_deref() == Some(row.before_commit.as_str()) {
-                ParticipantState::Aborted
-            } else {
-                ParticipantState::RolledBack
-            };
-            MatrixFixture {
-                root: value.root,
-                backend: value.backend,
-                model: value.model,
-            }
-        }
-        Lane::SelectedRoot => selected_root_fixture(name),
-    }
-}
-
-fn selected_root_fixture(name: &str) -> MatrixFixture {
-    let root = TempDir::new(name);
-    let backend = Git2Backend::new();
-    backend.create_repo(&root.path).unwrap();
-    std::fs::create_dir_all(root.path.join("gwz.conf")).unwrap();
-    let mut model = crate::workspace_ops::merge::model::v1::test_record();
-    let manifest = model.baseline.manifest_yaml.clone().unwrap();
-    let lock = model.baseline.lock_yaml.clone().unwrap();
-    let manifest_commit = commit_file(
-        &root.path,
-        WORKSPACE_MANIFEST,
-        &manifest,
-        "baseline manifest",
-        &[],
-    )
-    .unwrap();
-    let before = commit_file(
-        &root.path,
-        LOCK_PATH,
-        &lock,
-        "baseline lock",
-        &[manifest_commit.parse().unwrap()],
-    )
-    .unwrap();
-    let result_manifest = format!("{manifest}# selected-root result\n");
-    let result_lock = format!("{lock}# selected-root result\n");
-    let result_manifest_commit = commit_file(
-        &root.path,
-        WORKSPACE_MANIFEST,
-        &result_manifest,
-        "result manifest",
-        &[before.parse().unwrap()],
-    )
-    .unwrap();
-    let result = commit_file(
-        &root.path,
-        LOCK_PATH,
-        &result_lock,
-        "result lock",
-        &[result_manifest_commit.parse().unwrap()],
-    )
-    .unwrap();
-
-    model.state = OperationState::RollingBack;
-    model.baseline.root_head = Some(before.clone());
-    model.baseline.root_branch = Some("main".into());
-    model.baseline.manifest_commit_sha256 = Some(digest(&manifest));
-    model.baseline.lock_commit_sha256 = Some(digest(&lock));
-    model.selected_targets = vec!["@root".into()];
-    git2::Repository::open(&root.path)
-        .unwrap()
-        .find_reference("refs/heads/main")
-        .unwrap()
-        .set_target(before.parse().unwrap(), "seed post-participant rollback")
-        .unwrap();
-    let mut row = model.participants.remove("mem_a").unwrap();
-    row.path = ".".into();
-    row.target_kind = MergeTargetKind::Root;
-    row.target_branch = "main".into();
-    row.before_commit = before;
-    row.source_commit = result.clone();
-    row.state = ParticipantState::RolledBack;
-    row.resulting_commit = Some(result);
-    model.participants.clear();
-    model.participants.insert("@root".into(), row);
-    MatrixFixture {
-        root,
-        backend,
-        model,
-    }
-}
-
-fn digest(bytes: &str) -> String {
-    format!("{:x}", Sha256::digest(bytes.as_bytes()))
-}
-
-fn seed_open(root: &std::path::Path, model: &MergeOperationRecordV1) {
-    let merge_root = root.join(".gwz/merge");
-    std::fs::create_dir_all(&merge_root).unwrap();
-    std::fs::write(
-        merge_root.join(format!("{}.yaml", model.merge_id)),
-        serde_yaml::to_string(model).unwrap(),
-    )
-    .unwrap();
-}
-
-fn seed_recovery(root: &std::path::Path, model: &MergeOperationRecordV1) {
-    let mut recovery = model.clone();
-    recovery.state = OperationState::RecoveryRequired;
-    recovery.recovery_context = Some(RecoveryContextV1 {
-        origin_state: RecoveryOriginStateV1::RollingBack,
-    });
-    seed_open(root, &recovery);
-}
-
-fn context(model: &MergeOperationRecordV1) -> OperationContext {
-    OperationContext {
-        operation_id: model.operation_id.clone(),
-        request_id: format!("req_{}", model.merge_id),
-        schema_version: "gwz.protocol/v0".into(),
-        action: ActionKind::Merge,
-        dry_run: false,
-        attribution: None,
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Target {
+pub(super) enum Target {
     Participant(P),
     Evidence(E),
     Root(R),
 }
 
 impl Target {
-    fn from_action(action: &PhysicalActionKind) -> Option<Self> {
+    pub(super) fn from_action(action: &PhysicalActionKind) -> Option<Self> {
         match action {
             PhysicalActionKind::Rollback(PendingRollbackActionV1::Participant {
                 action, ..
@@ -301,7 +171,7 @@ impl Target {
         }
     }
 
-    fn matches(self, action: &PendingRollbackActionV1) -> bool {
+    pub(super) fn matches(self, action: &PendingRollbackActionV1) -> bool {
         Self::from_action(&PhysicalActionKind::Rollback(action.clone())) == Some(self)
     }
 }

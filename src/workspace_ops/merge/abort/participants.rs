@@ -82,6 +82,7 @@ pub(in crate::workspace_ops::merge) use v1_rollback::{
 #[cfg(test)]
 mod v1_rollback {
     use super::*;
+    use crate::workspace_ops::merge::model::v1::MergeOperationRecordV1;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(in crate::workspace_ops::merge) enum V1ParticipantRollbackObservation {
@@ -93,13 +94,22 @@ mod v1_rollback {
     pub(in crate::workspace_ops::merge) fn observe_v1_participant_rollback<B: GitBackend>(
         backend: &B,
         root: &Path,
+        record: &MergeOperationRecordV1,
         member_id: &str,
         row: &MergeParticipantRecord,
         action: ParticipantRollbackKindV1,
     ) -> ModelResult<V1ParticipantRollbackObservation> {
         let path =
             crate::workspace_ops::merge::status::validated_participant_path(root, member_id, row)?;
-        let after = clean_checkout(backend, &path, &row.target_branch, &row.before_commit)?;
+        let exclusions = checkout_exclusions(record, member_id, row)?;
+        let after = clean_checkout(
+            backend,
+            &path,
+            &row.target_branch,
+            &row.before_commit,
+            &exclusions,
+        )
+        .map_err(|error| attach(error, member_id, &row.path))?;
         let before = match action {
             ParticipantRollbackKindV1::AbortConflict => exact_native_conflict(backend, &path, row)?,
             ParticipantRollbackKindV1::ResetIntegrated => {
@@ -110,7 +120,8 @@ mod v1_rollback {
                         "integrated rollback has no recorded result commit",
                     ));
                 };
-                clean_checkout(backend, &path, &row.target_branch, result)?
+                clean_checkout(backend, &path, &row.target_branch, result, &exclusions)
+                    .map_err(|error| attach(error, member_id, &row.path))?
             }
         };
         Ok(match (before, after) {
@@ -123,9 +134,11 @@ mod v1_rollback {
     pub(in crate::workspace_ops::merge) fn verify_v1_no_mutation_participant<B: GitBackend>(
         backend: &B,
         root: &Path,
+        record: &MergeOperationRecordV1,
         member_id: &str,
         row: &MergeParticipantRecord,
     ) -> ModelResult<()> {
+        let exclusions = checkout_exclusions(record, member_id, row)?;
         if !matches!(
             row.state,
             ParticipantState::Planned
@@ -137,7 +150,10 @@ mod v1_rollback {
             &crate::workspace_ops::merge::status::validated_participant_path(root, member_id, row)?,
             &row.target_branch,
             &row.before_commit,
-        )? {
+            &exclusions,
+        )
+        .map_err(|error| attach(error, member_id, &row.path))?
+        {
             return Err(member_error(
                 member_id,
                 row,
@@ -150,11 +166,12 @@ mod v1_rollback {
     pub(in crate::workspace_ops::merge) fn execute_v1_participant_rollback<B: GitBackend>(
         backend: &B,
         root: &Path,
+        record: &MergeOperationRecordV1,
         member_id: &str,
         row: &MergeParticipantRecord,
         action: ParticipantRollbackKindV1,
     ) -> ModelResult<()> {
-        if observe_v1_participant_rollback(backend, root, member_id, row, action)?
+        if observe_v1_participant_rollback(backend, root, record, member_id, row, action)?
             != V1ParticipantRollbackObservation::Before
         {
             return Err(member_error(
@@ -192,19 +209,57 @@ mod v1_rollback {
         path: &Path,
         branch: &str,
         commit: &str,
+        exclusions: &[String],
     ) -> ModelResult<bool> {
         if backend.repository_state(path)? != GitRepositoryState::Clean {
             return Ok(false);
         }
         let head = backend.head(path)?;
-        let status = backend.status(path)?;
         let target = backend.read_ref(path, &format!("refs/heads/{branch}"))?;
         Ok(!head.is_detached
             && head.branch.as_deref() == Some(branch)
             && head.commit.as_deref() == Some(commit)
             && target.as_deref() == Some(commit)
-            && !status.is_dirty
-            && status.unresolved == 0)
+            && backend.checkout_matches_commit_except(path, commit, exclusions)?)
+    }
+
+    fn checkout_exclusions(
+        record: &MergeOperationRecordV1,
+        member_id: &str,
+        row: &MergeParticipantRecord,
+    ) -> ModelResult<Vec<String>> {
+        if member_id != "@root" {
+            return Ok(Vec::new());
+        }
+        let mut paths = if record
+            .publication
+            .as_ref()
+            .and_then(|publication| publication.candidate.as_ref())
+            .is_some()
+        {
+            crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?
+                .into_iter()
+                .map(|file| file.path)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        paths.push(crate::workspace::RUNTIME_DIR.into());
+        paths.push(format!("{}/.tmp", crate::workspace::WORKSPACE_DIR));
+        let manifest = crate::artifact::ManifestArtifact::from_yaml(
+            record.baseline.manifest_yaml.as_deref().ok_or_else(|| {
+                member_error(
+                    member_id,
+                    row,
+                    "selected-root rollback baseline has no manifest bytes",
+                )
+            })?,
+        )
+        .map_err(|error| attach(error, member_id, &row.path))?;
+        paths.extend(manifest.members.into_iter().map(|member| member.path));
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
     }
 
     fn exact_native_conflict<B: GitBackend>(

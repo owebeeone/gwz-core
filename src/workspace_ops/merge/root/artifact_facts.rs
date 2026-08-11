@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact};
+use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
 use crate::model::{ErrorCode, ModelResult};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -8,6 +8,14 @@ pub(in crate::workspace_ops::merge) enum RegularFileFact {
     Missing,
     Bytes(Vec<u8>),
     Invalid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::workspace_ops::merge) enum RegularFileTransition {
+    Before,
+    After,
+    Recoverable,
+    Ambiguous,
 }
 
 pub(in crate::workspace_ops::merge) fn observe(
@@ -31,6 +39,18 @@ pub(in crate::workspace_ops::merge) fn write_checked(
     artifact.replace_exact(&CheckedArtifactFact::Bytes(expected.to_vec()), bytes)
 }
 
+pub(in crate::workspace_ops::merge) fn classify_write(
+    root: &Path,
+    relative: &str,
+    expected: &[u8],
+    bytes: &[u8],
+) -> ModelResult<RegularFileTransition> {
+    map_transition(
+        acquire(root, relative)?
+            .classify_replace(&CheckedArtifactFact::Bytes(expected.to_vec()), bytes)?,
+    )
+}
+
 pub(in crate::workspace_ops::merge) fn remove_exact(
     root: &Path,
     relative: &str,
@@ -38,6 +58,25 @@ pub(in crate::workspace_ops::merge) fn remove_exact(
 ) -> ModelResult<()> {
     let artifact = acquire(root, relative)?;
     artifact.remove_exact(&CheckedArtifactFact::Bytes(expected.to_vec()))
+}
+
+pub(in crate::workspace_ops::merge) fn classify_remove(
+    root: &Path,
+    relative: &str,
+    expected: &[u8],
+) -> ModelResult<RegularFileTransition> {
+    map_transition(
+        acquire(root, relative)?.classify_remove(&CheckedArtifactFact::Bytes(expected.to_vec()))?,
+    )
+}
+
+fn map_transition(value: CheckedArtifactTransition) -> ModelResult<RegularFileTransition> {
+    Ok(match value {
+        CheckedArtifactTransition::Before => RegularFileTransition::Before,
+        CheckedArtifactTransition::After => RegularFileTransition::After,
+        CheckedArtifactTransition::Recoverable => RegularFileTransition::Recoverable,
+        CheckedArtifactTransition::Ambiguous => RegularFileTransition::Ambiguous,
+    })
 }
 
 fn acquire(root: &Path, relative: &str) -> ModelResult<CheckedArtifact> {

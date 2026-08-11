@@ -52,7 +52,8 @@ pub(crate) use stash_support::stash_message_matches_gwz_prefix;
 pub(crate) use transport_support::remote_credential;
 
 use backend::{
-    record_preparation_call, run_before_prepared_execution, run_before_scoped_commit_ref_lock,
+    record_preparation_call, run_before_prepared_execution, run_before_preservation_stash,
+    run_before_scoped_commit_ref_lock,
 };
 macro_rules! delegate {
     ($name:ident($($arg:ident: $arg_type:ty),* $(,)?) -> $result:ty => $module:ident::$function:ident) => {
@@ -99,6 +100,7 @@ impl GitBackend for Git2Backend {
     delegate!(preservation_stashes(path: &Path, merge_id: &str,) -> ModelResult<Vec<GitPreservationStashEvidence>> => preservation::preservation_stashes);
     delegate!(observe_direct_ref(path: &Path, name: &str,) -> ModelResult<GitDirectRefObservation> => preservation::observe_direct_ref);
     delegate!(checkout_matches_commit(path: &Path, branch: &str, commit: &str,) -> ModelResult<bool> => preservation::checkout_matches_commit);
+    delegate!(checkout_matches_commit_except(path: &Path, commit: &str, allowed_paths: &[String],) -> ModelResult<bool> => preservation::checkout_matches_commit_except);
     delegate!(prepare_root_preservation_stash(root: &Path, spec: &GitRootPreservationSpec,) -> ModelResult<GitPreparedRootStash> => preservation_root::prepare_root_preservation_stash);
     delegate!(observe_root_preservation_step(root: &Path, spec: &GitRootPreservationSpec, step: &GitRootPreservationPhysicalStep, guard: &GitRootPreservationGuard,) -> ModelResult<GitRootPreservationStepObservation> => preservation_root::observe_root_preservation_step);
     delegate!(execute_root_preservation_step_checked(root: &Path, spec: &GitRootPreservationSpec, step: &GitRootPreservationPhysicalStep, guard: &GitRootPreservationGuard,) -> ModelResult<GitCheckedPreservationMutation> => preservation_root::execute_root_preservation_step_checked);

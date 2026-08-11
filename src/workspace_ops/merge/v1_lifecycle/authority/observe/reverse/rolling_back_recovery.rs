@@ -32,6 +32,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_recovery_origin<B: G
             crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
                 backend,
                 current.location().root(),
+                current.record(),
                 member_id,
                 row,
                 *action,

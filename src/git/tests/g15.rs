@@ -249,6 +249,124 @@ fn checked_preservation_stash_binds_head_and_complete_preimage() {
 }
 
 #[test]
+fn checked_preservation_stash_rejects_changes_at_the_native_boundary() {
+    for case in ["head", "tracked", "staged", "untracked"] {
+        let (_temp, backend, repo, head) =
+            seeded_repo(&format!("merge-preservation-boundary-{case}"));
+        fs::write(repo.join("tracked.txt"), "pending value\n").unwrap();
+        let expected = backend.preservation_image(&repo, true).unwrap();
+        let callback_repo = repo.clone();
+        let callback_head = head.clone();
+        Git2Backend::before_next_preservation_stash(move || match case {
+            "head" => {
+                commit_file(
+                    &callback_repo,
+                    "late.txt",
+                    "late\n",
+                    "late",
+                    &[callback_head.parse().unwrap()],
+                )
+                .unwrap();
+            }
+            "tracked" => fs::write(callback_repo.join("tracked.txt"), "late tracked\n").unwrap(),
+            "staged" => {
+                fs::write(callback_repo.join("late-staged.txt"), "late staged\n").unwrap();
+                let status = std::process::Command::new("git")
+                    .args(["add", "late-staged.txt"])
+                    .current_dir(&callback_repo)
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+            }
+            "untracked" => {
+                fs::write(callback_repo.join("late-untracked.txt"), "late untracked\n").unwrap();
+            }
+            _ => unreachable!(),
+        });
+        let error = backend
+            .stash_for_merge_preservation_checked(
+                &repo,
+                "main",
+                &head,
+                &expected.preimage_sha256,
+                "merge_1",
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::PreservationEvidenceMismatch,
+            "{case}"
+        );
+        assert!(
+            backend
+                .preservation_stashes(&repo, "merge_1")
+                .unwrap()
+                .is_empty(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn checked_preservation_stash_rejects_matching_and_foreign_stash_set_changes_at_the_native_boundary()
+ {
+    for matching in [false, true] {
+        let label = if matching { "matching" } else { "foreign" };
+        let (_temp, backend, repo, head) =
+            seeded_repo(&format!("merge-preservation-boundary-{label}-stash"));
+        fs::write(repo.join("tracked.txt"), "pending value\n").unwrap();
+        let expected = backend.preservation_image(&repo, true).unwrap();
+        let callback_repo = repo.clone();
+        Git2Backend::before_next_preservation_stash(move || {
+            let callback_backend = Git2Backend::new();
+            if matching {
+                callback_backend
+                    .stash_for_merge_preservation(&callback_repo, "merge_1", true)
+                    .unwrap();
+            } else {
+                callback_backend
+                    .stash_push(
+                        &callback_repo,
+                        "foreign stash inserted at boundary",
+                        GitStashPushOptions {
+                            include_untracked: true,
+                            include_ignored: false,
+                            preserve_index: false,
+                        },
+                    )
+                    .unwrap();
+            }
+        });
+        let error = backend
+            .stash_for_merge_preservation_checked(
+                &repo,
+                "main",
+                &head,
+                &expected.preimage_sha256,
+                "merge_1",
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::PreservationEvidenceMismatch,
+            "{label}"
+        );
+        let stashes = backend.stash_list(&repo).unwrap();
+        assert_eq!(stashes.len(), 1, "{label}");
+        assert_eq!(
+            backend
+                .preservation_stashes(&repo, "merge_1")
+                .unwrap()
+                .len(),
+            usize::from(matching),
+            "{label}"
+        );
+    }
+}
+
+#[test]
 fn preservation_image_rejects_semantic_index_flags() {
     let (_temp, backend, repo, _head) = seeded_repo("merge-preservation-index-flags");
     let status = std::process::Command::new("git")
@@ -260,6 +378,75 @@ fn preservation_image_rejects_semantic_index_flags() {
     assert_eq!(
         backend.preservation_image(&repo, true).unwrap_err().code,
         ErrorCode::PreservationEvidenceMismatch
+    );
+}
+
+#[test]
+fn complete_checkout_comparison_rejects_hidden_drift_and_honors_only_exact_exclusions() {
+    let (_temp, backend, repo, head) = seeded_repo("complete-checkout-comparison");
+    assert!(
+        backend
+            .checkout_matches_commit_except(&repo, &head, &[])
+            .unwrap()
+    );
+
+    let status = std::process::Command::new("git")
+        .args(["update-index", "--assume-unchanged", "tracked.txt"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(repo.join("tracked.txt"), "hidden drift\n").unwrap();
+    assert_eq!(
+        backend
+            .checkout_matches_commit_except(&repo, &head, &[])
+            .unwrap_err()
+            .code,
+        ErrorCode::PreservationEvidenceMismatch
+    );
+
+    let status = std::process::Command::new("git")
+        .args(["update-index", "--no-assume-unchanged", "tracked.txt"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args(["checkout", "--", "tracked.txt"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args(["update-index", "--skip-worktree", "tracked.txt"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(repo.join("tracked.txt"), "skip-worktree drift\n").unwrap();
+    assert_eq!(
+        backend
+            .checkout_matches_commit_except(&repo, &head, &[])
+            .unwrap_err()
+            .code,
+        ErrorCode::PreservationEvidenceMismatch
+    );
+    let status = std::process::Command::new("git")
+        .args(["update-index", "--no-skip-worktree", "tracked.txt"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        backend
+            .checkout_matches_commit_except(&repo, &head, &["tracked.txt".into()])
+            .unwrap()
+    );
+    fs::write(repo.join("other.txt"), "unrelated\n").unwrap();
+    assert!(
+        !backend
+            .checkout_matches_commit_except(&repo, &head, &["tracked.txt".into()])
+            .unwrap()
     );
 }
 

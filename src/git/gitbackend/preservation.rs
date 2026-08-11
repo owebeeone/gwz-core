@@ -253,7 +253,7 @@ pub(super) fn stash_for_merge_preservation_checked(
     include_untracked: bool,
 ) -> ModelResult<GitStashPushResult> {
     validate_merge_id(merge_id)?;
-    let repo = open_repo(path)?;
+    let mut repo = open_repo(path)?;
     let expected = parse_commit(&repo, expected_head)?;
     let branch_ref = format!("refs/heads/{branch}");
     require_attached_head(&repo, &branch_ref, expected)?;
@@ -265,6 +265,18 @@ pub(super) fn stash_for_merge_preservation_checked(
     }
     let stash_id = format!("stash_{merge_id}");
     let message = format!("gwz:{stash_id}: merge preservation");
+    let status = backend.status(path)?;
+    if status.unresolved > 0 {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation stash has unresolved index entries",
+        ));
+    }
+    // Retain the complete native stash set, not only the merge-owned subset.
+    // Existing foreign stashes are permitted, but a concurrent addition,
+    // removal, or reorder at the final mutation boundary invalidates the
+    // prepared operation.
+    let native_stashes = backend.stash_list(path)?;
     let stashes = preservation_image::decode_stashes(backend, path, merge_id)?;
     let current = preservation_image::capture(path, include_untracked)?;
     match stashes.as_slice() {
@@ -287,6 +299,14 @@ pub(super) fn stash_for_merge_preservation_checked(
             ));
         }
     }
+    let preservable =
+        status.staged > 0 || status.unstaged > 0 || include_untracked && status.untracked > 0;
+    if !preservable {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "repository has no eligible work matching the persisted stash action",
+        ));
+    }
     if current.preimage_sha256 != expected_preimage_sha256
         || current.dirty == GitPreservationDirtySummary::default()
     {
@@ -295,9 +315,36 @@ pub(super) fn stash_for_merge_preservation_checked(
             "preservation checkout no longer matches the persisted stash preimage",
         ));
     }
-    // This is the final attached-HEAD check before the native stash mutation.
+    let signature = super::merge_support::merge_signature(&repo)?;
+    let flags = super::stash_support::stash_push_flags(GitStashPushOptions {
+        include_untracked,
+        include_ignored: false,
+        preserve_index: false,
+    });
+    // The deterministic hook is after every preparatory query. A second exact
+    // proof follows it and is the final in-contract check before libgit2's one
+    // native stash call. Raw filesystem writers after that proof are outside
+    // the workspace mutation-lease contract, as documented for native stash.
+    run_before_preservation_stash();
     require_attached_head(&repo, &branch_ref, expected)?;
-    let result = stash_for_merge_preservation(backend, path, merge_id, include_untracked)?;
+    if backend.repository_state(path)? != GitRepositoryState::Clean
+        || backend.stash_list(path)? != native_stashes
+        || !preservation_image::decode_stashes(backend, path, merge_id)?.is_empty()
+        || preservation_image::capture(path, include_untracked)?.preimage_sha256
+            != expected_preimage_sha256
+    {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation checkout or stash set changed at the native mutation boundary",
+        ));
+    }
+    let object_id = repo
+        .stash_save(&signature, &message, Some(flags))
+        .map_err(git_error)?;
+    let result = GitStashPushResult {
+        object_id: object_id.to_string(),
+        message: message.clone(),
+    };
     let verified = preservation_image::decode_stashes(backend, path, merge_id)?;
     let postimage = preservation_image::capture(path, include_untracked)?;
     if !matches!(verified.as_slice(), [stash]
@@ -360,13 +407,16 @@ pub(super) fn checkout_matches_commit(
     {
         return Ok(false);
     }
-    let status = backend.status_with_options(
-        path,
-        GitStatusOptions {
-            include_ignored: false,
-        },
-    )?;
-    Ok(!status.is_dirty && status.unresolved == 0)
+    preservation_image::checkout_matches_commit_except(path, commit, &[])
+}
+
+pub(super) fn checkout_matches_commit_except(
+    _backend: &Git2Backend,
+    path: &Path,
+    commit: &str,
+    allowed_paths: &[String],
+) -> ModelResult<bool> {
+    preservation_image::checkout_matches_commit_except(path, commit, allowed_paths)
 }
 
 pub(super) fn index_matches_candidate_files(

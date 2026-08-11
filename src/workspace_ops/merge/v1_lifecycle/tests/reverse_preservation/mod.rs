@@ -4,6 +4,8 @@ mod invariants;
 mod phases;
 mod real_git;
 mod recovery;
+mod root_ambiguity_matrix;
+mod root_durability;
 mod root_fault_matrix;
 mod root_successor_matrix;
 
@@ -22,14 +24,14 @@ use crate::workspace_ops::merge::{
 use crate::workspace_ops::tests::{TempDir, commit_file};
 use sha2::{Digest, Sha256};
 
-struct PreservationFixture {
-    root: TempDir,
-    backend: Git2Backend,
-    member: std::path::PathBuf,
-    before: String,
-    result: String,
-    protected: String,
-    model: MergeOperationRecordV1,
+pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct PreservationFixture {
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) root: TempDir,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) backend: Git2Backend,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) member: std::path::PathBuf,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) before: String,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) result: String,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) protected: String,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) model: MergeOperationRecordV1,
 }
 
 impl PreservationFixture {
@@ -185,32 +187,51 @@ fn add_integrated_member(
     (path, before, result, protected)
 }
 
-struct RootPreservationFixture {
-    base: PreservationFixture,
-    anchor: String,
-    protected: String,
+pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct RootPreservationFixture {
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) base: PreservationFixture,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) anchor: String,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) protected: String,
 }
 
 fn dirty_root_handoff_fixture(name: &str) -> RootPreservationFixture {
-    dirty_root_handoff_fixture_with_owner(name, false)
+    dirty_root_handoff_fixture_with_owner(name, false, false)
 }
 
-fn dirty_selected_root_handoff_fixture(name: &str) -> RootPreservationFixture {
-    dirty_root_handoff_fixture_with_owner(name, true)
+pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) fn dirty_selected_root_handoff_fixture(
+    name: &str,
+) -> RootPreservationFixture {
+    dirty_root_handoff_fixture_with_owner(name, true, false)
+}
+
+pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) fn dirty_selected_root_handoff_fixture_with_later_member(
+    name: &str,
+) -> RootPreservationFixture {
+    dirty_root_handoff_fixture_with_owner(name, true, true)
 }
 
 fn dirty_root_handoff_fixture_with_owner(
     name: &str,
     selected_root_owner: bool,
+    include_later_member: bool,
 ) -> RootPreservationFixture {
     let mut base = integrated_fixture(name);
     base.backend
         .set_branch_target_checked(&base.member, "main", &base.protected, &base.result)
         .unwrap();
+    if include_later_member {
+        add_integrated_member(&mut base, "mem_z", "members/z");
+    }
     base.backend.create_repo(&base.root.path).unwrap();
     fs::create_dir_all(base.root.path.join("gwz.conf")).unwrap();
     let manifest = base.model.baseline.manifest_yaml.clone().unwrap();
     let lock = base.model.baseline.lock_yaml.clone().unwrap();
+    crate::workspace_ops::ensure_workspace_exclude(
+        &base.backend,
+        &base.root.path,
+        &crate::artifact::ManifestArtifact::from_yaml(&manifest).unwrap(),
+        &crate::artifact::LockArtifact::from_yaml(&lock).unwrap(),
+    )
+    .unwrap();
     let first = commit_file(
         &base.root.path,
         crate::workspace::WORKSPACE_MANIFEST,
@@ -272,7 +293,18 @@ fn dirty_root_handoff_fixture_with_owner(
         crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::candidate_payload(&current);
     let boundary_path = crate::workspace_ops::workspace_exclude_path(&base.root.path);
     let baseline_boundary = fs::read_to_string(&boundary_path).unwrap();
-    let boundary = format!("{baseline_boundary}/members/a/\n/.gwz/\n");
+    let manifest_artifact = crate::artifact::ManifestArtifact::from_yaml(&manifest).unwrap();
+    let mut boundary = baseline_boundary.clone();
+    for member in manifest_artifact
+        .members
+        .iter()
+        .filter(|member| member.active)
+    {
+        boundary.push('/');
+        boundary.push_str(member.path.trim_matches('/'));
+        boundary.push_str("/\n");
+    }
+    boundary.push_str("/.gwz/\n");
     candidate.candidate.baseline_boundary_sha256 =
         format!("{:x}", Sha256::digest(baseline_boundary.as_bytes()));
     candidate.candidate.baseline_boundary_text = baseline_boundary;
@@ -380,4 +412,105 @@ fn dirty_root_handoff_fixture_with_owner(
         anchor,
         protected,
     }
+}
+
+fn install_root_handoff(
+    fixture: &mut RootPreservationFixture,
+    prefix: PublicationPrefixV1,
+    index: PublicationIndexFormV1,
+) {
+    let publication = fixture.base.model.publication.as_ref().unwrap();
+    let marker_path = publication.candidate_marker_path.as_ref().unwrap().clone();
+    let candidate = publication.candidate.as_ref().unwrap().clone();
+
+    let mut baseline_boundary = candidate.baseline_boundary_text.clone();
+    let manifest = crate::artifact::ManifestArtifact::from_yaml(
+        fixture
+            .base
+            .model
+            .baseline
+            .manifest_yaml
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    let mut required = vec![".gwz".to_owned(), "gwz.conf/.tmp".to_owned()];
+    required.extend(
+        manifest
+            .members
+            .into_iter()
+            .filter(|member| member.active)
+            .map(|member| member.path),
+    );
+    for path in required {
+        let line = format!("/{}/", path.trim_matches('/'));
+        if !baseline_boundary.lines().any(|actual| actual == line) {
+            if !baseline_boundary.ends_with('\n') {
+                baseline_boundary.push('\n');
+            }
+            baseline_boundary.push_str(&line);
+            baseline_boundary.push('\n');
+        }
+    }
+    let publication = fixture.base.model.publication.as_mut().unwrap();
+    let stored = publication.candidate.as_mut().unwrap();
+    stored.baseline_boundary_sha256 = format!("{:x}", Sha256::digest(baseline_boundary.as_bytes()));
+    stored.baseline_boundary_text = baseline_boundary.clone();
+
+    let marker = fixture.base.root.path.join(&marker_path);
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    if marker.exists() {
+        fs::remove_file(&marker).unwrap();
+    }
+    fs::write(
+        fixture.base.root.path.join(crate::artifact::LOCK_PATH),
+        &candidate.baseline_lock_yaml,
+    )
+    .unwrap();
+    fixture
+        .base
+        .backend
+        .stage_paths(
+            &fixture.base.root.path,
+            &[marker_path.as_str(), crate::artifact::LOCK_PATH],
+        )
+        .unwrap();
+
+    if prefix != PublicationPrefixV1::Baseline {
+        fs::write(&marker, &candidate.marker_yaml).unwrap();
+    }
+    if matches!(
+        prefix,
+        PublicationPrefixV1::Lock | PublicationPrefixV1::Boundary
+    ) {
+        fs::write(
+            fixture.base.root.path.join(crate::artifact::LOCK_PATH),
+            &candidate.lock_yaml,
+        )
+        .unwrap();
+    }
+    if index == PublicationIndexFormV1::Staged {
+        fixture
+            .base
+            .backend
+            .stage_paths(
+                &fixture.base.root.path,
+                &[marker_path.as_str(), crate::artifact::LOCK_PATH],
+            )
+            .unwrap();
+    }
+    crate::workspace_ops::publish_workspace_exclude_candidate(
+        &fixture.base.root.path,
+        if prefix == PublicationPrefixV1::Boundary {
+            &candidate.boundary_text
+        } else {
+            &baseline_boundary
+        },
+    )
+    .unwrap();
+    if prefix == PublicationPrefixV1::Baseline {
+        fs::remove_dir(marker.parent().unwrap()).unwrap();
+    }
+    fixture.base.model.preservation_publication_handoff =
+        Some(PreservationPublicationHandoffV1::Candidate { prefix, index });
 }

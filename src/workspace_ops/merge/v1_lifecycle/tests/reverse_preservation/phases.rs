@@ -124,6 +124,80 @@ fn changed_work_after_durable_stash_intent_is_rejected_without_stashing() {
 }
 
 #[test]
+fn advanced_head_after_durable_stash_intent_is_rejected_without_stashing() {
+    let fixture = dirty_anchor_fixture("v1-preservation-stale-stash-head");
+    fixture.seed_open();
+    let context = fixture.context();
+    let mut failing = FailFirstPreservationExecution {
+        inner: ReverseRuntime::new(&fixture.backend, &context),
+        failed: false,
+    };
+
+    let error = match run(
+        &CheckedV1Store::default(),
+        &fixture.root.path,
+        &fixture.model.merge_id,
+        V1LifecycleRequest::Preserve,
+        &mut failing,
+    ) {
+        Ok(_) => panic!("failed stash execution unexpectedly completed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, ErrorCode::GitCommandFailed);
+    let pending = CheckedV1Store::default()
+        .load_open(&fixture.root.path, &fixture.model.merge_id)
+        .unwrap();
+    assert!(matches!(
+        pending.record().pending_preservation,
+        Some(PendingPreservationActionV1::Stash { .. })
+    ));
+
+    let advanced = commit_file(
+        &fixture.member,
+        "advanced-after-intent.txt",
+        "advanced after stash intent\n",
+        "advance after stash intent",
+        &[fixture.result.parse().unwrap()],
+    )
+    .unwrap();
+    let record_path = fixture
+        .root
+        .path
+        .join(format!(".gwz/merge/{}.yaml", fixture.model.merge_id));
+    let record_before = fs::read(&record_path).unwrap();
+    let resume_context = fixture.context();
+    let mut runtime = ReverseRuntime::new(&fixture.backend, &resume_context);
+    let error = match run(
+        &CheckedV1Store::default(),
+        &fixture.root.path,
+        &fixture.model.merge_id,
+        V1LifecycleRequest::Preserve,
+        &mut runtime,
+    ) {
+        Ok(_) => panic!("advanced stash HEAD unexpectedly completed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, ErrorCode::PreservationEvidenceMismatch);
+    assert_eq!(fs::read(record_path).unwrap(), record_before);
+    assert_eq!(
+        fixture
+            .backend
+            .head(&fixture.member)
+            .unwrap()
+            .commit
+            .as_deref(),
+        Some(advanced.as_str())
+    );
+    assert!(
+        fixture
+            .backend
+            .preservation_stashes(&fixture.member, &fixture.model.merge_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn root_handoff_mapping_pins_every_non_degenerate_publishing_pair() {
     let mut fixture = dirty_root_handoff_fixture("v1-preservation-root-handoff-map");
     let publication = fixture.base.model.publication.as_ref().unwrap();

@@ -67,7 +67,7 @@ mod v1_rollback {
         })?;
         let head_before = exact_evidence_head(backend, root, record, true)?;
         let head_after = exact_evidence_head(backend, root, record, false)?;
-        let files = file_states(root, record)?;
+        let files = file_states(root, record, Some(step))?;
         let index = index_state(backend, root, record)?;
         Ok(classify_v1_evidence_rollback(
             step,
@@ -266,34 +266,70 @@ mod v1_rollback {
     fn file_states(
         root: &Path,
         record: &MergeOperationRecordV1,
+        pending: Option<EvidenceRollbackStepV1>,
     ) -> ModelResult<EvidenceFileStates> {
         let publication = publication_v1(record)?;
         let candidate = publication.candidate.as_ref().unwrap();
         Ok(EvidenceFileStates {
-            boundary: classify_file(
-                artifact_facts::observe(root, &boundary_relative(root)?)?,
-                candidate.boundary_text.as_bytes(),
-                candidate.baseline_boundary_text.as_bytes(),
-                false,
-            ),
-            lock: classify_file(
-                artifact_facts::observe(root, artifact::LOCK_PATH)?,
-                candidate.lock_yaml.as_bytes(),
-                candidate.baseline_lock_yaml.as_bytes(),
-                false,
-            ),
-            marker: classify_file(
-                artifact_facts::observe(
+            boundary: if pending == Some(EvidenceRollbackStepV1::Boundary) {
+                transition_file(artifact_facts::classify_write(
+                    root,
+                    &boundary_relative(root)?,
+                    candidate.boundary_text.as_bytes(),
+                    candidate.baseline_boundary_text.as_bytes(),
+                )?)
+            } else {
+                classify_file(
+                    artifact_facts::observe(root, &boundary_relative(root)?)?,
+                    candidate.boundary_text.as_bytes(),
+                    candidate.baseline_boundary_text.as_bytes(),
+                    false,
+                )
+            },
+            lock: if pending == Some(EvidenceRollbackStepV1::Lock) {
+                transition_file(artifact_facts::classify_write(
+                    root,
+                    artifact::LOCK_PATH,
+                    candidate.lock_yaml.as_bytes(),
+                    candidate.baseline_lock_yaml.as_bytes(),
+                )?)
+            } else {
+                classify_file(
+                    artifact_facts::observe(root, artifact::LOCK_PATH)?,
+                    candidate.lock_yaml.as_bytes(),
+                    candidate.baseline_lock_yaml.as_bytes(),
+                    false,
+                )
+            },
+            marker: if pending == Some(EvidenceRollbackStepV1::Marker) {
+                transition_file(artifact_facts::classify_remove(
                     root,
                     publication.candidate_marker_path.as_deref().unwrap(),
-                )?,
-                candidate.marker_yaml.as_bytes(),
-                &[],
-                true,
-            ),
+                    candidate.marker_yaml.as_bytes(),
+                )?)
+            } else {
+                classify_file(
+                    artifact_facts::observe(
+                        root,
+                        publication.candidate_marker_path.as_deref().unwrap(),
+                    )?,
+                    candidate.marker_yaml.as_bytes(),
+                    &[],
+                    true,
+                )
+            },
             boundary_noop: candidate.boundary_text == candidate.baseline_boundary_text,
             lock_noop: candidate.lock_yaml == candidate.baseline_lock_yaml,
         })
+    }
+
+    fn transition_file(value: artifact_facts::RegularFileTransition) -> FileState {
+        match value {
+            artifact_facts::RegularFileTransition::Before
+            | artifact_facts::RegularFileTransition::Recoverable => FileState::Candidate,
+            artifact_facts::RegularFileTransition::After => FileState::Baseline,
+            artifact_facts::RegularFileTransition::Ambiguous => FileState::Other,
+        }
     }
 
     fn boundary_relative(root: &Path) -> ModelResult<String> {
@@ -358,7 +394,7 @@ mod v1_rollback {
         root: &Path,
         record: &MergeOperationRecordV1,
     ) -> ModelResult<bool> {
-        let files = file_states(root, record)?;
+        let files = file_states(root, record, None)?;
         let index = index_state(backend, root, record)?;
         Ok(classify_v1_evidence_rollback(
             EvidenceRollbackStepV1::EvidenceCommit,

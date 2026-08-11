@@ -41,28 +41,32 @@ fn native_conflict_abort_is_exact_and_preserves_the_before_checkout() {
         .unwrap();
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     model.state = OperationState::RollingBack;
-    let row = model.participants.get_mut("mem_a").unwrap();
-    row.path = "members/a".into();
-    row.target_kind = MergeTargetKind::Member;
-    row.target_branch = "main".into();
-    row.before_commit = before.clone();
-    row.source_commit = source.clone();
-    row.state = ParticipantState::Conflicted;
-    row.resulting_commit = None;
-    row.expected_merge_head = Some(source);
-    row.conflict_paths = result.conflicts;
-    row.conflict_snapshot = snapshot
-        .files
-        .into_iter()
-        .map(|file| ConflictFileEvidence {
-            path: file.path,
-            sha256: file.sha256,
-        })
-        .collect();
+    {
+        let row = model.participants.get_mut("mem_a").unwrap();
+        row.path = "members/a".into();
+        row.target_kind = MergeTargetKind::Member;
+        row.target_branch = "main".into();
+        row.before_commit = before.clone();
+        row.source_commit = source.clone();
+        row.state = ParticipantState::Conflicted;
+        row.resulting_commit = None;
+        row.expected_merge_head = Some(source);
+        row.conflict_paths = result.conflicts;
+        row.conflict_snapshot = snapshot
+            .files
+            .into_iter()
+            .map(|file| ConflictFileEvidence {
+                path: file.path,
+                sha256: file.sha256,
+            })
+            .collect();
+    }
+    let row = &model.participants["mem_a"];
     assert_eq!(
         observe_v1_participant_rollback(
             &backend,
             &root.path,
+            &model,
             "mem_a",
             row,
             ParticipantRollbackKindV1::AbortConflict,
@@ -73,6 +77,7 @@ fn native_conflict_abort_is_exact_and_preserves_the_before_checkout() {
     execute_v1_participant_rollback(
         &backend,
         &root.path,
+        &model,
         "mem_a",
         row,
         ParticipantRollbackKindV1::AbortConflict,
@@ -82,6 +87,7 @@ fn native_conflict_abort_is_exact_and_preserves_the_before_checkout() {
         observe_v1_participant_rollback(
             &backend,
             &root.path,
+            &model,
             "mem_a",
             row,
             ParticipantRollbackKindV1::AbortConflict,
@@ -99,6 +105,7 @@ fn native_conflict_abort_is_exact_and_preserves_the_before_checkout() {
         observe_v1_participant_rollback(
             &backend,
             &root.path,
+            &model,
             "mem_a",
             row,
             ParticipantRollbackKindV1::AbortConflict,

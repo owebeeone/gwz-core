@@ -5,23 +5,37 @@ use crate::model::{ErrorCode, ModelResult};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CheckedArtifactFault {
     BeforeFinalCheck,
+    AfterFinalProof,
+    AfterDetach,
     AfterMutation,
     BeforeDurability,
     AfterDurability,
+    AfterCleanup,
 }
 
 #[cfg(test)]
 type FaultHook = (CheckedArtifactFault, Box<dyn FnOnce()>);
 
 #[cfg(test)]
+type FaultPoint = (CheckedArtifactFault, Option<&'static str>);
+
+#[cfg(test)]
 thread_local! {
-    static NEXT_FAULT: std::cell::Cell<Option<CheckedArtifactFault>> = const { std::cell::Cell::new(None) };
+    static NEXT_FAULT: std::cell::Cell<Option<FaultPoint>> = const { std::cell::Cell::new(None) };
     static NEXT_HOOK: std::cell::RefCell<Option<FaultHook>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 pub(crate) fn fail_next_checked_artifact_at(boundary: CheckedArtifactFault) {
-    NEXT_FAULT.set(Some(boundary));
+    NEXT_FAULT.set(Some((boundary, None)));
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_checked_artifact_at_for(
+    label: &'static str,
+    boundary: CheckedArtifactFault,
+) {
+    NEXT_FAULT.set(Some((boundary, Some(label))));
 }
 
 #[cfg(test)]
@@ -45,7 +59,9 @@ pub(super) fn fault(
                 hook();
             }
         });
-        if NEXT_FAULT.get() == Some(boundary) {
+        if NEXT_FAULT.get().is_some_and(|(at, expected_label)| {
+            at == boundary && expected_label.is_none_or(|expected| expected == label)
+        }) {
             NEXT_FAULT.set(None);
             return Err(ModelError::new(
                 code,

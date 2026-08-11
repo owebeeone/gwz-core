@@ -69,6 +69,7 @@ mod v1_rollback {
                     crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
                         backend,
                         root,
+                        record,
                         member_id,
                         row,
                         ParticipantRollbackKindV1::AbortConflict,
@@ -82,6 +83,7 @@ mod v1_rollback {
                     crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
                         backend,
                         root,
+                        record,
                         member_id,
                         row,
                         ParticipantRollbackKindV1::ResetIntegrated,
@@ -94,7 +96,7 @@ mod v1_rollback {
                 | ParticipantState::Failed
                 | ParticipantState::Unattempted => {
                     crate::workspace_ops::merge::abort::verify_v1_no_mutation_participant(
-                        backend, root, member_id, row,
+                        backend, root, record, member_id, row,
                     )?;
                 }
                 ParticipantState::Aborted | ParticipantState::RolledBack => {
@@ -166,6 +168,7 @@ mod v1_rollback {
                 "publication evidence does not retire to the selected-root participant result",
             ));
         }
+        crate::workspace_ops::merge::root::selected_root_result_artifacts(backend, root, record)?;
         if backend.repository_state(root)? != crate::git::GitRepositoryState::Clean {
             return Err(member_preflight_error(
                 "@root",
@@ -173,19 +176,25 @@ mod v1_rollback {
                 "selected-root publication handoff has a foreign native Git state",
             ));
         }
-        let allowed = crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?
+        let mut allowed = crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?
             .into_iter()
             .map(|file| file.path)
-            .collect::<BTreeSet<_>>();
-        let status = backend.status(root)?;
-        if status.unresolved > 0
-            || status.files.iter().any(|file| {
-                !allowed.contains(&file.path)
-                    || file
-                        .original_path
-                        .as_ref()
-                        .is_some_and(|path| !allowed.contains(path))
-            })
+            .collect::<Vec<_>>();
+        allowed.push(crate::workspace::RUNTIME_DIR.into());
+        allowed.push(format!("{}/.tmp", crate::workspace::WORKSPACE_DIR));
+        let manifest = crate::artifact::ManifestArtifact::from_yaml(
+            record.baseline.manifest_yaml.as_deref().ok_or_else(|| {
+                member_preflight_error("@root", ".", "rollback baseline has no manifest bytes")
+            })?,
+        )?;
+        allowed.extend(manifest.members.into_iter().map(|member| member.path));
+        if !backend
+            .checkout_matches_commit_except(root, result_commit, &allowed)
+            .map_err(|mut error| {
+                error.member_id = Some("@root".into());
+                error.member_path = Some(".".into());
+                error
+            })?
         {
             return Err(member_preflight_error(
                 "@root",

@@ -16,6 +16,7 @@ use super::MergeOperationRecord;
 pub(in crate::workspace_ops::merge) use abort::{
     V1RootRollbackObservation, execute_v1_root_metadata_rollback,
     observe_v1_root_metadata_rollback, observe_v1_selected_root_baseline,
+    selected_root_result_artifacts,
 };
 pub(in crate::workspace_ops::merge) use abort::{
     interrupted_evidence_rollback_is_exact, interrupted_evidence_rollback_is_exact_view,

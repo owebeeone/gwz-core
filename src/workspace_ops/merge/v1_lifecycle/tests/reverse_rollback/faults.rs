@@ -18,6 +18,7 @@ fn participant_executor_is_checked_and_restart_observes_completion() {
     execute_v1_participant_rollback(
         &fixture.backend,
         &fixture.root.path,
+        &fixture.model,
         "mem_a",
         row,
         ParticipantRollbackKindV1::ResetIntegrated,
@@ -27,6 +28,7 @@ fn participant_executor_is_checked_and_restart_observes_completion() {
         observe_v1_participant_rollback(
             &fixture.backend,
             &fixture.root.path,
+            &fixture.model,
             "mem_a",
             row,
             ParticipantRollbackKindV1::ResetIntegrated,
@@ -38,6 +40,7 @@ fn participant_executor_is_checked_and_restart_observes_completion() {
         execute_v1_participant_rollback(
             &fixture.backend,
             &fixture.root.path,
+            &fixture.model,
             "mem_a",
             row,
             ParticipantRollbackKindV1::ResetIntegrated,
@@ -92,6 +95,7 @@ fn authority_wrapper_binds_before_and_after_to_the_exact_rollback_action() {
     execute_v1_participant_rollback(
         &fixture.backend,
         &fixture.root.path,
+        &fixture.model,
         "mem_a",
         &fixture.model.participants["mem_a"],
         ParticipantRollbackKindV1::ResetIntegrated,

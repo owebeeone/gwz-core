@@ -10,7 +10,7 @@ use super::super::checked::{StoredV1Record, V1MutationLease};
 use super::super::transition::{PreservationTransition, V1Transition, prepare};
 use crate::artifact::{
     ArtifactSourceKind, CreatedByArtifact, LOCK_SCHEMA, LockArtifact, MARKER_SCHEMA,
-    MarkerArtifact, MarkerRootArtifact, ResolvedMemberArtifact, WORKSPACE_SCHEMA,
+    ManifestArtifact, MarkerArtifact, MarkerRootArtifact, ResolvedMemberArtifact, WORKSPACE_SCHEMA,
 };
 use crate::workspace_ops::merge::model::v1::{
     AcceptedAttachedCheckoutV1, AcceptedIntegrationRefV1, AcceptedLockMemberV1, AcceptedLockV1,
@@ -44,24 +44,59 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn accepted_workspace(
         .any(|target| target == "@root")
         .then(|| record.participants.get("@root"))
         .flatten();
-    let result = record.participants["mem_a"]
-        .resulting_commit
-        .as_deref()
-        .unwrap_or(&record.participants["mem_a"].before_commit)
-        .to_owned();
-    let lock_member = AcceptedLockMemberV1 {
-        path: "members/a".into(),
-        source_id: "src_a".into(),
-        source_kind: ArtifactSourceKind::Git,
-        commit: Some(result.clone()),
-        branch: Some("main".into()),
-        detached: Some(false),
-        upstream: None,
-        dirty: Some(false),
-        materialized: Some(true),
-        extensions: BTreeMap::new(),
-    };
-    let accepted_lock_yaml = accepted_lock_yaml(&record.workspace_id, &result);
+    let manifest =
+        ManifestArtifact::from_yaml(record.baseline.manifest_yaml.as_deref().unwrap()).unwrap();
+    let mut lock = LockArtifact::from_yaml(record.baseline.lock_yaml.as_deref().unwrap()).unwrap();
+    let mut member_audit = BTreeMap::new();
+    for member in manifest.members.iter().filter(|member| member.active) {
+        let selected = record
+            .selected_targets
+            .iter()
+            .any(|target| target == &member.id);
+        let participant = record.participants.get(&member.id);
+        let mut row = lock.members.remove(&member.id).unwrap_or_default();
+        row.path = member.path.clone();
+        row.source_id = Some(member.source_id.clone());
+        row.source_kind = member.source_kind;
+        if selected {
+            let participant = participant.unwrap();
+            let result = participant
+                .resulting_commit
+                .as_deref()
+                .unwrap_or(&participant.before_commit)
+                .to_owned();
+            row.commit = Some(result.clone());
+            row.branch = Some(participant.target_branch.clone());
+            row.detached = Some(false);
+            row.dirty = Some(false);
+            row.materialized = Some(true);
+            let accepted_row = accepted_lock_member(&row);
+            member_audit.insert(
+                member.id.clone(),
+                MemberAcceptanceV1::Selected {
+                    integration: AcceptedIntegrationRefV1 {
+                        branch: participant.target_branch.clone(),
+                        before_commit: participant.before_commit.clone(),
+                        resulting_commit: result.clone(),
+                    },
+                    final_checkout: AcceptedAttachedCheckoutV1 {
+                        branch: participant.target_branch.clone(),
+                        commit: result,
+                    },
+                    lock_member: accepted_row,
+                },
+            );
+        } else {
+            member_audit.insert(
+                member.id.clone(),
+                MemberAcceptanceV1::UnselectedPresent {
+                    lock_member: accepted_lock_member(&row),
+                },
+            );
+        }
+        lock.members.insert(member.id.clone(), row);
+    }
+    let accepted_lock_yaml = lock.to_yaml().unwrap();
     AcceptedWorkspaceV1 {
         operation_baseline_lock_sha256: record.baseline.lock_sha256.clone(),
         metadata_base: AcceptedMetadataBaseV1 {
@@ -79,21 +114,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn accepted_workspace(
             sha256: digest(&accepted_lock_yaml),
             exact_yaml: accepted_lock_yaml,
         },
-        member_audit: BTreeMap::from([(
-            "mem_a".into(),
-            MemberAcceptanceV1::Selected {
-                integration: AcceptedIntegrationRefV1 {
-                    branch: "main".into(),
-                    before_commit: record.participants["mem_a"].before_commit.clone(),
-                    resulting_commit: result.clone(),
-                },
-                final_checkout: AcceptedAttachedCheckoutV1 {
-                    branch: "main".into(),
-                    commit: result,
-                },
-                lock_member,
-            },
-        )]),
+        member_audit,
         root: RootPublicationInputV1 {
             base: AcceptedRootBaseV1::BornAttached {
                 commit: selected_root.map_or_else(
@@ -115,6 +136,21 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn accepted_workspace(
                 manifest_commit_sha256: record.baseline.manifest_commit_sha256.clone(),
             },
         },
+    }
+}
+
+fn accepted_lock_member(row: &ResolvedMemberArtifact) -> AcceptedLockMemberV1 {
+    AcceptedLockMemberV1 {
+        path: row.path.clone(),
+        source_id: row.source_id.clone().unwrap(),
+        source_kind: row.source_kind,
+        commit: row.commit.clone(),
+        branch: row.branch.clone(),
+        detached: row.detached,
+        upstream: row.upstream.clone(),
+        dirty: row.dirty,
+        materialized: row.materialized,
+        extensions: BTreeMap::new(),
     }
 }
 

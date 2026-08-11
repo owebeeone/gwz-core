@@ -1,9 +1,13 @@
 mod entry;
+mod entry_service;
+mod entry_service_drift;
 mod faults;
 mod phases;
 mod real_git;
 mod recovery;
 mod root_artifacts;
+mod service_ambiguity_matrix;
+mod service_durability;
 mod service_fault_matrix;
 
 use crate::git::{Git2Backend, GitBackend};

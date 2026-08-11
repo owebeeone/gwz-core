@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact};
+use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
 use cap_fs_ext::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -37,6 +37,29 @@ pub(super) fn replace_relative(
     match goal {
         Some(file) => artifact.replace_exact(&expected, &file.bytes),
         None => artifact.remove_exact(&expected),
+    }
+}
+
+pub(super) fn observe_transition(
+    root: &Path,
+    path: &str,
+    source: Option<&GitCandidateFile>,
+    goal: Option<&GitCandidateFile>,
+) -> ModelResult<CheckedArtifactTransition> {
+    let artifact = acquire(root, Path::new(path))?;
+    let expected = source.map_or(CheckedArtifactFact::Missing, |file| {
+        CheckedArtifactFact::Bytes(file.bytes.clone())
+    });
+    match goal {
+        Some(file) => artifact.classify_replace(&expected, &file.bytes),
+        None if source.is_some() => artifact.classify_remove(&expected),
+        None => Ok(
+            if artifact.observe_durable()? == CheckedArtifactFact::Missing {
+                CheckedArtifactTransition::After
+            } else {
+                CheckedArtifactTransition::Ambiguous
+            },
+        ),
     }
 }
 

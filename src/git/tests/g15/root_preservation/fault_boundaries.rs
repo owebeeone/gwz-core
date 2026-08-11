@@ -11,7 +11,7 @@ fn granular_leaf_and_index_faults_have_exact_restart_classification() {
         (
             1,
             CheckedArtifactFault::AfterMutation,
-            GitRootPreservationStepObservation::After,
+            GitRootPreservationStepObservation::Before,
         ),
         (
             2,
@@ -21,7 +21,7 @@ fn granular_leaf_and_index_faults_have_exact_restart_classification() {
         (
             2,
             CheckedArtifactFault::AfterMutation,
-            GitRootPreservationStepObservation::After,
+            GitRootPreservationStepObservation::Before,
         ),
     ];
     for (step_index, boundary, expected) in leaf_cases {

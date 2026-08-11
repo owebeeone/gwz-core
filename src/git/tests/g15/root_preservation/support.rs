@@ -91,6 +91,7 @@ pub(super) fn fixture_with_markers(
             restore_clean_form: restore_clean,
             handoff_form: handoff,
             handoff_boundary: BOUNDARY.to_vec(),
+            excluded_worktree_paths: Vec::new(),
         },
     }
 }

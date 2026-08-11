@@ -76,6 +76,9 @@ pub struct GitRootPreservationSpec {
     pub restore_clean_form: GitRootManagedForm,
     pub handoff_form: GitRootManagedForm,
     pub handoff_boundary: Vec<u8>,
+    /// Nested member roots are never part of the root repository checkout,
+    /// even while the publication boundary itself is being normalized.
+    pub excluded_worktree_paths: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -481,6 +484,16 @@ pub trait GitBackend {
         _commit: &str,
     ) -> ModelResult<bool> {
         unsupported_backend("checkout_matches_commit")
+    }
+    /// Compare the complete index and worktree with `commit`, excluding only
+    /// the exact canonical paths owned by a higher-level pending action.
+    fn checkout_matches_commit_except(
+        &self,
+        _path: &Path,
+        _commit: &str,
+        _allowed_paths: &[String],
+    ) -> ModelResult<bool> {
+        unsupported_backend("checkout_matches_commit_except")
     }
     fn prepare_root_preservation_stash(
         &self,

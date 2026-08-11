@@ -55,12 +55,24 @@ fn no_mutation_participants_require_the_exact_clean_before_checkout() {
             .unwrap();
         fixture.model.participants.get_mut("mem_a").unwrap().state = state;
         let row = &fixture.model.participants["mem_a"];
-        verify_v1_no_mutation_participant(&fixture.backend, &fixture.root.path, "mem_a", row)
-            .unwrap();
+        verify_v1_no_mutation_participant(
+            &fixture.backend,
+            &fixture.root.path,
+            &fixture.model,
+            "mem_a",
+            row,
+        )
+        .unwrap();
         std::fs::write(fixture.member.join("untracked"), "drift\n").unwrap();
         assert!(
-            verify_v1_no_mutation_participant(&fixture.backend, &fixture.root.path, "mem_a", row,)
-                .is_err(),
+            verify_v1_no_mutation_participant(
+                &fixture.backend,
+                &fixture.root.path,
+                &fixture.model,
+                "mem_a",
+                row,
+            )
+            .is_err(),
             "{state:?}",
         );
     }
@@ -124,8 +136,64 @@ fn selected_root_publication_handoff_rejects_all_unrelated_dirt_before_entry() {
     }
 }
 
-fn selected_root_evidence_fixture(name: &str) -> EvidenceFixture {
-    use crate::workspace_ops::merge::model::v1::AcceptedRootBaseV1;
+#[test]
+fn rollback_entry_rejects_semantic_index_flags_for_member_and_selected_root() {
+    let member = integrated_fixture("v1-rollback-member-semantic-index");
+    let status = std::process::Command::new("git")
+        .args(["update-index", "--assume-unchanged", "README.md"])
+        .current_dir(&member.member)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(member.member.join("README.md"), "hidden drift\n").unwrap();
+    let error =
+        preflight_v1_rollback(&member.backend, &member.root.path, &member.model).unwrap_err();
+    assert_eq!(error.member_id.as_deref(), Some("mem_a"));
+
+    let root = selected_root_evidence_fixture("v1-rollback-root-semantic-index");
+    let status = std::process::Command::new("git")
+        .args([
+            "update-index",
+            "--skip-worktree",
+            crate::workspace::WORKSPACE_MANIFEST,
+        ])
+        .current_dir(&root.root.path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(
+        root.root.path.join(crate::workspace::WORKSPACE_MANIFEST),
+        "hidden selected-root drift\n",
+    )
+    .unwrap();
+    let error = preflight_v1_rollback(&root.backend, &root.root.path, &root.model).unwrap_err();
+    assert_eq!(error.member_id.as_deref(), Some("@root"));
+}
+
+#[test]
+fn selected_root_result_artifacts_are_proved_before_rollback_entry() {
+    let mut fixture = selected_root_evidence_fixture("v1-rollback-result-artifact-proof");
+    fixture
+        .model
+        .accepted_workspace
+        .as_mut()
+        .unwrap()
+        .metadata_base
+        .manifest_exact_yaml
+        .push_str("# drift\n");
+    let head_before = fixture.backend.head(&fixture.root.path).unwrap();
+    let error =
+        preflight_v1_rollback(&fixture.backend, &fixture.root.path, &fixture.model).unwrap_err();
+    assert_eq!(error.member_id.as_deref(), Some("@root"));
+    assert_eq!(
+        fixture.backend.head(&fixture.root.path).unwrap(),
+        head_before
+    );
+}
+
+pub(super) fn selected_root_evidence_fixture(name: &str) -> EvidenceFixture {
+    use crate::workspace_ops::merge::model::v1::{AcceptedMetadataSourceV1, AcceptedRootBaseV1};
+    use sha2::{Digest, Sha256};
 
     let mut fixture = staged_evidence_fixture(name, true, true);
     let result = match &fixture.model.accepted_workspace.as_ref().unwrap().root.base {
@@ -136,9 +204,31 @@ fn selected_root_evidence_fixture(name: &str) -> EvidenceFixture {
     row.path = ".".into();
     row.target_kind = MergeTargetKind::Root;
     row.target_branch = "main".into();
-    row.state = ParticipantState::Merged;
+    row.before_commit = fixture.model.baseline.root_head.clone().unwrap();
+    row.state = if result == row.before_commit {
+        ParticipantState::UpToDate
+    } else {
+        ParticipantState::Merged
+    };
     row.resulting_commit = Some(result.clone());
     row.source_commit = result;
+    fixture.model.baseline.manifest_commit_sha256 = Some(format!(
+        "{:x}",
+        Sha256::digest(fixture.model.baseline.manifest_yaml.as_deref().unwrap())
+    ));
+    fixture.model.baseline.lock_commit_sha256 = Some(format!(
+        "{:x}",
+        Sha256::digest(fixture.model.baseline.lock_yaml.as_deref().unwrap())
+    ));
+    fixture
+        .model
+        .accepted_workspace
+        .as_mut()
+        .unwrap()
+        .metadata_base
+        .source = AcceptedMetadataSourceV1::SelectedRootResult {
+        commit: row.resulting_commit.clone().unwrap(),
+    };
     fixture.model.selected_targets = vec!["@root".into()];
     fixture.model.participants.clear();
     fixture.model.participants.insert("@root".into(), row);

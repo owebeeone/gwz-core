@@ -13,4 +13,4 @@ pub(super) fn observe<B: GitBackend>(
 
 #[cfg(test)]
 #[path = "../tests/reverse_preservation/mod.rs"]
-mod tests;
+pub(super) mod tests;

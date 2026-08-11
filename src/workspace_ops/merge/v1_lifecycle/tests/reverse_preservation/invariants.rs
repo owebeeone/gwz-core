@@ -205,6 +205,47 @@ fn bundle_rows_are_canonical_when_cursor_order_is_not() {
 }
 
 #[test]
+fn root_inclusive_bundle_has_canonical_owner_order_and_bytes() {
+    let fixture = dirty_selected_root_handoff_fixture_with_later_member(
+        "v1-preservation-bundle-root-inclusive-order",
+    );
+    for (path, value) in [
+        (fixture.base.member.join("dirty-a.txt"), "dirty a\n"),
+        (
+            fixture.base.root.path.join("members/z/dirty-z.txt"),
+            "dirty z\n",
+        ),
+    ] {
+        fs::write(path, value).unwrap();
+    }
+    fixture.base.seed_open();
+    let context = fixture.base.context();
+    let mut runtime = ReverseRuntime::new(&fixture.base.backend, &context);
+    run(
+        &CheckedV1Store::default(),
+        &fixture.base.root.path,
+        &fixture.base.model.merge_id,
+        V1LifecycleRequest::Preserve,
+        &mut runtime,
+    )
+    .unwrap();
+    let stash_id = format!("stash_{}", fixture.base.model.merge_id);
+    let path = crate::stash::bundle_path(&fixture.base.root.path, &stash_id);
+    let bytes = fs::read_to_string(&path).unwrap();
+    let bundle = crate::stash::read_bundle(&fixture.base.root.path, &stash_id).unwrap();
+    assert_eq!(bundle.selected_members, ["@root", "mem_a", "mem_z"]);
+    assert_eq!(
+        bundle
+            .members
+            .iter()
+            .map(|row| row.member_id.as_str())
+            .collect::<Vec<_>>(),
+        ["@root", "mem_a", "mem_z"]
+    );
+    assert_eq!(bytes, bundle.to_yaml().unwrap());
+}
+
+#[test]
 fn foreign_bundle_inserted_before_publication_is_not_overwritten() {
     use crate::checked_artifact::{CheckedArtifactFault, run_next_checked_artifact_at};
 

@@ -93,6 +93,7 @@ pub(in crate::workspace_ops::merge) fn normalize_evidence_observation(
 pub(in crate::workspace_ops::merge) use v1_rollback::{
     V1RootRollbackObservation, execute_v1_root_metadata_rollback,
     observe_v1_root_metadata_rollback, observe_v1_selected_root_baseline,
+    selected_root_result_artifacts,
 };
 
 #[cfg(test)]
@@ -122,16 +123,34 @@ mod v1_rollback {
         let baseline_lock = record.baseline.lock_yaml.as_deref().ok_or_else(|| {
             root_metadata_error("selected-root operation baseline has no lock bytes")
         })?;
-        let manifest = artifact_state(
-            artifact_facts::observe(root, WORKSPACE_MANIFEST)?,
-            &before_manifest,
-            baseline_manifest,
-        );
-        let lock = artifact_state(
-            artifact_facts::observe(root, LOCK_PATH)?,
-            &before_lock,
-            baseline_lock,
-        );
+        let manifest = if step == RootMetadataRollbackStepV1::Manifest {
+            transition_state(artifact_facts::classify_write(
+                root,
+                WORKSPACE_MANIFEST,
+                before_manifest.as_bytes(),
+                baseline_manifest.as_bytes(),
+            )?)
+        } else {
+            artifact_state(
+                artifact_facts::observe(root, WORKSPACE_MANIFEST)?,
+                &before_manifest,
+                baseline_manifest,
+            )
+        };
+        let lock = if step == RootMetadataRollbackStepV1::Lock {
+            transition_state(artifact_facts::classify_write(
+                root,
+                LOCK_PATH,
+                before_lock.as_bytes(),
+                baseline_lock.as_bytes(),
+            )?)
+        } else {
+            artifact_state(
+                artifact_facts::observe(root, LOCK_PATH)?,
+                &before_lock,
+                baseline_lock,
+            )
+        };
         let manifest_noop = before_manifest == baseline_manifest;
         let lock_noop = before_lock == baseline_lock;
         let initial = (manifest == RootArtifactState::Before
@@ -351,7 +370,7 @@ mod v1_rollback {
         }
     }
 
-    fn selected_root_result_artifacts<B: GitBackend>(
+    pub(in crate::workspace_ops::merge) fn selected_root_result_artifacts<B: GitBackend>(
         backend: &B,
         root: &Path,
         record: &MergeOperationRecordV1,
@@ -399,6 +418,15 @@ mod v1_rollback {
         Before,
         After,
         Other,
+    }
+
+    fn transition_state(value: artifact_facts::RegularFileTransition) -> RootArtifactState {
+        match value {
+            artifact_facts::RegularFileTransition::Before
+            | artifact_facts::RegularFileTransition::Recoverable => RootArtifactState::Before,
+            artifact_facts::RegularFileTransition::After => RootArtifactState::After,
+            artifact_facts::RegularFileTransition::Ambiguous => RootArtifactState::Other,
+        }
     }
 
     fn artifact_state(

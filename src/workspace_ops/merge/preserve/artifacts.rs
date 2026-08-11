@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(test)]
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact};
+use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
 
 pub(super) fn verify_root_publication(
     root: &Path,
@@ -563,6 +563,20 @@ pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<B: GitBackend>(
         lock,
         index,
     };
+    let mut excluded_worktree_paths =
+        crate::artifact::ManifestArtifact::from_yaml(
+            record.baseline.manifest_yaml.as_deref().ok_or_else(|| {
+                v1_error(plan, "root preservation baseline has no manifest bytes")
+            })?,
+        )?
+        .members
+        .into_iter()
+        .map(|member| member.path)
+        .collect::<Vec<_>>();
+    // The operation journal and preservation artifacts mutate while this
+    // preimage is being consumed. They are control-plane state, never user
+    // work, even when an older publication boundary did not ignore `.gwz`.
+    excluded_worktree_paths.push(".gwz".into());
     let spec = GitRootPreservationSpec {
         attached_branch: plan.branch.clone(),
         attached_commit: attached_commit.into(),
@@ -572,6 +586,7 @@ pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<B: GitBackend>(
         restore_clean_form: restore,
         handoff_form,
         handoff_boundary: boundary.to_vec(),
+        excluded_worktree_paths,
     };
     Ok(Some(spec))
 }
@@ -685,23 +700,20 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_observation<B: GitBackend>(
         })?;
     let before = expected_bundle(backend, record, &plans[..index])?;
     let after = expected_bundle(backend, record, &plans[..=index])?;
-    let observed = read_bundle_fact(root, &after.stash_id)?;
     let before_bytes = (!before.members.is_empty())
         .then(|| before.to_yaml().map(String::into_bytes))
         .transpose()?;
     let after_bytes = after.to_yaml()?.into_bytes();
-    Ok(match observed {
-        CheckedArtifactFact::Bytes(bytes) if bytes == after_bytes => V1BundleObservation::After,
-        CheckedArtifactFact::Missing if before_bytes.is_none() => V1BundleObservation::Before,
-        CheckedArtifactFact::Bytes(bytes)
-            if before_bytes
-                .as_ref()
-                .is_some_and(|value| value.as_slice() == bytes) =>
-        {
-            V1BundleObservation::Before
-        }
-        _ => V1BundleObservation::Ambiguous,
-    })
+    let before = before_bytes.map_or(CheckedArtifactFact::Missing, CheckedArtifactFact::Bytes);
+    Ok(
+        match bundle_artifact(root, &after.stash_id)?.classify_replace(&before, &after_bytes)? {
+            CheckedArtifactTransition::Before | CheckedArtifactTransition::Recoverable => {
+                V1BundleObservation::Before
+            }
+            CheckedArtifactTransition::After => V1BundleObservation::After,
+            CheckedArtifactTransition::Ambiguous => V1BundleObservation::Ambiguous,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -712,7 +724,7 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<B: GitBackend>(
     plans: &[super::plan::V1PreservationOwnerPlan],
 ) -> ModelResult<bool> {
     let expected = expected_bundle(backend, record, plans)?;
-    let observed = read_bundle_fact(root, &expected.stash_id)?;
+    let observed = bundle_artifact(root, &expected.stash_id)?.observe_durable()?;
     if expected.members.is_empty() {
         return Ok(observed == CheckedArtifactFact::Missing);
     }
@@ -740,24 +752,24 @@ pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<B: GitBackend>(
     let before = expected_bundle(backend, record, &plans[..index])?;
     let after = expected_bundle(backend, record, &plans[..=index])?;
     let artifact = bundle_artifact(root, &after.stash_id)?;
-    let observed = validated_bundle_fact(artifact.observe()?)?;
     let before = if before.members.is_empty() {
         CheckedArtifactFact::Missing
     } else {
         CheckedArtifactFact::Bytes(before.to_yaml()?.into_bytes())
     };
     let after = after.to_yaml()?.into_bytes();
-    if observed == CheckedArtifactFact::Bytes(after.clone()) {
-        return Ok(());
+    match artifact.classify_replace(&before, &after)? {
+        CheckedArtifactTransition::After => return Ok(()),
+        CheckedArtifactTransition::Before | CheckedArtifactTransition::Recoverable => {}
+        CheckedArtifactTransition::Ambiguous => {
+            return Err(ModelError::new(
+                ErrorCode::PreservationEvidenceMismatch,
+                "preservation bundle is neither the exact prior prefix nor the exact completed prefix",
+            ));
+        }
     }
-    if observed != before {
-        return Err(ModelError::new(
-            ErrorCode::PreservationEvidenceMismatch,
-            "preservation bundle is neither the exact prior prefix nor the exact completed prefix",
-        ));
-    }
-    artifact.replace_exact(&observed, &after)?;
-    (validated_bundle_fact(artifact.observe()?)? == CheckedArtifactFact::Bytes(after))
+    artifact.replace_exact(&before, &after)?;
+    (artifact.classify_replace(&before, &after)? == CheckedArtifactTransition::After)
         .then_some(())
         .ok_or_else(|| {
             ModelError::new(
@@ -839,39 +851,6 @@ fn expected_bundle<B: GitBackend>(
         warnings: Vec::new(),
         drift: Vec::new(),
     })
-}
-
-#[cfg(test)]
-fn read_bundle_fact(root: &Path, stash_id: &str) -> ModelResult<CheckedArtifactFact> {
-    let artifact = bundle_artifact(root, stash_id)?;
-    validated_bundle_fact(artifact.observe()?)
-}
-
-#[cfg(test)]
-fn validated_bundle_fact(fact: CheckedArtifactFact) -> ModelResult<CheckedArtifactFact> {
-    let CheckedArtifactFact::Bytes(bytes) = &fact else {
-        return if fact == CheckedArtifactFact::Invalid {
-            Err(ModelError::new(
-                ErrorCode::PreservationEvidenceMismatch,
-                "preservation bundle is not a canonical regular file",
-            ))
-        } else {
-            Ok(fact)
-        };
-    };
-    let text = std::str::from_utf8(bytes).map_err(|_| {
-        ModelError::new(
-            ErrorCode::PreservationEvidenceMismatch,
-            "preservation bundle is not canonical UTF-8 YAML",
-        )
-    })?;
-    StashBundle::from_yaml(text).map_err(|_| {
-        ModelError::new(
-            ErrorCode::PreservationEvidenceMismatch,
-            "preservation bundle is not a canonical bundle document",
-        )
-    })?;
-    Ok(fact)
 }
 
 #[cfg(test)]

@@ -58,7 +58,7 @@ fn every_root_phase_durable_successor_restarts_without_repeating_the_phase() {
                 target,
                 executions: 0,
             };
-            let response = run(
+            let mut response = run(
                 &store,
                 &fixture.base.root.path,
                 &fixture.base.model.merge_id,
@@ -70,26 +70,103 @@ fn every_root_phase_durable_successor_restarts_without_repeating_the_phase() {
                 &mut resume,
             )
             .unwrap();
-            match owner {
-                RootOwner::Publication => assert_eq!(
-                    response.disposition(),
-                    V1ResponseDisposition::Terminal(OperationState::Aborted),
-                    "{owner:?} {target:?}",
-                ),
-                RootOwner::Selected => assert!(
-                    matches!(
-                        response.disposition(),
-                        V1ResponseDisposition::Terminal(OperationState::Aborted)
-                            | V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
-                    ),
-                    "{owner:?} {target:?}",
-                ),
+            for retry in 0..8 {
+                if response.disposition()
+                    != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
+                {
+                    break;
+                }
+                response = run(
+                    &store,
+                    &fixture.base.root.path,
+                    &fixture.base.model.merge_id,
+                    if retry % 2 == 0 {
+                        V1LifecycleRequest::Abort
+                    } else {
+                        V1LifecycleRequest::Preserve
+                    },
+                    &mut resume,
+                )
+                .unwrap();
             }
+            assert_eq!(
+                response.disposition(),
+                V1ResponseDisposition::Terminal(OperationState::Aborted),
+                "{owner:?} {target:?}",
+            );
             assert_eq!(
                 resume.executions, 0,
                 "{owner:?} {target:?} repeated after its durable successor",
             );
             assert!(response.current().record().pending_preservation.is_none());
+        }
+    }
+}
+
+#[test]
+fn every_legal_root_handoff_form_exhausts_the_complete_phase_graph() {
+    use crate::workspace_ops::merge::model::v1::{
+        PublicationIndexFormV1 as I, PublicationPrefixV1 as P,
+    };
+
+    for owner in [RootOwner::Publication, RootOwner::Selected] {
+        for (form_index, (prefix, index)) in [
+            (P::Baseline, I::Pre),
+            (P::Marker, I::Pre),
+            (P::Lock, I::Pre),
+            (P::Boundary, I::Pre),
+            (P::Boundary, I::Staged),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut fixture =
+                root_fixture(owner, &format!("v1-root-handoff-{owner:?}-{form_index}"));
+            install_root_handoff(&mut fixture, prefix, index);
+            fixture.base.seed_open();
+            let operation_context = fixture.base.context();
+            let mut runtime = TraceRuntime {
+                inner: ReverseRuntime::new(&fixture.base.backend, &operation_context),
+                targets: Vec::new(),
+            };
+            let store = CheckedV1Store::default();
+            let mut response = run(
+                &store,
+                &fixture.base.root.path,
+                &fixture.base.model.merge_id,
+                V1LifecycleRequest::Preserve,
+                &mut runtime,
+            )
+            .unwrap();
+            for retry in 0..8 {
+                if response.disposition()
+                    != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
+                {
+                    break;
+                }
+                response = run(
+                    &store,
+                    &fixture.base.root.path,
+                    &fixture.base.model.merge_id,
+                    if retry % 2 == 0 {
+                        V1LifecycleRequest::Abort
+                    } else {
+                        V1LifecycleRequest::Preserve
+                    },
+                    &mut runtime,
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                response.disposition(),
+                V1ResponseDisposition::Terminal(OperationState::Aborted),
+                "{owner:?} {prefix:?}/{index:?}"
+            );
+            assert_eq!(
+                runtime.targets,
+                expected_targets(),
+                "{owner:?} {prefix:?}/{index:?}"
+            );
         }
     }
 }
@@ -121,14 +198,14 @@ fn root_fixture(owner: RootOwner, name: &str) -> RootPreservationFixture {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PhaseTarget {
+pub(super) enum PhaseTarget {
     Backup,
     Stash(S),
     Reset(R),
 }
 
 impl PhaseTarget {
-    fn from_record(record: &MergeOperationRecordV1) -> Option<Self> {
+    pub(super) fn from_record(record: &MergeOperationRecordV1) -> Option<Self> {
         match record.pending_preservation.as_ref()? {
             PendingPreservationActionV1::BackupRef { .. } => Some(Self::Backup),
             PendingPreservationActionV1::Stash { phase, .. } => Some(Self::Stash(*phase)),
@@ -138,7 +215,7 @@ impl PhaseTarget {
         }
     }
 
-    fn matches_action(self, action: &PhysicalActionKind) -> bool {
+    pub(super) fn matches_action(self, action: &PhysicalActionKind) -> bool {
         match action {
             PhysicalActionKind::Preservation(action) => match action {
                 PendingPreservationActionV1::BackupRef { .. } => self == Self::Backup,
@@ -155,7 +232,7 @@ impl PhaseTarget {
     }
 }
 
-fn expected_targets() -> Vec<PhaseTarget> {
+pub(super) fn expected_targets() -> Vec<PhaseTarget> {
     vec![
         PhaseTarget::Backup,
         PhaseTarget::Stash(S::NormalizeParent),

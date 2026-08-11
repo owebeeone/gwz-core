@@ -5,13 +5,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const PREIMAGE_FRAME: &[u8] = b"gwz.merge-preservation-preimage/v1\0";
 
-#[derive(Default)]
+#[derive(Default, Eq, PartialEq)]
 struct ImageEntry {
     index: Vec<IndexImage>,
     worktree: Option<WorktreeImage>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 struct IndexImage {
     stage: u8,
     mode: u32,
@@ -33,8 +33,11 @@ pub(super) fn capture(root: &Path, include_untracked: bool) -> ModelResult<GitPr
 pub(super) fn capture_normalized(
     root: &Path,
     form: &GitRootManagedForm,
+    excluded_paths: &[String],
 ) -> ModelResult<GitPreservationImage> {
-    capture_inner(root, true, Some(form))
+    let excluded_paths = raw_excluded_paths(excluded_paths)?;
+    let (entries, dirty) = live_entries(root, true, Some(form), &excluded_paths)?;
+    encode(entries, dirty)
 }
 
 fn capture_inner(
@@ -42,10 +45,26 @@ fn capture_inner(
     include_untracked: bool,
     managed: Option<&GitRootManagedForm>,
 ) -> ModelResult<GitPreservationImage> {
+    let (entries, dirty) = live_entries(root, include_untracked, managed, &[])?;
+    encode(entries, dirty)
+}
+
+fn live_entries(
+    root: &Path,
+    include_untracked: bool,
+    managed: Option<&GitRootManagedForm>,
+    excluded_paths: &[Vec<u8>],
+) -> ModelResult<(BTreeMap<Vec<u8>, ImageEntry>, GitPreservationDirtySummary)> {
     let repo = open_repo(root)?;
     let index = repo.index().map_err(git_error)?;
     let mut entries = BTreeMap::<Vec<u8>, ImageEntry>::new();
     for item in index.iter() {
+        if excluded_paths
+            .iter()
+            .any(|excluded| path_is_at_or_below(&item.path, excluded))
+        {
+            continue;
+        }
         let semantic = semantic_flags(&item)?;
         let stage = ((item.flags >> 12) & 3) as u8;
         let row = entries.entry(item.path.clone()).or_default();
@@ -79,6 +98,12 @@ fn capture_inner(
     let mut dirty = GitPreservationDirtySummary::default();
     for status in statuses.iter() {
         let path = status.path_bytes();
+        if excluded_paths
+            .iter()
+            .any(|excluded| path_is_at_or_below(path, excluded))
+        {
+            continue;
+        }
         let flags = status.status();
         if managed_paths.contains(path) {
             continue;
@@ -114,7 +139,63 @@ fn capture_inner(
     if let Some(form) = managed {
         substitute_managed(&mut entries, form)?;
     }
-    encode(entries, dirty)
+    Ok((entries, dirty))
+}
+
+pub(super) fn checkout_matches_commit_except(
+    root: &Path,
+    commit: &str,
+    allowed_paths: &[String],
+) -> ModelResult<bool> {
+    let repo = open_repo(root)?;
+    let commit = preservation_root::index::parse_exact_oid(&repo, commit, "checkout commit")?;
+    let commit = repo.find_commit(commit).map_err(git_error)?;
+    let expected_tree = flatten_tree(&repo, &commit.tree().map_err(git_error)?)?;
+    let mut expected = expected_tree
+        .into_iter()
+        .map(|(path, item)| {
+            let worktree = item.worktree();
+            (
+                path,
+                ImageEntry {
+                    index: vec![IndexImage {
+                        stage: 0,
+                        mode: item.mode,
+                        semantic: 0,
+                        oid: item.oid,
+                    }],
+                    worktree: Some(worktree),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let excluded_paths = raw_excluded_paths(allowed_paths)?;
+    let (mut live, _) = live_entries(root, true, None, &excluded_paths)?;
+    for raw in excluded_paths {
+        live.retain(|path, _| !path_is_at_or_below(path, &raw));
+        expected.retain(|path, _| !path_is_at_or_below(path, &raw));
+    }
+    Ok(live == expected)
+}
+
+fn raw_excluded_paths(paths: &[String]) -> ModelResult<Vec<Vec<u8>>> {
+    paths
+        .iter()
+        .map(|path| {
+            let mut raw = preservation_root::files::path_to_raw(Path::new(path))?;
+            while raw.last() == Some(&b'/') {
+                raw.pop();
+            }
+            Ok(raw)
+        })
+        .collect()
+}
+
+fn path_is_at_or_below(candidate: &[u8], prefix: &[u8]) -> bool {
+    candidate == prefix
+        || candidate
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.first() == Some(&b'/'))
 }
 
 fn substitute_managed(
@@ -344,7 +425,10 @@ fn read_worktree(
         return Ok(Some(WorktreeImage::Gitlink(index.unwrap().oid.clone())));
     }
     if !metadata.is_file() {
-        return Err(preimage_error("unsupported worktree file kind"));
+        return Err(preimage_error(format!(
+            "unsupported worktree file kind at '{}'",
+            path.display()
+        )));
     }
     #[cfg(unix)]
     let executable = {

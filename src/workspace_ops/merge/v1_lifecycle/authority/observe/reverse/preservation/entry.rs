@@ -145,6 +145,7 @@ fn preflight_non_preservation_participants<B: GitBackend>(
                 let observed = crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
                     backend,
                     current.location().root(),
+                    record,
                     member_id,
                     row,
                     ParticipantRollbackKindV1::AbortConflict,
@@ -166,6 +167,7 @@ fn preflight_non_preservation_participants<B: GitBackend>(
                 crate::workspace_ops::merge::abort::verify_v1_no_mutation_participant(
                     backend,
                     current.location().root(),
+                    record,
                     member_id,
                     row,
                 )

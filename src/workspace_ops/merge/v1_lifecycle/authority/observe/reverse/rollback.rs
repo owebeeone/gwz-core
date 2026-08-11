@@ -92,6 +92,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBacken
             crate::workspace_ops::merge::abort::verify_v1_no_mutation_participant(
                 backend,
                 current.location().root(),
+                current.record(),
                 member_id,
                 row,
             )?;
@@ -355,6 +356,7 @@ fn observe_participant<B: GitBackend>(
     match crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
         backend,
         current.location().root(),
+        current.record(),
         member_id,
         row,
         action,

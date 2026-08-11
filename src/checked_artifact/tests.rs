@@ -1,5 +1,13 @@
+use super::transition::TEMP_SEQUENCE;
 use super::*;
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+
+#[path = "tests/durability.rs"]
+mod durability;
+#[path = "tests/exact_source.rs"]
+mod exact_source;
 
 struct TempRoot(PathBuf);
 
@@ -11,6 +19,7 @@ impl TempRoot {
             TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&path).unwrap();
+        git2::Repository::init(&path).unwrap();
         Self(path)
     }
 }

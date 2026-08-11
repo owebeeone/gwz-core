@@ -49,6 +49,7 @@ fn execute_checked<B: GitBackend>(
             crate::workspace_ops::merge::abort::execute_v1_participant_rollback(
                 backend,
                 current.location().root(),
+                current.record(),
                 member_id,
                 row,
                 *action,

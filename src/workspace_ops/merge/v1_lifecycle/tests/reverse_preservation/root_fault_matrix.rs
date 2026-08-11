@@ -16,18 +16,13 @@ use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
 #[test]
 fn every_root_physical_and_successor_boundary_recovers_without_repeating_mutation() {
     for owner in [RootOwner::Publication, RootOwner::Selected] {
-        let targets = emitted_root_targets(owner);
+        let cases = physical_cases(owner);
         assert_eq!(
-            targets,
-            vec![
-                Target::Backup,
-                Target::Stash(S::CreateStash),
-                Target::Stash(S::WriteBundle),
-                Target::Reset(R::ResetRef),
-            ],
+            cases.iter().map(|(_, target)| *target).collect::<Vec<_>>(),
+            expected_targets(),
             "{owner:?} physical action set drifted",
         );
-        for (target_index, target) in targets.into_iter().enumerate() {
+        for (target_index, (handoff, target)) in cases.into_iter().enumerate() {
             for (boundary_index, boundary) in [
                 Boundary::BeforePhysical,
                 Boundary::AfterPhysical,
@@ -37,7 +32,8 @@ fn every_root_physical_and_successor_boundary_recovers_without_repeating_mutatio
             .enumerate()
             {
                 let name = format!("v1-root-matrix-{owner:?}-{target_index}-{boundary_index}",);
-                let fixture = root_fixture(owner, &name);
+                let mut fixture = root_fixture(owner, &name);
+                install_root_handoff(&mut fixture, handoff.prefix, handoff.index);
                 fixture.base.seed_open();
                 let context = fixture.base.context();
                 let mut interrupt = InterruptRuntime {
@@ -99,8 +95,9 @@ fn every_root_physical_and_successor_boundary_recovers_without_repeating_mutatio
                     target,
                     executions: 0,
                 };
-                let response = run(
-                    &CheckedV1Store::default(),
+                let store = CheckedV1Store::default();
+                let mut response = run(
+                    &store,
                     &fixture.base.root.path,
                     &fixture.base.model.merge_id,
                     if boundary_index % 2 == 0 {
@@ -111,24 +108,32 @@ fn every_root_physical_and_successor_boundary_recovers_without_repeating_mutatio
                     &mut resume,
                 )
                 .unwrap();
-                match owner {
-                    RootOwner::Publication => assert_eq!(
-                        response.disposition(),
-                        V1ResponseDisposition::Terminal(OperationState::Aborted),
-                        "{owner:?} {target:?} {boundary:?}",
-                    ),
-                    RootOwner::Selected => assert!(
-                        matches!(
-                            response.disposition(),
-                            V1ResponseDisposition::Terminal(OperationState::Aborted)
-                                | V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
-                        ),
-                        "{owner:?} {target:?} {boundary:?}"
-                    ),
+                for retry in 0..8 {
+                    if response.disposition()
+                        != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
+                    {
+                        break;
+                    }
+                    response = run(
+                        &store,
+                        &fixture.base.root.path,
+                        &fixture.base.model.merge_id,
+                        if retry % 2 == 0 {
+                            V1LifecycleRequest::Preserve
+                        } else {
+                            V1LifecycleRequest::Abort
+                        },
+                        &mut resume,
+                    )
+                    .unwrap();
                 }
+                assert_eq!(
+                    response.disposition(),
+                    V1ResponseDisposition::Terminal(OperationState::Aborted),
+                    "{owner:?} {target:?} {boundary:?}",
+                );
                 assert!(response.current().record().pending_preservation.is_none());
                 let expected = match boundary {
-                    Boundary::BeforePhysical if target.has_parent_durability() => 2,
                     Boundary::BeforePhysical => 1,
                     Boundary::AfterPhysical if target.has_parent_durability() => 1,
                     Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => 0,
@@ -178,8 +183,58 @@ fn root_fixture(owner: RootOwner, name: &str) -> RootPreservationFixture {
     }
 }
 
-fn emitted_root_targets(owner: RootOwner) -> Vec<Target> {
-    let fixture = root_fixture(owner, &format!("v1-root-matrix-trace-{owner:?}"));
+#[derive(Clone, Copy, Debug)]
+struct Handoff {
+    prefix: crate::workspace_ops::merge::model::v1::PublicationPrefixV1,
+    index: crate::workspace_ops::merge::model::v1::PublicationIndexFormV1,
+}
+
+fn handoffs() -> [Handoff; 5] {
+    use crate::workspace_ops::merge::model::v1::{
+        PublicationIndexFormV1 as I, PublicationPrefixV1 as P,
+    };
+    [
+        Handoff {
+            prefix: P::Baseline,
+            index: I::Pre,
+        },
+        Handoff {
+            prefix: P::Marker,
+            index: I::Pre,
+        },
+        Handoff {
+            prefix: P::Lock,
+            index: I::Pre,
+        },
+        Handoff {
+            prefix: P::Boundary,
+            index: I::Pre,
+        },
+        Handoff {
+            prefix: P::Boundary,
+            index: I::Staged,
+        },
+    ]
+}
+
+fn physical_cases(owner: RootOwner) -> Vec<(Handoff, Target)> {
+    let mut cases = Vec::new();
+    for (form_index, handoff) in handoffs().into_iter().enumerate() {
+        for target in emitted_root_targets(owner, handoff, form_index) {
+            if !cases.iter().any(|(_, existing)| *existing == target) {
+                cases.push((handoff, target));
+            }
+        }
+    }
+    cases
+}
+
+fn emitted_root_targets(owner: RootOwner, handoff: Handoff, form_index: usize) -> Vec<Target> {
+    let mut fixture = root_fixture(
+        owner,
+        &format!("v1-root-matrix-trace-{owner:?}-{form_index}"),
+    );
+    install_root_handoff(&mut fixture, handoff.prefix, handoff.index);
     fixture.base.seed_open();
     let context = fixture.base.context();
     let mut runtime = TraceRuntime {
@@ -201,6 +256,29 @@ fn emitted_root_targets(owner: RootOwner) -> Vec<Target> {
     ));
     assert!(response.current().record().pending_preservation.is_none());
     runtime.targets
+}
+
+fn expected_targets() -> Vec<Target> {
+    vec![
+        Target::Backup,
+        Target::Stash(S::NormalizeParent),
+        Target::Stash(S::NormalizeMarker),
+        Target::Stash(S::NormalizeLock),
+        Target::Stash(S::NormalizeIndex),
+        Target::Stash(S::CreateStash),
+        Target::Stash(S::RestoreIndex),
+        Target::Stash(S::RestoreLock),
+        Target::Stash(S::RestoreMarker),
+        Target::Stash(S::WriteBundle),
+        Target::Reset(R::PrepareParent),
+        Target::Reset(R::PrepareMarker),
+        Target::Reset(R::PrepareLock),
+        Target::Reset(R::PrepareIndex),
+        Target::Reset(R::ResetRef),
+        Target::Reset(R::RestoreIndex),
+        Target::Reset(R::RestoreLock),
+        Target::Reset(R::RestoreMarker),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,8 +331,7 @@ impl Target {
     fn has_parent_durability(self) -> bool {
         matches!(
             self,
-            Target::Stash(S::NormalizeParent | S::RestoreParent)
-                | Target::Reset(R::PrepareParent | R::RestoreParent)
+            Target::Stash(S::NormalizeParent) | Target::Reset(R::PrepareParent)
         )
     }
 }

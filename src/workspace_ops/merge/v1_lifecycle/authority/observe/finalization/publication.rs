@@ -152,6 +152,7 @@ fn reverse_handoff_error() -> ModelError {
         ErrorCode::MergeRecoveryRequired,
         "publication state is not an exact reversible handoff",
     )
+    .with_member("@root", ".")
 }
 
 fn candidate_handoff_fact(

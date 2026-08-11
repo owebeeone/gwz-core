@@ -1,4 +1,5 @@
 use super::*;
+use crate::checked_artifact::CheckedArtifactTransition;
 pub(super) mod files;
 pub(super) mod index;
 pub(super) mod index_format;
@@ -23,7 +24,11 @@ pub(super) fn prepare_root_preservation_stash(
         ));
     }
     Ok(GitPreparedRootStash {
-        normalized_image: preservation_image::capture_normalized(root, &spec.attached_clean_form)?,
+        normalized_image: preservation_image::capture_normalized(
+            root,
+            &spec.attached_clean_form,
+            &spec.excluded_worktree_paths,
+        )?,
     })
 }
 pub(super) fn observe_root_preservation_step(
@@ -180,12 +185,51 @@ fn observe_managed(
         return observe_parent(root, spec, transition, source, goal, pinned);
     }
     let staging = parent::staging_name(spec, transition.source, transition.goal);
-    if pattern_matches(root, spec, &staging, transition, true)? {
+    if matches!(
+        transition.object,
+        GitRootManagedObject::MarkerWorktree | GitRootManagedObject::LockWorktree
+    ) {
+        let (path, source_file, goal_file) = match transition.object {
+            GitRootManagedObject::MarkerWorktree => (
+                spec.managed_marker_path.as_str(),
+                source.marker.as_ref(),
+                goal.marker.as_ref(),
+            ),
+            GitRootManagedObject::LockWorktree => (
+                crate::artifact::LOCK_PATH,
+                Some(&source.lock),
+                Some(&goal.lock),
+            ),
+            GitRootManagedObject::Index | GitRootManagedObject::MarkerParentDirectory => {
+                unreachable!("checked above")
+            }
+        };
+        let observed = files::observe_transition(root, path, source_file, goal_file)?;
+        let after = observed == CheckedArtifactTransition::After;
+        if observed == CheckedArtifactTransition::Ambiguous
+            || !pattern_matches(
+                root,
+                spec,
+                &staging,
+                transition,
+                after,
+                Some(transition.object),
+            )?
+        {
+            return Ok(GitRootPreservationStepObservation::Ambiguous);
+        }
+        return Ok(if after {
+            GitRootPreservationStepObservation::After
+        } else {
+            GitRootPreservationStepObservation::Before
+        });
+    }
+    if pattern_matches(root, spec, &staging, transition, true, None)? {
         return Ok(GitRootPreservationStepObservation::After);
     }
     if object_matches(root, spec, &staging, transition.object, source)?
         && !object_matches(root, spec, &staging, transition.object, goal)?
-        && pattern_matches(root, spec, &staging, transition, false)?
+        && pattern_matches(root, spec, &staging, transition, false, None)?
     {
         return Ok(GitRootPreservationStepObservation::Before);
     }
@@ -212,12 +256,17 @@ fn observe_create_stash(
     if let [stash] = stashes.as_slice()
         && stash.head_commit == spec.attached_commit
         && stash.image.preimage_sha256 == *sha256
-        && otherwise_clean(root, &spec.attached_clean_form)?
+        && otherwise_clean(root, spec, &spec.attached_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::After);
     }
     if stashes.is_empty()
-        && preservation_image::capture_normalized(root, &spec.attached_clean_form)?.preimage_sha256
+        && preservation_image::capture_normalized(
+            root,
+            &spec.attached_clean_form,
+            &spec.excluded_worktree_paths,
+        )?
+        .preimage_sha256
             == *sha256
     {
         return Ok(GitRootPreservationStepObservation::Before);
@@ -238,13 +287,13 @@ fn observe_reset(
     }
     if exact_head(backend, root, &spec.attached_branch, &spec.restore_commit)?
         && full_form_matches(root, spec, &spec.restore_clean_form)?
-        && otherwise_clean(root, &spec.restore_clean_form)?
+        && otherwise_clean(root, spec, &spec.restore_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::After);
     }
     if exact_head(backend, root, &spec.attached_branch, &spec.attached_commit)?
         && full_form_matches(root, spec, &spec.attached_clean_form)?
-        && otherwise_clean(root, &spec.attached_clean_form)?
+        && otherwise_clean(root, spec, &spec.attached_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::Before);
     }
@@ -256,6 +305,7 @@ fn pattern_matches(
     staging: &str,
     transition: &GitRootManagedTransition,
     after: bool,
+    ignored: Option<GitRootManagedObject>,
 ) -> ModelResult<bool> {
     let source = form(spec, transition.source);
     let goal = form(spec, transition.goal);
@@ -280,6 +330,9 @@ fn pattern_matches(
         .position(|object| *object == transition.object)
         .expect("closed managed-object set");
     for (position, object) in objects.into_iter().enumerate() {
+        if Some(object) == ignored {
+            continue;
+        }
         let expected = if position < named_index || after && position == named_index {
             goal
         } else {
@@ -451,18 +504,28 @@ fn guard_matches(
     clean: &GitRootManagedForm,
 ) -> ModelResult<bool> {
     match guard {
-        GitRootPreservationGuard::NormalizedPreimage { sha256 } => Ok(
-            preservation_image::capture_normalized(root, &spec.attached_clean_form)?
-                .preimage_sha256
-                == *sha256,
-        ),
-        GitRootPreservationGuard::OtherwiseClean => otherwise_clean(root, clean),
+        GitRootPreservationGuard::NormalizedPreimage { sha256 } => {
+            Ok(preservation_image::capture_normalized(
+                root,
+                &spec.attached_clean_form,
+                &spec.excluded_worktree_paths,
+            )?
+            .preimage_sha256
+                == *sha256)
+        }
+        GitRootPreservationGuard::OtherwiseClean => otherwise_clean(root, spec, clean),
     }
 }
 
-fn otherwise_clean(root: &Path, clean: &GitRootManagedForm) -> ModelResult<bool> {
-    Ok(preservation_image::capture_normalized(root, clean)?.dirty
-        == GitPreservationDirtySummary::default())
+fn otherwise_clean(
+    root: &Path,
+    spec: &GitRootPreservationSpec,
+    clean: &GitRootManagedForm,
+) -> ModelResult<bool> {
+    Ok(
+        preservation_image::capture_normalized(root, clean, &spec.excluded_worktree_paths)?.dirty
+            == GitPreservationDirtySummary::default(),
+    )
 }
 
 fn exact_head(backend: &Git2Backend, root: &Path, branch: &str, commit: &str) -> ModelResult<bool> {

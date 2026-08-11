@@ -261,6 +261,18 @@ pub(super) fn stash_complete<B: GitBackend>(
         // Reclassifying an earlier owner against the complete durable set here
         // would reject the legitimate prior prefix while a later WriteBundle
         // action is pending.
+        if matches!(
+            current.record().pending_preservation.as_ref(),
+            Some(PendingPreservationActionV1::ResetAttachedRef { owner, .. })
+                if owner == &plan.owner && plan.root_handoff.is_some()
+        ) {
+            // A non-degenerate root reset deliberately moves its managed
+            // files between handoff and clean forms. Requiring the original
+            // handoff here would reject that journaled intermediate state;
+            // observe_reset_phase proves the exact form and otherwise-clean
+            // guard immediately after this prefix check.
+            return Ok(true);
+        }
         let image = v1_preservation_image(backend, current.record(), plan, &plan.live_commit)?;
         return Ok(image.dirty == GitPreservationDirtySummary::default());
     }

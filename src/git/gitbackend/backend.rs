@@ -54,6 +54,16 @@ impl Git2Backend {
             );
         });
     }
+
+    #[cfg(test)]
+    pub(crate) fn before_next_preservation_stash(callback: impl FnOnce() + 'static) {
+        BEFORE_PRESERVATION_STASH.with(|slot| {
+            assert!(
+                slot.borrow_mut().replace(Box::new(callback)).is_none(),
+                "a preservation-stash callback is already installed"
+            );
+        });
+    }
 }
 
 #[cfg(test)]
@@ -62,6 +72,8 @@ thread_local! {
     static BEFORE_PREPARED_EXECUTION: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
     static BEFORE_SCOPED_COMMIT_REF_LOCK: RefCell<Option<Box<dyn FnOnce()>>> =
+        const { RefCell::new(None) };
+    static BEFORE_PRESERVATION_STASH: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
 }
 
@@ -92,6 +104,16 @@ pub(super) fn run_before_scoped_commit_ref_lock() {
 
 #[cfg(not(test))]
 pub(super) fn run_before_scoped_commit_ref_lock() {}
+
+#[cfg(test)]
+pub(super) fn run_before_preservation_stash() {
+    if let Some(callback) = BEFORE_PRESERVATION_STASH.with(|slot| slot.borrow_mut().take()) {
+        callback();
+    }
+}
+
+#[cfg(not(test))]
+pub(super) fn run_before_preservation_stash() {}
 
 impl Default for Git2Backend {
     fn default() -> Self {
