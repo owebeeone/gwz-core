@@ -19,7 +19,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) use reverse::{
     prepare_direct_rollback_entry, prepare_exhausted_rollback_entry, prepare_preservation_entry,
     preservation_durability_fact, preservation_execution_prefix_is_exact, preservation_reset_step,
     preservation_stash_guard, preservation_stash_step, preserving_verify_recovery_origin,
-    rolling_back_verify_recovery_origin,
+    require_rollback_aggregate, rolling_back_verify_recovery_origin,
 };
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_preservation<B: GitBackend>(
@@ -90,9 +90,15 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn no_mutation_abort(
     )
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn rollback_exhausted(
+pub(super) fn rollback_exhausted(
     current: &StoredV1Record,
+    prefix: VerifiedRollbackPrefix,
 ) -> ModelResult<VerifiedRollbackExhausted> {
+    if !prefix.matches(current) {
+        return Err(authority_error(
+            "rollback exhaustion lacks its exact aggregate prefix proof",
+        ));
+    }
     let payload = match rollback_cursor(current.record()) {
         RollbackCursor::Complete => RollbackExhaustedPayload {
             selected_root_manifest_sha256: None,
@@ -108,6 +114,21 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn rollback_exhausted(
         "cursor_verified",
         payload,
     )
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn rollback_exhausted_for_test(
+    current: &StoredV1Record,
+) -> ModelResult<VerifiedRollbackExhausted> {
+    let value = RollbackAggregatePayload {
+        position: RollbackAggregatePosition::Exhaustion,
+        completed_participants: Vec::new(),
+        publication_evidence_complete: false,
+        selected_root_projection: None,
+        projection_sha256: [0; 32],
+    };
+    let prefix = VerifiedRollbackPrefix::issue(&AuthorityIssuer::for_observer(current), value)?;
+    rollback_exhausted(current, prefix)
 }
 
 fn selected_root_baseline(current: &StoredV1Record) -> ModelResult<RollbackExhaustedPayload> {

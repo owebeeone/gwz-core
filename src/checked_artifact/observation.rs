@@ -7,8 +7,11 @@ use cap_fs_ext::OsMetadataExt;
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, ambient_authority};
 use cap_std::fs::{Dir, OpenOptions};
 
-use super::{CheckedArtifact, CheckedArtifactFact, ParentState, error, io_error};
-use crate::model::{ErrorCode, ModelResult};
+use super::identity::{self, ObjectIdentity};
+use super::{
+    CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, ParentState, error, io_error,
+};
+use crate::model::{ErrorCode, ModelError, ModelResult};
 
 impl CheckedArtifact {
     /// Prepare a canonical no-follow directory hierarchy before an operation
@@ -53,8 +56,8 @@ impl CheckedArtifact {
             let next = current
                 .open_dir_nofollow(component)
                 .map_err(|cause| io_error(code, &label, cause))?;
-            if identity(&metadata)
-                != identity(
+            if metadata_identity(&metadata)
+                != metadata_identity(
                     &next
                         .dir_metadata()
                         .map_err(|cause| io_error(code, &label, cause))?,
@@ -72,7 +75,7 @@ impl CheckedArtifact {
     }
 
     pub(crate) fn acquire(
-        root: &Path,
+        policy: CheckedArtifactPolicy,
         relative: &Path,
         code: ErrorCode,
         label: impl Into<String>,
@@ -81,33 +84,27 @@ impl CheckedArtifact {
         let relative = relative.to_path_buf();
         let (parent_relative, leaf) =
             split_relative(&relative).map_err(|detail| error(code, &label, detail))?;
-        let (private_root, quarantine_parent) = git2::Repository::open(root).map_or_else(
-            |_| (root.to_path_buf(), PathBuf::from(".gwz/checked-artifacts")),
-            |repo| {
-                (
-                    repo.path().to_path_buf(),
-                    PathBuf::from("gwz/checked-artifacts"),
-                )
-            },
-        );
-        let root = Dir::open_ambient_dir(root, ambient_authority())
+        let private_root = policy.artifact_root().to_path_buf();
+        let quarantine_parent = policy.private_parent();
+        let root = Dir::open_ambient_dir(policy.artifact_root(), ambient_authority())
             .map_err(|cause| io_error(code, &label, cause))?;
+        let root_identity = durable_identity(&root, &label)?;
+        let canonical_path_identity = identity::canonical_path_identity(&root, &relative)
+            .map_err(|cause| unsupported(&label, cause))?;
         let parent = match traverse(&root, &parent_relative)
             .map_err(|cause| io_error(code, &label, cause))?
         {
             Traversal::Missing => ParentState::Missing,
             Traversal::Invalid => ParentState::Invalid,
             Traversal::Open(dir) => {
-                let identity = identity(
-                    &dir.dir_metadata()
-                        .map_err(|cause| io_error(code, &label, cause))?,
-                );
+                let identity = durable_identity(&dir, &label)?;
                 ParentState::Open { dir, identity }
             }
         };
         Ok(Self {
             root,
-            relative,
+            root_identity,
+            canonical_path_identity,
             parent_relative,
             parent,
             leaf,
@@ -126,10 +123,28 @@ impl CheckedArtifact {
                 ParentState::Open { .. } => unreachable!(),
             });
         };
-        if !self.parent_is_current(*identity)? {
+        if !self.parent_is_current(identity)? {
             return Ok(CheckedArtifactFact::Invalid);
         }
         observe_leaf(dir, &self.leaf, self.code, &self.label)
+    }
+
+    pub(super) fn observe_leaf_exact_current(&self) -> ModelResult<LeafObservation> {
+        let ParentState::Open { dir, identity } = &self.parent else {
+            return Err(error(
+                self.code,
+                &self.label,
+                "canonical parent is missing or invalid",
+            ));
+        };
+        if !self.parent_is_current(identity)? {
+            return Err(error(
+                self.code,
+                &self.label,
+                "canonical parent changed while observing artifact",
+            ));
+        }
+        observe_leaf_exact(dir, &self.leaf, self.code, &self.label)
     }
 
     #[cfg_attr(
@@ -138,22 +153,20 @@ impl CheckedArtifact {
     )]
     pub(crate) fn parent_is_canonical(&self) -> ModelResult<bool> {
         match &self.parent {
-            ParentState::Open { identity, .. } => self.parent_is_current(*identity),
+            ParentState::Open { identity, .. } => self.parent_is_current(identity),
             ParentState::Missing | ParentState::Invalid => Ok(false),
         }
     }
 
-    pub(super) fn parent_is_current(&self, expected: (u64, u64)) -> ModelResult<bool> {
+    pub(super) fn parent_is_current(&self, expected: &ObjectIdentity) -> ModelResult<bool> {
         let current = traverse(&self.root, &self.parent_relative)
             .map_err(|cause| io_error(self.code, &self.label, cause))?;
         let Traversal::Open(current) = current else {
             return Ok(false);
         };
-        Ok(identity(
-            &current
-                .dir_metadata()
-                .map_err(|cause| io_error(self.code, &self.label, cause))?,
-        ) == expected)
+        let observed =
+            identity::object_identity(&current).map_err(|cause| unsupported(&self.label, cause))?;
+        Ok(observed == *expected)
     }
 }
 
@@ -168,7 +181,7 @@ pub(super) fn observe_leaf(
 
 pub(super) struct LeafObservation {
     pub(super) fact: CheckedArtifactFact,
-    pub(super) identity: Option<(u64, u64)>,
+    pub(super) identity: Option<ObjectIdentity>,
 }
 
 pub(super) fn observe_leaf_exact(
@@ -213,7 +226,7 @@ pub(super) fn observe_leaf_exact(
     let opened = file
         .metadata()
         .map_err(|cause| io_error(code, label, cause))?;
-    if identity(&opened) != identity(&metadata) {
+    if metadata_identity(&opened) != metadata_identity(&metadata) {
         return Ok(LeafObservation {
             fact: CheckedArtifactFact::Invalid,
             identity: None,
@@ -235,8 +248,8 @@ pub(super) fn observe_leaf_exact(
     if !after.is_file()
         || after.is_symlink()
         || executable(&after)
-        || identity(&after) != identity(&metadata)
-        || identity(&after) != identity(&opened)
+        || metadata_identity(&after) != metadata_identity(&metadata)
+        || metadata_identity(&after) != metadata_identity(&opened)
         || opened.len() != bytes.len() as u64
     {
         return Ok(LeafObservation {
@@ -246,11 +259,11 @@ pub(super) fn observe_leaf_exact(
     }
     Ok(LeafObservation {
         fact: CheckedArtifactFact::Bytes(bytes),
-        identity: Some(identity(&opened)),
+        identity: Some(identity::file_identity(&file).map_err(|cause| unsupported(label, cause))?),
     })
 }
 
-pub(super) fn identity(metadata: &cap_fs_ext::Metadata) -> (u64, u64) {
+fn metadata_identity(metadata: &cap_fs_ext::Metadata) -> (u64, u64) {
     (MetadataExt::dev(metadata), MetadataExt::ino(metadata))
 }
 
@@ -283,12 +296,23 @@ fn traverse(root: &Dir, relative: &Path) -> std::io::Result<Traversal> {
             }
             Err(_) => return Ok(Traversal::Invalid),
         };
-        if identity(&metadata) != identity(&next.dir_metadata()?) {
+        if metadata_identity(&metadata) != metadata_identity(&next.dir_metadata()?) {
             return Ok(Traversal::Invalid);
         }
         current = next;
     }
     Ok(Traversal::Open(current))
+}
+
+fn durable_identity(dir: &Dir, label: &str) -> ModelResult<ObjectIdentity> {
+    identity::object_identity(dir).map_err(|cause| unsupported(label, cause))
+}
+
+fn unsupported(label: &str, cause: std::io::Error) -> ModelError {
+    ModelError::new(
+        ErrorCode::UnsupportedOperation,
+        format!("checked {label}: durable filesystem identity is unsupported: {cause}"),
+    )
 }
 
 fn split_relative(path: &Path) -> Result<(PathBuf, OsString), &'static str> {

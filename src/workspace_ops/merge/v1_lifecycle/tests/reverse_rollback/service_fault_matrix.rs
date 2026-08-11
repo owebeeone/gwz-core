@@ -24,18 +24,14 @@ fn every_emitted_rollback_physical_and_successor_boundary_recovers_exactly_once(
         Lane::Evidence,
         Lane::SelectedRoot,
     ] {
-        let targets = emitted_targets(lane);
+        let targets = expected_targets(lane);
         assert_eq!(
             targets,
             expected_targets(lane),
             "{lane:?} action set drifted"
         );
         for (target_index, target) in targets.into_iter().enumerate() {
-            for (request_index, request) in
-                [V1LifecycleRequest::Abort, V1LifecycleRequest::Preserve]
-                    .into_iter()
-                    .enumerate()
-            {
+            for (request_index, request) in admitted_requests().into_iter().enumerate() {
                 for (boundary_index, boundary) in [
                     Boundary::BeforePhysical,
                     Boundary::AfterPhysical,
@@ -103,21 +99,28 @@ fn every_emitted_rollback_physical_and_successor_boundary_recovers_exactly_once(
                         target,
                         executions: 0,
                     };
+                    let resume_request =
+                        admitted_requests()[(request_index + 1) % admitted_requests().len()];
                     let response = run(
                         &store,
                         &fixture.root.path,
                         &fixture.model.merge_id,
-                        if request == V1LifecycleRequest::Abort {
-                            V1LifecycleRequest::Preserve
-                        } else {
-                            V1LifecycleRequest::Abort
-                        },
+                        resume_request,
                         &mut resume,
                     )
                     .unwrap();
                     assert_eq!(
+                        response.current().record().state,
+                        OperationState::Aborted,
+                        "{lane:?} {target:?} {boundary:?}"
+                    );
+                    assert_eq!(
                         response.disposition(),
-                        V1ResponseDisposition::Terminal(OperationState::Aborted),
+                        if resume_request == V1LifecycleRequest::Archive {
+                            V1ResponseDisposition::ArchiveReady
+                        } else {
+                            V1ResponseDisposition::Terminal(OperationState::Aborted)
+                        },
                         "{lane:?} {target:?} {boundary:?}"
                     );
                     assert_eq!(
@@ -131,6 +134,16 @@ fn every_emitted_rollback_physical_and_successor_boundary_recovers_exactly_once(
             }
         }
     }
+}
+
+fn admitted_requests() -> [V1LifecycleRequest; 5] {
+    [
+        V1LifecycleRequest::ResumeStart,
+        V1LifecycleRequest::Continue,
+        V1LifecycleRequest::Abort,
+        V1LifecycleRequest::Preserve,
+        V1LifecycleRequest::Archive,
+    ]
 }
 
 pub(super) fn expected_targets(lane: Lane) -> Vec<Target> {
@@ -181,60 +194,6 @@ enum Boundary {
     BeforePhysical,
     AfterPhysical,
     AfterDurableSuccessor,
-}
-
-fn emitted_targets(lane: Lane) -> Vec<Target> {
-    let fixture = fixture(lane, &format!("v1-rollback-matrix-trace-{lane:?}"));
-    seed_open(&fixture.root.path, &fixture.model);
-    let context = context(&fixture.model);
-    let mut runtime = TraceRuntime {
-        inner: ReverseRuntime::new(&fixture.backend, &context),
-        targets: Vec::new(),
-    };
-    let response = run(
-        &CheckedV1Store::default(),
-        &fixture.root.path,
-        &fixture.model.merge_id,
-        V1LifecycleRequest::Abort,
-        &mut runtime,
-    )
-    .unwrap();
-    assert_eq!(
-        response.disposition(),
-        V1ResponseDisposition::Terminal(OperationState::Aborted)
-    );
-    runtime.targets
-}
-
-struct TraceRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
-    targets: Vec<Target>,
-}
-
-impl ExactObserver for TraceRuntime<'_> {
-    fn observe(
-        &mut self,
-        current: &StoredV1Record,
-        request: &BoundObservationRequest,
-    ) -> ModelResult<BoundExactObservation> {
-        self.inner.observe(current, request)
-    }
-}
-
-impl PhysicalExecutor for TraceRuntime<'_> {
-    fn execute(
-        &mut self,
-        lease: &V1MutationLease,
-        current: &StoredV1Record,
-        action: &PhysicalActionKind,
-    ) -> ExecutionDiagnostic {
-        if let Some(target) = Target::from_action(action)
-            && !self.targets.contains(&target)
-        {
-            self.targets.push(target);
-        }
-        self.inner.execute(lease, current, action)
-    }
 }
 
 struct InterruptRuntime<'a> {

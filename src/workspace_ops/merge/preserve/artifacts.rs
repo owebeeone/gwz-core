@@ -1,7 +1,9 @@
 use super::*;
 
 #[cfg(test)]
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
+use crate::checked_artifact::{
+    CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
+};
 
 pub(super) fn verify_root_publication(
     root: &Path,
@@ -857,7 +859,7 @@ fn expected_bundle<B: GitBackend>(
 fn bundle_artifact(root: &Path, stash_id: &str) -> ModelResult<CheckedArtifact> {
     let relative = Path::new(crate::stash::STASH_BUNDLE_DIR).join(format!("{stash_id}.yaml"));
     let artifact = CheckedArtifact::acquire(
-        root,
+        CheckedArtifactPolicy::workspace(root),
         &relative,
         ErrorCode::PreservationEvidenceMismatch,
         "preservation bundle",

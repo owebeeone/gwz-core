@@ -78,6 +78,30 @@ mod v1_rollback {
         ))
     }
 
+    pub(in crate::workspace_ops::merge) fn v1_evidence_residue_after_selected_root_is_exact(
+        root: &Path,
+        record: &MergeOperationRecordV1,
+    ) -> ModelResult<bool> {
+        let publication = publication_v1(record)?;
+        let candidate = publication
+            .candidate
+            .as_ref()
+            .ok_or_else(|| root_error("publication evidence has no immutable candidate"))?;
+        let boundary = artifact_facts::observe(root, &boundary_relative(root)?)?;
+        let marker = artifact_facts::observe(
+            root,
+            publication
+                .candidate_marker_path
+                .as_deref()
+                .ok_or_else(|| root_error("publication evidence has no marker path"))?,
+        )?;
+        Ok(boundary
+            == super::artifact_facts::RegularFileFact::Bytes(
+                candidate.baseline_boundary_text.as_bytes().to_vec(),
+            )
+            && marker == super::artifact_facts::RegularFileFact::Missing)
+    }
+
     fn classify_v1_evidence_rollback(
         step: EvidenceRollbackStepV1,
         head_before: bool,
@@ -515,6 +539,7 @@ fn semantic_mismatch(error: &ModelError) -> bool {
 pub(in crate::workspace_ops::merge) use v1_rollback::{
     V1EvidenceRollbackObservation, classify_v1_evidence_shape_for_test,
     execute_v1_evidence_rollback, observe_v1_evidence_rollback, preflight_v1_evidence,
+    v1_evidence_residue_after_selected_root_is_exact,
 };
 
 pub(super) struct EvidenceRollback {

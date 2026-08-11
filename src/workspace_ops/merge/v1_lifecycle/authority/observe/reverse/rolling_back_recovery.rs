@@ -16,6 +16,16 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_recovery_origin<B: G
             "rollback verifier received a different recovery origin",
         ));
     }
+    let aggregate_position = super::rollback_prefix::recovery_position(current)?;
+    if matches!(
+        super::rollback_prefix::classify_rollback_aggregate(backend, current, aggregate_position,)?,
+        super::rollback_prefix::RollbackAggregateClassification::Mismatch
+    ) {
+        return Err(ModelError::new(
+            ErrorCode::RecoveryEvidenceMismatch,
+            "live rollback aggregate prefix has drifted",
+        ));
+    }
     let action =
         current.record().pending_rollback.as_ref().ok_or_else(|| {
             recovery_error("rolling-back recovery has no retained rollback journal")

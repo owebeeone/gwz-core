@@ -4,6 +4,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 const PREIMAGE_FRAME: &[u8] = b"gwz.merge-preservation-preimage/v1\0";
+const CHECKED_ARTIFACT_PRIVATE_PATH: &str = ".gwz/checked-artifacts";
 
 #[derive(Default, Eq, PartialEq)]
 struct ImageEntry {
@@ -147,6 +148,21 @@ pub(super) fn checkout_matches_commit_except(
     commit: &str,
     allowed_paths: &[String],
 ) -> ModelResult<bool> {
+    checkout_matches_commit_with_overlay(
+        root,
+        commit,
+        &GitCheckoutOverlay {
+            worktree_paths: allowed_paths.to_vec(),
+            index_paths: allowed_paths.to_vec(),
+        },
+    )
+}
+
+pub(super) fn checkout_matches_commit_with_overlay(
+    root: &Path,
+    commit: &str,
+    overlay: &GitCheckoutOverlay,
+) -> ModelResult<bool> {
     let repo = open_repo(root)?;
     let commit = preservation_root::index::parse_exact_oid(&repo, commit, "checkout commit")?;
     let commit = repo.find_commit(commit).map_err(git_error)?;
@@ -169,18 +185,39 @@ pub(super) fn checkout_matches_commit_except(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let excluded_paths = raw_excluded_paths(allowed_paths)?;
-    let (mut live, _) = live_entries(root, true, None, &excluded_paths)?;
-    for raw in excluded_paths {
-        live.retain(|path, _| !path_is_at_or_below(path, &raw));
-        expected.retain(|path, _| !path_is_at_or_below(path, &raw));
-    }
+    let (mut live, _) = live_entries(root, true, None, &[])?;
+    let worktree_paths = raw_excluded_paths(&overlay.worktree_paths)?;
+    let index_paths = raw_excluded_paths(&overlay.index_paths)?;
+    apply_overlay(&mut live, &worktree_paths, &index_paths);
+    apply_overlay(&mut expected, &worktree_paths, &index_paths);
     Ok(live == expected)
 }
 
+fn apply_overlay(
+    entries: &mut BTreeMap<Vec<u8>, ImageEntry>,
+    worktree_paths: &[Vec<u8>],
+    index_paths: &[Vec<u8>],
+) {
+    for (path, entry) in entries.iter_mut() {
+        if worktree_paths
+            .iter()
+            .any(|prefix| path_is_at_or_below(path, prefix))
+        {
+            entry.worktree = None;
+        }
+        if index_paths
+            .iter()
+            .any(|prefix| path_is_at_or_below(path, prefix))
+        {
+            entry.index.clear();
+        }
+    }
+    entries.retain(|_, entry| !entry.index.is_empty() || entry.worktree.is_some());
+}
+
 fn raw_excluded_paths(paths: &[String]) -> ModelResult<Vec<Vec<u8>>> {
-    paths
-        .iter()
+    std::iter::once(CHECKED_ARTIFACT_PRIVATE_PATH)
+        .chain(paths.iter().map(String::as_str))
         .map(|path| {
             let mut raw = preservation_root::files::path_to_raw(Path::new(path))?;
             while raw.last() == Some(&b'/') {

@@ -5,11 +5,18 @@ use cap_std::fs::Dir;
 
 use crate::model::{ErrorCode, ModelError};
 
+mod authority;
+mod classification;
+mod cleanup;
 mod fault;
+mod identity;
 mod observation;
 mod platform;
+mod policy;
 mod residue;
 mod transition;
+
+pub(crate) use policy::CheckedArtifactPolicy;
 
 #[cfg(test)]
 pub(crate) use fault::{
@@ -32,10 +39,13 @@ pub(crate) enum CheckedArtifactTransition {
     Ambiguous,
 }
 
-pub(super) enum ParentState {
+enum ParentState {
     Missing,
     Invalid,
-    Open { dir: Dir, identity: (u64, u64) },
+    Open {
+        dir: Dir,
+        identity: identity::ObjectIdentity,
+    },
 }
 
 /// A no-follow capability for one workspace-relative regular-file artifact.
@@ -44,15 +54,16 @@ pub(super) enum ParentState {
 /// retained parent and reobserve the exact expected leaf immediately before
 /// their handle-relative linearization point.
 pub(crate) struct CheckedArtifact {
-    pub(super) root: Dir,
-    pub(super) relative: PathBuf,
-    pub(super) parent_relative: PathBuf,
-    pub(super) parent: ParentState,
-    pub(super) leaf: OsString,
-    pub(super) private_root: PathBuf,
-    pub(super) quarantine_parent: PathBuf,
-    pub(super) code: ErrorCode,
-    pub(super) label: String,
+    root: Dir,
+    root_identity: identity::ObjectIdentity,
+    canonical_path_identity: Vec<u8>,
+    parent_relative: PathBuf,
+    parent: ParentState,
+    leaf: OsString,
+    private_root: PathBuf,
+    quarantine_parent: PathBuf,
+    code: ErrorCode,
+    label: String,
 }
 
 pub(super) fn io_error(code: ErrorCode, label: &str, cause: std::io::Error) -> ModelError {

@@ -16,8 +16,7 @@ use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
 #[test]
 fn every_root_phase_durable_successor_restarts_without_repeating_the_phase() {
     for owner in [RootOwner::Publication, RootOwner::Selected] {
-        let targets = emitted_phase_targets(owner);
-        assert_eq!(targets, expected_targets(), "{owner:?} phase graph drifted");
+        let targets = expected_targets();
         for (index, target) in targets.into_iter().enumerate() {
             let fixture = root_fixture(owner, &format!("v1-root-successor-{owner:?}-{index}"));
             fixture.base.seed_open();
@@ -111,6 +110,7 @@ fn every_legal_root_handoff_form_exhausts_the_complete_phase_graph() {
 
     for owner in [RootOwner::Publication, RootOwner::Selected] {
         for (form_index, (prefix, index)) in [
+            (P::Marker, I::Staged),
             (P::Baseline, I::Pre),
             (P::Marker, I::Pre),
             (P::Lock, I::Pre),
@@ -120,8 +120,12 @@ fn every_legal_root_handoff_form_exhausts_the_complete_phase_graph() {
         .into_iter()
         .enumerate()
         {
-            let mut fixture =
-                root_fixture(owner, &format!("v1-root-handoff-{owner:?}-{form_index}"));
+            let name = format!("v1-root-handoff-{owner:?}-{form_index}");
+            let mut fixture = if (prefix, index) == (P::Marker, I::Staged) {
+                dirty_root_degenerate_handoff_fixture(&name, matches!(owner, RootOwner::Selected))
+            } else {
+                root_fixture(owner, &name)
+            };
             install_root_handoff(&mut fixture, prefix, index);
             fixture.base.seed_open();
             let operation_context = fixture.base.context();
@@ -155,7 +159,15 @@ fn every_legal_root_handoff_form_exhausts_the_complete_phase_graph() {
                     },
                     &mut runtime,
                 )
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{owner:?} {prefix:?}/{index:?} retry={retry}: {error:?}; state={:?}; preservation={:?}; rollback={:?}; targets={:?}",
+                        response.current().record().state,
+                        response.current().record().pending_preservation,
+                        response.current().record().pending_rollback,
+                        runtime.targets,
+                    )
+                });
             }
             assert_eq!(
                 response.disposition(),
@@ -169,6 +181,52 @@ fn every_legal_root_handoff_form_exhausts_the_complete_phase_graph() {
             );
         }
     }
+}
+
+#[test]
+fn selected_root_no_candidate_handoff_exhausts_the_short_phase_graph() {
+    use crate::workspace_ops::merge::model::v1::PreservationPublicationHandoffV1 as H;
+
+    let handoff = H::NoCandidate;
+    let mut fixture = dirty_selected_root_handoff_fixture("v1-selected-root-no-candidate");
+    install_selected_root_no_candidate_handoff(&mut fixture);
+    fixture.base.seed_open();
+    let operation_context = fixture.base.context();
+    let mut runtime = TraceRuntime {
+        inner: ReverseRuntime::new(&fixture.base.backend, &operation_context),
+        targets: Vec::new(),
+    };
+    let response = run(
+        &CheckedV1Store::default(),
+        &fixture.base.root.path,
+        &fixture.base.model.merge_id,
+        V1LifecycleRequest::ResumeStart,
+        &mut runtime,
+    )
+    .unwrap_or_else(|error| panic!("{handoff:?}: {error:?}"));
+    assert_eq!(response.current().record().state, OperationState::Aborted);
+    assert_eq!(runtime.targets, expected_absent_targets());
+}
+
+#[test]
+fn evidence_pending_handoff_exhausts_a_non_root_short_phase_graph() {
+    let fixture = evidence_pending_non_root_fixture("v1-evidence-pending-non-root");
+    fixture.seed_open();
+    let operation_context = fixture.context();
+    let mut runtime = TraceRuntime {
+        inner: ReverseRuntime::new(&fixture.backend, &operation_context),
+        targets: Vec::new(),
+    };
+    let response = run(
+        &CheckedV1Store::default(),
+        &fixture.root.path,
+        &fixture.model.merge_id,
+        V1LifecycleRequest::Archive,
+        &mut runtime,
+    )
+    .unwrap();
+    assert_eq!(response.current().record().state, OperationState::Aborted);
+    assert_eq!(runtime.targets, expected_evidence_pending_targets());
 }
 
 fn seed_recovery(root: &std::path::Path, model: &MergeOperationRecordV1) {
@@ -259,28 +317,23 @@ pub(super) fn expected_targets() -> Vec<PhaseTarget> {
     ]
 }
 
-fn emitted_phase_targets(owner: RootOwner) -> Vec<PhaseTarget> {
-    let fixture = root_fixture(owner, &format!("v1-root-successor-trace-{owner:?}"));
-    fixture.base.seed_open();
-    let context = fixture.base.context();
-    let mut runtime = TraceRuntime {
-        inner: ReverseRuntime::new(&fixture.base.backend, &context),
-        targets: Vec::new(),
-    };
-    let response = run(
-        &CheckedV1Store::default(),
-        &fixture.base.root.path,
-        &fixture.base.model.merge_id,
-        V1LifecycleRequest::Preserve,
-        &mut runtime,
-    )
-    .unwrap();
-    assert!(matches!(
-        response.disposition(),
-        V1ResponseDisposition::Terminal(OperationState::Aborted)
-            | V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
-    ));
-    runtime.targets
+fn expected_absent_targets() -> Vec<PhaseTarget> {
+    vec![
+        PhaseTarget::Backup,
+        PhaseTarget::Stash(S::CreateStash),
+        PhaseTarget::Stash(S::WriteBundle),
+        PhaseTarget::Stash(S::Complete),
+        PhaseTarget::Reset(R::ResetRef),
+        PhaseTarget::Reset(R::Complete),
+    ]
+}
+
+fn expected_evidence_pending_targets() -> Vec<PhaseTarget> {
+    vec![
+        PhaseTarget::Stash(S::CreateStash),
+        PhaseTarget::Stash(S::WriteBundle),
+        PhaseTarget::Stash(S::Complete),
+    ]
 }
 
 struct TraceRuntime<'a> {

@@ -451,6 +451,72 @@ fn complete_checkout_comparison_rejects_hidden_drift_and_honors_only_exact_exclu
 }
 
 #[test]
+fn complete_checkout_excludes_only_the_checked_artifact_private_tree() {
+    let (_temp, backend, repo, head) = seeded_repo("complete-checkout-private-recovery");
+    let head = commit_file(
+        &repo,
+        ".gwz/checked-artifacts/protocol",
+        "private baseline\n",
+        "private recovery state",
+        &[git2::Oid::from_str(&head).unwrap()],
+    )
+    .unwrap();
+    let head = commit_file(
+        &repo,
+        ".gwz/sibling",
+        "sibling baseline\n",
+        "neighboring workspace state",
+        &[git2::Oid::from_str(&head).unwrap()],
+    )
+    .unwrap();
+
+    fs::write(
+        repo.join(".gwz/checked-artifacts/protocol"),
+        "private live residue\n",
+    )
+    .unwrap();
+    assert!(
+        backend
+            .checkout_matches_commit_except(&repo, &head, &[])
+            .unwrap()
+    );
+
+    fs::write(
+        repo.join(".gwz/checked-artifacts/protocol"),
+        "private baseline\n",
+    )
+    .unwrap();
+    fs::write(repo.join(".gwz/sibling"), "sibling drift\n").unwrap();
+    assert!(
+        !backend
+            .checkout_matches_commit_except(&repo, &head, &[])
+            .unwrap()
+    );
+}
+
+#[test]
+fn complete_checkout_overlays_worktree_without_erasing_index_authority() {
+    let (_temp, backend, repo, head) = seeded_repo("complete-checkout-domain-overlay");
+    let overlay = GitCheckoutOverlay {
+        worktree_paths: vec!["tracked.txt".into()],
+        index_paths: Vec::new(),
+    };
+    fs::write(repo.join("tracked.txt"), "worktree overlay\n").unwrap();
+    assert!(
+        backend
+            .checkout_matches_commit_with_overlay(&repo, &head, &overlay)
+            .unwrap()
+    );
+
+    stage_path(&repo, "tracked.txt").unwrap();
+    assert!(
+        !backend
+            .checkout_matches_commit_with_overlay(&repo, &head, &overlay)
+            .unwrap()
+    );
+}
+
+#[test]
 fn preservation_image_orders_non_utf8_paths_as_raw_bytes() {
     let first = (vec![b'z', 0x80], b"first".to_vec());
     let second = (vec![b'z', 0x81], b"second".to_vec());

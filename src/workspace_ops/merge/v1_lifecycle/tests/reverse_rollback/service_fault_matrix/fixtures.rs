@@ -39,6 +39,12 @@ pub(crate) fn fixture(lane: Lane, name: &str) -> MatrixFixture {
             } else {
                 ParticipantState::RolledBack
             };
+            let status = std::process::Command::new("git")
+                .args(["reset", "--hard", &row.before_commit])
+                .current_dir(value.root.path.join(&row.path))
+                .status()
+                .unwrap();
+            assert!(status.success());
             MatrixFixture {
                 root: value.root,
                 backend: value.backend,
@@ -112,6 +118,12 @@ fn selected_root_fixture(name: &str) -> MatrixFixture {
     let root = TempDir::new(name);
     let backend = Git2Backend::new();
     backend.create_repo(&root.path).unwrap();
+    use std::io::Write;
+    let mut exclude = std::fs::OpenOptions::new()
+        .append(true)
+        .open(crate::workspace_ops::workspace_exclude_path(&root.path))
+        .unwrap();
+    writeln!(exclude, "/.gwz/").unwrap();
     std::fs::create_dir_all(root.path.join("gwz.conf")).unwrap();
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     let manifest = model.baseline.manifest_yaml.clone().unwrap();
@@ -163,6 +175,12 @@ fn selected_root_fixture(name: &str) -> MatrixFixture {
         .unwrap()
         .set_target(before.parse().unwrap(), "seed post-participant rollback")
         .unwrap();
+    let status = std::process::Command::new("git")
+        .args(["reset", "--mixed", &before])
+        .current_dir(&root.path)
+        .status()
+        .unwrap();
+    assert!(status.success());
     let mut row = model.participants.remove("mem_a").unwrap();
     row.path = ".".into();
     row.target_kind = MergeTargetKind::Root;

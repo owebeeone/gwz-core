@@ -176,18 +176,10 @@ mod v1_rollback {
                 "selected-root publication handoff has a foreign native Git state",
             ));
         }
-        let mut allowed = crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?
+        let allowed = crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?
             .into_iter()
             .map(|file| file.path)
             .collect::<Vec<_>>();
-        allowed.push(crate::workspace::RUNTIME_DIR.into());
-        allowed.push(format!("{}/.tmp", crate::workspace::WORKSPACE_DIR));
-        let manifest = crate::artifact::ManifestArtifact::from_yaml(
-            record.baseline.manifest_yaml.as_deref().ok_or_else(|| {
-                member_preflight_error("@root", ".", "rollback baseline has no manifest bytes")
-            })?,
-        )?;
-        allowed.extend(manifest.members.into_iter().map(|member| member.path));
         if !backend
             .checkout_matches_commit_except(root, result_commit, &allowed)
             .map_err(|mut error| {

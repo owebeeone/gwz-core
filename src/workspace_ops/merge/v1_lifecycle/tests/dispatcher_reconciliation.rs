@@ -189,7 +189,8 @@ fn completed_preservation_enters_rollback_for_every_mutating_resume_request() {
     assert_eq!(super::super::reverse::preservation_durability_diagnostic(
         Ok(GitCheckedPreservationMutation::AlreadyComplete)), ExecutionDiagnostic::Success);
     let root = TempDir::new("merge-v1-preservation-durability-pending");
-    for action in [root_stash(S::NormalizeParent), root_reset(R::PrepareParent), root_stash(S::RestoreParent)] {
+    for action in [root_stash(S::NormalizeParent), root_reset(R::PrepareParent),
+        root_stash(S::RestoreParent), root_reset(R::RestoreParent)] {
         assert_causal_parent_case(&root, action);
     }
 }
@@ -306,6 +307,7 @@ fn completed_preservation_enters_rollback_for_every_mutating_resume_request() {
     PendingPreservationActionV1::Stash { phase: S::NormalizeParent, .. } => root_stash(S::NormalizeMarker),
     PendingPreservationActionV1::Stash { phase: S::RestoreParent, .. } => root_stash(S::RestoreMarker),
     PendingPreservationActionV1::ResetAttachedRef { phase: R::PrepareParent, .. } => root_reset(R::PrepareMarker),
+    PendingPreservationActionV1::ResetAttachedRef { phase: R::RestoreParent, .. } => root_reset(R::RestoreMarker),
     _ => unreachable!(), } }
 #[rustfmt::skip] fn wrong_position(action: &PendingPreservationActionV1) -> PreservationCursorPosition { match action {
     PendingPreservationActionV1::Stash { .. } => PreservationCursorPosition::Stash(S::RestoreLock),

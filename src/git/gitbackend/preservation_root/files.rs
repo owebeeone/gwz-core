@@ -1,5 +1,7 @@
 use super::super::*;
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
+use crate::checked_artifact::{
+    CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
+};
 use cap_fs_ext::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -9,19 +11,24 @@ pub(super) fn observe_relative(
     path: &str,
 ) -> ModelResult<bool> {
     observe_in_root(
-        root,
-        Path::new(path),
+        acquire_workspace(root, Path::new(path))?,
         expected.as_ref().map(|file| file.bytes.as_slice()),
     )
 }
 
 pub(super) fn observe_required(root: &Path, expected: &GitCandidateFile) -> ModelResult<bool> {
-    observe_in_root(root, Path::new(&expected.path), Some(&expected.bytes))
+    observe_in_root(
+        acquire_workspace(root, Path::new(&expected.path))?,
+        Some(&expected.bytes),
+    )
 }
 
 pub(super) fn observe_boundary(root: &Path, expected: &[u8]) -> ModelResult<bool> {
     let repo = open_repo(root)?;
-    observe_in_root(repo.path(), Path::new("info/exclude"), Some(expected))
+    observe_in_root(
+        acquire_git_directory(repo.path(), Path::new("info/exclude"))?,
+        Some(expected),
+    )
 }
 
 pub(super) fn replace_relative(
@@ -30,7 +37,7 @@ pub(super) fn replace_relative(
     source: Option<&GitCandidateFile>,
     goal: Option<&GitCandidateFile>,
 ) -> ModelResult<()> {
-    let artifact = acquire(root, Path::new(path))?;
+    let artifact = acquire_workspace(root, Path::new(path))?;
     let expected = source.map_or(CheckedArtifactFact::Missing, |file| {
         CheckedArtifactFact::Bytes(file.bytes.clone())
     });
@@ -46,7 +53,7 @@ pub(super) fn observe_transition(
     source: Option<&GitCandidateFile>,
     goal: Option<&GitCandidateFile>,
 ) -> ModelResult<CheckedArtifactTransition> {
-    let artifact = acquire(root, Path::new(path))?;
+    let artifact = acquire_workspace(root, Path::new(path))?;
     let expected = source.map_or(CheckedArtifactFact::Missing, |file| {
         CheckedArtifactFact::Bytes(file.bytes.clone())
     });
@@ -63,8 +70,8 @@ pub(super) fn observe_transition(
     }
 }
 
-fn observe_in_root(root: &Path, path: &Path, expected: Option<&[u8]>) -> ModelResult<bool> {
-    let observed = acquire(root, path)?.observe()?;
+fn observe_in_root(artifact: CheckedArtifact, expected: Option<&[u8]>) -> ModelResult<bool> {
+    let observed = artifact.observe()?;
     Ok(match (observed, expected) {
         (CheckedArtifactFact::Missing, None) => true,
         (CheckedArtifactFact::Bytes(actual), Some(expected)) => actual == expected,
@@ -72,9 +79,18 @@ fn observe_in_root(root: &Path, path: &Path, expected: Option<&[u8]>) -> ModelRe
     })
 }
 
-fn acquire(root: &Path, path: &Path) -> ModelResult<CheckedArtifact> {
+fn acquire_workspace(root: &Path, path: &Path) -> ModelResult<CheckedArtifact> {
     CheckedArtifact::acquire(
-        root,
+        CheckedArtifactPolicy::workspace(root),
+        path,
+        ErrorCode::PreservationEvidenceMismatch,
+        "root preservation artifact",
+    )
+}
+
+fn acquire_git_directory(root: &Path, path: &Path) -> ModelResult<CheckedArtifact> {
+    CheckedArtifact::acquire(
+        CheckedArtifactPolicy::git_directory(root),
         path,
         ErrorCode::PreservationEvidenceMismatch,
         "root preservation artifact",

@@ -221,26 +221,42 @@ fn exercise_fault_at(
         reobserved: false,
         actions: Vec::new(),
     };
-    let mut response = run(
+    let error = match run(
         &store,
         root,
         &model.merge_id,
         V1LifecycleRequest::Preserve,
         &mut interrupted,
-    )
-    .unwrap_or_else(|error| {
-        panic!(
-            "{phase:?} {fault:?}: {error:?}; status={:?}; head={:?}; {:?}",
-            backend.status(root),
-            backend.head(root),
-            interrupted.actions
-        )
-    });
+    ) {
+        Ok(_) => panic!("a failed causal durability barrier must retain its owner"),
+        Err(error) => error,
+    };
+    assert!(
+        error.message.contains("injected failure"),
+        "{phase:?} {fault:?}: {error:?}"
+    );
     assert!(interrupted.injected, "{phase:?} {fault:?} was not reached");
     assert!(
         interrupted.reobserved && !interrupted.awaiting_reobservation,
         "{phase:?} {fault:?} advanced without reobserving the visible goal"
     );
+    let resume_context = context(model);
+    let mut resume = ReverseRuntime::new(backend, &resume_context);
+    let mut response = run(
+        &store,
+        root,
+        &model.merge_id,
+        V1LifecycleRequest::Preserve,
+        &mut resume,
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "{phase:?} {fault:?} fresh-invocation retry failed: {error:?}; status={:?}; head={:?}; {:?}",
+            backend.status(root),
+            backend.head(root),
+            interrupted.actions
+        )
+    });
     for _ in 0..8 {
         if response.disposition()
             != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)

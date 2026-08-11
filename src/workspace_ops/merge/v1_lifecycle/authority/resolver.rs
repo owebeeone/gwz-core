@@ -33,9 +33,11 @@ use crate::model::{ModelError, ModelResult};
 
 mod execution;
 mod observation;
+mod reconciliation;
 
 use execution::*;
 pub(in crate::workspace_ops::merge::v1_lifecycle) use observation::*;
+pub(in crate::workspace_ops::merge::v1_lifecycle) use reconciliation::*;
 
 type B<T> = Box<T>;
 
@@ -153,23 +155,36 @@ fn durability_pending(
         observation.kind(),
         &PhysicalActionKind::Preservation(action.clone()),
     ))?;
-    match attempt {
-        None => not_started(
+    let attempt_class = attempt_class(attempt.as_ref());
+    match reconcile(
+        TransitionClass::CausalParent,
+        attempt_class,
+        FreshFactClass::AfterNeedsDurability,
+    ) {
+        ReconciliationDecision::ExecuteOnceThenReobserve => not_started(
             current,
             request,
             observation,
             NotStartedObservation::Preservation { action, prefix },
             None,
         ),
-        Some(value) if attempt_succeeded(&value) => completed(
+        ReconciliationDecision::Advance => completed(
             current,
             request,
             observation.kind(),
             CompletedObservation::Preservation(completion),
         ),
-        Some(value) => Ok(ResolvedV1Action::Reject(
-            attempt_failure(&value).ok_or_else(rejected)?,
-        )),
+        ReconciliationDecision::RetainOwner => {
+            let value = attempt.as_ref().ok_or_else(rejected)?;
+            Ok(ResolvedV1Action::Reject(
+                attempt_failure(value).unwrap_or_else(|| {
+                    dispatch_error("causal parent reported success without durable progress")
+                }),
+            ))
+        }
+        ReconciliationDecision::Ambiguous
+        | ReconciliationDecision::OperationalError
+        | ReconciliationDecision::Reject => Err(rejected()),
     }
 }
 
@@ -202,7 +217,27 @@ fn not_started(
     ) {
         return reject("abort or preserve requires a bound participant abandonment entry");
     }
-    if let Some(value) = attempt
+    if matches!(
+        action,
+        PhysicalActionKind::Preservation(_) | PhysicalActionKind::Rollback(_)
+    ) {
+        match reconcile(
+            TransitionClass::Physical,
+            attempt_class(attempt.as_ref()),
+            FreshFactClass::Before,
+        ) {
+            ReconciliationDecision::RetainOwner => {
+                let value = attempt.ok_or_else(rejected)?;
+                require(value.action() == &action)?;
+                return no_progress(current, value);
+            }
+            ReconciliationDecision::ExecuteOnceThenReobserve => {}
+            ReconciliationDecision::Advance
+            | ReconciliationDecision::Ambiguous
+            | ReconciliationDecision::OperationalError
+            | ReconciliationDecision::Reject => return Err(rejected()),
+        }
+    } else if let Some(value) = attempt
         && value.action() == &action
     {
         return no_progress(current, value);
@@ -221,6 +256,14 @@ fn not_started(
             },
         )?,
     ))))
+}
+
+fn attempt_class(attempt: Option<&BoundExecutionAttempt>) -> AttemptClass {
+    match attempt {
+        None => AttemptClass::None,
+        Some(value) if attempt_succeeded(value) => AttemptClass::MatchingSuccess,
+        Some(_) => AttemptClass::MatchingFailed,
+    }
 }
 
 fn resolve_physical(

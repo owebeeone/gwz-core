@@ -311,12 +311,12 @@ fn rollback_observers_consume_the_shared_exact_cursor() {
     next.participants.get_mut("mem_b").unwrap().state = ParticipantState::Aborted;
     let next = StoredV1Record::for_test(&root.path, next).unwrap();
     assert_eq!(no_mutation_abort(&next).unwrap().value(), "mem_a");
-    assert!(rollback_exhausted(&next).is_err());
+    assert!(rollback_exhausted_for_test(&next).is_err());
 
     let mut complete = next.record().clone();
     complete.participants.get_mut("mem_a").unwrap().state = ParticipantState::Aborted;
     let complete = StoredV1Record::for_test(&root.path, complete).unwrap();
-    assert!(rollback_exhausted(&complete).is_ok());
+    assert!(rollback_exhausted_for_test(&complete).is_ok());
 }
 
 #[test]
@@ -341,13 +341,13 @@ fn selected_root_exhaustion_requires_the_exact_live_baseline() {
     fs::write(root.path.join(WORKSPACE_MANIFEST), &manifest).unwrap();
     fs::write(root.path.join(LOCK_PATH), &lock).unwrap();
     let stored = StoredV1Record::for_test(&root.path, current).unwrap();
-    assert!(rollback_exhausted(&stored).is_ok());
+    assert!(rollback_exhausted_for_test(&stored).is_ok());
 
     fs::write(root.path.join(WORKSPACE_MANIFEST), "changed").unwrap();
-    assert!(rollback_exhausted(&stored).is_err());
+    assert!(rollback_exhausted_for_test(&stored).is_err());
     fs::write(root.path.join(WORKSPACE_MANIFEST), &manifest).unwrap();
     fs::write(root.path.join(LOCK_PATH), "changed").unwrap();
-    assert!(rollback_exhausted(&stored).is_err());
+    assert!(rollback_exhausted_for_test(&stored).is_err());
 
     #[cfg(unix)]
     {
@@ -358,7 +358,7 @@ fn selected_root_exhaustion_requires_the_exact_live_baseline() {
         let target = root.path.join("same-manifest-bytes");
         fs::write(&target, &manifest).unwrap();
         symlink(&target, root.path.join(WORKSPACE_MANIFEST)).unwrap();
-        assert!(rollback_exhausted(&stored).is_err());
+        assert!(rollback_exhausted_for_test(&stored).is_err());
         assert_eq!(fs::read(target).unwrap(), manifest.as_bytes());
     }
 }

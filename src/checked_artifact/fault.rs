@@ -4,13 +4,44 @@ use crate::model::{ErrorCode, ModelResult};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CheckedArtifactFault {
+    BeforeAuthorityScratchCreate,
+    AfterAuthorityScratchCreate,
+    AfterAuthorityScratchWrite,
+    AfterAuthorityScratchFlush,
+    AfterAuthorityPublication,
+    AfterAuthorityParentBarrier,
+    BeforeGoalScratchCreate,
+    AfterGoalScratchCreate,
+    AfterGoalScratchWrite,
+    AfterGoalScratchFlush,
+    AfterGoalPublication,
+    AfterGoalParentBarrier,
+    BeforeDestinationDurability,
+    AfterDestinationDurability,
+    BeforeSourceRetirement,
+    AfterSourceRetirement,
+    BeforeManagedDestinationDurability,
+    AfterManagedDestinationDurability,
+    BeforeQuarantineSourceRetirement,
+    AfterQuarantineSourceRetirement,
+    BeforeSourceCleanup,
+    AfterSourceCleanup,
+    BeforeAuthorityCleanup,
+    AfterAuthorityCleanup,
+    #[cfg(windows)]
+    BeforeAnchorRoundTrip,
+    #[cfg(windows)]
+    AfterAnchorOutboundRename,
+    #[cfg(windows)]
+    AfterAnchorReturnRename,
+    #[cfg(windows)]
+    AfterAnchorReobservation,
     BeforeFinalCheck,
     AfterFinalProof,
     AfterDetach,
     AfterMutation,
     BeforeDurability,
     AfterDurability,
-    AfterCleanup,
 }
 
 #[cfg(test)]

@@ -8,6 +8,12 @@ use std::sync::atomic::Ordering;
 mod durability;
 #[path = "tests/exact_source.rs"]
 mod exact_source;
+#[path = "tests/recovery_protocol.rs"]
+mod recovery_protocol;
+#[path = "tests/removal_recovery.rs"]
+mod removal_recovery;
+#[path = "tests/staging_recovery.rs"]
+mod staging_recovery;
 
 struct TempRoot(PathBuf);
 
@@ -32,7 +38,7 @@ impl Drop for TempRoot {
 
 fn artifact(root: &Path, relative: &str) -> CheckedArtifact {
     CheckedArtifact::acquire(
-        root,
+        CheckedArtifactPolicy::workspace(root),
         Path::new(relative),
         ErrorCode::MergeRecoveryRequired,
         "test artifact",

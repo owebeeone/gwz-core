@@ -12,15 +12,21 @@ use crate::workspace_ops::merge::v1_lifecycle::checked::{StoredV1Record, V1Mutat
 use crate::workspace_ops::merge::v1_lifecycle::reverse::ReverseRuntime;
 use crate::workspace_ops::merge::v1_lifecycle::service::{ExactObserver, PhysicalExecutor, run};
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
+use crate::workspace_ops::merge::v1_lifecycle::tests::c7_matrix::matrix_spec::{
+    HANDOFFS, HandoffShape, RootPhase, canonical_physical_root_phases,
+};
 
 #[test]
 fn every_root_physical_and_successor_boundary_recovers_without_repeating_mutation() {
     for owner in [RootOwner::Publication, RootOwner::Selected] {
         let cases = physical_cases(owner);
         assert_eq!(
-            cases.iter().map(|(_, target)| *target).collect::<Vec<_>>(),
-            expected_targets(),
-            "{owner:?} physical action set drifted",
+            cases.len(),
+            match owner {
+                RootOwner::Publication => 54,
+                RootOwner::Selected => 58,
+            },
+            "{owner:?} physical/action-form cross drifted",
         );
         for (target_index, (handoff, target)) in cases.into_iter().enumerate() {
             for (boundary_index, boundary) in [
@@ -32,8 +38,8 @@ fn every_root_physical_and_successor_boundary_recovers_without_repeating_mutatio
             .enumerate()
             {
                 let name = format!("v1-root-matrix-{owner:?}-{target_index}-{boundary_index}",);
-                let mut fixture = root_fixture(owner, &name);
-                install_root_handoff(&mut fixture, handoff.prefix, handoff.index);
+                let mut fixture = root_fixture(owner, &name, handoff);
+                install_handoff(&mut fixture, handoff);
                 fixture.base.seed_open();
                 let context = fixture.base.context();
                 let mut interrupt = InterruptRuntime {
@@ -176,7 +182,10 @@ enum RootOwner {
     Selected,
 }
 
-fn root_fixture(owner: RootOwner, name: &str) -> RootPreservationFixture {
+fn root_fixture(owner: RootOwner, name: &str, handoff: Handoff) -> RootPreservationFixture {
+    if is_degenerate(handoff) {
+        return dirty_root_degenerate_handoff_fixture(name, matches!(owner, RootOwner::Selected));
+    }
     match owner {
         RootOwner::Publication => dirty_root_handoff_fixture(name),
         RootOwner::Selected => dirty_selected_root_handoff_fixture(name),
@@ -185,100 +194,98 @@ fn root_fixture(owner: RootOwner, name: &str) -> RootPreservationFixture {
 
 #[derive(Clone, Copy, Debug)]
 struct Handoff {
+    shape: HandoffShape,
     prefix: crate::workspace_ops::merge::model::v1::PublicationPrefixV1,
     index: crate::workspace_ops::merge::model::v1::PublicationIndexFormV1,
 }
 
-fn handoffs() -> [Handoff; 5] {
+fn is_degenerate(handoff: Handoff) -> bool {
     use crate::workspace_ops::merge::model::v1::{
         PublicationIndexFormV1 as I, PublicationPrefixV1 as P,
     };
-    [
-        Handoff {
-            prefix: P::Baseline,
-            index: I::Pre,
-        },
-        Handoff {
-            prefix: P::Marker,
-            index: I::Pre,
-        },
-        Handoff {
-            prefix: P::Lock,
-            index: I::Pre,
-        },
-        Handoff {
-            prefix: P::Boundary,
-            index: I::Pre,
-        },
-        Handoff {
-            prefix: P::Boundary,
-            index: I::Staged,
-        },
-    ]
+    matches!((handoff.prefix, handoff.index), (P::Marker, I::Staged))
+}
+
+fn handoffs() -> [Handoff; 6] {
+    use crate::workspace_ops::merge::model::v1::{
+        PublicationIndexFormV1 as I, PublicationPrefixV1 as P,
+    };
+    HANDOFFS
+        .into_iter()
+        .filter_map(|shape| match shape {
+            HandoffShape::BaselinePre => Some(Handoff {
+                shape,
+                prefix: P::Baseline,
+                index: I::Pre,
+            }),
+            HandoffShape::MarkerPre => Some(Handoff {
+                shape,
+                prefix: P::Marker,
+                index: I::Pre,
+            }),
+            HandoffShape::LockPre => Some(Handoff {
+                shape,
+                prefix: P::Lock,
+                index: I::Pre,
+            }),
+            HandoffShape::BoundaryPre => Some(Handoff {
+                shape,
+                prefix: P::Boundary,
+                index: I::Pre,
+            }),
+            HandoffShape::MarkerStagedDegenerate => Some(Handoff {
+                shape,
+                prefix: P::Marker,
+                index: I::Staged,
+            }),
+            HandoffShape::BoundaryStaged => Some(Handoff {
+                shape,
+                prefix: P::Boundary,
+                index: I::Staged,
+            }),
+            HandoffShape::NoCandidate | HandoffShape::EvidencePending => None,
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap()
 }
 
 fn physical_cases(owner: RootOwner) -> Vec<(Handoff, Target)> {
-    let mut cases = Vec::new();
-    for (form_index, handoff) in handoffs().into_iter().enumerate() {
-        for target in emitted_root_targets(owner, handoff, form_index) {
-            if !cases.iter().any(|(_, existing)| *existing == target) {
-                cases.push((handoff, target));
-            }
-        }
+    let mut handoffs = handoffs().to_vec();
+    if matches!(owner, RootOwner::Selected) {
+        handoffs.push(Handoff {
+            shape: HandoffShape::NoCandidate,
+            prefix: crate::workspace_ops::merge::model::v1::PublicationPrefixV1::Baseline,
+            index: crate::workspace_ops::merge::model::v1::PublicationIndexFormV1::Pre,
+        });
     }
-    cases
+    handoffs
+        .into_iter()
+        .flat_map(|handoff| {
+            expected_targets(handoff)
+                .into_iter()
+                .map(move |target| (handoff, target))
+        })
+        .collect()
 }
 
-fn emitted_root_targets(owner: RootOwner, handoff: Handoff, form_index: usize) -> Vec<Target> {
-    let mut fixture = root_fixture(
-        owner,
-        &format!("v1-root-matrix-trace-{owner:?}-{form_index}"),
-    );
-    install_root_handoff(&mut fixture, handoff.prefix, handoff.index);
-    fixture.base.seed_open();
-    let context = fixture.base.context();
-    let mut runtime = TraceRuntime {
-        inner: ReverseRuntime::new(&fixture.base.backend, &context),
-        targets: Vec::new(),
-    };
-    let response = run(
-        &CheckedV1Store::default(),
-        &fixture.base.root.path,
-        &fixture.base.model.merge_id,
-        V1LifecycleRequest::Preserve,
-        &mut runtime,
-    )
-    .unwrap();
-    assert!(matches!(
-        response.disposition(),
-        V1ResponseDisposition::Terminal(OperationState::Aborted)
-            | V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
-    ));
-    assert!(response.current().record().pending_preservation.is_none());
-    runtime.targets
+fn expected_targets(handoff: Handoff) -> Vec<Target> {
+    canonical_physical_root_phases(handoff.shape)
+        .into_iter()
+        .map(|phase| match phase {
+            RootPhase::BackupRef => Target::Backup,
+            RootPhase::Stash(phase) => Target::Stash(phase),
+            RootPhase::Reset(phase) => Target::Reset(phase),
+        })
+        .collect()
 }
 
-fn expected_targets() -> Vec<Target> {
-    vec![
-        Target::Backup,
-        Target::Stash(S::NormalizeParent),
-        Target::Stash(S::NormalizeMarker),
-        Target::Stash(S::NormalizeLock),
-        Target::Stash(S::NormalizeIndex),
-        Target::Stash(S::CreateStash),
-        Target::Stash(S::RestoreIndex),
-        Target::Stash(S::RestoreLock),
-        Target::Stash(S::RestoreMarker),
-        Target::Stash(S::WriteBundle),
-        Target::Reset(R::PrepareParent),
-        Target::Reset(R::PrepareMarker),
-        Target::Reset(R::PrepareLock),
-        Target::Reset(R::PrepareIndex),
-        Target::Reset(R::ResetRef),
-        Target::Reset(R::RestoreIndex),
-        Target::Reset(R::RestoreLock),
-        Target::Reset(R::RestoreMarker),
-    ]
+fn install_handoff(fixture: &mut RootPreservationFixture, handoff: Handoff) {
+    if handoff.shape == HandoffShape::NoCandidate {
+        install_selected_root_no_candidate_handoff(fixture);
+    } else {
+        install_root_handoff(fixture, handoff.prefix, handoff.index);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -333,37 +340,6 @@ impl Target {
             self,
             Target::Stash(S::NormalizeParent) | Target::Reset(R::PrepareParent)
         )
-    }
-}
-
-struct TraceRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
-    targets: Vec<Target>,
-}
-
-impl ExactObserver for TraceRuntime<'_> {
-    fn observe(
-        &mut self,
-        current: &StoredV1Record,
-        request: &BoundObservationRequest,
-    ) -> ModelResult<BoundExactObservation> {
-        self.inner.observe(current, request)
-    }
-}
-
-impl PhysicalExecutor for TraceRuntime<'_> {
-    fn execute(
-        &mut self,
-        lease: &V1MutationLease,
-        current: &StoredV1Record,
-        action: &PhysicalActionKind,
-    ) -> ExecutionDiagnostic {
-        if let Some(target) = Target::from_action(action)
-            && !self.targets.contains(&target)
-        {
-            self.targets.push(target);
-        }
-        self.inner.execute(lease, current, action)
     }
 }
 

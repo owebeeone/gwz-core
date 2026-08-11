@@ -286,7 +286,7 @@ pub(super) fn operation_reducers_cover_every_direct_state_edge() {
     aborting.state = OperationState::RollingBack;
     aborting.participants.get_mut("mem_a").unwrap().state = ParticipantState::Aborted;
     let aborting = stored(&root, aborting);
-    let exhausted = rollback_exhausted(&aborting).unwrap();
+    let exhausted = rollback_exhausted_for_test(&aborting).unwrap();
     let _ = exhausted.value();
     assert_eq!(
         operation(

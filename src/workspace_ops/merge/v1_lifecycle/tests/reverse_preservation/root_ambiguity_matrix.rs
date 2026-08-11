@@ -10,16 +10,13 @@ use crate::workspace_ops::merge::v1_lifecycle::checked::{StoredV1Record, V1Mutat
 use crate::workspace_ops::merge::v1_lifecycle::reverse::ReverseRuntime;
 use crate::workspace_ops::merge::v1_lifecycle::service::{ExactObserver, PhysicalExecutor, run};
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
+use crate::workspace_ops::merge::v1_lifecycle::tests::c7_matrix::matrix_spec::REQUESTS;
 
 #[test]
 fn every_root_phase_rejects_fresh_ambiguous_work_without_physical_execution() {
     for owner in [RootOwner::Publication, RootOwner::Selected] {
         for (target_index, target) in expected_targets().into_iter().enumerate() {
-            for (request_index, request) in
-                [V1LifecycleRequest::Preserve, V1LifecycleRequest::Abort]
-                    .into_iter()
-                    .enumerate()
-            {
+            for (request_index, request) in REQUESTS.into_iter().enumerate() {
                 let fixture = root_fixture(
                     owner,
                     &format!("v1-root-ambiguous-{owner:?}-{target_index}-{request_index}"),

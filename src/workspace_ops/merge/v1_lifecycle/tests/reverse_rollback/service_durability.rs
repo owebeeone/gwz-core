@@ -77,7 +77,7 @@ fn checked_rollback_consumers_recover_across_both_durability_sides() {
                     V1LifecycleRequest::Preserve,
                     &mut resume,
                 )
-                .unwrap();
+                .unwrap_or_else(|error| panic!("{lane:?} {target:?} {fault:?}: {error:?}"));
                 assert_eq!(
                     response.disposition(),
                     V1ResponseDisposition::Terminal(OperationState::Aborted),

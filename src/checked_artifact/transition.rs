@@ -1,12 +1,10 @@
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 
-use cap_std::fs::Dir;
-use sha2::{Digest, Sha256};
-
+use super::authority::{ArtifactOperation, CheckedArtifactAuthority, RetainedSource};
+use super::classification::ExactTransition;
 use super::fault::{CheckedArtifactFault, fault};
-use super::observation::{observe_leaf, observe_leaf_exact};
-use super::residue::{goal_name, source_name};
+use super::observation::observe_leaf_exact;
 use super::{
     CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition, ParentState, error, io_error,
 };
@@ -20,12 +18,16 @@ impl CheckedArtifact {
         let ParentState::Open { dir, identity } = &self.parent else {
             return self.observe();
         };
-        if !self.parent_is_current(*identity)? {
+        if !self.parent_is_current(identity)? {
             return Ok(CheckedArtifactFact::Invalid);
         }
         let before = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
-        self.sync_parent(dir)?;
-        if !self.parent_is_current(*identity)? {
+        self.sync_dir(
+            dir,
+            CheckedArtifactFault::BeforeDurability,
+            CheckedArtifactFault::AfterDurability,
+        )?;
+        if !self.parent_is_current(identity)? {
             return Ok(CheckedArtifactFact::Invalid);
         }
         let after = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
@@ -35,378 +37,389 @@ impl CheckedArtifact {
         Ok(after.fact)
     }
 
-    pub(crate) fn classify_replace(
-        &self,
-        expected: &CheckedArtifactFact,
-        goal: &[u8],
-    ) -> ModelResult<CheckedArtifactTransition> {
-        require_source(expected, self.code, &self.label)?;
-        self.classify(expected, Some(goal))
-    }
-
-    pub(crate) fn classify_remove(
-        &self,
-        expected: &CheckedArtifactFact,
-    ) -> ModelResult<CheckedArtifactTransition> {
-        if !matches!(expected, CheckedArtifactFact::Bytes(_)) {
-            return Err(error(
-                self.code,
-                &self.label,
-                "checked removal requires exact existing source bytes",
-            ));
-        }
-        self.classify(expected, None)
-    }
-
     pub(crate) fn replace_exact(
         &self,
         expected: &CheckedArtifactFact,
         goal: &[u8],
     ) -> ModelResult<()> {
-        require_source(expected, self.code, &self.label)?;
-        match self.classify_replace(expected, goal)? {
-            CheckedArtifactTransition::After => return Ok(()),
-            CheckedArtifactTransition::Ambiguous => {
+        match self.classify_replace_exact(expected, goal)? {
+            ExactTransition::ProofOnly | ExactTransition::After => return Ok(()),
+            ExactTransition::Ambiguous => {
                 return Err(error(
                     self.code,
                     &self.label,
                     "replacement evidence is ambiguous",
                 ));
             }
-            CheckedArtifactTransition::Before | CheckedArtifactTransition::Recoverable => {}
+            ExactTransition::Before
+            | ExactTransition::BeforeBound
+            | ExactTransition::RecoverableStaged
+            | ExactTransition::RecoverableDetached
+            | ExactTransition::RecoverablePublished
+            | ExactTransition::RecoverableDuplicateSource
+            | ExactTransition::RecoverableDuplicateGoal
+            | ExactTransition::BoundAfter => {}
         }
-        let ParentState::Open { dir, identity } = &self.parent else {
+        let ParentState::Open { .. } = &self.parent else {
             return Err(error(
                 self.code,
                 &self.label,
                 "canonical parent is missing or invalid",
             ));
         };
-        let key = self.action_key(expected, Some(goal));
-        let quarantine = self.open_quarantine(true)?.expect("created quarantine");
-        let prior = self.inspect_residue(&key, expected, Some(goal))?;
-        if prior.foreign {
-            return Err(error(
-                self.code,
-                &self.label,
-                "foreign checked-artifact recovery residue",
-            ));
-        }
-        if prior.source.is_some()
-            && observe_leaf(dir, &self.leaf, self.code, &self.label)?
-                == CheckedArtifactFact::Bytes(goal.to_vec())
-        {
-            self.sync_parent(dir)?;
-            self.cleanup_source(&quarantine, &key, expected, Some(goal))?;
-            return (self.observe_durable()? == CheckedArtifactFact::Bytes(goal.to_vec()))
-                .then_some(())
-                .ok_or_else(|| {
-                    error(
-                        self.code,
-                        &self.label,
-                        "replacement failed exact durable verification",
-                    )
-                });
-        }
-        self.stage_goal(&quarantine, &key, goal)?;
-        let mut residue = self.inspect_residue(&key, expected, Some(goal))?;
-        if residue.foreign {
-            return Err(error(
-                self.code,
-                &self.label,
-                "foreign checked-artifact recovery residue",
-            ));
-        }
-
-        if matches!(expected, CheckedArtifactFact::Bytes(_)) && residue.source.is_none() {
-            fault(
-                CheckedArtifactFault::BeforeFinalCheck,
-                self.code,
-                &self.label,
-            )?;
-            let source = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
-            if source.fact != *expected || !self.parent_is_current(*identity)? {
-                return Err(error(
-                    self.code,
-                    &self.label,
-                    "source changed before checked replacement",
-                ));
-            }
-            let source_identity = source.identity.expect("exact bytes have an identity");
-            let source_name = source_name(&key, *identity);
-            fault(
-                CheckedArtifactFault::AfterFinalProof,
-                self.code,
-                &self.label,
-            )?;
-            super::platform::rename_relative(
-                dir,
-                &self.leaf,
-                &quarantine,
-                &source_name,
-                false,
-                self.code,
-                &self.label,
-            )?;
-            fault(CheckedArtifactFault::AfterDetach, self.code, &self.label)?;
-            let moved = observe_leaf_exact(&quarantine, &source_name, self.code, &self.label)?;
-            if moved.fact != *expected
-                || moved.identity != Some(source_identity)
-                || !self.parent_is_current(*identity)?
-            {
-                self.restore_source(&quarantine, &source_name, dir)?;
-                return Err(error(
-                    self.code,
-                    &self.label,
-                    "source identity or parent changed at checked replacement",
-                ));
-            }
-            residue = self.inspect_residue(&key, expected, Some(goal))?;
-        } else if matches!(expected, CheckedArtifactFact::Missing) {
-            fault(
-                CheckedArtifactFault::BeforeFinalCheck,
-                self.code,
-                &self.label,
-            )?;
-            fault(
-                CheckedArtifactFault::AfterFinalProof,
-                self.code,
-                &self.label,
-            )?;
-            if observe_leaf(dir, &self.leaf, self.code, &self.label)?
-                != CheckedArtifactFact::Missing
-                || !self.parent_is_current(*identity)?
-            {
-                return Err(error(
-                    self.code,
-                    &self.label,
-                    "source changed before checked replacement",
-                ));
-            }
-        }
-
-        let leaf = observe_leaf(dir, &self.leaf, self.code, &self.label)?;
-        if leaf == CheckedArtifactFact::Missing {
-            let goal_name = goal_name(&key);
-            if !residue.goal_staged {
-                return Err(error(
-                    self.code,
-                    &self.label,
-                    "checked replacement lost its staged goal",
-                ));
-            }
-            super::platform::rename_relative(
-                &quarantine,
-                &goal_name,
-                dir,
-                &self.leaf,
-                false,
-                self.code,
-                &self.label,
-            )?;
-            fault(CheckedArtifactFault::AfterMutation, self.code, &self.label)?;
-        } else if leaf != CheckedArtifactFact::Bytes(goal.to_vec()) {
-            return Err(error(
-                self.code,
-                &self.label,
-                "replacement destination is not the exact goal",
-            ));
-        }
-
-        self.sync_parent(dir)?;
-        self.cleanup_source(&quarantine, &key, expected, Some(goal))?;
-        if self.observe_durable()? != CheckedArtifactFact::Bytes(goal.to_vec()) {
-            return Err(error(
-                self.code,
-                &self.label,
-                "replacement failed exact durable verification",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn remove_exact(&self, expected: &CheckedArtifactFact) -> ModelResult<()> {
-        if self.classify_remove(expected)? == CheckedArtifactTransition::After {
-            return Ok(());
-        }
-        let ParentState::Open { dir, identity } = &self.parent else {
-            return Err(error(
-                self.code,
-                &self.label,
-                "canonical parent is missing or invalid",
-            ));
-        };
-        let key = self.action_key(expected, None);
-        let quarantine = self.open_quarantine(true)?.expect("created quarantine");
-        let residue = self.inspect_residue(&key, expected, None)?;
-        if residue.foreign || residue.goal_staged {
-            return Err(error(
-                self.code,
-                &self.label,
-                "removal evidence is ambiguous",
-            ));
-        }
-        if residue.source.is_none() {
-            fault(
-                CheckedArtifactFault::BeforeFinalCheck,
-                self.code,
-                &self.label,
-            )?;
-            let source = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
-            if source.fact != *expected || !self.parent_is_current(*identity)? {
-                return Err(error(
-                    self.code,
-                    &self.label,
-                    "source changed before checked removal",
-                ));
-            }
-            let source_identity = source.identity.expect("exact bytes have an identity");
-            let source_name = source_name(&key, *identity);
-            fault(
-                CheckedArtifactFault::AfterFinalProof,
-                self.code,
-                &self.label,
-            )?;
-            super::platform::rename_relative(
-                dir,
-                &self.leaf,
-                &quarantine,
-                &source_name,
-                false,
-                self.code,
-                &self.label,
-            )?;
-            fault(CheckedArtifactFault::AfterDetach, self.code, &self.label)?;
-            let moved = observe_leaf_exact(&quarantine, &source_name, self.code, &self.label)?;
-            if moved.fact != *expected
-                || moved.identity != Some(source_identity)
-                || !self.parent_is_current(*identity)?
-            {
-                self.restore_source(&quarantine, &source_name, dir)?;
-                return Err(error(
-                    self.code,
-                    &self.label,
-                    "source identity or parent changed at checked removal",
-                ));
-            }
-            fault(CheckedArtifactFault::AfterMutation, self.code, &self.label)?;
-        }
-        self.sync_parent(dir)?;
-        self.cleanup_source(&quarantine, &key, expected, None)?;
-        if self.observe_durable()? != CheckedArtifactFact::Missing {
-            return Err(error(
-                self.code,
-                &self.label,
-                "removal failed exact durable verification",
-            ));
-        }
-        Ok(())
-    }
-
-    fn classify(
-        &self,
-        expected: &CheckedArtifactFact,
-        goal: Option<&[u8]>,
-    ) -> ModelResult<CheckedArtifactTransition> {
-        let ParentState::Open { dir, identity } = &self.parent else {
-            return Ok(CheckedArtifactTransition::Ambiguous);
-        };
-        if !self.parent_is_current(*identity)? {
-            return Ok(CheckedArtifactTransition::Ambiguous);
-        }
-        let key = self.action_key(expected, goal);
-        let residue = self.inspect_residue(&key, expected, goal)?;
-        if residue.foreign
-            || residue.source.as_ref().is_some_and(|source| {
-                source.parent_identity != *identity || source.identity == (0, 0)
-            })
-        {
-            return Ok(CheckedArtifactTransition::Ambiguous);
-        }
-        let leaf = observe_leaf(dir, &self.leaf, self.code, &self.label)?;
-        let goal_fact = goal.map_or(CheckedArtifactFact::Missing, |bytes| {
-            CheckedArtifactFact::Bytes(bytes.to_vec())
-        });
-        if residue.source.is_none() && !residue.goal_staged && leaf == goal_fact {
-            return self.durable_goal(&goal_fact).map(|exact| {
-                if exact {
-                    CheckedArtifactTransition::After
-                } else {
-                    CheckedArtifactTransition::Ambiguous
-                }
-            });
-        }
-        if residue.source.is_none() && !residue.goal_staged && leaf == *expected {
-            return Ok(CheckedArtifactTransition::Before);
-        }
-        let staged_is_legal = goal.is_some() && residue.goal_staged;
-        let source_is_legal =
-            residue.source.is_some() && matches!(expected, CheckedArtifactFact::Bytes(_));
-        if (staged_is_legal || source_is_legal)
-            && (leaf == *expected || leaf == goal_fact || leaf == CheckedArtifactFact::Missing)
-        {
-            return Ok(CheckedArtifactTransition::Recoverable);
-        }
-        Ok(CheckedArtifactTransition::Ambiguous)
-    }
-
-    fn durable_goal(&self, goal: &CheckedArtifactFact) -> ModelResult<bool> {
-        Ok(self.observe_durable()? == *goal)
-    }
-
-    fn action_key(&self, expected: &CheckedArtifactFact, goal: Option<&[u8]>) -> String {
-        let mut bytes = b"gwz.checked-artifact/v2\0".to_vec();
-        bytes.extend(self.relative.to_string_lossy().as_bytes());
-        bytes.push(0);
-        match expected {
-            CheckedArtifactFact::Missing => bytes.push(0),
-            CheckedArtifactFact::Bytes(value) => {
-                bytes.push(1);
-                bytes.extend(Sha256::digest(value));
-            }
-            CheckedArtifactFact::Invalid => bytes.push(2),
-        }
-        match goal {
-            Some(value) => {
-                bytes.push(1);
-                bytes.extend(Sha256::digest(value));
-            }
-            None => bytes.push(0),
-        }
-        format!("{:x}", Sha256::digest(bytes))
-    }
-
-    fn sync_parent(&self, dir: &Dir) -> ModelResult<()> {
         fault(
-            CheckedArtifactFault::BeforeDurability,
+            CheckedArtifactFault::BeforeFinalCheck,
             self.code,
             &self.label,
         )?;
-        super::platform::sync_parent(dir)
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        let source = self.observe_leaf_exact_current()?;
         fault(
-            CheckedArtifactFault::AfterDurability,
+            CheckedArtifactFault::AfterFinalProof,
             self.code,
             &self.label,
-        )
+        )?;
+        let authority = self.ensure_authority(expected, Some(goal), &source)?;
+        if authority.operation != ArtifactOperation::Replace {
+            return Err(error(
+                self.code,
+                &self.label,
+                "replacement authority has the wrong operation",
+            ));
+        }
+        let managed = self.observe_leaf_exact_current()?;
+        if managed.fact != CheckedArtifactFact::Bytes(goal.to_vec()) {
+            self.ensure_goal(&authority, expected, goal)?;
+        }
+        if matches!(authority.retained_source, RetainedSource::Existing(_)) {
+            self.detach_existing(&authority, expected, Some(goal))?;
+        } else {
+            let managed = self.observe_leaf_exact_current()?;
+            if managed.fact != CheckedArtifactFact::Missing
+                && managed.fact != CheckedArtifactFact::Bytes(goal.to_vec())
+            {
+                return Err(error(
+                    self.code,
+                    &self.label,
+                    "missing-source replacement destination changed before publication",
+                ));
+            }
+        }
+        self.publish_goal(&authority, expected, goal)?;
+        self.finish_replace(&authority, expected, goal)?;
+        (self.classify_replace(expected, goal)? == CheckedArtifactTransition::After)
+            .then_some(())
+            .ok_or_else(|| {
+                error(
+                    self.code,
+                    &self.label,
+                    "replacement failed exact durable verification",
+                )
+            })
     }
-}
 
-fn require_source(
-    expected: &CheckedArtifactFact,
-    code: crate::model::ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    if matches!(
-        expected,
-        CheckedArtifactFact::Missing | CheckedArtifactFact::Bytes(_)
-    ) {
+    pub(crate) fn remove_exact(&self, expected: &CheckedArtifactFact) -> ModelResult<()> {
+        match self.classify_remove_exact(expected)? {
+            ExactTransition::After => return Ok(()),
+            ExactTransition::Ambiguous => {
+                return Err(error(
+                    self.code,
+                    &self.label,
+                    "removal evidence is ambiguous",
+                ));
+            }
+            ExactTransition::Before
+            | ExactTransition::BeforeBound
+            | ExactTransition::RecoverableDetached
+            | ExactTransition::RecoverableDuplicateSource
+            | ExactTransition::BoundAfter => {}
+            ExactTransition::ProofOnly
+            | ExactTransition::RecoverableStaged
+            | ExactTransition::RecoverablePublished
+            | ExactTransition::RecoverableDuplicateGoal => {
+                return Err(error(
+                    self.code,
+                    &self.label,
+                    "removal classifier returned an invalid operation state",
+                ));
+            }
+        }
+        fault(
+            CheckedArtifactFault::BeforeFinalCheck,
+            self.code,
+            &self.label,
+        )?;
+        let source = self.observe_leaf_exact_current()?;
+        fault(
+            CheckedArtifactFault::AfterFinalProof,
+            self.code,
+            &self.label,
+        )?;
+        let authority = self.ensure_authority(expected, None, &source)?;
+        if authority.operation != ArtifactOperation::Remove
+            || !matches!(authority.retained_source, RetainedSource::Existing(_))
+        {
+            return Err(error(
+                self.code,
+                &self.label,
+                "removal authority has invalid source semantics",
+            ));
+        }
+        self.detach_existing(&authority, expected, None)?;
+        fault(CheckedArtifactFault::AfterMutation, self.code, &self.label)?;
+        self.finish_remove(&authority, expected)?;
+        (self.classify_remove(expected)? == CheckedArtifactTransition::After)
+            .then_some(())
+            .ok_or_else(|| {
+                error(
+                    self.code,
+                    &self.label,
+                    "removal failed exact durable verification",
+                )
+            })
+    }
+
+    fn detach_existing(
+        &self,
+        authority: &CheckedArtifactAuthority,
+        expected: &CheckedArtifactFact,
+        goal: Option<&[u8]>,
+    ) -> ModelResult<()> {
+        let ParentState::Open {
+            dir,
+            identity: parent_identity,
+        } = &self.parent
+        else {
+            return Err(error(
+                self.code,
+                &self.label,
+                "canonical parent is unavailable",
+            ));
+        };
+        let RetainedSource::Existing(expected_identity) = &authority.retained_source else {
+            return Err(error(
+                self.code,
+                &self.label,
+                "authority has no existing source",
+            ));
+        };
+        let private = self.open_private(false)?.ok_or_else(|| {
+            error(
+                self.code,
+                &self.label,
+                "private authority directory disappeared",
+            )
+        })?;
+        let residue = self.inspect_family(expected, goal)?;
+        if residue.foreign || residue.authority.as_ref() != Some(authority) {
+            return Err(error(
+                self.code,
+                &self.label,
+                "source authority changed before detach",
+            ));
+        }
+        let leaf = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        if let Some(source) = residue.source {
+            if source.identity.durable != *expected_identity {
+                return Err(error(
+                    self.code,
+                    &self.label,
+                    "quarantined source identity changed",
+                ));
+            }
+            if leaf.fact == CheckedArtifactFact::Missing {
+                return Ok(());
+            }
+            if goal.is_some_and(|bytes| leaf.fact == CheckedArtifactFact::Bytes(bytes.to_vec())) {
+                return Ok(());
+            }
+            if leaf.fact == *expected && leaf.identity.as_ref() == Some(&source.identity) {
+                dir.remove_file(&self.leaf)
+                    .map_err(|cause| io_error(self.code, &self.label, cause))?;
+                self.sync_dir(
+                    dir,
+                    CheckedArtifactFault::BeforeSourceRetirement,
+                    CheckedArtifactFault::AfterSourceRetirement,
+                )?;
+                return Ok(());
+            }
+            return Err(error(
+                self.code,
+                &self.label,
+                "managed source conflicts with quarantined source",
+            ));
+        }
+        if goal.is_some_and(|bytes| leaf.fact == CheckedArtifactFact::Bytes(bytes.to_vec()))
+            || (goal.is_none() && leaf.fact == CheckedArtifactFact::Missing)
+        {
+            return Ok(());
+        }
+        if leaf.fact != *expected
+            || leaf
+                .identity
+                .as_ref()
+                .is_none_or(|identity| identity.durable != *expected_identity)
+            || !self.parent_is_current(parent_identity)?
+            || parent_identity.durable != authority.retained_parent_identity
+        {
+            return Err(error(
+                self.code,
+                &self.label,
+                "source or retained parent changed before detach",
+            ));
+        }
+        let source_identity = leaf.identity.expect("exact existing source has identity");
+        let source_name = super::authority::source_name(
+            &authority.family_key,
+            &authority.action_key,
+            &source_identity.name_digest(),
+        );
+        super::platform::rename_relative(
+            dir,
+            &self.leaf,
+            &private,
+            source_name.as_ref(),
+            false,
+            self.code,
+            &self.label,
+        )?;
+        fault(CheckedArtifactFault::AfterDetach, self.code, &self.label)?;
+        self.sync_private(
+            &private,
+            CheckedArtifactFault::BeforeDestinationDurability,
+            CheckedArtifactFault::AfterDestinationDurability,
+        )?;
+        self.sync_dir(
+            dir,
+            CheckedArtifactFault::BeforeSourceRetirement,
+            CheckedArtifactFault::AfterSourceRetirement,
+        )?;
+        let moved = observe_leaf_exact(&private, source_name.as_ref(), self.code, &self.label)?;
+        if moved.fact != *expected
+            || moved.identity.as_ref() != Some(&source_identity)
+            || observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?.fact
+                != CheckedArtifactFact::Missing
+            || !self.parent_is_current(parent_identity)?
+        {
+            return Err(error(
+                self.code,
+                &self.label,
+                "source detach failed exact durable reobservation",
+            ));
+        }
         Ok(())
-    } else {
-        Err(error(
-            code,
-            label,
-            "invalid source cannot authorize mutation",
-        ))
+    }
+
+    fn publish_goal(
+        &self,
+        authority: &CheckedArtifactAuthority,
+        expected: &CheckedArtifactFact,
+        goal: &[u8],
+    ) -> ModelResult<()> {
+        let ParentState::Open { dir, identity } = &self.parent else {
+            return Err(error(
+                self.code,
+                &self.label,
+                "canonical parent is unavailable",
+            ));
+        };
+        let private = self.open_private(false)?.ok_or_else(|| {
+            error(
+                self.code,
+                &self.label,
+                "private authority directory disappeared",
+            )
+        })?;
+        let residue = self.inspect_family(expected, Some(goal))?;
+        if residue.foreign || residue.authority.as_ref() != Some(authority) {
+            return Err(error(
+                self.code,
+                &self.label,
+                "goal authority changed before publication",
+            ));
+        }
+        let leaf = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        if leaf.fact == CheckedArtifactFact::Bytes(goal.to_vec()) {
+            if residue
+                .goal
+                .as_ref()
+                .is_some_and(|staged| leaf.identity.as_ref() != Some(&staged.identity))
+            {
+                return Err(error(
+                    self.code,
+                    &self.label,
+                    "managed goal is a different-identity duplicate",
+                ));
+            }
+            return Ok(());
+        }
+        if leaf.fact != CheckedArtifactFact::Missing || !self.parent_is_current(identity)? {
+            return Err(error(
+                self.code,
+                &self.label,
+                "replacement destination changed before goal publication",
+            ));
+        }
+        let staged = residue.goal.ok_or_else(|| {
+            error(
+                self.code,
+                &self.label,
+                "checked replacement lost its staged goal",
+            )
+        })?;
+        super::platform::rename_relative(
+            &private,
+            &staged.name,
+            dir,
+            &self.leaf,
+            false,
+            self.code,
+            &self.label,
+        )?;
+        fault(CheckedArtifactFault::AfterMutation, self.code, &self.label)?;
+        self.sync_dir(
+            dir,
+            CheckedArtifactFault::BeforeManagedDestinationDurability,
+            CheckedArtifactFault::AfterManagedDestinationDurability,
+        )?;
+        self.sync_private(
+            &private,
+            CheckedArtifactFault::BeforeQuarantineSourceRetirement,
+            CheckedArtifactFault::AfterQuarantineSourceRetirement,
+        )?;
+        let managed = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        if managed.fact != CheckedArtifactFact::Bytes(goal.to_vec())
+            || managed.identity.as_ref() != Some(&staged.identity)
+            || !self.parent_is_current(identity)?
+        {
+            return Err(error(
+                self.code,
+                &self.label,
+                "managed goal failed exact post-publication verification",
+            ));
+        }
+        Ok(())
+    }
+
+    fn sync_dir(
+        &self,
+        dir: &cap_std::fs::Dir,
+        before: CheckedArtifactFault,
+        after: CheckedArtifactFault,
+    ) -> ModelResult<()> {
+        fault(before, self.code, &self.label)?;
+        super::platform::sync_parent(dir)
+            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        fault(after, self.code, &self.label)
+    }
+
+    fn sync_private(
+        &self,
+        dir: &cap_std::fs::Dir,
+        before: CheckedArtifactFault,
+        after: CheckedArtifactFault,
+    ) -> ModelResult<()> {
+        fault(before, self.code, &self.label)?;
+        super::platform::private_barrier(dir, self.code, &self.label)?;
+        fault(after, self.code, &self.label)
     }
 }

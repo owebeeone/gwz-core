@@ -77,6 +77,21 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBacken
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
     let record = current.record();
+    match super::rollback_prefix::classify_rollback_aggregate(
+        backend,
+        current,
+        super::rollback_prefix::position(current),
+    )? {
+        super::rollback_prefix::RollbackAggregateClassification::Exact(_) => {}
+        super::rollback_prefix::RollbackAggregateClassification::Mismatch
+            if record.pending_rollback.is_some() =>
+        {
+            return ambiguity(current);
+        }
+        super::rollback_prefix::RollbackAggregateClassification::Mismatch => {
+            return Err(recovery_error("live rollback aggregate prefix has drifted"));
+        }
+    }
     if let Some(action) = record.pending_rollback.as_ref() {
         return observe_pending(backend, current, action);
     }
@@ -109,7 +124,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBacken
                 RootMetadataRollbackStepV1::Complete,
             )?;
             if observed == crate::workspace_ops::merge::root::V1RootRollbackObservation::After {
-                exhausted(current)
+                exhausted_with_backend(backend, current)
             } else if observed
                 == crate::workspace_ops::merge::root::V1RootRollbackObservation::Ambiguous
             {
@@ -120,7 +135,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBacken
                 root_intent(current)
             }
         }
-        RollbackCursor::Complete => exhausted(current),
+        RollbackCursor::Complete => exhausted_with_backend(backend, current),
     }
 }
 
@@ -292,12 +307,18 @@ impl<B: GitBackend> SealedReverseEntryVisitor for RollbackEntryHandoffVisitor<'_
             current.location().root(),
             anticipated,
         )?;
+        let prefix = super::rollback_prefix::issue_verified_rollback_prefix(
+            self.backend,
+            current,
+            RollbackAggregatePosition::ReverseEntry,
+        )?;
         VerifiedRollbackEntryPreflight::issue(
             &AuthorityIssuer::for_observer(current),
             "@operation",
             "rollback_entry_preflight",
             "verified",
             expected,
+            prefix,
         )
     }
 }
@@ -510,8 +531,16 @@ fn observe_root<B: GitBackend>(
     }
 }
 
-fn exhausted(current: &StoredV1Record) -> ModelResult<ExactObservationFact> {
-    let proof = rollback_exhausted(current)?;
+fn exhausted_with_backend<B: GitBackend>(
+    backend: &B,
+    current: &StoredV1Record,
+) -> ModelResult<ExactObservationFact> {
+    let prefix = super::rollback_prefix::issue_verified_rollback_prefix(
+        backend,
+        current,
+        super::rollback_prefix::position(current),
+    )?;
+    let proof = super::super::rollback_exhausted(current, prefix)?;
     Ok(completed(CompletedObservation::Rollback(
         RollbackObservation::Exhausted(proof),
     )))

@@ -3,6 +3,7 @@ mod entry_service;
 mod entry_service_drift;
 mod faults;
 mod phases;
+mod prefix_drift;
 mod real_git;
 mod recovery;
 mod root_artifacts;
@@ -75,13 +76,45 @@ fn staged_evidence_fixture(
     };
     use sha2::{Digest, Sha256};
 
-    let mut model = crate::workspace_ops::merge::model::v1::test_record();
-    crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::align_baseline_lock(&mut model);
-    let baseline_manifest = model.baseline.manifest_yaml.clone().unwrap();
-    let baseline_lock = model.baseline.lock_yaml.clone().unwrap();
     let root = TempDir::new(name);
     let backend = Git2Backend::new();
     backend.create_repo(&root.path).unwrap();
+    let mut model = crate::workspace_ops::merge::model::v1::test_record();
+    if change_lock {
+        use std::io::Write;
+        let mut exclude = std::fs::OpenOptions::new()
+            .append(true)
+            .open(crate::workspace_ops::workspace_exclude_path(&root.path))
+            .unwrap();
+        writeln!(exclude, "/members/a/").unwrap();
+        let member = root.path.join("members/a");
+        backend.create_repo(&member).unwrap();
+        let member_before = commit_file(&member, "README.md", "before\n", "before", &[]).unwrap();
+        let member_result = commit_file(
+            &member,
+            "README.md",
+            "result\n",
+            "result",
+            &[member_before.parse().unwrap()],
+        )
+        .unwrap();
+        let row = model.participants.get_mut("mem_a").unwrap();
+        row.path = "members/a".into();
+        row.target_kind = MergeTargetKind::Member;
+        row.target_branch = "main".into();
+        row.before_commit = member_before;
+        row.source_commit = member_result.clone();
+        row.state = ParticipantState::FastForwarded;
+        row.resulting_commit = Some(member_result);
+    }
+    crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::align_baseline_lock(&mut model);
+    if !change_lock {
+        let row = model.participants.get_mut("mem_a").unwrap();
+        row.state = ParticipantState::UpToDate;
+        row.resulting_commit = Some(row.before_commit.clone());
+    }
+    let baseline_manifest = model.baseline.manifest_yaml.clone().unwrap();
+    let baseline_lock = model.baseline.lock_yaml.clone().unwrap();
     std::fs::create_dir_all(root.path.join("gwz.conf/markers")).unwrap();
     let manifest_commit = commit_file(
         &root.path,
@@ -111,14 +144,6 @@ fn staged_evidence_fixture(
     model.state = OperationState::RollingBack;
     model.baseline.root_head = Some(baseline.clone());
     model.baseline.root_branch = Some("main".into());
-    let row = model.participants.get_mut("mem_a").unwrap();
-    if change_lock {
-        row.state = ParticipantState::FastForwarded;
-        row.resulting_commit = Some(row.source_commit.clone());
-    } else {
-        row.state = ParticipantState::UpToDate;
-        row.resulting_commit = Some(row.before_commit.clone());
-    }
     let current = crate::workspace_ops::merge::v1_lifecycle::checked::StoredV1Record::for_test(
         &root.path,
         model.clone(),

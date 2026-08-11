@@ -21,8 +21,10 @@ sha1 = "0.10"
 sha2 = "0.10"
 url = "2"
 getrandom = "0.3"
+unicode-normalization = "0.1"
 
 [target.'cfg(unix)'.dependencies]
+libc = "0.2"
 rustix = { version = "1", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]

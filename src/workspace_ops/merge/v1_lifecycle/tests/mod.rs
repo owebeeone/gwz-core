@@ -1,6 +1,7 @@
 mod acceptance;
 mod archive_result;
 mod authority;
+pub(in crate::workspace_ops::merge::v1_lifecycle) mod c7_matrix;
 mod checked;
 mod dispatcher;
 mod dispatcher_attempt_matrix;

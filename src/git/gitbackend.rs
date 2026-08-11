@@ -101,6 +101,7 @@ impl GitBackend for Git2Backend {
     delegate!(observe_direct_ref(path: &Path, name: &str,) -> ModelResult<GitDirectRefObservation> => preservation::observe_direct_ref);
     delegate!(checkout_matches_commit(path: &Path, branch: &str, commit: &str,) -> ModelResult<bool> => preservation::checkout_matches_commit);
     delegate!(checkout_matches_commit_except(path: &Path, commit: &str, allowed_paths: &[String],) -> ModelResult<bool> => preservation::checkout_matches_commit_except);
+    delegate!(checkout_matches_commit_with_overlay(path: &Path, commit: &str, overlay: &GitCheckoutOverlay,) -> ModelResult<bool> => preservation::checkout_matches_commit_with_overlay);
     delegate!(prepare_root_preservation_stash(root: &Path, spec: &GitRootPreservationSpec,) -> ModelResult<GitPreparedRootStash> => preservation_root::prepare_root_preservation_stash);
     delegate!(observe_root_preservation_step(root: &Path, spec: &GitRootPreservationSpec, step: &GitRootPreservationPhysicalStep, guard: &GitRootPreservationGuard,) -> ModelResult<GitRootPreservationStepObservation> => preservation_root::observe_root_preservation_step);
     delegate!(execute_root_preservation_step_checked(root: &Path, spec: &GitRootPreservationSpec, step: &GitRootPreservationPhysicalStep, guard: &GitRootPreservationGuard,) -> ModelResult<GitCheckedPreservationMutation> => preservation_root::execute_root_preservation_step_checked);

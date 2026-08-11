@@ -12,9 +12,10 @@ use binding::{AuthorityIssuer, BoundValue};
 pub(super) use drift::{ParticipantDriftIdentity, ParticipantDriftPayload};
 
 use super::super::model::v1::{
-    AcceptedWorkspaceV1, MergeOperationRecordV1, PendingPreservationActionV1,
-    PendingRollbackActionV1, PreservationOwnerV1, PreservationRefResetPhaseV1,
-    PreservationStashPhaseV1, RecoveryOriginStateV1, RollbackCursor,
+    AcceptedWorkspaceV1, EvidenceRollbackStepV1, MergeOperationRecordV1,
+    PendingPreservationActionV1, PendingRollbackActionV1, PreservationOwnerV1,
+    PreservationRefResetPhaseV1, PreservationStashPhaseV1, RecoveryOriginStateV1, RollbackCursor,
+    RootMetadataRollbackStepV1,
 };
 use super::super::{
     MergeParticipantRecord, OperationDrift, PreservationEvidence, PublicationCandidate,
@@ -106,6 +107,53 @@ token!(VerifiedRollbackExhausted, RollbackExhaustedPayload);
 token!(VerifiedPreservationExhausted, ());
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+enum RollbackAggregatePosition {
+    ReverseEntry,
+    EvidencePending(EvidenceRollbackStepV1),
+    BetweenParticipants(String),
+    ParticipantPending {
+        member_id: String,
+        kind: super::super::model::v1::ParticipantRollbackKindV1,
+    },
+    NoMutationParticipant(String),
+    SelectedRootMetadataPending(RootMetadataRollbackStepV1),
+    Exhaustion,
+    RecoveryPending(PendingRollbackActionV1),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct RollbackAggregatePayload {
+    position: RollbackAggregatePosition,
+    completed_participants: Vec<String>,
+    publication_evidence_complete: bool,
+    selected_root_projection: Option<RootMetadataRollbackStepV1>,
+    projection_sha256: [u8; 32],
+}
+
+#[derive(Debug)]
+struct VerifiedRollbackPrefix(BoundValue<RollbackAggregatePayload>);
+
+impl VerifiedRollbackPrefix {
+    fn issue(issuer: &AuthorityIssuer<'_>, value: RollbackAggregatePayload) -> ModelResult<Self> {
+        Ok(Self(issuer.bind(
+            "@operation",
+            "rollback_prefix",
+            "aggregate_verified",
+            value,
+        )?))
+    }
+
+    fn matches(&self, current: &StoredV1Record) -> bool {
+        self.0.matches(
+            current,
+            "@operation",
+            "rollback_prefix",
+            "aggregate_verified",
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(super) struct ReverseEntryAuthorityPayload {
     pub(super) request: V1LifecycleRequest,
     pub(super) kind: ReverseEntryKind,
@@ -142,7 +190,38 @@ token!(
     VerifiedPreservationEntryPreflight,
     ReverseEntryAuthorityPayload
 );
-token!(VerifiedRollbackEntryPreflight, ReverseEntryAuthorityPayload);
+
+#[derive(Debug)]
+pub(super) struct VerifiedRollbackEntryPreflight {
+    bound: BoundValue<ReverseEntryAuthorityPayload>,
+    prefix: VerifiedRollbackPrefix,
+}
+
+impl VerifiedRollbackEntryPreflight {
+    fn issue(
+        issuer: &AuthorityIssuer<'_>,
+        owner: &str,
+        action: &str,
+        phase: &str,
+        value: ReverseEntryAuthorityPayload,
+        prefix: VerifiedRollbackPrefix,
+    ) -> ModelResult<Self> {
+        Ok(Self {
+            bound: issuer.bind(owner, action, phase, value)?,
+            prefix,
+        })
+    }
+
+    pub(super) fn value(&self) -> &ReverseEntryAuthorityPayload {
+        &self.bound.value
+    }
+}
+
+impl BoundAuthority for VerifiedRollbackEntryPreflight {
+    fn matches(&self, current: &StoredV1Record, owner: &str, action: &str, phase: &str) -> bool {
+        self.bound.matches(current, owner, action, phase) && self.prefix.matches(current)
+    }
+}
 
 #[cfg(test)]
 impl VerifiedPublicationHandoff {
@@ -213,8 +292,32 @@ reverse_entry_preflight_fixture!(
     VerifiedPreservationEntryPreflight,
     "preservation_entry_preflight"
 );
+
 #[cfg(test)]
-reverse_entry_preflight_fixture!(VerifiedRollbackEntryPreflight, "rollback_entry_preflight");
+impl VerifiedRollbackEntryPreflight {
+    pub(super) fn for_entry_test(
+        current: &StoredV1Record,
+        handoff: &VerifiedPublicationHandoff,
+    ) -> ModelResult<Self> {
+        let projection = RollbackAggregatePayload {
+            position: RollbackAggregatePosition::ReverseEntry,
+            completed_participants: Vec::new(),
+            publication_evidence_complete: false,
+            selected_root_projection: None,
+            projection_sha256: [0; 32],
+        };
+        let prefix =
+            VerifiedRollbackPrefix::issue(&AuthorityIssuer::for_observer(current), projection)?;
+        Self::issue(
+            &AuthorityIssuer::for_observer(current),
+            "@operation",
+            "rollback_entry_preflight",
+            "verified",
+            handoff.value().clone(),
+            prefix,
+        )
+    }
+}
 
 pub(super) fn payload_hash<T: Serialize>(value: &T) -> ModelResult<[u8; 32]> {
     binding::payload_hash(value)
@@ -430,13 +533,7 @@ impl PreparedRollbackEntry {
                 "rollback handoff does not match the anticipated model",
             ));
         }
-        let preflight = VerifiedRollbackEntryPreflight::issue(
-            &AuthorityIssuer::for_observer(current),
-            "@operation",
-            "rollback_entry_preflight",
-            "verified",
-            authority.clone(),
-        )?;
+        let preflight = VerifiedRollbackEntryPreflight::for_entry_test(current, &handoff)?;
         Ok(Self {
             bound: BoundValue::new(
                 current,
@@ -620,9 +717,12 @@ pub(super) use observe::{
     observe_reverse_publication_handoff, observe_rollback, prepare_direct_rollback_entry,
     prepare_exhausted_rollback_entry, prepare_preservation_entry, preservation_durability_fact,
     preservation_execution_prefix_is_exact, preservation_reset_step, preservation_stash_guard,
-    preservation_stash_step, preserving_verify_recovery_origin, rollback_exhausted,
+    preservation_stash_step, preserving_verify_recovery_origin, require_rollback_aggregate,
     rolling_back_verify_recovery_origin, verify_finalization_action, verify_participant_action,
 };
+
+#[cfg(test)]
+pub(super) use observe::rollback_exhausted_for_test;
 
 fn authority_error(detail: impl Into<String>) -> ModelError {
     ModelError::new(

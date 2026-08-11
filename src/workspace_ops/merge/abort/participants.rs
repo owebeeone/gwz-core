@@ -76,7 +76,8 @@ use crate::workspace_ops::merge::{MergeParticipantRecord, ParticipantState};
 #[cfg(test)]
 pub(in crate::workspace_ops::merge) use v1_rollback::{
     V1ParticipantRollbackObservation, execute_v1_participant_rollback,
-    observe_v1_participant_rollback, verify_v1_no_mutation_participant,
+    observe_v1_participant_rollback, terminal_v1_participant_is_exact,
+    verify_v1_no_mutation_participant,
 };
 
 #[cfg(test)]
@@ -163,6 +164,33 @@ mod v1_rollback {
         Ok(())
     }
 
+    pub(in crate::workspace_ops::merge) fn terminal_v1_participant_is_exact<B: GitBackend>(
+        backend: &B,
+        root: &Path,
+        member_id: &str,
+        row: &MergeParticipantRecord,
+        overlay: &crate::git::GitCheckoutOverlay,
+    ) -> ModelResult<bool> {
+        if !matches!(
+            row.state,
+            ParticipantState::Aborted | ParticipantState::RolledBack
+        ) {
+            return Ok(false);
+        }
+        let path =
+            crate::workspace_ops::merge::status::validated_participant_path(root, member_id, row)?;
+        if backend.repository_state(&path)? != GitRepositoryState::Clean {
+            return Ok(false);
+        }
+        let head = backend.head(&path)?;
+        let target = backend.read_ref(&path, &format!("refs/heads/{}", row.target_branch))?;
+        Ok(!head.is_detached
+            && head.branch.as_deref() == Some(row.target_branch.as_str())
+            && head.commit.as_deref() == Some(row.before_commit.as_str())
+            && target.as_deref() == Some(row.before_commit.as_str())
+            && backend.checkout_matches_commit_with_overlay(&path, &row.before_commit, overlay)?)
+    }
+
     pub(in crate::workspace_ops::merge) fn execute_v1_participant_rollback<B: GitBackend>(
         backend: &B,
         root: &Path,
@@ -226,7 +254,7 @@ mod v1_rollback {
     fn checkout_exclusions(
         record: &MergeOperationRecordV1,
         member_id: &str,
-        row: &MergeParticipantRecord,
+        _row: &MergeParticipantRecord,
     ) -> ModelResult<Vec<String>> {
         if member_id != "@root" {
             return Ok(Vec::new());
@@ -244,19 +272,6 @@ mod v1_rollback {
         } else {
             Vec::new()
         };
-        paths.push(crate::workspace::RUNTIME_DIR.into());
-        paths.push(format!("{}/.tmp", crate::workspace::WORKSPACE_DIR));
-        let manifest = crate::artifact::ManifestArtifact::from_yaml(
-            record.baseline.manifest_yaml.as_deref().ok_or_else(|| {
-                member_error(
-                    member_id,
-                    row,
-                    "selected-root rollback baseline has no manifest bytes",
-                )
-            })?,
-        )
-        .map_err(|error| attach(error, member_id, &row.path))?;
-        paths.extend(manifest.members.into_iter().map(|member| member.path));
         paths.sort();
         paths.dedup();
         Ok(paths)

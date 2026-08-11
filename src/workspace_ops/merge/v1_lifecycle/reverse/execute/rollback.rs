@@ -35,6 +35,9 @@ fn execute_checked<B: GitBackend>(
             "rollback executor action does not match the persisted journal",
         ));
     }
+    crate::workspace_ops::merge::v1_lifecycle::authority::require_rollback_aggregate(
+        backend, current,
+    )?;
     match action {
         PendingRollbackActionV1::Participant {
             member_id, action, ..

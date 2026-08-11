@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
+use crate::checked_artifact::{
+    CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
+};
 use crate::model::{ErrorCode, ModelResult};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,7 +83,7 @@ fn map_transition(value: CheckedArtifactTransition) -> ModelResult<RegularFileTr
 
 fn acquire(root: &Path, relative: &str) -> ModelResult<CheckedArtifact> {
     CheckedArtifact::acquire(
-        root,
+        CheckedArtifactPolicy::workspace(root),
         Path::new(relative),
         ErrorCode::MergeRecoveryRequired,
         format!("workspace artifact '{relative}'"),

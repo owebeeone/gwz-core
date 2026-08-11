@@ -129,6 +129,14 @@ pub struct GitPreparedRootStash {
     pub normalized_image: GitPreservationImage,
 }
 
+/// Exact paths whose live facts are proved by another aggregate observer.
+/// Worktree and index ownership are intentionally separate domains.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GitCheckoutOverlay {
+    pub worktree_paths: Vec<String>,
+    pub index_paths: Vec<String>,
+}
+
 /// Whether a prepared merge may publish a fast-forward or must create a
 /// two-parent merge commit when the source is strictly ahead.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -494,6 +502,20 @@ pub trait GitBackend {
         _allowed_paths: &[String],
     ) -> ModelResult<bool> {
         unsupported_backend("checkout_matches_commit_except")
+    }
+    /// Compare the complete checkout while delegating only the named
+    /// worktree or index facts to another exact observer.
+    fn checkout_matches_commit_with_overlay(
+        &self,
+        path: &Path,
+        commit: &str,
+        overlay: &GitCheckoutOverlay,
+    ) -> ModelResult<bool> {
+        if overlay.worktree_paths == overlay.index_paths {
+            self.checkout_matches_commit_except(path, commit, &overlay.worktree_paths)
+        } else {
+            unsupported_backend("checkout_matches_commit_with_overlay")
+        }
     }
     fn prepare_root_preservation_stash(
         &self,

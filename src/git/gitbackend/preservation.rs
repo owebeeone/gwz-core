@@ -419,6 +419,15 @@ pub(super) fn checkout_matches_commit_except(
     preservation_image::checkout_matches_commit_except(path, commit, allowed_paths)
 }
 
+pub(super) fn checkout_matches_commit_with_overlay(
+    _backend: &Git2Backend,
+    path: &Path,
+    commit: &str,
+    overlay: &GitCheckoutOverlay,
+) -> ModelResult<bool> {
+    preservation_image::checkout_matches_commit_with_overlay(path, commit, overlay)
+}
+
 pub(super) fn index_matches_candidate_files(
     _backend: &Git2Backend,
     path: &Path,
