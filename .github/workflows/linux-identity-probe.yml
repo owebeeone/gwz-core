@@ -84,6 +84,8 @@ jobs:
           python scripts/linux_identity_probe/aggregate.py \
             --input "$RUNNER_TEMP/linux-identity/evidence-linux-x86_64.json" \
             --input "$RUNNER_TEMP/linux-identity/evidence-linux-aarch64.json" \
+            --expected-core-commit "$GITHUB_SHA" \
+            --expected-workflow-run "$GITHUB_RUN_ID" \
             --output "$RUNNER_TEMP/linux-durable-identity-evidence.json"
       - name: Upload combined evidence
         uses: actions/upload-artifact@v4

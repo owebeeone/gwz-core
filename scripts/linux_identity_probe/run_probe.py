@@ -117,7 +117,7 @@ def retained_handle(fd: int, *, path: bytes = b"", flags: int = provider.AT_EMPT
     )
     if result != 0:
         error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error))
+        raise provider.handle_query_error(error)
     length = int(handle.handle_bytes)
     if not 1 <= length <= MAX_HANDLE_BYTES:
         raise provider.unsupported("name_to_handle_at returned an invalid length")
@@ -244,6 +244,10 @@ def synthetic_negative_rows(valid: dict[str, object]) -> dict[str, str]:
         "network": {"filesystem": "nfs"},
         "zero_uuid": {"filesystem_uuid": "00" * 16},
         "no_uuid": {"filesystem_uuid": "", "filesystem_uuid_length": 0},
+        "malformed_uuid_length": {
+            "filesystem_uuid": "aa" * 15,
+            "filesystem_uuid_length": 15,
+        },
         "handle_overflow": {"handle": "aa" * 129, "handle_length": 129},
         "unknown_handle_provider": {"handle_provider": "pathname"},
         "mode_query_failure": {"mode_query_succeeded": False},
@@ -257,6 +261,25 @@ def synthetic_negative_rows(valid: dict[str, object]) -> dict[str, str]:
             rows[name] = error.code
         else:
             raise RuntimeError(f"negative row {name} unexpectedly succeeded")
+
+    queries = {
+        "missing_at_empty_path": (b"", 0),
+        "symlink_follow": (
+            b"",
+            provider.AT_EMPTY_PATH | provider.AT_SYMLINK_FOLLOW,
+        ),
+        "handle_fid": (b"", provider.AT_EMPTY_PATH | provider.AT_HANDLE_FID),
+        "pathname_fallback": (b"stable", provider.AT_EMPTY_PATH),
+    }
+    for name, (path, flags) in queries.items():
+        try:
+            provider.validate_handle_query(path=path, flags=flags)
+        except provider.ProbeError as error:
+            rows[name] = error.code
+        else:
+            raise RuntimeError(f"query negative row {name} unexpectedly succeeded")
+    rows["permission_denial"] = provider.handle_query_error(errno.EACCES).code
+    rows["unsupported_empty_path"] = provider.handle_query_error(errno.EOPNOTSUPP).code
     return rows
 
 
@@ -275,6 +298,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     for executable in ("mkfs.ext4", "mount", "umount", "chattr"):
         if shutil.which(executable) is None:
             raise RuntimeError(f"required executable is unavailable: {executable}")
+    native_machine = platform.machine()
+    if provider.ARCHITECTURE_MACHINES[args.architecture] != native_machine:
+        raise RuntimeError(
+            f"declared architecture {args.architecture} does not match {native_machine}"
+        )
 
     temporary = pathlib.Path(tempfile.mkdtemp(prefix="gwz-r4b-linux-"))
     image = temporary / "ext4.img"
@@ -326,6 +354,20 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         negative_rows["tmpfs"] = reject_filesystem(tmpfs, "tmpfs")
         negative_rows["overlay"] = reject_filesystem(overlay / "merged", "overlay")
         provider.validate_negative_rows(negative_rows)
+        query_contract = {
+            "missing_at_empty_path_errno": errno.errorcode[missing_empty_path_errno],
+            "forbidden_flags_rejected_before_syscall": all(
+                negative_rows[name] == "UnsupportedOperation"
+                for name in ("missing_at_empty_path", "symlink_follow", "handle_fid")
+            ),
+            "pathname_fallback_rejected_before_syscall": (
+                negative_rows["pathname_fallback"] == "UnsupportedOperation"
+            ),
+            "permission_denial_typed": negative_rows["permission_denial"],
+            "unsupported_empty_path_typed": negative_rows["unsupported_empty_path"],
+        }
+        if query_contract != provider.QUERY_CONTRACT:
+            raise RuntimeError("query contract did not match the closed evidence schema")
 
         source_directory = pathlib.Path(__file__).resolve().parent
         return {
@@ -333,17 +375,14 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "core_commit": args.core_commit,
             "workflow_run": args.workflow_run,
             "architecture": args.architecture,
+            "native_machine": native_machine,
             "kernel_release": platform.release(),
             "probe_source_sha256": provider.probe_source_digest(source_directory),
             "provider_table_sha256": provider.provider_table_digest(),
             "tuple": provider.validate_facts(before),
             "remount": remount,
             "substitution": substitution,
-            "query_contract": {
-                "missing_at_empty_path_errno": errno.errorcode[missing_empty_path_errno],
-                "forbidden_flags_rejected_before_syscall": True,
-                "pathname_fallback_rejected_before_syscall": True,
-            },
+            "query_contract": query_contract,
             "negative_rows": negative_rows,
             "diagnostics": {
                 "mount_id_before": before["mount_id"],
