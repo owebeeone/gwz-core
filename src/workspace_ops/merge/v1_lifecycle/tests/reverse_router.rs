@@ -162,8 +162,8 @@ fn runtime_delegates_to_the_authority_owned_reverse_and_archive_observers() {
         Ok(_) => panic!("preservation unexpectedly produced an observation"),
         Err(error) => error,
     };
-    assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
-    assert_eq!(error.message, "preservation observation is not implemented");
+    assert_eq!(error.code, ErrorCode::GitCommandFailed);
+    assert_ne!(error.message, "preservation observation is not implemented");
 
     let rollback = BoundObservationRequest::for_test(
         &current,
@@ -212,7 +212,7 @@ fn physical_router_has_only_two_closed_reverse_delegates() {
             &current,
             &PhysicalActionKind::Preservation(backup_action()),
         ),
-        "preservation execution is not implemented",
+        "preservation executor action does not match the persisted journal",
     );
     assert_failure(
         runtime.execute(

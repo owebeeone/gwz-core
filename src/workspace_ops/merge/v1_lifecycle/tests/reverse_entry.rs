@@ -517,7 +517,7 @@ fn reverse_entry_visitor_source_gate_allows_only_the_declared_observer_modules()
         .join("src/workspace_ops/merge/v1_lifecycle");
     let approved = [
         root.join("authority/observe/finalization/handoff.rs"),
-        root.join("authority/observe/reverse/preservation.rs"),
+        root.join("authority/observe/reverse/preservation/entry.rs"),
         root.join("authority/observe/reverse/rollback.rs"),
     ];
     let test_root = root.join("tests");

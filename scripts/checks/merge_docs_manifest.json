@@ -21,6 +21,18 @@
       "id": "m5b_must_not_release_v0",
       "match": "regex",
       "value": "(?i)\\bM5b\\b\\s+(?:ships|releases|activates|writes)\\s+(?:`?--no-ff`?|no-ff)[^.\\n]{0,80}\\bv0\\b"
+    },
+    {
+      "id": "retired_compound_stash_phase",
+      "value": "normalize_root"
+    },
+    {
+      "id": "retired_compound_restore_phase",
+      "value": "restore_root"
+    },
+    {
+      "id": "retired_root_prefix_field",
+      "value": "root_publication_prefix"
     }
   ],
   "sources": [
@@ -118,6 +130,52 @@
         {
           "id": "r4b_a1_only_activation",
           "value": "A1 remains a separate, small, reviewed runtime-dispatch change after R4b and M5b meet their gates."
+        }
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "i2_action_journal_contract",
+      "path": "dev-docs/GwzM5-8I2ActionJournalContract.md",
+      "required": [
+        {
+          "id": "i2_journal_amended_wire_authority",
+          "value": "This document is wire-authoritative only as amended by those two accepted interfaces."
+        },
+        {
+          "id": "i2_journal_handoff_field",
+          "value": "root_publication_handoff: Option<PreservationPublicationCandidateV1>"
+        },
+        {
+          "id": "i2_journal_flat_stash_graph",
+          "value": "normalize_parent -> normalize_marker -> normalize_lock -> normalize_index"
+        },
+        {
+          "id": "i2_journal_flat_reset_graph",
+          "value": "prepare_parent -> prepare_marker -> prepare_lock -> prepare_index"
+        }
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "i2_record_contract",
+      "path": "dev-docs/GwzM5-8I2RecordContract.md",
+      "required": [
+        {
+          "id": "i2_record_amended_wire_authority",
+          "value": "This document is wire-authoritative only as amended by those accepted interfaces."
+        },
+        {
+          "id": "i2_record_five_fields",
+          "value": "It adds five top-level fields:"
+        },
+        {
+          "id": "i2_record_handoff_field",
+          "value": "preservation_publication_handoff: Option<PreservationPublicationHandoffV1>"
+        },
+        {
+          "id": "i2_record_five_collisions",
+          "value": "five top-level v1 collisions"
         }
       ],
       "forbidden": []

@@ -8,7 +8,7 @@ mod dispatcher_matrix;
 mod dispatcher_reconciliation;
 mod effect;
 mod effect_retry;
-mod fixtures;
+pub(in crate::workspace_ops::merge::v1_lifecycle) mod fixtures;
 mod forward;
 mod journal_vocabulary;
 pub(super) mod predecessor_matrix;

@@ -477,3 +477,398 @@ pub(super) fn unreadable(plan: &PreservationPlan, message: impl Into<String>) ->
     ModelError::new(ErrorCode::MergeRecordUnreadable, message)
         .with_member(&plan.target_id, &plan.relative_path)
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::workspace_ops::merge) enum V1BundleObservation {
+    Before,
+    After,
+    Ambiguous,
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<B: GitBackend>(
+    backend: &B,
+    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+    plan: &super::plan::V1PreservationOwnerPlan,
+    attached_commit: &str,
+) -> ModelResult<Option<crate::git::GitRootPreservationSpec>> {
+    use crate::git::{
+        GitCandidateFile, GitRootManagedForm, GitRootManagedIndexForm, GitRootPreservationSpec,
+    };
+    use crate::workspace_ops::merge::model::v1::{
+        PublicationIndexFormV1 as I, PublicationPrefixV1 as P,
+    };
+
+    let Some(handoff) = plan.root_handoff else {
+        return Ok(None);
+    };
+    let publication = record
+        .publication
+        .as_ref()
+        .ok_or_else(|| v1_error(plan, "root handoff has no publication progress"))?;
+    let candidate = publication
+        .candidate
+        .as_ref()
+        .ok_or_else(|| v1_error(plan, "root handoff has no publication candidate"))?;
+    let marker_path = publication
+        .candidate_marker_path
+        .as_ref()
+        .ok_or_else(|| v1_error(plan, "root handoff has no managed marker path"))?;
+    let attached = clean_form(backend, plan, attached_commit, marker_path)?;
+    let restore = clean_form(backend, plan, &plan.anchor, marker_path)?;
+    let marker = (!matches!(handoff.prefix, P::Baseline)).then(|| GitCandidateFile {
+        path: marker_path.clone(),
+        bytes: candidate.marker_yaml.as_bytes().to_vec(),
+    });
+    let lock_bytes = if matches!(handoff.prefix, P::Lock | P::Boundary) {
+        candidate.lock_yaml.as_bytes()
+    } else {
+        candidate.baseline_lock_yaml.as_bytes()
+    };
+    let lock = GitCandidateFile {
+        path: crate::artifact::LOCK_PATH.into(),
+        bytes: lock_bytes.to_vec(),
+    };
+    let index = match handoff.index {
+        I::Pre => {
+            let baseline_lock = GitCandidateFile {
+                path: crate::artifact::LOCK_PATH.into(),
+                bytes: candidate.baseline_lock_yaml.as_bytes().to_vec(),
+            };
+            GitRootManagedIndexForm {
+                marker: managed_fact(attached_commit, marker_path, None)?,
+                lock: managed_fact(
+                    attached_commit,
+                    crate::artifact::LOCK_PATH,
+                    Some(&baseline_lock),
+                )?,
+            }
+        }
+        I::Staged => GitRootManagedIndexForm {
+            marker: managed_fact(attached_commit, marker_path, marker.as_ref())?,
+            lock: managed_fact(attached_commit, crate::artifact::LOCK_PATH, Some(&lock))?,
+        },
+    };
+    let boundary = if handoff.prefix == P::Boundary {
+        candidate.boundary_text.as_bytes()
+    } else {
+        candidate.baseline_boundary_text.as_bytes()
+    };
+    let handoff_form = GitRootManagedForm {
+        marker,
+        lock,
+        index,
+    };
+    let spec = GitRootPreservationSpec {
+        attached_branch: plan.branch.clone(),
+        attached_commit: attached_commit.into(),
+        restore_commit: plan.anchor.clone(),
+        managed_marker_path: marker_path.clone(),
+        attached_clean_form: attached,
+        restore_clean_form: restore,
+        handoff_form,
+        handoff_boundary: boundary.to_vec(),
+    };
+    Ok(Some(spec))
+}
+
+#[cfg(test)]
+fn clean_form<B: GitBackend>(
+    backend: &B,
+    plan: &super::plan::V1PreservationOwnerPlan,
+    commit: &str,
+    marker_path: &str,
+) -> ModelResult<crate::git::GitRootManagedForm> {
+    use crate::git::{GitCandidateFile, GitRootManagedForm, GitRootManagedIndexForm};
+    let marker = backend
+        .read_file_at_commit(&plan.path, commit, marker_path)
+        .map_err(|error| attach_v1(error, plan))?
+        .map(|bytes| GitCandidateFile {
+            path: marker_path.into(),
+            bytes,
+        });
+    let lock = backend
+        .read_file_at_commit(&plan.path, commit, crate::artifact::LOCK_PATH)
+        .map_err(|error| attach_v1(error, plan))?
+        .map(|bytes| GitCandidateFile {
+            path: crate::artifact::LOCK_PATH.into(),
+            bytes,
+        })
+        .ok_or_else(|| v1_error(plan, "root clean commit has no managed lock file"))?;
+    Ok(GitRootManagedForm {
+        index: GitRootManagedIndexForm {
+            marker: managed_fact(commit, marker_path, marker.as_ref())?,
+            lock: managed_fact(commit, crate::artifact::LOCK_PATH, Some(&lock))?,
+        },
+        marker,
+        lock,
+    })
+}
+
+#[cfg(test)]
+fn managed_fact(
+    commit: &str,
+    path: &str,
+    file: Option<&crate::git::GitCandidateFile>,
+) -> ModelResult<crate::git::GitRootManagedIndexFact> {
+    use crate::git::{GitRootManagedIndexEntry, GitRootManagedIndexFact};
+    Ok(match file {
+        None => GitRootManagedIndexFact::Absent {
+            path: path.as_bytes().to_vec(),
+        },
+        Some(file) => GitRootManagedIndexFact::Present(GitRootManagedIndexEntry {
+            path: path.as_bytes().to_vec(),
+            object_id: blob_oid(commit, &file.bytes)?,
+            mode: 0o100644,
+            stage: 0,
+            assume_valid: false,
+            skip_worktree: false,
+            intent_to_add: false,
+        }),
+    })
+}
+
+#[cfg(test)]
+fn blob_oid(commit: &str, bytes: &[u8]) -> ModelResult<String> {
+    use sha1::Sha1;
+    use sha2::{Digest, Sha256};
+    let mut input = format!("blob {}\0", bytes.len()).into_bytes();
+    input.extend_from_slice(bytes);
+    match commit.len() {
+        40 => Ok(format!("{:x}", Sha1::digest(input))),
+        64 => Ok(format!("{:x}", Sha256::digest(input))),
+        _ => Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "root preservation commit has an unsupported object-id width",
+        )),
+    }
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) fn v1_preservation_image<B: GitBackend>(
+    backend: &B,
+    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+    plan: &super::plan::V1PreservationOwnerPlan,
+    attached_commit: &str,
+) -> ModelResult<crate::git::GitPreservationImage> {
+    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {
+        Some(spec) => backend
+            .prepare_root_preservation_stash(&plan.path, &spec)
+            .map(|prepared| prepared.normalized_image)
+            .map_err(|error| attach_v1(error, plan)),
+        None => backend
+            .preservation_image(&plan.path, true)
+            .map_err(|error| attach_v1(error, plan)),
+    }
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) fn v1_bundle_observation<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+    plans: &[super::plan::V1PreservationOwnerPlan],
+    owner: &crate::workspace_ops::merge::model::v1::PreservationOwnerV1,
+) -> ModelResult<V1BundleObservation> {
+    let index = plans
+        .iter()
+        .position(|plan| &plan.owner == owner)
+        .ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::PreservationEvidenceMismatch,
+                "bundle owner is outside the preservation cursor",
+            )
+        })?;
+    let before = expected_bundle(backend, record, &plans[..index])?;
+    let after = expected_bundle(backend, record, &plans[..=index])?;
+    let observed = read_bundle_bytes(root, &after.stash_id)?;
+    let before_bytes = (!before.members.is_empty())
+        .then(|| before.to_yaml())
+        .transpose()?;
+    let after_bytes = after.to_yaml()?.into_bytes();
+    Ok(match observed {
+        Some(bytes) if bytes == after_bytes => V1BundleObservation::After,
+        None if before_bytes.is_none() => V1BundleObservation::Before,
+        Some(bytes)
+            if before_bytes
+                .as_ref()
+                .is_some_and(|value| value.as_bytes() == bytes) =>
+        {
+            V1BundleObservation::Before
+        }
+        _ => V1BundleObservation::Ambiguous,
+    })
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+    plans: &[super::plan::V1PreservationOwnerPlan],
+) -> ModelResult<bool> {
+    let expected = expected_bundle(backend, record, plans)?;
+    let observed = read_bundle_bytes(root, &expected.stash_id)?;
+    if expected.members.is_empty() {
+        return Ok(observed.is_none());
+    }
+    let expected = expected.to_yaml()?.into_bytes();
+    Ok(observed.as_deref() == Some(expected.as_slice()))
+}
+
+#[cfg(test)]
+pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+    plans: &[super::plan::V1PreservationOwnerPlan],
+    owner: &crate::workspace_ops::merge::model::v1::PreservationOwnerV1,
+) -> ModelResult<()> {
+    match v1_bundle_observation(backend, root, record, plans, owner)? {
+        V1BundleObservation::After => return Ok(()),
+        V1BundleObservation::Ambiguous => {
+            return Err(ModelError::new(
+                ErrorCode::PreservationEvidenceMismatch,
+                "preservation bundle is neither the exact prior prefix nor the exact completed prefix",
+            ));
+        }
+        V1BundleObservation::Before => {}
+    }
+    let index = plans
+        .iter()
+        .position(|plan| &plan.owner == owner)
+        .ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::PreservationEvidenceMismatch,
+                "bundle owner is outside the preservation cursor",
+            )
+        })?;
+    let expected = expected_bundle(backend, record, &plans[..=index])?;
+    crate::stash::write_bundle(root, &expected)?;
+    (v1_bundle_observation(backend, root, record, plans, owner)? == V1BundleObservation::After)
+        .then_some(())
+        .ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::PreservationEvidenceMismatch,
+                "preservation bundle failed exact post-write verification",
+            )
+        })
+}
+
+#[cfg(test)]
+fn expected_bundle<B: GitBackend>(
+    backend: &B,
+    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+    plans: &[super::plan::V1PreservationOwnerPlan],
+) -> ModelResult<StashBundle> {
+    let stash_id = format!("stash_{}", record.merge_id);
+    let mut selected_members = Vec::new();
+    let mut members = Vec::new();
+    for plan in plans {
+        let Some(evidence) = super::plan::v1_owner_evidence(record, &plan.owner)? else {
+            continue;
+        };
+        let Some(expected_oid) = evidence.stash_object_id.as_deref() else {
+            continue;
+        };
+        let stashes = backend
+            .preservation_stashes(&plan.path, &record.merge_id)
+            .map_err(|error| attach_v1(error, plan))?;
+        let [stash] = stashes.as_slice() else {
+            return Err(v1_error(
+                plan,
+                "bundle source stash is missing or duplicated",
+            ));
+        };
+        if stash.object_id != expected_oid
+            || evidence.stash_id.as_deref() != Some(stash_id.as_str())
+            || stash.head_commit != plan.protected_commit
+            || stash.message != format!("gwz:{stash_id}: merge preservation")
+            || stash.image.dirty == crate::git::GitPreservationDirtySummary::default()
+        {
+            return Err(v1_error(
+                plan,
+                "bundle source stash does not match durable preservation evidence",
+            ));
+        }
+        selected_members.push(plan.target_id.clone());
+        members.push(StashBundleMember {
+            member_id: plan.target_id.clone(),
+            path: plan.relative_path.clone(),
+            participation: StashParticipation::Stashed,
+            push_lifecycle: StashPushLifecycle::Saved,
+            restore_state: StashRestoreState::Pending,
+            branch_before: Some(plan.branch.clone()),
+            head_before: Some(stash.head_commit.clone()),
+            full_stash_message: stash.message.clone(),
+            dirty_summary: StashDirtySummary {
+                staged: stash.image.dirty.staged,
+                unstaged: stash.image.dirty.unstaged,
+                untracked: stash.image.dirty.untracked,
+                ignored: false,
+            },
+            native_stash_object_id: Some(stash.object_id.clone()),
+            native_stash_display_ref: None,
+            error: None,
+        });
+    }
+    Ok(StashBundle {
+        schema: STASH_BUNDLE_SCHEMA.into(),
+        workspace_id: record.workspace_id.clone(),
+        stash_id,
+        created_at: record.created_at.clone(),
+        message_suffix: "merge preservation".into(),
+        include_untracked: true,
+        include_ignored: false,
+        selected_members,
+        members,
+        warnings: Vec::new(),
+        drift: Vec::new(),
+    })
+}
+
+#[cfg(test)]
+fn read_bundle_bytes(root: &Path, stash_id: &str) -> ModelResult<Option<Vec<u8>>> {
+    let path = crate::stash::bundle_path(root, stash_id);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(crate::git::io_error(error)),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation bundle is not a regular non-symlink file",
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(crate::git::io_error)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation bundle is not canonical UTF-8 YAML",
+        )
+    })?;
+    StashBundle::from_yaml(text).map_err(|_| {
+        ModelError::new(
+            ErrorCode::PreservationEvidenceMismatch,
+            "preservation bundle is not a canonical bundle document",
+        )
+    })?;
+    Ok(Some(bytes))
+}
+
+#[cfg(test)]
+fn attach_v1(mut error: ModelError, plan: &super::plan::V1PreservationOwnerPlan) -> ModelError {
+    if error.member_id.is_none() {
+        error.member_id = Some(plan.target_id.clone());
+        error.member_path = Some(plan.relative_path.clone());
+    }
+    error
+}
+
+#[cfg(test)]
+fn v1_error(plan: &super::plan::V1PreservationOwnerPlan, detail: impl Into<String>) -> ModelError {
+    ModelError::new(ErrorCode::PreservationEvidenceMismatch, detail.into())
+        .with_member(&plan.target_id, &plan.relative_path)
+}

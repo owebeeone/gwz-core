@@ -10,3 +10,7 @@ pub(super) fn observe<B: GitBackend>(
         backend, context, current, request,
     )
 }
+
+#[cfg(test)]
+#[path = "../tests/reverse_preservation/mod.rs"]
+mod tests;

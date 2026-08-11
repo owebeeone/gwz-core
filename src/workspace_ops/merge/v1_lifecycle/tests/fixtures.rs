@@ -32,8 +32,16 @@ pub(super) fn align_baseline_lock(record: &mut MergeOperationRecordV1) {
     record.baseline.lock_yaml = Some(lock);
 }
 
-pub(super) fn accepted_workspace(current: &StoredV1Record) -> AcceptedWorkspaceV1 {
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn accepted_workspace(
+    current: &StoredV1Record,
+) -> AcceptedWorkspaceV1 {
     let record = current.record();
+    let selected_root = record
+        .selected_targets
+        .iter()
+        .any(|target| target == "@root")
+        .then(|| record.participants.get("@root"))
+        .flatten();
     let result = record.participants["mem_a"]
         .resulting_commit
         .as_deref()
@@ -55,7 +63,11 @@ pub(super) fn accepted_workspace(current: &StoredV1Record) -> AcceptedWorkspaceV
     AcceptedWorkspaceV1 {
         operation_baseline_lock_sha256: record.baseline.lock_sha256.clone(),
         metadata_base: AcceptedMetadataBaseV1 {
-            source: AcceptedMetadataSourceV1::OperationBaseline,
+            source: selected_root.map_or(AcceptedMetadataSourceV1::OperationBaseline, |root| {
+                AcceptedMetadataSourceV1::SelectedRootResult {
+                    commit: root.resulting_commit.clone().unwrap(),
+                }
+            }),
             manifest_exact_yaml: record.baseline.manifest_yaml.clone().unwrap(),
             manifest_sha256: record.baseline.manifest_sha256.clone(),
             lock_exact_yaml: record.baseline.lock_yaml.clone().unwrap(),
@@ -70,7 +82,7 @@ pub(super) fn accepted_workspace(current: &StoredV1Record) -> AcceptedWorkspaceV
             MemberAcceptanceV1::Selected {
                 integration: AcceptedIntegrationRefV1 {
                     branch: "main".into(),
-                    before_commit: oid('a'),
+                    before_commit: record.participants["mem_a"].before_commit.clone(),
                     resulting_commit: result.clone(),
                 },
                 final_checkout: AcceptedAttachedCheckoutV1 {
@@ -82,15 +94,23 @@ pub(super) fn accepted_workspace(current: &StoredV1Record) -> AcceptedWorkspaceV
         )]),
         root: RootPublicationInputV1 {
             base: AcceptedRootBaseV1::BornAttached {
-                commit: oid('c'),
-                symbolic_branch: "main".into(),
+                commit: selected_root.map_or_else(
+                    || record.baseline.root_head.clone().unwrap(),
+                    |root| root.resulting_commit.clone().unwrap(),
+                ),
+                symbolic_branch: selected_root.map_or_else(
+                    || record.baseline.root_branch.clone().unwrap(),
+                    |root| root.target_branch.clone(),
+                ),
             },
-            publication_branch: Some("main".into()),
+            publication_branch: Some(
+                selected_root.map_or_else(|| "main".into(), |root| root.target_branch.clone()),
+            ),
             baseline_artifact_hashes: RootArtifactHashesV1 {
                 lock_worktree_sha256: record.baseline.lock_sha256.clone(),
                 manifest_worktree_sha256: record.baseline.manifest_sha256.clone(),
-                lock_commit_sha256: None,
-                manifest_commit_sha256: None,
+                lock_commit_sha256: record.baseline.lock_commit_sha256.clone(),
+                manifest_commit_sha256: record.baseline.manifest_commit_sha256.clone(),
             },
         },
     }
@@ -120,12 +140,33 @@ fn accepted_lock_yaml(workspace_id: &str, commit: &str) -> String {
     .unwrap()
 }
 
-pub(super) fn candidate_payload(current: &StoredV1Record) -> CandidatePayload {
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn candidate_payload(
+    current: &StoredV1Record,
+) -> CandidatePayload {
     let record = current.record();
     let accepted = accepted_workspace(current);
     let mut marker_record = record.clone();
     marker_record.accepted_workspace = Some(accepted.clone());
     let marker_id = "01987b0c-2f75-7c4a-9a32-8fd22f7d7c91";
+    let root_before = match &accepted.root.base {
+        AcceptedRootBaseV1::BornAttached { commit, .. }
+        | AcceptedRootBaseV1::BornDetached { commit } => Some(commit.clone()),
+        AcceptedRootBaseV1::UnbornAttached { .. } => None,
+    };
+    let mut committed_targets = record
+        .selected_targets
+        .iter()
+        .filter(|target| {
+            record.participants[*target]
+                .resulting_commit
+                .as_deref()
+                .is_some_and(|result| result != record.participants[*target].before_commit)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !committed_targets.iter().any(|target| target == "@root") {
+        committed_targets.push("@root".into());
+    }
     let marker = MarkerArtifact {
         schema: MARKER_SCHEMA.into(),
         gwz_commit_id: marker_id.into(),
@@ -137,11 +178,11 @@ pub(super) fn candidate_payload(current: &StoredV1Record) -> CandidatePayload {
         },
         root: MarkerRootArtifact {
             path: ".".into(),
-            before_commit: record.baseline.root_head.clone(),
+            before_commit: root_before,
             branch: Some("main".into()),
         },
         selected_targets: record.selected_targets.clone(),
-        committed_targets: vec!["mem_a".into(), "@root".into()],
+        committed_targets,
         members: LockArtifact::from_yaml(&accepted.lock.exact_yaml)
             .unwrap()
             .members,
@@ -174,7 +215,9 @@ pub(super) fn candidate_payload(current: &StoredV1Record) -> CandidatePayload {
     }
 }
 
-pub(super) fn evidence_payload(current: &StoredV1Record) -> EvidencePayload {
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn evidence_payload(
+    current: &StoredV1Record,
+) -> EvidencePayload {
     let publication = current.record().publication.as_ref().unwrap();
     let candidate = publication.candidate.as_ref().unwrap();
     let mut candidate_hashes = vec![

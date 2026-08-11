@@ -94,6 +94,12 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) struct BoundExactObservation {
 }
 
 impl BoundExactObservation {
+    pub(in crate::workspace_ops::merge::v1_lifecycle::authority) fn into_fact(
+        self,
+    ) -> ExactObservationFact {
+        self.fact
+    }
+
     #[cfg(test)]
     pub(in crate::workspace_ops::merge::v1_lifecycle) fn for_test(
         current: &StoredV1Record,

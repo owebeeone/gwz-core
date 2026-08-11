@@ -17,7 +17,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) use forward::{
 };
 pub(in crate::workspace_ops::merge::v1_lifecycle) use reverse::{
     prepare_direct_rollback_entry, prepare_exhausted_rollback_entry, prepare_preservation_entry,
-    preservation_durability_fact, rolling_back_verify_recovery_origin,
+    preservation_durability_fact, preservation_execution_prefix_is_exact, preservation_reset_step,
+    preservation_stash_guard, preservation_stash_step, preserving_verify_recovery_origin,
+    rolling_back_verify_recovery_origin,
 };
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_preservation<B: GitBackend>(
