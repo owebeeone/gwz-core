@@ -978,6 +978,51 @@ fn generated_protocol_is_current() {
 }
 
 #[test]
+fn generated_checked_artifact_protocol_is_current() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out_dir = std::env::temp_dir().join(format!(
+        "gwz-checked-artifact-taut-gen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&out_dir);
+
+    let status = taut_command(&root)
+        .args([
+            "gen",
+            "protocol/checked_artifact.taut.py",
+            "-o",
+            out_dir.to_str().expect("temp path is not utf-8"),
+            "-l",
+            "rust",
+            "--api-only",
+        ])
+        .status()
+        .expect("failed to run checked-artifact taut generator");
+    assert!(status.success(), "checked-artifact taut generator failed");
+
+    assert_same(
+        &root.join("src/checked_artifact/protocol/generated.rs"),
+        &out_dir.join("rust/api.rs"),
+    );
+
+    let status = taut_command(&root)
+        .args([
+            "corpus",
+            "protocol/checked_artifact.taut.py",
+            "-o",
+            "protocol/checked_artifact-corpus",
+            "-l",
+            "rust",
+            "--check",
+        ])
+        .status()
+        .expect("failed to run checked-artifact taut corpus check");
+    assert!(status.success(), "checked-artifact taut corpus is stale");
+
+    fs::remove_dir_all(&out_dir).expect("failed to clean checked-artifact protocol temp dir");
+}
+
+#[test]
 fn protocol_schema_uses_keyword_message_dsl() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let schema = fs::read_to_string(root.join("protocol/gwz.taut.py"))

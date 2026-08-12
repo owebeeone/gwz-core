@@ -6,13 +6,43 @@ use cap_std::fs::Dir;
 use crate::model::{ErrorCode, ModelError};
 
 mod authority;
+#[allow(
+    dead_code,
+    reason = "R1 freezes interfaces before R2 consumer conversion"
+)]
+mod bootstrap;
+#[allow(
+    dead_code,
+    reason = "R1 freezes interfaces before R2 consumer conversion"
+)]
+mod capability;
 mod classification;
 mod cleanup;
 mod fault;
+#[allow(
+    dead_code,
+    reason = "R1 freezes interfaces before R2 consumer conversion"
+)]
+mod fault_v1;
 mod identity;
+#[allow(
+    dead_code,
+    reason = "R1 freezes interfaces before R2 consumer conversion"
+)]
+mod leaf;
+#[allow(
+    dead_code,
+    reason = "R1 freezes interfaces before R2 consumer conversion"
+)]
+mod namespace;
 mod observation;
 mod platform;
 mod policy;
+#[allow(
+    dead_code,
+    reason = "R1 freezes interfaces before R2 consumer conversion"
+)]
+mod protocol;
 mod residue;
 mod transition;
 
@@ -77,3 +107,6 @@ pub(super) fn error(code: ErrorCode, label: &str, detail: impl std::fmt::Display
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod interface_tests;

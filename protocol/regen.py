@@ -24,6 +24,10 @@ Artifacts (all paths relative to the gwz-core crate root; commands run from ther
          an untracked, unverified file the build never references.)
     tautc corpus protocol/gwz.taut.py -o protocol/corpus -l rust
         writes protocol/corpus/golden.json and protocol/corpus/rust/vectors.rs in place
+    tautc gen protocol/checked_artifact.taut.py ... --api-only
+        <tmp>/rust/api.rs -> src/checked_artifact/protocol/generated.rs
+    tautc corpus protocol/checked_artifact.taut.py
+        -> protocol/checked_artifact-corpus/
 
 Usage:
     python protocol/regen.py                 # provision venv if needed, regenerate + write
@@ -48,12 +52,18 @@ from pathlib import Path
 GWZ_CORE = Path(__file__).resolve().parent.parent
 SCHEMA = "protocol/gwz.taut.py"            # relative to GWZ_CORE
 CORPUS_DIR = "protocol/corpus"             # relative to GWZ_CORE
+CHECKED_ARTIFACT_SCHEMA = "protocol/checked_artifact.taut.py"
+CHECKED_ARTIFACT_CORPUS_DIR = "protocol/checked_artifact-corpus"
 # tautc emits these into <out>/rust/; map each to its destination under GWZ_CORE.
 GEN_COPIES = [
     ("api.rs", "src/protocol/generated.rs"),
     ("cbor.rs", "src/cbor.rs"),
     # "ext.rs" is emitted by --with-runtime but deliberately not vendored (see module docstring).
 ]
+CHECKED_ARTIFACT_GEN_COPY = (
+    "api.rs",
+    "src/checked_artifact/protocol/generated.rs",
+)
 DEFAULT_VENV = GWZ_CORE / "protocol" / ".regen-venv"
 TAUT_GENERATOR_VERSION = "0.8.1"
 
@@ -134,20 +144,22 @@ def tautc(venv: Path) -> list:
     return [venv_exe(venv, "python"), "-m", "taut.cli"]
 
 
-def gen_into(venv: Path, out_dir: Path) -> None:
-    cmd = tautc(venv) + ["gen", SCHEMA, "-o", out_dir, "-l", "rust", "--api-only", "--with-runtime"]
+def gen_into(venv: Path, schema: str, out_dir: Path, with_runtime: bool) -> None:
+    cmd = tautc(venv) + ["gen", schema, "-o", out_dir, "-l", "rust", "--api-only"]
+    if with_runtime:
+        cmd.append("--with-runtime")
     if run(cmd, cwd=GWZ_CORE, env=taut_env()).returncode != 0:
         fail("tautc gen failed")
 
 
-def corpus_write(venv: Path) -> None:
-    cmd = tautc(venv) + ["corpus", SCHEMA, "-o", CORPUS_DIR, "-l", "rust"]
+def corpus_write(venv: Path, schema: str, corpus_dir: str) -> None:
+    cmd = tautc(venv) + ["corpus", schema, "-o", corpus_dir, "-l", "rust"]
     if run(cmd, cwd=GWZ_CORE, env=taut_env()).returncode != 0:
         fail("tautc corpus (write) failed")
 
 
-def corpus_is_current(venv: Path) -> bool:
-    cmd = tautc(venv) + ["corpus", SCHEMA, "-o", CORPUS_DIR, "-l", "rust", "--check"]
+def corpus_is_current(venv: Path, schema: str, corpus_dir: str) -> bool:
+    cmd = tautc(venv) + ["corpus", schema, "-o", corpus_dir, "-l", "rust", "--check"]
     return run(cmd, cwd=GWZ_CORE, env=taut_env()).returncode == 0
 
 
@@ -163,7 +175,7 @@ def do_write(venv: Path) -> list:
     changed = []
     tmp = Path(tempfile.mkdtemp(prefix="gwz-taut-gen-"))
     try:
-        gen_into(venv, tmp)
+        gen_into(venv, SCHEMA, tmp, with_runtime=True)
         for name, dest in GEN_COPIES:
             src = _emitted(tmp, name)
             dest_path = GWZ_CORE / dest
@@ -174,11 +186,33 @@ def do_write(venv: Path) -> list:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    if not corpus_is_current(venv):
+    tmp = Path(tempfile.mkdtemp(prefix="gwz-checked-artifact-taut-gen-"))
+    try:
+        gen_into(venv, CHECKED_ARTIFACT_SCHEMA, tmp, with_runtime=False)
+        name, dest = CHECKED_ARTIFACT_GEN_COPY
+        src = _emitted(tmp, name)
+        dest_path = GWZ_CORE / dest
+        if not (dest_path.exists() and filecmp.cmp(src, dest_path, shallow=False)):
+            changed.append(dest)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest_path)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if not corpus_is_current(venv, SCHEMA, CORPUS_DIR):
         changed.append(f"{CORPUS_DIR}/")
-    corpus_write(venv)
-    if not corpus_is_current(venv):
+    corpus_write(venv, SCHEMA, CORPUS_DIR)
+    if not corpus_is_current(venv, SCHEMA, CORPUS_DIR):
         fail("corpus still reports drift after regeneration -- unexpected")
+    if not corpus_is_current(
+        venv, CHECKED_ARTIFACT_SCHEMA, CHECKED_ARTIFACT_CORPUS_DIR
+    ):
+        changed.append(f"{CHECKED_ARTIFACT_CORPUS_DIR}/")
+    corpus_write(venv, CHECKED_ARTIFACT_SCHEMA, CHECKED_ARTIFACT_CORPUS_DIR)
+    if not corpus_is_current(
+        venv, CHECKED_ARTIFACT_SCHEMA, CHECKED_ARTIFACT_CORPUS_DIR
+    ):
+        fail("checked-artifact corpus still reports drift after regeneration")
     return changed
 
 
@@ -187,7 +221,7 @@ def do_check(venv: Path) -> int:
     drift = []
     tmp = Path(tempfile.mkdtemp(prefix="gwz-taut-check-"))
     try:
-        gen_into(venv, tmp)
+        gen_into(venv, SCHEMA, tmp, with_runtime=True)
         for name, dest in GEN_COPIES:
             src = _emitted(tmp, name)
             dest_path = GWZ_CORE / dest
@@ -195,8 +229,22 @@ def do_check(venv: Path) -> int:
                 drift.append(dest)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    if not corpus_is_current(venv):
+    tmp = Path(tempfile.mkdtemp(prefix="gwz-checked-artifact-taut-check-"))
+    try:
+        gen_into(venv, CHECKED_ARTIFACT_SCHEMA, tmp, with_runtime=False)
+        name, dest = CHECKED_ARTIFACT_GEN_COPY
+        src = _emitted(tmp, name)
+        dest_path = GWZ_CORE / dest
+        if not (dest_path.exists() and filecmp.cmp(src, dest_path, shallow=False)):
+            drift.append(dest)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if not corpus_is_current(venv, SCHEMA, CORPUS_DIR):
         drift.append(CORPUS_DIR)
+    if not corpus_is_current(
+        venv, CHECKED_ARTIFACT_SCHEMA, CHECKED_ARTIFACT_CORPUS_DIR
+    ):
+        drift.append(CHECKED_ARTIFACT_CORPUS_DIR)
 
     if drift:
         print("regen: DRIFT -- committed files do not match the generator:", file=sys.stderr)
