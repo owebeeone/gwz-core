@@ -1,5 +1,5 @@
 use super::*;
-use crate::checked_artifact::CheckedArtifactTransition;
+use crate::checked_artifact::entry::MergeArtifactTransition;
 pub(super) mod files;
 pub(super) mod index;
 pub(super) mod index_format;
@@ -205,8 +205,8 @@ fn observe_managed(
             }
         };
         let observed = files::observe_transition(root, path, source_file, goal_file)?;
-        let after = observed == CheckedArtifactTransition::After;
-        if observed == CheckedArtifactTransition::Ambiguous
+        let after = observed == MergeArtifactTransition::After;
+        if observed == MergeArtifactTransition::Ambiguous
             || !pattern_matches(
                 root,
                 spec,

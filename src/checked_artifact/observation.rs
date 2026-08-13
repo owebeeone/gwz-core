@@ -115,7 +115,7 @@ impl CheckedArtifact {
         })
     }
 
-    pub(crate) fn observe(&self) -> ModelResult<CheckedArtifactFact> {
+    pub(super) fn observe(&self) -> ModelResult<CheckedArtifactFact> {
         let ParentState::Open { dir, identity } = &self.parent else {
             return Ok(match self.parent {
                 ParentState::Missing => CheckedArtifactFact::Missing,
@@ -151,7 +151,7 @@ impl CheckedArtifact {
         not(test),
         allow(dead_code, reason = "v1 bundle lifecycle remains disabled until A1")
     )]
-    pub(crate) fn parent_is_canonical(&self) -> ModelResult<bool> {
+    pub(super) fn parent_is_canonical(&self) -> ModelResult<bool> {
         match &self.parent {
             ParentState::Open { identity, .. } => self.parent_is_current(identity),
             ParentState::Missing | ParentState::Invalid => Ok(false),

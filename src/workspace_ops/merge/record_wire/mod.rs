@@ -62,13 +62,15 @@ pub(crate) use decode::decode_v1_for_r3_tests;
 
 #[allow(unused_imports)]
 pub(crate) use checked_owner::{
-    CheckedOwnerObservationError, CheckedOwnerRecordObservation, CheckedOwnerRecordVersion,
+    CheckedArchiveSourceObservation, CheckedOwnerObservationError, CheckedOwnerRecordObservation,
+    CheckedOwnerRecordVersion, observe_checked_archive_source_v0,
     observe_checked_owner_v0_from_canonical,
 };
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use checked_owner::{
-    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_owner_v0, observe_checked_owner_v1,
+    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_archive_source_v0_leaves_for_test,
+    observe_checked_archive_source_v1, observe_checked_owner_v0, observe_checked_owner_v1,
     observe_checked_owner_v1_from_canonical,
 };
 pub(super) use decode::{RecordDecodeError, decode_production_v0};

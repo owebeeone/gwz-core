@@ -59,7 +59,7 @@ enum ManagedForm {
 }
 
 impl CheckedArtifact {
-    pub(crate) fn classify_replace(
+    pub(super) fn classify_replace(
         &self,
         expected: &CheckedArtifactFact,
         goal: &[u8],
@@ -67,7 +67,7 @@ impl CheckedArtifact {
         Ok(self.classify_replace_exact(expected, goal)?.public())
     }
 
-    pub(crate) fn classify_remove(
+    pub(super) fn classify_remove(
         &self,
         expected: &CheckedArtifactFact,
     ) -> ModelResult<CheckedArtifactTransition> {

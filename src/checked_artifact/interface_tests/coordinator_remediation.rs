@@ -13,7 +13,9 @@ use super::super::coordinator::{
     synthetic_leaf_request,
 };
 use crate::workspace_ops::{
-    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_owner_v0, observe_checked_owner_v1,
+    MAX_CHECKED_OWNER_RECORD_BYTES, acquire_canonical_merge_locations,
+    observe_checked_archive_source_v0, observe_checked_archive_source_v0_leaves_for_test,
+    observe_checked_archive_source_v1, observe_checked_owner_v0, observe_checked_owner_v1,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -21,10 +23,27 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn v0_bytes(extra: &str) -> Vec<u8> {
+    v0_bytes_with_state("executing", extra)
+}
+
+fn v0_bytes_with_state(state: &str, extra: &str) -> Vec<u8> {
     format!(
-        "schema: gwz.merge-operation/v0\nrecord_schema_version: 0\nwriter_version: test\nworkspace_id: ws_test\nmerge_id: merge_1\noperation_id: op_1\nstate: executing\nsource_ref: feature/x\ncreated_at: now\nbaseline: {{lock_sha256: lock, manifest_sha256: manifest}}\nselected_targets: []\nparticipants: {{}}\n{extra}"
+        "schema: gwz.merge-operation/v0\nrecord_schema_version: 0\nwriter_version: test\nworkspace_id: ws_test\nmerge_id: merge_1\noperation_id: op_1\nstate: {state}\nsource_ref: feature/x\ncreated_at: now\nbaseline: {{lock_sha256: lock, manifest_sha256: manifest}}\nselected_targets: []\nparticipants: {{}}\n{extra}"
     )
     .into_bytes()
+}
+
+fn archive_root(label: &str) -> std::path::PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "gwz-checked-archive-{label}-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join(".gwz/merge")).unwrap();
+    root
 }
 
 fn identity(byte: u8) -> DurableObjectIdentityV1 {
@@ -157,11 +176,116 @@ fn owner_class_and_managed_authority_are_one_sealed_decision() {
         CheckedManagedActionV1::for_durable_merge(&record, &[ManagedParentPurpose::MergeStore],)
             .is_err()
     );
-    let archive = CheckedManagedActionV1::for_archive(&record).unwrap();
+    let root = archive_root("terminal-source");
+    std::fs::write(
+        root.join(".gwz/merge/merge_1.yaml"),
+        v0_bytes_with_state("completed", ""),
+    )
+    .unwrap();
+    let locations = acquire_canonical_merge_locations(&root, "merge_1").unwrap();
+    let source = observe_checked_archive_source_v0(&locations).unwrap();
+    let archive = CheckedManagedActionV1::for_archive(&source).unwrap();
     assert_eq!(
         archive.managed().specs()[0].purpose(),
         ManagedParentPurpose::MergeArchive
     );
+    assert!(!root.join(".gwz/merge/done").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn archive_authority_requires_one_terminal_open_source_and_an_absent_destination() {
+    for state in [
+        "executing",
+        "awaiting_resolution",
+        "halted",
+        "finalizing",
+        "preserving",
+        "rolling_back",
+        "recovery_required",
+    ] {
+        let root = archive_root(&format!("open-{state}"));
+        std::fs::write(
+            root.join(".gwz/merge/merge_1.yaml"),
+            v0_bytes_with_state(state, ""),
+        )
+        .unwrap();
+        let locations = acquire_canonical_merge_locations(&root, "merge_1").unwrap();
+        assert!(observe_checked_archive_source_v0(&locations).is_err());
+        assert!(!root.join(".gwz/merge/done").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    for shape in ["both-absent", "destination-only", "both-present"] {
+        let root = archive_root(shape);
+        if shape != "both-absent" {
+            std::fs::create_dir(root.join(".gwz/merge/done")).unwrap();
+            std::fs::write(
+                root.join(".gwz/merge/done/merge_1.yaml"),
+                v0_bytes_with_state("completed", ""),
+            )
+            .unwrap();
+        }
+        if shape == "both-present" {
+            std::fs::write(
+                root.join(".gwz/merge/merge_1.yaml"),
+                v0_bytes_with_state("completed", ""),
+            )
+            .unwrap();
+        }
+        let locations = acquire_canonical_merge_locations(&root, "merge_1").unwrap();
+        assert!(observe_checked_archive_source_v0(&locations).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    let root = archive_root("both-present-different");
+    std::fs::write(
+        root.join(".gwz/merge/merge_1.yaml"),
+        v0_bytes_with_state("completed", "source_extension: source\n"),
+    )
+    .unwrap();
+    std::fs::create_dir(root.join(".gwz/merge/done")).unwrap();
+    std::fs::write(
+        root.join(".gwz/merge/done/merge_1.yaml"),
+        v0_bytes_with_state("completed", "destination_extension: destination\n"),
+    )
+    .unwrap();
+    let locations = acquire_canonical_merge_locations(&root, "merge_1").unwrap();
+    assert!(observe_checked_archive_source_v0(&locations).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn archive_authority_rejects_an_archived_leaf_as_its_source_and_supports_terminal_v1() {
+    let archived_root = archive_root("wrong-kind");
+    std::fs::create_dir(archived_root.join(".gwz/merge/done")).unwrap();
+    std::fs::write(
+        archived_root.join(".gwz/merge/done/merge_1.yaml"),
+        v0_bytes_with_state("completed", ""),
+    )
+    .unwrap();
+    let archived = acquire_canonical_merge_locations(&archived_root, "merge_1").unwrap();
+    let absent_root = archive_root("wrong-kind-absent");
+    let absent = acquire_canonical_merge_locations(&absent_root, "merge_1").unwrap();
+    assert!(
+        observe_checked_archive_source_v0_leaves_for_test(archived.archived(), absent.archived(),)
+            .is_err()
+    );
+
+    let v1_root = archive_root("terminal-v1");
+    let mut record = crate::workspace_ops::test_v1_record();
+    record.state = crate::workspace_ops::OperationState::Aborted;
+    record.participants.get_mut("mem_a").unwrap().state =
+        crate::workspace_ops::ParticipantState::Aborted;
+    let encoded = serde_yaml::to_string(&record).unwrap();
+    std::fs::write(v1_root.join(".gwz/merge/merge_1.yaml"), encoded).unwrap();
+    let locations = acquire_canonical_merge_locations(&v1_root, "merge_1").unwrap();
+    let source = observe_checked_archive_source_v1(&locations).unwrap();
+    assert!(CheckedManagedActionV1::for_archive(&source).is_ok());
+
+    std::fs::remove_dir_all(archived_root).unwrap();
+    std::fs::remove_dir_all(absent_root).unwrap();
+    std::fs::remove_dir_all(v1_root).unwrap();
 }
 
 #[test]

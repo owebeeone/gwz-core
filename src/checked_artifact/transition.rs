@@ -14,7 +14,7 @@ use crate::model::ModelResult;
 pub(super) static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 impl CheckedArtifact {
-    pub(crate) fn observe_durable(&self) -> ModelResult<CheckedArtifactFact> {
+    pub(super) fn observe_durable(&self) -> ModelResult<CheckedArtifactFact> {
         let ParentState::Open { dir, identity } = &self.parent else {
             return self.observe();
         };
@@ -37,7 +37,7 @@ impl CheckedArtifact {
         Ok(after.fact)
     }
 
-    pub(crate) fn replace_exact(
+    pub(super) fn replace_exact(
         &self,
         expected: &CheckedArtifactFact,
         goal: &[u8],
@@ -117,7 +117,7 @@ impl CheckedArtifact {
             })
     }
 
-    pub(crate) fn remove_exact(&self, expected: &CheckedArtifactFact) -> ModelResult<()> {
+    pub(super) fn remove_exact(&self, expected: &CheckedArtifactFact) -> ModelResult<()> {
         match self.classify_remove_exact(expected)? {
             ExactTransition::After => return Ok(()),
             ExactTransition::Ambiguous => {

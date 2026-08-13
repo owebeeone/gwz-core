@@ -10,7 +10,9 @@ use crate::checked_artifact::capability::{
     AsciiComponent, CheckedFsError, MAX_CANONICAL_PATH_IDENTITY_BYTES, PreCatalogRootKindV1,
 };
 use crate::checked_artifact::protocol::{ActionDigestV1, RequestOwnerBindingV1};
-use crate::workspace_ops::{CheckedOwnerRecordObservation, CheckedOwnerRecordVersion};
+use crate::workspace_ops::{
+    CheckedArchiveSourceObservation, CheckedOwnerRecordObservation, CheckedOwnerRecordVersion,
+};
 
 const OWNER_DOMAIN: &[u8] = b"gwz-checked-owner-v1\0";
 const ACTION_DOMAIN: &[u8] = b"gwz-checked-action-v1\0";
@@ -265,9 +267,9 @@ impl CheckedManagedActionV1 {
     }
 
     pub(in crate::checked_artifact) fn for_archive(
-        observation: &CheckedOwnerRecordObservation<'_>,
+        observation: &CheckedArchiveSourceObservation<'_>,
     ) -> Result<Self, CheckedFsError> {
-        let owner = CheckedActionOwnerV1::from_record_observation(observation)?;
+        let owner = CheckedActionOwnerV1::from_record_observation(observation.owner())?;
         let prerequisite = ValidatedArchiveSourceV1::from_exact_record_owner(
             owner.request_owner_binding(),
             owner

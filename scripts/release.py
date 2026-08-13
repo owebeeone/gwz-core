@@ -4,8 +4,8 @@
 gwz-core has no release branch — tags are cut directly on ``main``. This script
 automates RELEASE.md steps 1-4 for a given tag:
 
-  1. Gate the tree: ``python protocol/regen.py --check``, ``cargo fmt --check``,
-     ``cargo test --locked``, ``cargo clippy --all-targets -- -D warnings`` (same bar as CI).
+  1. Gate the tree: protocol regeneration, formatting, the structural checked-artifact
+     boundary, tests, and Clippy (the same bar as CI).
   2. Bump ``version`` in ``Cargo.toml`` and refresh ``Cargo.lock`` via ``cargo generate-lockfile``.
   3. Commit on ``main``: ``chore(release): gwz-core X.Y.Z``.
   4. Tag that commit ``vX.Y.Z`` (lightweight). An existing tag is NEVER moved — if
@@ -48,6 +48,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 REGEN = REPO / "protocol" / "regen.py"
 REGEN_VENV = REPO / "protocol" / ".regen-venv"
+CHECKED_ARTIFACT_BOUNDARY = Path("scripts/checks/check_checked_artifact_boundaries.py")
+CHECKED_ARTIFACT_BOUNDARY_TEST = Path("scripts/checks/test_check_checked_artifact_boundaries.py")
 
 
 def fail(msg: str):
@@ -345,6 +347,14 @@ def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool, no_clippy: b
 
     run_fmt_check(cargo_root=cargo_root)
     assert_lock_current(cargo_root=cargo_root)
+    run(
+        [sys.executable, CHECKED_ARTIFACT_BOUNDARY],
+        cwd=cargo_root,
+    )
+    run(
+        [sys.executable, "-m", "unittest", CHECKED_ARTIFACT_BOUNDARY_TEST, "-v"],
+        cwd=cargo_root,
+    )
     test_env = cargo_env()
 
     if not no_test:

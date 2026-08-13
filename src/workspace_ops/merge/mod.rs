@@ -50,16 +50,18 @@ pub(crate) use store::{AtomicUpgradeFault, AtomicUpgradeOutcome, upgrade_open_v0
 #[cfg(test)]
 pub(crate) use model::v1::test_record as test_v1_record;
 pub(crate) use model::*;
-#[allow(unused_imports)]
-pub(crate) use record_wire::{
-    CheckedOwnerObservationError, CheckedOwnerRecordObservation, CheckedOwnerRecordVersion,
-    observe_checked_owner_v0_from_canonical,
-};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use record_wire::{
-    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_owner_v0, observe_checked_owner_v1,
-    observe_checked_owner_v1_from_canonical,
+    CanonicalMergeLocations, MAX_CHECKED_OWNER_RECORD_BYTES, acquire_canonical_merge_locations,
+    observe_checked_archive_source_v0_leaves_for_test, observe_checked_archive_source_v1,
+    observe_checked_owner_v0, observe_checked_owner_v1, observe_checked_owner_v1_from_canonical,
+};
+#[allow(unused_imports)]
+pub(crate) use record_wire::{
+    CheckedArchiveSourceObservation, CheckedOwnerObservationError, CheckedOwnerRecordObservation,
+    CheckedOwnerRecordVersion, observe_checked_archive_source_v0,
+    observe_checked_owner_v0_from_canonical,
 };
 pub(crate) use recovery::*;
 #[cfg(test)]

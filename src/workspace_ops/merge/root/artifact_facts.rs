@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
+use crate::checked_artifact::entry::{MergeArtifactFact, MergeArtifactTransition};
 use crate::model::ModelResult;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,11 +22,16 @@ pub(in crate::workspace_ops::merge) fn observe(
     root: &Path,
     relative: &str,
 ) -> ModelResult<RegularFileFact> {
-    Ok(match acquire(root, relative)?.observe()? {
-        CheckedArtifactFact::Missing => RegularFileFact::Missing,
-        CheckedArtifactFact::Bytes(bytes) => RegularFileFact::Bytes(bytes),
-        CheckedArtifactFact::Invalid => RegularFileFact::Invalid,
-    })
+    Ok(
+        match crate::checked_artifact::entry::observe_merge_root_artifact(
+            root,
+            Path::new(relative),
+        )? {
+            MergeArtifactFact::Missing => RegularFileFact::Missing,
+            MergeArtifactFact::Bytes(bytes) => RegularFileFact::Bytes(bytes),
+            MergeArtifactFact::Invalid => RegularFileFact::Invalid,
+        },
+    )
 }
 
 pub(in crate::workspace_ops::merge) fn write_checked(
@@ -35,8 +40,12 @@ pub(in crate::workspace_ops::merge) fn write_checked(
     expected: &[u8],
     bytes: &[u8],
 ) -> ModelResult<()> {
-    let artifact = acquire(root, relative)?;
-    artifact.replace_exact(&CheckedArtifactFact::Bytes(expected.to_vec()), bytes)
+    crate::checked_artifact::entry::replace_merge_root_artifact(
+        root,
+        Path::new(relative),
+        expected,
+        bytes,
+    )
 }
 
 pub(in crate::workspace_ops::merge) fn classify_write(
@@ -46,8 +55,12 @@ pub(in crate::workspace_ops::merge) fn classify_write(
     bytes: &[u8],
 ) -> ModelResult<RegularFileTransition> {
     map_transition(
-        acquire(root, relative)?
-            .classify_replace(&CheckedArtifactFact::Bytes(expected.to_vec()), bytes)?,
+        crate::checked_artifact::entry::classify_replace_merge_root_artifact(
+            root,
+            Path::new(relative),
+            expected,
+            bytes,
+        )?,
     )
 }
 
@@ -56,8 +69,7 @@ pub(in crate::workspace_ops::merge) fn remove_exact(
     relative: &str,
     expected: &[u8],
 ) -> ModelResult<()> {
-    let artifact = acquire(root, relative)?;
-    artifact.remove_exact(&CheckedArtifactFact::Bytes(expected.to_vec()))
+    crate::checked_artifact::entry::remove_merge_root_artifact(root, Path::new(relative), expected)
 }
 
 pub(in crate::workspace_ops::merge) fn classify_remove(
@@ -66,19 +78,19 @@ pub(in crate::workspace_ops::merge) fn classify_remove(
     expected: &[u8],
 ) -> ModelResult<RegularFileTransition> {
     map_transition(
-        acquire(root, relative)?.classify_remove(&CheckedArtifactFact::Bytes(expected.to_vec()))?,
+        crate::checked_artifact::entry::classify_remove_merge_root_artifact(
+            root,
+            Path::new(relative),
+            expected,
+        )?,
     )
 }
 
-fn map_transition(value: CheckedArtifactTransition) -> ModelResult<RegularFileTransition> {
+fn map_transition(value: MergeArtifactTransition) -> ModelResult<RegularFileTransition> {
     Ok(match value {
-        CheckedArtifactTransition::Before => RegularFileTransition::Before,
-        CheckedArtifactTransition::After => RegularFileTransition::After,
-        CheckedArtifactTransition::Recoverable => RegularFileTransition::Recoverable,
-        CheckedArtifactTransition::Ambiguous => RegularFileTransition::Ambiguous,
+        MergeArtifactTransition::Before => RegularFileTransition::Before,
+        MergeArtifactTransition::After => RegularFileTransition::After,
+        MergeArtifactTransition::Recoverable => RegularFileTransition::Recoverable,
+        MergeArtifactTransition::Ambiguous => RegularFileTransition::Ambiguous,
     })
-}
-
-fn acquire(root: &Path, relative: &str) -> ModelResult<CheckedArtifact> {
-    crate::checked_artifact::entry::acquire_merge_root_artifact(root, Path::new(relative))
 }

@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
+use crate::checked_artifact::entry::MergeArtifactTransition;
 use cap_fs_ext::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -8,23 +8,26 @@ pub(super) fn observe_relative(
     expected: &Option<GitCandidateFile>,
     path: &str,
 ) -> ModelResult<bool> {
-    observe_in_root(
-        acquire_workspace(root, Path::new(path))?,
+    crate::checked_artifact::entry::observe_merge_preservation_workspace(
+        root,
+        Path::new(path),
         expected.as_ref().map(|file| file.bytes.as_slice()),
     )
 }
 
 pub(super) fn observe_required(root: &Path, expected: &GitCandidateFile) -> ModelResult<bool> {
-    observe_in_root(
-        acquire_workspace(root, Path::new(&expected.path))?,
+    crate::checked_artifact::entry::observe_merge_preservation_workspace(
+        root,
+        Path::new(&expected.path),
         Some(&expected.bytes),
     )
 }
 
 pub(super) fn observe_boundary(root: &Path, expected: &[u8]) -> ModelResult<bool> {
     let repo = open_repo(root)?;
-    observe_in_root(
-        acquire_git_directory(repo.path(), Path::new("info/exclude"))?,
+    crate::checked_artifact::entry::observe_merge_preservation_git_directory(
+        repo.path(),
+        Path::new("info/exclude"),
         Some(expected),
     )
 }
@@ -35,14 +38,12 @@ pub(super) fn replace_relative(
     source: Option<&GitCandidateFile>,
     goal: Option<&GitCandidateFile>,
 ) -> ModelResult<()> {
-    let artifact = acquire_workspace(root, Path::new(path))?;
-    let expected = source.map_or(CheckedArtifactFact::Missing, |file| {
-        CheckedArtifactFact::Bytes(file.bytes.clone())
-    });
-    match goal {
-        Some(file) => artifact.replace_exact(&expected, &file.bytes),
-        None => artifact.remove_exact(&expected),
-    }
+    crate::checked_artifact::entry::replace_merge_preservation_workspace(
+        root,
+        Path::new(path),
+        source.map(|file| file.bytes.as_slice()),
+        goal.map(|file| file.bytes.as_slice()),
+    )
 }
 
 pub(super) fn observe_transition(
@@ -50,39 +51,13 @@ pub(super) fn observe_transition(
     path: &str,
     source: Option<&GitCandidateFile>,
     goal: Option<&GitCandidateFile>,
-) -> ModelResult<CheckedArtifactTransition> {
-    let artifact = acquire_workspace(root, Path::new(path))?;
-    let expected = source.map_or(CheckedArtifactFact::Missing, |file| {
-        CheckedArtifactFact::Bytes(file.bytes.clone())
-    });
-    match goal {
-        Some(file) => artifact.classify_replace(&expected, &file.bytes),
-        None if source.is_some() => artifact.classify_remove(&expected),
-        None => Ok(
-            if artifact.observe_durable()? == CheckedArtifactFact::Missing {
-                CheckedArtifactTransition::After
-            } else {
-                CheckedArtifactTransition::Ambiguous
-            },
-        ),
-    }
-}
-
-fn observe_in_root(artifact: CheckedArtifact, expected: Option<&[u8]>) -> ModelResult<bool> {
-    let observed = artifact.observe()?;
-    Ok(match (observed, expected) {
-        (CheckedArtifactFact::Missing, None) => true,
-        (CheckedArtifactFact::Bytes(actual), Some(expected)) => actual == expected,
-        _ => false,
-    })
-}
-
-fn acquire_workspace(root: &Path, path: &Path) -> ModelResult<CheckedArtifact> {
-    crate::checked_artifact::entry::acquire_merge_preservation_workspace(root, path)
-}
-
-fn acquire_git_directory(root: &Path, path: &Path) -> ModelResult<CheckedArtifact> {
-    crate::checked_artifact::entry::acquire_merge_preservation_git_directory(root, path)
+) -> ModelResult<MergeArtifactTransition> {
+    crate::checked_artifact::entry::classify_merge_preservation_workspace(
+        root,
+        Path::new(path),
+        source.map(|file| file.bytes.as_slice()),
+        goal.map(|file| file.bytes.as_slice()),
+    )
 }
 
 pub(super) fn split_relative(path: &Path) -> ModelResult<(PathBuf, std::ffi::OsString)> {

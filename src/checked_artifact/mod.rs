@@ -61,7 +61,7 @@ mod protocol;
 mod residue;
 mod transition;
 
-pub(crate) use policy::CheckedArtifactPolicy;
+use policy::CheckedArtifactPolicy;
 
 #[cfg(test)]
 pub(crate) use fault::{
@@ -70,14 +70,14 @@ pub(crate) use fault::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CheckedArtifactFact {
+enum CheckedArtifactFact {
     Missing,
     Bytes(Vec<u8>),
     Invalid,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CheckedArtifactTransition {
+enum CheckedArtifactTransition {
     Before,
     After,
     Recoverable,
@@ -98,7 +98,7 @@ enum ParentState {
 /// Acquisition never creates a managed parent. Mutations remain bound to the
 /// retained parent and reobserve the exact expected leaf immediately before
 /// their handle-relative linearization point.
-pub(crate) struct CheckedArtifact {
+struct CheckedArtifact {
     root: Dir,
     root_identity: identity::ObjectIdentity,
     canonical_path_identity: Vec<u8>,

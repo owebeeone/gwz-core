@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
+use crate::checked_artifact::entry::MergeArtifactTransition;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
@@ -30,14 +30,18 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_observation<B: GitBackend>(
         .then(|| before.to_yaml().map(String::into_bytes))
         .transpose()?;
     let after_bytes = after.to_yaml()?.into_bytes();
-    let before = before_bytes.map_or(CheckedArtifactFact::Missing, CheckedArtifactFact::Bytes);
     Ok(
-        match bundle_artifact(root, &after.stash_id)?.classify_replace(&before, &after_bytes)? {
-            CheckedArtifactTransition::Before | CheckedArtifactTransition::Recoverable => {
+        match crate::checked_artifact::entry::classify_merge_preservation_bundle(
+            root,
+            &bundle_relative(&after.stash_id),
+            before_bytes.as_deref(),
+            &after_bytes,
+        )? {
+            MergeArtifactTransition::Before | MergeArtifactTransition::Recoverable => {
                 V1BundleObservation::Before
             }
-            CheckedArtifactTransition::After => V1BundleObservation::After,
-            CheckedArtifactTransition::Ambiguous => V1BundleObservation::Ambiguous,
+            MergeArtifactTransition::After => V1BundleObservation::After,
+            MergeArtifactTransition::Ambiguous => V1BundleObservation::Ambiguous,
         },
     )
 }
@@ -49,11 +53,14 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<B: GitBackend>(
     plans: &[V1PreservationOwnerPlan],
 ) -> ModelResult<bool> {
     let expected = expected_bundle(backend, record, plans)?;
-    let observed = bundle_artifact(root, &expected.stash_id)?.observe_durable()?;
-    if expected.members.is_empty() {
-        return Ok(observed == CheckedArtifactFact::Missing);
-    }
-    Ok(observed == CheckedArtifactFact::Bytes(expected.to_yaml()?.into_bytes()))
+    let bytes = (!expected.members.is_empty())
+        .then(|| expected.to_yaml().map(String::into_bytes))
+        .transpose()?;
+    crate::checked_artifact::entry::observe_merge_preservation_bundle(
+        root,
+        &bundle_relative(&expected.stash_id),
+        bytes.as_deref(),
+    )
 }
 
 pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<B: GitBackend>(
@@ -66,25 +73,38 @@ pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<B: GitBackend>(
     let index = owner_index(plans, owner)?;
     let before = expected_bundle(backend, record, &plans[..index])?;
     let after = expected_bundle(backend, record, &plans[..=index])?;
-    let artifact = bundle_artifact(root, &after.stash_id)?;
-    let before = if before.members.is_empty() {
-        CheckedArtifactFact::Missing
-    } else {
-        CheckedArtifactFact::Bytes(before.to_yaml()?.into_bytes())
-    };
+    let relative = bundle_relative(&after.stash_id);
+    let before = (!before.members.is_empty())
+        .then(|| before.to_yaml().map(String::into_bytes))
+        .transpose()?;
     let after = after.to_yaml()?.into_bytes();
-    match artifact.classify_replace(&before, &after)? {
-        CheckedArtifactTransition::After => return Ok(()),
-        CheckedArtifactTransition::Before | CheckedArtifactTransition::Recoverable => {}
-        CheckedArtifactTransition::Ambiguous => {
+    match crate::checked_artifact::entry::classify_merge_preservation_bundle(
+        root,
+        &relative,
+        before.as_deref(),
+        &after,
+    )? {
+        MergeArtifactTransition::After => return Ok(()),
+        MergeArtifactTransition::Before | MergeArtifactTransition::Recoverable => {}
+        MergeArtifactTransition::Ambiguous => {
             return Err(ModelError::new(
                 ErrorCode::PreservationEvidenceMismatch,
                 "preservation bundle is neither the exact prior prefix nor the exact completed prefix",
             ));
         }
     }
-    artifact.replace_exact(&before, &after)?;
-    (artifact.classify_replace(&before, &after)? == CheckedArtifactTransition::After)
+    crate::checked_artifact::entry::replace_merge_preservation_bundle(
+        root,
+        &relative,
+        before.as_deref(),
+        &after,
+    )?;
+    (crate::checked_artifact::entry::classify_merge_preservation_bundle(
+        root,
+        &relative,
+        before.as_deref(),
+        &after,
+    )? == MergeArtifactTransition::After)
         .then_some(())
         .ok_or_else(|| {
             ModelError::new(
@@ -109,15 +129,6 @@ fn owner_index(
         })
 }
 
-fn bundle_artifact(root: &Path, stash_id: &str) -> ModelResult<CheckedArtifact> {
-    let relative = PathBuf::from(crate::stash::STASH_BUNDLE_DIR).join(format!("{stash_id}.yaml"));
-    let artifact =
-        crate::checked_artifact::entry::acquire_merge_preservation_bundle(root, &relative)?;
-    if !artifact.parent_is_canonical()? {
-        return Err(ModelError::new(
-            ErrorCode::PreservationEvidenceMismatch,
-            "preservation bundle parent hierarchy is missing or noncanonical",
-        ));
-    }
-    Ok(artifact)
+fn bundle_relative(stash_id: &str) -> PathBuf {
+    PathBuf::from(crate::stash::STASH_BUNDLE_DIR).join(format!("{stash_id}.yaml"))
 }

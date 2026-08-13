@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed inventory for the checked-artifact production entry boundary."""
+"""Fail-closed structural inventory for the checked-artifact boundary."""
 
 from __future__ import annotations
 
@@ -11,43 +11,307 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-ENTRY_CALLERS = {
-    "acquire_merge_preservation_bundle": {
+ENTRY_REFERENCES = {
+    "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
+    "MergeArtifactTransition": {
+        "git/gitbackend/preservation_root.rs",
+        "git/gitbackend/preservation_root/files.rs",
         "workspace_ops/merge/preserve/checked_bundle.rs",
-    },
-    "acquire_merge_preservation_git_directory": {
-        "git/gitbackend/preservation_root/files.rs",
-    },
-    "acquire_merge_preservation_workspace": {
-        "git/gitbackend/preservation_root/files.rs",
-    },
-    "acquire_merge_root_artifact": {
         "workspace_ops/merge/root/artifact_facts.rs",
     },
-    "prepare_merge_store_parents": {
-        "workspace_ops/merge/store/mod.rs",
+    "classify_merge_preservation_bundle": {
+        "workspace_ops/merge/preserve/checked_bundle.rs"
+    },
+    "classify_merge_preservation_workspace": {
+        "git/gitbackend/preservation_root/files.rs"
+    },
+    "classify_remove_merge_root_artifact": {
+        "workspace_ops/merge/root/artifact_facts.rs"
+    },
+    "classify_replace_merge_root_artifact": {
+        "workspace_ops/merge/root/artifact_facts.rs"
+    },
+    "observe_merge_preservation_bundle": {
+        "workspace_ops/merge/preserve/checked_bundle.rs"
+    },
+    "observe_merge_preservation_git_directory": {
+        "git/gitbackend/preservation_root/files.rs"
+    },
+    "observe_merge_preservation_workspace": {
+        "git/gitbackend/preservation_root/files.rs"
+    },
+    "observe_merge_root_artifact": {"workspace_ops/merge/root/artifact_facts.rs"},
+    "prepare_merge_store_parents": {"workspace_ops/merge/store/mod.rs"},
+    "remove_merge_root_artifact": {"workspace_ops/merge/root/artifact_facts.rs"},
+    "replace_merge_preservation_bundle": {
+        "workspace_ops/merge/preserve/checked_bundle.rs"
+    },
+    "replace_merge_preservation_workspace": {
+        "git/gitbackend/preservation_root/files.rs"
+    },
+    "replace_merge_root_artifact": {"workspace_ops/merge/root/artifact_facts.rs"},
+}
+
+ENTRY_ITEMS = {
+    "MergeArtifactFact",
+    "MergeArtifactTransition",
+    "classify_expected",
+    "classify_merge_preservation_bundle",
+    "classify_merge_preservation_workspace",
+    "classify_remove_merge_root_artifact",
+    "classify_replace_merge_root_artifact",
+    "fact",
+    "map_fact",
+    "map_transition",
+    "matches_expected",
+    "observe_expected",
+    "observe_expected_durable",
+    "observe_merge_preservation_bundle",
+    "observe_merge_preservation_git_directory",
+    "observe_merge_preservation_workspace",
+    "observe_merge_root_artifact",
+    "prepare_merge_store_parents",
+    "preservation_bundle",
+    "preservation_git_directory",
+    "preservation_workspace",
+    "remove_merge_root_artifact",
+    "replace_expected",
+    "replace_merge_preservation_bundle",
+    "replace_merge_preservation_workspace",
+    "replace_merge_root_artifact",
+    "require_canonical_bundle_parent",
+    "root_artifact",
+}
+
+ENTRY_USES = {
+    "crate::model::{ErrorCode, ModelError, ModelResult}",
+    "std::path::Path",
+    "super::{ CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition, }",
+}
+
+ENTRY_CALLS = {
+    "Bytes",
+    "CheckedArtifact::acquire",
+    "CheckedArtifact::prepare_parent",
+    "CheckedArtifactFact::Bytes",
+    "CheckedArtifactPolicy::git_directory",
+    "CheckedArtifactPolicy::workspace",
+    "Err",
+    "MergeArtifactFact::Bytes",
+    "ModelError::new",
+    "Ok",
+    "Path::new",
+    "Some",
+    "classify_expected",
+    "classify_remove",
+    "classify_replace",
+    "display",
+    "fact",
+    "format!",
+    "is_some",
+    "map_fact",
+    "map_or",
+    "map_transition",
+    "match",
+    "matches_expected",
+    "observe",
+    "observe_durable",
+    "observe_expected",
+    "observe_expected_durable",
+    "parent_is_canonical",
+    "preservation_bundle",
+    "preservation_git_directory",
+    "preservation_workspace",
+    "remove_exact",
+    "replace_exact",
+    "replace_expected",
+    "require_canonical_bundle_parent",
+    "root_artifact",
+    "to_vec",
+}
+
+CHECKED_LEAF_ADAPTER_CALLS = {
+    "workspace_ops/merge/root/artifact_facts.rs": {
+        "Bytes",
+        "MergeArtifactFact::Bytes",
+        "Ok",
+        "Path::new",
+        "RegularFileFact::Bytes",
+        "crate::checked_artifact::entry::classify_remove_merge_root_artifact",
+        "crate::checked_artifact::entry::classify_replace_merge_root_artifact",
+        "crate::checked_artifact::entry::observe_merge_root_artifact",
+        "crate::checked_artifact::entry::remove_merge_root_artifact",
+        "crate::checked_artifact::entry::replace_merge_root_artifact",
+        "map_transition",
+    },
+    "git/gitbackend/preservation_root/files.rs": {
+        "Component::Normal",
+        "Err",
+        "MetadataExt::dev",
+        "MetadataExt::ino",
+        "ModelError::new",
+        "Ok",
+        "Path::new",
+        "PathBuf::new",
+        "Some",
+        "String::from_utf8",
+        "as_bytes",
+        "as_os_str",
+        "as_ref",
+        "as_slice",
+        "components",
+        "crate::checked_artifact::entry::classify_merge_preservation_workspace",
+        "crate::checked_artifact::entry::observe_merge_preservation_git_directory",
+        "crate::checked_artifact::entry::observe_merge_preservation_workspace",
+        "crate::checked_artifact::entry::replace_merge_preservation_workspace",
+        "evidence_error",
+        "into",
+        "is_absolute",
+        "map",
+        "map_err",
+        "ok_or_else",
+        "open_repo",
+        "path",
+        "pop",
+        "push",
+        "std::ffi::OsString::from_vec",
+        "to_owned",
+        "to_str",
+        "to_vec",
+    },
+    "workspace_ops/merge/preserve/checked_bundle.rs": {
+        "Err",
+        "ModelError::new",
+        "Ok",
+        "PathBuf::from",
+        "as_deref",
+        "bundle_relative",
+        "crate::checked_artifact::entry::classify_merge_preservation_bundle",
+        "crate::checked_artifact::entry::observe_merge_preservation_bundle",
+        "crate::checked_artifact::entry::replace_merge_preservation_bundle",
+        "expected_bundle",
+        "format!",
+        "into_bytes",
+        "is_empty",
+        "iter",
+        "join",
+        "map",
+        "ok_or_else",
+        "owner_index",
+        "position",
+        "then",
+        "then_some",
+        "to_yaml",
+        "transpose",
     },
 }
 
-# These adapters are the complete merge leaf-mutation boundary.  They may
-# observe through their checked artifact and may invoke its exact transition
-# methods, but they must not grow a second successful filesystem writer.
-CHECKED_LEAF_ADAPTERS = {
-    "git/gitbackend/preservation_root/files.rs",
-    "workspace_ops/merge/preserve/checked_bundle.rs",
-    "workspace_ops/merge/root/artifact_facts.rs",
+CHECKED_LEAF_ADAPTER_ITEMS = {
+    "workspace_ops/merge/root/artifact_facts.rs": {
+        "RegularFileFact",
+        "RegularFileTransition",
+        "classify_remove",
+        "classify_write",
+        "observe",
+        "remove_exact",
+        "write_checked",
+    },
+    "git/gitbackend/preservation_root/files.rs": {
+        "identity",
+        "observe_boundary",
+        "observe_relative",
+        "observe_required",
+        "observe_transition",
+        "path_to_raw",
+        "raw_path_to_path",
+        "replace_relative",
+        "split_relative",
+    },
+    "workspace_ops/merge/preserve/checked_bundle.rs": {
+        "V1BundleObservation",
+        "v1_bundle_cursor_is_exact",
+        "v1_bundle_observation",
+        "v1_write_bundle_checked",
+    },
 }
 
-ENTRY_DEFINITION = re.compile(r"pub\(crate\) fn ([a-z][a-z0-9_]*)\s*\(")
-ENTRY_CALL = re.compile(r"checked_artifact::entry::([a-z][a-z0-9_]*)")
-RAW_ENTRY = re.compile(r"CheckedArtifact::(?:acquire|prepare_parent)\s*\(")
-RAW_FILESYSTEM_MUTATION = re.compile(
-    r"(?:"
-    r"(?:crate::)?artifact::write_atomic(?:_verified)?\s*\("
-    r"|(?:std::)?fs::(?:write|remove_file|rename|copy|create_dir|create_dir_all|remove_dir|remove_dir_all)\s*\("
-    r"|(?:File|OpenOptions)::(?:create|new)\s*\("
-    r")"
+CHECKED_LEAF_ADAPTER_USES = {
+    "workspace_ops/merge/root/artifact_facts.rs": {
+        "crate::checked_artifact::entry::{MergeArtifactFact, MergeArtifactTransition}",
+        "crate::model::ModelResult",
+        "std::path::Path",
+    },
+    "git/gitbackend/preservation_root/files.rs": {
+        "cap_fs_ext::MetadataExt",
+        "crate::checked_artifact::entry::MergeArtifactTransition",
+        "std::os::unix::ffi::OsStrExt",
+        "std::os::unix::ffi::OsStringExt",
+        "std::path::{Component, Path, PathBuf}",
+        "super::super::*",
+    },
+    "workspace_ops/merge/preserve/checked_bundle.rs": {
+        "crate::checked_artifact::entry::MergeArtifactTransition",
+        "crate::git::GitBackend",
+        "crate::model::{ErrorCode, ModelError, ModelResult}",
+        "std::path::{Path, PathBuf}",
+        "super::artifacts::expected_bundle",
+        "super::plan::V1PreservationOwnerPlan",
+    },
+}
+
+# The only adapter callees that are not checked-entry functions. Their bodies
+# are inventoried too, closing the transitive raw-writer seam.
+TRANSITIVE_HELPER_CALLS = {
+    ("workspace_ops/merge/preserve/artifacts.rs", "expected_bundle"): {
+        "Err",
+        "Ok",
+        "Some",
+        "Vec::new",
+        "as_deref",
+        "as_slice",
+        "as_str",
+        "attach_v1",
+        "clone",
+        "cmp",
+        "crate::git::GitPreservationDirtySummary::default",
+        "format!",
+        "into",
+        "map_err",
+        "preservation_stashes",
+        "push",
+        "sort",
+        "sort_by",
+        "super::plan::v1_owner_evidence",
+        "v1_error",
+    },
+    ("git/gitbackend/repository_support.rs", "open_repo"): {
+        "git2::Repository::open",
+        "map_err",
+    },
+}
+
+VISIBLE_ITEM = re.compile(
+    r"\bpub\(crate\)\s+(?:unsafe\s+)?(?:async\s+)?"
+    r"(fn|enum|struct|type|trait|const|static)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
+ANY_VISIBLE_ITEM = re.compile(
+    r"\bpub(?:\([^)]*\))?\s+(?:unsafe\s+)?(?:async\s+)?"
+    r"(fn|enum|struct|type|trait|const|static|mod)\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+VISIBLE_REEXPORT = re.compile(r"\bpub(?:\([^)]*\))?\s+use\b")
+USE = re.compile(r"\buse\s+([^;]+);")
+CALL = re.compile(
+    r"(?<![A-Za-z0-9_:])"
+    r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"\s*(!?)\s*\("
+)
+IGNORED_CALLS = {"cfg", "derive", "fn", "not", "pub"}
+PRIVATE_CAPABILITIES = {
+    "CheckedArtifact",
+    "CheckedArtifactFact",
+    "CheckedArtifactPolicy",
+    "CheckedArtifactTransition",
+}
 
 
 def production_rust_files(source: Path) -> list[Path]:
@@ -60,62 +324,237 @@ def production_rust_files(source: Path) -> list[Path]:
     )
 
 
+def mask_non_code(text: str) -> str:
+    """Replace comments and string/character contents while retaining newlines."""
+    output = list(text)
+    index = 0
+    length = len(text)
+
+    def blank(start: int, end: int) -> None:
+        for offset in range(start, end):
+            if output[offset] != "\n":
+                output[offset] = " "
+
+    while index < length:
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            end = length if end < 0 else end
+            blank(index, end)
+            index = end
+        elif text.startswith("/*", index):
+            depth = 1
+            end = index + 2
+            while end < length and depth:
+                if text.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif text.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            blank(index, end)
+            index = end
+        elif text[index] == "r":
+            match = re.match(r'r(#+)?"', text[index:])
+            if not match:
+                index += 1
+                continue
+            hashes = match.group(1) or ""
+            close = '"' + hashes
+            end = text.find(close, index + len(match.group(0)))
+            end = length if end < 0 else end + len(close)
+            blank(index, end)
+            index = end
+        elif text[index] == '"':
+            end = index + 1
+            while end < length:
+                if text[end] == "\\":
+                    end += 2
+                elif text[end] == '"':
+                    end += 1
+                    break
+                else:
+                    end += 1
+            blank(index, min(end, length))
+            index = end
+        elif text[index] == "'" and index + 2 < length:
+            # A Rust lifetime is followed by an identifier and no closing quote;
+            # only mask a syntactic character literal.
+            end = index + 1
+            if text[end] == "\\":
+                end += 2
+            else:
+                end += 1
+            if end < length and text[end] == "'":
+                end += 1
+                blank(index, end)
+                index = end
+            else:
+                index += 1
+        else:
+            index += 1
+    return "".join(output)
+
+
+def calls(text: str) -> set[str]:
+    result = set()
+    for match in CALL.finditer(text):
+        name, bang = match.groups()
+        prefix = text[max(0, match.start() - 3) : match.start()]
+        if prefix == "fn " or name in IGNORED_CALLS:
+            continue
+        result.add(name + ("!" if bang else ""))
+    return result
+
+
+def function_body(text: str, name: str) -> str | None:
+    match = re.search(rf"\bfn\s+{re.escape(name)}\b", text)
+    if match is None:
+        return None
+    start = text.find("{", match.end())
+    if start < 0:
+        return None
+    depth = 0
+    for offset in range(start, len(text)):
+        if text[offset] == "{":
+            depth += 1
+        elif text[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : offset + 1]
+    return None
+
+
+def imports(text: str) -> set[str]:
+    return {re.sub(r"\s+", " ", value).strip() for value in USE.findall(text)}
+
+
 def check(source: Path) -> list[str]:
     findings: list[str] = []
-    entry = source / "checked_artifact/entry.rs"
-    definitions = set(ENTRY_DEFINITION.findall(entry.read_text(encoding="utf-8")))
-    expected = set(ENTRY_CALLERS)
-    if definitions != expected:
+    entry_path = source / "checked_artifact/entry.rs"
+    entry_text = mask_non_code(entry_path.read_text(encoding="utf-8"))
+    definitions = {name for _, name in VISIBLE_ITEM.findall(entry_text)}
+    expected = set(ENTRY_REFERENCES)
+    if definitions != expected or VISIBLE_REEXPORT.search(entry_text):
         findings.append(
-            "checked entry inventory changed: "
+            "checked entry visible-item inventory changed: "
             f"expected={sorted(expected)} actual={sorted(definitions)}"
         )
+    all_entry_items = {name for _, name in ANY_VISIBLE_ITEM.findall(entry_text)} | {
+        name
+        for name in re.findall(
+            r"(?m)^\s*(?:fn|enum|struct|type|trait|const|static|mod)\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)",
+            entry_text,
+        )
+    }
+    if all_entry_items != ENTRY_ITEMS:
+        findings.append(
+            "checked entry complete item inventory changed: "
+            f"expected={sorted(ENTRY_ITEMS)} actual={sorted(all_entry_items)}"
+        )
+    entry_uses = imports(entry_text)
+    if entry_uses != ENTRY_USES:
+        findings.append(
+            "checked entry import inventory changed: "
+            f"expected={sorted(ENTRY_USES)} actual={sorted(entry_uses)}"
+        )
+    entry_calls = calls(entry_text)
+    if entry_calls != ENTRY_CALLS:
+        findings.append(
+            "checked entry call graph changed: "
+            f"expected={sorted(ENTRY_CALLS)} actual={sorted(entry_calls)}"
+        )
 
-    actual_callers: dict[str, set[str]] = {}
-    raw_callers: set[str] = set()
-    raw_leaf_mutators: set[str] = set()
+    actual_references: dict[str, set[str]] = {name: set() for name in expected}
+    entry_path_users: set[str] = set()
+    escaped_capabilities: dict[str, set[str]] = {}
+    masked_sources: dict[str, str] = {}
     for path in production_rust_files(source):
         relative = path.relative_to(source).as_posix()
-        text = path.read_text(encoding="utf-8")
-        for symbol in ENTRY_CALL.findall(text):
-            actual_callers.setdefault(symbol, set()).add(relative)
-        if relative != "checked_artifact/entry.rs" and RAW_ENTRY.search(text):
-            raw_callers.add(relative)
-        if relative in CHECKED_LEAF_ADAPTERS and RAW_FILESYSTEM_MUTATION.search(text):
-            raw_leaf_mutators.add(relative)
+        if relative == "checked_artifact/entry.rs":
+            continue
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        masked_sources[relative] = text
+        if re.search(r"\bchecked_artifact\s*::\s*entry\b", text):
+            entry_path_users.add(relative)
+        for symbol in expected:
+            if re.search(rf"\b{re.escape(symbol)}\b", text):
+                actual_references[symbol].add(relative)
+        if not relative.startswith("checked_artifact/"):
+            for capability in PRIVATE_CAPABILITIES:
+                if re.search(rf"\b{capability}\b", text):
+                    escaped_capabilities.setdefault(capability, set()).add(relative)
 
-    for symbol in sorted(set(actual_callers) | expected):
-        callers = actual_callers.get(symbol, set())
-        allowed = ENTRY_CALLERS.get(symbol)
-        if allowed is None:
+    for symbol in sorted(expected):
+        actual = actual_references[symbol]
+        allowed = ENTRY_REFERENCES[symbol]
+        if actual != allowed:
             findings.append(
-                f"unclassified checked entry call: {symbol}: {sorted(callers)}"
-            )
-        elif callers != allowed:
-            findings.append(
-                f"checked entry caller set changed: {symbol}: "
-                f"expected={sorted(allowed)} actual={sorted(callers)}"
+                f"checked entry reference set changed: {symbol}: "
+                f"expected={sorted(allowed)} actual={sorted(actual)}"
             )
 
-    if raw_callers:
+    allowed_entry_users = set().union(*ENTRY_REFERENCES.values())
+    if entry_path_users != allowed_entry_users:
         findings.append(
-            "raw CheckedArtifact entry escaped checked_artifact/entry.rs: "
-            f"{sorted(raw_callers)}"
+            "checked entry module user set changed: "
+            f"expected={sorted(allowed_entry_users)} actual={sorted(entry_path_users)}"
+        )
+    if escaped_capabilities:
+        findings.append(
+            "general checked capability escaped its private module: "
+            + ", ".join(
+                f"{name}={sorted(paths)}"
+                for name, paths in sorted(escaped_capabilities.items())
+            )
         )
 
-    if raw_leaf_mutators:
-        findings.append(
-            "raw filesystem mutation escaped a checked merge leaf adapter: "
-            f"{sorted(raw_leaf_mutators)}"
-        )
+    for relative, expected_calls in CHECKED_LEAF_ADAPTER_CALLS.items():
+        adapter = masked_sources[relative]
+        actual_calls = calls(adapter)
+        if actual_calls != expected_calls:
+            findings.append(
+                f"checked adapter call graph changed: {relative}: "
+                f"expected={sorted(expected_calls)} actual={sorted(actual_calls)}"
+            )
+        actual_items = {name for _, name in ANY_VISIBLE_ITEM.findall(adapter)}
+        expected_items = CHECKED_LEAF_ADAPTER_ITEMS[relative]
+        if actual_items != expected_items or VISIBLE_REEXPORT.search(adapter):
+            findings.append(
+                f"checked adapter visible-item inventory changed: {relative}: "
+                f"expected={sorted(expected_items)} actual={sorted(actual_items)}"
+            )
+        actual_uses = imports(adapter)
+        expected_uses = CHECKED_LEAF_ADAPTER_USES[relative]
+        if actual_uses != expected_uses:
+            findings.append(
+                f"checked adapter import inventory changed: {relative}: "
+                f"expected={sorted(expected_uses)} actual={sorted(actual_uses)}"
+            )
 
-    checked_mod = (source / "checked_artifact/mod.rs").read_text(encoding="utf-8")
+    for (relative, name), expected_calls in TRANSITIVE_HELPER_CALLS.items():
+        body = function_body(masked_sources[relative], name)
+        actual_calls = calls(body) if body is not None else set()
+        if actual_calls != expected_calls:
+            findings.append(
+                f"checked adapter transitive helper changed: {relative}::{name}: "
+                f"expected={sorted(expected_calls)} actual={sorted(actual_calls)}"
+            )
+
+    checked_mod = mask_non_code(
+        (source / "checked_artifact/mod.rs").read_text(encoding="utf-8")
+    )
     if "pub(crate) mod entry;" not in checked_mod:
         findings.append("checked entry module is not the exported architectural boundary")
-    observation = (source / "checked_artifact/observation.rs").read_text(encoding="utf-8")
-    for symbol in ("acquire", "prepare_parent"):
-        if f"pub(super) fn {symbol}" not in observation:
-            findings.append(f"raw CheckedArtifact::{symbol} is not module-private")
+    for declaration in (
+        "struct CheckedArtifact",
+        "enum CheckedArtifactFact",
+        "enum CheckedArtifactTransition",
+    ):
+        if f"pub(crate) {declaration}" in checked_mod:
+            findings.append(f"general capability is crate-visible: {declaration}")
     return findings
 
 
@@ -131,8 +570,8 @@ def main() -> int:
         return 1
     print(
         "checked-artifact boundary: ok "
-        f"({len(ENTRY_CALLERS)} entries, "
-        f"{sum(map(len, ENTRY_CALLERS.values()))} classified callers)"
+        f"({len(ENTRY_REFERENCES)} visible entries, "
+        f"{len(set().union(*ENTRY_REFERENCES.values()))} classified modules)"
     )
     return 0
 
