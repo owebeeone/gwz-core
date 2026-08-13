@@ -11,10 +11,11 @@ use super::generated;
 use super::schedule::checked_array;
 use crate::checked_artifact::capability::{AsciiComponent, DurableObjectIdentityV1};
 
+mod owner;
+
+pub(in crate::checked_artifact) use owner::*;
+
 const CATALOG_FORMAT_V1: i64 = 1;
-const ADMISSION_ACTIVE: &[u8] = b"action-admission-active-v1";
-const ADMISSION_SCRATCH: &[u8] = b"action-admission-scratch-v1";
-const ADMISSION_STAGING: &[u8] = b"action-admission-staging-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct InfrastructureRecordV1 {
@@ -22,7 +23,9 @@ pub(in crate::checked_artifact) struct InfrastructureRecordV1 {
     catalog_anchor_identity: DurableObjectIdentityV1,
     roaming_anchor_identity: DurableObjectIdentityV1,
     retired_root_identity: DurableObjectIdentityV1,
+    staging_directory_identity: DurableObjectIdentityV1,
     catalog_bootstrap_record_id: [u8; 32],
+    bootstrap_ownership_token: super::CatalogBootstrapOwnershipTokenV1,
     admission_active_name: AsciiComponent,
     admission_scratch_name: AsciiComponent,
     admission_staging_name: AsciiComponent,
@@ -30,39 +33,15 @@ pub(in crate::checked_artifact) struct InfrastructureRecordV1 {
 }
 
 impl InfrastructureRecordV1 {
-    pub(in crate::checked_artifact) fn from_catalog_bootstrap(
-        catalog_bootstrap: &super::CatalogBootstrapRecordV1,
-        catalog_root_identity: DurableObjectIdentityV1,
-        catalog_anchor_identity: DurableObjectIdentityV1,
-        roaming_anchor_identity: DurableObjectIdentityV1,
-        retired_root_identity: DurableObjectIdentityV1,
-    ) -> Result<Self, ProtocolCodecErrorV1> {
-        let value = Self::from_fields(
-            catalog_root_identity,
-            catalog_anchor_identity,
-            roaming_anchor_identity,
-            retired_root_identity,
-            catalog_bootstrap.record_id(),
-            AsciiComponent::parse(ADMISSION_ACTIVE).expect("fixed active name is valid"),
-            AsciiComponent::parse(ADMISSION_SCRATCH).expect("fixed scratch name is valid"),
-            AsciiComponent::parse(ADMISSION_STAGING).expect("fixed staging name is valid"),
-        );
-        value.validate_profiles()?;
-        if value.catalog_root_identity.support_profile() != catalog_bootstrap.support_profile() {
-            return Err(ProtocolCodecErrorV1::Invalid(
-                "infrastructure profile does not match catalog bootstrap",
-            ));
-        }
-        Ok(value)
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn from_fields(
         catalog_root_identity: DurableObjectIdentityV1,
         catalog_anchor_identity: DurableObjectIdentityV1,
         roaming_anchor_identity: DurableObjectIdentityV1,
         retired_root_identity: DurableObjectIdentityV1,
+        staging_directory_identity: DurableObjectIdentityV1,
         catalog_bootstrap_record_id: [u8; 32],
+        bootstrap_ownership_token: super::CatalogBootstrapOwnershipTokenV1,
         admission_active_name: AsciiComponent,
         admission_scratch_name: AsciiComponent,
         admission_staging_name: AsciiComponent,
@@ -72,7 +51,9 @@ impl InfrastructureRecordV1 {
             catalog_anchor_identity,
             roaming_anchor_identity,
             retired_root_identity,
+            staging_directory_identity,
             catalog_bootstrap_record_id,
+            bootstrap_ownership_token,
             admission_active_name,
             admission_scratch_name,
             admission_staging_name,
@@ -86,11 +67,28 @@ impl InfrastructureRecordV1 {
         self.record_digest
     }
 
+    pub(in crate::checked_artifact) const fn catalog_bootstrap_record_id(&self) -> [u8; 32] {
+        self.catalog_bootstrap_record_id
+    }
+
+    pub(in crate::checked_artifact) const fn bootstrap_ownership_token(
+        &self,
+    ) -> super::CatalogBootstrapOwnershipTokenV1 {
+        self.bootstrap_ownership_token
+    }
+
+    pub(in crate::checked_artifact) fn staging_directory_identity(
+        &self,
+    ) -> &DurableObjectIdentityV1 {
+        &self.staging_directory_identity
+    }
+
     fn validate_profiles(&self) -> Result<(), ProtocolCodecErrorV1> {
         let profile = self.catalog_root_identity.support_profile();
         if self.catalog_anchor_identity.support_profile() != profile
             || self.roaming_anchor_identity.support_profile() != profile
             || self.retired_root_identity.support_profile() != profile
+            || self.staging_directory_identity.support_profile() != profile
         {
             return Err(ProtocolCodecErrorV1::Invalid(
                 "infrastructure durable identities use different support profiles",
@@ -119,16 +117,23 @@ impl InfrastructureRecordV1 {
             decode_identity(wire.catalog_anchor_identity)?,
             decode_identity(wire.roaming_anchor_identity)?,
             decode_identity(wire.retired_root_identity)?,
+            decode_identity(wire.staging_directory_identity)?,
             checked_array(wire.catalog_bootstrap_record_id)?,
+            super::CatalogBootstrapOwnershipTokenV1::try_from_random_bytes(checked_array(
+                wire.bootstrap_ownership_token,
+            )?)?,
             decode_ascii(&wire.admission_active_name)?,
             decode_ascii(&wire.admission_scratch_name)?,
             decode_ascii(&wire.admission_staging_name)?,
         );
         value.validate_profiles()?;
         if value.record_digest != stored_digest
-            || value.admission_active_name.as_bytes() != ADMISSION_ACTIVE
-            || value.admission_scratch_name.as_bytes() != ADMISSION_SCRATCH
-            || value.admission_staging_name.as_bytes() != ADMISSION_STAGING
+            || value.admission_active_name
+                != slot_component(super::InfrastructureSlotV1::ActionAdmissionActive)
+            || value.admission_scratch_name
+                != slot_component(super::InfrastructureSlotV1::ActionAdmissionScratch)
+            || value.admission_staging_name
+                != slot_component(super::InfrastructureSlotV1::ActionAdmissionStaging)
             || value.encode_canonical() != bytes
         {
             return Err(ProtocolCodecErrorV1::Invalid(
@@ -156,13 +161,49 @@ impl InfrastructureRecordV1 {
             catalog_anchor_identity: self.catalog_anchor_identity.to_generated(),
             roaming_anchor_identity: self.roaming_anchor_identity.to_generated(),
             retired_root_identity: self.retired_root_identity.to_generated(),
+            staging_directory_identity: self.staging_directory_identity.to_generated(),
             catalog_bootstrap_record_id: self.catalog_bootstrap_record_id.to_vec(),
             admission_active_name: self.admission_active_name.as_bytes().to_vec(),
             admission_scratch_name: self.admission_scratch_name.as_bytes().to_vec(),
             admission_staging_name: self.admission_staging_name.as_bytes().to_vec(),
             record_digest,
+            bootstrap_ownership_token: self.bootstrap_ownership_token.as_bytes().to_vec(),
         }
     }
+}
+
+#[cfg(test)]
+pub(in crate::checked_artifact) fn synthetic_infrastructure_from_catalog_bootstrap(
+    catalog_bootstrap: &super::CatalogBootstrapRecordV1,
+    catalog_root_identity: DurableObjectIdentityV1,
+    catalog_anchor_identity: DurableObjectIdentityV1,
+    roaming_anchor_identity: DurableObjectIdentityV1,
+    retired_root_identity: DurableObjectIdentityV1,
+) -> Result<InfrastructureRecordV1, ProtocolCodecErrorV1> {
+    let staging_directory_identity = catalog_root_identity.clone();
+    let value = InfrastructureRecordV1::from_fields(
+        catalog_root_identity,
+        catalog_anchor_identity,
+        roaming_anchor_identity,
+        retired_root_identity,
+        staging_directory_identity,
+        catalog_bootstrap.record_id(),
+        catalog_bootstrap.bootstrap_ownership_token(),
+        slot_component(super::InfrastructureSlotV1::ActionAdmissionActive),
+        slot_component(super::InfrastructureSlotV1::ActionAdmissionScratch),
+        slot_component(super::InfrastructureSlotV1::ActionAdmissionStaging),
+    );
+    value.validate_profiles()?;
+    if value.catalog_root_identity.support_profile() != catalog_bootstrap.support_profile() {
+        return Err(ProtocolCodecErrorV1::Invalid(
+            "infrastructure profile does not match catalog bootstrap",
+        ));
+    }
+    Ok(value)
+}
+
+fn slot_component(slot: super::InfrastructureSlotV1) -> AsciiComponent {
+    AsciiComponent::parse(slot.name().as_bytes()).expect("infrastructure slot name is valid ASCII")
 }
 
 impl BoundedCanonicalRecordV1 for InfrastructureRecordV1 {

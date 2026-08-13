@@ -9,3 +9,4 @@ mod managed_plan_binding;
 mod managed_records;
 mod namespace_roles;
 mod schedule_records;
+mod semantic_vectors;

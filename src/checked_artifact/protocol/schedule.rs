@@ -11,7 +11,7 @@ use super::bounds::{
     MAX_BARRIER_INVOCATIONS_PER_ACTION, MAX_BOOTSTRAP_INTENT_GENERATIONS,
     MAX_MANAGED_PARENT_BOOTSTRAPS, MAX_MANAGED_PARENT_COMPONENTS,
 };
-use super::cleanup::CleanupAliasSetV1;
+use super::cleanup::{CleanupAliasSetV1, CleanupAliasV1};
 use super::codec::ProtocolCodecErrorV1;
 use super::generated;
 
@@ -88,7 +88,7 @@ ordinal_type!(BarrierOrdinalV1, MAX_BARRIER_INVOCATIONS_PER_ACTION);
 ordinal_type!(BootstrapOrdinalV1, MAX_MANAGED_PARENT_BOOTSTRAPS);
 ordinal_type!(BootstrapGenerationV1, MAX_BOOTSTRAP_INTENT_GENERATIONS);
 ordinal_type!(BootstrapComponentOrdinalV1, MAX_MANAGED_PARENT_COMPONENTS);
-ordinal_type!(CleanupOrdinalV1, super::bounds::MAX_CLEANUP_ROWS);
+ordinal_type!(CleanupOrdinalV1, CleanupAliasV1::COUNT);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) enum ScheduleErrorV1 {

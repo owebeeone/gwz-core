@@ -6,7 +6,9 @@ use super::{
     ManagedBootstrapComponentRecordV1, ManagedBootstrapPhaseV1, ManagedParentBootstrapIntentV1,
 };
 use crate::checked_artifact::bootstrap::{BoundManagedParentPlanV1, ManagedParentPurpose};
-use crate::checked_artifact::capability::PathComponentMode;
+use crate::checked_artifact::capability::{
+    CanonicalPathIdentityV1, DurableObjectIdentityV1, PathComponentMode,
+};
 #[cfg(test)]
 use crate::checked_artifact::protocol::ActionCapacityReservationV1;
 use crate::checked_artifact::protocol::codec::{
@@ -50,6 +52,16 @@ impl ManagedParentBootstrapIntentV1 {
                     ownership_marker_intent_id: component
                         .ownership_marker_intent_id
                         .map(checked_array)
+                        .transpose()?,
+                    installed_identity: component
+                        .installed_identity
+                        .map(decode_identity)
+                        .transpose()?,
+                    installed_mode: component.installed_mode.map(decode_mode),
+                    installed_path: component.installed_path.map(decode_path).transpose()?,
+                    ownership_marker_object_identity: component
+                        .ownership_marker_object_identity
+                        .map(decode_identity)
                         .transpose()?,
                 })
             })
@@ -125,6 +137,19 @@ impl ManagedParentBootstrapIntentV1 {
                     ownership_marker_intent_id: component
                         .ownership_marker_intent_id
                         .map(|value| value.to_vec()),
+                    installed_identity: component
+                        .installed_identity
+                        .as_ref()
+                        .map(DurableObjectIdentityV1::to_generated),
+                    installed_mode: component.installed_mode.map(encode_mode),
+                    installed_path: component
+                        .installed_path
+                        .as_ref()
+                        .map(CanonicalPathIdentityV1::to_generated),
+                    ownership_marker_object_identity: component
+                        .ownership_marker_object_identity
+                        .as_ref()
+                        .map(DurableObjectIdentityV1::to_generated),
                 })
                 .collect(),
             ownership_token: self.ownership_token.to_vec(),

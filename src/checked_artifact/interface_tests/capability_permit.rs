@@ -3,9 +3,9 @@ use std::path::Path;
 use super::super::bootstrap::CatalogBootstrapV1;
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, LosslessIndexEntry, PathComponentMode, PreCatalogPermitV1,
-    PreCatalogPreflightV1, PreCatalogRootKindV1, PrivateControlDomain, SupportedFilesystemProfile,
-    TrackedWorktreeEntry, synthetic_pre_catalog_permit,
+    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1, PrivateControlDomain,
+    RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
+    synthetic_pre_catalog_permit,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,97 +37,83 @@ fn path(root: u8, invocation: u8, domain: u8) -> CanonicalPathIdentityV1 {
     .unwrap()
 }
 
-struct Provider {
-    root: u8,
-    invocation: u8,
-    domain: u8,
+struct Catalog {
+    probe: super::super::capability::SyntheticPreCatalogProbeV1,
 }
-
-impl PreCatalogPreflightV1<Path> for Provider {
-    type RetainedRoot = RetainedRoot;
-
-    fn inspect_and_scan(
-        &self,
-        _root: &Path,
-        _root_kind: PreCatalogRootKindV1,
-        _domain: &PrivateControlDomain,
-        _index: &[LosslessIndexEntry],
-        _worktree: &[TrackedWorktreeEntry],
-    ) -> Result<
-        (
-            Self::RetainedRoot,
-            SupportedFilesystemProfile,
-            DurableObjectIdentityV1,
-            Vec<u8>,
-            Vec<u8>,
-            CanonicalPathIdentityV1,
-        ),
-        CheckedFsError,
-    > {
-        Ok((
-            RetainedRoot(self.root),
-            SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
-            identity(self.root),
-            vec![self.invocation],
-            vec![self.domain],
-            path(self.root, self.invocation, self.domain),
-        ))
-    }
-
-    fn revalidate(
-        &self,
-        _root: &Path,
-        permit: &PreCatalogPermitV1<Self::RetainedRoot>,
-    ) -> Result<(), CheckedFsError> {
-        if permit.retained_root() == &RetainedRoot(self.root)
-            && permit.root_identity() == &identity(self.root)
-            && permit.root_invocation_identity() == [self.invocation]
-            && permit.rename_domain() == [self.domain]
-        {
-            Ok(())
-        } else {
-            Err(CheckedFsError::ambiguous("retained root", "replaced"))
-        }
-    }
-}
-
-struct Catalog;
 
 impl CatalogBootstrapV1<RetainedRoot> for Catalog {
     type Catalog = [u8; 32];
 
     fn recover_or_create(
         &self,
-        permit: &PreCatalogPermitV1<RetainedRoot>,
+        permit: RevalidatedPreCatalogPermitV1<'_, RetainedRoot>,
     ) -> Result<Self::Catalog, CheckedFsError> {
+        self.probe.note_bootstrap();
         Ok(permit.collision_domain_digest())
     }
 }
 
+fn owner() -> (
+    super::super::capability::PreCatalogOwnerV1<Path, RetainedRoot>,
+    super::super::capability::SyntheticPreCatalogProbeV1,
+) {
+    synthetic_pre_catalog_owner(
+        RetainedRoot(1),
+        SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
+        identity(1),
+        vec![2],
+        vec![3],
+        path(1, 2, 3),
+    )
+}
+
 #[test]
-fn one_transaction_issues_root_bound_workspace_and_git_directory_permits() {
-    let provider = Provider {
-        root: 1,
-        invocation: 2,
-        domain: 3,
-    };
+fn owner_structurally_revalidates_immediately_before_catalog_bootstrap() {
+    let (owner, probe) = owner();
     let control = PrivateControlDomain::checked_v1();
     for kind in [
         PreCatalogRootKindV1::Workspace,
         PreCatalogRootKindV1::GitDirectory,
     ] {
-        let permit = provider
-            .preflight(Path::new("."), kind, [9; 32], &control, &[], &[])
+        probe.clear_events();
+        let value = owner
+            .recover_or_create(
+                Path::new("."),
+                kind,
+                [9; 32],
+                &control,
+                &[],
+                &[],
+                &Catalog {
+                    probe: probe.clone(),
+                },
+            )
             .unwrap();
-        assert_eq!(permit.root_kind(), kind);
-        assert_eq!(permit.lease_binding(), [9; 32]);
-        assert_eq!(permit.collision_domain_digest(), control.version_digest());
-        provider.revalidate(Path::new("."), &permit).unwrap();
-        assert_eq!(
-            Catalog.recover_or_create(&permit).unwrap(),
-            control.version_digest()
-        );
+        assert_eq!(value, control.version_digest());
+        assert_eq!(probe.events(), ["observe", "revalidate", "bootstrap"]);
     }
+}
+
+#[test]
+fn failed_immediate_revalidation_cannot_enter_catalog_bootstrap() {
+    let (owner, probe) = owner();
+    probe.reject_revalidation();
+    assert!(
+        owner
+            .recover_or_create(
+                Path::new("."),
+                PreCatalogRootKindV1::Workspace,
+                [9; 32],
+                &PrivateControlDomain::checked_v1(),
+                &[],
+                &[],
+                &Catalog {
+                    probe: probe.clone(),
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(probe.events(), ["observe", "revalidate"]);
 }
 
 #[test]

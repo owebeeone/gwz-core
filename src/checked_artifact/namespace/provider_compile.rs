@@ -5,6 +5,7 @@
 
 use super::backend::{ActionDestination, BackendIssuer, ProviderBinding, RawNamespaceBackend};
 use super::{
+    ActionNamespace, BarrierSlots, BootstrapComponentSlots, BootstrapGenerationSlots,
     DurableNamespace, NamespaceObjectKind, PublishedIdentity, RetainedDirectory,
     RetainedNamespaceObject, RetiredIdentity,
 };
@@ -66,12 +67,19 @@ impl ProductionShapedBackend {
             CanonicalPathIdentityV1,
         >,
         marker: OwnershipMarkerV1,
+        marker_object_identity: DurableObjectIdentityV1,
         identity: DurableObjectIdentityV1,
         mode: crate::checked_artifact::capability::PathComponentMode,
         path: CanonicalPathIdentityV1,
     ) -> Result<super::InstalledManagedComponentV1, CheckedFsError> {
-        self.issuer()
-            .installed_managed_component(slots, marker, identity, mode, path)
+        self.issuer().installed_managed_component(
+            slots,
+            marker,
+            marker_object_identity,
+            identity,
+            mode,
+            path,
+        )
     }
 
     fn issue_retired_marker(
@@ -82,12 +90,81 @@ impl ProductionShapedBackend {
             CanonicalPathIdentityV1,
         >,
         marker: OwnershipMarkerV1,
-        identity: DurableObjectIdentityV1,
+        retired_marker_identity: DurableObjectIdentityV1,
+        installed_parent_identity: DurableObjectIdentityV1,
         mode: crate::checked_artifact::capability::PathComponentMode,
         path: CanonicalPathIdentityV1,
     ) -> Result<super::RetiredManagedMarkerV1, CheckedFsError> {
-        self.issuer()
-            .retired_managed_marker(slots, marker, identity, mode, path)
+        self.issuer().retired_managed_marker(
+            slots,
+            marker,
+            retired_marker_identity,
+            installed_parent_identity,
+            mode,
+            path,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "compile fixture exercises every sealed namespace role"
+    )]
+    fn forward_every_indexed_role(
+        namespace: &mut ActionNamespace<Self>,
+        barrier_scratch: &RetainedNamespaceObject<
+            u64,
+            u64,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        barrier_active: &RetainedNamespaceObject<
+            u64,
+            u64,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        anchor_alias: &RetainedNamespaceObject<
+            u64,
+            u64,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        barrier: &BarrierSlots<u64, DurableObjectIdentityV1, CanonicalPathIdentityV1>,
+        bootstrap_scratch: &RetainedNamespaceObject<
+            u64,
+            u64,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        bootstrap_active: &RetainedNamespaceObject<
+            u64,
+            u64,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        generation: &BootstrapGenerationSlots,
+        staging: &RetainedNamespaceObject<
+            u64,
+            u64,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        marker: &RetainedNamespaceObject<
+            u64,
+            u64,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        component: &BootstrapComponentSlots<u64, DurableObjectIdentityV1, CanonicalPathIdentityV1>,
+    ) -> Result<(), CheckedFsError> {
+        namespace.publish_barrier_intent(barrier_scratch, barrier)?;
+        namespace.retire_barrier_intent(barrier_active, barrier)?;
+        namespace.retire_barrier_target_alias(anchor_alias, barrier)?;
+        namespace.publish_bootstrap_generation(bootstrap_scratch, generation)?;
+        namespace.retire_bootstrap_generation(bootstrap_active, generation)?;
+        namespace.install_bootstrap_component(staging, component)?;
+        namespace.retire_bootstrap_marker(marker, component)?;
+        Ok(())
     }
 }
 

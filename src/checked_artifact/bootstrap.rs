@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::capability::{CheckedFsError, PreCatalogPermitV1};
+use super::capability::{CheckedFsError, RevalidatedPreCatalogPermitV1};
 
 mod managed;
 
@@ -41,13 +41,13 @@ pub(super) trait WorkspaceRuntimeBootstrapV1 {
     ) -> Result<Option<Self::Lease>, CheckedFsError>;
 }
 
-/// Durable first-catalog bootstrap. The permit makes capability/collision
-/// preflight a structural prerequisite rather than a caller convention.
+/// Durable first-catalog bootstrap. Only the pre-catalog owner can construct
+/// the lifetime-bound value accepted here, immediately after revalidation.
 pub(super) trait CatalogBootstrapV1<RetainedRoot> {
     type Catalog;
 
     fn recover_or_create(
         &self,
-        permit: &PreCatalogPermitV1<RetainedRoot>,
+        permit: RevalidatedPreCatalogPermitV1<'_, RetainedRoot>,
     ) -> Result<Self::Catalog, CheckedFsError>;
 }

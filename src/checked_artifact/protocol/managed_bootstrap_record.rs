@@ -13,8 +13,6 @@ use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, PathComponentMode,
 };
 
-const MARKER_NAME: &[u8] = b"gwz-bootstrap-owner-v1";
-
 mod codec;
 #[allow(
     unused_imports,
@@ -41,6 +39,10 @@ pub(in crate::checked_artifact) struct ManagedBootstrapComponentRecordV1 {
     global_component_ordinal: BootstrapComponentOrdinalV1,
     ownership_marker_id: Option<[u8; 32]>,
     ownership_marker_intent_id: Option<[u8; 32]>,
+    installed_identity: Option<DurableObjectIdentityV1>,
+    installed_mode: Option<PathComponentMode>,
+    installed_path: Option<CanonicalPathIdentityV1>,
+    ownership_marker_object_identity: Option<DurableObjectIdentityV1>,
 }
 
 impl ManagedBootstrapComponentRecordV1 {
@@ -60,6 +62,26 @@ impl ManagedBootstrapComponentRecordV1 {
 
     pub(in crate::checked_artifact) const fn ownership_marker_id(&self) -> Option<[u8; 32]> {
         self.ownership_marker_id
+    }
+
+    pub(in crate::checked_artifact) fn installed_identity(
+        &self,
+    ) -> Option<&DurableObjectIdentityV1> {
+        self.installed_identity.as_ref()
+    }
+
+    pub(in crate::checked_artifact) const fn installed_mode(&self) -> Option<PathComponentMode> {
+        self.installed_mode
+    }
+
+    pub(in crate::checked_artifact) fn installed_path(&self) -> Option<&CanonicalPathIdentityV1> {
+        self.installed_path.as_ref()
+    }
+
+    pub(in crate::checked_artifact) fn ownership_marker_object_identity(
+        &self,
+    ) -> Option<&DurableObjectIdentityV1> {
+        self.ownership_marker_object_identity.as_ref()
     }
 }
 
@@ -186,10 +208,14 @@ impl ManagedParentBootstrapIntentV1 {
                 component_ascii: final_name.clone(),
                 staging_name: managed_staging_name(reservation.action_digest(), global.index())?,
                 final_name,
-                marker_name: decode_ascii(MARKER_NAME)?,
+                marker_name: managed_marker_name(),
                 global_component_ordinal: global,
                 ownership_marker_id: None,
                 ownership_marker_intent_id: None,
+                installed_identity: None,
+                installed_mode: None,
+                installed_path: None,
+                ownership_marker_object_identity: None,
             });
         }
         Self::from_fields(
@@ -252,6 +278,9 @@ impl ManagedParentBootstrapIntentV1 {
             generation_ordinal,
             generation_start,
             component_start,
+            &retained_parent_identity,
+            retained_parent_mode,
+            &retained_parent_path,
             &components,
             ownership_token,
             predecessor_intent_id,
@@ -351,14 +380,42 @@ impl ManagedParentBootstrapIntentV1 {
             && self.bootstrap_ordinal == row.bootstrap_ordinal()
             && self.generation_start == row.generation_range().start
             && self.component_start == row.component_range().start
-            && self.retained_parent_identity == *row.retained_parent_identity()
-            && self.retained_parent_mode == row.retained_parent_mode()
-            && self.retained_parent_path == *row.retained_parent_path()
+            && self.matches_initial_parent(
+                row.retained_parent_identity(),
+                row.retained_parent_mode(),
+                row.retained_parent_path(),
+            )
             && self
                 .components
                 .iter()
                 .map(|component| &component.final_name)
                 .eq(row.missing_suffix().iter())
+    }
+
+    fn matches_initial_parent(
+        &self,
+        identity: &DurableObjectIdentityV1,
+        mode: PathComponentMode,
+        path: &CanonicalPathIdentityV1,
+    ) -> bool {
+        let Some(first_installed_path) = self
+            .components
+            .first()
+            .and_then(|component| component.installed_path.as_ref())
+        else {
+            return self.retained_parent_identity == *identity
+                && self.retained_parent_mode == mode
+                && self.retained_parent_path == *path;
+        };
+        first_installed_path.components().len() == path.components().len() + 1
+            && first_installed_path.components()[..path.components().len()] == path.components()[..]
+            && first_installed_path
+                .components()
+                .last()
+                .is_some_and(|component| {
+                    component.parent_durable_identity() == identity
+                        && component.parent_mode() == mode
+                })
     }
 
     pub(super) const fn action_digest(&self) -> ActionDigestV1 {
@@ -387,6 +444,20 @@ impl ManagedParentBootstrapIntentV1 {
     ) -> &CanonicalPathIdentityV1 {
         &self.retained_parent_path
     }
+
+    #[cfg(test)]
+    pub(in crate::checked_artifact) fn retained_parent_identity_for_test(
+        &self,
+    ) -> &DurableObjectIdentityV1 {
+        &self.retained_parent_identity
+    }
+
+    #[cfg(test)]
+    pub(in crate::checked_artifact) const fn retained_parent_mode_for_test(
+        &self,
+    ) -> PathComponentMode {
+        self.retained_parent_mode
+    }
 }
 
 pub(in crate::checked_artifact) fn managed_staging_name(
@@ -401,4 +472,8 @@ pub(in crate::checked_artifact) fn managed_staging_name(
         component.index()
     );
     decode_ascii(name.as_bytes())
+}
+
+pub(in crate::checked_artifact) fn managed_marker_name() -> AsciiComponent {
+    decode_ascii(b"gwz-bootstrap-owner-v1").expect("fixed managed marker name is valid")
 }

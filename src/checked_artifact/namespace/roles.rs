@@ -99,6 +99,7 @@ impl ScheduledBarrierOrdinal {
 pub(in crate::checked_artifact) struct BarrierSlots<DirectoryHandle, Identity, PathProfile> {
     pub(super) binding: ActionBinding,
     pub(super) ordinal: BarrierOrdinalV1,
+    pub(super) scratch: ActionDestination,
     pub(super) active: ActionDestination,
     pub(super) retired: ActionDestination,
     pub(super) retired_anchor_alias: ActionDestination,
@@ -135,10 +136,10 @@ pub(in crate::checked_artifact) struct BootstrapSlots {
 }
 
 pub(in crate::checked_artifact) struct BootstrapGenerationSlots {
-    binding: ActionBinding,
-    active: ActionDestination,
-    retired: ActionDestination,
-    scratch: ActionDestination,
+    pub(super) binding: ActionBinding,
+    pub(super) active: ActionDestination,
+    pub(super) retired: ActionDestination,
+    pub(super) scratch: ActionDestination,
 }
 
 impl BootstrapGenerationSlots {
@@ -165,6 +166,7 @@ pub(in crate::checked_artifact) struct BootstrapComponentSlots<
     pub(super) global_component_ordinal: usize,
     pub(super) target: BootstrapTarget<DirectoryHandle, Identity, PathProfile>,
     pub(super) marker_retired: ActionDestination,
+    pub(super) final_destination: ActionDestination,
 }
 
 impl<DirectoryHandle, Identity, PathProfile>
@@ -227,6 +229,8 @@ impl BootstrapSlots {
         {
             return Err(ScheduleErrorV1::OutOfBounds);
         }
+        let final_destination =
+            ActionDestination::new(target.final_leaf.clone(), self.binding.reservation);
         Ok(BootstrapComponentSlots {
             binding: self.binding,
             bootstrap_ordinal: self.bootstrap_ordinal,
@@ -236,6 +240,7 @@ impl BootstrapSlots {
                 self.binding,
                 ActionSlotV1::RetiredBootstrapMarker(ordinal as u8),
             ),
+            final_destination,
         })
     }
 }

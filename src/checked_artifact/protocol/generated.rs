@@ -415,6 +415,7 @@ pub struct CheckedCatalogBootstrapV1 {
     pub catalog_anchor_a_name: Vec<u8>,
     pub catalog_anchor_b_name: Vec<u8>,
     pub record_id: Vec<u8>,
+    pub bootstrap_ownership_token: Vec<u8>,
 }
 impl CheckedCatalogBootstrapV1 {
     pub fn to_cbor(&self) -> Cbor {
@@ -432,6 +433,7 @@ impl CheckedCatalogBootstrapV1 {
             (11, Cbor::Bytes(self.catalog_anchor_a_name.clone())),
             (12, Cbor::Bytes(self.catalog_anchor_b_name.clone())),
             (13, Cbor::Bytes(self.record_id.clone())),
+            (14, Cbor::Bytes(self.bootstrap_ownership_token.clone())),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -449,6 +451,7 @@ impl CheckedCatalogBootstrapV1 {
             catalog_anchor_a_name: c.try_get(11)?.try_bytes()?,
             catalog_anchor_b_name: c.try_get(12)?.try_bytes()?,
             record_id: c.try_get(13)?.try_bytes()?,
+            bootstrap_ownership_token: c.try_get(14)?.try_bytes()?,
         })
     }
 }
@@ -465,6 +468,8 @@ pub struct CheckedInfrastructureV1 {
     pub admission_scratch_name: Vec<u8>,
     pub admission_staging_name: Vec<u8>,
     pub record_digest: Vec<u8>,
+    pub bootstrap_ownership_token: Vec<u8>,
+    pub staging_directory_identity: CheckedDurableObjectIdentityV1,
 }
 impl CheckedInfrastructureV1 {
     pub fn to_cbor(&self) -> Cbor {
@@ -479,6 +484,8 @@ impl CheckedInfrastructureV1 {
             (8, Cbor::Bytes(self.admission_scratch_name.clone())),
             (9, Cbor::Bytes(self.admission_staging_name.clone())),
             (10, Cbor::Bytes(self.record_digest.clone())),
+            (11, Cbor::Bytes(self.bootstrap_ownership_token.clone())),
+            (12, self.staging_directory_identity.to_cbor()),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -493,6 +500,8 @@ impl CheckedInfrastructureV1 {
             admission_scratch_name: c.try_get(8)?.try_bytes()?,
             admission_staging_name: c.try_get(9)?.try_bytes()?,
             record_digest: c.try_get(10)?.try_bytes()?,
+            bootstrap_ownership_token: c.try_get(11)?.try_bytes()?,
+            staging_directory_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(12)?)?,
         })
     }
 }
@@ -556,6 +565,10 @@ pub struct CheckedManagedBootstrapComponentV1 {
     pub global_component_ordinal: i64,
     pub ownership_marker_id: Option<Vec<u8>>,
     pub ownership_marker_intent_id: Option<Vec<u8>>,
+    pub installed_identity: Option<CheckedDurableObjectIdentityV1>,
+    pub installed_mode: Option<CheckedPathComponentMode>,
+    pub installed_path: Option<CheckedCanonicalPathIdentityV1>,
+    pub ownership_marker_object_identity: Option<CheckedDurableObjectIdentityV1>,
 }
 impl CheckedManagedBootstrapComponentV1 {
     pub fn to_cbor(&self) -> Cbor {
@@ -567,6 +580,10 @@ impl CheckedManagedBootstrapComponentV1 {
             (5, Cbor::Int(self.global_component_ordinal)),
             (6, match &self.ownership_marker_id { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
             (7, match &self.ownership_marker_intent_id { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
+            (8, match &self.installed_identity { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (9, match &self.installed_mode { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (10, match &self.installed_path { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (11, match &self.ownership_marker_object_identity { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -578,6 +595,10 @@ impl CheckedManagedBootstrapComponentV1 {
             global_component_ordinal: c.try_get(5)?.try_int()?,
             ownership_marker_id: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
             ownership_marker_intent_id: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
+            installed_identity: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(CheckedDurableObjectIdentityV1::from_cbor(v)?) } },
+            installed_mode: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(CheckedPathComponentMode::from_wire(v.try_int()?)?) } },
+            installed_path: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(CheckedCanonicalPathIdentityV1::from_cbor(v)?) } },
+            ownership_marker_object_identity: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(CheckedDurableObjectIdentityV1::from_cbor(v)?) } },
         })
     }
 }

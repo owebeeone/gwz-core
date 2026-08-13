@@ -21,6 +21,11 @@ impl ManagedParentBootstrapIntentV1 {
         let mut components = self.components.clone();
         components[self.cursor].ownership_marker_id = Some(marker.marker_id());
         components[self.cursor].ownership_marker_intent_id = Some(self.intent_id);
+        components[self.cursor].installed_identity = Some(evidence.installed_identity().clone());
+        components[self.cursor].installed_mode = Some(evidence.installed_mode());
+        components[self.cursor].installed_path = Some(evidence.installed_path().clone());
+        components[self.cursor].ownership_marker_object_identity =
+            Some(evidence.marker_object_identity().clone());
         let next_cursor = self.cursor + 1;
         let next_phase = if next_cursor == components.len() {
             ManagedBootstrapPhaseV1::RetireMarkers
@@ -112,6 +117,10 @@ impl ManagedParentBootstrapIntentV1 {
             && evidence.staging_leaf() == &component.staging_name
             && evidence.final_leaf() == &component.final_name
             && evidence.marker().matches_component(self, self.cursor)
+            && evidence.installed_identity().support_profile()
+                == self.retained_parent_identity.support_profile()
+            && evidence.marker_object_identity().support_profile()
+                == self.retained_parent_identity.support_profile()
             && evidence.installed_path().components().len()
                 == self.retained_parent_path.components().len() + 1
             && evidence.installed_path().components()
@@ -121,7 +130,12 @@ impl ManagedParentBootstrapIntentV1 {
                 .installed_path()
                 .components()
                 .last()
-                .is_some_and(|path_component| path_component.original() == &component.final_name)
+                .is_some_and(|path_component| {
+                    path_component.original() == &component.final_name
+                        && path_component.parent_durable_identity()
+                            == &self.retained_parent_identity
+                        && path_component.parent_mode() == self.retained_parent_mode
+                })
     }
 
     fn matches_retired_marker(&self, evidence: &RetiredManagedMarkerV1) -> bool {
@@ -139,10 +153,10 @@ impl ManagedParentBootstrapIntentV1 {
             && evidence
                 .marker()
                 .matches_static_component(self, self.cursor)
-            && evidence
-                .retired_parent_path()
-                .components()
-                .last()
-                .is_some_and(|path_component| path_component.original() == &component.final_name)
+            && component.ownership_marker_object_identity.as_ref()
+                == Some(evidence.retired_marker_identity())
+            && component.installed_identity.as_ref() == Some(evidence.installed_parent_identity())
+            && component.installed_mode == Some(evidence.installed_parent_mode())
+            && component.installed_path.as_ref() == Some(evidence.installed_parent_path())
     }
 }

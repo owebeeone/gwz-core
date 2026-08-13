@@ -246,8 +246,8 @@ impl<Implementation> ActionNamespace<Implementation> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) enum RecordingNamespaceEvent {
-    Publish,
-    Retire,
+    Publish(Vec<u8>),
+    Retire(Vec<u8>),
     Barrier(usize),
 }
 
@@ -359,6 +359,7 @@ pub(in crate::checked_artifact) fn installed_component_evidence<
     backend: &RecordingNamespaceBackend,
     slots: &BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
     marker: OwnershipMarkerV1,
+    marker_object_identity: DurableObjectIdentityV1,
     installed_identity: DurableObjectIdentityV1,
     installed_mode: crate::checked_artifact::capability::PathComponentMode,
     installed_path: CanonicalPathIdentityV1,
@@ -366,6 +367,7 @@ pub(in crate::checked_artifact) fn installed_component_evidence<
     BackendIssuer::new(backend.provider).installed_managed_component(
         slots,
         marker,
+        marker_object_identity,
         installed_identity,
         installed_mode,
         installed_path,
@@ -381,15 +383,17 @@ pub(in crate::checked_artifact) fn retired_marker_evidence<
     slots: &BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
     marker: OwnershipMarkerV1,
     retired_marker_identity: DurableObjectIdentityV1,
-    retired_parent_mode: crate::checked_artifact::capability::PathComponentMode,
-    retired_parent_path: CanonicalPathIdentityV1,
+    installed_parent_identity: DurableObjectIdentityV1,
+    installed_parent_mode: crate::checked_artifact::capability::PathComponentMode,
+    installed_parent_path: CanonicalPathIdentityV1,
 ) -> Result<RetiredManagedMarkerV1, CheckedFsError> {
     BackendIssuer::new(backend.provider).retired_managed_marker(
         slots,
         marker,
         retired_marker_identity,
-        retired_parent_mode,
-        retired_parent_path,
+        installed_parent_identity,
+        installed_parent_mode,
+        installed_parent_path,
     )
 }
 
@@ -429,7 +433,9 @@ impl RawNamespaceBackend for RecordingNamespaceBackend {
         destination: &ActionDestination,
     ) -> Result<PublishedIdentity<Self::Identity>, CheckedFsError> {
         let _ = (destination.leaf(), destination.reservation());
-        self.events.push(RecordingNamespaceEvent::Publish);
+        self.events.push(RecordingNamespaceEvent::Publish(
+            destination.leaf().as_bytes().to_vec(),
+        ));
         Ok(BackendIssuer::new(self.provider).published(source.identity().clone()))
     }
 
@@ -444,7 +450,9 @@ impl RawNamespaceBackend for RecordingNamespaceBackend {
         destination: &ActionDestination,
     ) -> Result<RetiredIdentity<Self::Identity>, CheckedFsError> {
         let _ = (destination.leaf(), destination.reservation());
-        self.events.push(RecordingNamespaceEvent::Retire);
+        self.events.push(RecordingNamespaceEvent::Retire(
+            destination.leaf().as_bytes().to_vec(),
+        ));
         Ok(BackendIssuer::new(self.provider).retired(source.identity().clone()))
     }
 

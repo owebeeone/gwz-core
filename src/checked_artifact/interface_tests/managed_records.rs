@@ -11,6 +11,7 @@ use super::super::namespace::test_support::{
 use super::super::namespace::{
     ActionNamespace, InstalledManagedComponentV1, RetiredManagedMarkerV1,
 };
+use super::super::protocol::generated;
 use super::super::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionDirectoryAdmissionV1,
     ActionDirectoryObservationV1, ActionScheduleV1, BootstrapGenerationV1, BootstrapOrdinalV1,
@@ -40,6 +41,8 @@ fn path() -> CanonicalPathIdentityV1 {
 
 fn installed_path(
     parent: &CanonicalPathIdentityV1,
+    parent_identity: &DurableObjectIdentityV1,
+    parent_mode: PathComponentMode,
     name: &AsciiComponent,
     byte: u8,
 ) -> CanonicalPathIdentityV1 {
@@ -47,8 +50,8 @@ fn installed_path(
     components.push(
         CanonicalComponent::try_bound(
             name.clone(),
-            PathComponentMode::Sensitive,
-            identity(byte),
+            parent_mode,
+            parent_identity.clone(),
             vec![byte; 16],
             vec![byte + 1; 16],
         )
@@ -127,6 +130,37 @@ fn installed_evidence(
     local: usize,
     byte: u8,
 ) -> InstalledManagedComponentV1 {
+    installed_evidence_exact(
+        reservation,
+        intent,
+        marker,
+        bootstrap,
+        local,
+        identity(byte + 40),
+        identity(byte),
+        PathComponentMode::Sensitive,
+        installed_path(
+            intent.retained_parent_path_for_test(),
+            intent.retained_parent_identity_for_test(),
+            intent.retained_parent_mode_for_test(),
+            intent.components()[local].final_name(),
+            byte,
+        ),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn installed_evidence_exact(
+    reservation: &ActionCapacityReservationV1,
+    intent: &ManagedParentBootstrapIntentV1,
+    marker: OwnershipMarkerV1,
+    bootstrap: usize,
+    local: usize,
+    marker_object_identity: DurableObjectIdentityV1,
+    installed_identity: DurableObjectIdentityV1,
+    installed_mode: PathComponentMode,
+    installed_path: CanonicalPathIdentityV1,
+) -> InstalledManagedComponentV1 {
     let provider = [30; 32];
     let issuer = recording_backend(provider, identity(31));
     let component = &intent.components()[local];
@@ -152,13 +186,10 @@ fn installed_evidence(
         &issuer,
         &slots,
         marker,
-        identity(byte),
-        PathComponentMode::Sensitive,
-        installed_path(
-            intent.retained_parent_path_for_test(),
-            component.final_name(),
-            byte,
-        ),
+        marker_object_identity,
+        installed_identity,
+        installed_mode,
+        installed_path,
     )
     .unwrap()
 }
@@ -169,7 +200,35 @@ fn retirement_evidence(
     marker: OwnershipMarkerV1,
     bootstrap: usize,
     local: usize,
-    byte: u8,
+) -> RetiredManagedMarkerV1 {
+    let component = &intent.components()[local];
+    retirement_evidence_exact(
+        reservation,
+        intent,
+        marker,
+        bootstrap,
+        local,
+        component
+            .ownership_marker_object_identity()
+            .unwrap()
+            .clone(),
+        component.installed_identity().unwrap().clone(),
+        component.installed_mode().unwrap(),
+        component.installed_path().unwrap().clone(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retirement_evidence_exact(
+    reservation: &ActionCapacityReservationV1,
+    intent: &ManagedParentBootstrapIntentV1,
+    marker: OwnershipMarkerV1,
+    bootstrap: usize,
+    local: usize,
+    retired_marker_identity: DurableObjectIdentityV1,
+    installed_parent_identity: DurableObjectIdentityV1,
+    installed_parent_mode: PathComponentMode,
+    installed_parent_path: CanonicalPathIdentityV1,
 ) -> RetiredManagedMarkerV1 {
     let provider = [30; 32];
     let issuer = recording_backend(provider, identity(31));
@@ -196,9 +255,10 @@ fn retirement_evidence(
         &issuer,
         &slots,
         marker,
-        identity(byte),
-        PathComponentMode::Sensitive,
-        installed_path(&path(), component.final_name(), byte),
+        retired_marker_identity,
+        installed_parent_identity,
+        installed_parent_mode,
+        installed_parent_path,
     )
     .unwrap()
 }
@@ -231,8 +291,7 @@ fn component_and_marker_successors_form_one_closed_chain() {
     assert_eq!(retiring.cursor(), 0);
     assert_eq!(retiring.generation_ordinal().index(), 2);
 
-    let first_retirement =
-        retirement_evidence(&reservation, &retiring, first_marker.clone(), 0, 0, 7);
+    let first_retirement = retirement_evidence(&reservation, &retiring, first_marker.clone(), 0, 0);
     let after_first_retirement = retiring
         .successor_after_marker_retirement(&first_retirement)
         .unwrap();
@@ -244,7 +303,6 @@ fn component_and_marker_successors_form_one_closed_chain() {
         second_marker.clone(),
         0,
         1,
-        8,
     );
     let complete = after_first_retirement
         .successor_after_marker_retirement(&second_retirement)
@@ -283,8 +341,23 @@ fn substitutions_cannot_advance_or_bind_a_managed_chain() {
         installed_evidence(&other_reservation, &other, other_marker.clone(), 0, 0, 5);
 
     assert!(first.successor_after_component(&other_evidence).is_err());
-    let premature_retirement =
-        retirement_evidence(&first_reservation, &first, marker.clone(), 0, 0, 6);
+    let premature_retirement = retirement_evidence_exact(
+        &first_reservation,
+        &first,
+        marker.clone(),
+        0,
+        0,
+        identity(66),
+        identity(67),
+        PathComponentMode::Sensitive,
+        installed_path(
+            first.retained_parent_path_for_test(),
+            first.retained_parent_identity_for_test(),
+            first.retained_parent_mode_for_test(),
+            first.components()[0].final_name(),
+            68,
+        ),
+    );
     assert!(
         first
             .successor_after_marker_retirement(&premature_retirement)
@@ -346,13 +419,230 @@ fn opaque_success_evidence_rejects_component_target_marker_and_bootstrap_substit
     let retiring = after_first
         .successor_after_component(&second_install)
         .unwrap();
-    let wrong_retired_marker =
-        retirement_evidence(&reservation, &retiring, alternate_marker, 0, 0, 14);
+    let wrong_retired_marker = retirement_evidence(&reservation, &retiring, alternate_marker, 0, 0);
     assert!(
         retiring
             .successor_after_marker_retirement(&wrong_retired_marker)
             .is_err()
     );
+}
+
+#[test]
+fn exact_installed_facts_are_durable_and_every_retirement_substitution_rejects() {
+    let reservation = reservation(7, 1);
+    let initial = initial(&reservation, 7, &[b"one"]);
+    let marker = OwnershipMarkerV1::for_current_component(&initial).unwrap();
+    let marker_identity = identity(50);
+    let installed_identity = identity(51);
+    let installed_mode = PathComponentMode::AsciiCaseFold;
+    let exact_path = installed_path(
+        initial.retained_parent_path_for_test(),
+        initial.retained_parent_identity_for_test(),
+        initial.retained_parent_mode_for_test(),
+        initial.components()[0].final_name(),
+        52,
+    );
+    let install = installed_evidence_exact(
+        &reservation,
+        &initial,
+        marker.clone(),
+        0,
+        0,
+        marker_identity.clone(),
+        installed_identity.clone(),
+        installed_mode,
+        exact_path.clone(),
+    );
+    let retiring = initial.successor_after_component(&install).unwrap();
+    let component = &retiring.components()[0];
+    assert_eq!(component.installed_identity(), Some(&installed_identity));
+    assert_eq!(component.installed_mode(), Some(installed_mode));
+    assert_eq!(component.installed_path(), Some(&exact_path));
+    assert_eq!(
+        component.ownership_marker_object_identity(),
+        Some(&marker_identity)
+    );
+    let recovered = read_bounded_record::<ManagedParentBootstrapIntentV1>(Cursor::new(
+        retiring.encode_canonical(),
+    ))
+    .unwrap();
+    assert_eq!(recovered, retiring);
+
+    let exact = retirement_evidence_exact(
+        &reservation,
+        &retiring,
+        marker.clone(),
+        0,
+        0,
+        marker_identity.clone(),
+        installed_identity.clone(),
+        installed_mode,
+        exact_path.clone(),
+    );
+    assert!(retiring.successor_after_marker_retirement(&exact).is_ok());
+
+    for substituted in [
+        retirement_evidence_exact(
+            &reservation,
+            &retiring,
+            marker.clone(),
+            0,
+            0,
+            identity(53),
+            installed_identity.clone(),
+            installed_mode,
+            exact_path.clone(),
+        ),
+        retirement_evidence_exact(
+            &reservation,
+            &retiring,
+            marker.clone(),
+            0,
+            0,
+            marker_identity.clone(),
+            identity(54),
+            installed_mode,
+            exact_path.clone(),
+        ),
+        retirement_evidence_exact(
+            &reservation,
+            &retiring,
+            marker.clone(),
+            0,
+            0,
+            marker_identity.clone(),
+            installed_identity.clone(),
+            PathComponentMode::Sensitive,
+            exact_path.clone(),
+        ),
+        retirement_evidence_exact(
+            &reservation,
+            &retiring,
+            marker,
+            0,
+            0,
+            marker_identity,
+            installed_identity,
+            installed_mode,
+            installed_path(
+                retiring.retained_parent_path_for_test(),
+                retiring.retained_parent_identity_for_test(),
+                retiring.retained_parent_mode_for_test(),
+                retiring.components()[0].final_name(),
+                55,
+            ),
+        ),
+    ] {
+        assert!(
+            retiring
+                .successor_after_marker_retirement(&substituted)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn canonical_record_rejects_mutated_installed_facts_and_marker_object_identity() {
+    let reservation = reservation(7, 1);
+    let initial = initial(&reservation, 7, &[b"one"]);
+    let marker = OwnershipMarkerV1::for_current_component(&initial).unwrap();
+    let install = installed_evidence(&reservation, &initial, marker, 0, 0, 70);
+    let retiring = initial.successor_after_component(&install).unwrap();
+    let bytes = retiring.encode_canonical();
+    let cbor = crate::cbor::try_decode(&bytes).unwrap();
+    let wire = generated::CheckedManagedParentBootstrapIntentV1::from_cbor(&cbor).unwrap();
+
+    let mut mutations = Vec::new();
+    let mut changed_identity = wire.clone();
+    changed_identity.components[0].installed_identity = Some(identity(71).to_generated());
+    mutations.push(changed_identity);
+    let mut changed_mode = wire.clone();
+    changed_mode.components[0].installed_mode =
+        Some(generated::CheckedPathComponentMode::AsciiCaseFold);
+    mutations.push(changed_mode);
+    let mut changed_path = wire.clone();
+    changed_path.components[0].installed_path = Some(
+        installed_path(
+            retiring.retained_parent_path_for_test(),
+            retiring.retained_parent_identity_for_test(),
+            retiring.retained_parent_mode_for_test(),
+            retiring.components()[0].final_name(),
+            72,
+        )
+        .to_generated(),
+    );
+    mutations.push(changed_path);
+    let mut changed_marker_identity = wire;
+    changed_marker_identity.components[0].ownership_marker_object_identity =
+        Some(identity(73).to_generated());
+    mutations.push(changed_marker_identity);
+
+    for mutation in mutations {
+        assert!(
+            read_bounded_record::<ManagedParentBootstrapIntentV1>(Cursor::new(
+                crate::cbor::encode(&mutation.to_cbor()),
+            ))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn installation_rejects_changed_prefix_parent_identity_and_parent_mode() {
+    let reservation = reservation(7, 1);
+    let initial = initial(&reservation, 7, &[b"one"]);
+    let marker = OwnershipMarkerV1::for_current_component(&initial).unwrap();
+    let final_name = initial.components()[0].final_name();
+    let make = |parent_path: &CanonicalPathIdentityV1,
+                parent_identity: DurableObjectIdentityV1,
+                parent_mode: PathComponentMode,
+                byte: u8| {
+        installed_evidence_exact(
+            &reservation,
+            &initial,
+            marker.clone(),
+            0,
+            0,
+            identity(60),
+            identity(61),
+            PathComponentMode::Sensitive,
+            installed_path(parent_path, &parent_identity, parent_mode, final_name, byte),
+        )
+    };
+
+    let changed_prefix = CanonicalPathIdentityV1::new(vec![
+        CanonicalComponent::try_bound(
+            AsciiComponent::parse(b"other-root").unwrap(),
+            PathComponentMode::Sensitive,
+            identity(8),
+            vec![9; 16],
+            vec![10; 16],
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    for substituted in [
+        make(
+            initial.retained_parent_path_for_test(),
+            identity(62),
+            initial.retained_parent_mode_for_test(),
+            63,
+        ),
+        make(
+            initial.retained_parent_path_for_test(),
+            initial.retained_parent_identity_for_test().clone(),
+            PathComponentMode::AsciiCaseFold,
+            64,
+        ),
+        make(
+            &changed_prefix,
+            initial.retained_parent_identity_for_test().clone(),
+            initial.retained_parent_mode_for_test(),
+            65,
+        ),
+    ] {
+        assert!(initial.successor_after_component(&substituted).is_err());
+    }
 }
 
 #[test]
@@ -368,7 +658,27 @@ fn maximum_component_chain_fits_bound_and_limit_plus_one_rejects() {
         b"g".as_slice(),
         b"h".as_slice(),
     ];
-    let value = initial(&reservation, 9, &names);
+    let initial_value = initial(&reservation, 9, &names);
+    let mut value = initial_value;
+    let mut markers = Vec::new();
+    for local in 0..names.len() {
+        let marker = OwnershipMarkerV1::for_current_component(&value).unwrap();
+        let evidence = installed_evidence(
+            &reservation,
+            &value,
+            marker.clone(),
+            0,
+            local,
+            80 + local as u8,
+        );
+        value = value.successor_after_component(&evidence).unwrap();
+        markers.push(marker);
+    }
+    for (local, marker) in markers.into_iter().enumerate() {
+        let evidence = retirement_evidence(&reservation, &value, marker, 0, local);
+        value = value.successor_after_marker_retirement(&evidence).unwrap();
+    }
+    assert!(value.is_complete());
     let bytes = value.encode_canonical();
     assert!(bytes.len() <= ProtocolRecordKindV1::BootstrapIntent.max_bytes());
     assert_eq!(

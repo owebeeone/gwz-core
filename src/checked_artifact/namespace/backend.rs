@@ -330,6 +330,7 @@ impl BackendIssuer {
         &self,
         slots: &super::BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
         marker: OwnershipMarkerV1,
+        marker_object_identity: DurableObjectIdentityV1,
         installed_identity: DurableObjectIdentityV1,
         installed_mode: PathComponentMode,
         installed_path: CanonicalPathIdentityV1,
@@ -343,6 +344,7 @@ impl BackendIssuer {
         Ok(super::evidence::installed(
             slots,
             marker,
+            marker_object_identity,
             installed_identity,
             installed_mode,
             installed_path,
@@ -354,8 +356,9 @@ impl BackendIssuer {
         slots: &super::BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
         marker: OwnershipMarkerV1,
         retired_marker_identity: DurableObjectIdentityV1,
-        retired_parent_mode: PathComponentMode,
-        retired_parent_path: CanonicalPathIdentityV1,
+        installed_parent_identity: DurableObjectIdentityV1,
+        installed_parent_mode: PathComponentMode,
+        installed_parent_path: CanonicalPathIdentityV1,
     ) -> Result<super::RetiredManagedMarkerV1, CheckedFsError> {
         if slots.target.parent.provider() != self.provider {
             return Err(CheckedFsError::ambiguous(
@@ -367,8 +370,9 @@ impl BackendIssuer {
             slots,
             marker,
             retired_marker_identity,
-            retired_parent_mode,
-            retired_parent_path,
+            installed_parent_identity,
+            installed_parent_mode,
+            installed_parent_path,
         ))
     }
 

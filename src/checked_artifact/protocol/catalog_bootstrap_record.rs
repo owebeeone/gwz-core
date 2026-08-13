@@ -10,14 +10,34 @@ use super::codec::{
 use super::generated;
 use super::schedule::checked_array;
 use crate::checked_artifact::capability::{
-    AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, PreCatalogPermitV1,
-    PreCatalogRootKindV1, SupportedFilesystemProfile,
+    AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, PreCatalogRootKindV1,
+    RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile,
 };
 
 const STAGING_NAME: &[u8] = b"checked-artifacts-catalog-bootstrap-v1.staging";
 const FINAL_NAME: &[u8] = b"checked-artifacts";
-const ANCHOR_A_NAME: &[u8] = b"catalog-anchor-a-v1";
-const ANCHOR_B_NAME: &[u8] = b"catalog-anchor-b-v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) struct CatalogBootstrapOwnershipTokenV1([u8; 32]);
+
+impl CatalogBootstrapOwnershipTokenV1 {
+    /// Wraps 256 bits produced by the catalog owner's cryptographic random
+    /// source. Zero is reserved so an uninitialized token cannot be durable.
+    pub(in crate::checked_artifact) fn try_from_random_bytes(
+        bytes: [u8; 32],
+    ) -> Result<Self, ProtocolCodecErrorV1> {
+        if bytes == [0; 32] {
+            return Err(ProtocolCodecErrorV1::Invalid(
+                "catalog bootstrap ownership token is zero",
+            ));
+        }
+        Ok(Self(bytes))
+    }
+
+    pub(in crate::checked_artifact) const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct CatalogBootstrapRecordV1 {
@@ -33,12 +53,14 @@ pub(in crate::checked_artifact) struct CatalogBootstrapRecordV1 {
     final_name: AsciiComponent,
     catalog_anchor_a_name: AsciiComponent,
     catalog_anchor_b_name: AsciiComponent,
+    bootstrap_ownership_token: CatalogBootstrapOwnershipTokenV1,
     record_id: [u8; 32],
 }
 
 impl CatalogBootstrapRecordV1 {
-    pub(in crate::checked_artifact) fn from_permit<RetainedRoot>(
-        permit: &PreCatalogPermitV1<RetainedRoot>,
+    pub(in crate::checked_artifact) fn from_revalidated_permit<RetainedRoot>(
+        permit: RevalidatedPreCatalogPermitV1<'_, RetainedRoot>,
+        bootstrap_ownership_token: CatalogBootstrapOwnershipTokenV1,
     ) -> Self {
         Self::from_fields(
             permit.root_kind(),
@@ -51,8 +73,19 @@ impl CatalogBootstrapRecordV1 {
             permit.path_profile().clone(),
             AsciiComponent::parse(STAGING_NAME).expect("fixed staging name is valid ASCII"),
             AsciiComponent::parse(FINAL_NAME).expect("fixed final name is valid ASCII"),
-            AsciiComponent::parse(ANCHOR_A_NAME).expect("fixed anchor name is valid ASCII"),
-            AsciiComponent::parse(ANCHOR_B_NAME).expect("fixed anchor name is valid ASCII"),
+            AsciiComponent::parse(
+                super::InfrastructureSlotV1::CatalogAnchorA
+                    .name()
+                    .as_bytes(),
+            )
+            .expect("infrastructure slot name is valid ASCII"),
+            AsciiComponent::parse(
+                super::InfrastructureSlotV1::CatalogAnchorB
+                    .name()
+                    .as_bytes(),
+            )
+            .expect("infrastructure slot name is valid ASCII"),
+            bootstrap_ownership_token,
         )
     }
 
@@ -70,6 +103,7 @@ impl CatalogBootstrapRecordV1 {
         final_name: AsciiComponent,
         catalog_anchor_a_name: AsciiComponent,
         catalog_anchor_b_name: AsciiComponent,
+        bootstrap_ownership_token: CatalogBootstrapOwnershipTokenV1,
     ) -> Self {
         let mut value = Self {
             root_kind,
@@ -84,6 +118,7 @@ impl CatalogBootstrapRecordV1 {
             final_name,
             catalog_anchor_a_name,
             catalog_anchor_b_name,
+            bootstrap_ownership_token,
             record_id: [0; 32],
         };
         value.record_id = Sha256::digest(value.digest_material()).into();
@@ -94,8 +129,22 @@ impl CatalogBootstrapRecordV1 {
         self.record_id
     }
 
+    pub(in crate::checked_artifact) const fn bootstrap_ownership_token(
+        &self,
+    ) -> CatalogBootstrapOwnershipTokenV1 {
+        self.bootstrap_ownership_token
+    }
+
     pub(super) const fn support_profile(&self) -> SupportedFilesystemProfile {
         self.support_profile
+    }
+
+    pub(in crate::checked_artifact) fn retained_parent_identity(&self) -> &DurableObjectIdentityV1 {
+        &self.retained_parent_identity
+    }
+
+    pub(in crate::checked_artifact) fn retained_parent_path(&self) -> &CanonicalPathIdentityV1 {
+        &self.retained_parent_path
     }
 
     pub(in crate::checked_artifact) fn staging_name(&self) -> &AsciiComponent {
@@ -134,6 +183,9 @@ impl CatalogBootstrapRecordV1 {
             super::codec::decode_ascii(&wire.final_name)?,
             super::codec::decode_ascii(&wire.catalog_anchor_a_name)?,
             super::codec::decode_ascii(&wire.catalog_anchor_b_name)?,
+            CatalogBootstrapOwnershipTokenV1::try_from_random_bytes(checked_array(
+                wire.bootstrap_ownership_token,
+            )?)?,
         );
         if value.record_id != stored_id
             || value.retained_parent_identity.support_profile() != value.support_profile
@@ -141,8 +193,14 @@ impl CatalogBootstrapRecordV1 {
             || value.rename_domain.is_empty()
             || value.staging_name.as_bytes() != STAGING_NAME
             || value.final_name.as_bytes() != FINAL_NAME
-            || value.catalog_anchor_a_name.as_bytes() != ANCHOR_A_NAME
-            || value.catalog_anchor_b_name.as_bytes() != ANCHOR_B_NAME
+            || value.catalog_anchor_a_name.as_bytes()
+                != super::InfrastructureSlotV1::CatalogAnchorA
+                    .name()
+                    .as_bytes()
+            || value.catalog_anchor_b_name.as_bytes()
+                != super::InfrastructureSlotV1::CatalogAnchorB
+                    .name()
+                    .as_bytes()
             || value.encode_canonical() != bytes
         {
             return Err(ProtocolCodecErrorV1::Invalid(
@@ -180,6 +238,7 @@ impl CatalogBootstrapRecordV1 {
             catalog_anchor_a_name: self.catalog_anchor_a_name.as_bytes().to_vec(),
             catalog_anchor_b_name: self.catalog_anchor_b_name.as_bytes().to_vec(),
             record_id,
+            bootstrap_ownership_token: self.bootstrap_ownership_token.0.to_vec(),
         }
     }
 }
@@ -196,7 +255,7 @@ pub(in crate::checked_artifact) enum CatalogRecordObservationV1 {
 pub(in crate::checked_artifact) enum CatalogDirectoryObservationV1 {
     Missing,
     PartialExpectedContents,
-    Exact(Box<super::InfrastructureRecordV1>),
+    Exact(Box<super::BoundCatalogInfrastructureObservationV1>),
     Other,
 }
 
@@ -214,7 +273,6 @@ pub(in crate::checked_artifact) enum CatalogBootstrapRecoveryDecisionV1 {
 #[allow(clippy::too_many_arguments)]
 pub(in crate::checked_artifact) fn classify_catalog_bootstrap_recovery(
     expected_record: &CatalogBootstrapRecordV1,
-    expected_infrastructure: &super::InfrastructureRecordV1,
     scratch: &CatalogRecordObservationV1,
     active: &CatalogRecordObservationV1,
     staging: &CatalogDirectoryObservationV1,
@@ -254,7 +312,7 @@ pub(in crate::checked_artifact) fn classify_catalog_bootstrap_recovery(
             Directory::Missing,
             Record::Missing,
         ) if active_value.as_ref() == expected_record
-            && staging_value.as_ref() == expected_infrastructure =>
+            && staging_value.is_bound_to(expected_record) =>
         {
             PublishFinal
         }
@@ -265,7 +323,7 @@ pub(in crate::checked_artifact) fn classify_catalog_bootstrap_recovery(
             Directory::Exact(final_value),
             Record::Missing,
         ) if active_value.as_ref() == expected_record
-            && final_value.as_ref() == expected_infrastructure =>
+            && final_value.is_bound_to(expected_record) =>
         {
             RetireActive
         }
@@ -275,7 +333,7 @@ pub(in crate::checked_artifact) fn classify_catalog_bootstrap_recovery(
             Directory::Missing,
             Directory::Exact(final_value),
             Record::Exact(retired_value),
-        ) if final_value.as_ref() == expected_infrastructure
+        ) if final_value.is_bound_to(expected_record)
             && retired_value.as_ref() == expected_record =>
         {
             Complete

@@ -17,6 +17,7 @@ pub(in crate::checked_artifact) struct InstalledManagedComponentV1 {
     staging_leaf: AsciiComponent,
     final_leaf: AsciiComponent,
     marker: OwnershipMarkerV1,
+    marker_object_identity: DurableObjectIdentityV1,
     installed_identity: DurableObjectIdentityV1,
     installed_mode: PathComponentMode,
     installed_path: CanonicalPathIdentityV1,
@@ -30,8 +31,9 @@ pub(in crate::checked_artifact) struct RetiredManagedMarkerV1 {
     marker_retirement_leaf: AsciiComponent,
     marker: OwnershipMarkerV1,
     retired_marker_identity: DurableObjectIdentityV1,
-    retired_parent_mode: PathComponentMode,
-    retired_parent_path: CanonicalPathIdentityV1,
+    installed_parent_identity: DurableObjectIdentityV1,
+    installed_parent_mode: PathComponentMode,
+    installed_parent_path: CanonicalPathIdentityV1,
 }
 
 macro_rules! binding_getters {
@@ -80,6 +82,10 @@ impl InstalledManagedComponentV1 {
         &self.installed_identity
     }
 
+    pub(in crate::checked_artifact) fn marker_object_identity(&self) -> &DurableObjectIdentityV1 {
+        &self.marker_object_identity
+    }
+
     pub(in crate::checked_artifact) const fn installed_mode(&self) -> PathComponentMode {
         self.installed_mode
     }
@@ -98,18 +104,25 @@ impl RetiredManagedMarkerV1 {
         &self.retired_marker_identity
     }
 
-    pub(in crate::checked_artifact) const fn retired_parent_mode(&self) -> PathComponentMode {
-        self.retired_parent_mode
+    pub(in crate::checked_artifact) fn installed_parent_identity(
+        &self,
+    ) -> &DurableObjectIdentityV1 {
+        &self.installed_parent_identity
     }
 
-    pub(in crate::checked_artifact) fn retired_parent_path(&self) -> &CanonicalPathIdentityV1 {
-        &self.retired_parent_path
+    pub(in crate::checked_artifact) const fn installed_parent_mode(&self) -> PathComponentMode {
+        self.installed_parent_mode
+    }
+
+    pub(in crate::checked_artifact) fn installed_parent_path(&self) -> &CanonicalPathIdentityV1 {
+        &self.installed_parent_path
     }
 }
 
 pub(super) fn installed<DirectoryHandle, Identity, PathProfile>(
     slots: &BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
     marker: OwnershipMarkerV1,
+    marker_object_identity: DurableObjectIdentityV1,
     identity: DurableObjectIdentityV1,
     mode: PathComponentMode,
     path: CanonicalPathIdentityV1,
@@ -122,6 +135,7 @@ pub(super) fn installed<DirectoryHandle, Identity, PathProfile>(
         staging_leaf: slots.target.staging_leaf.clone(),
         final_leaf: slots.target.final_leaf.clone(),
         marker,
+        marker_object_identity,
         installed_identity: identity,
         installed_mode: mode,
         installed_path: path,
@@ -131,7 +145,8 @@ pub(super) fn installed<DirectoryHandle, Identity, PathProfile>(
 pub(super) fn retired_marker<DirectoryHandle, Identity, PathProfile>(
     slots: &BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
     marker: OwnershipMarkerV1,
-    identity: DurableObjectIdentityV1,
+    retired_marker_identity: DurableObjectIdentityV1,
+    installed_parent_identity: DurableObjectIdentityV1,
     mode: PathComponentMode,
     path: CanonicalPathIdentityV1,
 ) -> RetiredManagedMarkerV1 {
@@ -142,9 +157,10 @@ pub(super) fn retired_marker<DirectoryHandle, Identity, PathProfile>(
         component_ordinal: checked_component(slots.global_component_ordinal),
         marker_retirement_leaf: slots.marker_retired.leaf().clone(),
         marker,
-        retired_marker_identity: identity,
-        retired_parent_mode: mode,
-        retired_parent_path: path,
+        retired_marker_identity,
+        installed_parent_identity,
+        installed_parent_mode: mode,
+        installed_parent_path: path,
     }
 }
 

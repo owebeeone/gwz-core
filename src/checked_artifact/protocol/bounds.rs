@@ -3,7 +3,6 @@ pub(in crate::checked_artifact) const MAX_RETIRED_ACTION_DIRS: usize = 64;
 pub(in crate::checked_artifact) const MAX_MANAGED_PARENT_BOOTSTRAPS: usize = 8;
 pub(in crate::checked_artifact) const MAX_MANAGED_PARENT_COMPONENTS: usize = 8;
 pub(in crate::checked_artifact) const MAX_BARRIER_INVOCATIONS_PER_ACTION: usize = 64;
-pub(in crate::checked_artifact) const MAX_CLEANUP_ROWS: usize = 3;
 pub(in crate::checked_artifact) const MAX_BOOTSTRAP_INTENT_GENERATIONS: usize =
     MAX_MANAGED_PARENT_BOOTSTRAPS + 2 * MAX_MANAGED_PARENT_COMPONENTS;
 

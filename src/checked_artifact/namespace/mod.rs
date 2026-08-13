@@ -5,6 +5,7 @@
 
 mod backend;
 mod evidence;
+mod operations;
 mod provider_compile;
 mod roles;
 
@@ -162,6 +163,10 @@ impl<Implementation: RawNamespaceBackend> ActionNamespace<Implementation> {
         Ok(BarrierSlots {
             binding,
             ordinal: scheduled.ordinal,
+            scratch: action_destination(
+                binding,
+                ActionSlotV1::Base(BaseActionSlotV1::BarrierIntentScratch),
+            ),
             active: action_destination(binding, ActionSlotV1::BarrierIntentActive(index)),
             retired: action_destination(binding, ActionSlotV1::BarrierIntentRetired(index)),
             retired_anchor_alias: action_destination(

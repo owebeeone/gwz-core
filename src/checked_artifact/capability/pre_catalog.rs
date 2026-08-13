@@ -9,6 +9,13 @@ use super::{
 use crate::checked_artifact::protocol::generated;
 use crate::checked_artifact::protocol::{ProtocolCodecErrorV1, ProtocolRecordKindV1};
 
+mod provider;
+
+#[cfg(test)]
+pub(in crate::checked_artifact) use provider::{
+    SyntheticPreCatalogProbeV1, synthetic_pre_catalog_owner,
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) enum PreCatalogRootKindV1 {
     Workspace,
@@ -123,6 +130,111 @@ impl<RetainedRoot> PreCatalogPermitV1<RetainedRoot> {
     }
 }
 
+/// A one-shot view created only after the capability owner has re-observed the
+/// retained root and every retained path component. Its borrow prevents it
+/// from surviving the owner transaction that performs catalog bootstrap.
+pub(in crate::checked_artifact) struct RevalidatedPreCatalogPermitV1<'permit, RetainedRoot> {
+    permit: &'permit PreCatalogPermitV1<RetainedRoot>,
+}
+
+impl<'permit, RetainedRoot> RevalidatedPreCatalogPermitV1<'permit, RetainedRoot> {
+    fn new(permit: &'permit PreCatalogPermitV1<RetainedRoot>) -> Self {
+        Self { permit }
+    }
+
+    pub(in crate::checked_artifact) fn support_profile(&self) -> SupportedFilesystemProfile {
+        self.permit.support_profile()
+    }
+
+    pub(in crate::checked_artifact) fn root_identity(&self) -> &DurableObjectIdentityV1 {
+        self.permit.root_identity()
+    }
+
+    pub(in crate::checked_artifact) fn path_profile(&self) -> &CanonicalPathIdentityV1 {
+        self.permit.path_profile()
+    }
+
+    pub(in crate::checked_artifact) fn retained_root(&self) -> &RetainedRoot {
+        self.permit.retained_root()
+    }
+
+    pub(in crate::checked_artifact) fn root_invocation_identity(&self) -> &[u8] {
+        self.permit.root_invocation_identity()
+    }
+
+    pub(in crate::checked_artifact) fn rename_domain(&self) -> &[u8] {
+        self.permit.rename_domain()
+    }
+
+    pub(in crate::checked_artifact) const fn collision_domain_digest(&self) -> [u8; 32] {
+        self.permit.collision_domain_digest()
+    }
+
+    pub(in crate::checked_artifact) const fn lease_binding(&self) -> [u8; 32] {
+        self.permit.lease_binding()
+    }
+
+    pub(in crate::checked_artifact) const fn root_kind(&self) -> PreCatalogRootKindV1 {
+        self.permit.root_kind()
+    }
+}
+
+/// The only checked-artifact entry point that can turn raw pre-catalog
+/// observations into catalog mutations. Construction is owner-private; the
+/// raw provider trait is private to this module subtree.
+pub(in crate::checked_artifact) struct PreCatalogOwnerV1<Root: ?Sized, RetainedRoot> {
+    provider: Box<dyn provider::RawPreCatalogProviderV1<Root, RetainedRoot>>,
+}
+
+impl<Root: ?Sized, RetainedRoot> PreCatalogOwnerV1<Root, RetainedRoot> {
+    fn from_provider(
+        provider: impl provider::RawPreCatalogProviderV1<Root, RetainedRoot> + 'static,
+    ) -> Self {
+        Self {
+            provider: Box::new(provider),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one owner call binds every pre-catalog input to bootstrap"
+    )]
+    pub(in crate::checked_artifact) fn recover_or_create<Bootstrap>(
+        &self,
+        root: &Root,
+        root_kind: PreCatalogRootKindV1,
+        lease_binding: [u8; 32],
+        domain: &PrivateControlDomain,
+        index: &[LosslessIndexEntry],
+        worktree: &[TrackedWorktreeEntry],
+        bootstrap: &Bootstrap,
+    ) -> Result<Bootstrap::Catalog, CheckedFsError>
+    where
+        Bootstrap: crate::checked_artifact::bootstrap::CatalogBootstrapV1<RetainedRoot>,
+    {
+        let observation = self
+            .provider
+            .inspect_and_scan(root, root_kind, domain, index, worktree)?;
+        let permit = PreCatalogPermitV1::try_new(
+            observation.retained_root,
+            observation.support_profile,
+            observation.root_identity,
+            observation.root_invocation_identity,
+            observation.rename_domain,
+            observation.path_profile,
+            domain.version_digest(),
+            lease_binding,
+            root_kind,
+        )?;
+
+        // Keep these calls adjacent: this is the mutation boundary. There is
+        // deliberately no callback or returned permit on which a caller could
+        // interpose unrelated work after revalidation.
+        self.provider.revalidate(root, &permit)?;
+        bootstrap.recover_or_create(RevalidatedPreCatalogPermitV1::new(&permit))
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::too_many_arguments,
@@ -150,71 +262,6 @@ pub(in crate::checked_artifact) fn synthetic_pre_catalog_permit<RetainedRoot>(
         lease_binding,
         root_kind,
     )
-}
-
-/// The provider observes capability, retained path, and the complete collision
-/// domain in one transaction. No separately issued proof can be combined.
-pub(in crate::checked_artifact) trait PreCatalogPreflightV1<Root: ?Sized> {
-    type RetainedRoot;
-
-    #[allow(
-        clippy::type_complexity,
-        reason = "the tuple is private input to the sealing default"
-    )]
-    fn inspect_and_scan(
-        &self,
-        root: &Root,
-        root_kind: PreCatalogRootKindV1,
-        domain: &PrivateControlDomain,
-        index: &[LosslessIndexEntry],
-        worktree: &[TrackedWorktreeEntry],
-    ) -> Result<
-        (
-            Self::RetainedRoot,
-            SupportedFilesystemProfile,
-            DurableObjectIdentityV1,
-            Vec<u8>,
-            Vec<u8>,
-            CanonicalPathIdentityV1,
-        ),
-        CheckedFsError,
-    >;
-
-    fn preflight(
-        &self,
-        root: &Root,
-        root_kind: PreCatalogRootKindV1,
-        lease_binding: [u8; 32],
-        domain: &PrivateControlDomain,
-        index: &[LosslessIndexEntry],
-        worktree: &[TrackedWorktreeEntry],
-    ) -> Result<PreCatalogPermitV1<Self::RetainedRoot>, CheckedFsError> {
-        let (
-            retained_root,
-            support_profile,
-            root_identity,
-            invocation_identity,
-            rename_domain,
-            path_profile,
-        ) = self.inspect_and_scan(root, root_kind, domain, index, worktree)?;
-        PreCatalogPermitV1::try_new(
-            retained_root,
-            support_profile,
-            root_identity,
-            invocation_identity,
-            rename_domain,
-            path_profile,
-            domain.version_digest(),
-            lease_binding,
-            root_kind,
-        )
-    }
-
-    fn revalidate(
-        &self,
-        root: &Root,
-        permit: &PreCatalogPermitV1<Self::RetainedRoot>,
-    ) -> Result<(), CheckedFsError>;
 }
 
 pub(in crate::checked_artifact) fn read_canonical_path_identity(

@@ -17,7 +17,9 @@ pub(in crate::checked_artifact) enum CleanupAliasV1 {
 }
 
 impl CleanupAliasV1 {
-    const ALL: [Self; 3] = [Self::Source, Self::Goal, Self::Authority];
+    pub(in crate::checked_artifact) const ALL: [Self; 3] =
+        [Self::Source, Self::Goal, Self::Authority];
+    pub(in crate::checked_artifact) const COUNT: usize = Self::ALL.len();
 
     const fn bit(self) -> u8 {
         match self {
@@ -185,7 +187,7 @@ impl CleanupWorklistV1 {
         schedule_digest: ScheduleDigestV1,
         rows: Vec<CleanupRowV1>,
     ) -> Result<Self, ProtocolCodecErrorV1> {
-        if rows.len() > 3
+        if rows.len() > CleanupAliasV1::COUNT
             || rows
                 .windows(2)
                 .any(|pair| pair[0].alias() >= pair[1].alias())

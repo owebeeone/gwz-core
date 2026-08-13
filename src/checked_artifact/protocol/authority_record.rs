@@ -13,6 +13,14 @@ use super::schedule::{ActionDigestV1, RecordDigestV1, RequestOwnerBindingV1, Sch
 use super::{ActionCapacityReservationV1, CanonicalPathIdentityV1};
 use crate::checked_artifact::capability::DurableObjectIdentityV1;
 
+mod owner;
+
+#[allow(
+    unused_imports,
+    reason = "R1 freezes the opaque owner entry before R2 installs its provider"
+)]
+pub(in crate::checked_artifact) use owner::CheckedAuthorityObservationOwnerV1;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct CheckedAuthorityRecordV1 {
     action_digest: ActionDigestV1,
@@ -27,8 +35,27 @@ pub(in crate::checked_artifact) struct CheckedAuthorityRecordV1 {
     record_id: [u8; 32],
 }
 
-impl CheckedAuthorityRecordV1 {
-    pub(in crate::checked_artifact) fn new(
+/// One coherent retained observation issued by the authority owner.
+///
+/// The fields deliberately have no checked-artifact-visible constructor. A
+/// record can therefore bind only facts observed together by the retained
+/// authority transaction, rather than a path, parent and source assembled by
+/// a consumer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) struct CheckedAuthorityObservationV1 {
+    action_digest: ActionDigestV1,
+    request_owner_binding: RequestOwnerBindingV1,
+    schedule_digest: ScheduleDigestV1,
+    reservation_digest: RecordDigestV1,
+    artifact_root: CanonicalPathIdentityV1,
+    retained_parent_identity: DurableObjectIdentityV1,
+    source: DurableLeafFingerprintV1,
+    expected_sha256: [u8; 32],
+    goal_sha256: [u8; 32],
+}
+
+impl CheckedAuthorityObservationV1 {
+    fn owner_issue(
         reservation: &ActionCapacityReservationV1,
         artifact_root: CanonicalPathIdentityV1,
         retained_parent_identity: DurableObjectIdentityV1,
@@ -36,16 +63,43 @@ impl CheckedAuthorityRecordV1 {
         expected_sha256: [u8; 32],
         goal_sha256: [u8; 32],
     ) -> Result<Self, ProtocolCodecErrorV1> {
-        let value = Self::from_fields(
-            reservation.action_digest(),
-            reservation.request_owner_binding(),
-            reservation.schedule().digest(),
-            reservation.record_digest(),
+        let value = Self {
+            action_digest: reservation.action_digest(),
+            request_owner_binding: reservation.request_owner_binding(),
+            schedule_digest: reservation.schedule().digest(),
+            reservation_digest: reservation.record_digest(),
             artifact_root,
             retained_parent_identity,
             source,
             expected_sha256,
             goal_sha256,
+        };
+        let profile = value.retained_parent_identity.support_profile();
+        if value.source.identity().support_profile() != profile
+            || !super::codec::path_matches_profile(&value.artifact_root, profile)
+        {
+            return Err(ProtocolCodecErrorV1::Invalid(
+                "authority observation durable identities use different support profiles",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl CheckedAuthorityRecordV1 {
+    pub(in crate::checked_artifact) fn issue(
+        observation: &CheckedAuthorityObservationV1,
+    ) -> Result<Self, ProtocolCodecErrorV1> {
+        let value = Self::from_fields(
+            observation.action_digest,
+            observation.request_owner_binding,
+            observation.schedule_digest,
+            observation.reservation_digest,
+            observation.artifact_root.clone(),
+            observation.retained_parent_identity.clone(),
+            observation.source.clone(),
+            observation.expected_sha256,
+            observation.goal_sha256,
         );
         value.validate_profiles()?;
         Ok(value)
@@ -91,6 +145,18 @@ impl CheckedAuthorityRecordV1 {
             && self.request_owner_binding == reservation.request_owner_binding()
             && self.schedule_digest == reservation.schedule().digest()
             && self.reservation_digest == reservation.record_digest()
+    }
+
+    fn matches_observation(&self, observation: &CheckedAuthorityObservationV1) -> bool {
+        self.action_digest == observation.action_digest
+            && self.request_owner_binding == observation.request_owner_binding
+            && self.schedule_digest == observation.schedule_digest
+            && self.reservation_digest == observation.reservation_digest
+            && self.artifact_root == observation.artifact_root
+            && self.retained_parent_identity == observation.retained_parent_identity
+            && self.source == observation.source
+            && self.expected_sha256 == observation.expected_sha256
+            && self.goal_sha256 == observation.goal_sha256
     }
 
     fn validate_profiles(&self) -> Result<(), ProtocolCodecErrorV1> {
@@ -182,12 +248,32 @@ impl BoundCheckedAuthorityRecordV1 {
 pub(in crate::checked_artifact) fn read_and_bind_authority_record(
     reader: impl Read,
     reservation: &ActionCapacityReservationV1,
+    observation: &CheckedAuthorityObservationV1,
 ) -> Result<BoundCheckedAuthorityRecordV1, ProtocolCodecErrorV1> {
     let value = read_bounded_record_inner::<CheckedAuthorityRecordV1>(reader)?;
-    if !value.matches_reservation(reservation) {
+    if !value.matches_reservation(reservation) || !value.matches_observation(observation) {
         return Err(ProtocolCodecErrorV1::Invalid(
-            "authority does not match resident reservation",
+            "authority does not match resident reservation and retained observation",
         ));
     }
     Ok(BoundCheckedAuthorityRecordV1(value))
+}
+
+#[cfg(test)]
+pub(in crate::checked_artifact) fn synthetic_authority_observation(
+    reservation: &ActionCapacityReservationV1,
+    artifact_root: CanonicalPathIdentityV1,
+    retained_parent_identity: DurableObjectIdentityV1,
+    source: DurableLeafFingerprintV1,
+    expected_sha256: [u8; 32],
+    goal_sha256: [u8; 32],
+) -> Result<CheckedAuthorityObservationV1, ProtocolCodecErrorV1> {
+    CheckedAuthorityObservationV1::owner_issue(
+        reservation,
+        artifact_root,
+        retained_parent_identity,
+        source,
+        expected_sha256,
+        goal_sha256,
+    )
 }

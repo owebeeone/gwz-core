@@ -1,18 +1,21 @@
 use std::io::Cursor;
+use std::path::Path;
 
+use super::super::bootstrap::CatalogBootstrapV1;
 use super::super::capability::{
-    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1,
-    PathComponentMode, PreCatalogRootKindV1, SupportedFilesystemProfile,
-    synthetic_pre_catalog_permit,
+    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
+    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1, PrivateControlDomain,
+    RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
 };
 use super::super::protocol::{
-    ActionCapacityReservationV1, ActionDigestV1, ActionScheduleV1, CatalogBootstrapRecordV1,
-    CatalogBootstrapRecoveryDecisionV1, CatalogDirectoryObservationV1, CatalogRecordObservationV1,
-    CheckedAuthorityRecordV1, CleanupAliasSetV1, DurableLeafFingerprintV1, InfrastructureRecordV1,
-    ManagedBootstrapInputV1, ProtocolRecordKindV1, RequestOwnerBindingV1,
-    classify_catalog_bootstrap_recovery, read_and_bind_authority_record,
+    ActionCapacityReservationV1, ActionDigestV1, ActionScheduleV1,
+    CatalogBootstrapOwnershipTokenV1, CatalogBootstrapRecordV1, CatalogBootstrapRecoveryDecisionV1,
+    CatalogDirectoryObservationV1, CatalogRecordObservationV1, CheckedAuthorityRecordV1,
+    CleanupAliasSetV1, DurableLeafFingerprintV1, ManagedBootstrapInputV1, ProtocolRecordKindV1,
+    RequestOwnerBindingV1, classify_catalog_bootstrap_recovery, read_and_bind_authority_record,
     read_and_match_catalog_bootstrap_record, read_and_match_infrastructure_record,
-    read_bounded_record,
+    read_bounded_record, synthetic_authority_observation,
+    synthetic_infrastructure_from_catalog_bootstrap,
 };
 
 fn identity(byte: u8) -> DurableObjectIdentityV1 {
@@ -50,36 +53,80 @@ fn reservation() -> ActionCapacityReservationV1 {
     )
 }
 
-fn catalog(root_kind: PreCatalogRootKindV1, byte: u8) -> CatalogBootstrapRecordV1 {
-    let permit = synthetic_pre_catalog_permit(
+fn authority_observation(
+    reservation: &ActionCapacityReservationV1,
+    root: CanonicalPathIdentityV1,
+    parent: DurableObjectIdentityV1,
+    source: DurableLeafFingerprintV1,
+    expected: [u8; 32],
+    goal: [u8; 32],
+) -> super::super::protocol::CheckedAuthorityObservationV1 {
+    synthetic_authority_observation(reservation, root, parent, source, expected, goal).unwrap()
+}
+
+struct CatalogRecordBuilder {
+    token: CatalogBootstrapOwnershipTokenV1,
+}
+
+impl CatalogBootstrapV1<()> for CatalogRecordBuilder {
+    type Catalog = CatalogBootstrapRecordV1;
+
+    fn recover_or_create(
+        &self,
+        permit: RevalidatedPreCatalogPermitV1<'_, ()>,
+    ) -> Result<Self::Catalog, CheckedFsError> {
+        Ok(CatalogBootstrapRecordV1::from_revalidated_permit(
+            permit, self.token,
+        ))
+    }
+}
+
+fn catalog_with_token(
+    root_kind: PreCatalogRootKindV1,
+    byte: u8,
+    token: [u8; 32],
+) -> CatalogBootstrapRecordV1 {
+    let (owner, _) = synthetic_pre_catalog_owner(
         (),
         SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
         identity(byte),
         vec![byte; 16],
         vec![byte; 16],
         path(byte),
-        [byte; 32],
-        [byte.wrapping_add(1); 32],
-        root_kind,
-    )
-    .unwrap();
-    CatalogBootstrapRecordV1::from_permit(&permit)
+    );
+    owner
+        .recover_or_create(
+            Path::new("."),
+            root_kind,
+            [byte.wrapping_add(1); 32],
+            &PrivateControlDomain::checked_v1(),
+            &[],
+            &[],
+            &CatalogRecordBuilder {
+                token: CatalogBootstrapOwnershipTokenV1::try_from_random_bytes(token).unwrap(),
+            },
+        )
+        .unwrap()
+}
+
+fn catalog(root_kind: PreCatalogRootKindV1, byte: u8) -> CatalogBootstrapRecordV1 {
+    catalog_with_token(root_kind, byte, [byte.wrapping_add(64); 32])
 }
 
 #[test]
 fn every_nontransition_record_has_a_bounded_canonical_adapter() {
     let reservation = reservation();
-    let authority = CheckedAuthorityRecordV1::new(
+    let observation = authority_observation(
         &reservation,
         path(b'a'),
         identity(4),
         DurableLeafFingerprintV1::new(identity(5), 9, [6; 32]),
         [7; 32],
         [8; 32],
-    )
-    .unwrap();
+    );
+    let authority = CheckedAuthorityRecordV1::issue(&observation).unwrap();
     let catalog = catalog(PreCatalogRootKindV1::Workspace, 12);
-    let infrastructure = InfrastructureRecordV1::from_catalog_bootstrap(
+    let infrastructure = synthetic_infrastructure_from_catalog_bootstrap(
         &catalog,
         identity(14),
         identity(15),
@@ -90,7 +137,7 @@ fn every_nontransition_record_has_a_bounded_canonical_adapter() {
 
     let authority_bytes = authority.encode_canonical();
     assert_eq!(
-        read_and_bind_authority_record(Cursor::new(&authority_bytes), &reservation)
+        read_and_bind_authority_record(Cursor::new(&authority_bytes), &reservation, &observation)
             .unwrap()
             .value(),
         &authority
@@ -123,7 +170,8 @@ fn authority_id_binds_reservation_path_identity_payload_and_goal() {
         first_reservation.schedule().clone(),
     );
     let make = |reservation: &ActionCapacityReservationV1, root, parent, source, expected, goal| {
-        CheckedAuthorityRecordV1::new(reservation, root, parent, source, expected, goal).unwrap()
+        let observation = authority_observation(reservation, root, parent, source, expected, goal);
+        CheckedAuthorityRecordV1::issue(&observation).unwrap()
     };
     let base = make(
         &first_reservation,
@@ -200,6 +248,114 @@ fn catalog_id_binds_every_pre_catalog_domain() {
 }
 
 #[test]
+fn first_catalog_ownership_token_is_nonzero_and_binds_staging_infrastructure() {
+    assert!(CatalogBootstrapOwnershipTokenV1::try_from_random_bytes([0; 32]).is_err());
+
+    let token = [91; 32];
+    let bootstrap = catalog_with_token(PreCatalogRootKindV1::Workspace, 1, token);
+    assert_eq!(bootstrap.bootstrap_ownership_token().as_bytes(), &token);
+
+    let infrastructure = synthetic_infrastructure_from_catalog_bootstrap(
+        &bootstrap,
+        identity(14),
+        identity(15),
+        identity(16),
+        identity(17),
+    )
+    .unwrap();
+    assert_eq!(
+        infrastructure.catalog_bootstrap_record_id(),
+        bootstrap.record_id()
+    );
+    assert_eq!(
+        infrastructure.bootstrap_ownership_token(),
+        bootstrap.bootstrap_ownership_token()
+    );
+
+    let foreign = catalog_with_token(PreCatalogRootKindV1::Workspace, 1, [92; 32]);
+    assert_ne!(foreign.record_id(), bootstrap.record_id());
+}
+
+#[test]
+fn catalog_recovery_exact_requires_owner_bound_physical_marker_and_staging_identity() {
+    let bootstrap = catalog_with_token(PreCatalogRootKindV1::Workspace, 1, [91; 32]);
+    let identities = super::super::protocol::ObservedInfrastructureIdentitiesV1::new(
+        identity(14),
+        identity(15),
+        identity(16),
+        identity(17),
+    );
+    let owner = super::super::protocol::synthetic_catalog_infrastructure_owner(
+        &bootstrap,
+        bootstrap.record_id(),
+        *bootstrap.bootstrap_ownership_token().as_bytes(),
+        identity(14),
+        identities.clone(),
+    );
+    let exact = owner.recover_or_create(&bootstrap).unwrap();
+    let infrastructure = exact.value().clone();
+
+    assert_eq!(
+        classify_catalog_bootstrap_recovery(
+            &bootstrap,
+            &CatalogRecordObservationV1::Missing,
+            &CatalogRecordObservationV1::Exact(Box::new(bootstrap.clone())),
+            &CatalogDirectoryObservationV1::Exact(Box::new(exact)),
+            &CatalogDirectoryObservationV1::Missing,
+            &CatalogRecordObservationV1::Missing,
+        ),
+        CatalogBootstrapRecoveryDecisionV1::PublishFinal
+    );
+
+    let foreign = super::super::protocol::synthetic_catalog_infrastructure_owner(
+        &bootstrap,
+        bootstrap.record_id(),
+        [92; 32],
+        identity(14),
+        identities.clone(),
+    );
+    assert!(foreign.recover_or_create(&bootstrap).is_err());
+
+    let (missing, writes) =
+        super::super::protocol::synthetic_catalog_infrastructure_owner_missing_record(
+            &bootstrap,
+            identity(14),
+            identities.clone(),
+        );
+    assert!(missing.recover_or_create(&bootstrap).is_ok());
+    assert_eq!(writes.writes(), 1);
+
+    let mismatched =
+        super::super::protocol::synthetic_catalog_infrastructure_owner_mismatched_record(
+            &bootstrap,
+            identity(14),
+            identities.clone(),
+        );
+    assert!(mismatched.recover_or_create(&bootstrap).is_err());
+
+    let self_consistent_but_unowned = synthetic_infrastructure_from_catalog_bootstrap(
+        &bootstrap,
+        identity(14),
+        identity(15),
+        identity(16),
+        identity(17),
+    )
+    .unwrap();
+    assert_eq!(self_consistent_but_unowned, infrastructure);
+    assert_eq!(
+        classify_catalog_bootstrap_recovery(
+            &bootstrap,
+            &CatalogRecordObservationV1::Missing,
+            &CatalogRecordObservationV1::Exact(Box::new(bootstrap.clone())),
+            &CatalogDirectoryObservationV1::Other,
+            &CatalogDirectoryObservationV1::Missing,
+            &CatalogRecordObservationV1::Missing,
+        ),
+        CatalogBootstrapRecoveryDecisionV1::Ambiguous
+    );
+}
+
+#[test]
 fn bounded_read_precedes_decode_and_noncanonical_bytes_reject() {
     let limit = ProtocolRecordKindV1::CatalogBootstrap.max_bytes();
     assert!(
@@ -220,7 +376,7 @@ fn bounded_read_precedes_decode_and_noncanonical_bytes_reject() {
 fn durable_record_roles_cannot_mix_filesystem_profiles() {
     let reservation = reservation();
     assert!(
-        CheckedAuthorityRecordV1::new(
+        synthetic_authority_observation(
             &reservation,
             path(b'a'),
             identity(1),
@@ -231,7 +387,7 @@ fn durable_record_roles_cannot_mix_filesystem_profiles() {
         .is_err()
     );
     assert!(
-        InfrastructureRecordV1::from_catalog_bootstrap(
+        synthetic_infrastructure_from_catalog_bootstrap(
             &catalog(PreCatalogRootKindV1::Workspace, 5),
             identity(1),
             identity(2),
@@ -243,19 +399,97 @@ fn durable_record_roles_cannot_mix_filesystem_profiles() {
 }
 
 #[test]
+fn authority_recovery_binds_the_exact_coherent_observation() {
+    let reservation = reservation();
+    let observed = authority_observation(
+        &reservation,
+        path(b'a'),
+        identity(1),
+        DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]),
+        [5; 32],
+        [6; 32],
+    );
+    let authority = CheckedAuthorityRecordV1::issue(&observed).unwrap();
+    let bytes = authority.encode_canonical();
+    let other_reservation = ActionCapacityReservationV1::new(
+        ActionDigestV1::new([19; 32]),
+        RequestOwnerBindingV1::new([2; 32]),
+        reservation.schedule().clone(),
+    );
+    assert!(
+        read_and_bind_authority_record(Cursor::new(&bytes), &other_reservation, &observed).is_err()
+    );
+
+    for substituted in [
+        authority_observation(
+            &reservation,
+            path(b'b'),
+            identity(1),
+            DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]),
+            [5; 32],
+            [6; 32],
+        ),
+        authority_observation(
+            &reservation,
+            path(b'a'),
+            identity(9),
+            DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]),
+            [5; 32],
+            [6; 32],
+        ),
+        authority_observation(
+            &reservation,
+            path(b'a'),
+            identity(1),
+            DurableLeafFingerprintV1::new(identity(2), 4, [4; 32]),
+            [5; 32],
+            [6; 32],
+        ),
+        authority_observation(
+            &reservation,
+            path(b'a'),
+            identity(1),
+            DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]),
+            [9; 32],
+            [6; 32],
+        ),
+        authority_observation(
+            &reservation,
+            path(b'a'),
+            identity(1),
+            DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]),
+            [5; 32],
+            [9; 32],
+        ),
+    ] {
+        assert!(
+            read_and_bind_authority_record(Cursor::new(&bytes), &reservation, &substituted)
+                .is_err()
+        );
+    }
+    assert!(read_and_bind_authority_record(Cursor::new(bytes), &reservation, &observed).is_ok());
+}
+
+#[test]
 fn catalog_bootstrap_recovery_table_is_closed() {
     use CatalogBootstrapRecoveryDecisionV1::*;
     use CatalogDirectoryObservationV1 as Directory;
     use CatalogRecordObservationV1 as Record;
 
     let bootstrap = catalog(PreCatalogRootKindV1::Workspace, 31);
-    let infrastructure = InfrastructureRecordV1::from_catalog_bootstrap(
+    let exact = super::super::protocol::synthetic_catalog_infrastructure_owner(
         &bootstrap,
-        identity(32),
-        identity(33),
-        identity(34),
-        identity(35),
+        bootstrap.record_id(),
+        *bootstrap.bootstrap_ownership_token().as_bytes(),
+        identity(14),
+        super::super::protocol::ObservedInfrastructureIdentitiesV1::new(
+            identity(14),
+            identity(33),
+            identity(34),
+            identity(35),
+        ),
     )
+    .recover_or_create(&bootstrap)
     .unwrap();
 
     let records = [
@@ -267,7 +501,7 @@ fn catalog_bootstrap_recovery_table_is_closed() {
     let directories = [
         Directory::Missing,
         Directory::PartialExpectedContents,
-        Directory::Exact(Box::new(infrastructure.clone())),
+        Directory::Exact(Box::new(exact.clone())),
         Directory::Other,
     ];
 
@@ -279,7 +513,6 @@ fn catalog_bootstrap_recovery_table_is_closed() {
                     for retired in &records {
                         let decision = classify_catalog_bootstrap_recovery(
                             &bootstrap,
-                            &infrastructure,
                             scratch,
                             active,
                             staging,
@@ -315,7 +548,7 @@ fn catalog_bootstrap_recovery_table_is_closed() {
                                 Directory::Missing,
                                 Record::Missing,
                             ) if active_value.as_ref() == &bootstrap
-                                && staging_value.as_ref() == &infrastructure =>
+                                && staging_value.as_ref() == &exact =>
                             {
                                 PublishFinal
                             }
@@ -326,7 +559,7 @@ fn catalog_bootstrap_recovery_table_is_closed() {
                                 Directory::Exact(final_value),
                                 Record::Missing,
                             ) if active_value.as_ref() == &bootstrap
-                                && final_value.as_ref() == &infrastructure =>
+                                && final_value.as_ref() == &exact =>
                             {
                                 RetireActive
                             }
@@ -336,7 +569,7 @@ fn catalog_bootstrap_recovery_table_is_closed() {
                                 Directory::Missing,
                                 Directory::Exact(final_value),
                                 Record::Exact(retired_value),
-                            ) if final_value.as_ref() == &infrastructure
+                            ) if final_value.as_ref() == &exact
                                 && retired_value.as_ref() == &bootstrap =>
                             {
                                 Complete
