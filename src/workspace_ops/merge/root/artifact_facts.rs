@@ -1,3 +1,5 @@
+#![forbid(clippy::disallowed_methods)]
+
 use std::path::Path;
 
 use crate::checked_artifact::entry::{MergeArtifactFact, MergeArtifactTransition};

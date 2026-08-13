@@ -48,14 +48,17 @@ pub(crate) use record_wire::{
 pub(crate) use store::{AtomicUpgradeFault, AtomicUpgradeOutcome, upgrade_open_v0_for_r3_tests};
 
 #[cfg(test)]
+pub(crate) use model::v1::RecordVersion;
+#[cfg(test)]
 pub(crate) use model::v1::test_record as test_v1_record;
 pub(crate) use model::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use record_wire::{
     CanonicalMergeLocations, MAX_CHECKED_OWNER_RECORD_BYTES, acquire_canonical_merge_locations,
-    observe_checked_archive_source_v0_leaves_for_test, observe_checked_archive_source_v1,
-    observe_checked_owner_v0, observe_checked_owner_v1, observe_checked_owner_v1_from_canonical,
+    archived_fixture_for_test, observe_checked_archive_source_v0_leaves_for_test,
+    observe_checked_archive_source_v1, observe_checked_owner_v0, observe_checked_owner_v1,
+    observe_checked_owner_v1_from_canonical,
 };
 #[allow(unused_imports)]
 pub(crate) use record_wire::{

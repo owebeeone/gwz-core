@@ -39,6 +39,7 @@ pub(crate) enum CheckedOwnerObservationError {
     Bounds,
     Identity,
     NotTerminal,
+    InvalidTerminal,
     DestinationPresent,
     Decode(RecordDecodeError),
 }
@@ -132,6 +133,8 @@ fn observe_checked_archive_source_v0_leaves<'a>(
     if state.is_open() {
         return Err(CheckedOwnerObservationError::NotTerminal);
     }
+    super::archive::decode_archived_v0(bytes.as_slice(), owner.merge_id())
+        .map_err(|_| CheckedOwnerObservationError::InvalidTerminal)?;
     if path.as_path().file_stem().and_then(|value| value.to_str()) != Some(owner.merge_id()) {
         return Err(CheckedOwnerObservationError::Identity);
     }
@@ -165,6 +168,8 @@ pub(crate) fn observe_checked_archive_source_v1(
     if decoded.record.state.is_open() {
         return Err(CheckedOwnerObservationError::NotTerminal);
     }
+    super::archive::decode_archived_for_r3_tests(bytes.as_slice(), &decoded.record.merge_id)
+        .map_err(|_| CheckedOwnerObservationError::InvalidTerminal)?;
     let owner = CheckedOwnerRecordObservation {
         version: CheckedOwnerRecordVersion::V1,
         exact_bytes: bytes.as_slice(),

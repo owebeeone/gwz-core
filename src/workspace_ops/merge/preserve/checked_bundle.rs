@@ -1,12 +1,13 @@
 //! Test-gated v1 preservation-bundle checked adapter.
 
+#![forbid(clippy::disallowed_methods)]
+
 use std::path::{Path, PathBuf};
 
 use crate::checked_artifact::entry::MergeArtifactTransition;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-use super::artifacts::expected_bundle;
 use super::plan::V1PreservationOwnerPlan;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,4 +132,154 @@ fn owner_index(
 
 fn bundle_relative(stash_id: &str) -> PathBuf {
     PathBuf::from(crate::stash::STASH_BUNDLE_DIR).join(format!("{stash_id}.yaml"))
+}
+
+fn expected_bundle<B: GitBackend>(
+    backend: &B,
+    record: &super::super::model::v1::MergeOperationRecordV1,
+    plans: &[V1PreservationOwnerPlan],
+) -> ModelResult<crate::stash::StashBundle> {
+    use crate::stash::{
+        STASH_BUNDLE_SCHEMA, StashBundle, StashBundleMember, StashDirtySummary, StashParticipation,
+        StashPushLifecycle, StashRestoreState,
+    };
+
+    let stash_id = format!("stash_{}", record.merge_id);
+    let mut selected_members = Vec::new();
+    let mut members = Vec::new();
+    for plan in plans {
+        let Some(evidence) = owner_evidence(record, &plan.owner)? else {
+            continue;
+        };
+        let Some(expected_oid) = evidence.stash_object_id.as_deref() else {
+            continue;
+        };
+        let stashes = backend
+            .preservation_stashes(&plan.path, &record.merge_id)
+            .map_err(|error| attach_owner(error, plan))?;
+        let [stash] = stashes.as_slice() else {
+            return Err(owner_error(
+                plan,
+                "bundle source stash is missing or duplicated",
+            ));
+        };
+        if stash.object_id != expected_oid
+            || evidence.stash_id.as_deref() != Some(stash_id.as_str())
+            || stash.head_commit != plan.protected_commit
+            || stash.message != format!("gwz:{stash_id}: merge preservation")
+            || stash.image.dirty == crate::git::GitPreservationDirtySummary::default()
+        {
+            return Err(owner_error(
+                plan,
+                "bundle source stash does not match durable preservation evidence",
+            ));
+        }
+        selected_members.push(plan.target_id.clone());
+        members.push(StashBundleMember {
+            member_id: plan.target_id.clone(),
+            path: plan.relative_path.clone(),
+            participation: StashParticipation::Stashed,
+            push_lifecycle: StashPushLifecycle::Saved,
+            restore_state: StashRestoreState::Pending,
+            branch_before: Some(plan.branch.clone()),
+            head_before: Some(stash.head_commit.clone()),
+            full_stash_message: stash.message.clone(),
+            dirty_summary: StashDirtySummary {
+                staged: stash.image.dirty.staged,
+                unstaged: stash.image.dirty.unstaged,
+                untracked: stash.image.dirty.untracked,
+                ignored: false,
+            },
+            native_stash_object_id: Some(stash.object_id.clone()),
+            native_stash_display_ref: None,
+            error: None,
+        });
+    }
+    members.sort_by(|left, right| left.member_id.cmp(&right.member_id));
+    selected_members.sort();
+    Ok(StashBundle {
+        schema: STASH_BUNDLE_SCHEMA.into(),
+        workspace_id: record.workspace_id.clone(),
+        stash_id,
+        created_at: record.created_at.clone(),
+        message_suffix: "merge preservation".into(),
+        include_untracked: true,
+        include_ignored: false,
+        selected_members,
+        members,
+        warnings: Vec::new(),
+        drift: Vec::new(),
+    })
+}
+
+fn owner_evidence<'a>(
+    record: &'a super::super::model::v1::MergeOperationRecordV1,
+    owner: &super::super::model::v1::PreservationOwnerV1,
+) -> ModelResult<Option<&'a super::super::PreservationEvidence>> {
+    use super::super::model::v1::PreservationOwnerV1;
+
+    let rows = match owner {
+        PreservationOwnerV1::Participant { member_id } => record
+            .participants
+            .get(member_id)
+            .ok_or_else(|| {
+                owner_parts_error(owner, member_id, "preservation participant is missing")
+            })?
+            .preservation
+            .as_slice(),
+        PreservationOwnerV1::PublicationRoot => record
+            .publication
+            .as_ref()
+            .ok_or_else(|| owner_parts_error(owner, ".", "publication progress is missing"))?
+            .root_preservation
+            .as_slice(),
+    };
+    match rows {
+        [] => Ok(None),
+        [row] => Ok(Some(row)),
+        _ => Err(owner_parts_error(
+            owner,
+            if owner_id(owner) == "@root" {
+                "."
+            } else {
+                owner_id(owner)
+            },
+            "preservation owner has multiple evidence rows",
+        )),
+    }
+}
+
+fn attach_owner(mut error: ModelError, plan: &V1PreservationOwnerPlan) -> ModelError {
+    if error.member_id.is_none() {
+        error.member_id = Some(plan.target_id.clone());
+        error.member_path = Some(plan.relative_path.clone());
+    }
+    error
+}
+
+fn owner_error(plan: &V1PreservationOwnerPlan, detail: impl Into<String>) -> ModelError {
+    ModelError::new(ErrorCode::PreservationEvidenceMismatch, detail.into())
+        .with_member(&plan.target_id, &plan.relative_path)
+}
+
+fn owner_parts_error(
+    owner: &super::super::model::v1::PreservationOwnerV1,
+    relative_path: &str,
+    detail: impl Into<String>,
+) -> ModelError {
+    ModelError::new(ErrorCode::PreservationEvidenceMismatch, detail.into()).with_member(
+        owner_id(owner),
+        if owner_id(owner) == "@root" {
+            "."
+        } else {
+            relative_path
+        },
+    )
+}
+
+fn owner_id(owner: &super::super::model::v1::PreservationOwnerV1) -> &str {
+    match owner {
+        super::super::model::v1::PreservationOwnerV1::Participant { member_id } => member_id,
+        super::super::model::v1::PreservationOwnerV1::PublicationRoot => "@root",
+    }
 }

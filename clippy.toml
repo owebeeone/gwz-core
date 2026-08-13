@@ -1,0 +1,24 @@
+# Compiler-resolved writer boundary for merge paths that require checked
+# artifact mutation. Entries which are platform- or feature-specific remain
+# fail-closed when present and harmless when absent.
+disallowed-methods = [
+  { path = "std::fs::write", reason = "merge artifact writers must use a purpose-specific checked entry" },
+  { path = "std::fs::rename", reason = "merge artifact writers must use a purpose-specific checked entry" },
+  { path = "std::fs::remove_file", reason = "merge artifact writers must use a purpose-specific checked entry" },
+  { path = "std::fs::create_dir", reason = "merge managed parents must use checked bootstrap" },
+  { path = "std::fs::create_dir_all", reason = "merge managed parents must use checked bootstrap" },
+  { path = "std::fs::File::create", reason = "merge artifact writers must use a purpose-specific checked entry" },
+  { path = "std::fs::OpenOptions::open", reason = "merge artifact writers must use a purpose-specific checked entry" },
+  { path = "std::io::Write::write", reason = "merge artifact writers must use a purpose-specific checked entry" },
+  { path = "std::io::Write::write_all", reason = "merge artifact writers must use a purpose-specific checked entry" },
+  { path = "cap_std::fs::Dir::create", reason = "raw capability writes belong only inside checked_artifact", allow-invalid = true },
+  { path = "cap_std::fs::Dir::create_dir", reason = "managed parents must use checked bootstrap", allow-invalid = true },
+  { path = "cap_std::fs::Dir::remove_file", reason = "raw capability writes belong only inside checked_artifact", allow-invalid = true },
+  { path = "cap_std::fs::Dir::rename", reason = "raw capability writes belong only inside checked_artifact", allow-invalid = true },
+  { path = "cap_std::fs::Dir::open_with", reason = "raw capability writes belong only inside checked_artifact", allow-invalid = true },
+  { path = "git2::Index::write", reason = "merge Git mutation must use the reviewed Git backend", allow-invalid = true },
+  { path = "git2::Reference::delete", reason = "merge Git mutation must use the reviewed Git backend", allow-invalid = true },
+  { path = "gwz_core::artifact::write_atomic", reason = "checked merge paths must not fall through to ordinary atomic writers", allow-invalid = true },
+  { path = "gwz_core::stash::write_bundle", reason = "checked merge paths must not fall through to the ordinary stash writer", allow-invalid = true },
+  { path = "gwz_core::workspace_ops::sync_workspace_boundary", reason = "checked merge paths must not fall through to the ordinary boundary writer", allow-invalid = true },
+]

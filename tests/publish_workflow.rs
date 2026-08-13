@@ -13,7 +13,9 @@ fn release_workflow_runs_full_rust_verification() {
     assert!(RELEASE_WORKFLOW.contains("cargo fmt --check"));
     assert!(RELEASE_WORKFLOW.contains("Run 'cargo fmt' from the gwz-core repo root"));
     assert!(RELEASE_WORKFLOW.contains("cargo test --locked"));
-    assert!(RELEASE_WORKFLOW.contains("cargo clippy --all-targets -- -D warnings"));
+    assert!(RELEASE_WORKFLOW.contains(
+        "CLIPPY_CONF_DIR=\"$PWD\" cargo clippy --all-targets --all-features -- -D warnings"
+    ));
 }
 
 #[test]
@@ -39,6 +41,9 @@ fn checked_artifact_boundary_runs_before_merge_and_on_main_push() {
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("branches: [main]"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("check_checked_artifact_boundaries.py"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("test_check_checked_artifact_boundaries.py"));
+    assert!(CHECKED_ARTIFACT_WORKFLOW.contains(
+        "CLIPPY_CONF_DIR=\"$PWD\" cargo clippy --all-targets --all-features -- -D warnings"
+    ));
 }
 
 #[test]
@@ -52,4 +57,6 @@ fn local_release_runs_checked_artifact_boundary_before_rust_tests() {
         .expect("release gate invokes Rust tests");
     assert!(boundary < tests);
     assert!(release.contains("CHECKED_ARTIFACT_BOUNDARY_TEST"));
+    assert!(release.contains("cargo\", \"clippy\", \"--all-targets\", \"--all-features"));
+    assert!(release.contains("test_env[\"CLIPPY_CONF_DIR\"] = str(cargo_root)"));
 }

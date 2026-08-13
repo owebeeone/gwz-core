@@ -1,3 +1,5 @@
+#![forbid(clippy::disallowed_methods)]
+
 use super::super::*;
 use crate::checked_artifact::entry::MergeArtifactTransition;
 use cap_fs_ext::MetadataExt;
@@ -24,7 +26,7 @@ pub(super) fn observe_required(root: &Path, expected: &GitCandidateFile) -> Mode
 }
 
 pub(super) fn observe_boundary(root: &Path, expected: &[u8]) -> ModelResult<bool> {
-    let repo = open_repo(root)?;
+    let repo = git2::Repository::open(root).map_err(git_error)?;
     crate::checked_artifact::entry::observe_merge_preservation_git_directory(
         repo.path(),
         Path::new("info/exclude"),

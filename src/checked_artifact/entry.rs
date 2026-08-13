@@ -3,6 +3,8 @@
 //! The general checked capability never leaves this module. Callers receive
 //! only facts or transition classifications for their declared merge purpose.
 
+#![forbid(clippy::disallowed_methods)]
+
 use std::path::Path;
 
 use super::{

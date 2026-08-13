@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)]
+
 //! D4 render spike (TESTS-ONLY).
 //!
 //! This integration test file is a decision-forcing spike for GwzDiffPlan.md

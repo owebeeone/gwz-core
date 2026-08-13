@@ -1,6 +1,11 @@
 // The taut-generated runtime imports through `alloc::` paths (it is written to
 // be no_std-friendly); a std crate must link `alloc` explicitly for those paths
 // to resolve.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "raw writers are isolated from the checked merge boundary by module-level structural and compiler probes"
+)]
+
 extern crate alloc;
 
 #[rustfmt::skip]

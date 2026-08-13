@@ -11,6 +11,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
+PROTECTED_COMPILER_MODULES = {
+    "checked_artifact/entry.rs",
+    "git/gitbackend/preservation_root/files.rs",
+    "workspace_ops/merge/preserve/checked_bundle.rs",
+    "workspace_ops/merge/root/artifact_facts.rs",
+}
+
 ENTRY_REFERENCES = {
     "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
     "MergeArtifactTransition": {
@@ -170,7 +177,7 @@ CHECKED_LEAF_ADAPTER_CALLS = {
         "map",
         "map_err",
         "ok_or_else",
-        "open_repo",
+        "git2::Repository::open",
         "path",
         "pop",
         "push",
@@ -184,25 +191,47 @@ CHECKED_LEAF_ADAPTER_CALLS = {
         "ModelError::new",
         "Ok",
         "PathBuf::from",
+        "Some",
+        "Vec::new",
         "as_deref",
+        "as_ref",
+        "as_slice",
+        "as_str",
+        "attach_owner",
         "bundle_relative",
+        "clone",
+        "cmp",
         "crate::checked_artifact::entry::classify_merge_preservation_bundle",
         "crate::checked_artifact::entry::observe_merge_preservation_bundle",
         "crate::checked_artifact::entry::replace_merge_preservation_bundle",
+        "crate::git::GitPreservationDirtySummary::default",
         "expected_bundle",
         "format!",
+        "get",
+        "into",
         "into_bytes",
         "is_empty",
+        "is_none",
         "iter",
         "join",
         "map",
+        "map_err",
         "ok_or_else",
+        "owner_error",
+        "owner_evidence",
+        "owner_id",
         "owner_index",
+        "owner_parts_error",
         "position",
+        "preservation_stashes",
+        "push",
+        "sort",
+        "sort_by",
         "then",
         "then_some",
         "to_yaml",
         "transpose",
+        "with_member",
     },
 }
 
@@ -253,40 +282,10 @@ CHECKED_LEAF_ADAPTER_USES = {
         "crate::checked_artifact::entry::MergeArtifactTransition",
         "crate::git::GitBackend",
         "crate::model::{ErrorCode, ModelError, ModelResult}",
+        "crate::stash::{ STASH_BUNDLE_SCHEMA, StashBundle, StashBundleMember, StashDirtySummary, StashParticipation, StashPushLifecycle, StashRestoreState, }",
         "std::path::{Path, PathBuf}",
-        "super::artifacts::expected_bundle",
         "super::plan::V1PreservationOwnerPlan",
-    },
-}
-
-# The only adapter callees that are not checked-entry functions. Their bodies
-# are inventoried too, closing the transitive raw-writer seam.
-TRANSITIVE_HELPER_CALLS = {
-    ("workspace_ops/merge/preserve/artifacts.rs", "expected_bundle"): {
-        "Err",
-        "Ok",
-        "Some",
-        "Vec::new",
-        "as_deref",
-        "as_slice",
-        "as_str",
-        "attach_v1",
-        "clone",
-        "cmp",
-        "crate::git::GitPreservationDirtySummary::default",
-        "format!",
-        "into",
-        "map_err",
-        "preservation_stashes",
-        "push",
-        "sort",
-        "sort_by",
-        "super::plan::v1_owner_evidence",
-        "v1_error",
-    },
-    ("git/gitbackend/repository_support.rs", "open_repo"): {
-        "git2::Repository::open",
-        "map_err",
+        "super::super::model::v1::PreservationOwnerV1",
     },
 }
 
@@ -305,7 +304,7 @@ CALL = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"
     r"\s*(!?)\s*\("
 )
-IGNORED_CALLS = {"cfg", "derive", "fn", "not", "pub"}
+IGNORED_CALLS = {"cfg", "deny", "derive", "fn", "forbid", "not", "pub"}
 PRIVATE_CAPABILITIES = {
     "CheckedArtifact",
     "CheckedArtifactFact",
@@ -408,30 +407,18 @@ def calls(text: str) -> set[str]:
     return result
 
 
-def function_body(text: str, name: str) -> str | None:
-    match = re.search(rf"\bfn\s+{re.escape(name)}\b", text)
-    if match is None:
-        return None
-    start = text.find("{", match.end())
-    if start < 0:
-        return None
-    depth = 0
-    for offset in range(start, len(text)):
-        if text[offset] == "{":
-            depth += 1
-        elif text[offset] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : offset + 1]
-    return None
-
-
 def imports(text: str) -> set[str]:
     return {re.sub(r"\s+", " ", value).strip() for value in USE.findall(text)}
 
 
 def check(source: Path) -> list[str]:
     findings: list[str] = []
+    forbid = "#![forbid(clippy::disallowed_methods)]"
+    for relative in sorted(PROTECTED_COMPILER_MODULES):
+        if forbid not in (source / relative).read_text(encoding="utf-8"):
+            findings.append(
+                f"compiler-resolved writer boundary is not fail-closed: {relative}"
+            )
     entry_path = source / "checked_artifact/entry.rs"
     entry_text = mask_non_code(entry_path.read_text(encoding="utf-8"))
     definitions = {name for _, name in VISIBLE_ITEM.findall(entry_text)}
@@ -532,15 +519,6 @@ def check(source: Path) -> list[str]:
             findings.append(
                 f"checked adapter import inventory changed: {relative}: "
                 f"expected={sorted(expected_uses)} actual={sorted(actual_uses)}"
-            )
-
-    for (relative, name), expected_calls in TRANSITIVE_HELPER_CALLS.items():
-        body = function_body(masked_sources[relative], name)
-        actual_calls = calls(body) if body is not None else set()
-        if actual_calls != expected_calls:
-            findings.append(
-                f"checked adapter transitive helper changed: {relative}::{name}: "
-                f"expected={sorted(expected_calls)} actual={sorted(actual_calls)}"
             )
 
     checked_mod = mask_non_code(

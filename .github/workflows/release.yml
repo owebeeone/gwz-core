@@ -78,4 +78,4 @@ jobs:
         run: cargo test --locked
       - name: Clippy
         if: runner.os == 'Linux'
-        run: cargo clippy --all-targets -- -D warnings
+        run: CLIPPY_CONF_DIR="$PWD" cargo clippy --all-targets --all-features -- -D warnings

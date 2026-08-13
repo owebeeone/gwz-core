@@ -12,8 +12,9 @@ use super::super::coordinator::{
     CheckedManagedActionV1, CoordinatorScheduleDecisionV1, derive_new_reservation,
     synthetic_leaf_request,
 };
+use crate::workspace_ops::RecordVersion;
 use crate::workspace_ops::{
-    MAX_CHECKED_OWNER_RECORD_BYTES, acquire_canonical_merge_locations,
+    MAX_CHECKED_OWNER_RECORD_BYTES, acquire_canonical_merge_locations, archived_fixture_for_test,
     observe_checked_archive_source_v0, observe_checked_archive_source_v0_leaves_for_test,
     observe_checked_archive_source_v1, observe_checked_owner_v0, observe_checked_owner_v1,
 };
@@ -177,12 +178,13 @@ fn owner_class_and_managed_authority_are_one_sealed_decision() {
             .is_err()
     );
     let root = archive_root("terminal-source");
+    let (terminal_bytes, terminal_id) = archived_fixture_for_test(RecordVersion::V0);
     std::fs::write(
-        root.join(".gwz/merge/merge_1.yaml"),
-        v0_bytes_with_state("completed", ""),
+        root.join(format!(".gwz/merge/{terminal_id}.yaml")),
+        terminal_bytes,
     )
     .unwrap();
-    let locations = acquire_canonical_merge_locations(&root, "merge_1").unwrap();
+    let locations = acquire_canonical_merge_locations(&root, terminal_id).unwrap();
     let source = observe_checked_archive_source_v0(&locations).unwrap();
     let archive = CheckedManagedActionV1::for_archive(&source).unwrap();
     assert_eq!(
@@ -256,6 +258,22 @@ fn archive_authority_requires_one_terminal_open_source_and_an_absent_destination
 }
 
 #[test]
+fn archive_authority_rejects_a_terminal_label_with_a_contradictory_v0_envelope() {
+    let root = archive_root("contradictory-terminal-v0");
+    std::fs::write(
+        root.join(".gwz/merge/merge_1.yaml"),
+        v0_bytes_with_state("completed", ""),
+    )
+    .unwrap();
+    let locations = acquire_canonical_merge_locations(&root, "merge_1").unwrap();
+
+    assert!(observe_checked_archive_source_v0(&locations).is_err());
+    assert!(!root.join(".gwz/merge/done").exists());
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn archive_authority_rejects_an_archived_leaf_as_its_source_and_supports_terminal_v1() {
     let archived_root = archive_root("wrong-kind");
     std::fs::create_dir(archived_root.join(".gwz/merge/done")).unwrap();
@@ -273,13 +291,9 @@ fn archive_authority_rejects_an_archived_leaf_as_its_source_and_supports_termina
     );
 
     let v1_root = archive_root("terminal-v1");
-    let mut record = crate::workspace_ops::test_v1_record();
-    record.state = crate::workspace_ops::OperationState::Aborted;
-    record.participants.get_mut("mem_a").unwrap().state =
-        crate::workspace_ops::ParticipantState::Aborted;
-    let encoded = serde_yaml::to_string(&record).unwrap();
-    std::fs::write(v1_root.join(".gwz/merge/merge_1.yaml"), encoded).unwrap();
-    let locations = acquire_canonical_merge_locations(&v1_root, "merge_1").unwrap();
+    let (encoded, merge_id) = archived_fixture_for_test(RecordVersion::V1);
+    std::fs::write(v1_root.join(format!(".gwz/merge/{merge_id}.yaml")), encoded).unwrap();
+    let locations = acquire_canonical_merge_locations(&v1_root, merge_id).unwrap();
     let source = observe_checked_archive_source_v1(&locations).unwrap();
     assert!(CheckedManagedActionV1::for_archive(&source).is_ok());
 

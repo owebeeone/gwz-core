@@ -356,17 +356,21 @@ def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool, no_clippy: b
         cwd=cargo_root,
     )
     test_env = cargo_env()
+    test_env["CLIPPY_CONF_DIR"] = str(cargo_root)
+
+    if not no_clippy:
+        run(
+            ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
+            cwd=cargo_root,
+            env=test_env,
+        )
+    else:
+        log("skipping `cargo clippy`")
 
     if not no_test:
         run(["cargo", "test", "--locked"], cwd=cargo_root, env=test_env)
     else:
         log("skipping `cargo test`")
-
-    if not no_clippy:
-        run(["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], cwd=cargo_root, env=test_env)
-    else:
-        log("skipping `cargo clippy`")
-
 
 def main():
     parser = argparse.ArgumentParser(
