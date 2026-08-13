@@ -71,6 +71,7 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             "checked_artifact/entry.rs",
             "workspace_ops/merge/root/artifact_facts.rs",
             "git/gitbackend/preservation_root/files.rs",
+            "git/gitbackend/preservation_image.rs",
             "workspace_ops/merge/preserve/checked_bundle.rs",
         ]
         self.assertIn("clippy::disallowed_methods", crate)
@@ -98,6 +99,109 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         result = run(source)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("compiler-resolved writer boundary is not fail-closed", result.stderr)
+
+    def test_commented_compiler_boundary_is_not_executable_protection(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "workspace_ops/merge/root/artifact_facts.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "#![forbid(clippy::disallowed_methods)]",
+                "// #![forbid(clippy::disallowed_methods)]",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("compiler-resolved writer boundary is not fail-closed", result.stderr)
+
+    def test_complete_source_allowlist_rejects_unlisted_std_writer_alias(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "workspace_ops/merge/root/artifact_facts.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                ") -> ModelResult<()> {\n"
+                "    crate::checked_artifact::entry::replace_merge_root_artifact(",
+                ") -> ModelResult<()> {\n"
+                "    let map_transition = std::fs::copy;\n"
+                "    let _ = map_transition(relative, \".gwz/raw-copy\");\n"
+                "    crate::checked_artifact::entry::replace_merge_root_artifact(",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source allowlist changed", result.stderr)
+
+    def test_complete_source_allowlist_rejects_unlisted_crate_writer_alias(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "workspace_ops/merge/root/artifact_facts.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                ") -> ModelResult<()> {\n"
+                "    crate::checked_artifact::entry::replace_merge_root_artifact(",
+                ") -> ModelResult<()> {\n"
+                "    let map_transition = "
+                "crate::workspace_ops::publish_workspace_exclude_candidate;\n"
+                "    map_transition(root, \"unchecked boundary replacement\")?;\n"
+                "    crate::checked_artifact::entry::replace_merge_root_artifact(",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source allowlist changed", result.stderr)
+
+    def test_concrete_preservation_observer_is_inside_the_source_allowlist(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "git/gitbackend/preservation_image.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                ") -> ModelResult<Vec<GitPreservationStashEvidence>> {\n",
+                ") -> ModelResult<Vec<GitPreservationStashEvidence>> {\n"
+                "    std::fs::write(root.join(\"raw-observer\"), b\"bypass\")\n"
+                "        .map_err(crate::git::io_error)?;\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source allowlist changed", result.stderr)
+
+    def test_production_observer_delegate_cannot_leave_its_protected_leaf(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "git/gitbackend.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "=> preservation_image::preservation_stashes);",
+                "=> preservation::preservation_stashes);",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "production preservation observer no longer terminates in its protected leaf",
+            result.stderr,
+        )
+
+    def test_second_production_git_backend_is_rejected(self) -> None:
+        result = self.append(
+            "workspace_ops/handle_stash/shared.rs",
+            "\nstruct UnreviewedBackend;\n"
+            "impl GitBackend for UnreviewedBackend {}\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("production GitBackend implementation set changed", result.stderr)
 
     def copied_source(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temporary = tempfile.TemporaryDirectory()

@@ -27,4 +27,5 @@ jobs:
         run: |
           python scripts/checks/check_checked_artifact_boundaries.py
           python -m unittest scripts/checks/test_check_checked_artifact_boundaries.py -v
+          python -m unittest scripts/checks/test_release_boundary.py -v
           CLIPPY_CONF_DIR="$PWD" cargo clippy --all-targets --all-features -- -D warnings

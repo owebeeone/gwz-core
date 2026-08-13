@@ -370,15 +370,6 @@ pub(super) fn preservation_image(
     preservation_image::capture(path, include_untracked)
 }
 
-pub(super) fn preservation_stashes(
-    backend: &Git2Backend,
-    path: &Path,
-    merge_id: &str,
-) -> ModelResult<Vec<GitPreservationStashEvidence>> {
-    validate_merge_id(merge_id)?;
-    preservation_image::decode_stashes(backend, path, merge_id)
-}
-
 fn canonical_preservation_stash_message<'a>(
     native_message: &str,
     expected_message: &'a str,

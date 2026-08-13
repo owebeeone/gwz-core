@@ -41,6 +41,7 @@ fn checked_artifact_boundary_runs_before_merge_and_on_main_push() {
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("branches: [main]"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("check_checked_artifact_boundaries.py"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("test_check_checked_artifact_boundaries.py"));
+    assert!(CHECKED_ARTIFACT_WORKFLOW.contains("test_release_boundary.py"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains(
         "CLIPPY_CONF_DIR=\"$PWD\" cargo clippy --all-targets --all-features -- -D warnings"
     ));
@@ -57,6 +58,25 @@ fn local_release_runs_checked_artifact_boundary_before_rust_tests() {
         .expect("release gate invokes Rust tests");
     assert!(boundary < tests);
     assert!(release.contains("CHECKED_ARTIFACT_BOUNDARY_TEST"));
+    assert!(release.contains("RELEASE_BOUNDARY_TEST"));
     assert!(release.contains("cargo\", \"clippy\", \"--all-targets\", \"--all-features"));
     assert!(release.contains("test_env[\"CLIPPY_CONF_DIR\"] = str(cargo_root)"));
+}
+
+#[test]
+fn local_release_cannot_skip_or_tag_a_commit_before_the_boundary_gate() {
+    let release = include_str!("../scripts/release.py");
+    assert!(!release.contains("--no-clippy"));
+    assert!(!release.contains("no_clippy"));
+    let commit = release
+        .find("git([\"commit\", \"-m\", message])")
+        .expect("release script creates its version commit");
+    let exact_gate = release
+        .rfind("gate_exact_release_commit(cargo_root=cargo_root, expected_head=head)")
+        .expect("release script gates the exact version commit");
+    let tag = release
+        .find("ensure_tag(tag, head)")
+        .expect("release script creates the tag");
+    assert!(commit < exact_gate);
+    assert!(exact_gate < tag);
 }

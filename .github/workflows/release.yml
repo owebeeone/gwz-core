@@ -74,6 +74,7 @@ jobs:
         run: |
           python scripts/checks/check_checked_artifact_boundaries.py
           python scripts/checks/test_check_checked_artifact_boundaries.py
+          python scripts/checks/test_release_boundary.py
       - name: Test
         run: cargo test --locked
       - name: Clippy

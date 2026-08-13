@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -14,8 +15,21 @@ ROOT = Path(__file__).resolve().parents[2]
 PROTECTED_COMPILER_MODULES = {
     "checked_artifact/entry.rs",
     "git/gitbackend/preservation_root/files.rs",
+    "git/gitbackend/preservation_image.rs",
     "workspace_ops/merge/preserve/checked_bundle.rs",
     "workspace_ops/merge/root/artifact_facts.rs",
+}
+
+# Complete positive allowlist for the small production boundary. Any executable
+# or non-executable source change requires deliberate review and a digest
+# update; this closes aliases and new wrappers without guessing writer names.
+PROTECTED_SOURCE_DIGESTS = {
+    "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
+    "git/gitbackend.rs": "de44555eb1eb3f1e3f3772528f9efb36172b80611548dee4226c54e613940658",
+    "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
+    "git/gitbackend/preservation_image.rs": "c034508e5ce8d3f6d16ef6d591de7be3509376d632b1fc880147b8fd19337843",
+    "workspace_ops/merge/preserve/checked_bundle.rs": "9d667f0ccaa7189d8e436be2573bda858bf4ebbb6c3c846be19e72e7b5909c57",
+    "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
 }
 
 ENTRY_REFERENCES = {
@@ -414,11 +428,40 @@ def imports(text: str) -> set[str]:
 def check(source: Path) -> list[str]:
     findings: list[str] = []
     forbid = "#![forbid(clippy::disallowed_methods)]"
+    for relative, expected_digest in sorted(PROTECTED_SOURCE_DIGESTS.items()):
+        path = source / relative
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected_digest:
+            findings.append(f"protected source allowlist changed: {relative}")
     for relative in sorted(PROTECTED_COMPILER_MODULES):
-        if forbid not in (source / relative).read_text(encoding="utf-8"):
+        raw = (source / relative).read_bytes()
+        if forbid not in mask_non_code(raw.decode("utf-8")):
             findings.append(
                 f"compiler-resolved writer boundary is not fail-closed: {relative}"
             )
+    backend = mask_non_code(
+        (source / "git/gitbackend.rs").read_text(encoding="utf-8")
+    )
+    expected_observer_delegate = re.compile(
+        r"delegate!\(\s*preservation_stashes\b[\s\S]*?"
+        r"=>\s*preservation_image::preservation_stashes\s*\);"
+    )
+    if expected_observer_delegate.search(backend) is None:
+        findings.append(
+            "production preservation observer no longer terminates in its protected leaf"
+        )
+    production_implementations = []
+    for path in production_rust_files(source):
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        count = len(re.findall(r"\bimpl\s+GitBackend\s+for\b", text))
+        production_implementations.extend(
+            [path.relative_to(source).as_posix()] * count
+        )
+    if production_implementations != ["git/gitbackend.rs"]:
+        findings.append(
+            "production GitBackend implementation set changed: "
+            f"actual={production_implementations}"
+        )
     entry_path = source / "checked_artifact/entry.rs"
     entry_text = mask_non_code(entry_path.read_text(encoding="utf-8"))
     definitions = {name for _, name in VISIBLE_ITEM.findall(entry_text)}

@@ -1,4 +1,5 @@
-use super::repository_support::open_repo;
+#![forbid(clippy::disallowed_methods)]
+
 use super::*;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -56,8 +57,8 @@ fn live_entries(
     managed: Option<&GitRootManagedForm>,
     excluded_paths: &[Vec<u8>],
 ) -> ModelResult<(BTreeMap<Vec<u8>, ImageEntry>, GitPreservationDirtySummary)> {
-    let repo = open_repo(root)?;
-    let index = repo.index().map_err(git_error)?;
+    let repo = git2::Repository::open(root).map_err(preservation_git_error)?;
+    let index = repo.index().map_err(preservation_git_error)?;
     let mut entries = BTreeMap::<Vec<u8>, ImageEntry>::new();
     for item in index.iter() {
         if excluded_paths
@@ -95,7 +96,9 @@ fn live_entries(
         .include_ignored(false)
         .renames_head_to_index(false)
         .renames_index_to_workdir(false);
-    let statuses = repo.statuses(Some(&mut options)).map_err(git_error)?;
+    let statuses = repo
+        .statuses(Some(&mut options))
+        .map_err(preservation_git_error)?;
     let mut dirty = GitPreservationDirtySummary::default();
     for status in statuses.iter() {
         let path = status.path_bytes();
@@ -163,10 +166,10 @@ pub(super) fn checkout_matches_commit_with_overlay(
     commit: &str,
     overlay: &GitCheckoutOverlay,
 ) -> ModelResult<bool> {
-    let repo = open_repo(root)?;
+    let repo = git2::Repository::open(root).map_err(preservation_git_error)?;
     let commit = preservation_root::index::parse_exact_oid(&repo, commit, "checkout commit")?;
-    let commit = repo.find_commit(commit).map_err(git_error)?;
-    let expected_tree = flatten_tree(&repo, &commit.tree().map_err(git_error)?)?;
+    let commit = repo.find_commit(commit).map_err(preservation_git_error)?;
+    let expected_tree = flatten_tree(&repo, &commit.tree().map_err(preservation_git_error)?)?;
     let mut expected = expected_tree
         .into_iter()
         .map(|(path, item)| {
@@ -280,18 +283,32 @@ fn substitute(
 }
 
 pub(super) fn decode_stashes(
+    _backend: &Git2Backend,
+    root: &Path,
+    merge_id: &str,
+) -> ModelResult<Vec<GitPreservationStashEvidence>> {
+    let mut repo = git2::Repository::open(root).map_err(preservation_git_error)?;
+    let expected = format!("gwz:stash_{merge_id}: merge preservation");
+    let mut stashes = Vec::new();
+    repo.stash_foreach(|_, message, oid| {
+        stashes.push((*oid, message.to_owned()));
+        true
+    })
+    .map_err(preservation_git_error)?;
+    stashes
+        .into_iter()
+        .filter(|(_, message)| canonical_stash_message(message, &expected))
+        .map(|(oid, _)| decode_stash(&repo, oid, expected.clone()))
+        .collect()
+}
+
+pub(super) fn preservation_stashes(
     backend: &Git2Backend,
     root: &Path,
     merge_id: &str,
 ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
-    let repo = open_repo(root)?;
-    let expected = format!("gwz:stash_{merge_id}: merge preservation");
-    backend
-        .stash_list(root)?
-        .into_iter()
-        .filter(|entry| canonical_stash_message(&entry.message, &expected))
-        .map(|entry| decode_stash(&repo, entry.object_id, expected.clone()))
-        .collect()
+    validate_merge_id(merge_id)?;
+    decode_stashes(backend, root, merge_id)
 }
 
 pub(super) fn canonical_stash_message(native: &str, expected: &str) -> bool {
@@ -304,30 +321,30 @@ pub(super) fn canonical_stash_message(native: &str, expected: &str) -> bool {
 
 fn decode_stash(
     repo: &git2::Repository,
-    object_id: String,
+    oid: git2::Oid,
     message: String,
 ) -> ModelResult<GitPreservationStashEvidence> {
-    let oid = preservation_root::index::parse_exact_oid(repo, &object_id, "stash")?;
-    let stash = repo.find_commit(oid).map_err(git_error)?;
+    let stash = repo.find_commit(oid).map_err(preservation_git_error)?;
+    let object_id = oid.to_string();
 
     if !(2..=3).contains(&stash.parent_count()) {
         return Err(preimage_error(
             "preservation stash has an unknown parent layout",
         ));
     }
-    let head = stash.parent(0).map_err(git_error)?;
-    let index = stash.parent(1).map_err(git_error)?;
-    let head_tree = flatten_tree(repo, &head.tree().map_err(git_error)?)?;
-    let index_tree = flatten_tree(repo, &index.tree().map_err(git_error)?)?;
-    let worktree = flatten_tree(repo, &stash.tree().map_err(git_error)?)?;
+    let head = stash.parent(0).map_err(preservation_git_error)?;
+    let index = stash.parent(1).map_err(preservation_git_error)?;
+    let head_tree = flatten_tree(repo, &head.tree().map_err(preservation_git_error)?)?;
+    let index_tree = flatten_tree(repo, &index.tree().map_err(preservation_git_error)?)?;
+    let worktree = flatten_tree(repo, &stash.tree().map_err(preservation_git_error)?)?;
     let untracked = if stash.parent_count() == 3 {
         flatten_tree(
             repo,
             &stash
                 .parent(2)
-                .map_err(git_error)?
+                .map_err(preservation_git_error)?
                 .tree()
-                .map_err(git_error)?,
+                .map_err(preservation_git_error)?,
         )?
     } else {
         BTreeMap::new()
@@ -364,6 +381,20 @@ fn decode_stash(
         head_commit: head.id().to_string(),
         image: encode(entries, dirty)?,
     })
+}
+
+fn validate_merge_id(merge_id: &str) -> ModelResult<()> {
+    if merge_id.is_empty()
+        || !merge_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            format!("invalid merge preservation id '{merge_id}'"),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -405,7 +436,7 @@ fn flatten_tree(
             if entry.kind() == Some(git2::ObjectType::Tree) {
                 walk(
                     repo,
-                    &repo.find_tree(entry.id()).map_err(git_error)?,
+                    &repo.find_tree(entry.id()).map_err(preservation_git_error)?,
                     &path,
                     out,
                 )?;
@@ -417,7 +448,7 @@ fn flatten_tree(
                             .map(|blob| blob.content().to_vec())
                     })
                     .transpose()
-                    .map_err(git_error)?;
+                    .map_err(preservation_git_error)?;
                 if out
                     .insert(
                         path,
@@ -581,6 +612,10 @@ fn push_oid(bytes: &mut Vec<u8>, oid: &[u8]) -> ModelResult<()> {
 
 pub(super) fn preimage_error(detail: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::PreservationEvidenceMismatch, detail.into())
+}
+
+fn preservation_git_error(error: git2::Error) -> ModelError {
+    ModelError::new(ErrorCode::GitCommandFailed, error.message())
 }
 
 #[cfg(test)]

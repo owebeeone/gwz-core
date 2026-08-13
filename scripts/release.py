@@ -26,8 +26,7 @@ behind its upstream. Pull first if you want the latest.
 Usage:
     python scripts/release.py vX.Y.Z              # verify + bump + commit + tag (no push)
     python scripts/release.py vX.Y.Z --push       # also push main + tag to origin
-    python scripts/release.py vX.Y.Z --no-test      # skip `cargo test` (still runs clippy)
-    python scripts/release.py vX.Y.Z --no-clippy    # skip `cargo clippy`
+    python scripts/release.py vX.Y.Z --no-test      # skip full `cargo test` only
     python scripts/release.py vX.Y.Z --skip-regen-check
     python scripts/release.py vX.Y.Z --keep-worktree
 """
@@ -50,6 +49,7 @@ REGEN = REPO / "protocol" / "regen.py"
 REGEN_VENV = REPO / "protocol" / ".regen-venv"
 CHECKED_ARTIFACT_BOUNDARY = Path("scripts/checks/check_checked_artifact_boundaries.py")
 CHECKED_ARTIFACT_BOUNDARY_TEST = Path("scripts/checks/test_check_checked_artifact_boundaries.py")
+RELEASE_BOUNDARY_TEST = Path("scripts/checks/test_release_boundary.py")
 
 
 def fail(msg: str):
@@ -336,7 +336,45 @@ def push_release(branch: str, tag: str):
     log(f"pushed {branch} + {tag} to origin (atomic)")
 
 
-def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool, no_clippy: bool):
+def run_checked_boundary_gates(*, cargo_root: Path):
+    """Run the non-skippable source and compiler boundary on this exact tree."""
+    run(
+        [sys.executable, CHECKED_ARTIFACT_BOUNDARY],
+        cwd=cargo_root,
+    )
+    run(
+        [sys.executable, "-m", "unittest", CHECKED_ARTIFACT_BOUNDARY_TEST, "-v"],
+        cwd=cargo_root,
+    )
+    run(
+        [sys.executable, "-m", "unittest", RELEASE_BOUNDARY_TEST, "-v"],
+        cwd=cargo_root,
+    )
+    test_env = cargo_env()
+    test_env["CLIPPY_CONF_DIR"] = str(cargo_root)
+    run(
+        ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
+        cwd=cargo_root,
+        env=test_env,
+    )
+
+
+def gate_exact_release_commit(*, cargo_root: Path, expected_head: str):
+    """Reacquire the exact commit that can be tagged, then run mandatory gates."""
+    if cargo_root != REPO:
+        run(["git", "reset", "--hard", expected_head], cwd=cargo_root)
+    observed = run(
+        ["git", "rev-parse", "HEAD"], cwd=cargo_root, capture=True
+    ).stdout.strip()
+    if observed != expected_head:
+        fail(
+            f"release gate tree is {observed[:10]}, expected exact tag target "
+            f"{expected_head[:10]}"
+        )
+    run_checked_boundary_gates(cargo_root=cargo_root)
+
+
+def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool):
     if not skip_regen:
         if not REGEN.is_file():
             fail(f"protocol regen script not found at {REGEN}")
@@ -347,25 +385,8 @@ def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool, no_clippy: b
 
     run_fmt_check(cargo_root=cargo_root)
     assert_lock_current(cargo_root=cargo_root)
-    run(
-        [sys.executable, CHECKED_ARTIFACT_BOUNDARY],
-        cwd=cargo_root,
-    )
-    run(
-        [sys.executable, "-m", "unittest", CHECKED_ARTIFACT_BOUNDARY_TEST, "-v"],
-        cwd=cargo_root,
-    )
+    run_checked_boundary_gates(cargo_root=cargo_root)
     test_env = cargo_env()
-    test_env["CLIPPY_CONF_DIR"] = str(cargo_root)
-
-    if not no_clippy:
-        run(
-            ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
-            cwd=cargo_root,
-            env=test_env,
-        )
-    else:
-        log("skipping `cargo clippy`")
 
     if not no_test:
         run(["cargo", "test", "--locked"], cwd=cargo_root, env=test_env)
@@ -379,7 +400,6 @@ def main():
     parser.add_argument("tag", help="release tag, e.g. v0.3.0")
     parser.add_argument("--branch", default="main", help="branch to release from (default: main)")
     parser.add_argument("--no-test", action="store_true", help="skip `cargo test --locked`")
-    parser.add_argument("--no-clippy", action="store_true", help="skip `cargo clippy`")
     parser.add_argument(
         "--skip-regen-check",
         action="store_true",
@@ -418,7 +438,8 @@ def main():
         capture=True,
         check=False,
     )
-    if existing.returncode == 0:
+    release_already_cut = existing.returncode == 0
+    if release_already_cut:
         if existing.stdout.strip() != head:
             fail(
                 f"tag {tag} already exists at {existing.stdout.strip()[:10]} but {args.branch} HEAD is "
@@ -430,9 +451,6 @@ def main():
                 f"tag {tag} already points at HEAD but Cargo.toml version is {current}, not {version}"
             )
         log(f"{tag} already exists at {args.branch} HEAD ({head[:10]}); release already cut")
-        if args.push:
-            push_release(args.branch, tag)
-        return
 
     umbrella = parent_cargo_workspace_root(REPO)
     cargo_root = REPO
@@ -446,11 +464,16 @@ def main():
         cargo_root = worktree
 
     try:
+        if release_already_cut:
+            gate_exact_release_commit(cargo_root=cargo_root, expected_head=head)
+            if args.push:
+                push_release(args.branch, tag)
+            return
+
         run_gates(
             cargo_root=cargo_root,
             skip_regen=args.skip_regen_check,
             no_test=args.no_test,
-            no_clippy=args.no_clippy,
         )
 
         toml_changed = bump_cargo_version(version)
@@ -469,6 +492,7 @@ def main():
             git(["commit", "-m", message])
             head = git(["rev-parse", "HEAD"], capture=True).stdout.strip()
             log(f"release commit -> {head[:10]}  (gwz-core {version})")
+            gate_exact_release_commit(cargo_root=cargo_root, expected_head=head)
         else:
             current = read_package_version()
             if current != version:
