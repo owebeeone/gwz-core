@@ -5,6 +5,7 @@
 
 mod backend;
 mod evidence;
+mod managed;
 mod operations;
 mod provider_compile;
 mod roles;

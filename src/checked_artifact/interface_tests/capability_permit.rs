@@ -7,6 +7,7 @@ use super::super::capability::{
     RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
     synthetic_pre_catalog_permit,
 };
+use super::super::catalog_names::CatalogPrivateNameV1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RetainedRoot(u8);
@@ -26,7 +27,7 @@ fn path(root: u8, invocation: u8, domain: u8) -> CanonicalPathIdentityV1 {
         )
         .unwrap(),
         CanonicalComponent::try_bound(
-            AsciiComponent::parse(b"checked-artifacts").unwrap(),
+            AsciiComponent::parse(CatalogPrivateNameV1::Final.leaf_bytes()).unwrap(),
             PathComponentMode::Sensitive,
             identity(root + 1),
             vec![invocation + 1],

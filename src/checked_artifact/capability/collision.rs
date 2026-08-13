@@ -3,6 +3,7 @@
 use sha2::{Digest, Sha256};
 
 use super::{CheckedFsError, PlatformCapability};
+use crate::checked_artifact::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(in crate::checked_artifact) struct GitPathBytes(Vec<u8>);
@@ -125,15 +126,13 @@ pub(in crate::checked_artifact) struct PrivateControlDomain {
 impl PrivateControlDomain {
     pub(in crate::checked_artifact) fn checked_v1() -> Self {
         Self {
-            members: [
-                b".gwz/checked-artifacts".as_slice(),
-                b".gwz/checked-artifacts-catalog-bootstrap-v1.scratch".as_slice(),
-                b".gwz/checked-artifacts-catalog-bootstrap-v1.active".as_slice(),
-                b".gwz/checked-artifacts-catalog-bootstrap-v1.staging".as_slice(),
-            ]
-            .into_iter()
-            .map(|value| GitPathBytes::new(value.to_vec()).expect("fixed path is valid"))
-            .collect(),
+            members: CatalogPrivateNameV1::ALL
+                .iter()
+                .map(|name| {
+                    GitPathBytes::new(name.relative_bytes(CatalogPrivateRootV1::Workspace))
+                        .expect("fixed path is valid")
+                })
+                .collect(),
         }
     }
     pub(in crate::checked_artifact) fn members(&self) -> &[GitPathBytes] {

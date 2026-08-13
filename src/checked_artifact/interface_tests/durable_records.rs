@@ -9,13 +9,11 @@ use super::super::capability::{
 };
 use super::super::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionScheduleV1,
-    CatalogBootstrapOwnershipTokenV1, CatalogBootstrapRecordV1, CatalogBootstrapRecoveryDecisionV1,
-    CatalogDirectoryObservationV1, CatalogRecordObservationV1, CheckedAuthorityRecordV1,
+    CatalogBootstrapOwnershipTokenV1, CatalogBootstrapRecordV1, CheckedAuthorityRecordV1,
     CleanupAliasSetV1, DurableLeafFingerprintV1, ManagedBootstrapInputV1, ProtocolRecordKindV1,
-    RequestOwnerBindingV1, classify_catalog_bootstrap_recovery, read_and_bind_authority_record,
-    read_and_match_catalog_bootstrap_record, read_and_match_infrastructure_record,
-    read_bounded_record, synthetic_authority_observation,
-    synthetic_infrastructure_from_catalog_bootstrap,
+    RequestOwnerBindingV1, read_and_bind_authority_record, read_and_match_catalog_bootstrap_record,
+    read_and_match_infrastructure_record, read_bounded_record, synthetic_authority_observation,
+    synthetic_authority_observation_owner, synthetic_infrastructure_from_catalog_bootstrap,
 };
 
 fn identity(byte: u8) -> DurableObjectIdentityV1 {
@@ -236,6 +234,55 @@ fn authority_id_binds_reservation_path_identity_payload_and_goal() {
 }
 
 #[test]
+fn authority_owner_rejects_two_request_substitution_in_both_directions() {
+    let first = reservation();
+    let second = ActionCapacityReservationV1::new(
+        first.action_digest(),
+        RequestOwnerBindingV1::new([91; 32]),
+        first.schedule().clone(),
+    );
+    assert_eq!(first.action_digest(), second.action_digest());
+    assert_eq!(first.schedule(), second.schedule());
+    assert_ne!(
+        first.request_owner_binding(),
+        second.request_owner_binding()
+    );
+    let retained_root = path(b'a');
+    let retained_parent = identity(1);
+    let source = DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]);
+
+    let first_owner = synthetic_authority_observation_owner(
+        first.request_owner_binding(),
+        retained_root.clone(),
+        retained_parent.clone(),
+        source.clone(),
+        [5; 32],
+        [6; 32],
+    );
+    let first_observation = first_owner.observe(&first).unwrap();
+    assert!(first_owner.observe(&second).is_err());
+
+    let second_owner = synthetic_authority_observation_owner(
+        second.request_owner_binding(),
+        retained_root,
+        retained_parent,
+        source,
+        [7; 32],
+        [8; 32],
+    );
+    let second_observation = second_owner.observe(&second).unwrap();
+    assert!(second_owner.observe(&first).is_err());
+    assert_ne!(
+        CheckedAuthorityRecordV1::issue(&first_observation)
+            .unwrap()
+            .record_id(),
+        CheckedAuthorityRecordV1::issue(&second_observation)
+            .unwrap()
+            .record_id()
+    );
+}
+
+#[test]
 fn catalog_id_binds_every_pre_catalog_domain() {
     let base = catalog(PreCatalogRootKindV1::Workspace, 1);
     let changed = [
@@ -274,85 +321,6 @@ fn first_catalog_ownership_token_is_nonzero_and_binds_staging_infrastructure() {
 
     let foreign = catalog_with_token(PreCatalogRootKindV1::Workspace, 1, [92; 32]);
     assert_ne!(foreign.record_id(), bootstrap.record_id());
-}
-
-#[test]
-fn catalog_recovery_exact_requires_owner_bound_physical_marker_and_staging_identity() {
-    let bootstrap = catalog_with_token(PreCatalogRootKindV1::Workspace, 1, [91; 32]);
-    let identities = super::super::protocol::ObservedInfrastructureIdentitiesV1::new(
-        identity(14),
-        identity(15),
-        identity(16),
-        identity(17),
-    );
-    let owner = super::super::protocol::synthetic_catalog_infrastructure_owner(
-        &bootstrap,
-        bootstrap.record_id(),
-        *bootstrap.bootstrap_ownership_token().as_bytes(),
-        identity(14),
-        identities.clone(),
-    );
-    let exact = owner.recover_or_create(&bootstrap).unwrap();
-    let infrastructure = exact.value().clone();
-
-    assert_eq!(
-        classify_catalog_bootstrap_recovery(
-            &bootstrap,
-            &CatalogRecordObservationV1::Missing,
-            &CatalogRecordObservationV1::Exact(Box::new(bootstrap.clone())),
-            &CatalogDirectoryObservationV1::Exact(Box::new(exact)),
-            &CatalogDirectoryObservationV1::Missing,
-            &CatalogRecordObservationV1::Missing,
-        ),
-        CatalogBootstrapRecoveryDecisionV1::PublishFinal
-    );
-
-    let foreign = super::super::protocol::synthetic_catalog_infrastructure_owner(
-        &bootstrap,
-        bootstrap.record_id(),
-        [92; 32],
-        identity(14),
-        identities.clone(),
-    );
-    assert!(foreign.recover_or_create(&bootstrap).is_err());
-
-    let (missing, writes) =
-        super::super::protocol::synthetic_catalog_infrastructure_owner_missing_record(
-            &bootstrap,
-            identity(14),
-            identities.clone(),
-        );
-    assert!(missing.recover_or_create(&bootstrap).is_ok());
-    assert_eq!(writes.writes(), 1);
-
-    let mismatched =
-        super::super::protocol::synthetic_catalog_infrastructure_owner_mismatched_record(
-            &bootstrap,
-            identity(14),
-            identities.clone(),
-        );
-    assert!(mismatched.recover_or_create(&bootstrap).is_err());
-
-    let self_consistent_but_unowned = synthetic_infrastructure_from_catalog_bootstrap(
-        &bootstrap,
-        identity(14),
-        identity(15),
-        identity(16),
-        identity(17),
-    )
-    .unwrap();
-    assert_eq!(self_consistent_but_unowned, infrastructure);
-    assert_eq!(
-        classify_catalog_bootstrap_recovery(
-            &bootstrap,
-            &CatalogRecordObservationV1::Missing,
-            &CatalogRecordObservationV1::Exact(Box::new(bootstrap.clone())),
-            &CatalogDirectoryObservationV1::Other,
-            &CatalogDirectoryObservationV1::Missing,
-            &CatalogRecordObservationV1::Missing,
-        ),
-        CatalogBootstrapRecoveryDecisionV1::Ambiguous
-    );
 }
 
 #[test]
@@ -468,120 +436,4 @@ fn authority_recovery_binds_the_exact_coherent_observation() {
         );
     }
     assert!(read_and_bind_authority_record(Cursor::new(bytes), &reservation, &observed).is_ok());
-}
-
-#[test]
-fn catalog_bootstrap_recovery_table_is_closed() {
-    use CatalogBootstrapRecoveryDecisionV1::*;
-    use CatalogDirectoryObservationV1 as Directory;
-    use CatalogRecordObservationV1 as Record;
-
-    let bootstrap = catalog(PreCatalogRootKindV1::Workspace, 31);
-    let exact = super::super::protocol::synthetic_catalog_infrastructure_owner(
-        &bootstrap,
-        bootstrap.record_id(),
-        *bootstrap.bootstrap_ownership_token().as_bytes(),
-        identity(14),
-        super::super::protocol::ObservedInfrastructureIdentitiesV1::new(
-            identity(14),
-            identity(33),
-            identity(34),
-            identity(35),
-        ),
-    )
-    .recover_or_create(&bootstrap)
-    .unwrap();
-
-    let records = [
-        Record::Missing,
-        Record::PartialExpectedPrefix,
-        Record::Exact(Box::new(bootstrap.clone())),
-        Record::Other,
-    ];
-    let directories = [
-        Directory::Missing,
-        Directory::PartialExpectedContents,
-        Directory::Exact(Box::new(exact.clone())),
-        Directory::Other,
-    ];
-
-    let mut accepted = 0;
-    for scratch in &records {
-        for active in &records {
-            for staging in &directories {
-                for final_directory in &directories {
-                    for retired in &records {
-                        let decision = classify_catalog_bootstrap_recovery(
-                            &bootstrap,
-                            scratch,
-                            active,
-                            staging,
-                            final_directory,
-                            retired,
-                        );
-                        let expected = match (scratch, active, staging, final_directory, retired) {
-                            (
-                                Record::Missing | Record::PartialExpectedPrefix,
-                                Record::Missing,
-                                Directory::Missing,
-                                Directory::Missing,
-                                Record::Missing,
-                            ) => WriteOrRewriteScratch,
-                            (
-                                Record::Exact(value),
-                                Record::Missing,
-                                Directory::Missing,
-                                Directory::Missing,
-                                Record::Missing,
-                            ) if value.as_ref() == &bootstrap => PublishActive,
-                            (
-                                Record::Missing,
-                                Record::Exact(value),
-                                Directory::Missing | Directory::PartialExpectedContents,
-                                Directory::Missing,
-                                Record::Missing,
-                            ) if value.as_ref() == &bootstrap => PrepareOrRewriteStaging,
-                            (
-                                Record::Missing,
-                                Record::Exact(active_value),
-                                Directory::Exact(staging_value),
-                                Directory::Missing,
-                                Record::Missing,
-                            ) if active_value.as_ref() == &bootstrap
-                                && staging_value.as_ref() == &exact =>
-                            {
-                                PublishFinal
-                            }
-                            (
-                                Record::Missing,
-                                Record::Exact(active_value),
-                                Directory::Missing,
-                                Directory::Exact(final_value),
-                                Record::Missing,
-                            ) if active_value.as_ref() == &bootstrap
-                                && final_value.as_ref() == &exact =>
-                            {
-                                RetireActive
-                            }
-                            (
-                                Record::Missing,
-                                Record::Missing,
-                                Directory::Missing,
-                                Directory::Exact(final_value),
-                                Record::Exact(retired_value),
-                            ) if final_value.as_ref() == &exact
-                                && retired_value.as_ref() == &bootstrap =>
-                            {
-                                Complete
-                            }
-                            _ => Ambiguous,
-                        };
-                        assert_eq!(decision, expected);
-                        accepted += usize::from(decision != Ambiguous);
-                    }
-                }
-            }
-        }
-    }
-    assert_eq!(accepted, 8);
 }

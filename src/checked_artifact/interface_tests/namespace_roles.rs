@@ -3,9 +3,9 @@ use super::super::capability::{
     PathComponentMode,
 };
 use super::super::namespace::test_support::{
-    RecordingNamespaceEvent, backend_events, barrier_target, bootstrap_target,
-    installed_component_evidence, recording_backend, retained_directory_for, retained_object_for,
-    retired_marker_evidence,
+    RecordingNamespaceEvent, backend_events, barrier_target, bootstrap_target, recording_backend,
+    retained_directory_for, retained_object_for, seed_installed_component_observation,
+    seed_retired_marker_observation,
 };
 use super::super::namespace::{ActionNamespace, NamespaceObjectKind, PublishRoleV1};
 use super::super::protocol::{
@@ -76,6 +76,28 @@ fn admitted(
             identity(directory),
             RecordObservationV1::Exact(reservation.clone()),
         ),
+    )
+    .unwrap()
+}
+
+fn managed_intent(
+    reservation: &ActionCapacityReservationV1,
+    parent_identity: DurableObjectIdentityV1,
+    parent_path: CanonicalPathIdentityV1,
+    names: &[&[u8]],
+) -> ManagedParentBootstrapIntentV1 {
+    ManagedParentBootstrapIntentV1::try_initial_for_test(
+        reservation,
+        [1; 32],
+        BootstrapOrdinalV1::new(0).unwrap(),
+        parent_identity,
+        PathComponentMode::Sensitive,
+        parent_path,
+        names
+            .iter()
+            .map(|name| AsciiComponent::parse(name).unwrap())
+            .collect(),
+        [5; 32],
     )
     .unwrap()
 }
@@ -358,45 +380,49 @@ fn namespace_source_contains_no_consumer_backend_escape_hatch() {
 fn managed_success_evidence_is_schedule_role_and_observation_bound() {
     let other_reservation = reservation(4, 0, &[1], CleanupAliasSetV1::all());
     let reservation = reservation(3, 0, &[1], CleanupAliasSetV1::all());
-    let backend = recording_backend([9; 32], identity(7));
-    let intent = ManagedParentBootstrapIntentV1::try_initial_for_test(
+    let retained_path = path(b"retained");
+    let intent = managed_intent(
         &reservation,
-        [1; 32],
-        BootstrapOrdinalV1::new(0).unwrap(),
         identity(30),
-        PathComponentMode::Sensitive,
-        path(b"retained"),
-        vec![AsciiComponent::parse(b"final").unwrap()],
-        [5; 32],
-    )
-    .unwrap();
+        retained_path.clone(),
+        &[b"final"],
+    );
     let marker = OwnershipMarkerV1::for_current_component(&intent).unwrap();
+    let installed_path = child_path(&retained_path, identity(30), b"final");
+    let mut backend = recording_backend([9; 32], identity(7));
+    seed_installed_component_observation(
+        &mut backend,
+        marker.clone(),
+        identity(39),
+        identity(40),
+        PathComponentMode::Sensitive,
+        installed_path.clone(),
+    );
+    seed_retired_marker_observation(
+        &mut backend,
+        marker.clone(),
+        identity(39),
+        identity(40),
+        PathComponentMode::Sensitive,
+        installed_path.clone(),
+    );
     let target = bootstrap_target(
         &backend,
-        retained_directory_for(&backend, 3, identity(9), path(b"managed")),
+        retained_directory_for(&backend, 3, identity(30), retained_path),
         &reservation,
         0,
         AsciiComponent::parse(b"final").unwrap(),
     )
     .unwrap();
-    let slots = ActionNamespace::from_admitted(
-        recording_backend([9; 32], identity(7)),
-        admitted(&reservation, 7),
-    )
-    .bootstrap_slots(0)
-    .unwrap()
-    .component(0, target)
-    .unwrap();
-    let installed = installed_component_evidence(
-        &backend,
-        &slots,
-        marker.clone(),
-        identity(39),
-        identity(40),
-        PathComponentMode::Sensitive,
-        path(b"installed"),
-    )
-    .unwrap();
+    let mut namespace = ActionNamespace::from_admitted(backend, admitted(&reservation, 7));
+    let slots = namespace
+        .bootstrap_slots(0)
+        .unwrap()
+        .component(0, target)
+        .unwrap();
+    let installed = namespace
+        .recover_installed_bootstrap_component(&intent, &slots)
+        .unwrap();
     assert_eq!(installed.action_digest(), reservation.action_digest());
     assert_eq!(installed.reservation_digest(), reservation.record_digest());
     assert_ne!(
@@ -410,18 +436,12 @@ fn managed_success_evidence_is_schedule_role_and_observation_bound() {
     assert_eq!(installed.marker_object_identity(), &identity(39));
     assert_eq!(installed.installed_identity(), &identity(40));
     assert_eq!(installed.installed_mode(), PathComponentMode::Sensitive);
-    assert_eq!(installed.installed_path(), &path(b"installed"));
+    assert_eq!(installed.installed_path(), &installed_path);
 
-    let retired = retired_marker_evidence(
-        &backend,
-        &slots,
-        marker.clone(),
-        identity(39),
-        identity(40),
-        PathComponentMode::Sensitive,
-        path(b"installed"),
-    )
-    .unwrap();
+    let retiring = intent.successor_after_component(&installed).unwrap();
+    let retired = namespace
+        .recover_retired_bootstrap_marker(&retiring, &slots)
+        .unwrap();
     assert_eq!(retired.action_digest(), reservation.action_digest());
     assert_eq!(retired.reservation_digest(), reservation.record_digest());
     assert_eq!(retired.bootstrap_ordinal().index(), 0);
@@ -439,39 +459,125 @@ fn managed_success_evidence_is_schedule_role_and_observation_bound() {
         retired.installed_parent_mode(),
         PathComponentMode::Sensitive
     );
-    assert_eq!(retired.installed_parent_path(), &path(b"installed"));
+    assert_eq!(retired.installed_parent_path(), &installed_path);
 
-    let other_backend = recording_backend([10; 32], identity(7));
-    assert!(
-        installed_component_evidence(
-            &other_backend,
-            &slots,
-            marker.clone(),
-            identity(39),
-            identity(40),
-            PathComponentMode::Sensitive,
-            path(b"installed"),
-        )
-        .is_err()
+    let mut other_namespace = ActionNamespace::from_admitted(
+        recording_backend([10; 32], identity(7)),
+        admitted(&reservation, 7),
     );
     assert!(
-        retired_marker_evidence(
-            &other_backend,
-            &slots,
-            marker,
-            identity(39),
-            identity(40),
-            PathComponentMode::Sensitive,
-            path(b"installed"),
-        )
-        .is_err()
+        other_namespace
+            .recover_installed_bootstrap_component(&intent, &slots)
+            .is_err()
     );
+    assert!(
+        other_namespace
+            .recover_retired_bootstrap_marker(&retiring, &slots)
+            .is_err()
+    );
+}
+
+#[test]
+fn managed_restart_evidence_requires_the_exact_observed_physical_state() {
+    let reservation = reservation(3, 0, &[1], CleanupAliasSetV1::all());
+    let retained_path = path(b"retained");
+    let intent = managed_intent(
+        &reservation,
+        identity(30),
+        retained_path.clone(),
+        &[b"final"],
+    );
+
+    let empty_backend = recording_backend([9; 32], identity(7));
+    let empty_target = bootstrap_target(
+        &empty_backend,
+        retained_directory_for(&empty_backend, 3, identity(30), retained_path.clone()),
+        &reservation,
+        0,
+        AsciiComponent::parse(b"final").unwrap(),
+    )
+    .unwrap();
+    let mut empty_namespace =
+        ActionNamespace::from_admitted(empty_backend, admitted(&reservation, 7));
+    let empty_slots = empty_namespace
+        .bootstrap_slots(0)
+        .unwrap()
+        .component(0, empty_target)
+        .unwrap();
+    assert!(
+        empty_namespace
+            .recover_installed_bootstrap_component(&intent, &empty_slots)
+            .is_err()
+    );
+    assert!(backend_events(&empty_namespace).is_empty());
+
+    let marker = OwnershipMarkerV1::for_current_component(&intent).unwrap();
+    let installed_path = child_path(&retained_path, identity(30), b"final");
+    let mut installed_backend = recording_backend([9; 32], identity(7));
+    seed_installed_component_observation(
+        &mut installed_backend,
+        marker,
+        identity(39),
+        identity(40),
+        PathComponentMode::Sensitive,
+        installed_path,
+    );
+    let installed_target = bootstrap_target(
+        &installed_backend,
+        retained_directory_for(&installed_backend, 3, identity(30), retained_path),
+        &reservation,
+        0,
+        AsciiComponent::parse(b"final").unwrap(),
+    )
+    .unwrap();
+    let mut installed_namespace =
+        ActionNamespace::from_admitted(installed_backend, admitted(&reservation, 7));
+    let installed_slots = installed_namespace
+        .bootstrap_slots(0)
+        .unwrap()
+        .component(0, installed_target)
+        .unwrap();
+    let installed = installed_namespace
+        .recover_installed_bootstrap_component(&intent, &installed_slots)
+        .unwrap();
+    let retiring = intent.successor_after_component(&installed).unwrap();
+    assert!(
+        installed_namespace
+            .recover_retired_bootstrap_marker(&retiring, &installed_slots)
+            .is_err()
+    );
+    assert!(backend_events(&installed_namespace).is_empty());
 }
 
 #[test]
 fn every_indexed_namespace_role_forwards_through_its_exact_slot() {
     let reservation = reservation(3, 1, &[1], CleanupAliasSetV1::all());
-    let backend = recording_backend([9; 32], identity(7));
+    let managed_parent_path = path(b"managed-parent");
+    let intent = managed_intent(
+        &reservation,
+        identity(30),
+        managed_parent_path.clone(),
+        &[b"installed"],
+    );
+    let ownership_marker = OwnershipMarkerV1::for_current_component(&intent).unwrap();
+    let installed_path = child_path(&managed_parent_path, identity(30), b"installed");
+    let mut backend = recording_backend([9; 32], identity(7));
+    seed_installed_component_observation(
+        &mut backend,
+        ownership_marker.clone(),
+        identity(41),
+        identity(40),
+        PathComponentMode::Sensitive,
+        installed_path.clone(),
+    );
+    seed_retired_marker_observation(
+        &mut backend,
+        ownership_marker,
+        identity(41),
+        identity(40),
+        PathComponentMode::Sensitive,
+        installed_path.clone(),
+    );
     let barrier_parent_path = path(b"barrier-parent");
     let barrier_target = barrier_target(
         &backend,
@@ -480,7 +586,6 @@ fn every_indexed_namespace_role_forwards_through_its_exact_slot() {
         &reservation,
         0,
     );
-    let managed_parent_path = path(b"managed-parent");
     let component_target = bootstrap_target(
         &backend,
         retained_directory_for(&backend, 3, identity(30), managed_parent_path.clone()),
@@ -577,21 +682,22 @@ fn every_indexed_namespace_role_forwards_through_its_exact_slot() {
         identity(40),
         NamespaceObjectKind::Directory,
     );
-    namespace
-        .install_bootstrap_component(&staging, &component)
+    let installed = namespace
+        .install_bootstrap_component(&staging, &intent, &component)
         .unwrap();
+    let retiring = intent.successor_after_component(&installed).unwrap();
     let marker = retained_object_for(
         &recording_backend([9; 32], identity(7)),
         4,
         identity(40),
-        child_path(&managed_parent_path, identity(30), b"installed"),
+        installed_path,
         super::super::protocol::managed_marker_name(),
         16,
         identity(41),
         NamespaceObjectKind::RegularFile,
     );
     namespace
-        .retire_bootstrap_marker(&marker, &component)
+        .retire_bootstrap_marker(&marker, &retiring, &component)
         .unwrap();
 
     assert_eq!(
@@ -714,8 +820,23 @@ fn indexed_forwarding_rejects_role_parent_kind_provider_and_binding_substitution
 fn bootstrap_forwarding_rejects_generation_component_and_marker_substitutions() {
     let bound_reservation = reservation(3, 0, &[1], CleanupAliasSetV1::all());
     let other_reservation = reservation(4, 0, &[1], CleanupAliasSetV1::all());
-    let backend = recording_backend([9; 32], identity(7));
     let managed_path = path(b"managed");
+    let intent = managed_intent(
+        &bound_reservation,
+        identity(30),
+        managed_path.clone(),
+        &[b"installed"],
+    );
+    let ownership_marker = OwnershipMarkerV1::for_current_component(&intent).unwrap();
+    let mut backend = recording_backend([9; 32], identity(7));
+    seed_installed_component_observation(
+        &mut backend,
+        ownership_marker,
+        identity(40),
+        identity(41),
+        PathComponentMode::Sensitive,
+        child_path(&managed_path, identity(30), b"installed"),
+    );
     let target = bootstrap_target(
         &backend,
         retained_directory_for(&backend, 3, identity(30), managed_path.clone()),
@@ -727,6 +848,10 @@ fn bootstrap_forwarding_rejects_generation_component_and_marker_substitutions() 
     let mut namespace = ActionNamespace::from_admitted(backend, admitted(&bound_reservation, 7));
     let bootstrap = namespace.bootstrap_slots(0).unwrap();
     let component = bootstrap.component(0, target).unwrap();
+    let installed = namespace
+        .recover_installed_bootstrap_component(&intent, &component)
+        .unwrap();
+    let retiring = intent.successor_after_component(&installed).unwrap();
 
     let other_namespace = ActionNamespace::from_admitted(
         recording_backend([9; 32], identity(7)),
@@ -765,7 +890,7 @@ fn bootstrap_forwarding_rejects_generation_component_and_marker_substitutions() 
     );
     assert!(
         namespace
-            .install_bootstrap_component(&wrong_staging_parent, &component)
+            .install_bootstrap_component(&wrong_staging_parent, &intent, &component)
             .is_err()
     );
     let wrong_staging_kind = retained_object_for(
@@ -780,7 +905,7 @@ fn bootstrap_forwarding_rejects_generation_component_and_marker_substitutions() 
     );
     assert!(
         namespace
-            .install_bootstrap_component(&wrong_staging_kind, &component)
+            .install_bootstrap_component(&wrong_staging_kind, &intent, &component)
             .is_err()
     );
 
@@ -796,7 +921,7 @@ fn bootstrap_forwarding_rejects_generation_component_and_marker_substitutions() 
     );
     assert!(
         namespace
-            .retire_bootstrap_marker(&wrong_marker, &component)
+            .retire_bootstrap_marker(&wrong_marker, &retiring, &component)
             .is_err()
     );
     assert!(backend_events(&namespace).is_empty());

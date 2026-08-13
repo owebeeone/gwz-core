@@ -1,12 +1,12 @@
 use std::io::Cursor;
 
 use super::super::capability::{
-    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1,
-    PathComponentMode,
+    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
+    DurableObjectIdentityV1, PathComponentMode,
 };
 use super::super::namespace::test_support::{
-    bootstrap_target, installed_component_evidence, recording_backend, retained_directory_for,
-    retired_marker_evidence,
+    bootstrap_target, recording_backend, retained_directory_for,
+    seed_installed_component_observation, seed_retired_marker_observation,
 };
 use super::super::namespace::{
     ActionNamespace, InstalledManagedComponentV1, RetiredManagedMarkerV1,
@@ -129,7 +129,7 @@ fn installed_evidence(
     bootstrap: usize,
     local: usize,
     byte: u8,
-) -> InstalledManagedComponentV1 {
+) -> Result<InstalledManagedComponentV1, CheckedFsError> {
     installed_evidence_exact(
         reservation,
         intent,
@@ -160,38 +160,39 @@ fn installed_evidence_exact(
     installed_identity: DurableObjectIdentityV1,
     installed_mode: PathComponentMode,
     installed_path: CanonicalPathIdentityV1,
-) -> InstalledManagedComponentV1 {
+) -> Result<InstalledManagedComponentV1, CheckedFsError> {
     let provider = [30; 32];
-    let issuer = recording_backend(provider, identity(31));
-    let component = &intent.components()[local];
-    let global = component.global_component_ordinal().index();
-    let target = bootstrap_target(
-        &issuer,
-        retained_directory_for(&issuer, 1, identity(32), path()),
-        reservation,
-        global,
-        component.final_name().clone(),
-    )
-    .unwrap();
-    let namespace = ActionNamespace::from_admitted(
-        recording_backend(provider, identity(31)),
-        admitted(reservation),
-    );
-    let slots = namespace
-        .bootstrap_slots(bootstrap)
-        .unwrap()
-        .component(global, target)
-        .unwrap();
-    installed_component_evidence(
-        &issuer,
-        &slots,
+    let mut backend = recording_backend(provider, identity(31));
+    seed_installed_component_observation(
+        &mut backend,
         marker,
         marker_object_identity,
         installed_identity,
         installed_mode,
         installed_path,
+    );
+    let component = &intent.components()[local];
+    let global = component.global_component_ordinal().index();
+    let target = bootstrap_target(
+        &backend,
+        retained_directory_for(
+            &backend,
+            1,
+            intent.retained_parent_identity_for_test().clone(),
+            intent.retained_parent_path_for_test().clone(),
+        ),
+        reservation,
+        global,
+        component.final_name().clone(),
     )
-    .unwrap()
+    .unwrap();
+    let mut namespace = ActionNamespace::from_admitted(backend, admitted(reservation));
+    let slots = namespace
+        .bootstrap_slots(bootstrap)
+        .unwrap()
+        .component(global, target)
+        .unwrap();
+    namespace.recover_installed_bootstrap_component(intent, &slots)
 }
 
 fn retirement_evidence(
@@ -200,7 +201,7 @@ fn retirement_evidence(
     marker: OwnershipMarkerV1,
     bootstrap: usize,
     local: usize,
-) -> RetiredManagedMarkerV1 {
+) -> Result<RetiredManagedMarkerV1, CheckedFsError> {
     let component = &intent.components()[local];
     retirement_evidence_exact(
         reservation,
@@ -229,38 +230,55 @@ fn retirement_evidence_exact(
     installed_parent_identity: DurableObjectIdentityV1,
     installed_parent_mode: PathComponentMode,
     installed_parent_path: CanonicalPathIdentityV1,
-) -> RetiredManagedMarkerV1 {
+) -> Result<RetiredManagedMarkerV1, CheckedFsError> {
     let provider = [30; 32];
-    let issuer = recording_backend(provider, identity(31));
-    let component = &intent.components()[local];
-    let global = component.global_component_ordinal().index();
-    let target = bootstrap_target(
-        &issuer,
-        retained_directory_for(&issuer, 1, identity(32), path()),
-        reservation,
-        global,
-        component.final_name().clone(),
-    )
-    .unwrap();
-    let namespace = ActionNamespace::from_admitted(
-        recording_backend(provider, identity(31)),
-        admitted(reservation),
-    );
-    let slots = namespace
-        .bootstrap_slots(bootstrap)
-        .unwrap()
-        .component(global, target)
-        .unwrap();
-    retired_marker_evidence(
-        &issuer,
-        &slots,
+    let mut backend = recording_backend(provider, identity(31));
+    seed_retired_marker_observation(
+        &mut backend,
         marker,
         retired_marker_identity,
         installed_parent_identity,
         installed_parent_mode,
         installed_parent_path,
+    );
+    let component = &intent.components()[local];
+    let global = component.global_component_ordinal().index();
+    let (component_parent_identity, component_parent_path) =
+        if let Some(installed) = component.installed_path() {
+            let installed_component = installed.components().last().unwrap();
+            (
+                installed_component.parent_durable_identity().clone(),
+                CanonicalPathIdentityV1::new(
+                    installed.components()[..installed.components().len() - 1].to_vec(),
+                )
+                .unwrap(),
+            )
+        } else {
+            (
+                intent.retained_parent_identity_for_test().clone(),
+                intent.retained_parent_path_for_test().clone(),
+            )
+        };
+    let target = bootstrap_target(
+        &backend,
+        retained_directory_for(
+            &backend,
+            1,
+            component_parent_identity,
+            component_parent_path,
+        ),
+        reservation,
+        global,
+        component.final_name().clone(),
     )
-    .unwrap()
+    .unwrap();
+    let mut namespace = ActionNamespace::from_admitted(backend, admitted(reservation));
+    let slots = namespace
+        .bootstrap_slots(bootstrap)
+        .unwrap()
+        .component(global, target)
+        .unwrap();
+    namespace.recover_retired_bootstrap_marker(intent, &slots)
 }
 
 #[test]
@@ -272,7 +290,8 @@ fn component_and_marker_successors_form_one_closed_chain() {
     assert_eq!(initial.generation_ordinal().index(), 0);
 
     let first_marker = OwnershipMarkerV1::for_current_component(&initial).unwrap();
-    let first_install = installed_evidence(&reservation, &initial, first_marker.clone(), 0, 0, 5);
+    let first_install =
+        installed_evidence(&reservation, &initial, first_marker.clone(), 0, 0, 5).unwrap();
     let after_first = initial.successor_after_component(&first_install).unwrap();
     assert_eq!(after_first.cursor(), 1);
     assert_eq!(after_first.generation_ordinal().index(), 1);
@@ -283,7 +302,7 @@ fn component_and_marker_successors_form_one_closed_chain() {
 
     let second_marker = OwnershipMarkerV1::for_current_component(&after_first).unwrap();
     let second_install =
-        installed_evidence(&reservation, &after_first, second_marker.clone(), 0, 1, 6);
+        installed_evidence(&reservation, &after_first, second_marker.clone(), 0, 1, 6).unwrap();
     let retiring = after_first
         .successor_after_component(&second_install)
         .unwrap();
@@ -291,7 +310,8 @@ fn component_and_marker_successors_form_one_closed_chain() {
     assert_eq!(retiring.cursor(), 0);
     assert_eq!(retiring.generation_ordinal().index(), 2);
 
-    let first_retirement = retirement_evidence(&reservation, &retiring, first_marker.clone(), 0, 0);
+    let first_retirement =
+        retirement_evidence(&reservation, &retiring, first_marker.clone(), 0, 0).unwrap();
     let after_first_retirement = retiring
         .successor_after_marker_retirement(&first_retirement)
         .unwrap();
@@ -303,7 +323,8 @@ fn component_and_marker_successors_form_one_closed_chain() {
         second_marker.clone(),
         0,
         1,
-    );
+    )
+    .unwrap();
     let complete = after_first_retirement
         .successor_after_marker_retirement(&second_retirement)
         .unwrap();
@@ -338,7 +359,7 @@ fn substitutions_cannot_advance_or_bind_a_managed_chain() {
     let other = initial(&other_reservation, 8, &[b"one"]);
     let other_marker = OwnershipMarkerV1::for_current_component(&other).unwrap();
     let other_evidence =
-        installed_evidence(&other_reservation, &other, other_marker.clone(), 0, 0, 5);
+        installed_evidence(&other_reservation, &other, other_marker.clone(), 0, 0, 5).unwrap();
 
     assert!(first.successor_after_component(&other_evidence).is_err());
     let premature_retirement = retirement_evidence_exact(
@@ -358,11 +379,7 @@ fn substitutions_cannot_advance_or_bind_a_managed_chain() {
             68,
         ),
     );
-    assert!(
-        first
-            .successor_after_marker_retirement(&premature_retirement)
-            .is_err()
-    );
+    assert!(premature_retirement.is_err());
     assert!(
         read_and_bind_managed_bootstrap_intent_for_test(
             Cursor::new(first.encode_canonical()),
@@ -392,13 +409,13 @@ fn opaque_success_evidence_rejects_component_target_marker_and_bootstrap_substit
     let alternate = initial(&reservation, 7, &[b"other", b"two"]);
     let alternate_marker = OwnershipMarkerV1::for_current_component(&alternate).unwrap();
     let wrong_marker = installed_evidence(&reservation, &first, alternate_marker.clone(), 0, 0, 10);
-    assert!(first.successor_after_component(&wrong_marker).is_err());
+    assert!(wrong_marker.is_err());
 
     let wrong_target = installed_evidence(&reservation, &alternate, marker.clone(), 0, 0, 10);
-    assert!(first.successor_after_component(&wrong_target).is_err());
+    assert!(wrong_target.is_err());
 
     let wrong_component = installed_evidence(&reservation, &first, marker.clone(), 0, 1, 10);
-    assert!(first.successor_after_component(&wrong_component).is_err());
+    assert!(wrong_component.is_err());
 
     let two_bootstraps = reservation_rows(&[(7, 1), (8, 1)]);
     let first_bootstrap = initial_at(&two_bootstraps, 7, 0, &[b"one"]);
@@ -406,25 +423,18 @@ fn opaque_success_evidence_rejects_component_target_marker_and_bootstrap_substit
     let second_bootstrap = initial_at(&two_bootstraps, 8, 1, &[b"two"]);
     let wrong_bootstrap =
         installed_evidence(&two_bootstraps, &second_bootstrap, first_marker, 1, 0, 11);
-    assert!(
-        first_bootstrap
-            .successor_after_component(&wrong_bootstrap)
-            .is_err()
-    );
+    assert!(wrong_bootstrap.is_err());
 
-    let install = installed_evidence(&reservation, &first, marker, 0, 0, 12);
+    let install = installed_evidence(&reservation, &first, marker, 0, 0, 12).unwrap();
     let after_first = first.successor_after_component(&install).unwrap();
     let second_marker = OwnershipMarkerV1::for_current_component(&after_first).unwrap();
-    let second_install = installed_evidence(&reservation, &after_first, second_marker, 0, 1, 13);
+    let second_install =
+        installed_evidence(&reservation, &after_first, second_marker, 0, 1, 13).unwrap();
     let retiring = after_first
         .successor_after_component(&second_install)
         .unwrap();
     let wrong_retired_marker = retirement_evidence(&reservation, &retiring, alternate_marker, 0, 0);
-    assert!(
-        retiring
-            .successor_after_marker_retirement(&wrong_retired_marker)
-            .is_err()
-    );
+    assert!(wrong_retired_marker.is_err());
 }
 
 #[test]
@@ -452,7 +462,8 @@ fn exact_installed_facts_are_durable_and_every_retirement_substitution_rejects()
         installed_identity.clone(),
         installed_mode,
         exact_path.clone(),
-    );
+    )
+    .unwrap();
     let retiring = initial.successor_after_component(&install).unwrap();
     let component = &retiring.components()[0];
     assert_eq!(component.installed_identity(), Some(&installed_identity));
@@ -478,7 +489,8 @@ fn exact_installed_facts_are_durable_and_every_retirement_substitution_rejects()
         installed_identity.clone(),
         installed_mode,
         exact_path.clone(),
-    );
+    )
+    .unwrap();
     assert!(retiring.successor_after_marker_retirement(&exact).is_ok());
 
     for substituted in [
@@ -533,11 +545,7 @@ fn exact_installed_facts_are_durable_and_every_retirement_substitution_rejects()
             ),
         ),
     ] {
-        assert!(
-            retiring
-                .successor_after_marker_retirement(&substituted)
-                .is_err()
-        );
+        assert!(substituted.is_err());
     }
 }
 
@@ -546,7 +554,7 @@ fn canonical_record_rejects_mutated_installed_facts_and_marker_object_identity()
     let reservation = reservation(7, 1);
     let initial = initial(&reservation, 7, &[b"one"]);
     let marker = OwnershipMarkerV1::for_current_component(&initial).unwrap();
-    let install = installed_evidence(&reservation, &initial, marker, 0, 0, 70);
+    let install = installed_evidence(&reservation, &initial, marker, 0, 0, 70).unwrap();
     let retiring = initial.successor_after_component(&install).unwrap();
     let bytes = retiring.encode_canonical();
     let cbor = crate::cbor::try_decode(&bytes).unwrap();
@@ -641,7 +649,7 @@ fn installation_rejects_changed_prefix_parent_identity_and_parent_mode() {
             65,
         ),
     ] {
-        assert!(initial.successor_after_component(&substituted).is_err());
+        assert!(substituted.is_err());
     }
 }
 
@@ -670,12 +678,13 @@ fn maximum_component_chain_fits_bound_and_limit_plus_one_rejects() {
             0,
             local,
             80 + local as u8,
-        );
+        )
+        .unwrap();
         value = value.successor_after_component(&evidence).unwrap();
         markers.push(marker);
     }
     for (local, marker) in markers.into_iter().enumerate() {
-        let evidence = retirement_evidence(&reservation, &value, marker, 0, local);
+        let evidence = retirement_evidence(&reservation, &value, marker, 0, local).unwrap();
         value = value.successor_after_marker_retirement(&evidence).unwrap();
     }
     assert!(value.is_complete());

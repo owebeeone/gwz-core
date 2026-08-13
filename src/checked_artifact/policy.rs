@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use super::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
+
 /// Explicitly selects the filesystem that owns a checked artifact's private
 /// recovery namespace.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,8 +32,12 @@ impl CheckedArtifactPolicy {
 
     pub(super) fn private_parent(&self) -> PathBuf {
         match self {
-            Self::WorkspaceArtifact { .. } => PathBuf::from(".gwz/checked-artifacts"),
-            Self::GitDirectoryArtifact { .. } => PathBuf::from("gwz/checked-artifacts"),
+            Self::WorkspaceArtifact { .. } => {
+                CatalogPrivateNameV1::Final.relative_path(CatalogPrivateRootV1::Workspace)
+            }
+            Self::GitDirectoryArtifact { .. } => {
+                CatalogPrivateNameV1::Final.relative_path(CatalogPrivateRootV1::GitDirectory)
+            }
         }
     }
 }

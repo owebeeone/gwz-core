@@ -20,6 +20,8 @@ mod owner;
     reason = "R1 freezes the opaque owner entry before R2 installs its provider"
 )]
 pub(in crate::checked_artifact) use owner::CheckedAuthorityObservationOwnerV1;
+#[cfg(test)]
+pub(in crate::checked_artifact) use owner::synthetic_authority_observation_owner;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct CheckedAuthorityRecordV1 {
@@ -268,12 +270,13 @@ pub(in crate::checked_artifact) fn synthetic_authority_observation(
     expected_sha256: [u8; 32],
     goal_sha256: [u8; 32],
 ) -> Result<CheckedAuthorityObservationV1, ProtocolCodecErrorV1> {
-    CheckedAuthorityObservationV1::owner_issue(
-        reservation,
+    synthetic_authority_observation_owner(
+        reservation.request_owner_binding(),
         artifact_root,
         retained_parent_identity,
         source,
         expected_sha256,
         goal_sha256,
     )
+    .observe(reservation)
 }

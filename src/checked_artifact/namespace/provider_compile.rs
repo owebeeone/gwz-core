@@ -4,6 +4,10 @@
 #![allow(dead_code, reason = "R1 compile-only platform provider shape")]
 
 use super::backend::{ActionDestination, BackendIssuer, ProviderBinding, RawNamespaceBackend};
+use super::managed::{
+    ManagedInstallObservationV1, ManagedInstallRequestV1, ManagedMarkerRetirementObservationV1,
+    ManagedMarkerRetirementRequestV1,
+};
 use super::{
     ActionNamespace, BarrierSlots, BootstrapComponentSlots, BootstrapGenerationSlots,
     DurableNamespace, NamespaceObjectKind, PublishedIdentity, RetainedDirectory,
@@ -11,13 +15,33 @@ use super::{
 };
 use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1,
+    PathComponentMode,
 };
-use crate::checked_artifact::protocol::OwnershipMarkerV1;
-use crate::checked_artifact::protocol::{BarrierOrdinalV1, RecordDigestV1};
+use crate::checked_artifact::protocol::{
+    BarrierOrdinalV1, ManagedParentBootstrapIntentV1, OwnershipMarkerV1, RecordDigestV1,
+};
 
 struct ProductionShapedBackend {
     provider: ProviderBinding,
     action_identity: DurableObjectIdentityV1,
+    installed_observation: Option<ManagedInstallFacts>,
+    retired_marker_observation: Option<ManagedRetirementFacts>,
+}
+
+struct ManagedInstallFacts {
+    marker: OwnershipMarkerV1,
+    marker_object_identity: DurableObjectIdentityV1,
+    installed_identity: DurableObjectIdentityV1,
+    installed_mode: PathComponentMode,
+    installed_path: CanonicalPathIdentityV1,
+}
+
+struct ManagedRetirementFacts {
+    marker: OwnershipMarkerV1,
+    retired_marker_identity: DurableObjectIdentityV1,
+    installed_parent_identity: DurableObjectIdentityV1,
+    installed_parent_mode: PathComponentMode,
+    installed_parent_path: CanonicalPathIdentityV1,
 }
 
 impl ProductionShapedBackend {
@@ -56,52 +80,6 @@ impl ProductionShapedBackend {
             handle,
             identity,
             kind,
-        )
-    }
-
-    fn issue_installed_component(
-        &self,
-        slots: &super::BootstrapComponentSlots<
-            u64,
-            DurableObjectIdentityV1,
-            CanonicalPathIdentityV1,
-        >,
-        marker: OwnershipMarkerV1,
-        marker_object_identity: DurableObjectIdentityV1,
-        identity: DurableObjectIdentityV1,
-        mode: crate::checked_artifact::capability::PathComponentMode,
-        path: CanonicalPathIdentityV1,
-    ) -> Result<super::InstalledManagedComponentV1, CheckedFsError> {
-        self.issuer().installed_managed_component(
-            slots,
-            marker,
-            marker_object_identity,
-            identity,
-            mode,
-            path,
-        )
-    }
-
-    fn issue_retired_marker(
-        &self,
-        slots: &super::BootstrapComponentSlots<
-            u64,
-            DurableObjectIdentityV1,
-            CanonicalPathIdentityV1,
-        >,
-        marker: OwnershipMarkerV1,
-        retired_marker_identity: DurableObjectIdentityV1,
-        installed_parent_identity: DurableObjectIdentityV1,
-        mode: crate::checked_artifact::capability::PathComponentMode,
-        path: CanonicalPathIdentityV1,
-    ) -> Result<super::RetiredManagedMarkerV1, CheckedFsError> {
-        self.issuer().retired_managed_marker(
-            slots,
-            marker,
-            retired_marker_identity,
-            installed_parent_identity,
-            mode,
-            path,
         )
     }
 
@@ -156,14 +134,18 @@ impl ProductionShapedBackend {
             CanonicalPathIdentityV1,
         >,
         component: &BootstrapComponentSlots<u64, DurableObjectIdentityV1, CanonicalPathIdentityV1>,
+        install_intent: &ManagedParentBootstrapIntentV1,
+        retirement_intent: &ManagedParentBootstrapIntentV1,
     ) -> Result<(), CheckedFsError> {
         namespace.publish_barrier_intent(barrier_scratch, barrier)?;
         namespace.retire_barrier_intent(barrier_active, barrier)?;
         namespace.retire_barrier_target_alias(anchor_alias, barrier)?;
         namespace.publish_bootstrap_generation(bootstrap_scratch, generation)?;
         namespace.retire_bootstrap_generation(bootstrap_active, generation)?;
-        namespace.install_bootstrap_component(staging, component)?;
-        namespace.retire_bootstrap_marker(marker, component)?;
+        namespace.install_bootstrap_component(staging, install_intent, component)?;
+        namespace.recover_installed_bootstrap_component(install_intent, component)?;
+        namespace.retire_bootstrap_marker(marker, retirement_intent, component)?;
+        namespace.recover_retired_bootstrap_marker(retirement_intent, component)?;
         Ok(())
     }
 }
@@ -219,6 +201,76 @@ impl RawNamespaceBackend for ProductionShapedBackend {
         Ok(self.issuer().retired(source.identity().clone()))
     }
 
+    fn install_managed_component(
+        &mut self,
+        source: &RetainedNamespaceObject<
+            Self::DirectoryHandle,
+            Self::ObjectHandle,
+            Self::Identity,
+            Self::PathProfile,
+        >,
+        destination: &ActionDestination,
+        request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        self.publish_no_replace(source, destination)?;
+        self.observe_installed_managed_component(request)
+    }
+
+    fn observe_installed_managed_component(
+        &mut self,
+        request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        let facts = self.installed_observation.as_ref().ok_or_else(|| {
+            CheckedFsError::ambiguous(
+                "managed install observation",
+                "installed state is not present",
+            )
+        })?;
+        request.complete(
+            self.provider,
+            facts.marker.clone(),
+            facts.marker_object_identity.clone(),
+            facts.installed_identity.clone(),
+            facts.installed_mode,
+            facts.installed_path.clone(),
+        )
+    }
+
+    fn retire_managed_marker(
+        &mut self,
+        source: &RetainedNamespaceObject<
+            Self::DirectoryHandle,
+            Self::ObjectHandle,
+            Self::Identity,
+            Self::PathProfile,
+        >,
+        destination: &ActionDestination,
+        request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        self.retire_exact(source, destination)?;
+        self.observe_retired_managed_marker(request)
+    }
+
+    fn observe_retired_managed_marker(
+        &mut self,
+        request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        let facts = self.retired_marker_observation.as_ref().ok_or_else(|| {
+            CheckedFsError::ambiguous(
+                "managed marker retirement observation",
+                "retired marker state is not present",
+            )
+        })?;
+        request.complete(
+            self.provider,
+            facts.marker.clone(),
+            facts.retired_marker_identity.clone(),
+            facts.installed_parent_identity.clone(),
+            facts.installed_parent_mode,
+            facts.installed_parent_path.clone(),
+        )
+    }
+
     fn barrier(
         &mut self,
         _parent: &RetainedDirectory<Self::DirectoryHandle, Self::Identity, Self::PathProfile>,
@@ -247,6 +299,8 @@ mod tests {
         let provider = ProductionShapedBackend {
             provider: ProviderBinding::owner_new([2; 32]),
             action_identity: identity.clone(),
+            installed_observation: None,
+            retired_marker_observation: None,
         };
         let retained = provider.retain_directory(1, identity.clone(), path.clone());
         assert_eq!(retained.identity(), &identity);

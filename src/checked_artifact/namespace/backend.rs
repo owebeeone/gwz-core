@@ -6,8 +6,10 @@
 
 use super::super::capability::{AsciiComponent, CheckedFsError, DurableObjectIdentityV1};
 use super::super::protocol::{BarrierOrdinalV1, RecordDigestV1};
-use crate::checked_artifact::capability::{CanonicalPathIdentityV1, PathComponentMode};
-use crate::checked_artifact::protocol::OwnershipMarkerV1;
+use super::managed::{
+    ManagedInstallObservationV1, ManagedInstallRequestV1, ManagedMarkerRetirementObservationV1,
+    ManagedMarkerRetirementRequestV1,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::checked_artifact) struct ProviderBinding([u8; 32]);
@@ -326,54 +328,39 @@ impl BackendIssuer {
         PublishedIdentity(identity)
     }
 
-    pub(super) fn installed_managed_component<DirectoryHandle, Identity, PathProfile>(
+    pub(super) fn installed_managed_component(
         &self,
-        slots: &super::BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
-        marker: OwnershipMarkerV1,
-        marker_object_identity: DurableObjectIdentityV1,
-        installed_identity: DurableObjectIdentityV1,
-        installed_mode: PathComponentMode,
-        installed_path: CanonicalPathIdentityV1,
+        request: &ManagedInstallRequestV1,
+        observation: ManagedInstallObservationV1,
     ) -> Result<super::InstalledManagedComponentV1, CheckedFsError> {
-        if slots.target.parent.provider() != self.provider {
+        if observation.provider() != self.provider || !observation.binding_matches_install(request)
+        {
             return Err(CheckedFsError::ambiguous(
                 "managed component evidence",
-                "provider binding mismatch",
+                "operation observation binding mismatch",
             ));
         }
-        Ok(super::evidence::installed(
-            slots,
-            marker,
-            marker_object_identity,
-            installed_identity,
-            installed_mode,
-            installed_path,
-        ))
+        let evidence = super::evidence::installed(observation);
+        debug_assert_eq!(evidence.provider_binding(), self.provider);
+        Ok(evidence)
     }
 
-    pub(super) fn retired_managed_marker<DirectoryHandle, Identity, PathProfile>(
+    pub(super) fn retired_managed_marker(
         &self,
-        slots: &super::BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
-        marker: OwnershipMarkerV1,
-        retired_marker_identity: DurableObjectIdentityV1,
-        installed_parent_identity: DurableObjectIdentityV1,
-        installed_parent_mode: PathComponentMode,
-        installed_parent_path: CanonicalPathIdentityV1,
+        request: &ManagedMarkerRetirementRequestV1,
+        observation: ManagedMarkerRetirementObservationV1,
     ) -> Result<super::RetiredManagedMarkerV1, CheckedFsError> {
-        if slots.target.parent.provider() != self.provider {
+        if observation.provider() != self.provider
+            || !observation.binding_matches_retirement(request)
+        {
             return Err(CheckedFsError::ambiguous(
                 "retired marker evidence",
-                "provider binding mismatch",
+                "operation observation binding mismatch",
             ));
         }
-        Ok(super::evidence::retired_marker(
-            slots,
-            marker,
-            retired_marker_identity,
-            installed_parent_identity,
-            installed_parent_mode,
-            installed_parent_path,
-        ))
+        let evidence = super::evidence::retired_marker(observation);
+        debug_assert_eq!(evidence.provider_binding(), self.provider);
+        Ok(evidence)
     }
 
     pub(super) fn retired<Identity>(&self, identity: Identity) -> RetiredIdentity<Identity> {
@@ -421,11 +408,60 @@ pub(in crate::checked_artifact) trait RawNamespaceBackend {
         destination: &ActionDestination,
     ) -> Result<RetiredIdentity<Self::Identity>, CheckedFsError>;
 
+    fn install_managed_component(
+        &mut self,
+        _source: &RetainedNamespaceObject<
+            Self::DirectoryHandle,
+            Self::ObjectHandle,
+            Self::Identity,
+            Self::PathProfile,
+        >,
+        _destination: &ActionDestination,
+        _request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        Err(managed_operation_unavailable())
+    }
+
+    fn observe_installed_managed_component(
+        &mut self,
+        _request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        Err(managed_operation_unavailable())
+    }
+
+    fn retire_managed_marker(
+        &mut self,
+        _source: &RetainedNamespaceObject<
+            Self::DirectoryHandle,
+            Self::ObjectHandle,
+            Self::Identity,
+            Self::PathProfile,
+        >,
+        _destination: &ActionDestination,
+        _request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        Err(managed_operation_unavailable())
+    }
+
+    fn observe_retired_managed_marker(
+        &mut self,
+        _request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        Err(managed_operation_unavailable())
+    }
+
     fn barrier(
         &mut self,
         parent: &RetainedDirectory<Self::DirectoryHandle, Self::Identity, Self::PathProfile>,
         ordinal: BarrierOrdinalV1,
     ) -> Result<DurableNamespace, CheckedFsError>;
+}
+
+fn managed_operation_unavailable() -> CheckedFsError {
+    CheckedFsError::ambiguous(
+        "managed namespace operation",
+        "provider does not implement exact post-observation",
+    )
 }
 
 pub(in crate::checked_artifact) trait SealedActionNamespace {}

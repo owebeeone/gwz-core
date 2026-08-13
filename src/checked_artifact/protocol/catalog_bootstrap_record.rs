@@ -13,9 +13,7 @@ use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, PreCatalogRootKindV1,
     RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile,
 };
-
-const STAGING_NAME: &[u8] = b"checked-artifacts-catalog-bootstrap-v1.staging";
-const FINAL_NAME: &[u8] = b"checked-artifacts";
+use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct CatalogBootstrapOwnershipTokenV1([u8; 32]);
@@ -71,8 +69,8 @@ impl CatalogBootstrapRecordV1 {
             permit.collision_domain_digest(),
             permit.root_identity().clone(),
             permit.path_profile().clone(),
-            AsciiComponent::parse(STAGING_NAME).expect("fixed staging name is valid ASCII"),
-            AsciiComponent::parse(FINAL_NAME).expect("fixed final name is valid ASCII"),
+            catalog_component(CatalogPrivateNameV1::BootstrapStaging),
+            catalog_component(CatalogPrivateNameV1::Final),
             AsciiComponent::parse(
                 super::InfrastructureSlotV1::CatalogAnchorA
                     .name()
@@ -191,8 +189,8 @@ impl CatalogBootstrapRecordV1 {
             || value.retained_parent_identity.support_profile() != value.support_profile
             || value.invocation_identity.is_empty()
             || value.rename_domain.is_empty()
-            || value.staging_name.as_bytes() != STAGING_NAME
-            || value.final_name.as_bytes() != FINAL_NAME
+            || value.staging_name != catalog_component(CatalogPrivateNameV1::BootstrapStaging)
+            || value.final_name != catalog_component(CatalogPrivateNameV1::Final)
             || value.catalog_anchor_a_name.as_bytes()
                 != super::InfrastructureSlotV1::CatalogAnchorA
                     .name()
@@ -243,19 +241,15 @@ impl CatalogBootstrapRecordV1 {
     }
 }
 
+fn catalog_component(name: CatalogPrivateNameV1) -> AsciiComponent {
+    AsciiComponent::parse(name.leaf_bytes()).expect("fixed catalog name is valid ASCII")
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) enum CatalogRecordObservationV1 {
     Missing,
     PartialExpectedPrefix,
     Exact(Box<CatalogBootstrapRecordV1>),
-    Other,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::checked_artifact) enum CatalogDirectoryObservationV1 {
-    Missing,
-    PartialExpectedContents,
-    Exact(Box<super::BoundCatalogInfrastructureObservationV1>),
     Other,
 }
 
@@ -268,78 +262,6 @@ pub(in crate::checked_artifact) enum CatalogBootstrapRecoveryDecisionV1 {
     RetireActive,
     Complete,
     Ambiguous,
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(in crate::checked_artifact) fn classify_catalog_bootstrap_recovery(
-    expected_record: &CatalogBootstrapRecordV1,
-    scratch: &CatalogRecordObservationV1,
-    active: &CatalogRecordObservationV1,
-    staging: &CatalogDirectoryObservationV1,
-    final_directory: &CatalogDirectoryObservationV1,
-    retired: &CatalogRecordObservationV1,
-) -> CatalogBootstrapRecoveryDecisionV1 {
-    use CatalogBootstrapRecoveryDecisionV1::*;
-    use CatalogDirectoryObservationV1 as Directory;
-    use CatalogRecordObservationV1 as Record;
-
-    match (scratch, active, staging, final_directory, retired) {
-        (
-            Record::Missing | Record::PartialExpectedPrefix,
-            Record::Missing,
-            Directory::Missing,
-            Directory::Missing,
-            Record::Missing,
-        ) => WriteOrRewriteScratch,
-        (
-            Record::Exact(value),
-            Record::Missing,
-            Directory::Missing,
-            Directory::Missing,
-            Record::Missing,
-        ) if value.as_ref() == expected_record => PublishActive,
-        (
-            Record::Missing,
-            Record::Exact(value),
-            Directory::Missing | Directory::PartialExpectedContents,
-            Directory::Missing,
-            Record::Missing,
-        ) if value.as_ref() == expected_record => PrepareOrRewriteStaging,
-        (
-            Record::Missing,
-            Record::Exact(active_value),
-            Directory::Exact(staging_value),
-            Directory::Missing,
-            Record::Missing,
-        ) if active_value.as_ref() == expected_record
-            && staging_value.is_bound_to(expected_record) =>
-        {
-            PublishFinal
-        }
-        (
-            Record::Missing,
-            Record::Exact(active_value),
-            Directory::Missing,
-            Directory::Exact(final_value),
-            Record::Missing,
-        ) if active_value.as_ref() == expected_record
-            && final_value.is_bound_to(expected_record) =>
-        {
-            RetireActive
-        }
-        (
-            Record::Missing,
-            Record::Missing,
-            Directory::Missing,
-            Directory::Exact(final_value),
-            Record::Exact(retired_value),
-        ) if final_value.is_bound_to(expected_record)
-            && retired_value.as_ref() == expected_record =>
-        {
-            Complete
-        }
-        _ => Ambiguous,
-    }
 }
 
 fn encode_profile(value: SupportedFilesystemProfile) -> generated::CheckedFilesystemProfile {

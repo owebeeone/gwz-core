@@ -13,6 +13,10 @@ use crate::checked_artifact::capability::{AsciiComponent, DurableObjectIdentityV
 
 mod owner;
 
+#[allow(
+    unused_imports,
+    reason = "R1 exports the frozen catalog owner before R2 consumes it"
+)]
 pub(in crate::checked_artifact) use owner::*;
 
 const CATALOG_FORMAT_V1: i64 = 1;

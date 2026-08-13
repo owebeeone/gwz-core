@@ -16,6 +16,11 @@ mod bootstrap;
     reason = "R1 freezes interfaces before R2 consumer conversion"
 )]
 mod capability;
+#[allow(
+    dead_code,
+    reason = "R1 freezes the catalog grammar before R2 consumers are converted"
+)]
+mod catalog_names;
 mod classification;
 mod cleanup;
 mod fault;

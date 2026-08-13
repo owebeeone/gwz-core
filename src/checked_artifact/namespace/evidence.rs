@@ -1,6 +1,7 @@
 //! Sealed provider-issued evidence for managed-parent state transitions.
 
-use super::roles::BootstrapComponentSlots;
+use super::backend::ProviderBinding;
+use super::managed::{ManagedInstallObservationV1, ManagedMarkerRetirementObservationV1};
 use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, PathComponentMode,
 };
@@ -10,6 +11,8 @@ use crate::checked_artifact::protocol::{
 };
 
 pub(in crate::checked_artifact) struct InstalledManagedComponentV1 {
+    provider: ProviderBinding,
+    intent_id: [u8; 32],
     action: ActionDigestV1,
     reservation: RecordDigestV1,
     bootstrap_ordinal: BootstrapOrdinalV1,
@@ -24,6 +27,8 @@ pub(in crate::checked_artifact) struct InstalledManagedComponentV1 {
 }
 
 pub(in crate::checked_artifact) struct RetiredManagedMarkerV1 {
+    provider: ProviderBinding,
+    intent_id: [u8; 32],
     action: ActionDigestV1,
     reservation: RecordDigestV1,
     bootstrap_ordinal: BootstrapOrdinalV1,
@@ -39,6 +44,14 @@ pub(in crate::checked_artifact) struct RetiredManagedMarkerV1 {
 macro_rules! binding_getters {
     ($type:ident) => {
         impl $type {
+            pub(super) const fn provider_binding(&self) -> ProviderBinding {
+                self.provider
+            }
+
+            pub(in crate::checked_artifact) const fn intent_id(&self) -> [u8; 32] {
+                self.intent_id
+            }
+
             pub(in crate::checked_artifact) const fn action_digest(&self) -> ActionDigestV1 {
                 self.action
             }
@@ -119,21 +132,18 @@ impl RetiredManagedMarkerV1 {
     }
 }
 
-pub(super) fn installed<DirectoryHandle, Identity, PathProfile>(
-    slots: &BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
-    marker: OwnershipMarkerV1,
-    marker_object_identity: DurableObjectIdentityV1,
-    identity: DurableObjectIdentityV1,
-    mode: PathComponentMode,
-    path: CanonicalPathIdentityV1,
-) -> InstalledManagedComponentV1 {
+pub(super) fn installed(observation: ManagedInstallObservationV1) -> InstalledManagedComponentV1 {
+    let (binding, marker, marker_object_identity, identity, mode, path) =
+        observation.into_evidence_parts();
     InstalledManagedComponentV1 {
-        action: slots.binding.action,
-        reservation: slots.binding.reservation,
-        bootstrap_ordinal: slots.bootstrap_ordinal,
-        component_ordinal: checked_component(slots.global_component_ordinal),
-        staging_leaf: slots.target.staging_leaf.clone(),
-        final_leaf: slots.target.final_leaf.clone(),
+        provider: binding.provider,
+        intent_id: binding.intent_id,
+        action: binding.action,
+        reservation: binding.reservation,
+        bootstrap_ordinal: binding.bootstrap_ordinal,
+        component_ordinal: binding.component_ordinal,
+        staging_leaf: binding.staging_leaf,
+        final_leaf: binding.final_leaf,
         marker,
         marker_object_identity,
         installed_identity: identity,
@@ -142,28 +152,23 @@ pub(super) fn installed<DirectoryHandle, Identity, PathProfile>(
     }
 }
 
-pub(super) fn retired_marker<DirectoryHandle, Identity, PathProfile>(
-    slots: &BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
-    marker: OwnershipMarkerV1,
-    retired_marker_identity: DurableObjectIdentityV1,
-    installed_parent_identity: DurableObjectIdentityV1,
-    mode: PathComponentMode,
-    path: CanonicalPathIdentityV1,
+pub(super) fn retired_marker(
+    observation: ManagedMarkerRetirementObservationV1,
 ) -> RetiredManagedMarkerV1 {
+    let (binding, marker, retired_marker_identity, installed_parent_identity, mode, path) =
+        observation.into_evidence_parts();
     RetiredManagedMarkerV1 {
-        action: slots.binding.action,
-        reservation: slots.binding.reservation,
-        bootstrap_ordinal: slots.bootstrap_ordinal,
-        component_ordinal: checked_component(slots.global_component_ordinal),
-        marker_retirement_leaf: slots.marker_retired.leaf().clone(),
+        provider: binding.provider,
+        intent_id: binding.intent_id,
+        action: binding.action,
+        reservation: binding.reservation,
+        bootstrap_ordinal: binding.bootstrap_ordinal,
+        component_ordinal: binding.component_ordinal,
+        marker_retirement_leaf: binding.marker_retirement_leaf,
         marker,
         retired_marker_identity,
         installed_parent_identity,
         installed_parent_mode: mode,
         installed_parent_path: path,
     }
-}
-
-fn checked_component(value: usize) -> BootstrapComponentOrdinalV1 {
-    BootstrapComponentOrdinalV1::new(value).expect("component slots contain a checked ordinal")
 }

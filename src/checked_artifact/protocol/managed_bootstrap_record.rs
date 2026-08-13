@@ -365,6 +365,28 @@ impl ManagedParentBootstrapIntentV1 {
             && self.generation_ordinal.index() < row.generation_range().end
     }
 
+    pub(in crate::checked_artifact) fn matches_component_parent(
+        &self,
+        component_index: usize,
+        identity: &DurableObjectIdentityV1,
+        path: &CanonicalPathIdentityV1,
+    ) -> bool {
+        let Some(component) = self.components.get(component_index) else {
+            return false;
+        };
+        let Some(installed_path) = component.installed_path.as_ref() else {
+            return component_index == self.cursor
+                && self.retained_parent_identity == *identity
+                && self.retained_parent_path == *path;
+        };
+        installed_path.components().len() == path.components().len() + 1
+            && installed_path.components()[..path.components().len()] == path.components()[..]
+            && installed_path
+                .components()
+                .last()
+                .is_some_and(|installed| installed.parent_durable_identity() == identity)
+    }
+
     fn matches_bound_plan(
         &self,
         bound_plan: &BoundManagedParentPlanV1,

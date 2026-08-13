@@ -111,6 +111,7 @@ impl ManagedParentBootstrapIntentV1 {
     fn matches_installed_component(&self, evidence: &InstalledManagedComponentV1) -> bool {
         let component = &self.components[self.cursor];
         evidence.action_digest() == self.action_digest
+            && evidence.intent_id() == self.intent_id
             && evidence.reservation_digest() == self.reservation_digest
             && evidence.bootstrap_ordinal() == self.bootstrap_ordinal
             && evidence.component_ordinal() == component.global_component_ordinal
@@ -144,6 +145,7 @@ impl ManagedParentBootstrapIntentV1 {
             ActionSlotV1::RetiredBootstrapMarker(component.global_component_ordinal.index() as u8)
                 .name(self.action_digest);
         evidence.action_digest() == self.action_digest
+            && evidence.intent_id() == self.intent_id
             && evidence.reservation_digest() == self.reservation_digest
             && evidence.bootstrap_ordinal() == self.bootstrap_ordinal
             && evidence.component_ordinal() == component.global_component_ordinal

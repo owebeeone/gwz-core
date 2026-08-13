@@ -1,10 +1,20 @@
-//! Sealed physical-observation owner for first-catalog infrastructure.
+//! Aggregate, role-bound first-catalog recovery owner.
 
 use super::*;
 use crate::checked_artifact::capability::{CanonicalPathIdentityV1, CheckedFsError};
+use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 use crate::checked_artifact::protocol::{
-    CatalogBootstrapOwnershipTokenV1, CatalogBootstrapRecordV1, InfrastructureSlotV1,
+    CatalogBootstrapRecordV1, CatalogBootstrapRecoveryDecisionV1, CatalogRecordObservationV1,
+    InfrastructureSlotV1, ProtocolRecordKindV1,
 };
+
+mod provider_compile;
+
+#[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+pub(in crate::checked_artifact) use test_support::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct ObservedInfrastructureIdentitiesV1 {
@@ -31,330 +41,340 @@ impl ObservedInfrastructureIdentitiesV1 {
     }
 }
 
-struct RawCatalogInfrastructureObservationV1 {
+#[derive(Clone)]
+struct RawOwnedCatalogCandidateV1 {
+    observed_leaf: AsciiComponent,
     marker_bootstrap_record_id: [u8; 32],
     marker_ownership_token: [u8; 32],
     retained_parent_identity: DurableObjectIdentityV1,
     retained_parent_path: CanonicalPathIdentityV1,
-    staging_name: AsciiComponent,
-    staging_directory_identity: DurableObjectIdentityV1,
+    directory_identity: DurableObjectIdentityV1,
     identities: ObservedInfrastructureIdentitiesV1,
     stored_record: Option<InfrastructureRecordV1>,
 }
 
-trait RawCatalogInfrastructureProviderV1 {
-    fn observe(
-        &self,
-        active: &CatalogBootstrapRecordV1,
-    ) -> Result<RawCatalogInfrastructureObservationV1, CheckedFsError>;
+#[derive(Clone)]
+enum RawCatalogDirectoryObservationV1 {
+    Missing,
+    PartialExpectedContents,
+    OwnedCandidate(Box<RawOwnedCatalogCandidateV1>),
+    Other,
+}
 
-    fn write_infrastructure_record(
+#[derive(Clone)]
+struct RawCatalogRecoveryObservationV1 {
+    scratch: CatalogRecordObservationV1,
+    active: CatalogRecordObservationV1,
+    staging: RawCatalogDirectoryObservationV1,
+    final_directory: RawCatalogDirectoryObservationV1,
+    retired: CatalogRecordObservationV1,
+}
+
+#[derive(Clone, Copy)]
+struct CatalogRecoveryReadBudgetV1 {
+    infrastructure_record_bytes: usize,
+}
+
+impl CatalogRecoveryReadBudgetV1 {
+    const fn checked_v1() -> Self {
+        Self {
+            infrastructure_record_bytes: ProtocolRecordKindV1::Infrastructure.max_bytes(),
+        }
+    }
+}
+
+trait RawCatalogRecoveryProviderV1 {
+    fn observe_all(
+        &self,
+        expected: &CatalogBootstrapRecordV1,
+        budget: CatalogRecoveryReadBudgetV1,
+    ) -> Result<RawCatalogRecoveryObservationV1, CheckedFsError>;
+
+    fn write_staging_infrastructure_record(
         &self,
         value: &InfrastructureRecordV1,
     ) -> Result<(), CheckedFsError>;
 }
 
 pub(in crate::checked_artifact) struct CatalogInfrastructureOwnerV1 {
-    provider: Box<dyn RawCatalogInfrastructureProviderV1>,
+    provider: Box<dyn RawCatalogRecoveryProviderV1>,
 }
 
 impl CatalogInfrastructureOwnerV1 {
-    fn from_provider(provider: impl RawCatalogInfrastructureProviderV1 + 'static) -> Self {
+    fn from_provider(provider: impl RawCatalogRecoveryProviderV1 + 'static) -> Self {
         Self {
             provider: Box::new(provider),
         }
     }
 
-    /// Creates or validates the infrastructure record only after the physical
-    /// marker and every observed identity are bound to the durable active
-    /// bootstrap record.
-    pub(in crate::checked_artifact) fn recover_or_create(
+    /// Observes and classifies every fixed catalog role before mutation. A
+    /// permitted staging-record write is followed by a fresh aggregate
+    /// observation; the write itself never fabricates exact evidence.
+    pub(in crate::checked_artifact) fn recover(
         &self,
-        active: &CatalogBootstrapRecordV1,
-    ) -> Result<BoundCatalogInfrastructureObservationV1, CheckedFsError> {
-        let observed = self.provider.observe(active)?;
-        if observed.marker_bootstrap_record_id != active.record_id()
-            || observed.marker_ownership_token != *active.bootstrap_ownership_token().as_bytes()
-            || observed.retained_parent_identity != *active.retained_parent_identity()
-            || observed.retained_parent_path != *active.retained_parent_path()
-            || observed.staging_name != *active.staging_name()
+        expected: &CatalogBootstrapRecordV1,
+    ) -> Result<CatalogBootstrapRecoveryObservationV1, CheckedFsError> {
+        let validated = self.observe_and_validate(expected)?;
+        let write = validated.staging.missing_record().cloned();
+        let result = classify_catalog_bootstrap_recovery(expected, validated);
+
+        if result.decision() == CatalogBootstrapRecoveryDecisionV1::PrepareOrRewriteStaging
+            && let Some(value) = write
         {
-            return Err(CheckedFsError::ambiguous(
-                "catalog infrastructure ownership marker",
-                "marker is not rooted in the durable active bootstrap record",
+            self.provider.write_staging_infrastructure_record(&value)?;
+            return Ok(classify_catalog_bootstrap_recovery(
+                expected,
+                self.observe_and_validate(expected)?,
             ));
         }
+        Ok(result)
+    }
 
-        let expected = InfrastructureRecordV1::from_fields(
-            observed.identities.catalog_root_identity,
-            observed.identities.catalog_anchor_identity,
-            observed.identities.roaming_anchor_identity,
-            observed.identities.retired_root_identity,
-            observed.staging_directory_identity,
-            active.record_id(),
-            active.bootstrap_ownership_token(),
-            slot_component(InfrastructureSlotV1::ActionAdmissionActive),
-            slot_component(InfrastructureSlotV1::ActionAdmissionScratch),
-            slot_component(InfrastructureSlotV1::ActionAdmissionStaging),
-        );
-        expected.validate_profiles().map_err(|_| {
-            CheckedFsError::ambiguous(
-                "catalog infrastructure",
-                "observed identities do not share the active support profile",
-            )
-        })?;
-        if expected.catalog_root_identity.support_profile() != active.support_profile() {
-            return Err(CheckedFsError::ambiguous(
-                "catalog infrastructure",
-                "observed identities do not match the active bootstrap profile",
-            ));
-        }
-
-        match observed.stored_record {
-            Some(stored) if stored != expected => {
-                return Err(CheckedFsError::ambiguous(
-                    "catalog infrastructure record",
-                    "stored record does not match physical identities and active ownership",
-                ));
-            }
-            Some(_) => {}
-            None => self.provider.write_infrastructure_record(&expected)?,
-        }
-
-        Ok(BoundCatalogInfrastructureObservationV1 {
-            active_record_id: active.record_id(),
-            active_ownership_token: active.bootstrap_ownership_token(),
-            infrastructure: expected,
+    fn observe_and_validate(
+        &self,
+        expected: &CatalogBootstrapRecordV1,
+    ) -> Result<ValidatedCatalogRecoveryObservationV1, CheckedFsError> {
+        let budget = CatalogRecoveryReadBudgetV1::checked_v1();
+        let observed = self.provider.observe_all(expected, budget)?;
+        Ok(ValidatedCatalogRecoveryObservationV1 {
+            scratch: observed.scratch,
+            active: observed.active,
+            staging: validate_staging(expected, observed.staging, budget),
+            final_directory: validate_final(expected, observed.final_directory, budget),
+            retired: observed.retired,
         })
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::checked_artifact) struct BoundCatalogInfrastructureObservationV1 {
-    active_record_id: [u8; 32],
-    active_ownership_token: CatalogBootstrapOwnershipTokenV1,
-    infrastructure: InfrastructureRecordV1,
-}
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) struct ExactStagingInfrastructureV1(Box<InfrastructureRecordV1>);
 
-impl BoundCatalogInfrastructureObservationV1 {
+impl ExactStagingInfrastructureV1 {
     pub(in crate::checked_artifact) fn value(&self) -> &InfrastructureRecordV1 {
-        &self.infrastructure
-    }
-
-    pub(in crate::checked_artifact) fn is_bound_to(
-        &self,
-        active: &CatalogBootstrapRecordV1,
-    ) -> bool {
-        self.active_record_id == active.record_id()
-            && self.active_ownership_token == active.bootstrap_ownership_token()
-            && self.infrastructure.catalog_bootstrap_record_id() == active.record_id()
-            && self.infrastructure.bootstrap_ownership_token() == active.bootstrap_ownership_token()
+        &self.0
     }
 }
 
-#[cfg(test)]
-struct SyntheticCatalogInfrastructureProviderV1 {
-    observation: RawCatalogInfrastructureObservationV1,
-    writes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) struct ExactFinalInfrastructureV1(Box<InfrastructureRecordV1>);
 
-#[cfg(test)]
-impl RawCatalogInfrastructureProviderV1 for SyntheticCatalogInfrastructureProviderV1 {
-    fn observe(
-        &self,
-        _active: &CatalogBootstrapRecordV1,
-    ) -> Result<RawCatalogInfrastructureObservationV1, CheckedFsError> {
-        Ok(RawCatalogInfrastructureObservationV1 {
-            marker_bootstrap_record_id: self.observation.marker_bootstrap_record_id,
-            marker_ownership_token: self.observation.marker_ownership_token,
-            retained_parent_identity: self.observation.retained_parent_identity.clone(),
-            retained_parent_path: self.observation.retained_parent_path.clone(),
-            staging_name: self.observation.staging_name.clone(),
-            staging_directory_identity: self.observation.staging_directory_identity.clone(),
-            identities: self.observation.identities.clone(),
-            stored_record: self.observation.stored_record.clone(),
-        })
-    }
-
-    fn write_infrastructure_record(
-        &self,
-        _value: &InfrastructureRecordV1,
-    ) -> Result<(), CheckedFsError> {
-        self.writes
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(())
+impl ExactFinalInfrastructureV1 {
+    pub(in crate::checked_artifact) fn value(&self) -> &InfrastructureRecordV1 {
+        &self.0
     }
 }
 
-#[cfg(test)]
-#[derive(Clone)]
-pub(in crate::checked_artifact) struct SyntheticCatalogInfrastructureProbeV1(
-    std::sync::Arc<std::sync::atomic::AtomicUsize>,
-);
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) enum CatalogBootstrapRecoveryObservationV1 {
+    WriteOrRewriteScratch,
+    PublishActive,
+    PrepareOrRewriteStaging,
+    PublishFinal(ExactStagingInfrastructureV1),
+    RetireActive(ExactFinalInfrastructureV1),
+    Complete(ExactFinalInfrastructureV1),
+    Ambiguous,
+}
 
-#[cfg(test)]
-impl SyntheticCatalogInfrastructureProbeV1 {
-    pub(in crate::checked_artifact) fn writes(&self) -> usize {
-        self.0.load(std::sync::atomic::Ordering::Relaxed)
+impl CatalogBootstrapRecoveryObservationV1 {
+    pub(in crate::checked_artifact) const fn decision(&self) -> CatalogBootstrapRecoveryDecisionV1 {
+        match self {
+            Self::WriteOrRewriteScratch => {
+                CatalogBootstrapRecoveryDecisionV1::WriteOrRewriteScratch
+            }
+            Self::PublishActive => CatalogBootstrapRecoveryDecisionV1::PublishActive,
+            Self::PrepareOrRewriteStaging => {
+                CatalogBootstrapRecoveryDecisionV1::PrepareOrRewriteStaging
+            }
+            Self::PublishFinal(_) => CatalogBootstrapRecoveryDecisionV1::PublishFinal,
+            Self::RetireActive(_) => CatalogBootstrapRecoveryDecisionV1::RetireActive,
+            Self::Complete(_) => CatalogBootstrapRecoveryDecisionV1::Complete,
+            Self::Ambiguous => CatalogBootstrapRecoveryDecisionV1::Ambiguous,
+        }
     }
 }
 
-#[cfg(test)]
-enum SyntheticStoredRecordV1 {
-    Matching,
+enum ValidatedStagingObservationV1 {
     Missing,
-    Mismatched,
+    PartialExpectedContents,
+    OwnedMissingRecord(Box<InfrastructureRecordV1>),
+    Exact(ExactStagingInfrastructureV1),
+    Other,
 }
 
-#[cfg(test)]
-fn synthetic_owner(
-    active: &CatalogBootstrapRecordV1,
-    marker_bootstrap_record_id: [u8; 32],
-    marker_ownership_token: [u8; 32],
-    staging_directory_identity: DurableObjectIdentityV1,
-    identities: ObservedInfrastructureIdentitiesV1,
-    stored: SyntheticStoredRecordV1,
-) -> (
-    CatalogInfrastructureOwnerV1,
-    SyntheticCatalogInfrastructureProbeV1,
-) {
-    let token = CatalogBootstrapOwnershipTokenV1::try_from_random_bytes(marker_ownership_token)
-        .unwrap_or_else(|_| {
-            CatalogBootstrapOwnershipTokenV1::try_from_random_bytes([1; 32]).unwrap()
-        });
-    let make_record = |staging_directory_identity| {
-        InfrastructureRecordV1::from_fields(
-            identities.catalog_root_identity.clone(),
-            identities.catalog_anchor_identity.clone(),
-            identities.roaming_anchor_identity.clone(),
-            identities.retired_root_identity.clone(),
-            staging_directory_identity,
-            marker_bootstrap_record_id,
-            token,
-            slot_component(InfrastructureSlotV1::ActionAdmissionActive),
-            slot_component(InfrastructureSlotV1::ActionAdmissionScratch),
-            slot_component(InfrastructureSlotV1::ActionAdmissionStaging),
-        )
-    };
-    let stored_record = match stored {
-        SyntheticStoredRecordV1::Matching => Some(make_record(staging_directory_identity.clone())),
-        SyntheticStoredRecordV1::Missing => None,
-        SyntheticStoredRecordV1::Mismatched => {
-            Some(make_record(identities.catalog_anchor_identity.clone()))
-        }
-    };
-    let writes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    (
-        CatalogInfrastructureOwnerV1::from_provider(SyntheticCatalogInfrastructureProviderV1 {
-            observation: RawCatalogInfrastructureObservationV1 {
-                marker_bootstrap_record_id,
-                marker_ownership_token,
-                retained_parent_identity: active.retained_parent_identity().clone(),
-                retained_parent_path: active.retained_parent_path().clone(),
-                staging_name: active.staging_name().clone(),
-                staging_directory_identity,
-                identities,
-                stored_record,
-            },
-            writes: writes.clone(),
-        }),
-        SyntheticCatalogInfrastructureProbeV1(writes),
-    )
-}
-
-#[cfg(test)]
-pub(in crate::checked_artifact) fn synthetic_catalog_infrastructure_owner(
-    active: &CatalogBootstrapRecordV1,
-    marker_bootstrap_record_id: [u8; 32],
-    marker_ownership_token: [u8; 32],
-    staging_directory_identity: DurableObjectIdentityV1,
-    identities: ObservedInfrastructureIdentitiesV1,
-) -> CatalogInfrastructureOwnerV1 {
-    synthetic_owner(
-        active,
-        marker_bootstrap_record_id,
-        marker_ownership_token,
-        staging_directory_identity,
-        identities,
-        SyntheticStoredRecordV1::Matching,
-    )
-    .0
-}
-
-#[cfg(test)]
-pub(in crate::checked_artifact) fn synthetic_catalog_infrastructure_owner_missing_record(
-    active: &CatalogBootstrapRecordV1,
-    staging_directory_identity: DurableObjectIdentityV1,
-    identities: ObservedInfrastructureIdentitiesV1,
-) -> (
-    CatalogInfrastructureOwnerV1,
-    SyntheticCatalogInfrastructureProbeV1,
-) {
-    synthetic_owner(
-        active,
-        active.record_id(),
-        *active.bootstrap_ownership_token().as_bytes(),
-        staging_directory_identity,
-        identities,
-        SyntheticStoredRecordV1::Missing,
-    )
-}
-
-#[cfg(test)]
-pub(in crate::checked_artifact) fn synthetic_catalog_infrastructure_owner_mismatched_record(
-    active: &CatalogBootstrapRecordV1,
-    staging_directory_identity: DurableObjectIdentityV1,
-    identities: ObservedInfrastructureIdentitiesV1,
-) -> CatalogInfrastructureOwnerV1 {
-    synthetic_owner(
-        active,
-        active.record_id(),
-        *active.bootstrap_ownership_token().as_bytes(),
-        staging_directory_identity,
-        identities,
-        SyntheticStoredRecordV1::Mismatched,
-    )
-    .0
-}
-
-#[allow(
-    dead_code,
-    reason = "always-compiled proof that a platform provider fits the sealed catalog owner seam"
-)]
-mod production_provider_compile {
-    use super::*;
-
-    struct PlatformCatalogProvider;
-
-    impl RawCatalogInfrastructureProviderV1 for PlatformCatalogProvider {
-        fn observe(
-            &self,
-            _active: &CatalogBootstrapRecordV1,
-        ) -> Result<RawCatalogInfrastructureObservationV1, CheckedFsError> {
-            Err(CheckedFsError::ambiguous(
-                "compile-only catalog provider",
-                "not executed",
-            ))
-        }
-
-        fn write_infrastructure_record(
-            &self,
-            _value: &InfrastructureRecordV1,
-        ) -> Result<(), CheckedFsError> {
-            Err(CheckedFsError::ambiguous(
-                "compile-only catalog provider",
-                "not executed",
-            ))
+impl ValidatedStagingObservationV1 {
+    fn missing_record(&self) -> Option<&InfrastructureRecordV1> {
+        match self {
+            Self::OwnedMissingRecord(value) => Some(value),
+            _ => None,
         }
     }
+}
 
-    fn production_owner() -> CatalogInfrastructureOwnerV1 {
-        CatalogInfrastructureOwnerV1::from_provider(PlatformCatalogProvider)
+enum ValidatedFinalObservationV1 {
+    Missing,
+    PartialExpectedContents,
+    Exact(ExactFinalInfrastructureV1),
+    Other,
+}
+
+struct ValidatedCatalogRecoveryObservationV1 {
+    scratch: CatalogRecordObservationV1,
+    active: CatalogRecordObservationV1,
+    staging: ValidatedStagingObservationV1,
+    final_directory: ValidatedFinalObservationV1,
+    retired: CatalogRecordObservationV1,
+}
+
+fn validate_staging(
+    expected: &CatalogBootstrapRecordV1,
+    observed: RawCatalogDirectoryObservationV1,
+    budget: CatalogRecoveryReadBudgetV1,
+) -> ValidatedStagingObservationV1 {
+    match observed {
+        RawCatalogDirectoryObservationV1::Missing => ValidatedStagingObservationV1::Missing,
+        RawCatalogDirectoryObservationV1::PartialExpectedContents => {
+            ValidatedStagingObservationV1::PartialExpectedContents
+        }
+        RawCatalogDirectoryObservationV1::OwnedCandidate(candidate) => {
+            let Some((value, stored)) = validate_candidate(
+                expected,
+                CatalogPrivateNameV1::BootstrapStaging,
+                *candidate,
+                budget,
+            ) else {
+                return ValidatedStagingObservationV1::Other;
+            };
+            match stored {
+                Some(stored) if stored == value => ValidatedStagingObservationV1::Exact(
+                    ExactStagingInfrastructureV1(Box::new(value)),
+                ),
+                Some(_) => ValidatedStagingObservationV1::Other,
+                None => ValidatedStagingObservationV1::OwnedMissingRecord(Box::new(value)),
+            }
+        }
+        RawCatalogDirectoryObservationV1::Other => ValidatedStagingObservationV1::Other,
     }
+}
 
-    fn compile_recovery_call(
-        active: &CatalogBootstrapRecordV1,
-    ) -> Result<BoundCatalogInfrastructureObservationV1, CheckedFsError> {
-        production_owner().recover_or_create(active)
+fn validate_final(
+    expected: &CatalogBootstrapRecordV1,
+    observed: RawCatalogDirectoryObservationV1,
+    budget: CatalogRecoveryReadBudgetV1,
+) -> ValidatedFinalObservationV1 {
+    match observed {
+        RawCatalogDirectoryObservationV1::Missing => ValidatedFinalObservationV1::Missing,
+        RawCatalogDirectoryObservationV1::PartialExpectedContents => {
+            ValidatedFinalObservationV1::PartialExpectedContents
+        }
+        RawCatalogDirectoryObservationV1::OwnedCandidate(candidate) => {
+            let Some((value, Some(stored))) =
+                validate_candidate(expected, CatalogPrivateNameV1::Final, *candidate, budget)
+            else {
+                return ValidatedFinalObservationV1::Other;
+            };
+            if stored == value {
+                ValidatedFinalObservationV1::Exact(ExactFinalInfrastructureV1(Box::new(value)))
+            } else {
+                ValidatedFinalObservationV1::Other
+            }
+        }
+        RawCatalogDirectoryObservationV1::Other => ValidatedFinalObservationV1::Other,
+    }
+}
+
+fn validate_candidate(
+    expected: &CatalogBootstrapRecordV1,
+    role: CatalogPrivateNameV1,
+    candidate: RawOwnedCatalogCandidateV1,
+    budget: CatalogRecoveryReadBudgetV1,
+) -> Option<(InfrastructureRecordV1, Option<InfrastructureRecordV1>)> {
+    if candidate.observed_leaf.as_bytes() != role.leaf_bytes()
+        || candidate.marker_bootstrap_record_id != expected.record_id()
+        || candidate.marker_ownership_token != *expected.bootstrap_ownership_token().as_bytes()
+        || candidate.retained_parent_identity != *expected.retained_parent_identity()
+        || candidate.retained_parent_path != *expected.retained_parent_path()
+    {
+        return None;
+    }
+    let value = InfrastructureRecordV1::from_fields(
+        candidate.identities.catalog_root_identity,
+        candidate.identities.catalog_anchor_identity,
+        candidate.identities.roaming_anchor_identity,
+        candidate.identities.retired_root_identity,
+        candidate.directory_identity,
+        expected.record_id(),
+        expected.bootstrap_ownership_token(),
+        slot_component(InfrastructureSlotV1::ActionAdmissionActive),
+        slot_component(InfrastructureSlotV1::ActionAdmissionScratch),
+        slot_component(InfrastructureSlotV1::ActionAdmissionStaging),
+    );
+    if value.validate_profiles().is_err()
+        || value.catalog_root_identity.support_profile() != expected.support_profile()
+        || value.encode_canonical().len() > budget.infrastructure_record_bytes
+    {
+        return None;
+    }
+    Some((value, candidate.stored_record))
+}
+
+fn classify_catalog_bootstrap_recovery(
+    expected: &CatalogBootstrapRecordV1,
+    observed: ValidatedCatalogRecoveryObservationV1,
+) -> CatalogBootstrapRecoveryObservationV1 {
+    use CatalogBootstrapRecoveryObservationV1 as Result;
+    use CatalogRecordObservationV1 as Record;
+    use ValidatedFinalObservationV1 as Final;
+    use ValidatedStagingObservationV1 as Staging;
+
+    match (
+        observed.scratch,
+        observed.active,
+        observed.staging,
+        observed.final_directory,
+        observed.retired,
+    ) {
+        (
+            Record::Missing | Record::PartialExpectedPrefix,
+            Record::Missing,
+            Staging::Missing,
+            Final::Missing,
+            Record::Missing,
+        ) => Result::WriteOrRewriteScratch,
+        (
+            Record::Exact(value),
+            Record::Missing,
+            Staging::Missing,
+            Final::Missing,
+            Record::Missing,
+        ) if value.as_ref() == expected => Result::PublishActive,
+        (
+            Record::Missing,
+            Record::Exact(value),
+            Staging::Missing | Staging::PartialExpectedContents | Staging::OwnedMissingRecord(_),
+            Final::Missing,
+            Record::Missing,
+        ) if value.as_ref() == expected => Result::PrepareOrRewriteStaging,
+        (
+            Record::Missing,
+            Record::Exact(value),
+            Staging::Exact(exact),
+            Final::Missing,
+            Record::Missing,
+        ) if value.as_ref() == expected => Result::PublishFinal(exact),
+        (
+            Record::Missing,
+            Record::Exact(value),
+            Staging::Missing,
+            Final::Exact(exact),
+            Record::Missing,
+        ) if value.as_ref() == expected => Result::RetireActive(exact),
+        (
+            Record::Missing,
+            Record::Missing,
+            Staging::Missing,
+            Final::Exact(exact),
+            Record::Exact(value),
+        ) if value.as_ref() == expected => Result::Complete(exact),
+        _ => Result::Ambiguous,
     }
 }

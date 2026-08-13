@@ -1,6 +1,10 @@
 //! Test-only capability issuance and legacy contract compatibility.
 
 use super::backend::{BackendIssuer, ProviderBinding, RawNamespaceBackend};
+use super::managed::{
+    ManagedInstallObservationV1, ManagedInstallRequestV1, ManagedMarkerRetirementObservationV1,
+    ManagedMarkerRetirementRequestV1,
+};
 use super::*;
 use crate::checked_artifact::capability::{CanonicalPathIdentityV1, DurableObjectIdentityV1};
 use crate::checked_artifact::protocol::ActionCapacityReservationV1;
@@ -255,6 +259,24 @@ pub(in crate::checked_artifact) struct RecordingNamespaceBackend {
     provider: ProviderBinding,
     action_identity: DurableObjectIdentityV1,
     events: Vec<RecordingNamespaceEvent>,
+    installed_observation: Option<ManagedInstallFacts>,
+    retired_marker_observation: Option<ManagedRetirementFacts>,
+}
+
+struct ManagedInstallFacts {
+    marker: OwnershipMarkerV1,
+    marker_object_identity: DurableObjectIdentityV1,
+    installed_identity: DurableObjectIdentityV1,
+    installed_mode: crate::checked_artifact::capability::PathComponentMode,
+    installed_path: CanonicalPathIdentityV1,
+}
+
+struct ManagedRetirementFacts {
+    marker: OwnershipMarkerV1,
+    retired_marker_identity: DurableObjectIdentityV1,
+    installed_parent_identity: DurableObjectIdentityV1,
+    installed_parent_mode: crate::checked_artifact::capability::PathComponentMode,
+    installed_parent_path: CanonicalPathIdentityV1,
 }
 
 pub(in crate::checked_artifact) fn recording_backend(
@@ -265,6 +287,8 @@ pub(in crate::checked_artifact) fn recording_backend(
         provider: ProviderBinding::owner_new(provider),
         action_identity,
         events: Vec::new(),
+        installed_observation: None,
+        retired_marker_observation: None,
     }
 }
 
@@ -351,50 +375,38 @@ pub(in crate::checked_artifact) fn backend_events(
     &namespace.backend.events
 }
 
-pub(in crate::checked_artifact) fn installed_component_evidence<
-    DirectoryHandle,
-    Identity,
-    PathProfile,
->(
-    backend: &RecordingNamespaceBackend,
-    slots: &BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
+pub(in crate::checked_artifact) fn seed_installed_component_observation(
+    backend: &mut RecordingNamespaceBackend,
     marker: OwnershipMarkerV1,
     marker_object_identity: DurableObjectIdentityV1,
     installed_identity: DurableObjectIdentityV1,
     installed_mode: crate::checked_artifact::capability::PathComponentMode,
     installed_path: CanonicalPathIdentityV1,
-) -> Result<InstalledManagedComponentV1, CheckedFsError> {
-    BackendIssuer::new(backend.provider).installed_managed_component(
-        slots,
+) {
+    backend.installed_observation = Some(ManagedInstallFacts {
         marker,
         marker_object_identity,
         installed_identity,
         installed_mode,
         installed_path,
-    )
+    });
 }
 
-pub(in crate::checked_artifact) fn retired_marker_evidence<
-    DirectoryHandle,
-    Identity,
-    PathProfile,
->(
-    backend: &RecordingNamespaceBackend,
-    slots: &BootstrapComponentSlots<DirectoryHandle, Identity, PathProfile>,
+pub(in crate::checked_artifact) fn seed_retired_marker_observation(
+    backend: &mut RecordingNamespaceBackend,
     marker: OwnershipMarkerV1,
     retired_marker_identity: DurableObjectIdentityV1,
     installed_parent_identity: DurableObjectIdentityV1,
     installed_parent_mode: crate::checked_artifact::capability::PathComponentMode,
     installed_parent_path: CanonicalPathIdentityV1,
-) -> Result<RetiredManagedMarkerV1, CheckedFsError> {
-    BackendIssuer::new(backend.provider).retired_managed_marker(
-        slots,
+) {
+    backend.retired_marker_observation = Some(ManagedRetirementFacts {
         marker,
         retired_marker_identity,
         installed_parent_identity,
         installed_parent_mode,
         installed_parent_path,
-    )
+    });
 }
 
 impl RawNamespaceBackend for RecordingNamespaceBackend {
@@ -454,6 +466,80 @@ impl RawNamespaceBackend for RecordingNamespaceBackend {
             destination.leaf().as_bytes().to_vec(),
         ));
         Ok(BackendIssuer::new(self.provider).retired(source.identity().clone()))
+    }
+
+    fn install_managed_component(
+        &mut self,
+        _source: &RetainedNamespaceObject<
+            Self::DirectoryHandle,
+            Self::ObjectHandle,
+            Self::Identity,
+            Self::PathProfile,
+        >,
+        destination: &ActionDestination,
+        request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        self.events.push(RecordingNamespaceEvent::Publish(
+            destination.leaf().as_bytes().to_vec(),
+        ));
+        self.observe_installed_managed_component(request)
+    }
+
+    fn observe_installed_managed_component(
+        &mut self,
+        request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        let facts = self.installed_observation.as_ref().ok_or_else(|| {
+            CheckedFsError::ambiguous(
+                "managed install observation",
+                "installed state is not present",
+            )
+        })?;
+        request.complete(
+            self.provider,
+            facts.marker.clone(),
+            facts.marker_object_identity.clone(),
+            facts.installed_identity.clone(),
+            facts.installed_mode,
+            facts.installed_path.clone(),
+        )
+    }
+
+    fn retire_managed_marker(
+        &mut self,
+        _source: &RetainedNamespaceObject<
+            Self::DirectoryHandle,
+            Self::ObjectHandle,
+            Self::Identity,
+            Self::PathProfile,
+        >,
+        destination: &ActionDestination,
+        request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        self.events.push(RecordingNamespaceEvent::Retire(
+            destination.leaf().as_bytes().to_vec(),
+        ));
+        self.observe_retired_managed_marker(request)
+    }
+
+    fn observe_retired_managed_marker(
+        &mut self,
+        request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        let facts = self.retired_marker_observation.as_ref().ok_or_else(|| {
+            CheckedFsError::ambiguous(
+                "managed marker retirement observation",
+                "retired marker state is not present",
+            )
+        })?;
+        request.complete(
+            self.provider,
+            facts.marker.clone(),
+            facts.retired_marker_identity.clone(),
+            facts.installed_parent_identity.clone(),
+            facts.installed_parent_mode,
+            facts.installed_parent_path.clone(),
+        )
     }
 
     fn barrier(
