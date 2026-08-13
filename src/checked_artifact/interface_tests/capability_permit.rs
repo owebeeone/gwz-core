@@ -3,7 +3,7 @@ use std::path::Path;
 use super::super::bootstrap::CatalogBootstrapV1;
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1, PrivateControlDomain,
+    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1,
     RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
     synthetic_pre_catalog_permit,
 };
@@ -50,7 +50,7 @@ impl CatalogBootstrapV1<RetainedRoot> for Catalog {
         permit: RevalidatedPreCatalogPermitV1<'_, RetainedRoot>,
     ) -> Result<Self::Catalog, CheckedFsError> {
         self.probe.note_bootstrap();
-        Ok(permit.collision_domain_digest())
+        Ok(permit.collision_snapshot_digest())
     }
 }
 
@@ -71,27 +71,39 @@ fn owner() -> (
 #[test]
 fn owner_structurally_revalidates_immediately_before_catalog_bootstrap() {
     let (owner, probe) = owner();
-    let control = PrivateControlDomain::checked_v1();
     for kind in [
         PreCatalogRootKindV1::Workspace,
         PreCatalogRootKindV1::GitDirectory,
     ] {
         probe.clear_events();
-        let value = owner
-            .recover_or_create(
-                Path::new("."),
-                kind,
-                [9; 32],
-                &control,
-                &[],
-                &[],
-                &Catalog {
-                    probe: probe.clone(),
-                },
-            )
-            .unwrap();
-        assert_eq!(value, control.version_digest());
-        assert_eq!(probe.events(), ["observe", "revalidate", "bootstrap"]);
+        let catalog = Catalog {
+            probe: probe.clone(),
+        };
+        let value = match kind {
+            PreCatalogRootKindV1::Workspace => {
+                owner.recover_or_create_workspace(Path::new("."), [9; 32], &catalog)
+            }
+            PreCatalogRootKindV1::GitDirectory => {
+                owner.recover_or_create_git_directory(Path::new("."), [9; 32], &catalog)
+            }
+        }
+        .unwrap();
+        let (digest, events) = match kind {
+            PreCatalogRootKindV1::Workspace => (
+                [0x40; 32],
+                ["observe-workspace", "revalidate-workspace", "bootstrap"],
+            ),
+            PreCatalogRootKindV1::GitDirectory => (
+                [0x80; 32],
+                [
+                    "observe-git-directory",
+                    "revalidate-git-directory",
+                    "bootstrap",
+                ],
+            ),
+        };
+        assert_eq!(value, digest);
+        assert_eq!(probe.events(), events);
     }
 }
 
@@ -101,20 +113,40 @@ fn failed_immediate_revalidation_cannot_enter_catalog_bootstrap() {
     probe.reject_revalidation();
     assert!(
         owner
-            .recover_or_create(
+            .recover_or_create_workspace(
                 Path::new("."),
-                PreCatalogRootKindV1::Workspace,
                 [9; 32],
-                &PrivateControlDomain::checked_v1(),
-                &[],
-                &[],
                 &Catalog {
                     probe: probe.clone(),
                 },
             )
             .is_err()
     );
-    assert_eq!(probe.events(), ["observe", "revalidate"]);
+    assert_eq!(
+        probe.events(),
+        ["observe-workspace", "revalidate-workspace"]
+    );
+}
+
+#[test]
+fn changed_collision_snapshot_cannot_enter_catalog_bootstrap() {
+    let (owner, probe) = owner();
+    probe.change_snapshot_after_observe();
+    assert!(
+        owner
+            .recover_or_create_workspace(
+                Path::new("."),
+                [9; 32],
+                &Catalog {
+                    probe: probe.clone(),
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(
+        probe.events(),
+        ["observe-workspace", "revalidate-workspace"]
+    );
 }
 
 #[test]

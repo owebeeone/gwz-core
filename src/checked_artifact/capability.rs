@@ -11,6 +11,10 @@ mod durable_identity;
 mod path;
 mod pre_catalog;
 
+#[allow(
+    unused_imports,
+    reason = "R2 retains collision fact vocabulary for the sealed platform provider"
+)]
 pub(super) use collision::*;
 pub(super) use durable_identity::DurableObjectIdentityV1;
 pub(super) use path::*;

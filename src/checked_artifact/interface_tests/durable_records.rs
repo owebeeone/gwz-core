@@ -4,7 +4,7 @@ use std::path::Path;
 use super::super::bootstrap::CatalogBootstrapV1;
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1, PrivateControlDomain,
+    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1,
     RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
 };
 use super::super::protocol::{
@@ -92,19 +92,20 @@ fn catalog_with_token(
         vec![byte; 16],
         path(byte),
     );
-    owner
-        .recover_or_create(
+    let builder = CatalogRecordBuilder {
+        token: CatalogBootstrapOwnershipTokenV1::try_from_random_bytes(token).unwrap(),
+    };
+    match root_kind {
+        PreCatalogRootKindV1::Workspace => {
+            owner.recover_or_create_workspace(Path::new("."), [byte.wrapping_add(1); 32], &builder)
+        }
+        PreCatalogRootKindV1::GitDirectory => owner.recover_or_create_git_directory(
             Path::new("."),
-            root_kind,
             [byte.wrapping_add(1); 32],
-            &PrivateControlDomain::checked_v1(),
-            &[],
-            &[],
-            &CatalogRecordBuilder {
-                token: CatalogBootstrapOwnershipTokenV1::try_from_random_bytes(token).unwrap(),
-            },
-        )
-        .unwrap()
+            &builder,
+        ),
+    }
+    .unwrap()
 }
 
 fn catalog(root_kind: PreCatalogRootKindV1, byte: u8) -> CatalogBootstrapRecordV1 {

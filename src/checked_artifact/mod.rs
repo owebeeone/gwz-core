@@ -23,6 +23,11 @@ mod capability;
 mod catalog_names;
 mod classification;
 mod cleanup;
+#[allow(
+    dead_code,
+    reason = "R2 freezes coordinator identity and schedule contracts before consumer conversion"
+)]
+mod coordinator;
 mod fault;
 #[allow(
     dead_code,

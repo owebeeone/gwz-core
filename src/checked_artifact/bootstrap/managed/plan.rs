@@ -97,6 +97,8 @@ pub(in crate::checked_artifact) struct ManagedParentPlanV1 {
     pub(super) action_digest: ActionDigestV1,
     pub(super) request_owner_binding: RequestOwnerBindingV1,
     pub(super) rows: Vec<ManagedParentPlanRowV1>,
+    pub(super) declared_purposes: Vec<ManagedParentPurpose>,
+    pub(super) observation_digest: [u8; 32],
     pub(super) digest: [u8; 32],
     pub(super) schedule_inputs: ManagedParentScheduleInputsV1,
 }
@@ -112,6 +114,18 @@ impl ManagedParentPlanV1 {
 
     pub(in crate::checked_artifact) fn rows(&self) -> &[ManagedParentPlanRowV1] {
         &self.rows
+    }
+
+    pub(in crate::checked_artifact) fn declared_purposes(&self) -> &[ManagedParentPurpose] {
+        &self.declared_purposes
+    }
+
+    pub(in crate::checked_artifact) const fn observation_digest(&self) -> [u8; 32] {
+        self.observation_digest
+    }
+
+    pub(in crate::checked_artifact) const fn is_proof_only(&self) -> bool {
+        self.rows.is_empty()
     }
 
     pub(in crate::checked_artifact) const fn digest(&self) -> [u8; 32] {

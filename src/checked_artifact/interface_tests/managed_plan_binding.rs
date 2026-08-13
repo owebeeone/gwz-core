@@ -4,11 +4,12 @@ use std::io::Cursor;
 use super::super::bootstrap::{
     BoundManagedParentPlanV1, ManagedParentBootstrap, ManagedParentBootstrapOwnerV1,
     ManagedParentBootstrapRequest, ManagedParentObservationV1, ManagedParentPlanV1,
-    ManagedParentPurpose, ManagedParentSpec,
+    ManagedParentPurpose, SyntheticManagedParentAuthorityV1, synthetic_archive_source_prerequisite,
+    synthetic_managed_parent_request,
 };
 use super::super::capability::{
-    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, PathComponentMode,
+    CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1,
+    PathComponentMode,
 };
 use super::super::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionDirectoryAdmissionV1,
@@ -21,23 +22,35 @@ fn identity(byte: u8) -> DurableObjectIdentityV1 {
     DurableObjectIdentityV1::linux_ext4([byte; 16], 1, vec![byte; 24]).unwrap()
 }
 
-fn path(byte: u8) -> CanonicalPathIdentityV1 {
-    CanonicalPathIdentityV1::new(vec![CanonicalComponent::new(
-        AsciiComponent::parse(&[b'p', b'0' + byte]).unwrap(),
-        PathComponentMode::Sensitive,
-    )])
+fn retained_path(
+    request: &ManagedParentBootstrapRequest,
+    index: usize,
+    retained_count: usize,
+) -> CanonicalPathIdentityV1 {
+    let spec = &request.specs()[index];
+    let usable_count = retained_count.clamp(1, spec.components().len());
+    CanonicalPathIdentityV1::new(
+        spec.components()[..usable_count]
+            .iter()
+            .cloned()
+            .map(|component| CanonicalComponent::new(component, PathComponentMode::Sensitive))
+            .collect(),
+    )
     .unwrap()
 }
 
 fn request(purposes: &[ManagedParentPurpose]) -> ManagedParentBootstrapRequest {
-    ManagedParentBootstrapRequest::try_new(
-        purposes
-            .iter()
-            .copied()
-            .map(ManagedParentSpec::for_purpose)
-            .collect(),
-    )
-    .unwrap()
+    let authority = if purposes == [ManagedParentPurpose::MergeStore]
+        || purposes
+            == [
+                ManagedParentPurpose::MergeStore,
+                ManagedParentPurpose::PreservationBundles,
+            ] {
+        SyntheticManagedParentAuthorityV1::MergeStart
+    } else {
+        SyntheticManagedParentAuthorityV1::DurableMerge
+    };
+    synthetic_managed_parent_request(purposes, authority).unwrap()
 }
 
 struct Provider {
@@ -45,6 +58,7 @@ struct Provider {
     retained_counts: Vec<usize>,
     current: Cell<bool>,
     executions: Cell<usize>,
+    identity_seed: u8,
 }
 
 impl Provider {
@@ -54,7 +68,13 @@ impl Provider {
             retained_counts,
             current: Cell::new(true),
             executions: Cell::new(0),
+            identity_seed: 1,
         }
+    }
+
+    fn with_identity_seed(mut self, identity_seed: u8) -> Self {
+        self.identity_seed = identity_seed;
+        self
     }
 }
 
@@ -78,9 +98,9 @@ impl ManagedParentBootstrap for Provider {
                 ManagedParentObservationV1::new(
                     spec.purpose(),
                     *retained_count,
-                    identity(index as u8 + 1),
+                    identity(self.identity_seed.wrapping_add(index as u8)),
                     PathComponentMode::Sensitive,
-                    path(index as u8 + 1),
+                    retained_path(request, index, *retained_count),
                 )
             })
             .collect()
@@ -125,7 +145,7 @@ fn admitted(
 
 #[test]
 fn preflight_derives_an_immutable_complete_plan_and_its_schedule() {
-    let provider = Provider::new(7, vec![1, 2]);
+    let provider = Provider::new(7, vec![1, 1]);
     let owner = ManagedParentBootstrapOwnerV1::new(&provider);
     let action = ActionDigestV1::new([1; 32]);
     let request_owner = RequestOwnerBindingV1::new([2; 32]);
@@ -133,7 +153,7 @@ fn preflight_derives_an_immutable_complete_plan_and_its_schedule() {
         .preflight(
             &request(&[
                 ManagedParentPurpose::MergeStore,
-                ManagedParentPurpose::MergeArchive,
+                ManagedParentPurpose::PreservationBundles,
             ]),
             action,
             request_owner,
@@ -148,8 +168,8 @@ fn preflight_derives_an_immutable_complete_plan_and_its_schedule() {
     assert_eq!(plan.rows()[0].retained_existing_parent_count(), 1);
     assert_eq!(plan.rows()[0].missing_suffix().len(), 1);
     assert_eq!(plan.rows()[1].components().len(), 3);
-    assert_eq!(plan.rows()[1].retained_existing_parent_count(), 2);
-    assert_eq!(plan.rows()[1].missing_suffix().len(), 1);
+    assert_eq!(plan.rows()[1].retained_existing_parent_count(), 1);
+    assert_eq!(plan.rows()[1].missing_suffix().len(), 2);
 
     let schedule = ActionScheduleV1::try_from_managed_plan(
         4,
@@ -173,17 +193,21 @@ fn preflight_derives_an_immutable_complete_plan_and_its_schedule() {
 }
 
 #[test]
-fn preflight_rejects_empty_suffix_and_noncanonical_observation_order() {
+fn preflight_returns_proof_only_for_existing_parent_and_rejects_reordered_observations() {
     let fully_present = Provider::new(7, vec![2]);
-    assert!(
-        ManagedParentBootstrapOwnerV1::new(&fully_present)
-            .preflight(
-                &request(&[ManagedParentPurpose::MergeStore]),
-                ActionDigestV1::new([1; 32]),
-                RequestOwnerBindingV1::new([2; 32]),
-            )
-            .is_err()
+    let existing = ManagedParentBootstrapOwnerV1::new(&fully_present)
+        .preflight(
+            &request(&[ManagedParentPurpose::MergeStore]),
+            ActionDigestV1::new([1; 32]),
+            RequestOwnerBindingV1::new([2; 32]),
+        )
+        .unwrap();
+    assert!(existing.is_proof_only());
+    assert_eq!(
+        existing.declared_purposes(),
+        [ManagedParentPurpose::MergeStore]
     );
+    assert_ne!(existing.observation_digest(), [0; 32]);
 
     struct Reordered(Provider);
     impl ManagedParentBootstrap for Reordered {
@@ -213,13 +237,13 @@ fn preflight_rejects_empty_suffix_and_noncanonical_observation_order() {
             self.0.execute_bound(plan)
         }
     }
-    let reordered = Reordered(Provider::new(7, vec![1, 2]));
+    let reordered = Reordered(Provider::new(7, vec![1, 1]));
     assert!(
         ManagedParentBootstrapOwnerV1::new(&reordered)
             .preflight(
                 &request(&[
                     ManagedParentPurpose::MergeStore,
-                    ManagedParentPurpose::MergeArchive,
+                    ManagedParentPurpose::PreservationBundles,
                 ]),
                 ActionDigestV1::new([1; 32]),
                 RequestOwnerBindingV1::new([2; 32]),
@@ -230,7 +254,7 @@ fn preflight_rejects_empty_suffix_and_noncanonical_observation_order() {
 
 #[test]
 fn only_the_exact_resident_plan_binds_and_executes() {
-    let provider = Provider::new(7, vec![1, 2]);
+    let provider = Provider::new(7, vec![1, 1]);
     let owner = ManagedParentBootstrapOwnerV1::new(&provider);
     let action = ActionDigestV1::new([1; 32]);
     let request_owner = RequestOwnerBindingV1::new([2; 32]);
@@ -238,7 +262,7 @@ fn only_the_exact_resident_plan_binds_and_executes() {
         .preflight(
             &request(&[
                 ManagedParentPurpose::MergeStore,
-                ManagedParentPurpose::MergeArchive,
+                ManagedParentPurpose::PreservationBundles,
             ]),
             action,
             request_owner,
@@ -419,7 +443,8 @@ fn plan_digest_binds_retained_facts_not_only_schedule_shape() {
             request_owner,
         )
         .unwrap();
-    let second = ManagedParentBootstrapOwnerV1::new(&Provider::new(7, vec![0]))
+    let second_provider = Provider::new(7, vec![1]).with_identity_seed(8);
+    let second = ManagedParentBootstrapOwnerV1::new(&second_provider)
         .preflight(
             &request(&[ManagedParentPurpose::MergeStore]),
             action,
@@ -427,8 +452,98 @@ fn plan_digest_binds_retained_facts_not_only_schedule_shape() {
         )
         .unwrap();
     assert_ne!(first.digest(), second.digest());
-    assert_ne!(
+    assert_eq!(
         first.rows()[0].missing_suffix(),
         second.rows()[0].missing_suffix()
+    );
+}
+
+#[test]
+fn purpose_policy_rejects_forbidden_prefixes_and_overlap_before_admission() {
+    let action = ActionDigestV1::new([1; 32]);
+    let owner_binding = RequestOwnerBindingV1::new([2; 32]);
+
+    for (purpose, retained_count) in [
+        (ManagedParentPurpose::MergeStore, 0),
+        (ManagedParentPurpose::MergeArchive, 1),
+        (ManagedParentPurpose::PreservationBundles, 0),
+        (ManagedParentPurpose::RootPreservationMarkers, 0),
+    ] {
+        let request = synthetic_managed_parent_request(
+            &[purpose],
+            SyntheticManagedParentAuthorityV1::Unrestricted,
+        )
+        .unwrap();
+        assert!(
+            ManagedParentBootstrapOwnerV1::new(&Provider::new(7, vec![retained_count]))
+                .preflight(&request, action, owner_binding)
+                .is_err(),
+            "{purpose:?} accepted a forbidden retained prefix"
+        );
+    }
+
+    let overlapping = synthetic_managed_parent_request(
+        &[
+            ManagedParentPurpose::MergeStore,
+            ManagedParentPurpose::MergeArchive,
+        ],
+        SyntheticManagedParentAuthorityV1::Unrestricted,
+    )
+    .unwrap();
+    assert!(
+        ManagedParentBootstrapOwnerV1::new(&Provider::new(7, vec![1, 2]))
+            .preflight(&overlapping, action, owner_binding)
+            .is_err()
+    );
+}
+
+#[test]
+fn archive_requires_its_matching_opaque_source_and_plans_only_done() {
+    let action = ActionDigestV1::new([1; 32]);
+    let owner_binding = RequestOwnerBindingV1::new([2; 32]);
+    let request = ManagedParentBootstrapRequest::for_archive(
+        synthetic_archive_source_prerequisite(owner_binding, [9; 32]),
+    );
+    let provider = Provider::new(7, vec![2]);
+    let plan = ManagedParentBootstrapOwnerV1::new(&provider)
+        .preflight(&request, action, owner_binding)
+        .unwrap();
+    assert_eq!(plan.rows().len(), 1);
+    assert_eq!(plan.rows()[0].purpose(), ManagedParentPurpose::MergeArchive);
+    assert_eq!(plan.rows()[0].missing_suffix().len(), 1);
+    assert_eq!(plan.rows()[0].missing_suffix()[0].as_bytes(), b"done");
+
+    assert!(
+        ManagedParentBootstrapOwnerV1::new(&provider)
+            .preflight(&request, action, RequestOwnerBindingV1::new([3; 32]))
+            .is_err()
+    );
+    let zero_source = ManagedParentBootstrapRequest::for_archive(
+        synthetic_archive_source_prerequisite(owner_binding, [0; 32]),
+    );
+    assert!(
+        ManagedParentBootstrapOwnerV1::new(&provider)
+            .preflight(&zero_source, action, owner_binding)
+            .is_err()
+    );
+}
+
+#[test]
+fn request_constructors_keep_purposes_with_their_owner_class() {
+    assert!(
+        ManagedParentBootstrapRequest::try_for_durable_merge(&[ManagedParentPurpose::MergeStore,])
+            .is_err()
+    );
+    let start = ManagedParentBootstrapRequest::for_merge_start();
+    assert_eq!(
+        start
+            .specs()
+            .iter()
+            .map(|spec| spec.purpose())
+            .collect::<Vec<_>>(),
+        [
+            ManagedParentPurpose::MergeStore,
+            ManagedParentPurpose::PreservationBundles,
+        ]
     );
 }

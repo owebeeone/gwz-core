@@ -3,7 +3,7 @@ use std::path::Path;
 use super::super::bootstrap::CatalogBootstrapV1;
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1, PrivateControlDomain,
+    DurableObjectIdentityV1, PathComponentMode, PrivateControlDomain,
     RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
 };
 use super::super::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
@@ -59,15 +59,7 @@ fn catalog() -> CatalogBootstrapRecordV1 {
         path(1),
     );
     owner
-        .recover_or_create(
-            Path::new("."),
-            PreCatalogRootKindV1::Workspace,
-            [2; 32],
-            &PrivateControlDomain::checked_v1(),
-            &[],
-            &[],
-            &CatalogRecordBuilder,
-        )
+        .recover_or_create_workspace(Path::new("."), [2; 32], &CatalogRecordBuilder)
         .unwrap()
 }
 

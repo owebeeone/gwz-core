@@ -3,8 +3,7 @@
 use std::io::{self, Cursor};
 
 use super::{
-    CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1, LosslessIndexEntry,
-    PrivateControlDomain, SupportedFilesystemProfile, TrackedWorktreeEntry,
+    CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1, SupportedFilesystemProfile,
 };
 use crate::checked_artifact::protocol::generated;
 use crate::checked_artifact::protocol::{ProtocolCodecErrorV1, ProtocolRecordKindV1};
@@ -30,7 +29,7 @@ pub(in crate::checked_artifact) struct PreCatalogPermitV1<RetainedRoot> {
     root_invocation_identity: Vec<u8>,
     rename_domain: Vec<u8>,
     path_profile: CanonicalPathIdentityV1,
-    collision_domain_digest: [u8; 32],
+    collision_snapshot_digest: [u8; 32],
     lease_binding: [u8; 32],
     root_kind: PreCatalogRootKindV1,
 }
@@ -47,7 +46,7 @@ impl<RetainedRoot> PreCatalogPermitV1<RetainedRoot> {
         root_invocation_identity: Vec<u8>,
         rename_domain: Vec<u8>,
         path_profile: CanonicalPathIdentityV1,
-        collision_domain_digest: [u8; 32],
+        collision_snapshot_digest: [u8; 32],
         lease_binding: [u8; 32],
         root_kind: PreCatalogRootKindV1,
     ) -> Result<Self, CheckedFsError> {
@@ -87,7 +86,7 @@ impl<RetainedRoot> PreCatalogPermitV1<RetainedRoot> {
             root_invocation_identity,
             rename_domain,
             path_profile,
-            collision_domain_digest,
+            collision_snapshot_digest,
             lease_binding,
             root_kind,
         })
@@ -117,8 +116,8 @@ impl<RetainedRoot> PreCatalogPermitV1<RetainedRoot> {
         &self.rename_domain
     }
 
-    pub(in crate::checked_artifact) const fn collision_domain_digest(&self) -> [u8; 32] {
-        self.collision_domain_digest
+    pub(in crate::checked_artifact) const fn collision_snapshot_digest(&self) -> [u8; 32] {
+        self.collision_snapshot_digest
     }
 
     pub(in crate::checked_artifact) const fn lease_binding(&self) -> [u8; 32] {
@@ -166,8 +165,8 @@ impl<'permit, RetainedRoot> RevalidatedPreCatalogPermitV1<'permit, RetainedRoot>
         self.permit.rename_domain()
     }
 
-    pub(in crate::checked_artifact) const fn collision_domain_digest(&self) -> [u8; 32] {
-        self.permit.collision_domain_digest()
+    pub(in crate::checked_artifact) const fn collision_snapshot_digest(&self) -> [u8; 32] {
+        self.permit.collision_snapshot_digest()
     }
 
     pub(in crate::checked_artifact) const fn lease_binding(&self) -> [u8; 32] {
@@ -195,26 +194,55 @@ impl<Root: ?Sized, RetainedRoot> PreCatalogOwnerV1<Root, RetainedRoot> {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one owner call binds every pre-catalog input to bootstrap"
-    )]
-    pub(in crate::checked_artifact) fn recover_or_create<Bootstrap>(
+    pub(in crate::checked_artifact) fn recover_or_create_workspace<Bootstrap>(
         &self,
         root: &Root,
-        root_kind: PreCatalogRootKindV1,
         lease_binding: [u8; 32],
-        domain: &PrivateControlDomain,
-        index: &[LosslessIndexEntry],
-        worktree: &[TrackedWorktreeEntry],
         bootstrap: &Bootstrap,
     ) -> Result<Bootstrap::Catalog, CheckedFsError>
     where
         Bootstrap: crate::checked_artifact::bootstrap::CatalogBootstrapV1<RetainedRoot>,
     {
-        let observation = self
-            .provider
-            .inspect_and_scan(root, root_kind, domain, index, worktree)?;
+        let observation = self.provider.inspect_workspace(root)?;
+        self.recover_observed(
+            root,
+            PreCatalogRootKindV1::Workspace,
+            lease_binding,
+            observation,
+            bootstrap,
+        )
+    }
+
+    pub(in crate::checked_artifact) fn recover_or_create_git_directory<Bootstrap>(
+        &self,
+        root: &Root,
+        lease_binding: [u8; 32],
+        bootstrap: &Bootstrap,
+    ) -> Result<Bootstrap::Catalog, CheckedFsError>
+    where
+        Bootstrap: crate::checked_artifact::bootstrap::CatalogBootstrapV1<RetainedRoot>,
+    {
+        let observation = self.provider.inspect_git_directory(root)?;
+        self.recover_observed(
+            root,
+            PreCatalogRootKindV1::GitDirectory,
+            lease_binding,
+            observation,
+            bootstrap,
+        )
+    }
+
+    fn recover_observed<Bootstrap>(
+        &self,
+        root: &Root,
+        root_kind: PreCatalogRootKindV1,
+        lease_binding: [u8; 32],
+        observation: provider::RawPreCatalogObservationV1<RetainedRoot>,
+        bootstrap: &Bootstrap,
+    ) -> Result<Bootstrap::Catalog, CheckedFsError>
+    where
+        Bootstrap: crate::checked_artifact::bootstrap::CatalogBootstrapV1<RetainedRoot>,
+    {
         let permit = PreCatalogPermitV1::try_new(
             observation.retained_root,
             observation.support_profile,
@@ -222,7 +250,7 @@ impl<Root: ?Sized, RetainedRoot> PreCatalogOwnerV1<Root, RetainedRoot> {
             observation.root_invocation_identity,
             observation.rename_domain,
             observation.path_profile,
-            domain.version_digest(),
+            observation.collision_snapshot_digest,
             lease_binding,
             root_kind,
         )?;
@@ -230,7 +258,14 @@ impl<Root: ?Sized, RetainedRoot> PreCatalogOwnerV1<Root, RetainedRoot> {
         // Keep these calls adjacent: this is the mutation boundary. There is
         // deliberately no callback or returned permit on which a caller could
         // interpose unrelated work after revalidation.
-        self.provider.revalidate(root, &permit)?;
+        match root_kind {
+            PreCatalogRootKindV1::Workspace => {
+                self.provider.revalidate_workspace(root, &permit)?;
+            }
+            PreCatalogRootKindV1::GitDirectory => {
+                self.provider.revalidate_git_directory(root, &permit)?;
+            }
+        }
         bootstrap.recover_or_create(RevalidatedPreCatalogPermitV1::new(&permit))
     }
 }
@@ -247,7 +282,7 @@ pub(in crate::checked_artifact) fn synthetic_pre_catalog_permit<RetainedRoot>(
     root_invocation_identity: Vec<u8>,
     rename_domain: Vec<u8>,
     path_profile: CanonicalPathIdentityV1,
-    collision_domain_digest: [u8; 32],
+    collision_snapshot_digest: [u8; 32],
     lease_binding: [u8; 32],
     root_kind: PreCatalogRootKindV1,
 ) -> Result<PreCatalogPermitV1<RetainedRoot>, CheckedFsError> {
@@ -258,7 +293,7 @@ pub(in crate::checked_artifact) fn synthetic_pre_catalog_permit<RetainedRoot>(
         root_invocation_identity,
         rename_domain,
         path_profile,
-        collision_domain_digest,
+        collision_snapshot_digest,
         lease_binding,
         root_kind,
     )
