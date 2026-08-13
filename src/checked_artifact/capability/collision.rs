@@ -1,6 +1,8 @@
 //! Lossless Git facts and the opaque pre-catalog collision proof.
 
-use super::{CanonicalPathIdentityV1, CheckedFsError, PlatformCapability};
+use sha2::{Digest, Sha256};
+
+use super::{CheckedFsError, PlatformCapability};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(in crate::checked_artifact) struct GitPathBytes(Vec<u8>);
@@ -137,51 +139,13 @@ impl PrivateControlDomain {
     pub(in crate::checked_artifact) fn members(&self) -> &[GitPathBytes] {
         &self.members
     }
-}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::checked_artifact) struct PrivateNamespaceCollisionProof {
-    domain: PrivateControlDomain,
-    path_profile: CanonicalPathIdentityV1,
-}
-
-impl PrivateNamespaceCollisionProof {
-    fn cleared(domain: &PrivateControlDomain, path_profile: &CanonicalPathIdentityV1) -> Self {
-        Self {
-            domain: domain.clone(),
-            path_profile: path_profile.clone(),
+    pub(in crate::checked_artifact) fn version_digest(&self) -> [u8; 32] {
+        let mut material = Vec::new();
+        for member in &self.members {
+            material.extend_from_slice(&(member.as_bytes().len() as u64).to_le_bytes());
+            material.extend_from_slice(member.as_bytes());
         }
-    }
-    pub(in crate::checked_artifact) fn domain(&self) -> &PrivateControlDomain {
-        &self.domain
-    }
-    pub(in crate::checked_artifact) fn path_profile(&self) -> &CanonicalPathIdentityV1 {
-        &self.path_profile
-    }
-}
-
-pub(in crate::checked_artifact) trait PrivateNamespaceCollisionPreflight<Root: ?Sized> {
-    fn scan(
-        &self,
-        root: &Root,
-        domain: &PrivateControlDomain,
-        path_profile: &CanonicalPathIdentityV1,
-        index: &[LosslessIndexEntry],
-        worktree: &[TrackedWorktreeEntry],
-    ) -> Result<(), CheckedFsError>;
-
-    fn preflight(
-        &self,
-        root: &Root,
-        domain: &PrivateControlDomain,
-        path_profile: &CanonicalPathIdentityV1,
-        index: &[LosslessIndexEntry],
-        worktree: &[TrackedWorktreeEntry],
-    ) -> Result<PrivateNamespaceCollisionProof, CheckedFsError> {
-        self.scan(root, domain, path_profile, index, worktree)?;
-        Ok(PrivateNamespaceCollisionProof::cleared(
-            domain,
-            path_profile,
-        ))
+        Sha256::digest(material).into()
     }
 }

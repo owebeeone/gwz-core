@@ -7,7 +7,8 @@ use super::super::protocol::{
     BarrierOrdinalV1, CanonicalPathIdentityV1, CleanupAliasSetV1, CleanupAliasV1,
     CleanupPhysicalFactV1, CleanupResolutionV1, CleanupRowV1, CleanupWorklistV1,
     DurableLeafFingerprintV1, ManagedBootstrapInputV1, RecordObservationV1, RequestOwnerBindingV1,
-    ScratchRecordObservationV1, classify_cleanup_row, classify_fixed_replacement, classify_handoff,
+    ScratchRecordObservationV1, classify_fixed_replacement, classify_handoff,
+    read_and_bind_barrier_intent, read_and_bind_cleanup_worklist, read_bounded_record,
 };
 
 fn linux_identity(byte: u8) -> DurableObjectIdentityV1 {
@@ -79,18 +80,18 @@ fn reservation_and_admission_are_canonical_and_bound() {
     );
     let bytes = reservation.encode_canonical().unwrap();
     assert_eq!(
-        ActionCapacityReservationV1::decode_canonical(&bytes).unwrap(),
+        read_bounded_record::<ActionCapacityReservationV1>(Cursor::new(bytes)).unwrap(),
         reservation
     );
     let preparing = ActionDirectoryAdmissionV1::preparing(&reservation);
     let bytes = preparing.encode_canonical().unwrap();
     assert_eq!(
-        ActionDirectoryAdmissionV1::decode_canonical(&bytes).unwrap(),
+        read_bounded_record::<ActionDirectoryAdmissionV1>(Cursor::new(bytes.clone())).unwrap(),
         preparing
     );
     let mut trailing = bytes;
     trailing.push(0);
-    assert!(ActionDirectoryAdmissionV1::decode_canonical(&trailing).is_err());
+    assert!(read_bounded_record::<ActionDirectoryAdmissionV1>(Cursor::new(trailing)).is_err());
 }
 
 #[test]
@@ -206,35 +207,59 @@ fn cleanup_worklist_is_immutable_ordered_and_physical() {
     assert_eq!(worklist.rows().len(), 3);
     assert!(worklist.matches_reservation(&reservation));
     let encoded = worklist.encode_canonical().unwrap();
+    let bound = read_and_bind_cleanup_worklist(Cursor::new(encoded.clone()), &reservation).unwrap();
+    assert_eq!(bound.value(), &worklist);
+    assert_eq!(bound.len(), 3);
+    assert!(!bound.is_empty());
+    let row = bound.row(0).unwrap();
+    assert_eq!(row.alias(), CleanupAliasV1::Source);
+    let expected = row.expected().clone();
     assert_eq!(
-        CleanupWorklistV1::decode_canonical(&encoded).unwrap(),
-        worklist
-    );
-    let row = &worklist.rows()[0];
-    assert_eq!(
-        classify_cleanup_row(
-            row,
-            &CleanupPhysicalFactV1::Exact(row.expected().clone()),
+        bound.classify(
+            0,
+            &CleanupPhysicalFactV1::Exact(expected.clone()),
             &CleanupPhysicalFactV1::Missing
         ),
-        CleanupResolutionV1::Retire
+        Some(CleanupResolutionV1::Retire)
     );
     assert_eq!(
-        classify_cleanup_row(
-            row,
+        bound.classify(
+            0,
             &CleanupPhysicalFactV1::Missing,
-            &CleanupPhysicalFactV1::Exact(row.expected().clone())
+            &CleanupPhysicalFactV1::Exact(expected)
         ),
-        CleanupResolutionV1::Complete
+        Some(CleanupResolutionV1::Complete)
     );
     assert_eq!(
-        classify_cleanup_row(
-            row,
+        bound.classify(
+            0,
             &CleanupPhysicalFactV1::Other,
             &CleanupPhysicalFactV1::Missing
         ),
-        CleanupResolutionV1::Ambiguous
+        Some(CleanupResolutionV1::Ambiguous)
     );
+    assert_eq!(
+        bound.classify(
+            0,
+            &CleanupPhysicalFactV1::Exact(bound.row(1).unwrap().expected().clone()),
+            &CleanupPhysicalFactV1::Missing,
+        ),
+        Some(CleanupResolutionV1::Ambiguous)
+    );
+    assert_eq!(
+        bound.classify(
+            3,
+            &CleanupPhysicalFactV1::Missing,
+            &CleanupPhysicalFactV1::Missing,
+        ),
+        None
+    );
+    let wrong_reservation = ActionCapacityReservationV1::new(
+        ActionDigestV1::new([9; 32]),
+        RequestOwnerBindingV1::new([8; 32]),
+        schedule(&[1], 0),
+    );
+    assert!(read_and_bind_cleanup_worklist(Cursor::new(encoded), &wrong_reservation).is_err());
 }
 
 #[test]
@@ -254,7 +279,7 @@ fn barrier_intent_id_binds_every_persisted_field() {
             RequestOwnerBindingV1::new([owner; 32]),
             schedule(&[1], barrier_count),
         );
-        BarrierIntentV1::try_new(
+        BarrierIntentV1::test_issue(
             &reservation,
             BarrierOrdinalV1::new(ordinal).unwrap(),
             linux_identity(catalog),
@@ -292,7 +317,48 @@ fn barrier_intent_id_binds_every_persisted_field() {
         assert_ne!(first.intent_id(), changed.intent_id());
     }
     let bytes = first.encode_canonical().unwrap();
-    assert_eq!(BarrierIntentV1::decode_canonical(&bytes).unwrap(), first);
+    assert_eq!(
+        read_bounded_record::<BarrierIntentV1>(Cursor::new(bytes.clone())).unwrap(),
+        first
+    );
+    assert_eq!(
+        read_and_bind_barrier_intent(
+            Cursor::new(bytes.clone()),
+            &ActionCapacityReservationV1::new(
+                ActionDigestV1::new([8; 32]),
+                RequestOwnerBindingV1::new([9; 32]),
+                schedule(&[1], 2),
+            ),
+            BarrierOrdinalV1::new(0).unwrap(),
+        )
+        .unwrap()
+        .value(),
+        &first
+    );
+    assert!(
+        read_and_bind_barrier_intent(
+            Cursor::new(bytes.clone()),
+            &ActionCapacityReservationV1::new(
+                ActionDigestV1::new([7; 32]),
+                RequestOwnerBindingV1::new([9; 32]),
+                schedule(&[1], 2),
+            ),
+            BarrierOrdinalV1::new(0).unwrap(),
+        )
+        .is_err()
+    );
+    assert!(
+        read_and_bind_barrier_intent(
+            Cursor::new(bytes),
+            &ActionCapacityReservationV1::new(
+                ActionDigestV1::new([8; 32]),
+                RequestOwnerBindingV1::new([9; 32]),
+                schedule(&[1], 2),
+            ),
+            BarrierOrdinalV1::new(1).unwrap(),
+        )
+        .is_err()
+    );
 
     let too_short = ActionCapacityReservationV1::new(
         ActionDigestV1::new([8; 32]),
@@ -300,7 +366,7 @@ fn barrier_intent_id_binds_every_persisted_field() {
         schedule(&[1], 1),
     );
     assert!(
-        BarrierIntentV1::try_new(
+        BarrierIntentV1::test_issue(
             &too_short,
             BarrierOrdinalV1::new(1).unwrap(),
             linux_identity(1),
@@ -317,3 +383,4 @@ fn barrier_intent_id_binds_every_persisted_field() {
         .is_err()
     );
 }
+use std::io::Cursor;

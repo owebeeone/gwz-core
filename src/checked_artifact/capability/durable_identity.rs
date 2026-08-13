@@ -21,6 +21,16 @@ pub(in crate::checked_artifact) enum DurableObjectIdentityV1 {
 }
 
 impl DurableObjectIdentityV1 {
+    pub(in crate::checked_artifact) const fn support_profile(
+        &self,
+    ) -> super::SupportedFilesystemProfile {
+        match self {
+            Self::LinuxExt4 { .. } => super::SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
+            Self::Mac { .. } => super::SupportedFilesystemProfile::MacPersistentObjectIdV1,
+            Self::WindowsNtfs { .. } => super::SupportedFilesystemProfile::WindowsNtfsFileId128V1,
+        }
+    }
+
     pub(in crate::checked_artifact) fn linux_ext4(
         external_filesystem_uuid: [u8; 16],
         handle_type: i32,

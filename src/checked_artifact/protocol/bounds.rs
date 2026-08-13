@@ -75,7 +75,14 @@ const _: () = assert!(MAX_ROOT_ENTRIES == 74);
 pub(in crate::checked_artifact) struct CatalogOccupancyV1 {
     active_action_dirs: usize,
     retired_action_dirs: usize,
-    preparing_without_final: bool,
+    admission: CatalogAdmissionOccupancyV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) enum CatalogAdmissionOccupancyV1 {
+    Idle,
+    PreparingWithoutFinal,
+    PreparingWithFinal,
 }
 
 #[allow(
@@ -87,13 +94,32 @@ pub(in crate::checked_artifact) enum CatalogOccupancyErrorV1 {
     ActiveLimitExceeded,
     RetiredLimitExceeded,
     RetirementCreditsExceeded,
+    PreparingFinalMissing,
 }
 
 impl CatalogOccupancyV1 {
+    #[cfg(not(test))]
     pub(in crate::checked_artifact) fn new(
         active_action_dirs: usize,
         retired_action_dirs: usize,
-        preparing_without_final: bool,
+        admission: CatalogAdmissionOccupancyV1,
+    ) -> Result<Self, CatalogOccupancyErrorV1> {
+        Self::validate(active_action_dirs, retired_action_dirs, admission)
+    }
+
+    #[cfg(test)]
+    pub(in crate::checked_artifact) fn new(
+        active_action_dirs: usize,
+        retired_action_dirs: usize,
+        admission: impl Into<CatalogAdmissionOccupancyV1>,
+    ) -> Result<Self, CatalogOccupancyErrorV1> {
+        Self::validate(active_action_dirs, retired_action_dirs, admission.into())
+    }
+
+    fn validate(
+        active_action_dirs: usize,
+        retired_action_dirs: usize,
+        admission: CatalogAdmissionOccupancyV1,
     ) -> Result<Self, CatalogOccupancyErrorV1> {
         if active_action_dirs > MAX_ACTIVE_ACTION_DIRS {
             return Err(CatalogOccupancyErrorV1::ActiveLimitExceeded);
@@ -101,19 +127,23 @@ impl CatalogOccupancyV1 {
         if retired_action_dirs > MAX_RETIRED_ACTION_DIRS {
             return Err(CatalogOccupancyErrorV1::RetiredLimitExceeded);
         }
-        let outstanding = active_action_dirs + usize::from(preparing_without_final);
+        if admission == CatalogAdmissionOccupancyV1::PreparingWithFinal && active_action_dirs == 0 {
+            return Err(CatalogOccupancyErrorV1::PreparingFinalMissing);
+        }
+        let outstanding = active_action_dirs
+            + usize::from(admission == CatalogAdmissionOccupancyV1::PreparingWithoutFinal);
         if retired_action_dirs + outstanding > MAX_RETIRED_ACTION_DIRS {
             return Err(CatalogOccupancyErrorV1::RetirementCreditsExceeded);
         }
         Ok(Self {
             active_action_dirs,
             retired_action_dirs,
-            preparing_without_final,
+            admission,
         })
     }
 
     pub(in crate::checked_artifact) fn can_admit_new(self) -> bool {
-        !self.preparing_without_final
+        self.admission == CatalogAdmissionOccupancyV1::Idle
             && self.active_action_dirs < MAX_ACTIVE_ACTION_DIRS
             && self.retired_action_dirs + self.active_action_dirs < MAX_RETIRED_ACTION_DIRS
     }
@@ -121,7 +151,18 @@ impl CatalogOccupancyV1 {
     pub(in crate::checked_artifact) fn can_resume(self) -> bool {
         self.retired_action_dirs
             + self.active_action_dirs
-            + usize::from(self.preparing_without_final)
+            + usize::from(self.admission == CatalogAdmissionOccupancyV1::PreparingWithoutFinal)
             <= MAX_RETIRED_ACTION_DIRS
+    }
+}
+
+#[cfg(test)]
+impl From<bool> for CatalogAdmissionOccupancyV1 {
+    fn from(preparing_without_final: bool) -> Self {
+        if preparing_without_final {
+            Self::PreparingWithoutFinal
+        } else {
+            Self::Idle
+        }
     }
 }

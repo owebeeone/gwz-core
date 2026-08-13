@@ -7,7 +7,14 @@ use super::generated;
 use super::schedule::{
     ActionDigestV1, ActionScheduleV1, RecordDigestV1, RequestOwnerBindingV1, checked_array,
 };
+use super::slots::{InfrastructureSlotV1, RootEntryNameV1};
 use crate::checked_artifact::capability::DurableObjectIdentityV1;
+
+mod owner;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+pub(in crate::checked_artifact) use test_support::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct ActionCapacityReservationV1 {
@@ -55,9 +62,11 @@ impl ActionCapacityReservationV1 {
         Ok(crate::cbor::encode(&self.to_generated().to_cbor()))
     }
 
-    pub(in crate::checked_artifact) fn decode_canonical(
-        bytes: &[u8],
-    ) -> Result<Self, ProtocolCodecErrorV1> {
+    fn decode_canonical(bytes: &[u8]) -> Result<Self, ProtocolCodecErrorV1> {
+        Self::decode_canonical_inner(bytes)
+    }
+
+    fn decode_canonical_inner(bytes: &[u8]) -> Result<Self, ProtocolCodecErrorV1> {
         let cbor = crate::cbor::try_decode(bytes)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid capacity taut encoding"))?;
         let wire = generated::CheckedActionCapacityReservationV1::from_cbor(&cbor)
@@ -110,7 +119,10 @@ impl BoundedCanonicalRecordV1 for ActionCapacityReservationV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::checked_artifact) struct ActionDirectoryAdmissionV1(ActionDirectoryAdmissionStateV1);
+pub(in crate::checked_artifact) struct ActionDirectoryAdmissionV1 {
+    state: ActionDirectoryAdmissionStateV1,
+    record_digest: RecordDigestV1,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ActionDirectoryAdmissionStateV1 {
@@ -126,20 +138,22 @@ enum ActionDirectoryAdmissionStateV1 {
 }
 
 impl ActionDirectoryAdmissionV1 {
-    pub(in crate::checked_artifact) const fn idle() -> Self {
-        Self(ActionDirectoryAdmissionStateV1::Idle)
+    pub(in crate::checked_artifact) fn idle() -> Self {
+        Self::from_state(ActionDirectoryAdmissionStateV1::Idle)
     }
 
     pub(in crate::checked_artifact) fn preparing(
         reservation: &ActionCapacityReservationV1,
     ) -> Self {
         let action = reservation.action_digest();
-        Self(ActionDirectoryAdmissionStateV1::Preparing {
+        Self::from_state(ActionDirectoryAdmissionStateV1::Preparing {
             action_digest: action,
             request_owner_binding: reservation.request_owner_binding(),
             capacity_schedule_sha256: reservation.schedule().digest().bytes(),
-            staging_name: "action-admission-staging-v1".to_owned(),
-            final_action_name: format!("action-{}-v1", action.hex()),
+            staging_name: InfrastructureSlotV1::ActionAdmissionStaging
+                .name()
+                .to_owned(),
+            final_action_name: RootEntryNameV1::ActiveAction(action).name(),
             resident_reservation_sha256: reservation.record_digest().bytes(),
         })
     }
@@ -152,15 +166,44 @@ impl ActionDirectoryAdmissionV1 {
     }
 
     fn is_idle(&self) -> bool {
-        matches!(self.0, ActionDirectoryAdmissionStateV1::Idle)
+        matches!(self.state, ActionDirectoryAdmissionStateV1::Idle)
+    }
+
+    pub(in crate::checked_artifact) const fn record_digest(&self) -> RecordDigestV1 {
+        self.record_digest
+    }
+
+    fn from_state(state: ActionDirectoryAdmissionStateV1) -> Self {
+        let mut value = Self {
+            state,
+            record_digest: RecordDigestV1::new([0; 32]),
+        };
+        value.record_digest = RecordDigestV1::new(Sha256::digest(value.digest_material()).into());
+        value
     }
 
     pub(in crate::checked_artifact) fn encode_canonical(
         &self,
     ) -> Result<Vec<u8>, ProtocolCodecErrorV1> {
-        let wire = match &self.0 {
+        Ok(crate::cbor::encode(&self.to_generated().to_cbor()))
+    }
+
+    fn digest_material(&self) -> Vec<u8> {
+        crate::cbor::encode(&self.to_generated_with_digest(Vec::new()).to_cbor())
+    }
+
+    fn to_generated(&self) -> generated::CheckedActionDirectoryAdmissionV1 {
+        self.to_generated_with_digest(self.record_digest.bytes().to_vec())
+    }
+
+    fn to_generated_with_digest(
+        &self,
+        record_digest: Vec<u8>,
+    ) -> generated::CheckedActionDirectoryAdmissionV1 {
+        match &self.state {
             ActionDirectoryAdmissionStateV1::Idle => generated::CheckedActionDirectoryAdmissionV1 {
                 state: generated::CheckedAdmissionState::Idle,
+                record_digest,
                 ..Default::default()
             },
             ActionDirectoryAdmissionStateV1::Preparing {
@@ -178,18 +221,17 @@ impl ActionDirectoryAdmissionV1 {
                 staging_name: Some(staging_name.as_bytes().to_vec()),
                 final_action_name: Some(final_action_name.as_bytes().to_vec()),
                 resident_reservation_sha256: Some(resident_reservation_sha256.to_vec()),
+                record_digest,
             },
-        };
-        Ok(crate::cbor::encode(&wire.to_cbor()))
+        }
     }
 
-    pub(in crate::checked_artifact) fn decode_canonical(
-        bytes: &[u8],
-    ) -> Result<Self, ProtocolCodecErrorV1> {
+    fn decode_canonical(bytes: &[u8]) -> Result<Self, ProtocolCodecErrorV1> {
         let cbor = crate::cbor::try_decode(bytes)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid admission taut encoding"))?;
         let wire = generated::CheckedActionDirectoryAdmissionV1::from_cbor(&cbor)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid admission record shape"))?;
+        let stored_digest = checked_array(wire.record_digest)?;
         let value = match wire.state {
             generated::CheckedAdmissionState::Idle => {
                 if wire.action_digest.is_some()
@@ -206,7 +248,7 @@ impl ActionDirectoryAdmissionV1 {
                 Self::idle()
             }
             generated::CheckedAdmissionState::Preparing => {
-                Self(ActionDirectoryAdmissionStateV1::Preparing {
+                Self::from_state(ActionDirectoryAdmissionStateV1::Preparing {
                     action_digest: ActionDigestV1::new(checked_array(required(
                         wire.action_digest,
                     )?)?),
@@ -224,7 +266,7 @@ impl ActionDirectoryAdmissionV1 {
                 })
             }
         };
-        if value.encode_canonical()? != bytes {
+        if value.record_digest.bytes() != stored_digest || value.encode_canonical()? != bytes {
             return Err(ProtocolCodecErrorV1::Invalid(
                 "noncanonical admission record",
             ));
@@ -332,71 +374,6 @@ pub(in crate::checked_artifact) fn classify_fixed_replacement<T: Eq>(
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::checked_artifact) enum ActionDirectoryObservationV1 {
-    Missing,
-    Exact {
-        identity: DurableObjectIdentityV1,
-        reservation: Box<RecordObservationV1<ActionCapacityReservationV1>>,
-        extra_children: usize,
-    },
-    Other,
-}
-
-impl ActionDirectoryObservationV1 {
-    pub(in crate::checked_artifact) fn exact(
-        identity: DurableObjectIdentityV1,
-        reservation: RecordObservationV1<ActionCapacityReservationV1>,
-    ) -> Self {
-        Self::Exact {
-            identity,
-            reservation: Box::new(reservation),
-            extra_children: 0,
-        }
-    }
-
-    fn has_exact(&self, expected: &ActionCapacityReservationV1) -> bool {
-        matches!(
-            self,
-            Self::Exact {
-                reservation,
-                extra_children: 0,
-                ..
-            } if matches!(reservation.as_ref(), RecordObservationV1::Exact(value) if value == expected)
-        )
-    }
-
-    fn has_rewritable_reservation(&self) -> bool {
-        matches!(
-            self,
-            Self::Exact {
-                reservation,
-                extra_children: 0,
-                ..
-            } if matches!(
-                reservation.as_ref(),
-                RecordObservationV1::Missing | RecordObservationV1::PartialExpectedPrefix
-            )
-        )
-    }
-
-    fn exact_identity_for(
-        &self,
-        expected: &ActionCapacityReservationV1,
-    ) -> Option<&DurableObjectIdentityV1> {
-        match self {
-            Self::Exact {
-                identity,
-                reservation,
-                extra_children: 0,
-            } if matches!(reservation.as_ref(), RecordObservationV1::Exact(value) if value == expected) => {
-                Some(identity)
-            }
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) enum AdmissionHandoffDecisionV1 {
     CreateStaging,
@@ -404,46 +381,4 @@ pub(in crate::checked_artifact) enum AdmissionHandoffDecisionV1 {
     PublishStaging,
     ReplacePreparingWithIdle,
     Ambiguous,
-}
-
-pub(in crate::checked_artifact) fn classify_handoff(
-    admission: &ActionDirectoryAdmissionV1,
-    expected: &ActionCapacityReservationV1,
-    staging: &ActionDirectoryObservationV1,
-    final_directory: &ActionDirectoryObservationV1,
-) -> AdmissionHandoffDecisionV1 {
-    use AdmissionHandoffDecisionV1::*;
-    if !admission.matches_reservation(expected) {
-        return Ambiguous;
-    }
-    match (staging, final_directory) {
-        (ActionDirectoryObservationV1::Missing, ActionDirectoryObservationV1::Missing) => {
-            CreateStaging
-        }
-        (value, ActionDirectoryObservationV1::Missing) if value.has_rewritable_reservation() => {
-            WriteOrRewriteReservation
-        }
-        (value, ActionDirectoryObservationV1::Missing) if value.has_exact(expected) => {
-            PublishStaging
-        }
-        (ActionDirectoryObservationV1::Missing, value) if value.has_exact(expected) => {
-            ReplacePreparingWithIdle
-        }
-        _ => Ambiguous,
-    }
-}
-
-pub(in crate::checked_artifact) fn admit_observed_action(
-    admission: &ActionDirectoryAdmissionV1,
-    expected: &ActionCapacityReservationV1,
-    staging: &ActionDirectoryObservationV1,
-    final_directory: &ActionDirectoryObservationV1,
-) -> Option<AdmittedActionV1> {
-    if !admission.is_idle() || !matches!(staging, ActionDirectoryObservationV1::Missing) {
-        return None;
-    }
-    Some(AdmittedActionV1 {
-        reservation: expected.clone(),
-        directory_identity: final_directory.exact_identity_for(expected)?.clone(),
-    })
 }

@@ -76,11 +76,94 @@ impl CheckedCleanupAlias {
     }) }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum CheckedCatalogRootKind {
+    #[default] Workspace,
+    GitDirectory,
+}
+impl CheckedCatalogRootKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::Workspace => 0,
+        Self::GitDirectory => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Workspace,
+        1 => Self::GitDirectory,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "CheckedCatalogRootKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum CheckedManagedBootstrapPhase {
+    #[default] InstallComponents,
+    RetireMarkers,
+    Complete,
+}
+impl CheckedManagedBootstrapPhase {
+    pub fn wire(self) -> i64 { match self {
+        Self::InstallComponents => 0,
+        Self::RetireMarkers => 1,
+        Self::Complete => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::InstallComponents,
+        1 => Self::RetireMarkers,
+        2 => Self::Complete,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "CheckedManagedBootstrapPhase", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum CheckedFilesystemProfile {
+    #[default] LinuxExt4FsIocGetfsuuidV1,
+    MacPersistentObjectIdV1,
+    WindowsNtfsFileId128V1,
+}
+impl CheckedFilesystemProfile {
+    pub fn wire(self) -> i64 { match self {
+        Self::LinuxExt4FsIocGetfsuuidV1 => 0,
+        Self::MacPersistentObjectIdV1 => 1,
+        Self::WindowsNtfsFileId128V1 => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::LinuxExt4FsIocGetfsuuidV1,
+        1 => Self::MacPersistentObjectIdV1,
+        2 => Self::WindowsNtfsFileId128V1,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "CheckedFilesystemProfile", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum CheckedManagedParentPurpose {
+    #[default] MergeStore,
+    MergeArchive,
+    PreservationBundles,
+    RootPreservationMarkers,
+}
+impl CheckedManagedParentPurpose {
+    pub fn wire(self) -> i64 { match self {
+        Self::MergeStore => 0,
+        Self::MergeArchive => 1,
+        Self::PreservationBundles => 2,
+        Self::RootPreservationMarkers => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::MergeStore,
+        1 => Self::MergeArchive,
+        2 => Self::PreservationBundles,
+        3 => Self::RootPreservationMarkers,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "CheckedManagedParentPurpose", value: v }),
+    }) }
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct CheckedCanonicalComponentV1 {
     pub original_ascii: Vec<u8>,
     pub parent_mode: CheckedPathComponentMode,
     pub canonical_ascii: Vec<u8>,
+    pub parent_durable_identity: CheckedDurableObjectIdentityV1,
+    pub parent_invocation_identity: Vec<u8>,
+    pub rename_domain: Vec<u8>,
 }
 impl CheckedCanonicalComponentV1 {
     pub fn to_cbor(&self) -> Cbor {
@@ -88,6 +171,9 @@ impl CheckedCanonicalComponentV1 {
             (1, Cbor::Bytes(self.original_ascii.clone())),
             (2, Cbor::Int(self.parent_mode.wire())),
             (3, Cbor::Bytes(self.canonical_ascii.clone())),
+            (4, self.parent_durable_identity.to_cbor()),
+            (5, Cbor::Bytes(self.parent_invocation_identity.clone())),
+            (6, Cbor::Bytes(self.rename_domain.clone())),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -95,6 +181,9 @@ impl CheckedCanonicalComponentV1 {
             original_ascii: c.try_get(1)?.try_bytes()?,
             parent_mode: CheckedPathComponentMode::from_wire(c.try_get(2)?.try_int()?)?,
             canonical_ascii: c.try_get(3)?.try_bytes()?,
+            parent_durable_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(4)?)?,
+            parent_invocation_identity: c.try_get(5)?.try_bytes()?,
+            rename_domain: c.try_get(6)?.try_bytes()?,
         })
     }
 }
@@ -180,6 +269,7 @@ pub struct CheckedActionScheduleV1 {
     pub bootstraps: Vec<CheckedManagedBootstrapInputV1>,
     pub cleanup_aliases: Vec<CheckedCleanupAlias>,
     pub schedule_digest: Vec<u8>,
+    pub managed_plan_digest: Vec<u8>,
 }
 impl CheckedActionScheduleV1 {
     pub fn to_cbor(&self) -> Cbor {
@@ -188,6 +278,7 @@ impl CheckedActionScheduleV1 {
             (2, Cbor::Array(self.bootstraps.iter().map(|x| x.to_cbor()).collect())),
             (3, Cbor::Array(self.cleanup_aliases.iter().map(|x| Cbor::Int(x.wire())).collect())),
             (4, Cbor::Bytes(self.schedule_digest.clone())),
+            (5, Cbor::Bytes(self.managed_plan_digest.clone())),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -196,6 +287,7 @@ impl CheckedActionScheduleV1 {
             bootstraps: c.try_get(2)?.try_array()?.iter().map(|x| CheckedManagedBootstrapInputV1::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
             cleanup_aliases: c.try_get(3)?.try_array()?.iter().map(|x| Ok(CheckedCleanupAlias::from_wire(x.try_int()?)?)).collect::<Result<Vec<_>, DecodeError>>()?,
             schedule_digest: c.try_get(4)?.try_bytes()?,
+            managed_plan_digest: c.try_get(5)?.try_bytes()?,
         })
     }
 }
@@ -235,6 +327,7 @@ pub struct CheckedActionDirectoryAdmissionV1 {
     pub staging_name: Option<Vec<u8>>,
     pub final_action_name: Option<Vec<u8>>,
     pub resident_reservation_sha256: Option<Vec<u8>>,
+    pub record_digest: Vec<u8>,
 }
 impl CheckedActionDirectoryAdmissionV1 {
     pub fn to_cbor(&self) -> Cbor {
@@ -246,6 +339,7 @@ impl CheckedActionDirectoryAdmissionV1 {
             (5, match &self.staging_name { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
             (6, match &self.final_action_name { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
             (7, match &self.resident_reservation_sha256 { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
+            (8, Cbor::Bytes(self.record_digest.clone())),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -257,6 +351,148 @@ impl CheckedActionDirectoryAdmissionV1 {
             staging_name: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
             final_action_name: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
             resident_reservation_sha256: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
+            record_digest: c.try_get(8)?.try_bytes()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CheckedAuthorityV1 {
+    pub action_digest: Vec<u8>,
+    pub request_owner_binding: Vec<u8>,
+    pub schedule_digest: Vec<u8>,
+    pub reservation_digest: Vec<u8>,
+    pub artifact_root: CheckedCanonicalPathIdentityV1,
+    pub retained_parent_identity: CheckedDurableObjectIdentityV1,
+    pub source: CheckedDurableLeafFingerprintV1,
+    pub expected_sha256: Vec<u8>,
+    pub goal_sha256: Vec<u8>,
+    pub record_id: Vec<u8>,
+}
+impl CheckedAuthorityV1 {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Bytes(self.action_digest.clone())),
+            (2, Cbor::Bytes(self.request_owner_binding.clone())),
+            (3, Cbor::Bytes(self.schedule_digest.clone())),
+            (4, Cbor::Bytes(self.reservation_digest.clone())),
+            (5, self.artifact_root.to_cbor()),
+            (6, self.retained_parent_identity.to_cbor()),
+            (7, self.source.to_cbor()),
+            (8, Cbor::Bytes(self.expected_sha256.clone())),
+            (9, Cbor::Bytes(self.goal_sha256.clone())),
+            (10, Cbor::Bytes(self.record_id.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            action_digest: c.try_get(1)?.try_bytes()?,
+            request_owner_binding: c.try_get(2)?.try_bytes()?,
+            schedule_digest: c.try_get(3)?.try_bytes()?,
+            reservation_digest: c.try_get(4)?.try_bytes()?,
+            artifact_root: CheckedCanonicalPathIdentityV1::from_cbor(c.try_get(5)?)?,
+            retained_parent_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(6)?)?,
+            source: CheckedDurableLeafFingerprintV1::from_cbor(c.try_get(7)?)?,
+            expected_sha256: c.try_get(8)?.try_bytes()?,
+            goal_sha256: c.try_get(9)?.try_bytes()?,
+            record_id: c.try_get(10)?.try_bytes()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CheckedCatalogBootstrapV1 {
+    pub root_kind: CheckedCatalogRootKind,
+    pub support_profile: CheckedFilesystemProfile,
+    pub invocation_identity: Vec<u8>,
+    pub rename_domain: Vec<u8>,
+    pub lease_binding: Vec<u8>,
+    pub collision_domain_digest: Vec<u8>,
+    pub retained_parent_identity: CheckedDurableObjectIdentityV1,
+    pub retained_parent_path: CheckedCanonicalPathIdentityV1,
+    pub staging_name: Vec<u8>,
+    pub final_name: Vec<u8>,
+    pub catalog_anchor_a_name: Vec<u8>,
+    pub catalog_anchor_b_name: Vec<u8>,
+    pub record_id: Vec<u8>,
+}
+impl CheckedCatalogBootstrapV1 {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.root_kind.wire())),
+            (2, Cbor::Int(self.support_profile.wire())),
+            (3, Cbor::Bytes(self.invocation_identity.clone())),
+            (4, Cbor::Bytes(self.rename_domain.clone())),
+            (5, Cbor::Bytes(self.lease_binding.clone())),
+            (6, Cbor::Bytes(self.collision_domain_digest.clone())),
+            (7, self.retained_parent_identity.to_cbor()),
+            (8, self.retained_parent_path.to_cbor()),
+            (9, Cbor::Bytes(self.staging_name.clone())),
+            (10, Cbor::Bytes(self.final_name.clone())),
+            (11, Cbor::Bytes(self.catalog_anchor_a_name.clone())),
+            (12, Cbor::Bytes(self.catalog_anchor_b_name.clone())),
+            (13, Cbor::Bytes(self.record_id.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            root_kind: CheckedCatalogRootKind::from_wire(c.try_get(1)?.try_int()?)?,
+            support_profile: CheckedFilesystemProfile::from_wire(c.try_get(2)?.try_int()?)?,
+            invocation_identity: c.try_get(3)?.try_bytes()?,
+            rename_domain: c.try_get(4)?.try_bytes()?,
+            lease_binding: c.try_get(5)?.try_bytes()?,
+            collision_domain_digest: c.try_get(6)?.try_bytes()?,
+            retained_parent_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(7)?)?,
+            retained_parent_path: CheckedCanonicalPathIdentityV1::from_cbor(c.try_get(8)?)?,
+            staging_name: c.try_get(9)?.try_bytes()?,
+            final_name: c.try_get(10)?.try_bytes()?,
+            catalog_anchor_a_name: c.try_get(11)?.try_bytes()?,
+            catalog_anchor_b_name: c.try_get(12)?.try_bytes()?,
+            record_id: c.try_get(13)?.try_bytes()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CheckedInfrastructureV1 {
+    pub catalog_format: i64,
+    pub catalog_root_identity: CheckedDurableObjectIdentityV1,
+    pub catalog_anchor_identity: CheckedDurableObjectIdentityV1,
+    pub roaming_anchor_identity: CheckedDurableObjectIdentityV1,
+    pub retired_root_identity: CheckedDurableObjectIdentityV1,
+    pub catalog_bootstrap_record_id: Vec<u8>,
+    pub admission_active_name: Vec<u8>,
+    pub admission_scratch_name: Vec<u8>,
+    pub admission_staging_name: Vec<u8>,
+    pub record_digest: Vec<u8>,
+}
+impl CheckedInfrastructureV1 {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.catalog_format)),
+            (2, self.catalog_root_identity.to_cbor()),
+            (3, self.catalog_anchor_identity.to_cbor()),
+            (4, self.roaming_anchor_identity.to_cbor()),
+            (5, self.retired_root_identity.to_cbor()),
+            (6, Cbor::Bytes(self.catalog_bootstrap_record_id.clone())),
+            (7, Cbor::Bytes(self.admission_active_name.clone())),
+            (8, Cbor::Bytes(self.admission_scratch_name.clone())),
+            (9, Cbor::Bytes(self.admission_staging_name.clone())),
+            (10, Cbor::Bytes(self.record_digest.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            catalog_format: c.try_get(1)?.try_int()?,
+            catalog_root_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(2)?)?,
+            catalog_anchor_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(3)?)?,
+            roaming_anchor_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(4)?)?,
+            retired_root_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(5)?)?,
+            catalog_bootstrap_record_id: c.try_get(6)?.try_bytes()?,
+            admission_active_name: c.try_get(7)?.try_bytes()?,
+            admission_scratch_name: c.try_get(8)?.try_bytes()?,
+            admission_staging_name: c.try_get(9)?.try_bytes()?,
+            record_digest: c.try_get(10)?.try_bytes()?,
         })
     }
 }
@@ -274,6 +510,7 @@ pub struct CheckedBarrierIntentV1 {
     pub target_path_profile: CheckedCanonicalPathIdentityV1,
     pub reserved_target_leaf: Vec<u8>,
     pub intent_id: Vec<u8>,
+    pub reservation_digest: Vec<u8>,
 }
 impl CheckedBarrierIntentV1 {
     pub fn to_cbor(&self) -> Cbor {
@@ -289,6 +526,7 @@ impl CheckedBarrierIntentV1 {
             (9, self.target_path_profile.to_cbor()),
             (10, Cbor::Bytes(self.reserved_target_leaf.clone())),
             (11, Cbor::Bytes(self.intent_id.clone())),
+            (12, Cbor::Bytes(self.reservation_digest.clone())),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -304,6 +542,166 @@ impl CheckedBarrierIntentV1 {
             target_path_profile: CheckedCanonicalPathIdentityV1::from_cbor(c.try_get(9)?)?,
             reserved_target_leaf: c.try_get(10)?.try_bytes()?,
             intent_id: c.try_get(11)?.try_bytes()?,
+            reservation_digest: c.try_get(12)?.try_bytes()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CheckedManagedBootstrapComponentV1 {
+    pub component_ascii: Vec<u8>,
+    pub staging_name: Vec<u8>,
+    pub final_name: Vec<u8>,
+    pub marker_name: Vec<u8>,
+    pub global_component_ordinal: i64,
+    pub ownership_marker_id: Option<Vec<u8>>,
+    pub ownership_marker_intent_id: Option<Vec<u8>>,
+}
+impl CheckedManagedBootstrapComponentV1 {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Bytes(self.component_ascii.clone())),
+            (2, Cbor::Bytes(self.staging_name.clone())),
+            (3, Cbor::Bytes(self.final_name.clone())),
+            (4, Cbor::Bytes(self.marker_name.clone())),
+            (5, Cbor::Int(self.global_component_ordinal)),
+            (6, match &self.ownership_marker_id { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
+            (7, match &self.ownership_marker_intent_id { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            component_ascii: c.try_get(1)?.try_bytes()?,
+            staging_name: c.try_get(2)?.try_bytes()?,
+            final_name: c.try_get(3)?.try_bytes()?,
+            marker_name: c.try_get(4)?.try_bytes()?,
+            global_component_ordinal: c.try_get(5)?.try_int()?,
+            ownership_marker_id: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
+            ownership_marker_intent_id: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CheckedManagedParentBootstrapIntentV1 {
+    pub action_digest: Vec<u8>,
+    pub request_owner_binding: Vec<u8>,
+    pub reservation_digest: Vec<u8>,
+    pub schedule_digest: Vec<u8>,
+    pub spec_digest: Vec<u8>,
+    pub bootstrap_ordinal: i64,
+    pub generation_ordinal: i64,
+    pub generation_start: i64,
+    pub component_start: i64,
+    pub retained_parent_identity: CheckedDurableObjectIdentityV1,
+    pub retained_parent_mode: CheckedPathComponentMode,
+    pub retained_parent_path: CheckedCanonicalPathIdentityV1,
+    pub components: Vec<CheckedManagedBootstrapComponentV1>,
+    pub ownership_token: Vec<u8>,
+    pub predecessor_intent_id: Option<Vec<u8>>,
+    pub phase: CheckedManagedBootstrapPhase,
+    pub cursor: i64,
+    pub intent_id: Vec<u8>,
+    pub purpose: CheckedManagedParentPurpose,
+    pub managed_plan_digest: Vec<u8>,
+}
+impl CheckedManagedParentBootstrapIntentV1 {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Bytes(self.action_digest.clone())),
+            (2, Cbor::Bytes(self.request_owner_binding.clone())),
+            (3, Cbor::Bytes(self.reservation_digest.clone())),
+            (4, Cbor::Bytes(self.schedule_digest.clone())),
+            (5, Cbor::Bytes(self.spec_digest.clone())),
+            (6, Cbor::Int(self.bootstrap_ordinal)),
+            (7, Cbor::Int(self.generation_ordinal)),
+            (8, Cbor::Int(self.generation_start)),
+            (9, Cbor::Int(self.component_start)),
+            (10, self.retained_parent_identity.to_cbor()),
+            (11, Cbor::Int(self.retained_parent_mode.wire())),
+            (12, self.retained_parent_path.to_cbor()),
+            (13, Cbor::Array(self.components.iter().map(|x| x.to_cbor()).collect())),
+            (14, Cbor::Bytes(self.ownership_token.clone())),
+            (15, match &self.predecessor_intent_id { Some(v) => Cbor::Bytes(v.clone()), None => Cbor::Null }),
+            (16, Cbor::Int(self.phase.wire())),
+            (17, Cbor::Int(self.cursor)),
+            (18, Cbor::Bytes(self.intent_id.clone())),
+            (19, Cbor::Int(self.purpose.wire())),
+            (20, Cbor::Bytes(self.managed_plan_digest.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            action_digest: c.try_get(1)?.try_bytes()?,
+            request_owner_binding: c.try_get(2)?.try_bytes()?,
+            reservation_digest: c.try_get(3)?.try_bytes()?,
+            schedule_digest: c.try_get(4)?.try_bytes()?,
+            spec_digest: c.try_get(5)?.try_bytes()?,
+            bootstrap_ordinal: c.try_get(6)?.try_int()?,
+            generation_ordinal: c.try_get(7)?.try_int()?,
+            generation_start: c.try_get(8)?.try_int()?,
+            component_start: c.try_get(9)?.try_int()?,
+            retained_parent_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(10)?)?,
+            retained_parent_mode: CheckedPathComponentMode::from_wire(c.try_get(11)?.try_int()?)?,
+            retained_parent_path: CheckedCanonicalPathIdentityV1::from_cbor(c.try_get(12)?)?,
+            components: c.try_get(13)?.try_array()?.iter().map(|x| CheckedManagedBootstrapComponentV1::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            ownership_token: c.try_get(14)?.try_bytes()?,
+            predecessor_intent_id: { let v = c.try_get(15)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
+            phase: CheckedManagedBootstrapPhase::from_wire(c.try_get(16)?.try_int()?)?,
+            cursor: c.try_get(17)?.try_int()?,
+            intent_id: c.try_get(18)?.try_bytes()?,
+            purpose: CheckedManagedParentPurpose::from_wire(c.try_get(19)?.try_int()?)?,
+            managed_plan_digest: c.try_get(20)?.try_bytes()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CheckedOwnershipMarkerV1 {
+    pub action_digest: Vec<u8>,
+    pub request_owner_binding: Vec<u8>,
+    pub schedule_digest: Vec<u8>,
+    pub intent_id: Vec<u8>,
+    pub bootstrap_ordinal: i64,
+    pub local_component_ordinal: i64,
+    pub global_component_ordinal: i64,
+    pub component_ascii: Vec<u8>,
+    pub staging_name: Vec<u8>,
+    pub final_name: Vec<u8>,
+    pub ownership_token: Vec<u8>,
+    pub marker_id: Vec<u8>,
+}
+impl CheckedOwnershipMarkerV1 {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Bytes(self.action_digest.clone())),
+            (2, Cbor::Bytes(self.request_owner_binding.clone())),
+            (3, Cbor::Bytes(self.schedule_digest.clone())),
+            (4, Cbor::Bytes(self.intent_id.clone())),
+            (5, Cbor::Int(self.bootstrap_ordinal)),
+            (6, Cbor::Int(self.local_component_ordinal)),
+            (7, Cbor::Int(self.global_component_ordinal)),
+            (8, Cbor::Bytes(self.component_ascii.clone())),
+            (9, Cbor::Bytes(self.staging_name.clone())),
+            (10, Cbor::Bytes(self.final_name.clone())),
+            (11, Cbor::Bytes(self.ownership_token.clone())),
+            (12, Cbor::Bytes(self.marker_id.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            action_digest: c.try_get(1)?.try_bytes()?,
+            request_owner_binding: c.try_get(2)?.try_bytes()?,
+            schedule_digest: c.try_get(3)?.try_bytes()?,
+            intent_id: c.try_get(4)?.try_bytes()?,
+            bootstrap_ordinal: c.try_get(5)?.try_int()?,
+            local_component_ordinal: c.try_get(6)?.try_int()?,
+            global_component_ordinal: c.try_get(7)?.try_int()?,
+            component_ascii: c.try_get(8)?.try_bytes()?,
+            staging_name: c.try_get(9)?.try_bytes()?,
+            final_name: c.try_get(10)?.try_bytes()?,
+            ownership_token: c.try_get(11)?.try_bytes()?,
+            marker_id: c.try_get(12)?.try_bytes()?,
         })
     }
 }
@@ -357,6 +755,7 @@ pub struct CheckedCleanupWorklistV1 {
     pub request_owner_binding: Vec<u8>,
     pub schedule_digest: Vec<u8>,
     pub rows: Vec<CheckedCleanupRowV1>,
+    pub reservation_digest: Vec<u8>,
 }
 impl CheckedCleanupWorklistV1 {
     pub fn to_cbor(&self) -> Cbor {
@@ -365,6 +764,7 @@ impl CheckedCleanupWorklistV1 {
             (2, Cbor::Bytes(self.request_owner_binding.clone())),
             (3, Cbor::Bytes(self.schedule_digest.clone())),
             (4, Cbor::Array(self.rows.iter().map(|x| x.to_cbor()).collect())),
+            (5, Cbor::Bytes(self.reservation_digest.clone())),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -373,6 +773,7 @@ impl CheckedCleanupWorklistV1 {
             request_owner_binding: c.try_get(2)?.try_bytes()?,
             schedule_digest: c.try_get(3)?.try_bytes()?,
             rows: c.try_get(4)?.try_array()?.iter().map(|x| CheckedCleanupRowV1::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            reservation_digest: c.try_get(5)?.try_bytes()?,
         })
     }
 }

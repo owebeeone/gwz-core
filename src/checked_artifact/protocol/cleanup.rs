@@ -1,7 +1,11 @@
 //! Immutable, ordered cleanup worklist and physical resolution table.
 
-use super::codec::{BoundedCanonicalRecordV1, ProtocolCodecErrorV1, ProtocolRecordKindV1};
-use super::schedule::{ActionDigestV1, RequestOwnerBindingV1, ScheduleDigestV1};
+use std::io::Read;
+
+use super::codec::{
+    BoundedCanonicalRecordV1, ProtocolCodecErrorV1, ProtocolRecordKindV1, read_bounded_record_inner,
+};
+use super::schedule::{ActionDigestV1, RecordDigestV1, RequestOwnerBindingV1, ScheduleDigestV1};
 use super::{generated, schedule::checked_array};
 use crate::checked_artifact::capability::DurableObjectIdentityV1;
 
@@ -149,6 +153,7 @@ impl CleanupRowV1 {
 pub(in crate::checked_artifact) struct CleanupWorklistV1 {
     action_digest: ActionDigestV1,
     request_owner_binding: RequestOwnerBindingV1,
+    reservation_digest: RecordDigestV1,
     schedule_digest: ScheduleDigestV1,
     rows: Vec<CleanupRowV1>,
 }
@@ -167,6 +172,7 @@ impl CleanupWorklistV1 {
         Self::from_bound_fields(
             reservation.action_digest(),
             reservation.request_owner_binding(),
+            reservation.record_digest(),
             reservation.schedule().digest(),
             rows,
         )
@@ -175,6 +181,7 @@ impl CleanupWorklistV1 {
     fn from_bound_fields(
         action_digest: ActionDigestV1,
         request_owner_binding: RequestOwnerBindingV1,
+        reservation_digest: RecordDigestV1,
         schedule_digest: ScheduleDigestV1,
         rows: Vec<CleanupRowV1>,
     ) -> Result<Self, ProtocolCodecErrorV1> {
@@ -193,6 +200,7 @@ impl CleanupWorklistV1 {
         Ok(Self {
             action_digest,
             request_owner_binding,
+            reservation_digest,
             schedule_digest,
             rows,
         })
@@ -202,12 +210,17 @@ impl CleanupWorklistV1 {
         &self.rows
     }
 
+    pub(in crate::checked_artifact) const fn reservation_digest(&self) -> RecordDigestV1 {
+        self.reservation_digest
+    }
+
     pub(in crate::checked_artifact) fn matches_reservation(
         &self,
         reservation: &super::ActionCapacityReservationV1,
     ) -> bool {
         self.action_digest == reservation.action_digest()
             && self.request_owner_binding == reservation.request_owner_binding()
+            && self.reservation_digest == reservation.record_digest()
             && self.schedule_digest == reservation.schedule().digest()
             && CleanupAliasSetV1::from_mask(
                 self.rows
@@ -222,15 +235,14 @@ impl CleanupWorklistV1 {
         Ok(crate::cbor::encode(&self.to_generated().to_cbor()))
     }
 
-    pub(in crate::checked_artifact) fn decode_canonical(
-        bytes: &[u8],
-    ) -> Result<Self, ProtocolCodecErrorV1> {
+    fn decode_canonical(bytes: &[u8]) -> Result<Self, ProtocolCodecErrorV1> {
         let cbor = crate::cbor::try_decode(bytes)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid cleanup taut encoding"))?;
         let wire = generated::CheckedCleanupWorklistV1::from_cbor(&cbor)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid cleanup record shape"))?;
         let action = ActionDigestV1::new(checked_array(wire.action_digest)?);
         let owner = RequestOwnerBindingV1::new(checked_array(wire.request_owner_binding)?);
+        let reservation = RecordDigestV1::new(checked_array(wire.reservation_digest)?);
         let schedule = ScheduleDigestV1::new(checked_array(wire.schedule_digest)?);
         let mut rows = Vec::new();
         rows.try_reserve_exact(wire.rows.len())
@@ -250,7 +262,7 @@ impl CleanupWorklistV1 {
                 ),
             ));
         }
-        let value = Self::from_bound_fields(action, owner, schedule, rows)?;
+        let value = Self::from_bound_fields(action, owner, reservation, schedule, rows)?;
         if value.encode_canonical()? != bytes {
             return Err(ProtocolCodecErrorV1::Invalid("noncanonical cleanup record"));
         }
@@ -261,6 +273,7 @@ impl CleanupWorklistV1 {
         generated::CheckedCleanupWorklistV1 {
             action_digest: self.action_digest.bytes().to_vec(),
             request_owner_binding: self.request_owner_binding.bytes().to_vec(),
+            reservation_digest: self.reservation_digest.bytes().to_vec(),
             schedule_digest: self.schedule_digest.bytes().to_vec(),
             rows: self
                 .rows
@@ -290,6 +303,67 @@ impl BoundedCanonicalRecordV1 for CleanupWorklistV1 {
     }
 }
 
+pub(in crate::checked_artifact) struct BoundCleanupWorklistV1(CleanupWorklistV1);
+
+impl BoundCleanupWorklistV1 {
+    pub(in crate::checked_artifact) fn len(&self) -> usize {
+        self.0.rows.len()
+    }
+
+    pub(in crate::checked_artifact) fn is_empty(&self) -> bool {
+        self.0.rows.is_empty()
+    }
+
+    pub(in crate::checked_artifact) fn row(&self, index: usize) -> Option<BoundCleanupRowV1<'_>> {
+        self.0.rows.get(index).map(|row| BoundCleanupRowV1 { row })
+    }
+
+    pub(in crate::checked_artifact) fn classify(
+        &self,
+        index: usize,
+        source: &CleanupPhysicalFactV1,
+        destination: &CleanupPhysicalFactV1,
+    ) -> Option<CleanupResolutionV1> {
+        self.0
+            .rows
+            .get(index)
+            .map(|row| classify_cleanup_row(row, source, destination))
+    }
+
+    #[cfg(test)]
+    pub(in crate::checked_artifact) fn value(&self) -> &CleanupWorklistV1 {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::checked_artifact) struct BoundCleanupRowV1<'a> {
+    row: &'a CleanupRowV1,
+}
+
+impl BoundCleanupRowV1<'_> {
+    pub(in crate::checked_artifact) const fn alias(&self) -> CleanupAliasV1 {
+        self.row.alias()
+    }
+
+    pub(in crate::checked_artifact) fn expected(&self) -> &DurableLeafFingerprintV1 {
+        self.row.expected()
+    }
+}
+
+pub(in crate::checked_artifact) fn read_and_bind_cleanup_worklist(
+    reader: impl Read,
+    reservation: &super::ActionCapacityReservationV1,
+) -> Result<BoundCleanupWorklistV1, ProtocolCodecErrorV1> {
+    let value = read_bounded_record_inner::<CleanupWorklistV1>(reader)?;
+    if !value.matches_reservation(reservation) {
+        return Err(ProtocolCodecErrorV1::Invalid(
+            "cleanup worklist does not match resident reservation",
+        ));
+    }
+    Ok(BoundCleanupWorklistV1(value))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) enum CleanupPhysicalFactV1 {
     Missing,
@@ -304,7 +378,7 @@ pub(in crate::checked_artifact) enum CleanupResolutionV1 {
     Ambiguous,
 }
 
-pub(in crate::checked_artifact) fn classify_cleanup_row(
+fn classify_cleanup_row(
     row: &CleanupRowV1,
     source: &CleanupPhysicalFactV1,
     destination: &CleanupPhysicalFactV1,

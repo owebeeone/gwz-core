@@ -1,4 +1,11 @@
 mod bounds_slots;
+mod capability_permit;
+mod catalog_admission;
 mod codec_faults;
 mod contracts;
+mod durable_records;
+mod fault_expected_keys;
+mod managed_plan_binding;
+mod managed_records;
+mod namespace_roles;
 mod schedule_records;

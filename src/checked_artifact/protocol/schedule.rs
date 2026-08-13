@@ -1,8 +1,11 @@
 //! Distinct identity domains and the immutable physical action schedule.
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use sha2::{Digest, Sha256};
+
+use crate::checked_artifact::bootstrap::ManagedParentScheduleInputsV1;
 
 use super::bounds::{
     MAX_BARRIER_INVOCATIONS_PER_ACTION, MAX_BOOTSTRAP_INTENT_GENERATIONS,
@@ -125,6 +128,14 @@ pub(in crate::checked_artifact) struct ManagedBootstrapRowV1 {
 }
 
 impl ManagedBootstrapRowV1 {
+    pub(in crate::checked_artifact) const fn spec_digest(&self) -> [u8; 32] {
+        self.spec_digest
+    }
+
+    pub(in crate::checked_artifact) const fn ordinal(&self) -> BootstrapOrdinalV1 {
+        self.ordinal
+    }
+
     pub(in crate::checked_artifact) fn generation_range(&self) -> Range<usize> {
         self.generation_range.clone()
     }
@@ -141,25 +152,53 @@ pub(in crate::checked_artifact) struct ActionScheduleV1 {
     component_count: usize,
     generation_count: usize,
     cleanup_aliases: CleanupAliasSetV1,
+    managed_plan_digest: [u8; 32],
     digest: ScheduleDigestV1,
 }
 
 impl ActionScheduleV1 {
     pub(in crate::checked_artifact) fn try_new(
         barrier_count: usize,
+        inputs: Vec<ManagedBootstrapInputV1>,
+        cleanup_aliases: CleanupAliasSetV1,
+    ) -> Result<Self, ScheduleErrorV1> {
+        Self::try_new_inner(barrier_count, inputs, cleanup_aliases, None, true)
+    }
+
+    pub(in crate::checked_artifact) fn try_from_managed_plan(
+        barrier_count: usize,
+        inputs: &ManagedParentScheduleInputsV1,
+        cleanup_aliases: CleanupAliasSetV1,
+    ) -> Result<Self, ScheduleErrorV1> {
+        Self::try_new_inner(
+            barrier_count,
+            inputs.rows().to_vec(),
+            cleanup_aliases,
+            Some(inputs.plan_digest()),
+            false,
+        )
+    }
+
+    fn try_new_inner(
+        barrier_count: usize,
         mut inputs: Vec<ManagedBootstrapInputV1>,
         cleanup_aliases: CleanupAliasSetV1,
+        managed_plan_digest: Option<[u8; 32]>,
+        canonicalize_legacy_inputs: bool,
     ) -> Result<Self, ScheduleErrorV1> {
         if barrier_count > MAX_BARRIER_INVOCATIONS_PER_ACTION
             || inputs.len() > MAX_MANAGED_PARENT_BOOTSTRAPS
         {
             return Err(ScheduleErrorV1::OutOfBounds);
         }
-        inputs.sort_by_key(|input| input.spec_digest);
-        if inputs
-            .windows(2)
-            .any(|pair| pair[0].spec_digest == pair[1].spec_digest)
-        {
+        if canonicalize_legacy_inputs {
+            inputs.sort_by_key(|input| input.spec_digest);
+        }
+        let unique = inputs
+            .iter()
+            .map(|input| input.spec_digest)
+            .collect::<BTreeSet<_>>();
+        if unique.len() != inputs.len() {
             return Err(ScheduleErrorV1::DuplicateSpec);
         }
         let component_count = inputs.iter().try_fold(0usize, |sum, input| {
@@ -190,12 +229,15 @@ impl ActionScheduleV1 {
         if generation_start > MAX_BOOTSTRAP_INTENT_GENERATIONS {
             return Err(ScheduleErrorV1::OutOfBounds);
         }
+        let managed_plan_digest =
+            managed_plan_digest.unwrap_or_else(|| digest_schedule_rows(&rows));
         let mut value = Self {
             barrier_count,
             bootstrap_rows: rows,
             component_count,
             generation_count: generation_start,
             cleanup_aliases,
+            managed_plan_digest,
             digest: ScheduleDigestV1::new([0; 32]),
         };
         value.digest = ScheduleDigestV1::new(Sha256::digest(value.digest_material()).into());
@@ -226,13 +268,15 @@ impl ActionScheduleV1 {
         self.cleanup_aliases
     }
 
+    pub(in crate::checked_artifact) const fn managed_plan_digest(&self) -> [u8; 32] {
+        self.managed_plan_digest
+    }
+
     pub(in crate::checked_artifact) fn encode_canonical(&self) -> Vec<u8> {
         crate::cbor::encode(&self.to_generated().to_cbor())
     }
 
-    pub(in crate::checked_artifact) fn decode_canonical(
-        bytes: &[u8],
-    ) -> Result<Self, ProtocolCodecErrorV1> {
+    pub(super) fn decode_canonical(bytes: &[u8]) -> Result<Self, ProtocolCodecErrorV1> {
         let cbor = crate::cbor::try_decode(bytes)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid schedule taut encoding"))?;
         let wire = generated::CheckedActionScheduleV1::from_cbor(&cbor)
@@ -251,12 +295,29 @@ impl ActionScheduleV1 {
             .collect::<Result<Vec<_>, _>>()?;
         let aliases = CleanupAliasSetV1::from_generated(&wire.cleanup_aliases)?;
         let stored_digest = checked_array(wire.schedule_digest)?;
-        let value = Self::try_new(barrier_count, inputs, aliases)
-            .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid schedule"))?;
-        if value.digest.bytes() != stored_digest || value.encode_canonical() != bytes {
+        let stored_plan_digest = checked_array(wire.managed_plan_digest)?;
+        let value = Self::try_new_inner(
+            barrier_count,
+            inputs,
+            aliases,
+            Some(stored_plan_digest),
+            false,
+        )
+        .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid schedule"))?;
+        if value.digest.bytes() != stored_digest
+            || value.managed_plan_digest != stored_plan_digest
+            || value.encode_canonical() != bytes
+        {
             return Err(ProtocolCodecErrorV1::Invalid("noncanonical schedule"));
         }
         Ok(value)
+    }
+
+    #[cfg(test)]
+    pub(in crate::checked_artifact) fn test_decode_canonical(
+        bytes: &[u8],
+    ) -> Result<Self, ProtocolCodecErrorV1> {
+        Self::decode_canonical(bytes)
     }
 
     fn digest_material(&self) -> Vec<u8> {
@@ -283,8 +344,23 @@ impl ActionScheduleV1 {
                 .collect(),
             cleanup_aliases: self.cleanup_aliases.to_generated(),
             schedule_digest,
+            managed_plan_digest: self.managed_plan_digest.to_vec(),
         }
     }
+}
+
+fn digest_schedule_rows(rows: &[ManagedBootstrapRowV1]) -> [u8; 32] {
+    let material = rows
+        .iter()
+        .map(|row| {
+            generated::CheckedManagedBootstrapInputV1 {
+                spec_digest: row.spec_digest.to_vec(),
+                component_count: (row.component_range.end - row.component_range.start) as i64,
+            }
+            .to_cbor()
+        })
+        .collect();
+    Sha256::digest(crate::cbor::encode(&crate::cbor::Cbor::Array(material))).into()
 }
 
 pub(in crate::checked_artifact) fn checked_array<const N: usize>(

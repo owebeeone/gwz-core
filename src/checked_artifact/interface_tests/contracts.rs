@@ -1,16 +1,11 @@
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-use super::super::bootstrap::{
-    CatalogBootstrapPermit, CatalogBootstrapV1, ManagedParentBootstrap,
-    ManagedParentBootstrapRequest, ManagedParentPurpose, ManagedParentSpec,
-    NonWorktreeGitDirectoryPreflight, WorkspaceRuntimeBootstrapV1, WorkspaceRuntimePaths,
-};
+use super::super::bootstrap::{WorkspaceRuntimeBootstrapV1, WorkspaceRuntimePaths};
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, FilesystemCapabilityPreflight, GitPathBytes, IndexStage,
-    LosslessIndexEntry, PathComponentMode, PlatformCapability, PrivateControlDomain,
-    PrivateNamespaceCollisionPreflight, SupportedFilesystemProfile, TrackedWorktreeEntry,
+    DurableObjectIdentityV1, GitPathBytes, IndexStage, LosslessIndexEntry, PathComponentMode,
+    PlatformCapability, PrivateControlDomain, SupportedFilesystemProfile, TrackedWorktreeEntry,
     TrackedWorktreeKind,
 };
 use super::super::leaf::{
@@ -27,8 +22,8 @@ use super::super::namespace::{
 };
 use super::super::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionDirectoryAdmissionV1,
-    ActionDirectoryObservationV1, ActionScheduleV1, ActionSlotV1, CleanupAliasSetV1,
-    RecordObservationV1, RequestOwnerBindingV1, admit_observed_action,
+    ActionDirectoryObservationV1, ActionScheduleV1, CleanupAliasSetV1, RecordObservationV1,
+    RequestOwnerBindingV1, admit_observed_action,
 };
 
 #[test]
@@ -62,12 +57,12 @@ fn canonical_path_identity_is_nonempty_and_bounded() {
     assert_eq!(path.components().len(), 1);
     let bytes = path.encode_canonical();
     assert_eq!(
-        CanonicalPathIdentityV1::decode_canonical(&bytes).unwrap(),
+        CanonicalPathIdentityV1::decode_canonical_for_test(&bytes).unwrap(),
         path
     );
     let mut trailing = bytes;
     trailing.push(0);
-    assert!(CanonicalPathIdentityV1::decode_canonical(&trailing).is_err());
+    assert!(CanonicalPathIdentityV1::decode_canonical_for_test(&trailing).is_err());
     assert!(CanonicalPathIdentityV1::new(Vec::new()).is_err());
 
     let many = (0..17)
@@ -136,70 +131,15 @@ fn collision_facts_keep_raw_paths_stages_and_flags() {
     assert_eq!(PrivateControlDomain::checked_v1().members().len(), 4);
 }
 
-struct ClearCollision;
-
-impl PrivateNamespaceCollisionPreflight<Path> for ClearCollision {
-    fn scan(
-        &self,
-        _root: &Path,
-        _domain: &PrivateControlDomain,
-        _path_profile: &CanonicalPathIdentityV1,
-        _index: &[LosslessIndexEntry],
-        _worktree: &[TrackedWorktreeEntry],
-    ) -> Result<(), CheckedFsError> {
-        Ok(())
-    }
-}
-
 #[test]
-fn collision_preflight_issues_an_opaque_bound_proof() {
-    let profile = one_component_profile();
+fn collision_domain_is_fixed_and_digest_bound() {
     let domain = PrivateControlDomain::checked_v1();
-    let proof = ClearCollision
-        .preflight(Path::new("."), &domain, &profile, &[], &[])
-        .unwrap();
-    assert_eq!(proof.domain(), &domain);
-    assert_eq!(proof.path_profile(), &profile);
+    assert_eq!(domain.members().len(), 4);
+    assert_ne!(domain.version_digest(), [0; 32]);
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Identity(u8);
-
-struct CapabilityPreflight;
-
-impl FilesystemCapabilityPreflight<Path> for CapabilityPreflight {
-    type RootIdentity = Identity;
-
-    fn inspect(
-        &self,
-        _root: &Path,
-    ) -> Result<
-        (
-            SupportedFilesystemProfile,
-            Self::RootIdentity,
-            CanonicalPathIdentityV1,
-        ),
-        CheckedFsError,
-    > {
-        Ok((
-            SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
-            Identity(7),
-            one_component_profile(),
-        ))
-    }
-}
-
-#[test]
-fn filesystem_capability_proof_binds_profile_identity_and_path() {
-    let path = one_component_profile();
-    let proof = CapabilityPreflight.preflight(Path::new(".")).unwrap();
-    assert_eq!(
-        proof.support_profile(),
-        SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1
-    );
-    assert_eq!(proof.root_identity(), &Identity(7));
-    assert_eq!(proof.path_profile(), &path);
-}
 
 #[derive(Clone)]
 struct Bytes(Vec<u8>);
@@ -372,17 +312,19 @@ fn action_namespace_is_issued_only_after_idle_exact_admission() {
     let action_namespace = ActionNamespace::from_admitted(RecordingNamespace::default(), admitted);
     assert_eq!(
         action_namespace
-            .scheduled_barrier_ordinal(0)
+            .scheduled_barrier(0)
             .unwrap()
+            .ordinal()
             .index(),
         0
     );
-    assert!(action_namespace.scheduled_barrier_ordinal(1).is_err());
-    let destination = action_namespace.reserve_action_slot(
-        retained_directory(2, Identity(2), one_component_profile()),
-        ActionSlotV1::Base(super::super::protocol::BaseActionSlotV1::GoalPayload),
+    assert!(action_namespace.scheduled_barrier(1).is_err());
+    let destination =
+        action_namespace.publish_destination(super::super::namespace::PublishRoleV1::GoalPayload);
+    assert_eq!(
+        destination.reservation_binding(),
+        reservation.record_digest()
     );
-    assert_eq!(destination.binding(), &reservation.record_digest());
     assert!(destination.leaf().as_bytes().ends_with(b"goal-payload-v1"));
 }
 
@@ -403,127 +345,11 @@ impl WorkspaceRuntimeBootstrapV1 for RuntimeBootstrap {
     }
 }
 
-struct CatalogBootstrap;
-
-struct GitDirectoryPreflight;
-
-impl NonWorktreeGitDirectoryPreflight<Path> for GitDirectoryPreflight {
-    fn inspect(&self, _git_directory: &Path) -> Result<(), CheckedFsError> {
-        Ok(())
-    }
-}
-
-impl CatalogBootstrapV1<Identity> for CatalogBootstrap {
-    type Catalog = &'static str;
-
-    fn recover_or_create(
-        &self,
-        _permit: CatalogBootstrapPermit<'_, Identity>,
-    ) -> Result<Self::Catalog, CheckedFsError> {
-        Ok("catalog")
-    }
-}
-
-struct ParentBootstrap;
-
-impl ManagedParentBootstrap for ParentBootstrap {
-    type Plan = Vec<ManagedParentSpec>;
-    type RetainedParents = usize;
-
-    fn preflight(
-        &self,
-        request: &ManagedParentBootstrapRequest,
-    ) -> Result<Vec<ManagedParentSpec>, CheckedFsError> {
-        Ok(request.specs().to_vec())
-    }
-
-    fn execute(
-        &self,
-        _admitted_action: &super::super::protocol::AdmittedActionV1,
-        plan: &Vec<ManagedParentSpec>,
-    ) -> Result<Self::RetainedParents, CheckedFsError> {
-        Ok(plan.len())
-    }
-}
-
 #[test]
-fn bootstrap_contracts_keep_runtime_catalog_and_managed_roles_separate() {
+fn runtime_bootstrap_contract_remains_capability_neutral() {
     let runtime = RuntimeBootstrap;
     let paths = WorkspaceRuntimePaths::new(Path::new("/workspace"), Path::new("/workspace/.git"));
     assert!(runtime.try_acquire(paths).unwrap().is_some());
-
-    let profile = one_component_profile();
-    let capability = CapabilityPreflight.preflight(Path::new(".")).unwrap();
-    let collision = ClearCollision
-        .preflight(
-            Path::new("."),
-            &PrivateControlDomain::checked_v1(),
-            &profile,
-            &[],
-            &[],
-        )
-        .unwrap();
-    assert_eq!(
-        CatalogBootstrap
-            .recover_or_create(CatalogBootstrapPermit::workspace(&capability, &collision,))
-            .unwrap(),
-        "catalog"
-    );
-    let non_worktree = GitDirectoryPreflight
-        .preflight(Path::new("/workspace/.git"))
-        .unwrap();
-    assert_eq!(
-        CatalogBootstrap
-            .recover_or_create(CatalogBootstrapPermit::git_directory(
-                &capability,
-                &non_worktree,
-            ))
-            .unwrap(),
-        "catalog"
-    );
-
-    assert_eq!(ManagedParentPurpose::ALL.len(), 4);
-    let specs = ManagedParentPurpose::ALL
-        .iter()
-        .copied()
-        .map(ManagedParentSpec::for_purpose)
-        .collect::<Vec<_>>();
-    assert!(ManagedParentBootstrapRequest::try_new(Vec::new()).is_err());
-    assert!(
-        ManagedParentBootstrapRequest::try_new(vec![
-            ManagedParentSpec::for_purpose(ManagedParentPurpose::MergeStore),
-            ManagedParentSpec::for_purpose(ManagedParentPurpose::MergeStore),
-        ])
-        .is_err()
-    );
-    let request = ManagedParentBootstrapRequest::try_new(specs.clone()).unwrap();
-    let plan = ParentBootstrap.preflight(&request).unwrap();
-    let reservation = ActionCapacityReservationV1::new(
-        ActionDigestV1::new([7; 32]),
-        RequestOwnerBindingV1::new([8; 32]),
-        ActionScheduleV1::try_new(0, Vec::new(), CleanupAliasSetV1::all()).unwrap(),
-    );
-    let action_directory = ActionDirectoryObservationV1::exact(
-        linux_identity(9),
-        RecordObservationV1::Exact(reservation.clone()),
-    );
-    let admitted = admit_observed_action(
-        &ActionDirectoryAdmissionV1::idle(),
-        &reservation,
-        &ActionDirectoryObservationV1::Missing,
-        &action_directory,
-    )
-    .unwrap();
-    assert_eq!(ParentBootstrap.execute(&admitted, &plan).unwrap(), 4);
-    assert_eq!(specs[0].purpose(), ManagedParentPurpose::MergeStore);
-    assert_eq!(
-        specs[0]
-            .components()
-            .iter()
-            .map(|part| part.as_bytes())
-            .collect::<Vec<_>>(),
-        vec![b".gwz".as_slice(), b"merge".as_slice()]
-    );
 }
 
 fn one_component_profile() -> CanonicalPathIdentityV1 {

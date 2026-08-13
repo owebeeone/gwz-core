@@ -1,10 +1,15 @@
 //! Fully bound, canonically encoded namespace-barrier intent.
 
 use sha2::{Digest, Sha256};
+use std::io::Read;
 
-use super::codec::{BoundedCanonicalRecordV1, ProtocolCodecErrorV1, ProtocolRecordKindV1};
+use super::codec::{
+    BoundedCanonicalRecordV1, ProtocolCodecErrorV1, ProtocolRecordKindV1, read_bounded_record_inner,
+};
 use super::generated;
-use super::schedule::{ActionDigestV1, BarrierOrdinalV1, RequestOwnerBindingV1, ScheduleDigestV1};
+use super::schedule::{
+    ActionDigestV1, BarrierOrdinalV1, RecordDigestV1, RequestOwnerBindingV1, ScheduleDigestV1,
+};
 use super::schedule::{checked_array, checked_usize};
 use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1,
@@ -14,6 +19,7 @@ use crate::checked_artifact::capability::{
 pub(in crate::checked_artifact) struct BarrierIntentV1 {
     action_digest: ActionDigestV1,
     request_owner_binding: RequestOwnerBindingV1,
+    reservation_digest: RecordDigestV1,
     schedule_digest: ScheduleDigestV1,
     ordinal: BarrierOrdinalV1,
     catalog_anchor_identity: DurableObjectIdentityV1,
@@ -30,7 +36,8 @@ impl BarrierIntentV1 {
         clippy::too_many_arguments,
         reason = "the intent deliberately binds each independent retained namespace fact"
     )]
-    pub(in crate::checked_artifact) fn try_new(
+    pub(in crate::checked_artifact) fn issue(
+        _authority: &crate::checked_artifact::namespace::NamespaceBarrierAuthority,
         reservation: &super::ActionCapacityReservationV1,
         ordinal: BarrierOrdinalV1,
         catalog_anchor_identity: DurableObjectIdentityV1,
@@ -45,9 +52,10 @@ impl BarrierIntentV1 {
                 "barrier ordinal is not reserved by the action schedule",
             ));
         }
-        Ok(Self::from_bound_fields(
+        Ok(BarrierIntentV1::from_bound_fields(
             reservation.action_digest(),
             reservation.request_owner_binding(),
+            reservation.record_digest(),
             reservation.schedule().digest(),
             ordinal,
             catalog_anchor_identity,
@@ -58,7 +66,6 @@ impl BarrierIntentV1 {
             reserved_target_leaf,
         ))
     }
-
     #[allow(
         clippy::too_many_arguments,
         reason = "decoder validates every persisted binding explicitly"
@@ -66,6 +73,7 @@ impl BarrierIntentV1 {
     fn from_bound_fields(
         action_digest: ActionDigestV1,
         request_owner_binding: RequestOwnerBindingV1,
+        reservation_digest: RecordDigestV1,
         schedule_digest: ScheduleDigestV1,
         ordinal: BarrierOrdinalV1,
         catalog_anchor_identity: DurableObjectIdentityV1,
@@ -78,6 +86,7 @@ impl BarrierIntentV1 {
         let mut value = Self {
             action_digest,
             request_owner_binding,
+            reservation_digest,
             schedule_digest,
             ordinal,
             catalog_anchor_identity,
@@ -96,21 +105,24 @@ impl BarrierIntentV1 {
         self.intent_id
     }
 
+    pub(in crate::checked_artifact) const fn reservation_digest(&self) -> RecordDigestV1 {
+        self.reservation_digest
+    }
+
     pub(in crate::checked_artifact) fn encode_canonical(
         &self,
     ) -> Result<Vec<u8>, ProtocolCodecErrorV1> {
         Ok(crate::cbor::encode(&self.to_generated().to_cbor()))
     }
 
-    pub(in crate::checked_artifact) fn decode_canonical(
-        bytes: &[u8],
-    ) -> Result<Self, ProtocolCodecErrorV1> {
+    fn decode_canonical(bytes: &[u8]) -> Result<Self, ProtocolCodecErrorV1> {
         let cbor = crate::cbor::try_decode(bytes)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid barrier taut encoding"))?;
         let wire = generated::CheckedBarrierIntentV1::from_cbor(&cbor)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid barrier record shape"))?;
         let action = ActionDigestV1::new(checked_array(wire.action_digest)?);
         let owner = RequestOwnerBindingV1::new(checked_array(wire.request_owner_binding)?);
+        let reservation = RecordDigestV1::new(checked_array(wire.reservation_digest)?);
         let schedule = ScheduleDigestV1::new(checked_array(wire.schedule_digest)?);
         let ordinal = BarrierOrdinalV1::new(checked_usize(wire.ordinal)?)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid barrier ordinal"))?;
@@ -119,16 +131,16 @@ impl BarrierIntentV1 {
         let home_name = AsciiComponent::parse(&wire.private_home_name)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid private home name"))?;
         let target = decode_identity(wire.target_parent_identity)?;
-        let path = CanonicalPathIdentityV1::decode_canonical(&crate::cbor::encode(
-            &wire.target_path_profile.to_cbor(),
-        ))
-        .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid path identity"))?;
+        let path = crate::checked_artifact::capability::decode_canonical_path_value(
+            wire.target_path_profile,
+        )?;
         let target_leaf = AsciiComponent::parse(&wire.reserved_target_leaf)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid reserved target leaf"))?;
         let intent_id = checked_array(wire.intent_id)?;
         let value = Self::from_bound_fields(
             action,
             owner,
+            reservation,
             schedule,
             ordinal,
             catalog,
@@ -158,6 +170,7 @@ impl BarrierIntentV1 {
         generated::CheckedBarrierIntentV1 {
             action_digest: self.action_digest.bytes().to_vec(),
             request_owner_binding: self.request_owner_binding.bytes().to_vec(),
+            reservation_digest: self.reservation_digest.bytes().to_vec(),
             schedule_digest: self.schedule_digest.bytes().to_vec(),
             ordinal: self.ordinal.index() as i64,
             catalog_anchor_identity: self.catalog_anchor_identity.to_generated(),
@@ -171,6 +184,37 @@ impl BarrierIntentV1 {
     }
 }
 
+#[cfg(test)]
+impl BarrierIntentV1 {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "protocol-private semantic test binds every persisted field"
+    )]
+    pub(in crate::checked_artifact) fn test_issue(
+        reservation: &super::ActionCapacityReservationV1,
+        ordinal: BarrierOrdinalV1,
+        catalog_anchor_identity: DurableObjectIdentityV1,
+        private_home_parent_identity: DurableObjectIdentityV1,
+        private_home_name: AsciiComponent,
+        target_parent_identity: DurableObjectIdentityV1,
+        target_path_profile: CanonicalPathIdentityV1,
+        reserved_target_leaf: AsciiComponent,
+    ) -> Result<Self, ProtocolCodecErrorV1> {
+        let authority = crate::checked_artifact::namespace::NamespaceBarrierAuthority::test_only();
+        Self::issue(
+            &authority,
+            reservation,
+            ordinal,
+            catalog_anchor_identity,
+            private_home_parent_identity,
+            private_home_name,
+            target_parent_identity,
+            target_path_profile,
+            reserved_target_leaf,
+        )
+    }
+}
+
 impl BoundedCanonicalRecordV1 for BarrierIntentV1 {
     const KIND: ProtocolRecordKindV1 = ProtocolRecordKindV1::BarrierIntent;
 
@@ -181,6 +225,34 @@ impl BoundedCanonicalRecordV1 for BarrierIntentV1 {
     fn decode_record(bytes: &[u8]) -> Result<Self, ProtocolCodecErrorV1> {
         Self::decode_canonical(bytes)
     }
+}
+
+pub(in crate::checked_artifact) struct BoundBarrierIntentV1(BarrierIntentV1);
+
+impl BoundBarrierIntentV1 {
+    pub(in crate::checked_artifact) fn value(&self) -> &BarrierIntentV1 {
+        &self.0
+    }
+}
+
+pub(in crate::checked_artifact) fn read_and_bind_barrier_intent(
+    reader: impl Read,
+    reservation: &super::ActionCapacityReservationV1,
+    expected_ordinal: BarrierOrdinalV1,
+) -> Result<BoundBarrierIntentV1, ProtocolCodecErrorV1> {
+    let value = read_bounded_record_inner::<BarrierIntentV1>(reader)?;
+    if value.action_digest != reservation.action_digest()
+        || value.request_owner_binding != reservation.request_owner_binding()
+        || value.reservation_digest != reservation.record_digest()
+        || value.schedule_digest != reservation.schedule().digest()
+        || value.ordinal != expected_ordinal
+        || expected_ordinal.index() >= reservation.schedule().barrier_count()
+    {
+        return Err(ProtocolCodecErrorV1::Invalid(
+            "barrier intent does not match resident reservation and ordinal",
+        ));
+    }
+    Ok(BoundBarrierIntentV1(value))
 }
 
 fn decode_identity(
