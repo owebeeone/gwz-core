@@ -2,11 +2,15 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::checked_artifact::bootstrap::{ManagedParentBootstrapRequest, ManagedParentPurpose};
+use crate::checked_artifact::bootstrap::{
+    ManagedParentAuthorityClassV1, ManagedParentBootstrapRequest, ManagedParentPurpose,
+    ValidatedArchiveSourceV1,
+};
 use crate::checked_artifact::capability::{
     AsciiComponent, CheckedFsError, MAX_CANONICAL_PATH_IDENTITY_BYTES, PreCatalogRootKindV1,
 };
 use crate::checked_artifact::protocol::{ActionDigestV1, RequestOwnerBindingV1};
+use crate::workspace_ops::{CheckedOwnerRecordObservation, CheckedOwnerRecordVersion};
 
 const OWNER_DOMAIN: &[u8] = b"gwz-checked-owner-v1\0";
 const ACTION_DOMAIN: &[u8] = b"gwz-checked-action-v1\0";
@@ -75,6 +79,53 @@ impl CheckedActionOwnerV1 {
                 source_record_sha256: Sha256::digest(source_record_bytes).into(),
             },
         })
+    }
+
+    fn from_record_observation(
+        observation: &CheckedOwnerRecordObservation<'_>,
+    ) -> Result<Self, CheckedFsError> {
+        let variant = match observation.version() {
+            CheckedOwnerRecordVersion::V0 => OwnerVariantV1::MergeRecordV0,
+            #[cfg(test)]
+            CheckedOwnerRecordVersion::V1 => OwnerVariantV1::MergeRecordV1,
+        };
+        Self::for_merge_record(
+            variant,
+            observation.workspace_id(),
+            observation.merge_id(),
+            observation.operation_id(),
+            observation.exact_bytes(),
+        )
+    }
+
+    fn source_record_sha256(&self) -> Option<[u8; 32]> {
+        match self.fields {
+            OwnerFieldsV1::ManagedParents { .. } => None,
+            OwnerFieldsV1::MergeRecord {
+                source_record_sha256,
+                ..
+            } => Some(source_record_sha256),
+        }
+    }
+
+    fn permits_managed_request(&self, request: &ManagedParentBootstrapRequest) -> bool {
+        match (self.variant, request.authority_class()) {
+            (OwnerVariantV1::ManagedParents, ManagedParentAuthorityClassV1::MergeStart) => true,
+            (
+                OwnerVariantV1::MergeRecordV0 | OwnerVariantV1::MergeRecordV1,
+                ManagedParentAuthorityClassV1::DurableMerge,
+            ) => true,
+            (
+                OwnerVariantV1::MergeRecordV0 | OwnerVariantV1::MergeRecordV1,
+                ManagedParentAuthorityClassV1::Archive,
+            ) => request.archive_prerequisite().is_some_and(|prerequisite| {
+                prerequisite.owner_binding() == self.request_owner_binding()
+                    && Some(prerequisite.source_record_sha256()) == self.source_record_sha256()
+            }),
+            #[cfg(test)]
+            (_, ManagedParentAuthorityClassV1::Unrestricted) => true,
+            _ => false,
+        }
     }
 
     pub(in crate::checked_artifact) fn request_owner_binding(&self) -> RequestOwnerBindingV1 {
@@ -187,11 +238,80 @@ pub(in crate::checked_artifact) struct CheckedActionRequestV1 {
     purposes: CheckedPurposeSetV1,
 }
 
+/// Sealed owner, action identity, and managed-purpose request. Production
+/// managed preflight accepts only this tuple, never independent digests or
+/// purpose lists.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) struct CheckedManagedActionV1 {
+    checked: CheckedActionRequestV1,
+    managed: ManagedParentBootstrapRequest,
+}
+
+impl CheckedManagedActionV1 {
+    pub(in crate::checked_artifact) fn for_merge_start(
+        workspace_id: &str,
+    ) -> Result<Self, CheckedFsError> {
+        let owner = CheckedActionOwnerV1::for_merge_start(workspace_id)?;
+        Self::seal(owner, ManagedParentBootstrapRequest::for_merge_start())
+    }
+
+    pub(in crate::checked_artifact) fn for_durable_merge(
+        observation: &CheckedOwnerRecordObservation<'_>,
+        purposes: &[ManagedParentPurpose],
+    ) -> Result<Self, CheckedFsError> {
+        let owner = CheckedActionOwnerV1::from_record_observation(observation)?;
+        let managed = ManagedParentBootstrapRequest::try_for_durable_merge(purposes)?;
+        Self::seal(owner, managed)
+    }
+
+    pub(in crate::checked_artifact) fn for_archive(
+        observation: &CheckedOwnerRecordObservation<'_>,
+    ) -> Result<Self, CheckedFsError> {
+        let owner = CheckedActionOwnerV1::from_record_observation(observation)?;
+        let prerequisite = ValidatedArchiveSourceV1::from_exact_record_owner(
+            owner.request_owner_binding(),
+            owner
+                .source_record_sha256()
+                .ok_or_else(|| identity_error("archive owner is not record-derived"))?,
+        )?;
+        Self::seal(
+            owner,
+            ManagedParentBootstrapRequest::for_archive(prerequisite),
+        )
+    }
+
+    fn seal(
+        owner: CheckedActionOwnerV1,
+        managed: ManagedParentBootstrapRequest,
+    ) -> Result<Self, CheckedFsError> {
+        if !owner.permits_managed_request(&managed) {
+            return Err(identity_error(
+                "managed-parent authority does not match its owner class",
+            ));
+        }
+        let checked = CheckedActionRequestV1::for_managed_parents(&owner, &managed)?;
+        Ok(Self { checked, managed })
+    }
+
+    pub(in crate::checked_artifact) fn checked(&self) -> &CheckedActionRequestV1 {
+        &self.checked
+    }
+
+    pub(in crate::checked_artifact) fn managed(&self) -> &ManagedParentBootstrapRequest {
+        &self.managed
+    }
+}
+
 impl CheckedActionRequestV1 {
     pub(in crate::checked_artifact) fn for_managed_parents(
         owner: &CheckedActionOwnerV1,
         request: &ManagedParentBootstrapRequest,
     ) -> Result<Self, CheckedFsError> {
+        if !owner.permits_managed_request(request) {
+            return Err(identity_error(
+                "managed-parent authority does not match its owner class",
+            ));
+        }
         let purposes = CheckedPurposeSetV1::from_request(request);
         if purposes.is_empty() {
             return Err(identity_error("parent-only action has no purpose"));
@@ -263,6 +383,10 @@ impl CheckedActionRequestV1 {
 
     pub(in crate::checked_artifact) const fn goal(&self) -> CheckedLeafFactV1 {
         self.goal
+    }
+
+    pub(in crate::checked_artifact) const fn purposes(&self) -> CheckedPurposeSetV1 {
+        self.purposes
     }
 
     #[cfg(test)]
@@ -379,6 +503,7 @@ fn validate_prefixed_id(
         || value.len() <= prefix.len()
         || value.len() > MAX_ID_BYTES
         || !value.bytes().all(is_portable_id_byte)
+        || matches!(&value[prefix.len()..], "." | "..")
     {
         return Err(identity_error(label));
     }

@@ -22,6 +22,7 @@ pub(in crate::checked_artifact) fn derive_new_reservation(
     if managed_plan.is_some_and(|plan| {
         plan.action_digest() != request.action_digest()
             || plan.request_owner_binding() != request.owner_binding()
+            || plan.declared_purpose_mask() != request.purposes().mask()
     }) {
         return Err(schedule_error(
             "managed-parent plan belongs to another checked action",

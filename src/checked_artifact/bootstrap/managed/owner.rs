@@ -3,6 +3,7 @@
 use sha2::{Digest, Sha256};
 
 use super::*;
+use crate::checked_artifact::coordinator::CheckedManagedActionV1;
 use crate::checked_artifact::protocol::{
     ActionDigestV1, ActionScheduleV1, AdmittedActionV1, ManagedBootstrapInputV1,
     RequestOwnerBindingV1,
@@ -38,7 +39,27 @@ impl<'a, Provider: ManagedParentBootstrap> ManagedParentBootstrapOwnerV1<'a, Pro
         Self { provider }
     }
 
+    pub(in crate::checked_artifact) fn preflight_checked(
+        &self,
+        action: &CheckedManagedActionV1,
+    ) -> Result<ManagedParentPlanV1, CheckedFsError> {
+        let request = action.managed();
+        let action_digest = action.checked().action_digest();
+        let request_owner_binding = action.checked().owner_binding();
+        self.preflight_inputs(request, action_digest, request_owner_binding)
+    }
+
+    #[cfg(test)]
     pub(in crate::checked_artifact) fn preflight(
+        &self,
+        request: &ManagedParentBootstrapRequest,
+        action_digest: ActionDigestV1,
+        request_owner_binding: RequestOwnerBindingV1,
+    ) -> Result<ManagedParentPlanV1, CheckedFsError> {
+        self.preflight_inputs(request, action_digest, request_owner_binding)
+    }
+
+    fn preflight_inputs(
         &self,
         request: &ManagedParentBootstrapRequest,
         action_digest: ActionDigestV1,
@@ -59,6 +80,14 @@ impl<'a, Provider: ManagedParentBootstrap> ManagedParentBootstrapOwnerV1<'a, Pro
             .iter()
             .map(ManagedParentSpec::purpose)
             .collect::<Vec<_>>();
+        let declared_purpose_mask = declared_purposes.iter().fold(0, |mask, purpose| {
+            mask | match purpose {
+                ManagedParentPurpose::MergeStore => 1,
+                ManagedParentPurpose::MergeArchive => 2,
+                ManagedParentPurpose::PreservationBundles => 4,
+                ManagedParentPurpose::RootPreservationMarkers => 8,
+            }
+        });
 
         let mut rows = Vec::new();
         rows.try_reserve_exact(request.specs().len()).map_err(|_| {
@@ -136,6 +165,7 @@ impl<'a, Provider: ManagedParentBootstrap> ManagedParentBootstrapOwnerV1<'a, Pro
             request_owner_binding,
             rows,
             declared_purposes,
+            declared_purpose_mask,
             observation_digest,
             digest,
             schedule_inputs: ManagedParentScheduleInputsV1 {

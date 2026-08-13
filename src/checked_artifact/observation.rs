@@ -16,7 +16,7 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 impl CheckedArtifact {
     /// Prepare a canonical no-follow directory hierarchy before an operation
     /// can persist an action that depends on it.
-    pub(crate) fn prepare_parent(
+    pub(super) fn prepare_parent(
         root: &Path,
         relative: &Path,
         code: ErrorCode,
@@ -74,7 +74,7 @@ impl CheckedArtifact {
         Ok(())
     }
 
-    pub(crate) fn acquire(
+    pub(super) fn acquire(
         policy: CheckedArtifactPolicy,
         relative: &Path,
         code: ErrorCode,

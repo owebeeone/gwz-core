@@ -203,6 +203,44 @@ enum ManagedParentRequestAuthorityV1 {
     Unrestricted,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) enum ManagedParentAuthorityClassV1 {
+    MergeStart,
+    DurableMerge,
+    Archive,
+    #[cfg(test)]
+    Unrestricted,
+}
+
+impl ManagedParentBootstrapRequest {
+    pub(in crate::checked_artifact) const fn authority_class(
+        &self,
+    ) -> ManagedParentAuthorityClassV1 {
+        match self.authority {
+            ManagedParentRequestAuthorityV1::MergeStart => {
+                ManagedParentAuthorityClassV1::MergeStart
+            }
+            ManagedParentRequestAuthorityV1::DurableMerge => {
+                ManagedParentAuthorityClassV1::DurableMerge
+            }
+            ManagedParentRequestAuthorityV1::Archive(_) => ManagedParentAuthorityClassV1::Archive,
+            #[cfg(test)]
+            ManagedParentRequestAuthorityV1::Unrestricted => {
+                ManagedParentAuthorityClassV1::Unrestricted
+            }
+        }
+    }
+
+    pub(in crate::checked_artifact) fn archive_prerequisite(
+        &self,
+    ) -> Option<&ValidatedArchiveSourceV1> {
+        match &self.authority {
+            ManagedParentRequestAuthorityV1::Archive(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
 /// Opaque result of terminal/source archive arbitration. There is deliberately
 /// no general constructor; the R2 coordinator will issue it inside this module
 /// from an exact durable merge-store observation.
@@ -210,6 +248,33 @@ enum ManagedParentRequestAuthorityV1 {
 pub(in crate::checked_artifact) struct ValidatedArchiveSourceV1 {
     request_owner_binding: crate::checked_artifact::protocol::RequestOwnerBindingV1,
     source_record_sha256: [u8; 32],
+}
+
+impl ValidatedArchiveSourceV1 {
+    pub(in crate::checked_artifact) fn from_exact_record_owner(
+        request_owner_binding: crate::checked_artifact::protocol::RequestOwnerBindingV1,
+        source_record_sha256: [u8; 32],
+    ) -> Result<Self, CheckedFsError> {
+        if source_record_sha256 == [0; 32] {
+            return Err(request_mismatch(
+                "archive source prerequisite has an empty record digest",
+            ));
+        }
+        Ok(Self {
+            request_owner_binding,
+            source_record_sha256,
+        })
+    }
+
+    pub(in crate::checked_artifact) const fn owner_binding(
+        &self,
+    ) -> crate::checked_artifact::protocol::RequestOwnerBindingV1 {
+        self.request_owner_binding
+    }
+
+    pub(in crate::checked_artifact) const fn source_record_sha256(&self) -> [u8; 32] {
+        self.source_record_sha256
+    }
 }
 
 #[cfg(test)]

@@ -132,12 +132,7 @@ impl MergeStore for FileMergeStore {
             }
         }
         if !path_exists(&path)? {
-            crate::checked_artifact::CheckedArtifact::prepare_parent(
-                root,
-                Path::new(crate::stash::STASH_BUNDLE_DIR),
-                ErrorCode::MergeRecoveryRequired,
-                "preservation bundle parent",
-            )?;
+            crate::checked_artifact::entry::prepare_merge_store_parents(root)?;
         }
 
         let mut next = serde_yaml::to_value(record).map_err(encode_error)?;

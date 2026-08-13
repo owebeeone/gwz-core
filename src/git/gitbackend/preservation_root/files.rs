@@ -1,7 +1,5 @@
 use super::super::*;
-use crate::checked_artifact::{
-    CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
-};
+use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
 use cap_fs_ext::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -80,21 +78,11 @@ fn observe_in_root(artifact: CheckedArtifact, expected: Option<&[u8]>) -> ModelR
 }
 
 fn acquire_workspace(root: &Path, path: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire(
-        CheckedArtifactPolicy::workspace(root),
-        path,
-        ErrorCode::PreservationEvidenceMismatch,
-        "root preservation artifact",
-    )
+    crate::checked_artifact::entry::acquire_merge_preservation_workspace(root, path)
 }
 
 fn acquire_git_directory(root: &Path, path: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire(
-        CheckedArtifactPolicy::git_directory(root),
-        path,
-        ErrorCode::PreservationEvidenceMismatch,
-        "root preservation artifact",
-    )
+    crate::checked_artifact::entry::acquire_merge_preservation_git_directory(root, path)
 }
 
 pub(super) fn split_relative(path: &Path) -> ModelResult<(PathBuf, std::ffi::OsString)> {

@@ -43,6 +43,17 @@ pub use handle_tag::*;
 pub(crate) use historical_identity::*;
 pub(crate) use materialize_preflight::*;
 pub(crate) use merge::guarded_workspace_root;
+#[allow(unused_imports)]
+pub(crate) use merge::{
+    CheckedOwnerObservationError, CheckedOwnerRecordObservation, CheckedOwnerRecordVersion,
+    observe_checked_owner_v0_from_canonical,
+};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use merge::{
+    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_owner_v0, observe_checked_owner_v1,
+    observe_checked_owner_v1_from_canonical, test_v1_record,
+};
 pub use merge::{
     WorkspaceMutationGuard, acquire_workspace_mutation_guard, enforce_workspace_open_merge_gate,
     handle_merge, handle_merge_with_events,

@@ -46,7 +46,7 @@ pub(in crate::workspace_ops::merge) fn participant(
     }
 }
 
-pub(in crate::workspace_ops::merge) fn record() -> MergeOperationRecordV1 {
+pub(crate) fn record() -> MergeOperationRecordV1 {
     let manifest_yaml = ManifestArtifact {
         schema: WORKSPACE_SCHEMA.to_owned(),
         workspace: WorkspaceHeader {

@@ -98,6 +98,7 @@ pub(in crate::checked_artifact) struct ManagedParentPlanV1 {
     pub(super) request_owner_binding: RequestOwnerBindingV1,
     pub(super) rows: Vec<ManagedParentPlanRowV1>,
     pub(super) declared_purposes: Vec<ManagedParentPurpose>,
+    pub(super) declared_purpose_mask: u8,
     pub(super) observation_digest: [u8; 32],
     pub(super) digest: [u8; 32],
     pub(super) schedule_inputs: ManagedParentScheduleInputsV1,
@@ -118,6 +119,10 @@ impl ManagedParentPlanV1 {
 
     pub(in crate::checked_artifact) fn declared_purposes(&self) -> &[ManagedParentPurpose] {
         &self.declared_purposes
+    }
+
+    pub(in crate::checked_artifact) const fn declared_purpose_mask(&self) -> u8 {
+        self.declared_purpose_mask
     }
 
     pub(in crate::checked_artifact) const fn observation_digest(&self) -> [u8; 32] {

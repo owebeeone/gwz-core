@@ -1,3 +1,8 @@
+#[allow(
+    dead_code,
+    reason = "R2 freezes the durable-record owner issuer before consumer conversion"
+)]
+mod checked_owner;
 mod decode;
 mod header;
 mod raw_yaml;
@@ -55,6 +60,17 @@ pub(crate) fn decode_v0_for_r3_tests(
 #[cfg(test)]
 pub(crate) use decode::decode_v1_for_r3_tests;
 
+#[allow(unused_imports)]
+pub(crate) use checked_owner::{
+    CheckedOwnerObservationError, CheckedOwnerRecordObservation, CheckedOwnerRecordVersion,
+    observe_checked_owner_v0_from_canonical,
+};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use checked_owner::{
+    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_owner_v0, observe_checked_owner_v1,
+    observe_checked_owner_v1_from_canonical,
+};
 pub(super) use decode::{RecordDecodeError, decode_production_v0};
 pub(super) use header::{HeaderClassificationError, HeaderMalformedReason, MergeRecordHeader};
 pub(super) use raw_yaml::StrictYamlError;

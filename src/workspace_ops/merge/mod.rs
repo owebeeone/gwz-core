@@ -47,7 +47,20 @@ pub(crate) use record_wire::{
 #[cfg(test)]
 pub(crate) use store::{AtomicUpgradeFault, AtomicUpgradeOutcome, upgrade_open_v0_for_r3_tests};
 
+#[cfg(test)]
+pub(crate) use model::v1::test_record as test_v1_record;
 pub(crate) use model::*;
+#[allow(unused_imports)]
+pub(crate) use record_wire::{
+    CheckedOwnerObservationError, CheckedOwnerRecordObservation, CheckedOwnerRecordVersion,
+    observe_checked_owner_v0_from_canonical,
+};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use record_wire::{
+    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_owner_v0, observe_checked_owner_v1,
+    observe_checked_owner_v1_from_canonical,
+};
 pub(crate) use recovery::*;
 #[cfg(test)]
 pub(crate) use runtime::handle_merge_with_dependencies;

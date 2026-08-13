@@ -1,10 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-use crate::checked_artifact::{
-    CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
-};
-
 pub(super) fn verify_root_publication(
     root: &Path,
     record: &MergeOperationRecord,
@@ -484,14 +479,6 @@ pub(super) fn unreadable(plan: &PreservationPlan, message: impl Into<String>) ->
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::workspace_ops::merge) enum V1BundleObservation {
-    Before,
-    After,
-    Ambiguous,
-}
-
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<B: GitBackend>(
     backend: &B,
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
@@ -684,105 +671,7 @@ pub(in crate::workspace_ops::merge) fn v1_preservation_image<B: GitBackend>(
 }
 
 #[cfg(test)]
-pub(in crate::workspace_ops::merge) fn v1_bundle_observation<B: GitBackend>(
-    backend: &B,
-    root: &Path,
-    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
-    plans: &[super::plan::V1PreservationOwnerPlan],
-    owner: &crate::workspace_ops::merge::model::v1::PreservationOwnerV1,
-) -> ModelResult<V1BundleObservation> {
-    let index = plans
-        .iter()
-        .position(|plan| &plan.owner == owner)
-        .ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::PreservationEvidenceMismatch,
-                "bundle owner is outside the preservation cursor",
-            )
-        })?;
-    let before = expected_bundle(backend, record, &plans[..index])?;
-    let after = expected_bundle(backend, record, &plans[..=index])?;
-    let before_bytes = (!before.members.is_empty())
-        .then(|| before.to_yaml().map(String::into_bytes))
-        .transpose()?;
-    let after_bytes = after.to_yaml()?.into_bytes();
-    let before = before_bytes.map_or(CheckedArtifactFact::Missing, CheckedArtifactFact::Bytes);
-    Ok(
-        match bundle_artifact(root, &after.stash_id)?.classify_replace(&before, &after_bytes)? {
-            CheckedArtifactTransition::Before | CheckedArtifactTransition::Recoverable => {
-                V1BundleObservation::Before
-            }
-            CheckedArtifactTransition::After => V1BundleObservation::After,
-            CheckedArtifactTransition::Ambiguous => V1BundleObservation::Ambiguous,
-        },
-    )
-}
-
-#[cfg(test)]
-pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<B: GitBackend>(
-    backend: &B,
-    root: &Path,
-    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
-    plans: &[super::plan::V1PreservationOwnerPlan],
-) -> ModelResult<bool> {
-    let expected = expected_bundle(backend, record, plans)?;
-    let observed = bundle_artifact(root, &expected.stash_id)?.observe_durable()?;
-    if expected.members.is_empty() {
-        return Ok(observed == CheckedArtifactFact::Missing);
-    }
-    let expected = expected.to_yaml()?.into_bytes();
-    Ok(observed == CheckedArtifactFact::Bytes(expected))
-}
-
-#[cfg(test)]
-pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<B: GitBackend>(
-    backend: &B,
-    root: &Path,
-    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
-    plans: &[super::plan::V1PreservationOwnerPlan],
-    owner: &crate::workspace_ops::merge::model::v1::PreservationOwnerV1,
-) -> ModelResult<()> {
-    let index = plans
-        .iter()
-        .position(|plan| &plan.owner == owner)
-        .ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::PreservationEvidenceMismatch,
-                "bundle owner is outside the preservation cursor",
-            )
-        })?;
-    let before = expected_bundle(backend, record, &plans[..index])?;
-    let after = expected_bundle(backend, record, &plans[..=index])?;
-    let artifact = bundle_artifact(root, &after.stash_id)?;
-    let before = if before.members.is_empty() {
-        CheckedArtifactFact::Missing
-    } else {
-        CheckedArtifactFact::Bytes(before.to_yaml()?.into_bytes())
-    };
-    let after = after.to_yaml()?.into_bytes();
-    match artifact.classify_replace(&before, &after)? {
-        CheckedArtifactTransition::After => return Ok(()),
-        CheckedArtifactTransition::Before | CheckedArtifactTransition::Recoverable => {}
-        CheckedArtifactTransition::Ambiguous => {
-            return Err(ModelError::new(
-                ErrorCode::PreservationEvidenceMismatch,
-                "preservation bundle is neither the exact prior prefix nor the exact completed prefix",
-            ));
-        }
-    }
-    artifact.replace_exact(&before, &after)?;
-    (artifact.classify_replace(&before, &after)? == CheckedArtifactTransition::After)
-        .then_some(())
-        .ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::PreservationEvidenceMismatch,
-                "preservation bundle failed exact post-write verification",
-            )
-        })
-}
-
-#[cfg(test)]
-fn expected_bundle<B: GitBackend>(
+pub(super) fn expected_bundle<B: GitBackend>(
     backend: &B,
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
     plans: &[super::plan::V1PreservationOwnerPlan],
@@ -856,25 +745,10 @@ fn expected_bundle<B: GitBackend>(
 }
 
 #[cfg(test)]
-fn bundle_artifact(root: &Path, stash_id: &str) -> ModelResult<CheckedArtifact> {
-    let relative = Path::new(crate::stash::STASH_BUNDLE_DIR).join(format!("{stash_id}.yaml"));
-    let artifact = CheckedArtifact::acquire(
-        CheckedArtifactPolicy::workspace(root),
-        &relative,
-        ErrorCode::PreservationEvidenceMismatch,
-        "preservation bundle",
-    )?;
-    if !artifact.parent_is_canonical()? {
-        return Err(ModelError::new(
-            ErrorCode::PreservationEvidenceMismatch,
-            "preservation bundle parent hierarchy is missing or noncanonical",
-        ));
-    }
-    Ok(artifact)
-}
-
-#[cfg(test)]
-fn attach_v1(mut error: ModelError, plan: &super::plan::V1PreservationOwnerPlan) -> ModelError {
+pub(super) fn attach_v1(
+    mut error: ModelError,
+    plan: &super::plan::V1PreservationOwnerPlan,
+) -> ModelError {
     if error.member_id.is_none() {
         error.member_id = Some(plan.target_id.clone());
         error.member_path = Some(plan.relative_path.clone());
@@ -883,7 +757,10 @@ fn attach_v1(mut error: ModelError, plan: &super::plan::V1PreservationOwnerPlan)
 }
 
 #[cfg(test)]
-fn v1_error(plan: &super::plan::V1PreservationOwnerPlan, detail: impl Into<String>) -> ModelError {
+pub(super) fn v1_error(
+    plan: &super::plan::V1PreservationOwnerPlan,
+    detail: impl Into<String>,
+) -> ModelError {
     ModelError::new(ErrorCode::PreservationEvidenceMismatch, detail.into())
         .with_member(&plan.target_id, &plan.relative_path)
 }

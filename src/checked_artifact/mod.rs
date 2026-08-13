@@ -28,6 +28,11 @@ mod cleanup;
     reason = "R2 freezes coordinator identity and schedule contracts before consumer conversion"
 )]
 mod coordinator;
+#[allow(
+    dead_code,
+    reason = "R2 inventories checked entry points before production consumer activation"
+)]
+pub(crate) mod entry;
 mod fault;
 #[allow(
     dead_code,

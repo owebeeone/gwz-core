@@ -1,9 +1,7 @@
 use std::path::Path;
 
-use crate::checked_artifact::{
-    CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
-};
-use crate::model::{ErrorCode, ModelResult};
+use crate::checked_artifact::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition};
+use crate::model::ModelResult;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::workspace_ops::merge) enum RegularFileFact {
@@ -82,10 +80,5 @@ fn map_transition(value: CheckedArtifactTransition) -> ModelResult<RegularFileTr
 }
 
 fn acquire(root: &Path, relative: &str) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire(
-        CheckedArtifactPolicy::workspace(root),
-        Path::new(relative),
-        ErrorCode::MergeRecoveryRequired,
-        format!("workspace artifact '{relative}'"),
-    )
+    crate::checked_artifact::entry::acquire_merge_root_artifact(root, Path::new(relative))
 }

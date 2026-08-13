@@ -69,6 +69,11 @@ jobs:
             echo "  cargo fmt"
             exit 1
           fi
+      - name: Checked-artifact boundary
+        if: runner.os == 'Linux'
+        run: |
+          python scripts/checks/check_checked_artifact_boundaries.py
+          python scripts/checks/test_check_checked_artifact_boundaries.py
       - name: Test
         run: cargo test --locked
       - name: Clippy
