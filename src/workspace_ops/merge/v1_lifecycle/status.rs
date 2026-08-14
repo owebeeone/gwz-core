@@ -2,11 +2,11 @@ use std::path::Path;
 
 use super::archive_result::ValidatedArchivedMerge;
 use super::store::CheckedV1Store;
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 
-pub(super) fn open_status<B: GitBackend>(
+pub(super) fn open_status<B: MergeAuthorityBackend>(
     backend: &B,
     store: &CheckedV1Store,
     root: &Path,

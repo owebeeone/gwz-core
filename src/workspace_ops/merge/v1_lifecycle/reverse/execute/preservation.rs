@@ -8,7 +8,7 @@ use crate::workspace_ops::merge::preserve::{
     v1_preservation_owners, v1_root_preservation_spec, v1_write_bundle_checked,
 };
 
-pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) fn execute<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) fn execute<B: MergeAuthorityBackend>(
     backend: &B,
     lease: &V1MutationLease,
     current: &StoredV1Record,
@@ -20,7 +20,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) fn execute<B: GitBack
     }
 }
 
-fn execute_checked<B: GitBackend>(
+fn execute_checked<B: MergeAuthorityBackend>(
     backend: &B,
     lease: &V1MutationLease,
     current: &StoredV1Record,
@@ -71,13 +71,7 @@ fn execute_checked<B: GitBackend>(
         PendingPreservationActionV1::Stash {
             phase: S::WriteBundle,
             ..
-        } => v1_write_bundle_checked(
-            backend,
-            current.location().root(),
-            current.record(),
-            &plans,
-            owner,
-        )?,
+        } => v1_write_bundle_checked(current.location().root(), current.record(), &plans, owner)?,
         PendingPreservationActionV1::Stash {
             phase: S::Complete, ..
         } => return Err(route_error("complete stash phase has no physical mutation")),

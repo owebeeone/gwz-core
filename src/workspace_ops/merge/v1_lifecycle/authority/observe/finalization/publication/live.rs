@@ -77,7 +77,7 @@ fn resolve_candidate(
     }
 }
 
-pub(super) fn snapshot<B: GitBackend>(
+pub(super) fn snapshot<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<Option<(CandidatePublicationPrefix, IndexForm)>> {

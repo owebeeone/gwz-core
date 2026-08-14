@@ -1,6 +1,6 @@
 use super::super::*;
 use super::verify_finalization_recovery_origin;
-use crate::git::{GitBackend, GitMergeAnalysisKind, GitPreparedMergeMode};
+use crate::git::{GitMergeAnalysisKind, GitPreparedMergeMode, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 use crate::workspace_ops::merge::MergeExecutionMode;
@@ -12,7 +12,7 @@ use crate::workspace_ops::merge::{
     PendingMergeAction, PendingMergeActionKind,
 };
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_forward<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_forward<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -36,7 +36,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_forward<B: GitBacke
     BoundExactObservation::issue(current, request, fact)
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_participant_action<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_participant_action<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     current: &StoredV1Record,
     member_id: &str,
@@ -80,7 +82,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_participant_action<B
     }
 }
 
-fn prepare_participant<B: GitBackend>(
+fn prepare_participant<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -113,7 +115,7 @@ fn prepare_participant<B: GitBackend>(
     }
 }
 
-fn prepare_pending<B: GitBackend>(
+fn prepare_pending<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -269,7 +271,7 @@ fn preparation_failure(
     )))
 }
 
-fn observe_participant_action<B: GitBackend>(
+fn observe_participant_action<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     member_id: &str,
@@ -417,7 +419,7 @@ fn semantic_drift(error: &ModelError) -> bool {
     )
 }
 
-fn observe_recovery<B: GitBackend>(
+fn observe_recovery<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -453,7 +455,7 @@ fn observe_recovery<B: GitBackend>(
     Ok(completed(CompletedObservation::Recovery(proof)))
 }
 
-fn verify_forward_recovery_origin<B: GitBackend>(
+fn verify_forward_recovery_origin<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     origin: RecoveryOriginStateV1,

@@ -479,7 +479,9 @@ pub(super) fn unreadable(plan: &PreservationPlan, message: impl Into<String>) ->
 }
 
 #[cfg(test)]
-pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<B: GitBackend>(
+pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<
+    B: crate::git::MergeAuthorityBackend,
+>(
     backend: &B,
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
     plan: &super::plan::V1PreservationOwnerPlan,
@@ -581,7 +583,7 @@ pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<B: GitBackend>(
 }
 
 #[cfg(test)]
-fn clean_form<B: GitBackend>(
+fn clean_form<B: crate::git::MergeAuthorityBackend>(
     backend: &B,
     plan: &super::plan::V1PreservationOwnerPlan,
     commit: &str,
@@ -653,7 +655,9 @@ fn blob_oid(commit: &str, bytes: &[u8]) -> ModelResult<String> {
 }
 
 #[cfg(test)]
-pub(in crate::workspace_ops::merge) fn v1_preservation_image<B: GitBackend>(
+pub(in crate::workspace_ops::merge) fn v1_preservation_image<
+    B: crate::git::MergeAuthorityBackend,
+>(
     backend: &B,
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
     plan: &super::plan::V1PreservationOwnerPlan,

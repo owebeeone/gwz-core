@@ -10,6 +10,7 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::*;
 
+mod authority_backend;
 mod backend;
 mod comparison;
 mod contract;
@@ -31,6 +32,7 @@ mod transport;
 mod transport_support;
 mod types;
 
+pub use authority_backend::MergeAuthorityBackend;
 pub use backend::*;
 pub use contract::*;
 pub use transport_support::set_server_timeout_ms;

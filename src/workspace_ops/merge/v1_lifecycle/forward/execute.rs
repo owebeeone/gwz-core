@@ -1,11 +1,11 @@
 use super::super::authority::verify_participant_action;
 use super::super::checked::StoredV1Record;
-use crate::git::{GitBackend, GitIntegrateResult, GitPreparedMerge};
+use crate::git::{GitIntegrateResult, GitPreparedMerge, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::merge::integration::{PreparedIntegrationAction, decode_for_participant};
 use crate::workspace_ops::merge::{MergeParticipantRecord, PendingMergeAction};
 
-pub(super) fn participant<B: GitBackend>(
+pub(super) fn participant<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     member_id: &str,

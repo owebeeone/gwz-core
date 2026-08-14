@@ -2,7 +2,7 @@
 
 use super::super::super::model::v1::rollback_cursor;
 use super::*;
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::operation::OperationContext;
 
 mod archive;
@@ -24,7 +24,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) use reverse::{
     require_rollback_aggregate, rolling_back_verify_recovery_origin,
 };
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_preservation<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_preservation<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -33,7 +35,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_preservation<B: Git
     reverse::observe_preservation(backend, context, current, request)
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_rollback<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_rollback<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,

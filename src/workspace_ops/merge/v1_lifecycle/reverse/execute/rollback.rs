@@ -2,7 +2,7 @@ use super::super::*;
 use crate::workspace_ops::merge::OperationState;
 use crate::workspace_ops::merge::model::v1::PendingRollbackActionV1;
 
-pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) fn execute<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) fn execute<B: MergeAuthorityBackend>(
     backend: &B,
     lease: &V1MutationLease,
     current: &StoredV1Record,
@@ -14,7 +14,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) fn execute<B: GitBack
     }
 }
 
-fn execute_checked<B: GitBackend>(
+fn execute_checked<B: MergeAuthorityBackend>(
     backend: &B,
     lease: &V1MutationLease,
     current: &StoredV1Record,

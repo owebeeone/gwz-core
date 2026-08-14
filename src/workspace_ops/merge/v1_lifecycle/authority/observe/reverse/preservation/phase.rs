@@ -3,8 +3,8 @@ mod steps;
 
 use super::*;
 use crate::git::{
-    GitBackend, GitDirectRefObservation, GitPreservationDirtySummary, GitRootPreservationGuard,
-    GitRootPreservationStepObservation,
+    GitDirectRefObservation, GitPreservationDirtySummary, GitRootPreservationGuard,
+    GitRootPreservationStepObservation, MergeAuthorityBackend,
 };
 use crate::workspace_ops::merge::PreservationEvidence;
 use crate::workspace_ops::merge::model::v1::{
@@ -18,7 +18,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) use steps::{
     reset_step, stash_guard, stash_step,
 };
 
-pub(super) fn observe_pending<B: GitBackend>(
+pub(super) fn observe_pending<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plans: &[V1PreservationOwnerPlan],
@@ -50,7 +50,6 @@ pub(super) fn observe_pending<B: GitBackend>(
             phase: S::WriteBundle,
             ..
         } => match v1_bundle_observation(
-            backend,
             current.location().root(),
             current.record(),
             plans,
@@ -87,7 +86,7 @@ pub(super) fn observe_pending<B: GitBackend>(
     }
 }
 
-fn observe_stash_phase<B: GitBackend>(
+fn observe_stash_phase<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
@@ -120,7 +119,7 @@ fn observe_stash_phase<B: GitBackend>(
     classify_phase(backend, current, plan, action, prefix, observation, true)
 }
 
-fn observe_reset_phase<B: GitBackend>(
+fn observe_reset_phase<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
@@ -157,7 +156,7 @@ fn observe_reset_phase<B: GitBackend>(
     classify_phase(backend, current, plan, action, prefix, observation, false)
 }
 
-fn observe_plain_stash<B: GitBackend>(
+fn observe_plain_stash<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
@@ -203,7 +202,7 @@ fn observe_plain_stash<B: GitBackend>(
     Ok(GitRootPreservationStepObservation::Ambiguous)
 }
 
-fn exact_attached_head<B: GitBackend>(
+fn exact_attached_head<B: MergeAuthorityBackend>(
     backend: &B,
     plan: &V1PreservationOwnerPlan,
     commit: &str,
@@ -219,7 +218,7 @@ fn exact_attached_head<B: GitBackend>(
         && branch.as_deref() == Some(commit))
 }
 
-fn classify_phase<B: GitBackend>(
+fn classify_phase<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
@@ -294,7 +293,7 @@ fn backup_done(
     )))
 }
 
-fn stash_done<B: GitBackend>(
+fn stash_done<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
@@ -305,7 +304,7 @@ fn stash_done<B: GitBackend>(
     Ok(completed(CompletedObservation::Preservation(completion)))
 }
 
-fn stash_completion<B: GitBackend>(
+fn stash_completion<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,

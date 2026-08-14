@@ -394,7 +394,9 @@ pub(in crate::workspace_ops::merge) struct V1PreservationOwnerPlan {
 }
 
 #[cfg(test)]
-pub(in crate::workspace_ops::merge) fn v1_preservation_owners<B: GitBackend>(
+pub(in crate::workspace_ops::merge) fn v1_preservation_owners<
+    B: crate::git::MergeAuthorityBackend,
+>(
     backend: &B,
     root: &Path,
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
@@ -593,7 +595,7 @@ fn v1_stash_matches_action(
 }
 
 #[cfg(test)]
-fn v1_owner_plan<B: GitBackend>(
+fn v1_owner_plan<B: crate::git::MergeAuthorityBackend>(
     backend: &B,
     root: &Path,
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,

@@ -1,5 +1,5 @@
 use super::super::super::*;
-use crate::git::{GitBackend, GitCheckoutOverlay};
+use crate::git::{GitCheckoutOverlay, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::merge::ParticipantState;
 use crate::workspace_ops::merge::model::v1::{
@@ -59,7 +59,7 @@ pub(super) fn recovery_position(
         .ok_or_else(|| prefix_error("rollback recovery has no exact pending action"))
 }
 
-pub(super) fn classify_rollback_aggregate<B: GitBackend>(
+pub(super) fn classify_rollback_aggregate<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     position: RollbackAggregatePosition,
@@ -152,7 +152,7 @@ pub(super) fn classify_rollback_aggregate<B: GitBackend>(
     ))
 }
 
-fn pending_selected_root_is_after<B: GitBackend>(
+fn pending_selected_root_is_after<B: MergeAuthorityBackend>(
     backend: &B,
     root: &std::path::Path,
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
@@ -237,7 +237,7 @@ fn terminal(
     })
 }
 
-pub(super) fn issue_verified_rollback_prefix<B: GitBackend>(
+pub(super) fn issue_verified_rollback_prefix<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     position: RollbackAggregatePosition,
@@ -250,7 +250,9 @@ pub(super) fn issue_verified_rollback_prefix<B: GitBackend>(
     VerifiedRollbackPrefix::issue(&AuthorityIssuer::for_observer(current), facts)
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn require_rollback_aggregate<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn require_rollback_aggregate<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {

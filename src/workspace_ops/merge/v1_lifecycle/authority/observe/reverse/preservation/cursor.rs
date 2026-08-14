@@ -1,5 +1,5 @@
 use super::*;
-use crate::git::{GitBackend, GitPreservationDirtySummary};
+use crate::git::{GitPreservationDirtySummary, MergeAuthorityBackend};
 use crate::workspace_ops::merge::model::v1::{
     MergeOperationRecordV1, PreservationRefResetPhaseV1 as R, PreservationStashPhaseV1 as S,
 };
@@ -11,7 +11,7 @@ use crate::workspace_ops::merge::v1_lifecycle::transition::{
     ReverseEntryPredecessor, preview_reverse_entry,
 };
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -24,7 +24,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBacken
         let prefix = issue_prefix(current, plan, position)?;
         return phase::observe_pending(backend, current, &plans, plan, action, prefix);
     }
-    verify_bundle_prefix(backend, current, &plans)?;
+    verify_bundle_prefix(current, &plans)?;
 
     for (index, plan) in plans.iter().enumerate() {
         if !backup_complete(current.record(), plan)? {
@@ -61,7 +61,9 @@ fn reject_later_durable_owner(
     Ok(())
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn pending_recovery_is_exact<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn pending_recovery_is_exact<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<bool> {
@@ -82,7 +84,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn pending_recovery_is_exact<B
     ))
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn execution_prefix_is_exact<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn execution_prefix_is_exact<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     current: &StoredV1Record,
     action: &PendingPreservationActionV1,
@@ -92,14 +96,14 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn execution_prefix_is_exact<B
     verify_pending_prefix(backend, current, &plans, plan, action)
 }
 
-fn verify_pending_prefix<B: GitBackend>(
+fn verify_pending_prefix<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plans: &[V1PreservationOwnerPlan],
     current_plan: &V1PreservationOwnerPlan,
     action: &PendingPreservationActionV1,
 ) -> ModelResult<()> {
-    verify_pending_bundle_prefix(backend, current, plans, current_plan, action)?;
+    verify_pending_bundle_prefix(current, plans, current_plan, action)?;
     match action {
         PendingPreservationActionV1::BackupRef { .. } => {
             for plan in plans
@@ -151,15 +155,13 @@ fn verify_pending_prefix<B: GitBackend>(
     Ok(())
 }
 
-fn verify_bundle_prefix<B: GitBackend>(
-    backend: &B,
+fn verify_bundle_prefix(
     current: &StoredV1Record,
     plans: &[V1PreservationOwnerPlan],
 ) -> ModelResult<()> {
     let owner = plans.last();
-    let exact =
-        v1_bundle_cursor_is_exact(backend, current.location().root(), current.record(), plans)
-            .map_err(|error| attach_plan(error, owner))?;
+    let exact = v1_bundle_cursor_is_exact(current.location().root(), current.record(), plans)
+        .map_err(|error| attach_plan(error, owner))?;
     if !exact {
         return Err(owner.map_or_else(
             || preservation_error("preservation bundle exists for an empty owner set"),
@@ -174,8 +176,7 @@ fn verify_bundle_prefix<B: GitBackend>(
     Ok(())
 }
 
-fn verify_pending_bundle_prefix<B: GitBackend>(
-    backend: &B,
+fn verify_pending_bundle_prefix(
     current: &StoredV1Record,
     plans: &[V1PreservationOwnerPlan],
     plan: &V1PreservationOwnerPlan,
@@ -193,10 +194,9 @@ fn verify_pending_bundle_prefix<B: GitBackend>(
         }
     );
     if !before_bundle_write {
-        return verify_bundle_prefix(backend, current, plans);
+        return verify_bundle_prefix(current, plans);
     }
     let observed = v1_bundle_observation(
-        backend,
         current.location().root(),
         current.record(),
         plans,
@@ -222,7 +222,7 @@ fn attach_plan(mut error: ModelError, plan: Option<&V1PreservationOwnerPlan>) ->
     error
 }
 
-fn require_artifact_complete<B: GitBackend>(
+fn require_artifact_complete<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plans: &[V1PreservationOwnerPlan],
@@ -248,7 +248,7 @@ fn backup_complete(
     )
 }
 
-pub(super) fn stash_complete<B: GitBackend>(
+pub(super) fn stash_complete<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     _plans: &[V1PreservationOwnerPlan],
@@ -282,7 +282,7 @@ pub(super) fn stash_complete<B: GitBackend>(
     )
 }
 
-pub(super) fn reset_complete<B: GitBackend>(
+pub(super) fn reset_complete<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
@@ -336,7 +336,7 @@ fn backup_intent(
     )))
 }
 
-fn stash_intent<B: GitBackend>(
+fn stash_intent<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
@@ -430,7 +430,7 @@ fn reset_intent(
     )))
 }
 
-fn exhausted<B: GitBackend>(
+fn exhausted<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,

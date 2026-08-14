@@ -1,9 +1,11 @@
 use super::super::super::*;
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::merge::model::v1::RecoveryOriginStateV1;
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_recovery_origin<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_recovery_origin<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<VerifiedRecoveryOrigin> {

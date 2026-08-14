@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::*;
 use crate::artifact::LOCK_PATH;
-use crate::git::{GitBackend, GitCandidateFile, GitRepositoryState};
+use crate::git::{GitCandidateFile, GitRepositoryState, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 use crate::workspace::WORKSPACE_MANIFEST;
@@ -22,7 +22,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) use handoff::{
     RecordEvidenceOr, observe_reverse_publication_handoff,
 };
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_finalization<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_finalization<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -42,7 +44,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_finalization<B: Git
     BoundExactObservation::issue(current, request, fact)
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_finalization_action<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_finalization_action<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     current: &StoredV1Record,
     action: PublicationPhysicalAction,
@@ -51,7 +55,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_finalization_action<
 }
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_finalization_recovery_origin<
-    B: GitBackend,
+    B: MergeAuthorityBackend,
 >(
     backend: &B,
     current: &StoredV1Record,
@@ -83,7 +87,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_finalization_recover
     }
 }
 
-fn participants_complete<B: GitBackend>(
+fn participants_complete<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -99,7 +103,7 @@ fn participants_complete<B: GitBackend>(
     Ok(completed(CompletedObservation::Participants(proof)))
 }
 
-fn acceptance<B: GitBackend>(
+fn acceptance<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -143,18 +147,21 @@ fn acceptance<B: GitBackend>(
     Ok(completed(CompletedObservation::Acceptance(Box::new(proof))))
 }
 
-fn verify_participants<B: GitBackend>(backend: &B, current: &StoredV1Record) -> ModelResult<()> {
+fn verify_participants<B: MergeAuthorityBackend>(
+    backend: &B,
+    current: &StoredV1Record,
+) -> ModelResult<()> {
     verify_participant_outcomes(backend, current, true)
 }
 
-pub(super) fn verify_non_root_participants<B: GitBackend>(
+pub(super) fn verify_non_root_participants<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {
     verify_participant_outcomes(backend, current, false)
 }
 
-fn verify_participant_outcomes<B: GitBackend>(
+fn verify_participant_outcomes<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     include_root: bool,
@@ -220,7 +227,7 @@ fn verify_participant_outcomes<B: GitBackend>(
     Ok(())
 }
 
-pub(super) fn verify_accepted_root<B: GitBackend>(
+pub(super) fn verify_accepted_root<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {
@@ -275,7 +282,7 @@ pub(super) fn verify_accepted_root<B: GitBackend>(
     }
 }
 
-pub(super) fn verify_frozen_manifest<B: GitBackend>(
+pub(super) fn verify_frozen_manifest<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {
@@ -329,7 +336,7 @@ fn verify_real_directory_chains(root: &Path, relatives: &[&str]) -> ModelResult<
     Ok(())
 }
 
-fn exact_files<B: GitBackend>(
+fn exact_files<B: MergeAuthorityBackend>(
     backend: &B,
     root: &Path,
     expected: &[(&str, &str)],
@@ -350,7 +357,7 @@ fn exact_files<B: GitBackend>(
         .try_fold(true, |exact, next| next.map(|next| exact && next))
 }
 
-fn verify_unselected_root_baseline<B: GitBackend>(
+fn verify_unselected_root_baseline<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {
@@ -397,7 +404,7 @@ fn verify_unselected_root_baseline<B: GitBackend>(
     }
 }
 
-fn committed_text<B: GitBackend>(
+fn committed_text<B: MergeAuthorityBackend>(
     backend: &B,
     root: &Path,
     commit: &str,

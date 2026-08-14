@@ -11,7 +11,7 @@ use super::reverse::{ReverseRuntime, route_error};
 use super::service;
 use super::store::CheckedV1Store;
 use crate::durable_fs::sync_dir;
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OperationContext, WorkspaceMutatorLock};
 use crate::workspace_ops::merge::record_wire::{
@@ -67,7 +67,7 @@ pub(super) fn acquire_archived(root: &Path, merge_id: &str) -> ModelResult<Valid
 
 /// Run the terminal checked archive action, reconcile either crash shape, and
 /// return a fresh destination-derived result.
-pub(super) fn archive_terminal<B: GitBackend>(
+pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
     backend: &B,
     store: &CheckedV1Store,
     root: &Path,
@@ -105,7 +105,7 @@ pub(super) fn archive_terminal<B: GitBackend>(
 
 /// Collect only merge-owned backup refs from an immutable archive worklist,
 /// then delete that unchanged archive. Stashes and bundles are never inputs.
-pub(super) fn gc_archived<B: GitBackend>(
+pub(super) fn gc_archived<B: MergeAuthorityBackend>(
     backend: &B,
     root: &Path,
     merge_id: &str,
@@ -113,7 +113,7 @@ pub(super) fn gc_archived<B: GitBackend>(
     gc_archived_with_hook(backend, root, merge_id, || {})
 }
 
-fn gc_archived_with_hook<B: GitBackend, F: FnOnce()>(
+fn gc_archived_with_hook<B: MergeAuthorityBackend, F: FnOnce()>(
     backend: &B,
     root: &Path,
     merge_id: &str,
@@ -145,7 +145,7 @@ fn gc_archived_with_hook<B: GitBackend, F: FnOnce()>(
     Ok(authority)
 }
 
-pub(super) fn observe_open<B: GitBackend>(
+pub(super) fn observe_open<B: MergeAuthorityBackend>(
     _backend: &B,
     _context: &OperationContext,
     current: &StoredV1Record,

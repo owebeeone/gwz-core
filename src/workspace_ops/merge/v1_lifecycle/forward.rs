@@ -5,7 +5,7 @@ use super::authority::{
 use super::checked::{StoredV1Record, V1MutationLease};
 use super::finalization::FinalizationRuntime;
 use super::service::{ExactObserver, PhysicalExecutor};
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 
@@ -22,7 +22,7 @@ impl<'a, B> ForwardRuntime<'a, B> {
     }
 }
 
-impl<B: GitBackend> ExactObserver for ForwardRuntime<'_, B> {
+impl<B: MergeAuthorityBackend> ExactObserver for ForwardRuntime<'_, B> {
     fn observe(
         &mut self,
         current: &StoredV1Record,
@@ -47,7 +47,7 @@ impl<B: GitBackend> ExactObserver for ForwardRuntime<'_, B> {
     }
 }
 
-impl<B: GitBackend> PhysicalExecutor for ForwardRuntime<'_, B> {
+impl<B: MergeAuthorityBackend> PhysicalExecutor for ForwardRuntime<'_, B> {
     fn execute(
         &mut self,
         lease: &V1MutationLease,

@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 PROTECTED_COMPILER_MODULES = {
     "checked_artifact/entry.rs",
+    "git/gitbackend/authority_backend.rs",
     "git/gitbackend/preservation_root/files.rs",
     "git/gitbackend/preservation_image.rs",
     "workspace_ops/merge/preserve/checked_bundle.rs",
@@ -27,19 +28,28 @@ PROTECTED_COMPILER_MODULES = {
 # update; this closes aliases and new wrappers without guessing writer names.
 PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
-    "git/gitbackend.rs": "d40b6c7163990f0ee8bdb687d15ddabc99bcdfb9ed42293a3868180a96c16bfa",
+    "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
+    "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "1a96e1921052895c836837def6d7c3c19fb6bf383ad8df9482a5960c1b2cbdac",
-    "workspace_ops/merge/preserve/checked_bundle.rs": "19b65bc727b514bb88a1bbcbdce2f2f710926c6a27cfce396eac097a30911709",
-    "workspace_ops/merge/preserve/plan.rs": "1dd6750d1c426f912df1e136b2e8e552a146bb7e6722ff6fb4f21fc6652fc605",
+    "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
+    "workspace_ops/merge/preserve/plan.rs": "880d4905eeab96ff52a746a360043628cd4c11e5324b5f92b5889419ade53c7a",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
+}
+
+CONCRETE_PRESERVATION_OBSERVER_REFERENCES = {
+    "git/gitbackend.rs",
+    "workspace_ops/merge/preserve/checked_bundle.rs",
+    "workspace_ops/merge/preserve/plan.rs",
+    "workspace_ops/merge/v1_lifecycle/authority/observe/reverse/preservation/phase.rs",
+    "workspace_ops/merge/v1_lifecycle/authority/observe/reverse/preservation/phase/evidence.rs",
 }
 
 # Module-tree roots are protected as one path-and-byte manifest. This includes
 # the root module, every current descendant, and the descendant file set, so a
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
-    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "41d5d4db9f53b3275113d2f44caf36053c527824a5f0222270d759d4fde2e8e8",
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
 }
 
 ENTRY_REFERENCES = {
@@ -304,7 +314,6 @@ CHECKED_LEAF_ADAPTER_USES = {
     },
     "workspace_ops/merge/preserve/checked_bundle.rs": {
         "crate::checked_artifact::entry::MergeArtifactTransition",
-        "crate::git::GitBackend",
         "crate::model::{ErrorCode, ModelError, ModelResult}",
         "crate::stash::{ STASH_BUNDLE_SCHEMA, StashBundle, StashBundleMember, StashDirtySummary, StashParticipation, StashPushLifecycle, StashRestoreState, }",
         "std::path::{Path, PathBuf}",
@@ -488,14 +497,36 @@ def check(source: Path) -> list[str]:
             "open GitBackend preservation observer was reintroduced into the trait contract"
         )
     open_merge_observer_calls = []
+    concrete_observer_references = []
     for path in production_rust_files(source / "workspace_ops/merge"):
         text = mask_non_code(path.read_text(encoding="utf-8"))
+        relative = path.relative_to(source).as_posix()
         if re.search(r"\bpreservation_stashes\b", text):
-            open_merge_observer_calls.append(path.relative_to(source).as_posix())
+            open_merge_observer_calls.append(relative)
     if open_merge_observer_calls:
         findings.append(
             "authority-sensitive merge code reintroduced the open GitBackend "
             f"preservation observer: {open_merge_observer_calls}"
+        )
+    for path in production_rust_files(source):
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        if re.search(r"\bobserve_preservation_stashes_read_only\b", text):
+            concrete_observer_references.append(path.relative_to(source).as_posix())
+    if set(concrete_observer_references) != CONCRETE_PRESERVATION_OBSERVER_REFERENCES:
+        findings.append(
+            "concrete preservation observer caller set changed: "
+            f"expected={sorted(CONCRETE_PRESERVATION_OBSERVER_REFERENCES)} "
+            f"actual={sorted(concrete_observer_references)}"
+        )
+    open_v1_backend_sources = []
+    for path in production_rust_files(source / "workspace_ops/merge/v1_lifecycle"):
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        if re.search(r"\bGitBackend\b", text):
+            open_v1_backend_sources.append(path.relative_to(source).as_posix())
+    if open_v1_backend_sources:
+        findings.append(
+            "v1 lifecycle source uses the open GitBackend instead of the sealed "
+            f"MergeAuthorityBackend: {open_v1_backend_sources}"
         )
     entry_path = source / "checked_artifact/entry.rs"
     entry_text = mask_non_code(entry_path.read_text(encoding="utf-8"))

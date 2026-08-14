@@ -1,6 +1,6 @@
 use super::super::super::*;
 use super::publication;
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 use crate::workspace_ops::merge::OperationState;
@@ -15,7 +15,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum RecordEvidenceOr<T> {
 }
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_reverse_publication_handoff<
-    B: GitBackend,
+    B: MergeAuthorityBackend,
 >(
     backend: &B,
     _context: &OperationContext,
@@ -34,7 +34,7 @@ struct PublicationHandoffVisitor<'a, B> {
 
 impl<B> super::super::reverse_entry_visitor_seal::Visitor for PublicationHandoffVisitor<'_, B> {}
 
-impl<B: GitBackend> SealedReverseEntryVisitor for PublicationHandoffVisitor<'_, B> {
+impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for PublicationHandoffVisitor<'_, B> {
     type SealedAuthority = RecordEvidenceOr<VerifiedPublicationHandoff>;
 
     fn inspect(

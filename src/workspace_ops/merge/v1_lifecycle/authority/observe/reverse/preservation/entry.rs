@@ -9,7 +9,7 @@ use crate::workspace_ops::merge::v1_lifecycle::transition::{
 };
 use crate::workspace_ops::merge::{OperationState, ParticipantState};
 
-pub(super) fn observe_entry<B: GitBackend>(
+pub(super) fn observe_entry<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -33,7 +33,7 @@ pub(super) fn observe_entry<B: GitBackend>(
     }
 }
 
-pub(super) fn preflight_entry<B: GitBackend>(
+pub(super) fn preflight_entry<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     preview: &PreparedReverseEntryView,
@@ -55,7 +55,7 @@ impl<B> super::super::super::reverse_entry_visitor_seal::Visitor
 {
 }
 
-impl<B: GitBackend> SealedReverseEntryVisitor for PreservationEntryVisitor<'_, B> {
+impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for PreservationEntryVisitor<'_, B> {
     type SealedAuthority = VerifiedPreservationEntryPreflight;
 
     fn inspect(
@@ -99,14 +99,9 @@ impl<B: GitBackend> SealedReverseEntryVisitor for PreservationEntryVisitor<'_, B
             // selected owner set and each immutable anchor are observable before
             // any preservation entry record can be durably committed.
             let _ = v1_preservation_image(self.backend, &preserving, plan, &plan.protected_commit)?;
-            let bundle = v1_bundle_observation(
-                self.backend,
-                current.location().root(),
-                &preserving,
-                &plans,
-                &plan.owner,
-            )
-            .map_err(|error| attach_member(error, &plan.target_id, &plan.relative_path))?;
+            let bundle =
+                v1_bundle_observation(current.location().root(), &preserving, &plans, &plan.owner)
+                    .map_err(|error| attach_member(error, &plan.target_id, &plan.relative_path))?;
             if bundle != V1BundleObservation::Before {
                 return Err(owner_error(
                     plan,
@@ -125,7 +120,7 @@ impl<B: GitBackend> SealedReverseEntryVisitor for PreservationEntryVisitor<'_, B
     }
 }
 
-fn preflight_non_preservation_participants<B: GitBackend>(
+fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     record: &MergeOperationRecordV1,
@@ -203,7 +198,7 @@ fn attach_member(mut error: ModelError, member_id: &str, member_path: &str) -> M
     error
 }
 
-pub(super) fn observe_preserve_participant<B: GitBackend>(
+pub(super) fn observe_preserve_participant<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -253,7 +248,7 @@ pub(super) fn observe_preserve_participant<B: GitBackend>(
     }
 }
 
-fn prepare_participant_entry<B: GitBackend>(
+fn prepare_participant_entry<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,

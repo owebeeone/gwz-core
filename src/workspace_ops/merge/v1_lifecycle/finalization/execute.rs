@@ -5,7 +5,7 @@ use crate::workspace_ops::merge::acceptance::{
 };
 use crate::workspace_ops::publish_workspace_exclude_candidate;
 
-pub(super) fn publication<B: GitBackend>(
+pub(super) fn publication<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     action: PublicationPhysicalAction,

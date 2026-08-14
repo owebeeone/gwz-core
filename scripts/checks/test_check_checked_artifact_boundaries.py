@@ -302,6 +302,46 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             "pub(crate) fn observe_preservation_stashes_read_only", gitbackend
         )
 
+    def test_concrete_observer_cannot_gain_an_unprotected_merge_caller(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "workspace_ops/merge/preserve/artifacts.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\n#[cfg(test)]\n#[allow(dead_code)]\n"
+            "fn unreviewed_observer_wrapper(path: &std::path::Path) "
+            "-> crate::model::ModelResult<Vec<crate::git::GitPreservationStashEvidence>> {\n"
+            "    std::fs::write(path.join(\"raw-observer-caller\"), b\"bypass\").unwrap();\n"
+            "    crate::git::observe_preservation_stashes_read_only(path, \"merge_probe\")\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("concrete preservation observer caller set changed", result.stderr)
+
+    def test_v1_runtime_cannot_restore_the_open_backend_bound(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "workspace_ops/merge/v1_lifecycle/reverse.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "MergeAuthorityBackend", "GitBackend", 1
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("v1 lifecycle source uses the open GitBackend", result.stderr)
+
+    def test_merge_authority_backend_has_a_private_compiler_seal(self) -> None:
+        path = SOURCE / "git/gitbackend/authority_backend.rs"
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("mod sealed", text)
+        self.assertIn("pub trait MergeAuthorityBackend", text)
+        self.assertIn("sealed::Sealed", text)
+        self.assertIn("for super::backend::Git2Backend", text)
+
     def test_open_backend_observer_cannot_reenter_merge_authority(self) -> None:
         result = self.append(
             "workspace_ops/merge/preserve/plan.rs",
@@ -539,6 +579,20 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             )
 
         self.assert_compiler_rejects(mutate, "std::fs::write")
+
+    def test_compiler_rejects_an_alternative_merge_authority_backend(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "src/workspace_ops/tests/g01/tracking_backend.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\nimpl crate::git::MergeAuthorityBackend for TrackingBackend {}\n",
+                encoding="utf-8",
+            )
+
+        result = run_compiler_probe(mutate)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("MergeAuthorityBackend", result.stderr)
+        self.assertIn("Sealed", result.stderr)
 
     def test_comments_and_strings_do_not_create_false_references(self) -> None:
         result = self.append(

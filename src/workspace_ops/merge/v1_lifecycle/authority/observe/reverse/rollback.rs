@@ -1,5 +1,5 @@
 use super::super::super::*;
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 use crate::workspace_ops::merge::model::v1::{
@@ -17,7 +17,9 @@ use crate::workspace_ops::merge::{
     PendingMergeActionKind,
 };
 
-pub(in crate::workspace_ops::merge::v1_lifecycle::authority) fn observe<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle::authority) fn observe<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -47,7 +49,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle::authority) fn observe<B: GitBa
     BoundExactObservation::issue(current, request, fact)
 }
 
-fn observe_entry<B: GitBackend>(
+fn observe_entry<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -72,7 +74,7 @@ fn observe_entry<B: GitBackend>(
     }
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -139,7 +141,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: GitBacken
     }
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_abort_participant<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_abort_participant<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -238,7 +242,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_abort_participant<B
     }
 }
 
-fn prepare_entry<B: GitBackend>(
+fn prepare_entry<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -256,7 +260,9 @@ fn prepare_entry<B: GitBackend>(
     prepare_direct_rollback_entry(current, &preview, handoff, preflight)
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle) fn preflight_entry_with_handoff<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn preflight_entry_with_handoff<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     current: &StoredV1Record,
     preview: &PreparedReverseEntryView,
@@ -275,7 +281,7 @@ struct RollbackEntryHandoffVisitor<'a, B> {
 
 impl<B> super::super::reverse_entry_visitor_seal::Visitor for RollbackEntryHandoffVisitor<'_, B> {}
 
-impl<B: GitBackend> SealedReverseEntryVisitor for RollbackEntryHandoffVisitor<'_, B> {
+impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for RollbackEntryHandoffVisitor<'_, B> {
     type SealedAuthority = VerifiedRollbackEntryPreflight;
 
     fn inspect(
@@ -323,7 +329,7 @@ impl<B: GitBackend> SealedReverseEntryVisitor for RollbackEntryHandoffVisitor<'_
     }
 }
 
-fn observe_pending<B: GitBackend>(
+fn observe_pending<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     action: &PendingRollbackActionV1,
@@ -366,7 +372,7 @@ fn participant_intent(
     )))
 }
 
-fn observe_participant<B: GitBackend>(
+fn observe_participant<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     member_id: &str,
@@ -427,7 +433,7 @@ fn evidence_intent(current: &StoredV1Record) -> ModelResult<ExactObservationFact
     )))
 }
 
-fn observe_evidence<B: GitBackend>(
+fn observe_evidence<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     step: EvidenceRollbackStepV1,
@@ -487,7 +493,7 @@ fn root_intent(current: &StoredV1Record) -> ModelResult<ExactObservationFact> {
     )))
 }
 
-fn observe_root<B: GitBackend>(
+fn observe_root<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     step: RootMetadataRollbackStepV1,
@@ -531,7 +537,7 @@ fn observe_root<B: GitBackend>(
     }
 }
 
-fn exhausted_with_backend<B: GitBackend>(
+fn exhausted_with_backend<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -546,7 +552,7 @@ fn exhausted_with_backend<B: GitBackend>(
     )))
 }
 
-fn outcome_with_entry<B: GitBackend>(
+fn outcome_with_entry<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,

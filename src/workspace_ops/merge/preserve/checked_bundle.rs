@@ -5,7 +5,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::checked_artifact::entry::MergeArtifactTransition;
-use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::plan::V1PreservationOwnerPlan;
@@ -17,8 +16,7 @@ pub(in crate::workspace_ops::merge) enum V1BundleObservation {
     Ambiguous,
 }
 
-pub(in crate::workspace_ops::merge) fn v1_bundle_observation<B: GitBackend>(
-    _backend: &B,
+pub(in crate::workspace_ops::merge) fn v1_bundle_observation(
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
     plans: &[V1PreservationOwnerPlan],
@@ -47,8 +45,7 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_observation<B: GitBackend>(
     )
 }
 
-pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<B: GitBackend>(
-    _backend: &B,
+pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact(
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
     plans: &[V1PreservationOwnerPlan],
@@ -64,8 +61,7 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<B: GitBackend>(
     )
 }
 
-pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<B: GitBackend>(
-    _backend: &B,
+pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked(
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
     plans: &[V1PreservationOwnerPlan],

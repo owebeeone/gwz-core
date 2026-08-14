@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn observe<B: GitBackend>(
+pub(super) fn observe<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,

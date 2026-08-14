@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::workspace_ops::merge::PreservationEvidence;
 use crate::workspace_ops::merge::model::v1::{
     GitObjectAlgorithmV1, GitObjectIdV1, PreservationStashPhaseV1 as S,
@@ -12,7 +12,7 @@ type StashEvidence = (
     Option<PreservationEvidence>,
 );
 
-pub(super) fn stash_evidence<B: GitBackend>(
+pub(super) fn stash_evidence<B: MergeAuthorityBackend>(
     _backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,

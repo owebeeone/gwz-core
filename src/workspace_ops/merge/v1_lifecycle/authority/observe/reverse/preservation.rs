@@ -3,7 +3,7 @@ mod entry;
 mod phase;
 
 use super::super::super::*;
-use crate::git::GitBackend;
+use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 use crate::workspace_ops::merge::model::v1::{
@@ -18,7 +18,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) use phase::{
     durability_fact, reset_step, stash_guard, stash_step,
 };
 
-pub(in crate::workspace_ops::merge::v1_lifecycle::authority) fn observe<B: GitBackend>(
+pub(in crate::workspace_ops::merge::v1_lifecycle::authority) fn observe<
+    B: MergeAuthorityBackend,
+>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,

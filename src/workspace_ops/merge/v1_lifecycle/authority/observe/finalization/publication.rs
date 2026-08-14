@@ -1,5 +1,5 @@
 use super::*;
-use crate::git::{GitBackend, GitRepositoryState, GitScopedCommitResult};
+use crate::git::{GitRepositoryState, GitScopedCommitResult, MergeAuthorityBackend};
 use crate::workspace_ops::merge::PublicationStep;
 use crate::workspace_ops::merge::acceptance::{
     CandidatePublicationPrefix, V1CandidateBuildInput, build_v1_candidate, candidate_artifacts,
@@ -17,7 +17,7 @@ pub(super) enum ReversePublicationHandoffObservation {
     Ready(PublicationHandoffFact),
 }
 
-pub(super) fn observe_reverse_handoff<B: GitBackend>(
+pub(super) fn observe_reverse_handoff<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ReversePublicationHandoffObservation> {
@@ -129,7 +129,7 @@ pub(super) fn observe_reverse_handoff<B: GitBackend>(
     }
 }
 
-fn require_post_evidence_handoff<B: GitBackend>(
+fn require_post_evidence_handoff<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {
@@ -172,7 +172,7 @@ fn candidate_handoff_fact(
     }
 }
 
-pub(super) fn observe<B: GitBackend>(
+pub(super) fn observe<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -207,7 +207,7 @@ pub(super) fn observe<B: GitBackend>(
     }
 }
 
-pub(super) fn verify_action<B: GitBackend>(
+pub(super) fn verify_action<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     expected: PublicationPhysicalAction,
@@ -224,7 +224,7 @@ pub(super) fn verify_action<B: GitBackend>(
     }
 }
 
-pub(super) fn recovery_origin_is_exact<B: GitBackend>(
+pub(super) fn recovery_origin_is_exact<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<bool> {
@@ -307,7 +307,7 @@ fn migrated_decision(
     )))
 }
 
-fn prepare_candidate<B: GitBackend>(
+fn prepare_candidate<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
@@ -353,7 +353,7 @@ fn prepare_candidate<B: GitBackend>(
     )))
 }
 
-fn begin_evidence<B: GitBackend>(
+fn begin_evidence<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -374,7 +374,7 @@ fn begin_evidence<B: GitBackend>(
     )))
 }
 
-fn observe_evidence<B: GitBackend>(
+fn observe_evidence<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -399,7 +399,7 @@ fn observe_evidence<B: GitBackend>(
     )))
 }
 
-fn begin_publication<B: GitBackend>(
+fn begin_publication<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -424,7 +424,7 @@ fn begin_publication<B: GitBackend>(
     )))
 }
 
-fn observe_publication<B: GitBackend>(
+fn observe_publication<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
@@ -452,7 +452,7 @@ fn observe_publication<B: GitBackend>(
     }
 }
 
-fn verify_publication<B: GitBackend>(
+fn verify_publication<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     operation_complete: bool,
@@ -489,7 +489,7 @@ fn verify_publication<B: GitBackend>(
     Ok(completed(CompletedObservation::Publication(observation)))
 }
 
-fn action_for_state<B: GitBackend>(
+fn action_for_state<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<Option<PublicationPhysicalAction>> {
@@ -536,12 +536,15 @@ fn publication_action(
     ))
 }
 
-fn verify_accepted_inputs<B: GitBackend>(backend: &B, current: &StoredV1Record) -> ModelResult<()> {
+fn verify_accepted_inputs<B: MergeAuthorityBackend>(
+    backend: &B,
+    current: &StoredV1Record,
+) -> ModelResult<()> {
     verify_participants(backend, current)?;
     verify_accepted_root(backend, current)
 }
 
-fn verify_post_evidence_inputs<B: GitBackend>(
+fn verify_post_evidence_inputs<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {
@@ -550,7 +553,7 @@ fn verify_post_evidence_inputs<B: GitBackend>(
     verify_frozen_manifest(backend, current)
 }
 
-fn evidence_base_is_live<B: GitBackend>(
+fn evidence_base_is_live<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<bool> {
@@ -562,7 +565,7 @@ fn evidence_base_is_live<B: GitBackend>(
     )
 }
 
-fn observed_evidence<B: GitBackend>(
+fn observed_evidence<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<Option<GitScopedCommitResult>> {
@@ -610,7 +613,7 @@ fn is_semantic_drift(error: &ModelError) -> bool {
     )
 }
 
-fn recorded_evidence_is_live<B: GitBackend>(
+fn recorded_evidence_is_live<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<bool> {
