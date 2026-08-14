@@ -7,10 +7,21 @@ import argparse
 import hashlib
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Trust anchor for the compiler route into the protected v1 tree. Cargo's lib
+# target is checked semantically below; each exact parent then selects the next
+# canonical module. Hashing only the descendant tree would prove resident
+# bytes without proving that rustc actually loads them.
+PROTECTED_COMPILER_ROOT_DIGESTS = {
+    "src/lib.rs": "e035f8a53ddb589362972c85593cc0dff4b590129de38fe0fdb72ca1880f544e",
+    "src/workspace_ops/mod.rs": "663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124",
+    "src/workspace_ops/merge/mod.rs": "d7b2662b8c18fa7d5b83e951a65be73498edcdc29565ca65e3f6d5cd069c1356",
+}
 
 PROTECTED_COMPILER_MODULES = {
     "checked_artifact/entry.rs",
@@ -117,7 +128,7 @@ APPROVED_RUST_PATH_EDGES = {
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "21ab2154e58ebe091a62bfb5bdf36afdbe98c30b9181d0ba08e29415aa6af00d",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "56c96f601db9f709ace68b5a1959bf2fc657481741c131d0da4c02d8d3fb8d27",
 }
 
 ENTRY_REFERENCES = {
@@ -540,6 +551,26 @@ def imports(text: str) -> set[str]:
 
 def check(source: Path) -> list[str]:
     findings: list[str] = []
+    crate_root = source.parent.resolve()
+    manifest_path = crate_root / "Cargo.toml"
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        manifest = None
+    if (
+        manifest_path.is_symlink()
+        or not isinstance(manifest, dict)
+        or manifest.get("lib") != {"path": "src/lib.rs"}
+    ):
+        findings.append("compiler root manifest changed: Cargo.toml [lib]")
+    for relative, expected_digest in sorted(PROTECTED_COMPILER_ROOT_DIGESTS.items()):
+        path = crate_root / relative
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest
+        ):
+            findings.append(f"compiler root manifest changed: {relative}")
     forbid = "#![forbid(clippy::disallowed_methods)]"
     for relative, expected_digest in sorted(PROTECTED_SOURCE_DIGESTS.items()):
         path = source / relative
@@ -558,7 +589,6 @@ def check(source: Path) -> list[str]:
     path_edges = set()
     malformed_path_edges = []
     include_sources = []
-    crate_root = source.parent.resolve()
     invalid_path_targets = []
     for path in sorted(source.rglob("*.rs")):
         raw = path.read_text(encoding="utf-8")

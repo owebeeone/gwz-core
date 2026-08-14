@@ -381,6 +381,88 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         result = run(source)
         self.assertNotEqual(result.returncode, 0)
 
+    def test_compiler_rejects_a_redirected_v1_root(self) -> None:
+        compiler = run_compiler_probe(self.redirect_v1_root)
+        self.assertEqual(compiler.returncode, 0, compiler.stderr)
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        self.redirect_v1_root(source.parent)
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("compiler root manifest changed", result.stderr)
+
+    def test_compiler_root_manifest_rejects_crate_target_redirection(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        manifest = source.parent / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'path = "src/lib.rs"', 'path = "src/unreviewed_lib.rs"', 1
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("compiler root manifest changed", result.stderr)
+
+    def test_compiler_root_manifest_allows_non_target_metadata_change(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        manifest = source.parent / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'version = "0.10.3"', 'version = "99.0.0"', 1
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_compiler_root_manifest_rejects_workspace_ops_redirection(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        crate = source / "lib.rs"
+        crate.write_text(
+            crate.read_text(encoding="utf-8").replace(
+                "pub mod workspace_ops;",
+                '#[cfg_attr(all(), path = "unreviewed_workspace_ops.rs")]\n'
+                "pub mod workspace_ops;",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("compiler root manifest changed", result.stderr)
+
+    def test_compiler_root_manifest_rejects_merge_redirection(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        workspace_ops = source / "workspace_ops/mod.rs"
+        workspace_ops.write_text(
+            workspace_ops.read_text(encoding="utf-8").replace(
+                "mod merge;",
+                '#[cfg_attr(all(), path = "unreviewed_merge.rs")]\nmod merge;',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("compiler root manifest changed", result.stderr)
+
+    def test_v1_compiler_root_has_a_positive_sentinel(self) -> None:
+        parent = (SOURCE / "workspace_ops/merge/mod.rs").read_text(encoding="utf-8")
+        root = (SOURCE / "workspace_ops/merge/v1_lifecycle/mod.rs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "const _: &str = v1_lifecycle::COMPILER_ROOT_SENTINEL;", parent
+        )
+        self.assertIn(
+            'pub(super) const COMPILER_ROOT_SENTINEL: &str = module_path!();', root
+        )
+
     def test_macro_spelled_source_loading_edge_is_rejected(self) -> None:
         result = self.append(
             "workspace_ops/merge/preserve/artifacts.rs",
@@ -437,7 +519,49 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         target = Path(temporary.name) / "src"
         shutil.copytree(SOURCE, target)
         shutil.copytree(ROOT / "protocol", target.parent / "protocol")
+        shutil.copy2(ROOT / "Cargo.toml", target.parent / "Cargo.toml")
         return temporary, target
+
+    def redirect_v1_root(self, root: Path) -> None:
+        source = root / "src"
+        crate = source / "lib.rs"
+        crate.write_text(
+            crate.read_text(encoding="utf-8").replace(
+                "#![allow(\n",
+                "#![cfg_attr(test, allow(dead_code, unused_imports))]\n\n#![allow(\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        parent = source / "workspace_ops/merge/mod.rs"
+        parent.write_text(
+            parent.read_text(encoding="utf-8").replace(
+                "#[cfg(test)]\nmod v1_lifecycle;",
+                "#[cfg(test)]\n"
+                '#[cfg_attr(all(), path = "unreviewed_v1.rs")]\n'
+                "mod v1_lifecycle;",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        parent.with_name("unreviewed_v1.rs").write_text(
+            'pub(super) const COMPILER_ROOT_SENTINEL: &str = "replacement";\n'
+            "mod service {\n"
+            "    trait ExactObserver {}\n"
+            "    trait PhysicalExecutor {}\n"
+            "    trait V1Runtime: ExactObserver + PhysicalExecutor {}\n"
+            "    impl<T: ExactObserver + PhysicalExecutor> V1Runtime for T {}\n"
+            "    struct UnreviewedRuntime;\n"
+            "    impl ExactObserver for UnreviewedRuntime {}\n"
+            "    impl PhysicalExecutor for UnreviewedRuntime {}\n"
+            "    fn accepts_runtime<R: V1Runtime>() {}\n"
+            "    #[test]\n"
+            "    fn unreviewed_runtime_enters_replacement_service() {\n"
+            "        accepts_runtime::<UnreviewedRuntime>();\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
 
     def add_non_rs_observer_caller(self, source: Path, form: str) -> None:
         path = source / "workspace_ops/merge/preserve/artifacts.rs"

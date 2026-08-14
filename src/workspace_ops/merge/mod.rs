@@ -22,6 +22,8 @@ mod status;
 mod store;
 #[cfg(test)]
 mod v1_lifecycle;
+#[cfg(test)]
+const _: &str = v1_lifecycle::COMPILER_ROOT_SENTINEL;
 mod validate;
 
 #[cfg(test)]
