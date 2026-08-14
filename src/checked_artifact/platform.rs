@@ -476,7 +476,7 @@ fn anchor_name(identity: &[u8; 16]) -> String {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::{anchor_roundtrip_name, open_rename_source, rename_open_source};
+    use super::{anchor_roundtrip_name, hex, open_rename_source, rename_open_source};
     use cap_std::{ambient_authority, fs::Dir};
     use std::ffi::{OsStr, OsString};
 
