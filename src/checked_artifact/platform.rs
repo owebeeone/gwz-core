@@ -52,7 +52,7 @@ pub(super) fn open_rename_source<'a>(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<OpenedRenameSource<'a>> {
-    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
     use cap_std::fs::{OpenOptions, OpenOptionsExt};
     use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::*;
@@ -61,9 +61,10 @@ pub(super) fn open_rename_source<'a>(
     options
         .access_mode(GENERIC_READ | DELETE)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
-        .follow(FollowSymlinks::No)
-        .maybe_dir(true);
+        .custom_flags(
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_BACKUP_SEMANTICS,
+        )
+        .follow(FollowSymlinks::No);
     let file = source_dir
         .open_with(source, &options)
         .map_err(|cause| io_error(code, label, cause))?;
@@ -107,7 +108,10 @@ pub(super) fn rename_open_source(
     use windows_sys::Win32::Storage::FileSystem::*;
 
     let name = destination.encode_wide().collect::<Vec<_>>();
-    let size = std::mem::offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
+    // Windows requires at least the fixed structure size plus the variable
+    // name bytes, even though the fixed structure already contains its
+    // one-element FileName placeholder.
+    let size = std::mem::size_of::<FILE_RENAME_INFO>() + name.len() * 2;
     let mut storage = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     unsafe {

@@ -43,7 +43,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
     "checked_artifact/mod.rs": "ab520e0ea5868e033aec015530281ebd274642918fc82b77279f2a5c921c05b0",
-    "checked_artifact/platform.rs": "47e0f84172d42db12e62c4dd52e30e09a85c6507e77425131a381402f41a18ac",
+    "checked_artifact/platform.rs": "a654c832947344ca76c6446d1695862757b9a6d3f1b4040e462e1de4d6466ef9",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
