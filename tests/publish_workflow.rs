@@ -26,6 +26,17 @@ fn release_workflow_installs_release_taut_proto_for_protocol_tests() {
 }
 
 #[test]
+fn release_workflow_has_an_exact_v0105_boundary_compatibility_exception() {
+    assert!(RELEASE_WORKFLOW.contains("if [ \"$tag\" = \"v0.10.5\" ]; then"));
+    assert!(RELEASE_WORKFLOW.contains(
+        "v0.10.5 predates the checked-artifact boundary; running the remaining release gates."
+    ));
+    assert!(
+        !RELEASE_WORKFLOW.contains("if [ -f scripts/checks/check_checked_artifact_boundaries.py")
+    );
+}
+
+#[test]
 fn release_workflow_only_runs_for_explicit_releases() {
     assert!(RELEASE_WORKFLOW.contains("release:"));
     assert!(RELEASE_WORKFLOW.contains("types: [published]"));
