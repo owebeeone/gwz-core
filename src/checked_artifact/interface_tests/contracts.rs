@@ -4,9 +4,9 @@ use std::path::Path;
 use super::super::bootstrap::{WorkspaceRuntimeBootstrapV1, WorkspaceRuntimePaths};
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, GitPathBytes, IndexStage, LosslessIndexEntry, PathComponentMode,
-    PlatformCapability, PrivateControlDomain, SupportedFilesystemProfile, TrackedWorktreeEntry,
-    TrackedWorktreeKind,
+    DurableObjectIdentityV1, GitPathBytes, IndexStage, IndexTimestampV1, LosslessIndexEntry,
+    LosslessIndexMetadataV1, PathComponentMode, PlatformCapability, PrivateControlDomain,
+    SupportedFilesystemProfile, TrackedWorktreeEntry, TrackedWorktreeKind,
 };
 use super::super::leaf::{
     DurableLeafExpectation, DurableLeafProof, ExpectedLeafContent, LeafOther, LeafProof,
@@ -119,12 +119,27 @@ fn supported_profiles_and_typed_errors_are_closed() {
 #[test]
 fn collision_facts_keep_raw_paths_stages_and_flags() {
     let path = GitPathBytes::new(vec![0xff, b'/', b'a']).unwrap();
-    let entry = LosslessIndexEntry::new(path.clone(), 2, 0o100644, 0xc000, 0x6000).unwrap();
+    let metadata = LosslessIndexMetadataV1::new(
+        IndexTimestampV1::new(11, 12).unwrap(),
+        IndexTimestampV1::new(21, 22).unwrap(),
+        [31, 32, 33, 34, 35],
+        vec![0x44; 20],
+    )
+    .unwrap();
+    let entry =
+        LosslessIndexEntry::new(path.clone(), 2, 0o100644, 0xc000, 0x6000, metadata.clone())
+            .unwrap();
     assert_eq!(entry.path(), &path);
     assert_eq!(entry.stage(), IndexStage::Ours);
     assert_eq!(entry.raw_flags(), 0xc000);
     assert_eq!(entry.raw_extended_flags(), 0x6000);
-    assert!(LosslessIndexEntry::new(path.clone(), 4, 0, 0, 0).is_err());
+    assert_eq!(entry.metadata(), &metadata);
+    assert_eq!(entry.metadata().ctime().seconds(), 11);
+    assert_eq!(entry.metadata().mtime().nanoseconds(), 22);
+    assert_eq!(entry.metadata().stat(), &[31, 32, 33, 34, 35]);
+    assert_eq!(entry.metadata().object_id(), &[0x44; 20]);
+    assert!(LosslessIndexEntry::new(path.clone(), 4, 0, 0, 0, metadata).is_err());
+    assert!(IndexTimestampV1::new(0, 1_000_000_000).is_err());
 
     let tracked = TrackedWorktreeEntry::new(path, TrackedWorktreeKind::Symlink);
     assert_eq!(tracked.kind(), TrackedWorktreeKind::Symlink);

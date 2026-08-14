@@ -45,6 +45,94 @@ impl IndexStage {
             )),
         }
     }
+
+    pub(super) const fn code(self) -> u8 {
+        match self {
+            Self::Normal => 0,
+            Self::Base => 1,
+            Self::Ours => 2,
+            Self::Theirs => 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) struct IndexTimestampV1 {
+    seconds: i32,
+    nanoseconds: u32,
+}
+
+impl IndexTimestampV1 {
+    pub(in crate::checked_artifact) fn new(
+        seconds: i32,
+        nanoseconds: u32,
+    ) -> Result<Self, CheckedFsError> {
+        if nanoseconds >= 1_000_000_000 {
+            return Err(CheckedFsError::ambiguous(
+                "Git index",
+                "index timestamp nanoseconds are out of range",
+            ));
+        }
+        Ok(Self {
+            seconds,
+            nanoseconds,
+        })
+    }
+
+    pub(in crate::checked_artifact) fn seconds(&self) -> i32 {
+        self.seconds
+    }
+
+    pub(in crate::checked_artifact) fn nanoseconds(&self) -> u32 {
+        self.nanoseconds
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) struct LosslessIndexMetadataV1 {
+    ctime: IndexTimestampV1,
+    mtime: IndexTimestampV1,
+    stat: [u32; 5],
+    object_id: Vec<u8>,
+}
+
+impl LosslessIndexMetadataV1 {
+    pub(in crate::checked_artifact) fn new(
+        ctime: IndexTimestampV1,
+        mtime: IndexTimestampV1,
+        stat: [u32; 5],
+        object_id: Vec<u8>,
+    ) -> Result<Self, CheckedFsError> {
+        if object_id.is_empty() {
+            return Err(CheckedFsError::ambiguous(
+                "Git index",
+                "index object identity is empty",
+            ));
+        }
+        Ok(Self {
+            ctime,
+            mtime,
+            stat,
+            object_id,
+        })
+    }
+
+    pub(in crate::checked_artifact) fn ctime(&self) -> &IndexTimestampV1 {
+        &self.ctime
+    }
+
+    pub(in crate::checked_artifact) fn mtime(&self) -> &IndexTimestampV1 {
+        &self.mtime
+    }
+
+    /// Returns device, inode, uid, gid, and file size in Git-index order.
+    pub(in crate::checked_artifact) fn stat(&self) -> &[u32; 5] {
+        &self.stat
+    }
+
+    pub(in crate::checked_artifact) fn object_id(&self) -> &[u8] {
+        &self.object_id
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +142,7 @@ pub(in crate::checked_artifact) struct LosslessIndexEntry {
     mode: u32,
     raw_flags: u16,
     raw_extended_flags: u16,
+    metadata: LosslessIndexMetadataV1,
 }
 
 impl LosslessIndexEntry {
@@ -63,6 +152,7 @@ impl LosslessIndexEntry {
         mode: u32,
         raw_flags: u16,
         raw_extended_flags: u16,
+        metadata: LosslessIndexMetadataV1,
     ) -> Result<Self, CheckedFsError> {
         Ok(Self {
             path,
@@ -70,6 +160,7 @@ impl LosslessIndexEntry {
             mode,
             raw_flags,
             raw_extended_flags,
+            metadata,
         })
     }
 
@@ -88,6 +179,9 @@ impl LosslessIndexEntry {
     pub(in crate::checked_artifact) fn raw_extended_flags(&self) -> u16 {
         self.raw_extended_flags
     }
+    pub(in crate::checked_artifact) fn metadata(&self) -> &LosslessIndexMetadataV1 {
+        &self.metadata
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,6 +192,19 @@ pub(in crate::checked_artifact) enum TrackedWorktreeKind {
     Directory,
     Gitlink,
     Other,
+}
+
+impl TrackedWorktreeKind {
+    pub(super) const fn code(self) -> u8 {
+        match self {
+            Self::Missing => 0,
+            Self::RegularFile => 1,
+            Self::Symlink => 2,
+            Self::Directory => 3,
+            Self::Gitlink => 4,
+            Self::Other => 5,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,12 +232,15 @@ pub(in crate::checked_artifact) struct PrivateControlDomain {
 
 impl PrivateControlDomain {
     pub(in crate::checked_artifact) fn checked_v1() -> Self {
+        Self::for_root(CatalogPrivateRootV1::Workspace)
+    }
+
+    pub(super) fn for_root(root: CatalogPrivateRootV1) -> Self {
         Self {
             members: CatalogPrivateNameV1::ALL
                 .iter()
                 .map(|name| {
-                    GitPathBytes::new(name.relative_bytes(CatalogPrivateRootV1::Workspace))
-                        .expect("fixed path is valid")
+                    GitPathBytes::new(name.relative_bytes(root)).expect("fixed path is valid")
                 })
                 .collect(),
         }

@@ -61,6 +61,22 @@ CONCRETE_PRESERVATION_OBSERVER_REFERENCES = {
 # edge, require its target to remain a regular in-crate `.rs` file, and reject
 # `include` entirely so the source inventory matches the compiler-loaded graph.
 APPROVED_RUST_PATH_EDGES = {
+    (
+        "checked_artifact/capability/pre_catalog/provider/platform.rs",
+        "platform/linux.rs",
+    ),
+    (
+        "checked_artifact/capability/pre_catalog/provider/platform.rs",
+        "platform/macos.rs",
+    ),
+    (
+        "checked_artifact/capability/pre_catalog/provider/platform.rs",
+        "platform/unsupported.rs",
+    ),
+    (
+        "checked_artifact/capability/pre_catalog/provider/platform.rs",
+        "platform/windows.rs",
+    ),
     ("checked_artifact/mod.rs", "tests.rs"),
     ("checked_artifact/tests.rs", "tests/durability.rs"),
     ("checked_artifact/tests.rs", "tests/exact_source.rs"),

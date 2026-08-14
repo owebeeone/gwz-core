@@ -185,6 +185,15 @@ pub(in crate::checked_artifact) struct PreCatalogOwnerV1<Root: ?Sized, RetainedR
     provider: Box<dyn provider::RawPreCatalogProviderV1<Root, RetainedRoot>>,
 }
 
+#[allow(
+    dead_code,
+    reason = "R2-B installs the provider before R2-C catalog conversion consumes it"
+)]
+fn platform_pre_catalog_owner_v1()
+-> PreCatalogOwnerV1<std::path::Path, provider::RetainedPlatformRoot> {
+    provider::platform_pre_catalog_owner()
+}
+
 impl<Root: ?Sized, RetainedRoot> PreCatalogOwnerV1<Root, RetainedRoot> {
     fn from_provider(
         provider: impl provider::RawPreCatalogProviderV1<Root, RetainedRoot> + 'static,

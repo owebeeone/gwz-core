@@ -5,6 +5,15 @@
 
 use super::*;
 
+mod filesystem;
+mod index;
+mod namespace;
+mod platform;
+mod retained;
+mod snapshot;
+
+pub(super) use filesystem::{RetainedPlatformRoot, platform_pre_catalog_owner};
+
 pub(super) struct RawPreCatalogObservationV1<RetainedRoot> {
     pub(super) retained_root: RetainedRoot,
     pub(super) support_profile: SupportedFilesystemProfile,
@@ -38,6 +47,11 @@ pub(super) trait RawPreCatalogProviderV1<Root: ?Sized, RetainedRoot> {
         permit: &PreCatalogPermitV1<RetainedRoot>,
     ) -> Result<(), CheckedFsError>;
 }
+
+#[cfg(test)]
+pub(in crate::checked_artifact) use test_support::{
+    SyntheticPreCatalogProbeV1, synthetic_pre_catalog_owner,
+};
 
 #[cfg(test)]
 mod test_support {
@@ -224,92 +238,4 @@ mod test_support {
 }
 
 #[cfg(test)]
-pub(in crate::checked_artifact) use test_support::{
-    SyntheticPreCatalogProbeV1, synthetic_pre_catalog_owner,
-};
-
-#[allow(
-    dead_code,
-    reason = "always-compiled proof that a platform provider fits the sealed owner seam"
-)]
-mod production_provider_compile {
-    use std::path::Path;
-
-    use super::*;
-
-    struct PlatformRetainedRoot;
-    struct PlatformProvider;
-
-    impl RawPreCatalogProviderV1<Path, PlatformRetainedRoot> for PlatformProvider {
-        fn inspect_workspace(
-            &self,
-            _root: &Path,
-        ) -> Result<RawPreCatalogObservationV1<PlatformRetainedRoot>, CheckedFsError> {
-            Err(CheckedFsError::ambiguous(
-                "compile-only platform provider",
-                "not executed",
-            ))
-        }
-
-        fn inspect_git_directory(
-            &self,
-            _root: &Path,
-        ) -> Result<RawPreCatalogObservationV1<PlatformRetainedRoot>, CheckedFsError> {
-            Err(CheckedFsError::ambiguous(
-                "compile-only platform provider",
-                "not executed",
-            ))
-        }
-
-        fn revalidate_workspace(
-            &self,
-            _root: &Path,
-            _permit: &PreCatalogPermitV1<PlatformRetainedRoot>,
-        ) -> Result<(), CheckedFsError> {
-            Err(CheckedFsError::ambiguous(
-                "compile-only platform provider",
-                "not executed",
-            ))
-        }
-
-        fn revalidate_git_directory(
-            &self,
-            _root: &Path,
-            _permit: &PreCatalogPermitV1<PlatformRetainedRoot>,
-        ) -> Result<(), CheckedFsError> {
-            Err(CheckedFsError::ambiguous(
-                "compile-only platform provider",
-                "not executed",
-            ))
-        }
-    }
-
-    struct PlatformBootstrap;
-
-    impl crate::checked_artifact::bootstrap::CatalogBootstrapV1<PlatformRetainedRoot>
-        for PlatformBootstrap
-    {
-        type Catalog = ();
-
-        fn recover_or_create(
-            &self,
-            _permit: RevalidatedPreCatalogPermitV1<'_, PlatformRetainedRoot>,
-        ) -> Result<Self::Catalog, CheckedFsError> {
-            Ok(())
-        }
-    }
-
-    fn compile_provider(root: &Path) -> Result<(), CheckedFsError> {
-        PreCatalogOwnerV1::from_provider(PlatformProvider).recover_or_create_workspace(
-            root,
-            [1; 32],
-            &PlatformBootstrap,
-        )
-    }
-
-    #[cfg(test)]
-    #[test]
-    fn production_shaped_provider_can_be_owned_without_exposing_raw_seam() {
-        assert!(compile_provider(Path::new(".")).is_err());
-    }
-}
+mod production_tests;
