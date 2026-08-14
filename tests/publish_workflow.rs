@@ -37,6 +37,17 @@ fn release_workflow_has_an_exact_v0105_boundary_compatibility_exception() {
 }
 
 #[test]
+fn release_workflow_can_verify_an_explicit_dispatch_ref_without_a_fake_tag() {
+    assert!(RELEASE_WORKFLOW.contains("required: false"));
+    assert!(
+        RELEASE_WORKFLOW
+            .contains("ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}")
+    );
+    assert!(RELEASE_WORKFLOW.contains("if [ -z \"$tag\" ]; then"));
+    assert!(RELEASE_WORKFLOW.contains("git rev-parse --verify \"$GITHUB_SHA\""));
+}
+
+#[test]
 fn release_workflow_only_runs_for_explicit_releases() {
     assert!(RELEASE_WORKFLOW.contains("release:"));
     assert!(RELEASE_WORKFLOW.contains("types: [published]"));
