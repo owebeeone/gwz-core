@@ -320,6 +320,41 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("concrete preservation observer caller set changed", result.stderr)
 
+    def test_non_rs_path_module_cannot_hide_a_concrete_observer_caller(self) -> None:
+        compiler = run_compiler_probe(
+            lambda root: self.add_non_rs_observer_caller(root / "src", "path")
+        )
+        self.assertEqual(compiler.returncode, 0, compiler.stderr)
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        self.add_non_rs_observer_caller(source, "path")
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Rust source-loading edge inventory changed", result.stderr)
+
+    def test_non_rs_include_cannot_hide_a_concrete_observer_caller(self) -> None:
+        compiler = run_compiler_probe(
+            lambda root: self.add_non_rs_observer_caller(root / "src", "include")
+        )
+        self.assertEqual(compiler.returncode, 0, compiler.stderr)
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        self.add_non_rs_observer_caller(source, "include")
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Rust source-loading edge inventory changed", result.stderr)
+
+    def test_macro_spelled_source_loading_edge_is_rejected(self) -> None:
+        result = self.append(
+            "workspace_ops/merge/preserve/artifacts.rs",
+            "\nmacro_rules! unreviewed_module {\n"
+            "    ($target:literal) => { #[path = $target] mod hidden; };\n"
+            "}\n"
+            "unreviewed_module!(\"unreviewed_observer.inc\");\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Rust source-loading edge inventory changed", result.stderr)
+
     def test_v1_runtime_cannot_restore_the_open_backend_bound(self) -> None:
         temporary, source = self.copied_source()
         self.addCleanup(temporary.cleanup)
@@ -364,7 +399,40 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         target = Path(temporary.name) / "src"
         shutil.copytree(SOURCE, target)
+        shutil.copytree(ROOT / "protocol", target.parent / "protocol")
         return temporary, target
+
+    def add_non_rs_observer_caller(self, source: Path, form: str) -> None:
+        path = source / "workspace_ops/merge/preserve/artifacts.rs"
+        helper = path.with_name("unreviewed_observer.inc")
+        helper.write_text(
+            "pub(super) fn observe_after_write(\n"
+            "    path: &std::path::Path,\n"
+            ") -> crate::model::ModelResult<Vec<crate::git::GitPreservationStashEvidence>> {\n"
+            "    let _ = std::fs::write(path.join(\"raw-observer-caller\"), b\"bypass\");\n"
+            "    crate::git::observe_preservation_stashes_read_only(path, \"merge_probe\")\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        if form == "path":
+            edge = (
+                "\n#[cfg(test)]\n#[path = \"unreviewed_observer.inc\"]\n"
+                "mod unreviewed_observer;\n"
+            )
+            call = "unreviewed_observer::observe_after_write(&plan.path)?;"
+        elif form == "include":
+            edge = "\n#[cfg(test)]\ninclude!(\"unreviewed_observer.inc\");\n"
+            call = "observe_after_write(&plan.path)?;"
+        else:
+            self.fail(f"unsupported source-loading form: {form}")
+        text = path.read_text(encoding="utf-8") + edge
+        text = text.replace(
+            "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
+            f"    let _ = {call}\n"
+            "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
+            1,
+        )
+        path.write_text(text, encoding="utf-8")
 
     def append(self, relative: str, text: str) -> subprocess.CompletedProcess[str]:
         temporary, source = self.copied_source()

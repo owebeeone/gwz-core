@@ -45,6 +45,72 @@ CONCRETE_PRESERVATION_OBSERVER_REFERENCES = {
     "workspace_ops/merge/v1_lifecycle/authority/observe/reverse/preservation/phase/evidence.rs",
 }
 
+# Rust permits `#[path]` modules to name any file suffix. Freeze every approved
+# edge, require its target to remain a regular in-crate `.rs` file, and reject
+# `include` entirely so the source inventory matches the compiler-loaded graph.
+APPROVED_RUST_PATH_EDGES = {
+    ("checked_artifact/mod.rs", "tests.rs"),
+    ("checked_artifact/tests.rs", "tests/durability.rs"),
+    ("checked_artifact/tests.rs", "tests/exact_source.rs"),
+    ("checked_artifact/tests.rs", "tests/recovery_protocol.rs"),
+    ("checked_artifact/tests.rs", "tests/removal_recovery.rs"),
+    ("checked_artifact/tests.rs", "tests/staging_recovery.rs"),
+    ("lib.rs", "../protocol/corpus/rust/vectors.rs"),
+    ("lib.rs", "cbor.rs"),
+    ("protocol/mod.rs", "generated.rs"),
+    ("workspace_ops/merge/mod.rs", "tests/acceptance_v0/mod.rs"),
+    ("workspace_ops/merge/mod.rs", "tests/transition_matrix_v0.rs"),
+    (
+        "workspace_ops/merge/participant_semantics/continue_eligibility.rs",
+        "continue_eligibility_tests.rs",
+    ),
+    ("workspace_ops/merge/participant_semantics/result.rs", "result_tests.rs"),
+    (
+        "workspace_ops/merge/participant_semantics/rollback.rs",
+        "rollback_tests/mod.rs",
+    ),
+    (
+        "workspace_ops/merge/participant_semantics/status.rs",
+        "status_tests/mod.rs",
+    ),
+    ("workspace_ops/merge/plan.rs", "plan/tests.rs"),
+    ("workspace_ops/merge/start.rs", "start/tests/durable_recovery.rs"),
+    ("workspace_ops/merge/start.rs", "start/tests/event_sink.rs"),
+    ("workspace_ops/merge/start.rs", "start/tests/execution.rs"),
+    ("workspace_ops/merge/start.rs", "start/tests/prepared_recovery.rs"),
+    ("workspace_ops/merge/start.rs", "start/tests/resolution_race.rs"),
+    ("workspace_ops/merge/start.rs", "start/tests/resolution_validation.rs"),
+    ("workspace_ops/merge/start.rs", "start/tests/root_execution.rs"),
+    ("workspace_ops/merge/v1_lifecycle/archive.rs", "tests/archive.rs"),
+    ("workspace_ops/merge/v1_lifecycle/archive.rs", "tests/gc.rs"),
+    (
+        "workspace_ops/merge/v1_lifecycle/finalization.rs",
+        "tests/finalization.rs",
+    ),
+    (
+        "workspace_ops/merge/v1_lifecycle/finalization.rs",
+        "tests/finalization_inputs.rs",
+    ),
+    (
+        "workspace_ops/merge/v1_lifecycle/finalization.rs",
+        "tests/finalization_root.rs",
+    ),
+    (
+        "workspace_ops/merge/v1_lifecycle/reverse/preservation.rs",
+        "../tests/reverse_preservation/mod.rs",
+    ),
+    (
+        "workspace_ops/merge/v1_lifecycle/reverse/rollback.rs",
+        "../tests/reverse_rollback/mod.rs",
+    ),
+    ("workspace_ops/merge/v1_lifecycle/service.rs", "tests/service.rs"),
+    (
+        "workspace_ops/merge/v1_lifecycle/service.rs",
+        "tests/service_sequence.rs",
+    ),
+    ("workspace_ops/merge/v1_lifecycle/status.rs", "tests/status.rs"),
+}
+
 # Module-tree roots are protected as one path-and-byte manifest. This includes
 # the root module, every current descendant, and the descendant file set, so a
 # nested helper, a new source file, or a changed module edge fails closed.
@@ -338,6 +404,13 @@ CALL = re.compile(
     r"\s*(!?)\s*\("
 )
 IGNORED_CALLS = {"cfg", "deny", "derive", "fn", "forbid", "not", "pub"}
+PATH_ATTRIBUTE_START = re.compile(r"#\s*\[\s*path\b")
+PATH_ATTRIBUTE_LITERAL = re.compile(
+    r'#\s*\[\s*path\s*=\s*"([^"\r\n]+)"\s*\]'
+)
+INCLUDE_SOURCE_LOADER = re.compile(
+    r"\binclude\s*!|\b(?:std|core)\s*::\s*include\b"
+)
 PRIVATE_CAPABILITIES = {
     "CheckedArtifact",
     "CheckedArtifactFact",
@@ -434,7 +507,7 @@ def source_tree_digest(source: Path, root_relative: str) -> str:
     descendant_root = root_file.with_suffix("")
     paths = [root_file]
     if descendant_root.is_dir():
-        paths.extend(descendant_root.rglob("*.rs"))
+        paths.extend(path for path in descendant_root.rglob("*") if path.is_file())
     digest = hashlib.sha256()
     for path in sorted(paths, key=lambda value: value.relative_to(source).as_posix()):
         relative = path.relative_to(source).as_posix().encode("utf-8")
@@ -478,6 +551,45 @@ def check(source: Path) -> list[str]:
             findings.append(
                 f"compiler-resolved writer boundary is not fail-closed: {relative}"
             )
+    path_edges = set()
+    malformed_path_edges = []
+    include_sources = []
+    crate_root = source.parent.resolve()
+    invalid_path_targets = []
+    for path in sorted(source.rglob("*.rs")):
+        raw = path.read_text(encoding="utf-8")
+        masked = mask_non_code(raw)
+        relative = path.relative_to(source).as_posix()
+        if INCLUDE_SOURCE_LOADER.search(masked):
+            include_sources.append(relative)
+        for start in PATH_ATTRIBUTE_START.finditer(masked):
+            literal = PATH_ATTRIBUTE_LITERAL.match(raw, start.start())
+            if literal is None:
+                malformed_path_edges.append(relative)
+                continue
+            target = literal.group(1)
+            path_edges.add((relative, target))
+            resolved = (path.parent / target).resolve()
+            try:
+                resolved.relative_to(crate_root)
+            except ValueError:
+                invalid_path_targets.append((relative, target, "outside crate"))
+                continue
+            if resolved.suffix != ".rs" or not resolved.is_file():
+                invalid_path_targets.append((relative, target, "not a regular .rs file"))
+    if (
+        path_edges != APPROVED_RUST_PATH_EDGES
+        or malformed_path_edges
+        or include_sources
+        or invalid_path_targets
+    ):
+        findings.append(
+            "Rust source-loading edge inventory changed: "
+            f"expected={sorted(APPROVED_RUST_PATH_EDGES)} actual={sorted(path_edges)} "
+            f"malformed={sorted(malformed_path_edges)} "
+            f"include={sorted(include_sources)} "
+            f"invalid_targets={sorted(invalid_path_targets)}"
+        )
     backend = mask_non_code(
         (source / "git/gitbackend.rs").read_text(encoding="utf-8")
     )
