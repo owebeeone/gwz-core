@@ -54,9 +54,8 @@ pub(in crate::checked_artifact) struct CatalogBootstrapRecordV1 {
 }
 
 impl CatalogBootstrapRecordV1 {
-    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub(in crate::checked_artifact) fn synthetic_for_test(
+    pub(in crate::checked_artifact) fn owner_issue(
         root_kind: PreCatalogRootKindV1,
         support_profile: SupportedFilesystemProfile,
         durable_target_digest: DurableCatalogTargetDigestV1,
@@ -86,6 +85,28 @@ impl CatalogBootstrapRecordV1 {
                     .as_bytes(),
             )
             .expect("infrastructure slot name is valid ASCII"),
+            bootstrap_ownership_token,
+        )
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::checked_artifact) fn synthetic_for_test(
+        root_kind: PreCatalogRootKindV1,
+        support_profile: SupportedFilesystemProfile,
+        durable_target_digest: DurableCatalogTargetDigestV1,
+        historical_collision_digest: HistoricalCollisionDigestV1,
+        retained_parent_identity: DurableObjectIdentityV1,
+        retained_parent_path: DurablePathV1,
+        bootstrap_ownership_token: CatalogBootstrapOwnershipTokenV1,
+    ) -> Self {
+        Self::owner_issue(
+            root_kind,
+            support_profile,
+            durable_target_digest,
+            historical_collision_digest,
+            retained_parent_identity,
+            retained_parent_path,
             bootstrap_ownership_token,
         )
     }
@@ -146,6 +167,21 @@ impl CatalogBootstrapRecordV1 {
         &self,
     ) -> HistoricalCollisionDigestV1 {
         self.historical_collision_digest
+    }
+
+    pub(in crate::checked_artifact) fn matches_attempt(
+        &self,
+        root_kind: PreCatalogRootKindV1,
+        support_profile: SupportedFilesystemProfile,
+        durable_target_digest: DurableCatalogTargetDigestV1,
+        retained_parent_identity: &DurableObjectIdentityV1,
+        retained_parent_path: &DurablePathV1,
+    ) -> bool {
+        self.root_kind == root_kind
+            && self.support_profile == support_profile
+            && self.durable_target_digest == durable_target_digest
+            && &self.retained_parent_identity == retained_parent_identity
+            && &self.retained_parent_path == retained_parent_path
     }
 
     pub(in crate::checked_artifact) fn retained_parent_identity(&self) -> &DurableObjectIdentityV1 {
@@ -334,4 +370,10 @@ pub(in crate::checked_artifact) fn read_and_match_catalog_bootstrap_record(
         ));
     }
     Ok(BoundCatalogBootstrapRecordV1(value))
+}
+
+pub(in crate::checked_artifact) fn decode_catalog_bootstrap_record(
+    reader: impl Read,
+) -> Result<CatalogBootstrapRecordV1, ProtocolCodecErrorV1> {
+    read_bounded_record_inner::<CatalogBootstrapRecordV1>(reader)
 }

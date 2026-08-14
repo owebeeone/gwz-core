@@ -78,6 +78,9 @@ fn catalog_preflight_surface_has_no_path_plus_lease_or_callback_seam() {
         "CatalogLeaseTargetBatchV1",
         "repository_common_git_directory",
         "bound: provider::LeaseBoundPreCatalogObservationV1",
+        "preflight_catalog_target(",
+        "_attempt_binding: CatalogAttemptBindingV1",
+        "revalidate_observation",
     ] {
         assert!(
             combined.contains(required),

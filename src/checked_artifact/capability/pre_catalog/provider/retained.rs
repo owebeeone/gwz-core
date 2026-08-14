@@ -8,6 +8,7 @@ use cap_std::fs::{Dir, File, OpenOptions};
 use super::super::*;
 use super::filesystem::PlatformProviderV1;
 use crate::checked_artifact::capability::{ObjectIdentityFact, PathComponentMode};
+use crate::checked_artifact::catalog::{CatalogNameBudgetV1, native_name_matches_ascii};
 
 pub(super) struct RetainedDirectory {
     handle: Dir,
@@ -79,6 +80,10 @@ impl RetainedFile {
         encode_identity(&self.identity)
     }
 
+    pub(super) fn encoded_durable_identity(&self) -> Vec<u8> {
+        self.identity.durable().encode_canonical()
+    }
+
     fn revalidate(&self, platform: &impl PlatformProviderV1) -> Result<(), CheckedFsError> {
         if platform.file_identity(&self.handle)? != self.identity {
             return Err(CheckedFsError::ambiguous(
@@ -98,7 +103,24 @@ pub(in crate::checked_artifact::capability::pre_catalog) struct RetainedPlatform
     repository: RetainedDirectory,
     common_directory: RetainedDirectory,
     private_parent: Option<RetainedDirectory>,
+    private_parent_alias_observation: AliasObservationV1,
     index: Option<RetainedFile>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct AliasObservationV1 {
+    entry_count: usize,
+    encoded_name_bytes: usize,
+}
+
+impl AliasObservationV1 {
+    pub(super) const fn entry_count(self) -> usize {
+        self.entry_count
+    }
+
+    pub(super) const fn encoded_name_bytes(self) -> usize {
+        self.encoded_name_bytes
+    }
 }
 
 impl RetainedPlatformRoot {
@@ -128,6 +150,10 @@ impl RetainedPlatformRoot {
 
     pub(super) fn private_parent(&self) -> Option<&RetainedDirectory> {
         self.private_parent.as_ref()
+    }
+
+    pub(super) const fn private_parent_alias_observation(&self) -> AliasObservationV1 {
+        self.private_parent_alias_observation
     }
 
     pub(super) fn install_index(&mut self, index: Option<RetainedFile>) {
@@ -178,12 +204,8 @@ pub(super) fn retain_workspace(
     let repository = retain_ambient(&git_directory_path, platform, "Git directory")?;
     let common_directory =
         retain_ambient(&common_directory_path, platform, "common Git directory")?;
-    let private_parent = Some(retain_required_child(
-        &root,
-        OsStr::new(".gwz"),
-        platform,
-        "workspace GWZ parent",
-    )?);
+    let (private_parent, private_parent_alias_observation) =
+        retain_required_child(&root, OsStr::new(".gwz"), platform, "workspace GWZ parent")?;
     Ok(RetainedPlatformRoot {
         root_path,
         git_directory_path,
@@ -191,7 +213,8 @@ pub(super) fn retain_workspace(
         root,
         repository,
         common_directory,
-        private_parent,
+        private_parent: Some(private_parent),
+        private_parent_alias_observation,
         index: None,
     })
 }
@@ -215,7 +238,7 @@ pub(super) fn retain_git_directory(
     let repository = retain_ambient(&git_directory_path, platform, "Git directory")?;
     let common_directory =
         retain_ambient(&common_directory_path, platform, "common Git directory")?;
-    let private_parent = retain_optional_child(
+    let (private_parent, private_parent_alias_observation) = retain_optional_child(
         &root,
         OsStr::new("gwz"),
         platform,
@@ -229,6 +252,7 @@ pub(super) fn retain_git_directory(
         repository,
         common_directory,
         private_parent,
+        private_parent_alias_observation,
         index: None,
     })
 }
@@ -273,8 +297,10 @@ fn retain_required_child(
     name: &OsStr,
     platform: &impl PlatformProviderV1,
     label: &'static str,
-) -> Result<RetainedDirectory, CheckedFsError> {
-    retain_optional_child(parent, name, platform, label)?
+) -> Result<(RetainedDirectory, AliasObservationV1), CheckedFsError> {
+    let (child, observation) = retain_optional_child(parent, name, platform, label)?;
+    child
+        .map(|child| (child, observation))
         .ok_or_else(|| CheckedFsError::ambiguous(label, "required retained directory is missing"))
 }
 
@@ -283,10 +309,10 @@ fn retain_optional_child(
     name: &OsStr,
     platform: &impl PlatformProviderV1,
     label: &'static str,
-) -> Result<Option<RetainedDirectory>, CheckedFsError> {
-    reject_equivalent_alias(parent.handle(), name, parent.mode(), label)?;
+) -> Result<(Option<RetainedDirectory>, AliasObservationV1), CheckedFsError> {
+    let alias_observation = reject_equivalent_alias(parent.handle(), name, parent.mode(), label)?;
     match parent.handle.symlink_metadata(name) {
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok((None, alias_observation)),
         Err(source) => Err(CheckedFsError::io(
             "observe retained child directory",
             source,
@@ -299,7 +325,7 @@ fn retain_optional_child(
             .open_dir_nofollow(name)
             .map_err(|source| CheckedFsError::io("open retained child no-follow", source))
             .and_then(|handle| retain_opened(handle, platform, label))
-            .map(Some),
+            .map(|child| (Some(child), alias_observation)),
     }
 }
 
@@ -324,33 +350,36 @@ fn reject_equivalent_alias(
     expected: &OsStr,
     mode: PathComponentMode,
     label: &'static str,
-) -> Result<(), CheckedFsError> {
-    let Some(expected) = expected.to_str() else {
-        unreachable!("fixed GWZ names are ASCII")
-    };
+) -> Result<AliasObservationV1, CheckedFsError> {
+    if mode == PathComponentMode::Sensitive {
+        return Ok(AliasObservationV1 {
+            entry_count: 0,
+            encoded_name_bytes: 0,
+        });
+    }
+    let expected_bytes = expected.as_encoded_bytes();
+    debug_assert!(expected_bytes.is_ascii(), "fixed GWZ names are ASCII");
+    let mut budget = CatalogNameBudgetV1::new();
     for entry in parent
         .entries()
         .map_err(|source| CheckedFsError::io("enumerate retained parent", source))?
     {
         let entry = entry.map_err(|source| CheckedFsError::io("read retained parent", source))?;
         let observed = entry.file_name();
-        let Some(observed) = observed.to_str() else {
-            continue;
-        };
-        let equivalent = match mode {
-            PathComponentMode::Sensitive => observed == expected,
-            PathComponentMode::AsciiCaseFold => {
-                observed.is_ascii() && observed.eq_ignore_ascii_case(expected)
-            }
-        };
-        if equivalent && observed != expected {
+        budget.charge_os_str(&observed)?;
+        if native_name_matches_ascii(&observed, expected_bytes, mode)
+            && observed.as_os_str() != expected
+        {
             return Err(CheckedFsError::ambiguous(
                 label,
                 "platform-equivalent alias has noncanonical spelling",
             ));
         }
     }
-    Ok(())
+    Ok(AliasObservationV1 {
+        entry_count: budget.entry_count(),
+        encoded_name_bytes: budget.encoded_name_bytes(),
+    })
 }
 
 fn revalidate_repository_paths(root: &RetainedPlatformRoot) -> Result<(), CheckedFsError> {

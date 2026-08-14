@@ -80,9 +80,11 @@ pub(super) fn observe(
             .then_with(|| left.kind().code().cmp(&right.kind().code()))
     });
     let file_identity = file.as_ref().map(RetainedFile::encoded_identity);
+    let file_durable_identity = file.as_ref().map(RetainedFile::encoded_durable_identity);
     Ok((
         IndexSnapshotFacts {
             file_identity,
+            file_durable_identity,
             content_digest,
             entries,
             worktree,

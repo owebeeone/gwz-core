@@ -228,6 +228,7 @@ impl TrackedWorktreeEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct PrivateControlDomain {
     members: Vec<GitPathBytes>,
+    scratch_family: GitPathBytes,
 }
 
 impl PrivateControlDomain {
@@ -236,6 +237,9 @@ impl PrivateControlDomain {
     }
 
     pub(super) fn for_root(root: CatalogPrivateRootV1) -> Self {
+        let scratch_family =
+            GitPathBytes::new(CatalogPrivateNameV1::BootstrapScratch.relative_bytes(root))
+                .expect("fixed scratch-family path is valid");
         Self {
             members: CatalogPrivateNameV1::ALL
                 .iter()
@@ -243,18 +247,26 @@ impl PrivateControlDomain {
                     GitPathBytes::new(name.relative_bytes(root)).expect("fixed path is valid")
                 })
                 .collect(),
+            scratch_family,
         }
     }
     pub(in crate::checked_artifact) fn members(&self) -> &[GitPathBytes] {
         &self.members
     }
 
+    pub(in crate::checked_artifact) fn scratch_family(&self) -> &GitPathBytes {
+        &self.scratch_family
+    }
+
     pub(in crate::checked_artifact) fn version_digest(&self) -> [u8; 32] {
         let mut material = Vec::new();
+        material.extend_from_slice(b"gwz-private-control-domain-v2\0dynamic-scratch-family\0");
         for member in &self.members {
             material.extend_from_slice(&(member.as_bytes().len() as u64).to_le_bytes());
             material.extend_from_slice(member.as_bytes());
         }
+        material.extend_from_slice(&(self.scratch_family.as_bytes().len() as u64).to_le_bytes());
+        material.extend_from_slice(self.scratch_family.as_bytes());
         Sha256::digest(material).into()
     }
 }

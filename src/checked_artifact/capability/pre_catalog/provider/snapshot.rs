@@ -1,6 +1,9 @@
 use sha2::{Digest, Sha256};
 
 use super::super::*;
+use super::{
+    RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogRetiredFactV1, RawCatalogRoleRowV1,
+};
 use crate::checked_artifact::capability::{
     LosslessIndexEntry, PathComponentMode, PrivateControlDomain, TrackedWorktreeEntry,
 };
@@ -12,6 +15,7 @@ pub(super) struct CollisionModes {
 
 pub(super) struct IndexSnapshotFacts {
     pub(super) file_identity: Option<Vec<u8>>,
+    pub(super) file_durable_identity: Option<Vec<u8>>,
     pub(super) content_digest: Option<[u8; 32]>,
     pub(super) entries: Vec<LosslessIndexEntry>,
     pub(super) worktree: Vec<TrackedWorktreeEntry>,
@@ -26,7 +30,9 @@ pub(super) struct SnapshotParts<'a> {
     pub(super) private_parent_fact: Option<&'a [u8]>,
     pub(super) path_profile: &'a CanonicalPathIdentityV1,
     pub(super) index: Option<&'a IndexSnapshotFacts>,
-    pub(super) namespace: &'a [(Vec<u8>, Vec<u8>)],
+    pub(super) namespace: &'a [RawCatalogRoleRowV1],
+    pub(super) namespace_entry_count: usize,
+    pub(super) namespace_encoded_name_bytes: usize,
 }
 
 pub(super) fn reject_private_collisions(
@@ -47,8 +53,44 @@ pub(super) fn reject_private_collisions(
                 ));
             }
         }
+        if scratch_family_collides(
+            entry.path().as_bytes(),
+            domain.scratch_family().as_bytes(),
+            &modes,
+        ) {
+            return Err(CheckedFsError::ambiguous(
+                "private namespace collision",
+                format!(
+                    "Git index path {} overlaps reserved dynamic scratch family {}.<attempt>",
+                    render_bytes(entry.path().as_bytes()),
+                    render_bytes(domain.scratch_family().as_bytes())
+                ),
+            ));
+        }
     }
     Ok(())
+}
+
+fn scratch_family_collides(candidate: &[u8], family: &[u8], modes: &CollisionModes) -> bool {
+    let candidate = candidate.split(|byte| *byte == b'/').collect::<Vec<_>>();
+    let family = family.split(|byte| *byte == b'/').collect::<Vec<_>>();
+    if candidate.len() < 2 || family.len() != 2 {
+        return false;
+    }
+    if !component_equivalent(candidate[0], family[0], modes.root) {
+        return false;
+    }
+    let Some(mode) = modes.private_parent else {
+        return false;
+    };
+    component_has_dot_suffix(candidate[1], family[1], mode)
+}
+
+fn component_has_dot_suffix(candidate: &[u8], family: &[u8], mode: PathComponentMode) -> bool {
+    if candidate.len() <= family.len() || candidate.get(family.len()) != Some(&b'.') {
+        return false;
+    }
+    component_equivalent(&candidate[..family.len()], family, mode)
 }
 
 pub(super) fn digest(parts: SnapshotParts<'_>) -> [u8; 32] {
@@ -114,14 +156,66 @@ pub(super) fn digest(parts: SnapshotParts<'_>) -> [u8; 32] {
         }
     }
 
-    let mut namespace = parts.namespace.iter().collect::<Vec<_>>();
-    namespace.sort_by(|left, right| left.0.cmp(&right.0));
-    frame(&mut digest, &(namespace.len() as u64).to_be_bytes());
-    for (path, fact) in namespace {
-        frame(&mut digest, path);
-        frame(&mut digest, fact);
+    frame(
+        &mut digest,
+        &(parts.namespace_entry_count as u64).to_be_bytes(),
+    );
+    frame(
+        &mut digest,
+        &(parts.namespace_encoded_name_bytes as u64).to_be_bytes(),
+    );
+    frame(&mut digest, &(parts.namespace.len() as u64).to_be_bytes());
+    debug_assert!(
+        parts
+            .namespace
+            .windows(2)
+            .all(|rows| rows[0].path < rows[1].path)
+    );
+    for row in parts.namespace {
+        frame(&mut digest, &row.path);
+        frame_catalog_fact(&mut digest, &row.fact);
     }
     digest.finalize().into()
+}
+
+fn frame_catalog_fact(digest: &mut Sha256, fact: &RawCatalogEntryFactV1) {
+    match fact {
+        RawCatalogEntryFactV1::Directory { identity, retired } => {
+            frame(digest, &[1]);
+            frame(digest, identity);
+            match retired {
+                RawCatalogRetiredFactV1::Missing => frame(digest, &[0]),
+                RawCatalogRetiredFactV1::RegularFile { identity, bytes } => {
+                    frame(digest, &[1]);
+                    frame(digest, identity);
+                    frame_catalog_bytes(digest, bytes);
+                }
+                RawCatalogRetiredFactV1::Other(value) => {
+                    frame(digest, &[2]);
+                    frame(digest, value);
+                }
+            }
+        }
+        RawCatalogEntryFactV1::RegularFile { identity, bytes } => {
+            frame(digest, &[2]);
+            frame(digest, identity);
+            frame_catalog_bytes(digest, bytes);
+        }
+        RawCatalogEntryFactV1::Other(value) => {
+            frame(digest, &[3]);
+            frame(digest, value);
+        }
+    }
+}
+
+fn frame_catalog_bytes(digest: &mut Sha256, bytes: &RawCatalogBytesV1) {
+    match bytes {
+        RawCatalogBytesV1::Bounded(value) => {
+            frame(digest, &[1]);
+            frame(digest, value);
+        }
+        RawCatalogBytesV1::Oversize => frame(digest, &[2]),
+    }
 }
 
 fn paths_collide(candidate: &[u8], owned: &[u8], modes: &CollisionModes) -> bool {
@@ -265,6 +359,48 @@ mod tests {
                 }
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn collision_relation_reserves_the_complete_dynamic_scratch_family() {
+        let domain = PrivateControlDomain::for_root(
+            crate::checked_artifact::catalog_names::CatalogPrivateRootV1::Workspace,
+        );
+        let suffix = b".0000000000000000000000000000000000000000000000000000000000000000.\
+0000000000000000000000000000000000000000000000000000000000000000.\
+0101010101010101010101010101010101010101010101010101010101010101";
+        let mut canonical = b".gwz/checked-artifacts-catalog-bootstrap-v1.scratch".to_vec();
+        canonical.extend_from_slice(suffix);
+        let mut malformed = b".gwz/checked-artifacts-catalog-bootstrap-v1.scratch".to_vec();
+        malformed.extend_from_slice(b".malformed");
+
+        for path in [canonical.as_slice(), malformed.as_slice()] {
+            assert!(
+                reject_private_collisions(
+                    &[entry(path)],
+                    &domain,
+                    CollisionModes {
+                        root: PathComponentMode::Sensitive,
+                        private_parent: Some(PathComponentMode::Sensitive),
+                    },
+                )
+                .is_err(),
+                "dynamic scratch-family path must be reserved: {path:?}"
+            );
+        }
+        assert!(
+            reject_private_collisions(
+                &[entry(
+                    b".GWZ/CHECKED-ARTIFACTS-CATALOG-BOOTSTRAP-V1.SCRATCH.alias"
+                )],
+                &domain,
+                CollisionModes {
+                    root: PathComponentMode::AsciiCaseFold,
+                    private_parent: Some(PathComponentMode::AsciiCaseFold),
+                },
+            )
+            .is_err()
         );
     }
 }

@@ -1,6 +1,7 @@
 mod bounds_slots;
 mod capability_permit;
 mod catalog_admission;
+mod catalog_classifier;
 mod catalog_recovery;
 mod codec_faults;
 mod contracts;

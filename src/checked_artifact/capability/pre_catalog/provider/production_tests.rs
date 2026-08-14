@@ -613,3 +613,16 @@ fn provider_rejects_a_substituted_related_git_directory_capability() {
     assert!(!first.private_catalog().exists());
     assert!(!second.private_catalog().exists());
 }
+
+#[test]
+fn case_fold_alias_scan_rejects_maximum_plus_one_parent_entries() {
+    let fixture = Fixture::new();
+    for index in 0..=crate::checked_artifact::catalog::MAX_CATALOG_PARENT_ENTRIES_V1 {
+        fs::write(fixture.root.join(format!("ordinary-{index:04}")), []).unwrap();
+    }
+
+    let (result, called) = run_workspace(&fixture.root, FakePlatform::folded(), None);
+    assert!(result.is_err());
+    assert!(!called.load(Ordering::SeqCst));
+    assert!(!fixture.private_catalog().exists());
+}

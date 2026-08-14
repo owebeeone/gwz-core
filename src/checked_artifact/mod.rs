@@ -18,6 +18,11 @@ mod bootstrap;
 mod capability;
 #[allow(
     dead_code,
+    reason = "R2-C1 freezes the pure catalog grammar before C2 enables its owner"
+)]
+mod catalog;
+#[allow(
+    dead_code,
     reason = "R1 freezes the catalog grammar before R2 consumers are converted"
 )]
 mod catalog_names;

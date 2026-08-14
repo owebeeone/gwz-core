@@ -7,6 +7,15 @@ use super::{
     CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1, SupportedFilesystemProfile,
 };
 use crate::checked_artifact::bootstrap::CatalogLeaseTargetWitnessV1;
+#[cfg(test)]
+use crate::checked_artifact::catalog::CatalogScratchNameV1;
+use crate::checked_artifact::catalog::{
+    CatalogAttemptBindingV1, CatalogClassificationV1, classify_catalog_attempt,
+};
+#[cfg(test)]
+use crate::checked_artifact::protocol::{
+    CatalogBootstrapOwnershipTokenV1, CatalogBootstrapRecordV1,
+};
 
 mod provider;
 
@@ -46,6 +55,28 @@ pub(in crate::checked_artifact) enum CatalogPreflightV1<'lease> {
     Ready(Box<CatalogPermitV1<'lease>>),
 }
 
+pub(in crate::checked_artifact) fn preflight_catalog_target(
+    target: CatalogLeaseTargetWitnessV1<'_>,
+) -> Result<CatalogPreflightV1<'_>, CheckedFsError> {
+    let bound = provider::inspect_bound_catalog_target(target)?;
+    match bound.observation.ready_digests {
+        Some(digests) => Ok(CatalogPreflightV1::Ready(Box::new(
+            CatalogPermitV1::owner_issue(bound, digests.fresh, digests.target, digests.historical)?,
+        ))),
+        None => {
+            let digest = bound.observation.missing_parent_digest.ok_or_else(|| {
+                CheckedFsError::ambiguous(
+                    "catalog preflight state",
+                    "observation is neither a ready target nor a missing Git parent",
+                )
+            })?;
+            Ok(CatalogPreflightV1::MissingGitPrivateParent(Box::new(
+                MissingCatalogParentPermitV1::owner_issue(bound, digest)?,
+            )))
+        }
+    }
+}
+
 /// A ready, live-only permit. Its target cannot be substituted because the
 /// lease is carried inside the permit rather than supplied beside it.
 pub(in crate::checked_artifact) struct CatalogPermitV1<'lease> {
@@ -60,6 +91,7 @@ pub(in crate::checked_artifact) struct CatalogPermitV1<'lease> {
     _fresh_observation_digest: FreshObservationDigestV1,
     _durable_target_digest: DurableCatalogTargetDigestV1,
     _historical_collision_digest: HistoricalCollisionDigestV1,
+    _attempt_binding: CatalogAttemptBindingV1,
 }
 
 /// A disjoint, live-only authorization for the one fixed Git `gwz` parent
@@ -78,6 +110,14 @@ impl CatalogPermitV1<'_> {
         provider::revalidate_lease_root_binding(&self._catalog_target, &self._retained_root)
     }
 
+    pub(in crate::checked_artifact) fn revalidate_observation(&self) -> Result<(), CheckedFsError> {
+        provider::revalidate_ready_observation(
+            &self._catalog_target,
+            &self._retained_root,
+            self._fresh_observation_digest,
+        )
+    }
+
     #[allow(dead_code, reason = "R2-C1 consumes the frozen ready-permit fields")]
     pub(in crate::checked_artifact) const fn support_profile(&self) -> SupportedFilesystemProfile {
         self._support_profile
@@ -86,6 +126,45 @@ impl CatalogPermitV1<'_> {
     #[allow(dead_code, reason = "R2-C1 consumes the frozen ready-permit fields")]
     pub(in crate::checked_artifact) fn path_profile(&self) -> &CanonicalPathIdentityV1 {
         &self._path_profile
+    }
+
+    pub(in crate::checked_artifact) const fn digests(
+        &self,
+    ) -> (
+        FreshObservationDigestV1,
+        DurableCatalogTargetDigestV1,
+        HistoricalCollisionDigestV1,
+    ) {
+        (
+            self._fresh_observation_digest,
+            self._durable_target_digest,
+            self._historical_collision_digest,
+        )
+    }
+
+    pub(in crate::checked_artifact) fn attempt_binding(&self) -> &CatalogAttemptBindingV1 {
+        &self._attempt_binding
+    }
+
+    pub(in crate::checked_artifact) fn classify_observed(&self) -> CatalogClassificationV1 {
+        classify_catalog_attempt(
+            &self._attempt_binding,
+            provider::outer_aggregate_facts(&self._raw_roles),
+        )
+    }
+
+    #[cfg(test)]
+    pub(in crate::checked_artifact) fn record_for_test(
+        &self,
+        token: CatalogBootstrapOwnershipTokenV1,
+    ) -> CatalogBootstrapRecordV1 {
+        self._attempt_binding
+            .record_from_scratch(&CatalogScratchNameV1::new(
+                self._durable_target_digest,
+                self._historical_collision_digest,
+                token,
+            ))
+            .expect("permit digests match its attempt binding")
     }
 }
 
@@ -107,6 +186,8 @@ impl<'lease> CatalogPermitV1<'lease> {
                 "ready permit requires the retained private parent",
             ));
         }
+        let attempt_binding =
+            provider::attempt_binding(&bound, durable_target_digest, historical_collision_digest)?;
         let provider::LeaseBoundPreCatalogObservationV1 {
             target,
             observation,
@@ -123,6 +204,7 @@ impl<'lease> CatalogPermitV1<'lease> {
             _fresh_observation_digest: fresh_observation_digest,
             _durable_target_digest: durable_target_digest,
             _historical_collision_digest: historical_collision_digest,
+            _attempt_binding: attempt_binding,
         })
     }
 }
@@ -133,6 +215,20 @@ impl MissingCatalogParentPermitV1<'_> {
         &self,
     ) -> Result<(), CheckedFsError> {
         provider::revalidate_lease_root_binding(&self._catalog_target, &self._retained_root)
+    }
+
+    pub(in crate::checked_artifact) fn revalidate_observation(&self) -> Result<(), CheckedFsError> {
+        provider::revalidate_missing_observation(
+            &self._catalog_target,
+            &self._retained_root,
+            self._missing_parent_observation_digest,
+        )
+    }
+
+    pub(in crate::checked_artifact) const fn observation_digest(
+        &self,
+    ) -> MissingParentObservationDigestV1 {
+        self._missing_parent_observation_digest
     }
 }
 
