@@ -8,6 +8,10 @@ use cap_std::fs::{Dir, File};
 
 use super::filesystem::{filesystem_provider_for_test, filesystem_provider_with_hook_for_test};
 use super::*;
+use crate::checked_artifact::bootstrap::{
+    CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
+    try_acquire_workspace_runtime,
+};
 use crate::checked_artifact::capability::{
     ObjectIdentityFact, PathComponentMode, PathEquivalenceProvider,
 };
@@ -486,4 +490,126 @@ fn native_macos_provider_issues_the_persistent_identity_profile() {
     );
     assert_eq!(catalog.path, [b".gwz".to_vec()]);
     assert!(!fixture.private_catalog().exists());
+}
+
+#[test]
+fn production_provider_observation_is_derived_from_the_workspace_lease() {
+    let fixture = Fixture::new();
+    let runtime = try_acquire_workspace_runtime(&fixture.root)
+        .unwrap()
+        .expect("workspace runtime lease");
+    let witness = runtime
+        .catalog_mutation_lease()
+        .begin_preflight()
+        .expect("lease-derived target witness");
+    let provider = super::filesystem::platform_pre_catalog_provider();
+    let bound = provider.inspect_bound_catalog_target(witness).unwrap();
+    provider
+        .revalidate_bound_target(&bound.target, &bound.observation)
+        .unwrap();
+    assert_eq!(
+        bound.target.facts().unwrap().root_kind(),
+        PreCatalogRootKindV1::Workspace
+    );
+}
+
+#[test]
+fn provider_rejects_target_substitution_after_witness_issuance() {
+    let fixture = Fixture::new();
+    let request = CatalogLeaseTargetRequestV1::repository_common_git_directory(&fixture.root);
+    let batch = CatalogLeaseTargetBatchV1::try_new([request]).unwrap();
+    let leases = CatalogLeaseSetV1::try_acquire(batch)
+        .unwrap()
+        .expect("Git target lease");
+    let witness = leases
+        .leases()
+        .next()
+        .unwrap()
+        .begin_preflight()
+        .expect("lease-derived target witness");
+    let git = fs::canonicalize(fixture.repo().commondir()).unwrap();
+    let retired = fixture.root.join("retired-provider-git-target");
+    fs::rename(&git, &retired).unwrap();
+    git2::Repository::init(&fixture.root).unwrap();
+
+    assert!(
+        super::filesystem::platform_pre_catalog_provider()
+            .inspect_bound_catalog_target(witness)
+            .is_err()
+    );
+    assert!(!git.join("gwz").exists());
+    assert!(!retired.join("gwz").exists());
+}
+
+#[test]
+fn provider_rejects_cross_target_lease_and_observation_pairing() {
+    let first = Fixture::new();
+    let second = Fixture::new();
+    let first_runtime = try_acquire_workspace_runtime(&first.root)
+        .unwrap()
+        .expect("first workspace lease");
+    let second_runtime = try_acquire_workspace_runtime(&second.root)
+        .unwrap()
+        .expect("second workspace lease");
+    let first_target = first_runtime
+        .catalog_mutation_lease()
+        .begin_preflight()
+        .unwrap();
+    let second_target = second_runtime
+        .catalog_mutation_lease()
+        .begin_preflight()
+        .unwrap();
+    let provider = super::filesystem::platform_pre_catalog_provider();
+    let second_bound = provider
+        .inspect_bound_catalog_target(second_target)
+        .unwrap();
+    let forged = LeaseBoundPreCatalogObservationV1 {
+        target: first_target,
+        observation: second_bound.observation,
+    };
+
+    assert!(
+        provider
+            .revalidate_bound_target(&forged.target, &forged.observation)
+            .is_err()
+    );
+    assert!(!first.private_catalog().exists());
+    assert!(!second.private_catalog().exists());
+}
+
+#[test]
+fn provider_rejects_a_substituted_related_git_directory_capability() {
+    let first = Fixture::new();
+    let second = Fixture::new();
+    let first_runtime = try_acquire_workspace_runtime(&first.root)
+        .unwrap()
+        .expect("first workspace lease");
+    let second_runtime = try_acquire_workspace_runtime(&second.root)
+        .unwrap()
+        .expect("second workspace lease");
+    let provider = super::filesystem::platform_pre_catalog_provider();
+    let mut first_bound = provider
+        .inspect_bound_catalog_target(
+            first_runtime
+                .catalog_mutation_lease()
+                .begin_preflight()
+                .unwrap(),
+        )
+        .unwrap();
+    let mut second_bound = provider
+        .inspect_bound_catalog_target(
+            second_runtime
+                .catalog_mutation_lease()
+                .begin_preflight()
+                .unwrap(),
+        )
+        .unwrap();
+    first_bound
+        .observation
+        .retained_root
+        .swap_repository_for_test(&mut second_bound.observation.retained_root);
+
+    assert!(revalidate_bound_observation(&first_bound).is_err());
+    assert!(!first.private_catalog().exists());
+    assert!(!second.private_catalog().exists());
 }

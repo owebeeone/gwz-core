@@ -1,24 +1,68 @@
 //! Target-bound advisory leases for checked catalog mutation.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::ffi::OsStr;
-use std::path::Path;
 
 use super::paths::{open_or_create_file, revalidate_file};
 use super::{BOOTSTRAP_GUARD_NAME, WorkspaceRuntimeLease, try_advisory_lock};
-use crate::checked_artifact::capability::{CheckedFsError, PreCatalogRootKindV1};
+use crate::checked_artifact::capability::{CheckedFsError, PlatformCapability};
 
+mod alias;
 mod target;
+mod witness;
 
+use alias::reject_equivalent_alias;
+#[cfg(test)]
+use alias::{
+    MAX_CATALOG_ALIAS_PARENT_ENTRIES_V1, native_name_charge_for_test,
+    reject_equivalent_alias_with_mode_for_test,
+};
 pub(in crate::checked_artifact) use target::CatalogLeaseTargetRequestV1;
 #[cfg(test)]
 use target::GIT_CATALOG_MUTATOR_LOCK_NAME;
-use target::{
-    CatalogTargetBindingV1, HeldCatalogTargetV1, RetainedCatalogTargetV1, reject_equivalent_alias,
-};
+use target::{CatalogTargetBindingV1, HeldCatalogTargetV1, RetainedCatalogTargetV1};
+pub(crate) use witness::CatalogLeaseTargetWitnessV1;
 
 struct PreparedCatalogTargetV1 {
     request: CatalogLeaseTargetRequestV1,
     binding: CatalogTargetBindingV1,
+}
+
+pub(in crate::checked_artifact) const MAX_CATALOG_LEASE_TARGETS_V1: usize = 4_096;
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_CATALOG_BATCH_ALLOCATION: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(in crate::checked_artifact) struct CatalogLeaseTargetBatchV1 {
+    requests: Vec<CatalogLeaseTargetRequestV1>,
+}
+
+impl CatalogLeaseTargetBatchV1 {
+    pub(in crate::checked_artifact) fn try_new(
+        requests: impl IntoIterator<Item = CatalogLeaseTargetRequestV1>,
+    ) -> Result<Self, CheckedFsError> {
+        let mut bounded = Vec::new();
+        for request in requests.into_iter().take(MAX_CATALOG_LEASE_TARGETS_V1 + 1) {
+            if bounded.len() == MAX_CATALOG_LEASE_TARGETS_V1 {
+                return Err(CheckedFsError::ambiguous(
+                    "catalog lease target capacity",
+                    "target batch exceeds 4,096 entries",
+                ));
+            }
+            try_reserve_batch(&mut bounded, 1)?;
+            bounded.push(request);
+        }
+        if bounded.is_empty() {
+            return Err(CheckedFsError::ambiguous(
+                "catalog lease target capacity",
+                "target batch is empty",
+            ));
+        }
+        Ok(Self { requests: bounded })
+    }
 }
 
 pub(in crate::checked_artifact) struct CatalogLeaseSetV1 {
@@ -27,18 +71,19 @@ pub(in crate::checked_artifact) struct CatalogLeaseSetV1 {
 
 impl CatalogLeaseSetV1 {
     pub(in crate::checked_artifact) fn try_acquire(
-        requests: impl IntoIterator<Item = CatalogLeaseTargetRequestV1>,
+        batch: CatalogLeaseTargetBatchV1,
     ) -> Result<Option<Self>, CheckedFsError> {
         let mut prepared = Vec::new();
-        for request in requests {
+        try_reserve_batch(&mut prepared, batch.requests.len())?;
+        for request in batch.requests {
             let target = RetainedCatalogTargetV1::retain(&request)?;
             prepared.push(PreparedCatalogTargetV1 {
                 request,
                 binding: target.binding,
             });
         }
+        prepared = deduplicate_exact_locations(prepared)?;
         prepared.sort_by(|left, right| left.binding.order_key.cmp(&right.binding.order_key));
-        prepared = deduplicate_exact_targets(prepared)?;
 
         // Phase one may converge only the fixed runtime lock grammar. Every
         // transient guard is released before the next target is visited.
@@ -74,7 +119,8 @@ impl CatalogLeaseSetV1 {
 
         // Phase two performs no preparation mutation. It opens the prepared
         // slots in canonical order and drops the whole prefix on any failure.
-        let mut held = Vec::with_capacity(prepared.len());
+        let mut held = Vec::new();
+        try_reserve_batch(&mut held, prepared.len())?;
         for expected in &prepared {
             let target = RetainedCatalogTargetV1::retain(&expected.request)?;
             if let Err(error) = require_same_binding(&expected.binding, &target.binding) {
@@ -143,30 +189,10 @@ impl<'lease> CatalogMutationLeaseV1<'lease> {
         }
     }
 
-    pub(in crate::checked_artifact) fn root_kind(&self) -> PreCatalogRootKindV1 {
-        match self.source {
-            CatalogMutationLeaseSourceV1::WorkspaceRuntime(_) => PreCatalogRootKindV1::Workspace,
-            CatalogMutationLeaseSourceV1::LeaseSet(held) => held.target.binding.root_kind,
-        }
-    }
-
-    pub(in crate::checked_artifact) fn canonical_target_path(&self) -> &Path {
-        match self.source {
-            CatalogMutationLeaseSourceV1::WorkspaceRuntime(runtime) => {
-                runtime.workspace_root_path()
-            }
-            CatalogMutationLeaseSourceV1::LeaseSet(held) => &held.target.binding.canonical_path,
-        }
-    }
-
-    #[cfg(test)]
-    fn root_kind_for_test(&self) -> PreCatalogRootKindV1 {
-        self.root_kind()
-    }
-
-    #[cfg(test)]
-    fn canonical_target_path_for_test(&self) -> &Path {
-        self.canonical_target_path()
+    pub(in crate::checked_artifact) fn begin_preflight(
+        self,
+    ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        CatalogLeaseTargetWitnessV1::try_new(self)
     }
 
     #[cfg(test)]
@@ -178,13 +204,19 @@ impl<'lease> CatalogMutationLeaseV1<'lease> {
     }
 }
 
-fn deduplicate_exact_targets(
-    targets: Vec<PreparedCatalogTargetV1>,
+fn deduplicate_exact_locations(
+    mut targets: Vec<PreparedCatalogTargetV1>,
 ) -> Result<Vec<PreparedCatalogTargetV1>, CheckedFsError> {
-    let mut unique: Vec<PreparedCatalogTargetV1> = Vec::with_capacity(targets.len());
+    targets.sort_by(|left, right| {
+        left.binding
+            .canonical_path
+            .cmp(&right.binding.canonical_path)
+    });
+    let mut unique: Vec<PreparedCatalogTargetV1> = Vec::new();
+    try_reserve_batch(&mut unique, targets.len())?;
     for target in targets {
         if let Some(previous) = unique.last()
-            && previous.binding.order_key == target.binding.order_key
+            && previous.binding.canonical_path == target.binding.canonical_path
         {
             require_same_binding(&previous.binding, &target.binding)?;
             continue;
@@ -192,6 +224,31 @@ fn deduplicate_exact_targets(
         unique.push(target);
     }
     Ok(unique)
+}
+
+fn batch_allocation_error(_: std::collections::TryReserveError) -> CheckedFsError {
+    CheckedFsError::unsupported(
+        PlatformCapability::RuntimeAdvisoryLock,
+        "catalog lease batch allocation failed",
+    )
+}
+
+fn try_reserve_batch<T>(values: &mut Vec<T>, additional: usize) -> Result<(), CheckedFsError> {
+    #[cfg(test)]
+    if FAIL_NEXT_CATALOG_BATCH_ALLOCATION.with(|failure| failure.replace(false)) {
+        return Err(CheckedFsError::unsupported(
+            PlatformCapability::RuntimeAdvisoryLock,
+            "injected catalog lease batch allocation failure",
+        ));
+    }
+    values
+        .try_reserve_exact(additional)
+        .map_err(batch_allocation_error)
+}
+
+#[cfg(test)]
+fn fail_next_catalog_batch_allocation_for_test() {
+    FAIL_NEXT_CATALOG_BATCH_ALLOCATION.with(|failure| failure.set(true));
 }
 
 fn require_same_binding(

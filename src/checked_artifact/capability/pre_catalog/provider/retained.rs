@@ -134,6 +134,11 @@ impl RetainedPlatformRoot {
         self.index = index;
     }
 
+    #[cfg(test)]
+    pub(super) fn swap_repository_for_test(&mut self, other: &mut Self) {
+        std::mem::swap(&mut self.repository, &mut other.repository);
+    }
+
     pub(super) fn revalidate(
         &self,
         platform: &impl PlatformProviderV1,

@@ -8,12 +8,15 @@ mod managed;
 mod runtime;
 
 pub(super) use managed::*;
+pub(super) use runtime::CatalogLeaseTargetWitnessV1;
 pub(crate) use runtime::CatalogMutationLeaseV1;
 #[allow(
     unused_imports,
     reason = "R2-C0 freezes catalog lease interfaces before the C1 owner consumes them"
 )]
-pub(in crate::checked_artifact) use runtime::{CatalogLeaseSetV1, CatalogLeaseTargetRequestV1};
+pub(in crate::checked_artifact) use runtime::{
+    CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
+};
 pub(crate) use runtime::{WorkspaceRuntimeLease, try_acquire_workspace_runtime};
 
 pub(super) struct WorkspaceRuntimePaths<'a> {

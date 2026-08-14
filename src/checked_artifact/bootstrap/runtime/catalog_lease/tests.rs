@@ -5,8 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::super::fault::{RuntimeBootstrapFault, run_next_at};
 use super::super::try_acquire_workspace_runtime;
 use super::*;
+use crate::checked_artifact::capability::PreCatalogRootKindV1;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+mod association;
+mod bounds;
 
 #[test]
 fn workspace_runtime_lease_borrows_only_its_exact_catalog_target() {
@@ -16,16 +20,19 @@ fn workspace_runtime_lease_borrows_only_its_exact_catalog_target() {
         .unwrap()
         .expect("workspace runtime lease");
 
-    let catalog = runtime.catalog_mutation_lease();
+    let catalog = runtime.catalog_mutation_lease().begin_preflight().unwrap();
     assert_eq!(
-        catalog.root_kind_for_test(),
+        catalog.root_kind_for_test().unwrap(),
         PreCatalogRootKindV1::Workspace
     );
     assert_eq!(
-        catalog.canonical_target_path_for_test(),
+        catalog.canonical_target_path_for_test().unwrap(),
         fs::canonicalize(first.path()).unwrap()
     );
-    assert_ne!(catalog.canonical_target_path_for_test(), second.path());
+    assert_ne!(
+        catalog.canonical_target_path_for_test().unwrap(),
+        second.path()
+    );
 }
 
 #[test]
@@ -36,14 +43,17 @@ fn workspace_batch_target_contends_on_the_existing_compatibility_lock() {
         .expect("workspace runtime lease");
 
     assert!(
-        CatalogLeaseSetV1::try_acquire([CatalogLeaseTargetRequestV1::workspace(repo.path())])
+        try_acquire([CatalogLeaseTargetRequestV1::workspace(repo.path())])
             .unwrap()
             .is_none()
     );
     assert_eq!(
         runtime
             .catalog_mutation_lease()
-            .canonical_target_path_for_test(),
+            .begin_preflight()
+            .unwrap()
+            .canonical_target_path_for_test()
+            .unwrap(),
         fs::canonicalize(repo.path()).unwrap()
     );
     assert_catalog_roles_absent(&repo.path().join(crate::workspace::RUNTIME_DIR));
@@ -59,19 +69,22 @@ fn linked_worktrees_resolving_to_one_git_target_share_one_final_lock() {
     let linked = git2::Repository::open(&linked_root).unwrap();
     assert_eq!(repository.commondir(), linked.commondir());
 
-    let first = CatalogLeaseSetV1::try_acquire([CatalogLeaseTargetRequestV1::git_directory(
-        repository.commondir(),
-    )])
+    let first = try_acquire([
+        CatalogLeaseTargetRequestV1::repository_common_git_directory(main.path()),
+        CatalogLeaseTargetRequestV1::repository_common_git_directory(linked.path()),
+    ])
     .unwrap()
     .expect("first Git-target lease set");
     assert!(
-        CatalogLeaseSetV1::try_acquire([CatalogLeaseTargetRequestV1::git_directory(
-            linked.commondir(),
-        )])
-        .unwrap()
-        .is_none()
+        try_acquire([CatalogLeaseTargetRequestV1::repository_common_git_directory(linked.path(),)])
+            .unwrap()
+            .is_none()
     );
-    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first.len(),
+        1,
+        "actual and common Git inputs must deduplicate"
+    );
 }
 
 #[test]
@@ -87,10 +100,10 @@ fn duplicate_targets_are_deduplicated_and_held_in_canonical_order() {
         .path()
         .to_path_buf();
 
-    let set = CatalogLeaseSetV1::try_acquire([
-        CatalogLeaseTargetRequestV1::git_directory(&second_git),
-        CatalogLeaseTargetRequestV1::git_directory(&first_git),
-        CatalogLeaseTargetRequestV1::git_directory(&second_git),
+    let set = try_acquire([
+        CatalogLeaseTargetRequestV1::repository_common_git_directory(&second_git),
+        CatalogLeaseTargetRequestV1::repository_common_git_directory(&first_git),
+        CatalogLeaseTargetRequestV1::repository_common_git_directory(&second_git),
     ])
     .unwrap()
     .expect("canonical lease set");
@@ -113,7 +126,7 @@ fn wrong_kind_git_lock_rejects_before_any_catalog_namespace_mutation() {
     fs::create_dir(git.join(GIT_CATALOG_MUTATOR_LOCK_NAME)).unwrap();
 
     assert!(
-        CatalogLeaseSetV1::try_acquire([CatalogLeaseTargetRequestV1::git_directory(&git)]).is_err()
+        try_acquire([CatalogLeaseTargetRequestV1::repository_common_git_directory(&git)]).is_err()
     );
     assert_catalog_roles_absent(&git);
 }
@@ -133,7 +146,7 @@ fn symlinked_git_lock_rejects_without_following_the_target() {
     symlink(&outside, git.join(GIT_CATALOG_MUTATOR_LOCK_NAME)).unwrap();
 
     assert!(
-        CatalogLeaseSetV1::try_acquire([CatalogLeaseTargetRequestV1::git_directory(&git)]).is_err()
+        try_acquire([CatalogLeaseTargetRequestV1::repository_common_git_directory(&git)]).is_err()
     );
     assert_eq!(fs::read(outside).unwrap(), b"outside\n");
     assert_catalog_roles_absent(&git);
@@ -156,7 +169,7 @@ fn replaced_git_lock_between_open_and_lock_is_rejected() {
     });
 
     assert!(
-        CatalogLeaseSetV1::try_acquire([CatalogLeaseTargetRequestV1::git_directory(&git)]).is_err()
+        try_acquire([CatalogLeaseTargetRequestV1::repository_common_git_directory(&git)]).is_err()
     );
     assert_eq!(
         fs::read(git.join(GIT_CATALOG_MUTATOR_LOCK_NAME)).unwrap(),
@@ -183,7 +196,7 @@ fn substituted_git_target_after_final_lock_is_rejected() {
     });
 
     assert!(
-        CatalogLeaseSetV1::try_acquire([CatalogLeaseTargetRequestV1::git_directory(&git)]).is_err()
+        try_acquire([CatalogLeaseTargetRequestV1::repository_common_git_directory(&git)]).is_err()
     );
     assert_catalog_roles_absent(&git);
 }
@@ -206,7 +219,7 @@ fn target_reacquisition_mismatch_after_preparation_is_read_only() {
     });
 
     assert!(
-        CatalogLeaseSetV1::try_acquire([CatalogLeaseTargetRequestV1::git_directory(&git)]).is_err()
+        try_acquire([CatalogLeaseTargetRequestV1::repository_common_git_directory(&git)]).is_err()
     );
     assert_catalog_roles_absent(&git);
 }
@@ -220,18 +233,12 @@ fn later_target_contention_releases_every_earlier_final_lock() {
     let mut ordered = vec![first_request, second_request];
     ordered.sort_by_key(|request| request.canonical_order_key_for_test().unwrap());
 
-    let _later = CatalogLeaseSetV1::try_acquire([ordered[1].clone()])
+    let _later = try_acquire([ordered[1].clone()])
         .unwrap()
         .expect("later target blocker");
+    assert!(try_acquire(ordered.clone()).unwrap().is_none());
     assert!(
-        CatalogLeaseSetV1::try_acquire(ordered.clone())
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        CatalogLeaseSetV1::try_acquire([ordered[0].clone()])
-            .unwrap()
-            .is_some(),
+        try_acquire([ordered[0].clone()]).unwrap().is_some(),
         "failed batch must release the earlier final lock"
     );
 }
@@ -250,11 +257,9 @@ fn preparation_failure_occurs_while_no_final_target_lock_is_held() {
     )
     .unwrap();
 
-    assert!(CatalogLeaseSetV1::try_acquire(ordered.clone()).is_err());
+    assert!(try_acquire(ordered.clone()).is_err());
     assert!(
-        CatalogLeaseSetV1::try_acquire([ordered[0].clone()])
-            .unwrap()
-            .is_some(),
+        try_acquire([ordered[0].clone()]).unwrap().is_some(),
         "preparation may not retain an earlier final lock"
     );
 }
@@ -264,7 +269,13 @@ fn git_request(worktree: &Path) -> CatalogLeaseTargetRequestV1 {
         .unwrap()
         .path()
         .to_path_buf();
-    CatalogLeaseTargetRequestV1::git_directory(git)
+    CatalogLeaseTargetRequestV1::repository_common_git_directory(git)
+}
+
+fn try_acquire(
+    requests: impl IntoIterator<Item = CatalogLeaseTargetRequestV1>,
+) -> Result<Option<CatalogLeaseSetV1>, CheckedFsError> {
+    CatalogLeaseSetV1::try_acquire(CatalogLeaseTargetBatchV1::try_new(requests)?)
 }
 
 fn assert_catalog_roles_absent(parent: &Path) {

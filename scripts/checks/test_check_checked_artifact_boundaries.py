@@ -103,6 +103,18 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("protected source tree changed", result.stderr)
 
+    def test_git_lease_target_cannot_return_to_a_caller_selected_directory(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/bootstrap/runtime/catalog_lease/target.rs"
+        text = path.read_text(encoding="utf-8").replace(
+            "fn repository_common_git_directory(", "fn git_directory("
+        )
+        path.write_text(text, encoding="utf-8")
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be derived from repository common-directory", result.stderr)
+
     def test_durable_path_tree_rejects_an_unreviewed_schema_helper(self) -> None:
         temporary, source = self.copied_source()
         self.addCleanup(temporary.cleanup)

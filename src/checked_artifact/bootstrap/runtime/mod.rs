@@ -17,10 +17,10 @@ mod fault;
 mod tests;
 
 use advisory::AdvisoryLock;
-pub(crate) use catalog_lease::CatalogMutationLeaseV1;
 pub(in crate::checked_artifact) use catalog_lease::{
-    CatalogLeaseSetV1, CatalogLeaseTargetRequestV1,
+    CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
 };
+pub(crate) use catalog_lease::{CatalogLeaseTargetWitnessV1, CatalogMutationLeaseV1};
 use paths::{
     RetainedDirectory, ensure_child_directory, open_or_create_file, resolve_workspace_paths,
     retain_ambient_directory, revalidate_ambient_directory, revalidate_child_directory,
@@ -34,13 +34,14 @@ const WORKSPACE_MUTATOR_LOCK_NAME: &str = "workspace-mutator.lock";
 struct RuntimeBootstrap;
 
 pub(crate) struct WorkspaceRuntimeLease {
-    _lock: AdvisoryLock,
+    lock: AdvisoryLock,
     path: PathBuf,
-    _workspace_root: RetainedDirectory,
-    _workspace_git_dir: RetainedDirectory,
-    _runtime_dir: RetainedDirectory,
-    _locks_dir: RetainedDirectory,
+    workspace_root: RetainedDirectory,
+    workspace_git_dir: RetainedDirectory,
+    runtime_dir: RetainedDirectory,
+    locks_dir: RetainedDirectory,
     workspace_root_path: PathBuf,
+    workspace_git_dir_path: PathBuf,
 }
 
 impl WorkspaceRuntimeLease {
@@ -54,6 +55,29 @@ impl WorkspaceRuntimeLease {
 
     fn workspace_root_path(&self) -> &Path {
         &self.workspace_root_path
+    }
+
+    fn workspace_git_dir_path(&self) -> &Path {
+        &self.workspace_git_dir_path
+    }
+
+    fn workspace_root_handle(&self) -> &cap_std::fs::Dir {
+        self.workspace_root.handle()
+    }
+
+    fn workspace_git_dir_handle(&self) -> &cap_std::fs::Dir {
+        self.workspace_git_dir.handle()
+    }
+
+    fn revalidate_catalog_target(&self) -> Result<(), CheckedFsError> {
+        revalidate_workspace_catalog_target(
+            &WorkspaceRuntimePaths::new(&self.workspace_root_path, &self.workspace_git_dir_path),
+            &self.workspace_root,
+            &self.workspace_git_dir,
+            &self.runtime_dir,
+            &self.locks_dir,
+            &self.lock,
+        )
     }
 }
 
@@ -132,17 +156,18 @@ impl WorkspaceRuntimeBootstrapV1 for RuntimeBootstrap {
 
         drop(guard);
         Ok(Some(WorkspaceRuntimeLease {
-            _lock: lock,
+            lock,
             path: paths
                 .workspace_root()
                 .join(crate::workspace::RUNTIME_DIR)
                 .join(LOCKS_DIRECTORY_NAME)
                 .join(WORKSPACE_MUTATOR_LOCK_NAME),
-            _workspace_root: workspace_root,
-            _workspace_git_dir: workspace_git_dir,
-            _runtime_dir: runtime_dir,
-            _locks_dir: locks_dir,
+            workspace_root,
+            workspace_git_dir,
+            runtime_dir,
+            locks_dir,
             workspace_root_path: paths.workspace_root().to_path_buf(),
+            workspace_git_dir_path: paths.workspace_git_dir().to_path_buf(),
         }))
     }
 }
@@ -157,6 +182,31 @@ fn revalidate_runtime_tree(
     guard: &AdvisoryLock,
     lock: &AdvisoryLock,
 ) -> Result<(), CheckedFsError> {
+    revalidate_workspace_catalog_target(
+        paths,
+        workspace_root,
+        workspace_git_dir,
+        runtime_dir,
+        locks_dir,
+        lock,
+    )?;
+    revalidate_file(
+        workspace_git_dir.handle(),
+        OsStr::new(BOOTSTRAP_GUARD_NAME),
+        guard.file(),
+        "runtime bootstrap guard",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn revalidate_workspace_catalog_target(
+    paths: &WorkspaceRuntimePaths<'_>,
+    workspace_root: &RetainedDirectory,
+    workspace_git_dir: &RetainedDirectory,
+    runtime_dir: &RetainedDirectory,
+    locks_dir: &RetainedDirectory,
+    lock: &AdvisoryLock,
+) -> Result<(), CheckedFsError> {
     revalidate_ambient_directory(paths.workspace_root(), workspace_root, "workspace root")?;
     revalidate_ambient_directory(
         paths.workspace_git_dir(),
@@ -164,12 +214,6 @@ fn revalidate_runtime_tree(
         "workspace Git directory",
     )?;
     revalidate_workspace_repository(paths.workspace_root(), paths.workspace_git_dir())?;
-    revalidate_file(
-        workspace_git_dir.handle(),
-        OsStr::new(BOOTSTRAP_GUARD_NAME),
-        guard.file(),
-        "runtime bootstrap guard",
-    )?;
     revalidate_child_directory(
         workspace_root.handle(),
         OsStr::new(crate::workspace::RUNTIME_DIR),

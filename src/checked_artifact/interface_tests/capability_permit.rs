@@ -49,7 +49,8 @@ fn catalog_preflight_surface_has_no_path_plus_lease_or_callback_seam() {
     let pre_catalog = include_str!("../capability/pre_catalog.rs");
     let bootstrap = include_str!("../bootstrap.rs");
     let lease = include_str!("../bootstrap/runtime/catalog_lease.rs");
-    let combined = format!("{pre_catalog}\n{bootstrap}\n{lease}");
+    let target = include_str!("../bootstrap/runtime/catalog_lease/target.rs");
+    let combined = format!("{pre_catalog}\n{bootstrap}\n{lease}\n{target}");
 
     for forbidden in [
         "CatalogBootstrapV1",
@@ -58,6 +59,8 @@ fn catalog_preflight_surface_has_no_path_plus_lease_or_callback_seam() {
         "recover_or_create_workspace",
         "recover_or_create_git_directory",
         "bootstrap: &Bootstrap",
+        "fn git_directory(",
+        "fn canonical_target_path(&self)",
     ] {
         assert!(
             !combined.contains(forbidden),
@@ -69,7 +72,12 @@ fn catalog_preflight_surface_has_no_path_plus_lease_or_callback_seam() {
         "MissingGitPrivateParent(Box<MissingCatalogParentPermitV1",
         "Ready(Box<CatalogPermitV1",
         "CatalogMutationLeaseV1<'lease>",
+        "CatalogLeaseTargetWitnessV1<'lease>",
+        "begin_preflight",
         "CatalogLeaseSetV1",
+        "CatalogLeaseTargetBatchV1",
+        "repository_common_git_directory",
+        "bound: provider::LeaseBoundPreCatalogObservationV1",
     ] {
         assert!(
             combined.contains(required),
@@ -83,7 +91,7 @@ fn ready_and_missing_parent_permits_have_disjoint_exact_authority_fields() {
     let source = include_str!("../capability/pre_catalog.rs");
     let ready = struct_body(source, "CatalogPermitV1");
     for field in [
-        "_catalog_target_lease",
+        "_catalog_target",
         "_retained_root",
         "_raw_roles",
         "_fresh_observation_digest",
@@ -95,7 +103,7 @@ fn ready_and_missing_parent_permits_have_disjoint_exact_authority_fields() {
 
     let missing = struct_body(source, "MissingCatalogParentPermitV1");
     for field in [
-        "_catalog_target_lease",
+        "_catalog_target",
         "_retained_root",
         "_missing_parent_observation_digest",
     ] {

@@ -1,6 +1,7 @@
 //! Owner-private raw pre-catalog provider seam.
 
 use super::*;
+use crate::checked_artifact::bootstrap::CatalogLeaseTargetWitnessV1;
 use crate::checked_artifact::capability::{
     CheckedFsError, DurableObjectIdentityV1, SupportedFilesystemProfile,
 };
@@ -12,6 +13,20 @@ mod platform;
 mod retained;
 mod snapshot;
 
+#[allow(
+    unused_imports,
+    reason = "R2-C1 consumes the sole lease-bound production observation route"
+)]
+pub(in crate::checked_artifact::capability::pre_catalog) use filesystem::{
+    inspect_bound_catalog_target, revalidate_lease_root_binding,
+};
+
+pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_bound_observation(
+    bound: &LeaseBoundPreCatalogObservationV1<'_>,
+) -> Result<(), CheckedFsError> {
+    filesystem::platform_pre_catalog_provider()
+        .revalidate_bound_target(&bound.target, &bound.observation)
+}
 pub(in crate::checked_artifact) use platform::HostPlatform;
 pub(in crate::checked_artifact::capability::pre_catalog) use retained::RetainedPlatformRoot;
 
@@ -24,6 +39,19 @@ pub(super) struct RawPreCatalogObservationV1<RetainedRoot> {
     pub(super) path_profile: CanonicalPathIdentityV1,
     pub(super) collision_snapshot_digest: [u8; 32],
     pub(super) raw_roles: RawCatalogRoleObservationV1,
+}
+
+pub(in crate::checked_artifact::capability::pre_catalog) struct LeaseBoundPreCatalogObservationV1<
+    'lease,
+> {
+    pub(super) target: CatalogLeaseTargetWitnessV1<'lease>,
+    pub(super) observation: RawPreCatalogObservationV1<RetainedPlatformRoot>,
+}
+
+pub(in crate::checked_artifact::capability::pre_catalog) fn has_private_parent(
+    bound: &LeaseBoundPreCatalogObservationV1<'_>,
+) -> bool {
+    bound.observation.retained_root.private_parent().is_some()
 }
 
 #[derive(Debug, Eq, PartialEq)]

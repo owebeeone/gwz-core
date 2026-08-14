@@ -11,6 +11,7 @@ use super::super::paths::{
     revalidate_workspace_repository,
 };
 use super::super::{LOCKS_DIRECTORY_NAME, WORKSPACE_MUTATOR_LOCK_NAME, try_advisory_lock};
+use super::alias::reject_equivalent_alias;
 use crate::checked_artifact::capability::{
     CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1, HostPlatform,
     PathComponentMode, PathEquivalenceProvider, PreCatalogRootKindV1, SupportedFilesystemProfile,
@@ -20,22 +21,27 @@ pub(super) const GIT_CATALOG_MUTATOR_LOCK_NAME: &str = "gwz-catalog-mutator-v1.l
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct CatalogLeaseTargetRequestV1 {
-    root_kind: PreCatalogRootKindV1,
-    path: PathBuf,
+    purpose: CatalogLeaseTargetPurposeV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CatalogLeaseTargetPurposeV1 {
+    Workspace(PathBuf),
+    RepositoryCommonGitDirectory(PathBuf),
 }
 
 impl CatalogLeaseTargetRequestV1 {
     pub(in crate::checked_artifact) fn workspace(path: impl Into<PathBuf>) -> Self {
         Self {
-            root_kind: PreCatalogRootKindV1::Workspace,
-            path: path.into(),
+            purpose: CatalogLeaseTargetPurposeV1::Workspace(path.into()),
         }
     }
 
-    pub(in crate::checked_artifact) fn git_directory(path: impl Into<PathBuf>) -> Self {
+    pub(in crate::checked_artifact) fn repository_common_git_directory(
+        repository: impl Into<PathBuf>,
+    ) -> Self {
         Self {
-            root_kind: PreCatalogRootKindV1::GitDirectory,
-            path: path.into(),
+            purpose: CatalogLeaseTargetPurposeV1::RepositoryCommonGitDirectory(repository.into()),
         }
     }
 
@@ -53,27 +59,33 @@ impl CatalogLeaseTargetRequestV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct CatalogTargetBindingV1 {
     pub(super) root_kind: PreCatalogRootKindV1,
-    support_profile: SupportedFilesystemProfile,
-    durable_identity: DurableObjectIdentityV1,
+    pub(super) support_profile: SupportedFilesystemProfile,
+    pub(super) durable_identity: DurableObjectIdentityV1,
+    pub(super) target_invocation_identity: Vec<u8>,
+    pub(super) target_rename_domain: Vec<u8>,
+    pub(super) target_mode: PathComponentMode,
     pub(super) canonical_path: PathBuf,
-    related_git_directory: PathBuf,
+    pub(super) related_git_directory: PathBuf,
+    pub(super) related_git_durable_identity: DurableObjectIdentityV1,
+    pub(super) related_git_invocation_identity: Vec<u8>,
+    pub(super) related_git_rename_domain: Vec<u8>,
+    pub(super) related_git_mode: PathComponentMode,
     pub(super) order_key: Vec<u8>,
 }
 
 pub(super) struct RetainedCatalogTargetV1 {
     pub(super) binding: CatalogTargetBindingV1,
-    target: RetainedDirectory,
-    related_git_directory: RetainedDirectory,
-    target_invocation_identity: Vec<u8>,
-    target_rename_domain: Vec<u8>,
-    target_mode: PathComponentMode,
+    pub(super) target: RetainedDirectory,
+    pub(super) related_git_directory: RetainedDirectory,
 }
 
 impl RetainedCatalogTargetV1 {
     pub(super) fn retain(request: &CatalogLeaseTargetRequestV1) -> Result<Self, CheckedFsError> {
-        match request.root_kind {
-            PreCatalogRootKindV1::Workspace => Self::retain_workspace(&request.path),
-            PreCatalogRootKindV1::GitDirectory => Self::retain_git_directory(&request.path),
+        match &request.purpose {
+            CatalogLeaseTargetPurposeV1::Workspace(path) => Self::retain_workspace(path),
+            CatalogLeaseTargetPurposeV1::RepositoryCommonGitDirectory(path) => {
+                Self::retain_repository_common_git_directory(path)
+            }
         }
     }
 
@@ -109,6 +121,19 @@ impl RetainedCatalogTargetV1 {
         )
     }
 
+    fn retain_repository_common_git_directory(path: &Path) -> Result<Self, CheckedFsError> {
+        let repository = git2::Repository::open(path).map_err(|error| {
+            CheckedFsError::io(
+                "open catalog target repository",
+                std::io::Error::other(error.message().to_owned()),
+            )
+        })?;
+        let common = std::fs::canonicalize(repository.commondir()).map_err(|source| {
+            CheckedFsError::io("canonicalize catalog common Git directory", source)
+        })?;
+        Self::retain_git_directory(&common)
+    }
+
     fn finish(
         root_kind: PreCatalogRootKindV1,
         canonical_path: PathBuf,
@@ -117,38 +142,51 @@ impl RetainedCatalogTargetV1 {
         related_git_directory: RetainedDirectory,
     ) -> Result<Self, CheckedFsError> {
         let platform = HostPlatform;
-        let fact = platform.dir_identity(target.handle())?;
+        let target_fact = platform.dir_identity(target.handle())?;
+        let related_git_fact = platform.dir_identity(related_git_directory.handle())?;
         let support_profile = platform.support_profile();
-        if fact.durable().support_profile() != support_profile {
+        if target_fact.durable().support_profile() != support_profile
+            || related_git_fact.durable().support_profile() != support_profile
+        {
             return Err(CheckedFsError::ambiguous(
                 "catalog target identity",
-                "durable identity does not match the host support profile",
+                "target or related Git identity does not match the host support profile",
             ));
         }
         let target_mode = platform.parent_mode(target.handle())?;
         let target_rename_domain = platform.rename_domain(target.handle())?;
-        if fact.invocation().is_empty() || target_rename_domain.is_empty() {
+        let related_git_mode = platform.parent_mode(related_git_directory.handle())?;
+        let related_git_rename_domain = platform.rename_domain(related_git_directory.handle())?;
+        if target_fact.invocation().is_empty()
+            || target_rename_domain.is_empty()
+            || related_git_fact.invocation().is_empty()
+            || related_git_rename_domain.is_empty()
+        {
             return Err(CheckedFsError::ambiguous(
                 "catalog target identity",
-                "live target identity and rename domain must be nonempty",
+                "live target and related Git identities and rename domains must be nonempty",
             ));
         }
-        let durable_identity = fact.durable().clone();
+        let durable_identity = target_fact.durable().clone();
         let order_key = canonical_order_key(support_profile, &durable_identity, root_kind);
         Ok(Self {
             binding: CatalogTargetBindingV1 {
                 root_kind,
                 support_profile,
                 durable_identity,
+                target_invocation_identity: target_fact.invocation().clone(),
+                target_rename_domain,
+                target_mode,
                 canonical_path,
                 related_git_directory: related_git_directory_path,
+                related_git_durable_identity: related_git_fact.durable().clone(),
+                related_git_invocation_identity: related_git_fact.invocation().clone(),
+                related_git_rename_domain,
+                related_git_mode,
                 order_key,
             },
             target,
             related_git_directory,
-            target_invocation_identity: fact.invocation().clone(),
-            target_rename_domain,
-            target_mode,
         })
     }
 
@@ -177,16 +215,23 @@ impl RetainedCatalogTargetV1 {
             ));
         }
         let platform = HostPlatform;
-        let fact = platform.dir_identity(self.target.handle())?;
-        if fact.durable() != &self.binding.durable_identity
-            || fact.invocation() != &self.target_invocation_identity
+        let target_fact = platform.dir_identity(self.target.handle())?;
+        let related_git_fact = platform.dir_identity(self.related_git_directory.handle())?;
+        if target_fact.durable() != &self.binding.durable_identity
+            || target_fact.invocation() != &self.binding.target_invocation_identity
             || platform.support_profile() != self.binding.support_profile
-            || platform.parent_mode(self.target.handle())? != self.target_mode
-            || platform.rename_domain(self.target.handle())? != self.target_rename_domain
+            || platform.parent_mode(self.target.handle())? != self.binding.target_mode
+            || platform.rename_domain(self.target.handle())? != self.binding.target_rename_domain
+            || related_git_fact.durable() != &self.binding.related_git_durable_identity
+            || related_git_fact.invocation() != &self.binding.related_git_invocation_identity
+            || platform.parent_mode(self.related_git_directory.handle())?
+                != self.binding.related_git_mode
+            || platform.rename_domain(self.related_git_directory.handle())?
+                != self.binding.related_git_rename_domain
         {
             return Err(CheckedFsError::ambiguous(
                 "catalog mutation target",
-                "stable or live target binding changed",
+                "stable or live target or related Git binding changed",
             ));
         }
         Ok(())
@@ -282,13 +327,36 @@ impl RetainedCatalogTargetV1 {
         };
         #[cfg(test)]
         super::super::fault::run(super::super::fault::RuntimeBootstrapFault::CatalogFinalLeaseLock);
-        self.revalidate()?;
-        match self.binding.root_kind {
+        let held = HeldCatalogTargetV1 {
+            target: self,
+            _runtime_dir: runtime_dir,
+            _locks_dir: locks_dir,
+            _lock: lock,
+        };
+        held.revalidate_held()?;
+        Ok(Some(held))
+    }
+}
+
+pub(super) struct HeldCatalogTargetV1 {
+    pub(super) target: RetainedCatalogTargetV1,
+    _runtime_dir: Option<RetainedDirectory>,
+    _locks_dir: Option<RetainedDirectory>,
+    _lock: AdvisoryLock,
+}
+
+impl HeldCatalogTargetV1 {
+    pub(super) fn revalidate_held(&self) -> Result<(), CheckedFsError> {
+        self.target.revalidate()?;
+        match self.target.binding.root_kind {
             PreCatalogRootKindV1::Workspace => {
-                let runtime = runtime_dir.as_ref().expect("workspace runtime retained");
-                let locks = locks_dir.as_ref().expect("workspace locks retained");
+                let runtime = self
+                    ._runtime_dir
+                    .as_ref()
+                    .expect("workspace runtime retained");
+                let locks = self._locks_dir.as_ref().expect("workspace locks retained");
                 revalidate_child_directory(
-                    self.target.handle(),
+                    self.target.target.handle(),
                     OsStr::new(crate::workspace::RUNTIME_DIR),
                     runtime.identity(),
                     "workspace runtime directory",
@@ -302,31 +370,18 @@ impl RetainedCatalogTargetV1 {
                 revalidate_file(
                     locks.handle(),
                     OsStr::new(WORKSPACE_MUTATOR_LOCK_NAME),
-                    lock.file(),
+                    self._lock.file(),
                     "workspace mutator lease",
-                )?;
+                )
             }
             PreCatalogRootKindV1::GitDirectory => revalidate_file(
-                self.target.handle(),
+                self.target.target.handle(),
                 OsStr::new(GIT_CATALOG_MUTATOR_LOCK_NAME),
-                lock.file(),
+                self._lock.file(),
                 "Git catalog mutator lease",
-            )?,
+            ),
         }
-        Ok(Some(HeldCatalogTargetV1 {
-            target: self,
-            _runtime_dir: runtime_dir,
-            _locks_dir: locks_dir,
-            _lock: lock,
-        }))
     }
-}
-
-pub(super) struct HeldCatalogTargetV1 {
-    pub(super) target: RetainedCatalogTargetV1,
-    _runtime_dir: Option<RetainedDirectory>,
-    _locks_dir: Option<RetainedDirectory>,
-    _lock: AdvisoryLock,
 }
 
 fn canonical_git_directory(path: &Path) -> Result<PathBuf, CheckedFsError> {
@@ -376,40 +431,4 @@ fn canonical_order_key(
         PreCatalogRootKindV1::GitDirectory => 2,
     });
     key
-}
-
-pub(super) fn reject_equivalent_alias(
-    parent: &Dir,
-    expected: &OsStr,
-    label: &'static str,
-) -> Result<(), CheckedFsError> {
-    let platform = HostPlatform;
-    let mode = platform.parent_mode(parent)?;
-    let expected = expected
-        .to_str()
-        .expect("fixed catalog lease names are ASCII");
-    for entry in parent
-        .entries()
-        .map_err(|source| CheckedFsError::io("enumerate catalog lease parent", source))?
-    {
-        let entry =
-            entry.map_err(|source| CheckedFsError::io("read catalog lease parent", source))?;
-        let observed = entry.file_name();
-        let Some(observed) = observed.to_str() else {
-            continue;
-        };
-        let equivalent = match mode {
-            PathComponentMode::Sensitive => observed == expected,
-            PathComponentMode::AsciiCaseFold => {
-                observed.is_ascii() && observed.eq_ignore_ascii_case(expected)
-            }
-        };
-        if equivalent && observed != expected {
-            return Err(CheckedFsError::ambiguous(
-                label,
-                "platform-equivalent alias has noncanonical spelling",
-            ));
-        }
-    }
-    Ok(())
 }

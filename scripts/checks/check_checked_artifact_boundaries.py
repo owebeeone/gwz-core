@@ -38,8 +38,8 @@ PROTECTED_COMPILER_MODULES = {
 # or non-executable source change requires deliberate review and a digest
 # update; this closes aliases and new wrappers without guessing writer names.
 PROTECTED_SOURCE_DIGESTS = {
-    "checked_artifact/bootstrap.rs": "258a6d627b9de468d67b66cdc34de49485ac1703ffa094a47d76d5305a3211f1",
-    "checked_artifact/bootstrap/runtime/mod.rs": "84e692d7efde1f7d5abb59aa1fa283d4a1a55ec95053ab287f4b978926ce24c0",
+    "checked_artifact/bootstrap.rs": "d85d894032512125ee5ad0cab770db25dd37cee32096ad84be3061eaab94b2aa",
+    "checked_artifact/bootstrap/runtime/mod.rs": "1bddf4b40e4bd6454300e7b08b54119875ec19daacb819a14dbd0c483784230d",
     "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
     "checked_artifact/mod.rs": "c528abb99ae93b3b040f9dbd5fd0e67c2edb50c5cfd9c6d488b8845059b30e4a",
@@ -148,9 +148,9 @@ APPROVED_RUST_PATH_EDGES = {
 # the root module, every current descendant, and the descendant file set, so a
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
-    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "63b828fe5e8ac2fd3afcc95a29841cfb88666edc22b1546f007c2adde2477b23",
+    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "dc475fe3b2e28b584ee48ef82074fb138935195b4c453d9a6cba166fb2e0be1e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "05089e867867889bbfaf8cda717767ffbefe741b54582d50616421290e3c9703",
+    "checked_artifact/capability/pre_catalog.rs": "dd69b335c71fd5b35ff11c9d93842c8f7da49dbabf71aa67fcb6b23e2953893c",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }
@@ -460,23 +460,55 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/bootstrap.rs",
         "checked_artifact/bootstrap/runtime/catalog_lease.rs",
         "checked_artifact/bootstrap/runtime/mod.rs",
+        "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
     },
     "CatalogLeaseTargetRequestV1": {
         "checked_artifact/bootstrap.rs",
         "checked_artifact/bootstrap/runtime/catalog_lease.rs",
         "checked_artifact/bootstrap/runtime/catalog_lease/target.rs",
         "checked_artifact/bootstrap/runtime/mod.rs",
+        "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
+    },
+    "CatalogLeaseTargetBatchV1": {
+        "checked_artifact/bootstrap.rs",
+        "checked_artifact/bootstrap/runtime/catalog_lease.rs",
+        "checked_artifact/bootstrap/runtime/mod.rs",
+        "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
     },
     "CatalogMutationLeaseV1": {
         "checked_artifact/bootstrap.rs",
         "checked_artifact/bootstrap/runtime/catalog_lease.rs",
+        "checked_artifact/bootstrap/runtime/catalog_lease/witness.rs",
         "checked_artifact/bootstrap/runtime/mod.rs",
-        "checked_artifact/capability/pre_catalog.rs",
         "checked_artifact/mod.rs",
         "operation/workspace_mutator_lock.rs",
     },
+    "CatalogLeaseTargetWitnessV1": {
+        "checked_artifact/bootstrap.rs",
+        "checked_artifact/bootstrap/runtime/catalog_lease.rs",
+        "checked_artifact/bootstrap/runtime/catalog_lease/witness.rs",
+        "checked_artifact/bootstrap/runtime/mod.rs",
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/filesystem.rs",
+    },
+    "begin_preflight": {
+        "checked_artifact/bootstrap/runtime/catalog_lease.rs",
+        "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
+    },
+    "inspect_bound_catalog_target": {
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/filesystem.rs",
+        "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
+    },
+    "revalidate_lease_root_binding": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/filesystem.rs",
+    },
     "catalog_mutation_lease": {
         "checked_artifact/bootstrap/runtime/mod.rs",
+        "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
         "operation/workspace_mutator_lock.rs",
     },
 }
@@ -824,6 +856,15 @@ def check(source: Path) -> list[str]:
             findings.append(
                 f"provisional catalog interface was reintroduced: {symbol}: {actual}"
             )
+    catalog_target = masked_sources[
+        "checked_artifact/bootstrap/runtime/catalog_lease/target.rs"
+    ]
+    if re.search(r"\bfn\s+git_directory\s*\(", catalog_target) or not re.search(
+        r"\bfn\s+repository_common_git_directory\s*\(", catalog_target
+    ):
+        findings.append(
+            "catalog Git lease target must be derived from repository common-directory state"
+        )
 
     for relative, expected_calls in CHECKED_LEAF_ADAPTER_CALLS.items():
         adapter = masked_sources[relative]
