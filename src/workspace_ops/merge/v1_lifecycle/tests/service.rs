@@ -9,7 +9,7 @@ use super::super::authority::{
     V1ResponseDisposition, VerifiedParticipantOutcome, VerifiedParticipants,
 };
 use super::super::checked::{StoredV1Record, V1MutationLease};
-use super::super::service::{ExactObserver, PhysicalExecutor, run};
+use super::super::service::{ExactObserver, PhysicalExecutor, run_test as run};
 use super::super::store::CheckedV1Store;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::merge::model::v1::{MergeOperationRecordV1, test_record};

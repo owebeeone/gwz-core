@@ -600,7 +600,7 @@ fn run<R: ExactObserver + PhysicalExecutor>(
     fixture: &Fixture,
     runtime: &mut R,
 ) -> ModelResult<super::super::service::V1ServiceResponse> {
-    super::super::service::run(
+    super::super::service::run_test(
         &CheckedV1Store::default(),
         &fixture.root.path,
         &fixture.model.merge_id,

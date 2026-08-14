@@ -479,6 +479,7 @@ pub(super) fn unreadable(plan: &PreservationPlan, message: impl Into<String>) ->
 }
 
 #[cfg(test)]
+#[forbid(clippy::disallowed_methods)]
 pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<
     B: crate::git::MergeAuthorityBackend,
 >(
@@ -583,6 +584,7 @@ pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<
 }
 
 #[cfg(test)]
+#[forbid(clippy::disallowed_methods)]
 fn clean_form<B: crate::git::MergeAuthorityBackend>(
     backend: &B,
     plan: &super::plan::V1PreservationOwnerPlan,
@@ -616,6 +618,7 @@ fn clean_form<B: crate::git::MergeAuthorityBackend>(
 }
 
 #[cfg(test)]
+#[forbid(clippy::disallowed_methods)]
 fn managed_fact(
     commit: &str,
     path: &str,
@@ -639,6 +642,7 @@ fn managed_fact(
 }
 
 #[cfg(test)]
+#[forbid(clippy::disallowed_methods)]
 fn blob_oid(commit: &str, bytes: &[u8]) -> ModelResult<String> {
     use sha1::Sha1;
     use sha2::{Digest, Sha256};
@@ -655,6 +659,7 @@ fn blob_oid(commit: &str, bytes: &[u8]) -> ModelResult<String> {
 }
 
 #[cfg(test)]
+#[forbid(clippy::disallowed_methods)]
 pub(in crate::workspace_ops::merge) fn v1_preservation_image<
     B: crate::git::MergeAuthorityBackend,
 >(
@@ -675,6 +680,7 @@ pub(in crate::workspace_ops::merge) fn v1_preservation_image<
 }
 
 #[cfg(test)]
+#[forbid(clippy::disallowed_methods)]
 pub(super) fn attach_v1(
     mut error: ModelError,
     plan: &super::plan::V1PreservationOwnerPlan,
@@ -687,6 +693,7 @@ pub(super) fn attach_v1(
 }
 
 #[cfg(test)]
+#[forbid(clippy::disallowed_methods)]
 pub(super) fn v1_error(
     plan: &super::plan::V1PreservationOwnerPlan,
     detail: impl Into<String>,

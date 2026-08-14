@@ -6,8 +6,12 @@ use super::authority::{
     next_action, resolve_observation,
 };
 use super::checked::{StoredV1Record, V1MutationLease};
+use super::finalization::FinalizationRuntime;
+use super::forward::ForwardRuntime;
+use super::reverse::ReverseRuntime;
 use super::store::CheckedV1Store;
 use super::transition::prepare;
+use crate::git::MergeAuthorityBackend;
 use crate::model::ModelResult;
 
 mod execution;
@@ -31,9 +35,21 @@ pub(super) trait PhysicalExecutor {
     ) -> ExecutionDiagnostic;
 }
 
-pub(super) trait V1Runtime: ExactObserver + PhysicalExecutor {}
+mod sealed {
+    pub trait ProductionRuntime {}
+}
 
-impl<T: ExactObserver + PhysicalExecutor> V1Runtime for T {}
+impl<B: MergeAuthorityBackend> sealed::ProductionRuntime for ForwardRuntime<'_, B> {}
+impl<B: MergeAuthorityBackend> sealed::ProductionRuntime for ReverseRuntime<'_, B> {}
+impl<B: MergeAuthorityBackend> sealed::ProductionRuntime for FinalizationRuntime<'_, B> {}
+
+#[allow(private_bounds)]
+pub(super) trait V1Runtime:
+    ExactObserver + PhysicalExecutor + sealed::ProductionRuntime
+{
+}
+
+impl<T: ExactObserver + PhysicalExecutor + sealed::ProductionRuntime> V1Runtime for T {}
 
 pub(super) struct V1ServiceResponse {
     current: StoredV1Record,
@@ -51,6 +67,27 @@ impl V1ServiceResponse {
 }
 
 pub(super) fn run<R: V1Runtime>(
+    store: &CheckedV1Store,
+    root: &Path,
+    merge_id: &str,
+    request: V1LifecycleRequest,
+    runtime: &mut R,
+) -> ModelResult<V1ServiceResponse> {
+    run_with_runtime(store, root, merge_id, request, runtime)
+}
+
+#[cfg(test)]
+pub(super) fn run_test<R: ExactObserver + PhysicalExecutor>(
+    store: &CheckedV1Store,
+    root: &Path,
+    merge_id: &str,
+    request: V1LifecycleRequest,
+    runtime: &mut R,
+) -> ModelResult<V1ServiceResponse> {
+    run_with_runtime(store, root, merge_id, request, runtime)
+}
+
+fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
     store: &CheckedV1Store,
     root: &Path,
     merge_id: &str,

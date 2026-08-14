@@ -5,7 +5,7 @@ use crate::workspace_ops::merge::model::v1::AcceptedMetadataSourceV1;
 use crate::workspace_ops::merge::model::v1::AcceptedRootBaseV1;
 use crate::workspace_ops::merge::v1_lifecycle::authority::V1LifecycleRequest;
 use crate::workspace_ops::merge::v1_lifecycle::reverse::ReverseRuntime;
-use crate::workspace_ops::merge::v1_lifecycle::service::run;
+use crate::workspace_ops::merge::v1_lifecycle::service::run_test as run;
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
 use crate::workspace_ops::merge::{PublicationCandidateHash, PublicationProgress, PublicationStep};
 use sha2::{Digest, Sha256};

@@ -32,6 +32,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "1a96e1921052895c836837def6d7c3c19fb6bf383ad8df9482a5960c1b2cbdac",
+    "workspace_ops/merge/preserve/artifacts.rs": "489006a9a7550503fd051b2d6136f8a08728ab9355e6281ede684047732f6da5",
     "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
     "workspace_ops/merge/preserve/plan.rs": "880d4905eeab96ff52a746a360043628cd4c11e5324b5f92b5889419ade53c7a",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
@@ -116,6 +117,7 @@ APPROVED_RUST_PATH_EDGES = {
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "21ab2154e58ebe091a62bfb5bdf36afdbe98c30b9181d0ba08e29415aa6af00d",
 }
 
 ENTRY_REFERENCES = {
@@ -504,10 +506,12 @@ def mask_non_code(text: str) -> str:
 
 def source_tree_digest(source: Path, root_relative: str) -> str:
     root_file = source / root_relative
-    descendant_root = root_file.with_suffix("")
-    paths = [root_file]
+    descendant_root = (
+        root_file.parent if root_file.name == "mod.rs" else root_file.with_suffix("")
+    )
+    paths = {root_file}
     if descendant_root.is_dir():
-        paths.extend(path for path in descendant_root.rglob("*") if path.is_file())
+        paths.update(path for path in descendant_root.rglob("*") if path.is_file())
     digest = hashlib.sha256()
     for path in sorted(paths, key=lambda value: value.relative_to(source).as_posix()):
         relative = path.relative_to(source).as_posix().encode("utf-8")
@@ -629,16 +633,6 @@ def check(source: Path) -> list[str]:
             "concrete preservation observer caller set changed: "
             f"expected={sorted(CONCRETE_PRESERVATION_OBSERVER_REFERENCES)} "
             f"actual={sorted(concrete_observer_references)}"
-        )
-    open_v1_backend_sources = []
-    for path in production_rust_files(source / "workspace_ops/merge/v1_lifecycle"):
-        text = mask_non_code(path.read_text(encoding="utf-8"))
-        if re.search(r"\bGitBackend\b", text):
-            open_v1_backend_sources.append(path.relative_to(source).as_posix())
-    if open_v1_backend_sources:
-        findings.append(
-            "v1 lifecycle source uses the open GitBackend instead of the sealed "
-            f"MergeAuthorityBackend: {open_v1_backend_sources}"
         )
     entry_path = source / "checked_artifact/entry.rs"
     entry_text = mask_non_code(entry_path.read_text(encoding="utf-8"))

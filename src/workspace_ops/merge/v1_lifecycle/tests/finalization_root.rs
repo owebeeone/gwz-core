@@ -20,7 +20,7 @@ fn selected_root_acceptance_uses_exact_result_metadata_and_evidence_parent() {
     let context = context();
     let mut runtime = FinalizationRuntime::new(&backend, &context);
 
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -80,7 +80,7 @@ fn degenerate_marker_restart_uses_only_stage_then_completion() {
         let context = context();
         let mut crashing = CrashAfterRuntime::new(&backend, &context, target);
         let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::super::service::run(
+            super::super::service::run_test(
                 &super::super::store::CheckedV1Store::default(),
                 &root.path,
                 &model.merge_id,
@@ -105,7 +105,7 @@ fn degenerate_marker_restart_uses_only_stage_then_completion() {
         assert_eq!(candidate.boundary_text, candidate.baseline_boundary_text);
 
         let mut resumed = RecordingRuntime::new(&backend, &context);
-        let response = super::super::service::run(
+        let response = super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -125,7 +125,7 @@ fn unborn_attached_root_completes_without_publication() {
     let context = context();
     let mut runtime = RecordingRuntime::new(&backend, &context);
 
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -154,7 +154,7 @@ fn unborn_publication_uses_the_exact_checked_first_commit_candidate() {
     let context = context();
     let mut runtime = RecordingRuntime::new(&backend, &context);
 
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -203,7 +203,7 @@ fn publication_rejects_symlinked_marker_parent_before_ref_or_external_write() {
     let context = context();
     let mut runtime = RecordingRuntime::new(&backend, &context);
 
-    let result = super::super::service::run(
+    let result = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -248,7 +248,7 @@ fn detached_no_publication_preserves_an_unused_symlinked_marker_parent() {
     let context = context();
     let mut runtime = RecordingRuntime::new(&backend, &context);
 
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,

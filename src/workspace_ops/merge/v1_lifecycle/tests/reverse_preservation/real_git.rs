@@ -10,7 +10,9 @@ use crate::workspace_ops::merge::v1_lifecycle::authority::{
 };
 use crate::workspace_ops::merge::v1_lifecycle::checked::{StoredV1Record, V1MutationLease};
 use crate::workspace_ops::merge::v1_lifecycle::reverse::ReverseRuntime;
-use crate::workspace_ops::merge::v1_lifecycle::service::{ExactObserver, PhysicalExecutor, run};
+use crate::workspace_ops::merge::v1_lifecycle::service::{
+    ExactObserver, PhysicalExecutor, run_test as run,
+};
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
 
 #[test]

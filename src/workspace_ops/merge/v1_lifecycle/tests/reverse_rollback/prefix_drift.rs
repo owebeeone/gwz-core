@@ -1,7 +1,7 @@
 use super::*;
 use crate::workspace_ops::merge::v1_lifecycle::authority::V1LifecycleRequest;
 use crate::workspace_ops::merge::v1_lifecycle::reverse::ReverseRuntime;
-use crate::workspace_ops::merge::v1_lifecycle::service::run;
+use crate::workspace_ops::merge::v1_lifecycle::service::run_test as run;
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
 
 #[derive(Clone, Copy, Debug)]

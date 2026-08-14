@@ -6,7 +6,9 @@ use crate::workspace_ops::merge::v1_lifecycle::authority::{
     V1NextAction, next_action, resolve_observation,
 };
 use crate::workspace_ops::merge::v1_lifecycle::checked::{StoredV1Record, V1MutationLease};
-use crate::workspace_ops::merge::v1_lifecycle::service::{ExactObserver, PhysicalExecutor, run};
+use crate::workspace_ops::merge::v1_lifecycle::service::{
+    ExactObserver, PhysicalExecutor, run_test as run,
+};
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
 use crate::workspace_ops::merge::v1_lifecycle::tests::dispatcher_attempt_matrix::{
     preservation_record, rollback_action, rollback_record,

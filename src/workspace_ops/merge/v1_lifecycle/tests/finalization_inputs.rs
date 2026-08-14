@@ -19,7 +19,7 @@ fn detached_unchanged_root_completes_without_publication_authority() {
     let context = context();
     let mut runtime = RecordingRuntime::new(&backend, &context);
 
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -76,7 +76,7 @@ fn pre_acceptance_noncanonical_index_flags_do_not_receive_authority() {
         let context = context();
         let mut runtime = FinalizationRuntime::new(&backend, &context);
 
-        let result = super::super::service::run(
+        let result = super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -108,7 +108,7 @@ fn post_evidence_manifest_tamper_enters_finalizing_recovery() {
         PublicationPhysicalAction::EvidenceCommit,
     );
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -121,7 +121,7 @@ fn post_evidence_manifest_tamper_enters_finalizing_recovery() {
     fs::write(root.path.join(WORKSPACE_MANIFEST), "tampered: true\n").unwrap();
     let head_before = backend.head(&root.path).unwrap();
     let mut resumed = FinalizationRuntime::new(&backend, &context);
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -159,7 +159,7 @@ fn mixed_publication_index_enters_recovery_without_another_write() {
     let mut crashing =
         CrashAfterRuntime::new(&backend, &context, PublicationPhysicalAction::WriteMarker);
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -178,7 +178,7 @@ fn mixed_publication_index_enters_recovery_without_another_write() {
     backend.stage_paths(&root.path, &[&marker_path]).unwrap();
 
     let mut resumed = RecordingRuntime::new(&backend, &context);
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &store,
         &root.path,
         &model.merge_id,
@@ -210,7 +210,7 @@ fn staged_candidate_worktree_tamper_enters_recovery_without_overwrite() {
     let mut crashing =
         CrashAfterRuntime::new(&backend, &context, PublicationPhysicalAction::StageIndex);
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -234,7 +234,7 @@ fn staged_candidate_worktree_tamper_enters_recovery_without_overwrite() {
     fs::write(root.path.join(&marker_path), "tampered: true\n").unwrap();
 
     let mut resumed = RecordingRuntime::new(&backend, &context);
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &store,
         &root.path,
         &model.merge_id,
@@ -265,7 +265,7 @@ fn accepted_metadata_tamper(tamper: &str) {
     let context = context();
     let mut crashing = CrashAfterAcceptanceRuntime::new(&backend, &context);
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -316,7 +316,7 @@ fn accepted_metadata_tamper(tamper: &str) {
     }
     let head_before = backend.head(&root.path).unwrap();
     let mut resumed = FinalizationRuntime::new(&backend, &context);
-    let result = super::super::service::run(
+    let result = super::super::service::run_test(
         &store,
         &root.path,
         &model.merge_id,

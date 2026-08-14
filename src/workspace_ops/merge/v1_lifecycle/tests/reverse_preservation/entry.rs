@@ -4,7 +4,7 @@ use crate::workspace_ops::merge::v1_lifecycle::authority::{
     resolve_observation,
 };
 use crate::workspace_ops::merge::v1_lifecycle::reverse::ReverseRuntime;
-use crate::workspace_ops::merge::v1_lifecycle::service::run;
+use crate::workspace_ops::merge::v1_lifecycle::service::run_test as run;
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
 use crate::{model::ErrorCode, workspace_ops::merge::MergeRecordError};
 use sha2::{Digest, Sha256};

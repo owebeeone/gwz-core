@@ -344,6 +344,43 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Rust source-loading edge inventory changed", result.stderr)
 
+    def test_cfg_attr_path_cannot_hide_a_concrete_observer_caller(self) -> None:
+        compiler = run_compiler_probe(
+            lambda root: self.add_non_rs_observer_caller(root / "src", "cfg_attr")
+        )
+        self.assertEqual(compiler.returncode, 0, compiler.stderr)
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        self.add_non_rs_observer_caller(source, "cfg_attr")
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_import_aliased_include_cannot_hide_a_concrete_observer_caller(
+        self,
+    ) -> None:
+        compiler = run_compiler_probe(
+            lambda root: self.add_non_rs_observer_caller(
+                root / "src", "include_alias"
+            )
+        )
+        self.assertEqual(compiler.returncode, 0, compiler.stderr)
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        self.add_non_rs_observer_caller(source, "include_alias")
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_approved_outside_source_target_cannot_hide_an_observer_caller(
+        self,
+    ) -> None:
+        compiler = run_compiler_probe(self.add_outside_source_observer_caller)
+        self.assertEqual(compiler.returncode, 0, compiler.stderr)
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        self.add_outside_source_observer_caller(source.parent)
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+
     def test_macro_spelled_source_loading_edge_is_rejected(self) -> None:
         result = self.append(
             "workspace_ops/merge/preserve/artifacts.rs",
@@ -367,7 +404,7 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         )
         result = run(source)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("v1 lifecycle source uses the open GitBackend", result.stderr)
+        self.assertIn("protected source tree changed", result.stderr)
 
     def test_merge_authority_backend_has_a_private_compiler_seal(self) -> None:
         path = SOURCE / "git/gitbackend/authority_backend.rs"
@@ -423,6 +460,21 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         elif form == "include":
             edge = "\n#[cfg(test)]\ninclude!(\"unreviewed_observer.inc\");\n"
             call = "observe_after_write(&plan.path)?;"
+        elif form == "cfg_attr":
+            edge = (
+                "\n#[cfg(test)]\n"
+                "#[cfg_attr(test, path = \"unreviewed_observer.inc\")]\n"
+                "mod unreviewed_observer;\n"
+            )
+            call = "unreviewed_observer::observe_after_write(&plan.path)?;"
+        elif form == "include_alias":
+            edge = (
+                "\n#[cfg(test)]\n"
+                "use std::{include as load_unreviewed_source};\n"
+                "#[cfg(test)]\n"
+                "load_unreviewed_source!(\"unreviewed_observer.inc\");\n"
+            )
+            call = "observe_after_write(&plan.path)?;"
         else:
             self.fail(f"unsupported source-loading form: {form}")
         text = path.read_text(encoding="utf-8") + edge
@@ -433,6 +485,33 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             1,
         )
         path.write_text(text, encoding="utf-8")
+
+    def add_outside_source_observer_caller(self, root: Path) -> None:
+        target = root / "protocol/corpus/rust/vectors.rs"
+        target.write_text(
+            target.read_text(encoding="utf-8").replace(
+                "#[cfg(test)]\nmod conformance {",
+                "pub(crate) fn observe_after_write(\n"
+                "    path: &std::path::Path,\n"
+                ") -> crate::model::ModelResult<Vec<crate::git::GitPreservationStashEvidence>> {\n"
+                "    let _ = std::fs::write(path.join(\"raw-observer-caller\"), b\"bypass\");\n"
+                "    crate::git::observe_preservation_stashes_read_only(path, \"merge_probe\")\n"
+                "}\n\n"
+                "#[cfg(test)]\nmod conformance {",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        path = root / "src/workspace_ops/merge/preserve/artifacts.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
+                "    let _ = crate::protocol_corpus::observe_after_write(&plan.path)?;\n"
+                "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
+                1,
+            ),
+            encoding="utf-8",
+        )
 
     def append(self, relative: str, text: str) -> subprocess.CompletedProcess[str]:
         temporary, source = self.copied_source()
@@ -648,6 +727,22 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
 
         self.assert_compiler_rejects(mutate, "std::fs::write")
 
+    def test_compiler_rejects_writer_in_v1_artifact_observer(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "src/workspace_ops/merge/preserve/artifacts.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
+                    "    std::fs::write(plan.path.join(\"raw-v1-observer\"), b\"bypass\")"
+                    ".unwrap();\n"
+                    "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_compiler_rejects(mutate, "std::fs::write")
+
     def test_compiler_rejects_an_alternative_merge_authority_backend(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "src/workspace_ops/tests/g01/tracking_backend.rs"
@@ -661,6 +756,42 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("MergeAuthorityBackend", result.stderr)
         self.assertIn("Sealed", result.stderr)
+
+    def test_compiler_rejects_an_unsealed_v1_runtime(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "src/workspace_ops/merge/v1_lifecycle/status.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\nstruct UnreviewedRuntime;\n"
+                "impl super::service::ExactObserver for UnreviewedRuntime {\n"
+                "    fn observe(\n"
+                "        &mut self,\n"
+                "        _: &super::checked::StoredV1Record,\n"
+                "        _: &super::authority::BoundObservationRequest,\n"
+                "    ) -> crate::model::ModelResult<super::authority::BoundExactObservation> {\n"
+                "        unreachable!()\n"
+                "    }\n"
+                "}\n"
+                "impl super::service::PhysicalExecutor for UnreviewedRuntime {\n"
+                "    fn execute(\n"
+                "        &mut self,\n"
+                "        _: &super::checked::V1MutationLease,\n"
+                "        _: &super::checked::StoredV1Record,\n"
+                "        _: &super::authority::PhysicalActionKind,\n"
+                "    ) -> super::authority::ExecutionDiagnostic {\n"
+                "        super::authority::ExecutionDiagnostic::Success\n"
+                "    }\n"
+                "}\n"
+                "fn accepts_v1_runtime<R: super::service::V1Runtime>() {}\n"
+                "fn prove_unreviewed_runtime_is_admitted() {\n"
+                "    accepts_v1_runtime::<UnreviewedRuntime>();\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+        result = run_compiler_probe(mutate)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("V1Runtime", result.stderr)
 
     def test_comments_and_strings_do_not_create_false_references(self) -> None:
         result = self.append(

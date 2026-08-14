@@ -11,7 +11,7 @@ use super::super::authority::{
     VerifiedParticipantOutcome,
 };
 use super::super::checked::{StoredV1Record, V1MutationLease};
-use super::super::service::{ExactObserver, PhysicalExecutor, run};
+use super::super::service::{ExactObserver, PhysicalExecutor, run_test as run};
 use super::super::store::CheckedV1Store;
 use crate::artifact::ManifestArtifact;
 use crate::model::{ErrorCode, ModelError, ModelResult};

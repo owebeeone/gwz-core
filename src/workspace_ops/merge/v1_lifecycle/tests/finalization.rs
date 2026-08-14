@@ -23,7 +23,7 @@ fn concrete_finalizer_freezes_acceptance_and_publishes_exact_candidate() {
     let context = context();
     let mut runtime = RecordingRuntime::new(&backend, &context);
 
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -97,7 +97,7 @@ fn no_change_finalization_freezes_acceptance_without_physical_publication() {
     let context = context();
     let mut runtime = RecordingRuntime::new(&backend, &context);
 
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -130,7 +130,7 @@ fn participant_drift_rejects_before_acceptance_or_root_mutation() {
     let context = context();
     let mut runtime = FinalizationRuntime::new(&backend, &context);
 
-    let result = super::super::service::run(
+    let result = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
@@ -174,7 +174,7 @@ fn tampered_owned_publication_prefix_enters_recovery_without_overwrite() {
     let mut crashing =
         CrashAfterRuntime::new(&backend, &context, PublicationPhysicalAction::WriteMarker);
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -198,7 +198,7 @@ fn tampered_owned_publication_prefix_enters_recovery_without_overwrite() {
     fs::write(root.path.join(&marker_path), "tampered: true\n").unwrap();
     let head_before = backend.head(&root.path).unwrap();
     let mut resumed = FinalizationRuntime::new(&backend, &context);
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &store,
         &root.path,
         &model.merge_id,
@@ -435,7 +435,7 @@ fn reverse_handoff_classifies_every_durable_publication_phase() {
         PublicationPhysicalAction::StageIndex,
     );
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -532,7 +532,7 @@ fn interrupted_before_publication_record_with_change(
     let operation_context = context();
     let mut runtime = CrashBeforePublicationRecordRuntime::new(&backend, &operation_context);
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -559,7 +559,7 @@ fn interrupted_before(
     let operation_context = context();
     let mut runtime = CrashBeforeRuntime::new(&backend, &operation_context, target);
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -584,7 +584,7 @@ fn interrupted_after(
     let operation_context = context();
     let mut runtime = CrashAfterRuntime::new(&backend, &operation_context, target);
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -606,7 +606,7 @@ fn restart_after(target: PublicationPhysicalAction) {
     let mut crashing = CrashAfterRuntime::new(&backend, &context, target);
 
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::super::service::run(
+        super::super::service::run_test(
             &super::super::store::CheckedV1Store::default(),
             &root.path,
             &model.merge_id,
@@ -618,7 +618,7 @@ fn restart_after(target: PublicationPhysicalAction) {
     assert!(crashing.hit);
 
     let mut resumed = RecordingRuntime::new(&backend, &context);
-    let response = super::super::service::run(
+    let response = super::super::service::run_test(
         &super::super::store::CheckedV1Store::default(),
         &root.path,
         &model.merge_id,
