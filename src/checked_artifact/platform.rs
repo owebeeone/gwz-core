@@ -107,7 +107,9 @@ pub(super) fn rename_open_source(
     use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
     use windows_sys::Win32::Storage::FileSystem::*;
 
-    let name = destination.encode_wide().collect::<Vec<_>>();
+    let destination_path = windows_destination_path(destination_dir, destination)
+        .map_err(|cause| io_error(code, label, cause))?;
+    let name = destination_path.encode_wide().collect::<Vec<_>>();
     // Windows requires at least the fixed structure size plus the variable
     // name bytes, even though the fixed structure already contains its
     // one-element FileName placeholder.
@@ -116,7 +118,11 @@ pub(super) fn rename_open_source(
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     unsafe {
         (*info).Anonymous.ReplaceIfExists = replace;
-        (*info).RootDirectory = destination_dir.as_raw_handle();
+        // SetFileInformationByHandle rejects a non-null RootDirectory on
+        // supported Windows runners. The absolute path is derived from the
+        // retained directory handle, whose cap-std open prevents the target
+        // directory from being renamed or deleted while this operation runs.
+        (*info).RootDirectory = std::ptr::null_mut();
         (*info).FileNameLength = u32::try_from(name.len() * 2)
             .map_err(|_| error(code, label, "destination name is too long"))?;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
@@ -131,6 +137,71 @@ pub(super) fn rename_open_source(
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn windows_destination_path(
+    destination_dir: &Dir,
+    destination: &OsStr,
+) -> std::io::Result<OsString> {
+    use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
+    };
+
+    const MAX_PATH_UNITS: usize = 32_768;
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(512)
+        .map_err(|_| std::io::Error::other("allocate Windows destination path"))?;
+    buffer.resize(512, 0);
+    loop {
+        let capacity = u32::try_from(buffer.len()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows destination path buffer is too large",
+            )
+        })?;
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                destination_dir.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                capacity,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        };
+        if length == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let length = usize::try_from(length).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows destination path length is invalid",
+            )
+        })?;
+        if length < buffer.len() {
+            buffer.truncate(length);
+            let mut path = std::path::PathBuf::from(OsString::from_wide(&buffer));
+            path.push(destination);
+            return Ok(path.into_os_string());
+        }
+        let required = length.checked_add(1).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows destination path length overflowed",
+            )
+        })?;
+        if required > MAX_PATH_UNITS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows destination path exceeds the platform bound",
+            ));
+        }
+        buffer
+            .try_reserve_exact(required - buffer.len())
+            .map_err(|_| std::io::Error::other("grow Windows destination path"))?;
+        buffer.resize(required, 0);
+    }
 }
 
 #[cfg(not(windows))]
