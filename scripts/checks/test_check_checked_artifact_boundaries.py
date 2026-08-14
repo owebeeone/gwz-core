@@ -73,6 +73,8 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             "git/gitbackend/preservation_root/files.rs",
             "git/gitbackend/preservation_image.rs",
             "workspace_ops/merge/preserve/checked_bundle.rs",
+            "workspace_ops/merge/preserve/plan.rs",
+            "workspace_ops/merge/v1_lifecycle/authority/observe.rs",
         ]
         self.assertIn("clippy::disallowed_methods", crate)
         self.assertIn("raw writers are isolated from the checked merge boundary", crate)
@@ -104,6 +106,22 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         temporary, source = self.copied_source()
         self.addCleanup(temporary.cleanup)
         path = source / "workspace_ops/merge/root/artifact_facts.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "#![forbid(clippy::disallowed_methods)]",
+                "// #![forbid(clippy::disallowed_methods)]",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("compiler-resolved writer boundary is not fail-closed", result.stderr)
+
+    def test_commented_authority_tree_boundary_is_not_executable_protection(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "workspace_ops/merge/v1_lifecycle/authority/observe.rs"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
                 "#![forbid(clippy::disallowed_methods)]",
@@ -174,6 +192,81 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         result = run(source)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("protected source allowlist changed", result.stderr)
+
+    def test_preservation_plan_caller_is_inside_the_source_allowlist(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "workspace_ops/merge/preserve/plan.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "crate::git::observe_preservation_stashes_read_only(&plan.path, &record.merge_id)",
+                "{ std::fs::write(plan.path.join(\"raw-plan-writer\"), b\"bypass\").unwrap(); "
+                "crate::git::observe_preservation_stashes_read_only(&plan.path, &record.merge_id) }",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source allowlist changed", result.stderr)
+
+    def test_authority_observer_tree_rejects_a_nested_writer_helper(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = (
+            source
+            / "workspace_ops/merge/v1_lifecycle/authority/observe/reverse/preservation/phase.rs"
+        )
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nfn unreviewed_authority_writer(path: &std::path::Path) {\n"
+            "    let observe_preservation_stashes_read_only = std::fs::write;\n"
+            "    observe_preservation_stashes_read_only(path, b\"bypass\").unwrap();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source tree changed", result.stderr)
+
+    def test_authority_observer_tree_rejects_a_new_helper_file(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = (
+            source
+            / "workspace_ops/merge/v1_lifecycle/authority/observe/unreviewed_helper.rs"
+        )
+        path.write_text(
+            "fn write(path: &std::path::Path) { std::fs::write(path, b\"bypass\").unwrap(); }\n",
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source tree changed", result.stderr)
+
+    def test_authority_observer_tree_rejects_a_differently_named_backend_callback(
+        self,
+    ) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = (
+            source
+            / "workspace_ops/merge/v1_lifecycle/authority/observe/reverse/preservation/phase/evidence.rs"
+        )
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            .replace("    _backend: &B,", "    backend: &B,", 1)
+            .replace(
+                "    let stashes =\n",
+                "    let _unreviewed = backend.status(&plan.path)?;\n"
+                "    let stashes =\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source tree changed", result.stderr)
 
     def test_production_observer_delegate_cannot_leave_its_protected_leaf(self) -> None:
         temporary, source = self.copied_source()
@@ -414,6 +507,38 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             )
 
         self.assert_compiler_rejects(mutate, "gwz_core::artifact::write_atomic")
+
+    def test_compiler_rejects_nested_writer_in_authority_observer_tree(self) -> None:
+        def mutate(root: Path) -> None:
+            path = (
+                root
+                / "src/workspace_ops/merge/v1_lifecycle/authority/observe/reverse/preservation/phase.rs"
+            )
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\nfn unreviewed_authority_writer(path: &std::path::Path) {\n"
+                "    let observe_preservation_stashes_read_only = std::fs::write;\n"
+                "    observe_preservation_stashes_read_only(path, b\"bypass\").unwrap();\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+        self.assert_compiler_rejects(mutate, "std::fs::write")
+
+    def test_compiler_rejects_writer_in_preservation_plan_caller(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "src/workspace_ops/merge/preserve/plan.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "crate::git::observe_preservation_stashes_read_only(&plan.path, &record.merge_id)",
+                    "{ std::fs::write(plan.path.join(\"raw-plan-writer\"), b\"bypass\").unwrap(); "
+                    "crate::git::observe_preservation_stashes_read_only(&plan.path, &record.merge_id) }",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_compiler_rejects(mutate, "std::fs::write")
 
     def test_comments_and_strings_do_not_create_false_references(self) -> None:
         result = self.append(

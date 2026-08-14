@@ -1,3 +1,5 @@
+#![forbid(clippy::disallowed_methods)]
+
 use super::super::super::model::v1::rollback_cursor;
 use super::*;
 use crate::git::GitBackend;

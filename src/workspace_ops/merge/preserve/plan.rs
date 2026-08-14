@@ -1,3 +1,5 @@
+#![forbid(clippy::disallowed_methods)]
+
 use super::*;
 
 pub(super) fn plan_participant<B: GitBackend>(

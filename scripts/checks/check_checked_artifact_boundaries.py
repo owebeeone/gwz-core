@@ -17,7 +17,9 @@ PROTECTED_COMPILER_MODULES = {
     "git/gitbackend/preservation_root/files.rs",
     "git/gitbackend/preservation_image.rs",
     "workspace_ops/merge/preserve/checked_bundle.rs",
+    "workspace_ops/merge/preserve/plan.rs",
     "workspace_ops/merge/root/artifact_facts.rs",
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs",
 }
 
 # Complete positive allowlist for the small production boundary. Any executable
@@ -29,7 +31,15 @@ PROTECTED_SOURCE_DIGESTS = {
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "1a96e1921052895c836837def6d7c3c19fb6bf383ad8df9482a5960c1b2cbdac",
     "workspace_ops/merge/preserve/checked_bundle.rs": "19b65bc727b514bb88a1bbcbdce2f2f710926c6a27cfce396eac097a30911709",
+    "workspace_ops/merge/preserve/plan.rs": "1dd6750d1c426f912df1e136b2e8e552a146bb7e6722ff6fb4f21fc6652fc605",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
+}
+
+# Module-tree roots are protected as one path-and-byte manifest. This includes
+# the root module, every current descendant, and the descendant file set, so a
+# nested helper, a new source file, or a changed module edge fails closed.
+PROTECTED_SOURCE_TREE_DIGESTS = {
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "41d5d4db9f53b3275113d2f44caf36053c527824a5f0222270d759d4fde2e8e8",
 }
 
 ENTRY_REFERENCES = {
@@ -410,6 +420,23 @@ def mask_non_code(text: str) -> str:
     return "".join(output)
 
 
+def source_tree_digest(source: Path, root_relative: str) -> str:
+    root_file = source / root_relative
+    descendant_root = root_file.with_suffix("")
+    paths = [root_file]
+    if descendant_root.is_dir():
+        paths.extend(descendant_root.rglob("*.rs"))
+    digest = hashlib.sha256()
+    for path in sorted(paths, key=lambda value: value.relative_to(source).as_posix()):
+        relative = path.relative_to(source).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
 def calls(text: str) -> set[str]:
     result = set()
     for match in CALL.finditer(text):
@@ -433,6 +460,9 @@ def check(source: Path) -> list[str]:
         raw = path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != expected_digest:
             findings.append(f"protected source allowlist changed: {relative}")
+    for relative, expected_digest in sorted(PROTECTED_SOURCE_TREE_DIGESTS.items()):
+        if source_tree_digest(source, relative) != expected_digest:
+            findings.append(f"protected source tree changed: {relative}")
     for relative in sorted(PROTECTED_COMPILER_MODULES):
         raw = (source / relative).read_bytes()
         if forbid not in mask_non_code(raw.decode("utf-8")):
