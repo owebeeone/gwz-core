@@ -54,6 +54,7 @@ pub(super) fn open_rename_source<'a>(
 ) -> ModelResult<OpenedRenameSource<'a>> {
     use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
     use cap_std::fs::{OpenOptions, OpenOptionsExt};
+    use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::*;
 
     let mut options = OpenOptions::new();
@@ -491,12 +492,27 @@ mod windows_tests {
 
     #[test]
     fn rename_open_source_moves_the_checked_object_after_path_substitution() {
-        let temporary = tempfile::tempdir().unwrap();
-        let source_path = temporary.path().join("source");
-        let displaced_path = temporary.path().join("displaced");
-        let destination_path = temporary.path().join("destination");
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random).unwrap();
+        let temporary = std::env::temp_dir().join(format!(
+            "gwz-platform-{}-{}",
+            std::process::id(),
+            hex(&random)
+        ));
+        std::fs::create_dir(&temporary).unwrap();
+        let _cleanup = Cleanup(temporary.clone());
+        let source_path = temporary.join("source");
+        let displaced_path = temporary.join("displaced");
+        let destination_path = temporary.join("destination");
         std::fs::write(&source_path, b"checked\n").unwrap();
-        let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+        let directory = Dir::open_ambient_dir(&temporary, ambient_authority()).unwrap();
         let source = open_rename_source(
             &directory,
             OsStr::new("source"),
