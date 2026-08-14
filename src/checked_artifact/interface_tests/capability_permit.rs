@@ -97,6 +97,66 @@ fn catalog_batch_ordering_has_no_allocating_stable_sort() {
 }
 
 #[test]
+fn catalog_owner_surface_is_sealed_and_lease_only() {
+    let catalog = include_str!("../catalog.rs");
+    let owner = include_str!("../catalog/bootstrap.rs");
+
+    for required in [
+        "mod bootstrap;",
+        "pub(in crate::checked_artifact) use bootstrap::{",
+        "CatalogOwnerV1",
+        "OpaqueRetainedCatalogV1",
+        "recover_or_create",
+    ] {
+        assert!(
+            catalog.contains(required),
+            "missing C2 catalog-owner interface: {required}"
+        );
+    }
+    for forbidden in [
+        "bootstrap: &Bootstrap",
+        "expected: &CatalogBootstrapRecordV1",
+        "token: CatalogBootstrapOwnershipTokenV1",
+        "raw_roles:",
+        "provider: impl",
+    ] {
+        assert!(
+            !catalog.contains(forbidden),
+            "catalog owner exposes forbidden caller authority: {forbidden}"
+        );
+    }
+
+    for required in [
+        "lease: CatalogMutationLeaseV1<'_>",
+        ") -> Result<OpaqueRetainedCatalogV1<'_>, CheckedFsError>",
+        "CatalogOwnerV1::recover_or_create(lease)",
+        "CatalogPreflightV1::MissingGitPrivateParent",
+        "CatalogPreflightV1::Ready",
+        "CatalogOwnerStepV1::Retry",
+        "CatalogOwnerStepV1::Complete",
+    ] {
+        assert!(
+            owner.contains(required),
+            "missing sealed C2 owner transition: {required}"
+        );
+    }
+    for forbidden in [
+        "dyn ",
+        "Box<dyn",
+        "provider: impl",
+        "root: &Path",
+        "raw_roles:",
+        "expected: &CatalogBootstrapRecordV1",
+        "bootstrap: &",
+    ] {
+        assert!(
+            !owner.contains(forbidden),
+            "sealed C2 owner exposes caller-supplied authority: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn ready_and_missing_parent_permits_have_disjoint_exact_authority_fields() {
     let source = include_str!("../capability/pre_catalog.rs");
     let ready = struct_body(source, "CatalogPermitV1");

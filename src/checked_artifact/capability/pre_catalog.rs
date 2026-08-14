@@ -7,15 +7,13 @@ use super::{
     CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1, SupportedFilesystemProfile,
 };
 use crate::checked_artifact::bootstrap::CatalogLeaseTargetWitnessV1;
-#[cfg(test)]
 use crate::checked_artifact::catalog::CatalogScratchNameV1;
 use crate::checked_artifact::catalog::{
     CatalogAttemptBindingV1, CatalogClassificationV1, classify_catalog_attempt,
 };
+use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 #[cfg(test)]
-use crate::checked_artifact::protocol::{
-    CatalogBootstrapOwnershipTokenV1, CatalogBootstrapRecordV1,
-};
+use crate::checked_artifact::protocol::CatalogBootstrapRecordV1;
 
 mod provider;
 
@@ -102,7 +100,7 @@ pub(in crate::checked_artifact) struct MissingCatalogParentPermitV1<'lease> {
     _missing_parent_observation_digest: MissingParentObservationDigestV1,
 }
 
-impl CatalogPermitV1<'_> {
+impl<'lease> CatalogPermitV1<'lease> {
     #[allow(dead_code, reason = "R2-C2 revalidates before every physical edge")]
     pub(in crate::checked_artifact) fn revalidate_target_binding(
         &self,
@@ -151,6 +149,88 @@ impl CatalogPermitV1<'_> {
             &self._attempt_binding,
             provider::outer_aggregate_facts(&self._raw_roles),
         )
+    }
+
+    pub(in crate::checked_artifact) fn execute_write_or_rewrite_scratch(
+        self: Box<Self>,
+        token: CatalogBootstrapOwnershipTokenV1,
+    ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        self.revalidate_observation()?;
+        let scratch = CatalogScratchNameV1::new(
+            self._durable_target_digest,
+            self._historical_collision_digest,
+            token,
+        );
+        let record = self
+            ._attempt_binding
+            .record_from_scratch(&scratch)
+            .map_err(|_| {
+                CheckedFsError::ambiguous(
+                    "catalog scratch",
+                    "scratch values do not match the retained attempt binding",
+                )
+            })?;
+        let classification = self.classify_observed();
+        let create_new = classification.expected_record().is_none();
+        if classification.decision()
+            != crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::WriteOrRewriteScratch
+            || classification
+                .expected_record()
+                .is_some_and(|expected| expected != &record)
+        {
+            return Err(CheckedFsError::ambiguous(
+                "catalog scratch",
+                "ready permit does not authorize this scratch edge",
+            ));
+        }
+        provider::write_or_rewrite_scratch(&self._retained_root, &scratch, &record, create_new)?;
+        Ok(self.into_target())
+    }
+
+    pub(in crate::checked_artifact) fn execute_publish_active(
+        self: Box<Self>,
+    ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        self.revalidate_observation()?;
+        let classification = self.classify_observed();
+        if classification.decision()
+            != crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::PublishActive
+        {
+            return Err(CheckedFsError::ambiguous(
+                "catalog active publication",
+                "ready permit does not authorize active publication",
+            ));
+        }
+        let record = classification.expected_record().ok_or_else(|| {
+            CheckedFsError::ambiguous(
+                "catalog active publication",
+                "published scratch has no expected record",
+            )
+        })?;
+        let scratch = CatalogScratchNameV1::new(
+            record.durable_target_digest(),
+            record.historical_collision_digest(),
+            record.bootstrap_ownership_token(),
+        );
+        provider::publish_active_record(&self._retained_root, &scratch)?;
+        Ok(self.into_target())
+    }
+
+    fn into_target(self: Box<Self>) -> CatalogLeaseTargetWitnessV1<'lease> {
+        let Self {
+            _catalog_target,
+            _retained_root: _,
+            _support_profile: _,
+            _root_identity: _,
+            _root_invocation_identity: _,
+            _rename_domain: _,
+            _path_profile: _,
+            _raw_roles: _,
+            _fresh_observation_digest: _,
+            _durable_target_digest: _,
+            _historical_collision_digest: _,
+            _attempt_binding: _,
+        } = *self;
+        _catalog_target
     }
 
     #[cfg(test)]
@@ -209,7 +289,7 @@ impl<'lease> CatalogPermitV1<'lease> {
     }
 }
 
-impl MissingCatalogParentPermitV1<'_> {
+impl<'lease> MissingCatalogParentPermitV1<'lease> {
     #[allow(dead_code, reason = "R2-C2 revalidates the one missing-parent edge")]
     pub(in crate::checked_artifact) fn revalidate_target_binding(
         &self,
@@ -229,6 +309,19 @@ impl MissingCatalogParentPermitV1<'_> {
         &self,
     ) -> MissingParentObservationDigestV1 {
         self._missing_parent_observation_digest
+    }
+
+    pub(in crate::checked_artifact) fn execute_create_and_retry(
+        self: Box<Self>,
+    ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        self.revalidate_observation()?;
+        provider::create_git_private_parent(&self._retained_root)?;
+        let Self {
+            _catalog_target,
+            _retained_root: _,
+            _missing_parent_observation_digest: _,
+        } = *self;
+        Ok(_catalog_target)
     }
 }
 

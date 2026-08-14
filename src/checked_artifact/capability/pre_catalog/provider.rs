@@ -13,6 +13,7 @@ mod aggregate;
 mod digests;
 mod filesystem;
 mod index;
+mod mutation;
 mod namespace;
 mod platform;
 mod retained;
@@ -35,6 +36,9 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_bound_obs
 }
 pub(in crate::checked_artifact::capability::pre_catalog) use aggregate::outer_aggregate_facts;
 pub(in crate::checked_artifact::capability::pre_catalog) use digests::ReadyObservationDigestsV1;
+pub(in crate::checked_artifact::capability::pre_catalog) use mutation::{
+    create_git_private_parent, publish_active_record, write_or_rewrite_scratch,
+};
 pub(in crate::checked_artifact) use platform::HostPlatform;
 pub(in crate::checked_artifact::capability::pre_catalog) use retained::RetainedPlatformRoot;
 

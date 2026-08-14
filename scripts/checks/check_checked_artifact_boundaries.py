@@ -150,8 +150,8 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "d9b5d57d08be29edcc4f905a1721032db37c52fd5e040dbbc9a88a417e01d4d0",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "f08494b13ced60a63cba0b294bd03f29d900925b895c4216df90a3a34e918576",
-    "checked_artifact/catalog.rs": "27afd2b0ff3c58a5a5ef45619ce7dbcfeb1919bfe59981fbce11d3ec68df86e4",
+    "checked_artifact/capability/pre_catalog.rs": "601913e71ef15ec5d00540ba4847ec945cdca96d003a8df48b1a5e099efdcea2",
+    "checked_artifact/catalog.rs": "cbf344c6de78be3ce04d8448d844d4c830b02c624828a1991172a9303f36bd6e",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }
@@ -487,6 +487,7 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/bootstrap/runtime/catalog_lease.rs",
         "checked_artifact/bootstrap/runtime/catalog_lease/witness.rs",
         "checked_artifact/bootstrap/runtime/mod.rs",
+        "checked_artifact/catalog/bootstrap.rs",
         "checked_artifact/mod.rs",
         "operation/workspace_mutator_lock.rs",
     },
@@ -499,6 +500,7 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider.rs",
         "checked_artifact/capability/pre_catalog/provider/filesystem.rs",
         "checked_artifact/capability/pre_catalog/provider/filesystem/bound.rs",
+        "checked_artifact/catalog/bootstrap.rs",
     },
     "begin_preflight": {
         "checked_artifact/bootstrap/runtime/catalog_lease.rs",
@@ -506,6 +508,7 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider/catalog_tests/grammar.rs",
         "checked_artifact/capability/pre_catalog/provider/catalog_tests/preflight.rs",
         "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
+        "checked_artifact/catalog/bootstrap.rs",
     },
     "inspect_bound_catalog_target": {
         "checked_artifact/capability/pre_catalog.rs",
