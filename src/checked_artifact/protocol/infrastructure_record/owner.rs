@@ -1,7 +1,7 @@
 //! Aggregate, role-bound first-catalog recovery owner.
 
 use super::*;
-use crate::checked_artifact::capability::{CanonicalPathIdentityV1, CheckedFsError};
+use crate::checked_artifact::capability::{CheckedFsError, DurablePathV1};
 use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 use crate::checked_artifact::protocol::{
     CatalogBootstrapRecordV1, CatalogBootstrapRecoveryDecisionV1, CatalogRecordObservationV1,
@@ -47,7 +47,7 @@ struct RawOwnedCatalogCandidateV1 {
     marker_bootstrap_record_id: [u8; 32],
     marker_ownership_token: [u8; 32],
     retained_parent_identity: DurableObjectIdentityV1,
-    retained_parent_path: CanonicalPathIdentityV1,
+    retained_parent_path: DurablePathV1,
     directory_identity: DurableObjectIdentityV1,
     identities: ObservedInfrastructureIdentitiesV1,
     stored_record: Option<InfrastructureRecordV1>,

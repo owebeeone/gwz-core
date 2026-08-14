@@ -4,7 +4,7 @@ use super::backend::ProviderBinding;
 use super::{BootstrapComponentSlots, binding_error};
 use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1,
-    PathComponentMode,
+    DurablePathV1, PathComponentMode,
 };
 use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, BootstrapComponentOrdinalV1, BootstrapOrdinalV1,
@@ -37,7 +37,7 @@ pub(in crate::checked_artifact) struct ManagedMarkerRetirementRequestV1 {
     expected_marker_object_identity: DurableObjectIdentityV1,
     installed_parent_identity: DurableObjectIdentityV1,
     installed_parent_mode: PathComponentMode,
-    installed_parent_path: CanonicalPathIdentityV1,
+    installed_parent_path: DurablePathV1,
 }
 
 pub(in crate::checked_artifact) struct ManagedInstallObservationV1 {
@@ -182,12 +182,13 @@ impl ManagedMarkerRetirementRequestV1 {
         installed_parent_mode: PathComponentMode,
         installed_parent_path: CanonicalPathIdentityV1,
     ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        let durable_installed_parent_path = DurablePathV1::from_live(&installed_parent_path)?;
         if provider != self.binding.provider
             || marker.marker_id() != self.expected_marker_id
             || retired_marker_identity != self.expected_marker_object_identity
             || installed_parent_identity != self.installed_parent_identity
             || installed_parent_mode != self.installed_parent_mode
-            || installed_parent_path != self.installed_parent_path
+            || durable_installed_parent_path != self.installed_parent_path
         {
             return Err(binding_error(
                 "managed marker retirement observation binding mismatch",
@@ -211,7 +212,8 @@ impl ManagedMarkerRetirementRequestV1 {
     ) -> bool {
         marker_identity == &self.expected_marker_object_identity
             && installed_parent_identity == &self.installed_parent_identity
-            && installed_parent_path == &self.installed_parent_path
+            && DurablePathV1::from_live(installed_parent_path)
+                .is_ok_and(|path| path == self.installed_parent_path)
     }
 }
 

@@ -1,16 +1,9 @@
-use std::path::Path;
-
-use super::super::bootstrap::CatalogBootstrapV1;
 use super::super::capability::{
-    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1,
-    RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
-    synthetic_pre_catalog_permit,
+    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, DurableCatalogTargetDigestV1,
+    DurableObjectIdentityV1, FreshObservationDigestV1, HistoricalCollisionDigestV1,
+    MissingParentObservationDigestV1, PathComponentMode,
 };
 use super::super::catalog_names::CatalogPrivateNameV1;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct RetainedRoot(u8);
 
 fn identity(value: u8) -> DurableObjectIdentityV1 {
     DurableObjectIdentityV1::linux_ext4([value; 16], 1, vec![value]).unwrap()
@@ -38,161 +31,94 @@ fn path(root: u8, invocation: u8, domain: u8) -> CanonicalPathIdentityV1 {
     .unwrap()
 }
 
-struct Catalog {
-    probe: super::super::capability::SyntheticPreCatalogProbeV1,
-}
+#[test]
+fn catalog_digest_domains_are_distinct_nonconvertible_types() {
+    let fresh = FreshObservationDigestV1::owner_issue([1; 32]);
+    let target = DurableCatalogTargetDigestV1::owner_issue([2; 32]);
+    let historical = HistoricalCollisionDigestV1::owner_issue([3; 32]);
+    let missing = MissingParentObservationDigestV1::owner_issue([4; 32]);
 
-impl CatalogBootstrapV1<RetainedRoot> for Catalog {
-    type Catalog = [u8; 32];
-
-    fn recover_or_create(
-        &self,
-        permit: RevalidatedPreCatalogPermitV1<'_, RetainedRoot>,
-    ) -> Result<Self::Catalog, CheckedFsError> {
-        self.probe.note_bootstrap();
-        Ok(permit.collision_snapshot_digest())
-    }
-}
-
-fn owner() -> (
-    super::super::capability::PreCatalogOwnerV1<Path, RetainedRoot>,
-    super::super::capability::SyntheticPreCatalogProbeV1,
-) {
-    synthetic_pre_catalog_owner(
-        RetainedRoot(1),
-        SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
-        identity(1),
-        vec![2],
-        vec![3],
-        path(1, 2, 3),
-    )
+    assert_eq!(fresh.bytes(), [1; 32]);
+    assert_eq!(target.bytes(), [2; 32]);
+    assert_eq!(historical.bytes(), [3; 32]);
+    assert_eq!(missing.bytes(), [4; 32]);
 }
 
 #[test]
-fn owner_structurally_revalidates_immediately_before_catalog_bootstrap() {
-    let (owner, probe) = owner();
-    for kind in [
-        PreCatalogRootKindV1::Workspace,
-        PreCatalogRootKindV1::GitDirectory,
+fn catalog_preflight_surface_has_no_path_plus_lease_or_callback_seam() {
+    let pre_catalog = include_str!("../capability/pre_catalog.rs");
+    let bootstrap = include_str!("../bootstrap.rs");
+    let lease = include_str!("../bootstrap/runtime/catalog_lease.rs");
+    let combined = format!("{pre_catalog}\n{bootstrap}\n{lease}");
+
+    for forbidden in [
+        "CatalogBootstrapV1",
+        "RevalidatedPreCatalogPermitV1",
+        "lease_binding",
+        "recover_or_create_workspace",
+        "recover_or_create_git_directory",
+        "bootstrap: &Bootstrap",
     ] {
-        probe.clear_events();
-        let catalog = Catalog {
-            probe: probe.clone(),
-        };
-        let value = match kind {
-            PreCatalogRootKindV1::Workspace => {
-                owner.recover_or_create_workspace(Path::new("."), [9; 32], &catalog)
-            }
-            PreCatalogRootKindV1::GitDirectory => {
-                owner.recover_or_create_git_directory(Path::new("."), [9; 32], &catalog)
-            }
-        }
-        .unwrap();
-        let (digest, events) = match kind {
-            PreCatalogRootKindV1::Workspace => (
-                [0x40; 32],
-                ["observe-workspace", "revalidate-workspace", "bootstrap"],
-            ),
-            PreCatalogRootKindV1::GitDirectory => (
-                [0x80; 32],
-                [
-                    "observe-git-directory",
-                    "revalidate-git-directory",
-                    "bootstrap",
-                ],
-            ),
-        };
-        assert_eq!(value, digest);
-        assert_eq!(probe.events(), events);
+        assert!(
+            !combined.contains(forbidden),
+            "forbidden provisional catalog interface remains: {forbidden}"
+        );
+    }
+    for required in [
+        "CatalogPreflightV1",
+        "MissingGitPrivateParent(Box<MissingCatalogParentPermitV1",
+        "Ready(Box<CatalogPermitV1",
+        "CatalogMutationLeaseV1<'lease>",
+        "CatalogLeaseSetV1",
+    ] {
+        assert!(
+            combined.contains(required),
+            "missing C0 interface: {required}"
+        );
     }
 }
 
 #[test]
-fn failed_immediate_revalidation_cannot_enter_catalog_bootstrap() {
-    let (owner, probe) = owner();
-    probe.reject_revalidation();
-    assert!(
-        owner
-            .recover_or_create_workspace(
-                Path::new("."),
-                [9; 32],
-                &Catalog {
-                    probe: probe.clone(),
-                },
-            )
-            .is_err()
-    );
-    assert_eq!(
-        probe.events(),
-        ["observe-workspace", "revalidate-workspace"]
-    );
+fn ready_and_missing_parent_permits_have_disjoint_exact_authority_fields() {
+    let source = include_str!("../capability/pre_catalog.rs");
+    let ready = struct_body(source, "CatalogPermitV1");
+    for field in [
+        "_catalog_target_lease",
+        "_retained_root",
+        "_raw_roles",
+        "_fresh_observation_digest",
+        "_durable_target_digest",
+        "_historical_collision_digest",
+    ] {
+        assert!(ready.contains(field), "ready permit is missing {field}");
+    }
+
+    let missing = struct_body(source, "MissingCatalogParentPermitV1");
+    for field in [
+        "_catalog_target_lease",
+        "_retained_root",
+        "_missing_parent_observation_digest",
+    ] {
+        assert!(
+            missing.contains(field),
+            "missing-parent permit is missing {field}"
+        );
+    }
+    for forbidden in [
+        "_raw_roles",
+        "_fresh_observation_digest",
+        "_durable_target_digest",
+        "_historical_collision_digest",
+    ] {
+        assert!(
+            !missing.contains(forbidden),
+            "missing-parent permit gained ready authority: {forbidden}"
+        );
+    }
 }
 
 #[test]
-fn changed_collision_snapshot_cannot_enter_catalog_bootstrap() {
-    let (owner, probe) = owner();
-    probe.change_snapshot_after_observe();
-    assert!(
-        owner
-            .recover_or_create_workspace(
-                Path::new("."),
-                [9; 32],
-                &Catalog {
-                    probe: probe.clone(),
-                },
-            )
-            .is_err()
-    );
-    assert_eq!(
-        probe.events(),
-        ["observe-workspace", "revalidate-workspace"]
-    );
-}
-
-#[test]
-fn profile_identity_and_path_root_substitution_reject() {
-    let wrong_profile = synthetic_pre_catalog_permit(
-        RetainedRoot(1),
-        SupportedFilesystemProfile::WindowsNtfsFileId128V1,
-        identity(1),
-        vec![2],
-        vec![3],
-        path(1, 2, 3),
-        [4; 32],
-        [5; 32],
-        PreCatalogRootKindV1::Workspace,
-    );
-    assert!(wrong_profile.is_err());
-
-    let wrong_root = synthetic_pre_catalog_permit(
-        RetainedRoot(1),
-        SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
-        identity(1),
-        vec![2],
-        vec![3],
-        path(9, 2, 3),
-        [4; 32],
-        [5; 32],
-        PreCatalogRootKindV1::Workspace,
-    );
-    assert!(wrong_root.is_err());
-
-    let wrong_invocation = synthetic_pre_catalog_permit(
-        RetainedRoot(1),
-        SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
-        identity(1),
-        vec![2],
-        vec![3],
-        path(1, 8, 3),
-        [4; 32],
-        [5; 32],
-        PreCatalogRootKindV1::Workspace,
-    );
-    assert!(wrong_invocation.is_err());
-}
-
-#[test]
-fn every_intermediate_parent_identity_mode_and_domain_is_persisted() {
+fn every_live_path_component_retains_identity_mode_and_domain() {
     let value = path(1, 2, 3);
     assert_eq!(value.components().len(), 2);
     assert_eq!(
@@ -207,4 +133,14 @@ fn every_intermediate_parent_identity_mode_and_domain_is_persisted() {
     assert_eq!(value.components()[1].parent_invocation_identity(), [3]);
     assert_eq!(value.components()[0].rename_domain(), [3]);
     assert_eq!(value.components()[1].rename_domain(), [3]);
+}
+
+fn struct_body<'a>(source: &'a str, name: &str) -> &'a str {
+    source
+        .split_once(&format!("struct {name}"))
+        .unwrap()
+        .1
+        .split_once('}')
+        .unwrap()
+        .0
 }

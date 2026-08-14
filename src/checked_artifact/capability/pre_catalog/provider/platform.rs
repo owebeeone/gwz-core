@@ -18,7 +18,7 @@ mod imp;
 #[path = "platform/unsupported.rs"]
 mod imp;
 
-pub(super) struct HostPlatform;
+pub(in crate::checked_artifact) struct HostPlatform;
 
 impl PathEquivalenceProvider<Dir> for HostPlatform {
     fn parent_mode(&self, parent: &Dir) -> Result<PathComponentMode, CheckedFsError> {

@@ -5,7 +5,7 @@ use std::io::{self, Read};
 use super::cleanup::DurableLeafFingerprintV1;
 use super::generated;
 use crate::checked_artifact::capability::{
-    AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, SupportedFilesystemProfile,
+    AsciiComponent, DurableObjectIdentityV1, DurablePathV1, SupportedFilesystemProfile,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,7 +19,7 @@ pub(in crate::checked_artifact) enum ProtocolRecordKindV1 {
     Infrastructure,
     Marker,
     CleanupWorklist,
-    CanonicalPathIdentity,
+    DurablePath,
 }
 
 impl ProtocolRecordKindV1 {
@@ -33,7 +33,7 @@ impl ProtocolRecordKindV1 {
         Self::Infrastructure,
         Self::Marker,
         Self::CleanupWorklist,
-        Self::CanonicalPathIdentity,
+        Self::DurablePath,
     ];
 
     pub(in crate::checked_artifact) const fn stable_name(self) -> &'static str {
@@ -47,7 +47,7 @@ impl ProtocolRecordKindV1 {
             Self::Infrastructure => "infrastructure",
             Self::Marker => "marker",
             Self::CleanupWorklist => "cleanup_worklist",
-            Self::CanonicalPathIdentity => "canonical_path_identity",
+            Self::DurablePath => "durable_path",
         }
     }
 
@@ -61,7 +61,7 @@ impl ProtocolRecordKindV1 {
             | Self::CatalogBootstrap
             | Self::CleanupWorklist => 16 * 1024,
             Self::Infrastructure => 8 * 1024,
-            Self::Marker | Self::CanonicalPathIdentity => 4 * 1024,
+            Self::Marker | Self::DurablePath => 4 * 1024,
         }
     }
 }
@@ -212,9 +212,10 @@ pub(super) fn decode_identity(
 }
 
 pub(super) fn decode_path(
-    value: generated::CheckedCanonicalPathIdentityV1,
-) -> Result<CanonicalPathIdentityV1, ProtocolCodecErrorV1> {
-    crate::checked_artifact::capability::decode_canonical_path_value(value)
+    value: generated::CheckedDurablePathV1,
+) -> Result<DurablePathV1, ProtocolCodecErrorV1> {
+    DurablePathV1::decode_canonical(&crate::cbor::encode(&value.to_cbor()))
+        .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid durable path"))
 }
 
 pub(super) fn decode_ascii(value: &[u8]) -> Result<AsciiComponent, ProtocolCodecErrorV1> {
@@ -223,7 +224,7 @@ pub(super) fn decode_ascii(value: &[u8]) -> Result<AsciiComponent, ProtocolCodec
 }
 
 pub(super) fn path_matches_profile(
-    path: &CanonicalPathIdentityV1,
+    path: &DurablePathV1,
     profile: SupportedFilesystemProfile,
 ) -> bool {
     path.components()

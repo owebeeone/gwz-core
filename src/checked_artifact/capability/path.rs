@@ -1,7 +1,10 @@
-//! Component-wise, identity-bound canonical path records.
+//! Component-wise, identity-bound live path observations.
 
 use super::{CheckedFsError, DurableObjectIdentityV1, PlatformCapability};
-use crate::checked_artifact::protocol::generated;
+
+mod durable;
+
+pub(in crate::checked_artifact) use durable::*;
 
 pub(in crate::checked_artifact) const MAX_PATH_COMPONENT_BYTES: usize = 255;
 pub(in crate::checked_artifact) const MAX_CANONICAL_PATH_IDENTITY_BYTES: usize = 4 * 1024;
@@ -140,12 +143,7 @@ impl CanonicalPathIdentityV1 {
             ));
         }
         let value = Self { components };
-        if value.encode_canonical().len() > MAX_CANONICAL_PATH_IDENTITY_BYTES {
-            return Err(CheckedFsError::unsupported(
-                PlatformCapability::PathEquivalence,
-                "canonical path identity exceeds 4 KiB",
-            ));
-        }
+        DurablePathV1::from_live(&value)?;
         Ok(value)
     }
 
@@ -153,95 +151,34 @@ impl CanonicalPathIdentityV1 {
         &self.components
     }
 
-    pub(in crate::checked_artifact) fn encode_canonical(&self) -> Vec<u8> {
-        crate::cbor::encode(&self.to_generated().to_cbor())
-    }
-
-    #[cfg_attr(test, allow(dead_code))]
-    pub(super) fn decode_canonical(bytes: &[u8]) -> Result<Self, CheckedFsError> {
-        let cbor = crate::cbor::try_decode(bytes).map_err(|_| {
-            CheckedFsError::ambiguous("canonical path identity", "invalid taut encoding")
-        })?;
-        let wire = generated::CheckedCanonicalPathIdentityV1::from_cbor(&cbor).map_err(|_| {
-            CheckedFsError::ambiguous("canonical path identity", "invalid taut record shape")
-        })?;
-        let mut components = Vec::new();
-        components
-            .try_reserve_exact(wire.components.len())
-            .map_err(|_| {
-                CheckedFsError::unsupported(
-                    PlatformCapability::PathEquivalence,
-                    "canonical path component allocation failed",
-                )
-            })?;
-        for value in wire.components {
-            let mode = match value.parent_mode {
-                generated::CheckedPathComponentMode::Sensitive => PathComponentMode::Sensitive,
-                generated::CheckedPathComponentMode::AsciiCaseFold => {
-                    PathComponentMode::AsciiCaseFold
-                }
-            };
-            let original = AsciiComponent::parse(&value.original_ascii)?;
-            let parent_identity = DurableObjectIdentityV1::decode_canonical(&crate::cbor::encode(
-                &value.parent_durable_identity.to_cbor(),
-            ))?;
-            let component = CanonicalComponent::try_bound(
-                original,
-                mode,
-                parent_identity,
-                value.parent_invocation_identity,
-                value.rename_domain,
-            )?;
-            if value.canonical_ascii != component.canonical_ascii() {
-                return Err(CheckedFsError::ambiguous(
-                    "canonical path identity",
-                    "stored component is not canonical",
-                ));
-            }
-            components.push(component);
+    /// Deterministic same-process digest material. This includes invocation
+    /// identities and rename domains but is never a durable wire record.
+    pub(in crate::checked_artifact) fn fresh_digest_material(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        frame(&mut bytes, b"gwz-live-canonical-path-v1\0");
+        frame(&mut bytes, &(self.components.len() as u64).to_be_bytes());
+        for component in &self.components {
+            frame(&mut bytes, component.original_ascii.as_bytes());
+            frame(
+                &mut bytes,
+                &[match component.parent_mode {
+                    PathComponentMode::Sensitive => 0,
+                    PathComponentMode::AsciiCaseFold => 1,
+                }],
+            );
+            frame(&mut bytes, &component.canonical_ascii);
+            frame(
+                &mut bytes,
+                &component.parent_durable_identity.encode_canonical(),
+            );
+            frame(&mut bytes, &component.parent_invocation_identity);
+            frame(&mut bytes, &component.rename_domain);
         }
-        let value = Self::new(components)?;
-        if value.encode_canonical() != bytes {
-            return Err(CheckedFsError::ambiguous(
-                "canonical path identity",
-                "noncanonical encoding",
-            ));
-        }
-        Ok(value)
-    }
-
-    pub(in crate::checked_artifact) fn to_generated(
-        &self,
-    ) -> generated::CheckedCanonicalPathIdentityV1 {
-        generated::CheckedCanonicalPathIdentityV1 {
-            components: self
-                .components
-                .iter()
-                .map(|component| generated::CheckedCanonicalComponentV1 {
-                    original_ascii: component.original_ascii.as_bytes().to_vec(),
-                    parent_mode: match component.parent_mode {
-                        PathComponentMode::Sensitive => {
-                            generated::CheckedPathComponentMode::Sensitive
-                        }
-                        PathComponentMode::AsciiCaseFold => {
-                            generated::CheckedPathComponentMode::AsciiCaseFold
-                        }
-                    },
-                    canonical_ascii: component.canonical_ascii.clone(),
-                    parent_durable_identity: component.parent_durable_identity.to_generated(),
-                    parent_invocation_identity: component.parent_invocation_identity.clone(),
-                    rename_domain: component.rename_domain.clone(),
-                })
-                .collect(),
-        }
+        bytes
     }
 }
 
-#[cfg(test)]
-impl CanonicalPathIdentityV1 {
-    pub(in crate::checked_artifact) fn decode_canonical_for_test(
-        bytes: &[u8],
-    ) -> Result<Self, CheckedFsError> {
-        Self::decode_canonical(bytes)
-    }
+fn frame(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    output.extend_from_slice(value);
 }

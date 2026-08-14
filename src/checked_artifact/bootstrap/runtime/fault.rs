@@ -2,8 +2,11 @@ use std::cell::RefCell;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RuntimeBootstrapFault {
-    AfterFinalLeaseOpen,
-    AfterFinalLeaseLock,
+    FinalLeaseOpen,
+    FinalLeaseLock,
+    CatalogPreparation,
+    CatalogFinalLeaseOpen,
+    CatalogFinalLeaseLock,
 }
 
 type Callback = Box<dyn FnOnce()>;

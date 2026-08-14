@@ -1,10 +1,9 @@
 use std::path::Path;
 
-use super::super::bootstrap::CatalogBootstrapV1;
 use super::super::capability::{
-    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, PathComponentMode, PrivateControlDomain,
-    RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
+    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, DurableCatalogTargetDigestV1,
+    DurableObjectIdentityV1, DurablePathV1, HistoricalCollisionDigestV1, PathComponentMode,
+    PreCatalogRootKindV1, PrivateControlDomain, SupportedFilesystemProfile,
 };
 use super::super::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
 use super::super::policy::CheckedArtifactPolicy;
@@ -33,34 +32,17 @@ fn path(byte: u8) -> CanonicalPathIdentityV1 {
     .unwrap()
 }
 
-struct CatalogRecordBuilder;
-
-impl CatalogBootstrapV1<()> for CatalogRecordBuilder {
-    type Catalog = CatalogBootstrapRecordV1;
-
-    fn recover_or_create(
-        &self,
-        permit: RevalidatedPreCatalogPermitV1<'_, ()>,
-    ) -> Result<Self::Catalog, CheckedFsError> {
-        Ok(CatalogBootstrapRecordV1::from_revalidated_permit(
-            permit,
-            CatalogBootstrapOwnershipTokenV1::try_from_random_bytes([91; 32]).unwrap(),
-        ))
-    }
-}
-
 fn catalog() -> CatalogBootstrapRecordV1 {
-    let (owner, _) = synthetic_pre_catalog_owner(
-        (),
+    let live_path = path(1);
+    CatalogBootstrapRecordV1::synthetic_for_test(
+        PreCatalogRootKindV1::Workspace,
         SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
+        DurableCatalogTargetDigestV1::owner_issue([2; 32]),
+        HistoricalCollisionDigestV1::owner_issue([3; 32]),
         identity(1),
-        vec![1; 16],
-        vec![1; 16],
-        path(1),
-    );
-    owner
-        .recover_or_create_workspace(Path::new("."), [2; 32], &CatalogRecordBuilder)
-        .unwrap()
+        DurablePathV1::from_live(&live_path).unwrap(),
+        CatalogBootstrapOwnershipTokenV1::try_from_random_bytes([91; 32]).unwrap(),
+    )
 }
 
 fn identities() -> ObservedInfrastructureIdentitiesV1 {

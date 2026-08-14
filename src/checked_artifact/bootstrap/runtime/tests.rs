@@ -18,7 +18,7 @@ fn changed_final_identity_between_open_and_lock_is_rejected() {
     fs::create_dir_all(&locks).unwrap();
     let lease = locks.join(WORKSPACE_MUTATOR_LOCK_NAME);
     fs::write(&lease, b"first").unwrap();
-    run_next_at(RuntimeBootstrapFault::AfterFinalLeaseOpen, {
+    run_next_at(RuntimeBootstrapFault::FinalLeaseOpen, {
         let lease = lease.clone();
         move || {
             fs::remove_file(&lease).unwrap();
@@ -34,7 +34,7 @@ fn changed_final_identity_between_open_and_lock_is_rejected() {
 #[test]
 fn substituted_runtime_parent_after_final_lock_is_rejected() {
     let temp = TempRepo::new("substituted-parent");
-    run_next_at(RuntimeBootstrapFault::AfterFinalLeaseLock, {
+    run_next_at(RuntimeBootstrapFault::FinalLeaseLock, {
         let root = temp.path().to_path_buf();
         move || {
             let runtime = root.join(crate::workspace::RUNTIME_DIR);
@@ -70,7 +70,7 @@ fn changed_linked_worktree_git_indirection_after_lock_is_rejected() {
     let linked_root = linked_parent.path().join("linked");
     let main_repo = git2::Repository::open(main.path()).unwrap();
     main_repo.worktree("linked", &linked_root, None).unwrap();
-    run_next_at(RuntimeBootstrapFault::AfterFinalLeaseLock, {
+    run_next_at(RuntimeBootstrapFault::FinalLeaseLock, {
         let git_file = linked_root.join(".git");
         let replacement_git_dir = main_repo.path().to_path_buf();
         move || {

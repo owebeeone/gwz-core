@@ -25,7 +25,7 @@ fn codec_limit_table_is_literal_and_complete() {
             ("infrastructure", 8 * 1024),
             ("marker", 4 * 1024),
             ("cleanup_worklist", 16 * 1024),
-            ("canonical_path_identity", 4 * 1024),
+            ("durable_path", 4 * 1024),
         ]
     );
 }

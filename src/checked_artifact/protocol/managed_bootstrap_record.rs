@@ -10,7 +10,8 @@ use super::schedule::{
 };
 use crate::checked_artifact::bootstrap::{BoundManagedParentPlanV1, ManagedParentPurpose};
 use crate::checked_artifact::capability::{
-    AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, PathComponentMode,
+    AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, DurablePathV1,
+    PathComponentMode,
 };
 
 mod codec;
@@ -41,7 +42,7 @@ pub(in crate::checked_artifact) struct ManagedBootstrapComponentRecordV1 {
     ownership_marker_intent_id: Option<[u8; 32]>,
     installed_identity: Option<DurableObjectIdentityV1>,
     installed_mode: Option<PathComponentMode>,
-    installed_path: Option<CanonicalPathIdentityV1>,
+    installed_path: Option<DurablePathV1>,
     ownership_marker_object_identity: Option<DurableObjectIdentityV1>,
 }
 
@@ -74,7 +75,7 @@ impl ManagedBootstrapComponentRecordV1 {
         self.installed_mode
     }
 
-    pub(in crate::checked_artifact) fn installed_path(&self) -> Option<&CanonicalPathIdentityV1> {
+    pub(in crate::checked_artifact) fn installed_path(&self) -> Option<&DurablePathV1> {
         self.installed_path.as_ref()
     }
 
@@ -100,7 +101,7 @@ pub(in crate::checked_artifact) struct ManagedParentBootstrapIntentV1 {
     component_start: usize,
     retained_parent_identity: DurableObjectIdentityV1,
     retained_parent_mode: PathComponentMode,
-    retained_parent_path: CanonicalPathIdentityV1,
+    retained_parent_path: DurablePathV1,
     components: Vec<ManagedBootstrapComponentRecordV1>,
     ownership_token: [u8; 32],
     predecessor_intent_id: Option<[u8; 32]>,
@@ -180,6 +181,10 @@ impl ManagedParentBootstrapIntentV1 {
                 "managed bootstrap ownership token must be nonzero",
             ));
         }
+        let retained_parent_path =
+            DurablePathV1::from_live(&retained_parent_path).map_err(|_| {
+                ProtocolCodecErrorV1::Invalid("managed bootstrap has invalid durable parent path")
+            })?;
         let row = reservation
             .schedule()
             .bootstrap_rows()
@@ -257,7 +262,7 @@ impl ManagedParentBootstrapIntentV1 {
         component_start: usize,
         retained_parent_identity: DurableObjectIdentityV1,
         retained_parent_mode: PathComponentMode,
-        retained_parent_path: CanonicalPathIdentityV1,
+        retained_parent_path: DurablePathV1,
         components: Vec<ManagedBootstrapComponentRecordV1>,
         ownership_token: [u8; 32],
         predecessor_intent_id: Option<[u8; 32]>,
@@ -371,13 +376,16 @@ impl ManagedParentBootstrapIntentV1 {
         identity: &DurableObjectIdentityV1,
         path: &CanonicalPathIdentityV1,
     ) -> bool {
+        let Ok(path) = DurablePathV1::from_live(path) else {
+            return false;
+        };
         let Some(component) = self.components.get(component_index) else {
             return false;
         };
         let Some(installed_path) = component.installed_path.as_ref() else {
             return component_index == self.cursor
                 && self.retained_parent_identity == *identity
-                && self.retained_parent_path == *path;
+                && self.retained_parent_path == path;
         };
         installed_path.components().len() == path.components().len() + 1
             && installed_path.components()[..path.components().len()] == path.components()[..]
@@ -420,6 +428,9 @@ impl ManagedParentBootstrapIntentV1 {
         mode: PathComponentMode,
         path: &CanonicalPathIdentityV1,
     ) -> bool {
+        let Ok(path) = DurablePathV1::from_live(path) else {
+            return false;
+        };
         let Some(first_installed_path) = self
             .components
             .first()
@@ -427,7 +438,7 @@ impl ManagedParentBootstrapIntentV1 {
         else {
             return self.retained_parent_identity == *identity
                 && self.retained_parent_mode == mode
-                && self.retained_parent_path == *path;
+                && self.retained_parent_path == path;
         };
         first_installed_path.components().len() == path.components().len() + 1
             && first_installed_path.components()[..path.components().len()] == path.components()[..]
@@ -461,9 +472,7 @@ impl ManagedParentBootstrapIntentV1 {
     }
 
     #[cfg(test)]
-    pub(in crate::checked_artifact) fn retained_parent_path_for_test(
-        &self,
-    ) -> &CanonicalPathIdentityV1 {
+    pub(in crate::checked_artifact) fn retained_parent_path_for_test(&self) -> &DurablePathV1 {
         &self.retained_parent_path
     }
 

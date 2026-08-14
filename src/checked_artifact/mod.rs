@@ -63,7 +63,9 @@ mod transition;
 
 use policy::CheckedArtifactPolicy;
 
-pub(crate) use bootstrap::{WorkspaceRuntimeLease, try_acquire_workspace_runtime};
+pub(crate) use bootstrap::{
+    CatalogMutationLeaseV1, WorkspaceRuntimeLease, try_acquire_workspace_runtime,
+};
 
 #[cfg(test)]
 pub(crate) use fault::{

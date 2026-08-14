@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::io::Cursor;
 
-use super::super::capability::read_canonical_path_identity;
+use super::super::capability::DurablePathV1;
 use super::super::protocol::generated;
 use super::super::protocol::{
     ActionCapacityReservationV1, ActionDirectoryAdmissionV1, BarrierIntentV1,
@@ -83,7 +83,7 @@ fn identity_kind(coverage: &mut Coverage, value: &generated::CheckedDurableObjec
     coverage.identity_kinds.insert(value.kind.wire());
 }
 
-fn path_coverage(coverage: &mut Coverage, value: &generated::CheckedCanonicalPathIdentityV1) {
+fn path_coverage(coverage: &mut Coverage, value: &generated::CheckedDurablePathV1) {
     for component in &value.components {
         coverage.path_modes.insert(component.parent_mode.wire());
         identity_kind(coverage, &component.parent_durable_identity);
@@ -94,12 +94,12 @@ fn inspect_vector(vector: &Vector<'_>, coverage: &mut Coverage) {
     let cbor = crate::cbor::try_decode(&vector.bytes).unwrap();
     coverage.record_kinds.insert(vector.kind.to_owned());
     match vector.kind {
-        "canonical_path_identity" => {
-            let value = read_canonical_path_identity(Cursor::new(&vector.bytes)).unwrap();
+        "durable_path" => {
+            let value = DurablePathV1::decode_canonical(&vector.bytes).unwrap();
             assert_eq!(value.encode_canonical(), vector.bytes);
             path_coverage(
                 coverage,
-                &generated::CheckedCanonicalPathIdentityV1::from_cbor(&cbor).unwrap(),
+                &generated::CheckedDurablePathV1::from_cbor(&cbor).unwrap(),
             );
         }
         "capacity" => {
@@ -230,7 +230,7 @@ fn independent_semantic_vectors_bounded_decode_and_reencode_exact_literals() {
             "barrier_intent",
             "bootstrap_intent",
             "capacity",
-            "canonical_path_identity",
+            "durable_path",
             "catalog_bootstrap",
             "cleanup_worklist",
             "infrastructure",

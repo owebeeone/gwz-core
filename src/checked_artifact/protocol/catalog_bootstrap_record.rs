@@ -10,8 +10,8 @@ use super::codec::{
 use super::generated;
 use super::schedule::checked_array;
 use crate::checked_artifact::capability::{
-    AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, PreCatalogRootKindV1,
-    RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile,
+    AsciiComponent, DurableCatalogTargetDigestV1, DurableObjectIdentityV1, DurablePathV1,
+    HistoricalCollisionDigestV1, PreCatalogRootKindV1, SupportedFilesystemProfile,
 };
 use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 
@@ -41,12 +41,10 @@ impl CatalogBootstrapOwnershipTokenV1 {
 pub(in crate::checked_artifact) struct CatalogBootstrapRecordV1 {
     root_kind: PreCatalogRootKindV1,
     support_profile: SupportedFilesystemProfile,
-    invocation_identity: Vec<u8>,
-    rename_domain: Vec<u8>,
-    lease_binding: [u8; 32],
-    collision_snapshot_digest: [u8; 32],
+    durable_target_digest: DurableCatalogTargetDigestV1,
+    historical_collision_digest: HistoricalCollisionDigestV1,
     retained_parent_identity: DurableObjectIdentityV1,
-    retained_parent_path: CanonicalPathIdentityV1,
+    retained_parent_path: DurablePathV1,
     staging_name: AsciiComponent,
     final_name: AsciiComponent,
     catalog_anchor_a_name: AsciiComponent,
@@ -56,19 +54,24 @@ pub(in crate::checked_artifact) struct CatalogBootstrapRecordV1 {
 }
 
 impl CatalogBootstrapRecordV1 {
-    pub(in crate::checked_artifact) fn from_revalidated_permit<RetainedRoot>(
-        permit: RevalidatedPreCatalogPermitV1<'_, RetainedRoot>,
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::checked_artifact) fn synthetic_for_test(
+        root_kind: PreCatalogRootKindV1,
+        support_profile: SupportedFilesystemProfile,
+        durable_target_digest: DurableCatalogTargetDigestV1,
+        historical_collision_digest: HistoricalCollisionDigestV1,
+        retained_parent_identity: DurableObjectIdentityV1,
+        retained_parent_path: DurablePathV1,
         bootstrap_ownership_token: CatalogBootstrapOwnershipTokenV1,
     ) -> Self {
         Self::from_fields(
-            permit.root_kind(),
-            permit.support_profile(),
-            permit.root_invocation_identity().to_vec(),
-            permit.rename_domain().to_vec(),
-            permit.lease_binding(),
-            permit.collision_snapshot_digest(),
-            permit.root_identity().clone(),
-            permit.path_profile().clone(),
+            root_kind,
+            support_profile,
+            durable_target_digest,
+            historical_collision_digest,
+            retained_parent_identity,
+            retained_parent_path,
             catalog_component(CatalogPrivateNameV1::BootstrapStaging),
             catalog_component(CatalogPrivateNameV1::Final),
             AsciiComponent::parse(
@@ -91,12 +94,10 @@ impl CatalogBootstrapRecordV1 {
     fn from_fields(
         root_kind: PreCatalogRootKindV1,
         support_profile: SupportedFilesystemProfile,
-        invocation_identity: Vec<u8>,
-        rename_domain: Vec<u8>,
-        lease_binding: [u8; 32],
-        collision_snapshot_digest: [u8; 32],
+        durable_target_digest: DurableCatalogTargetDigestV1,
+        historical_collision_digest: HistoricalCollisionDigestV1,
         retained_parent_identity: DurableObjectIdentityV1,
-        retained_parent_path: CanonicalPathIdentityV1,
+        retained_parent_path: DurablePathV1,
         staging_name: AsciiComponent,
         final_name: AsciiComponent,
         catalog_anchor_a_name: AsciiComponent,
@@ -106,10 +107,8 @@ impl CatalogBootstrapRecordV1 {
         let mut value = Self {
             root_kind,
             support_profile,
-            invocation_identity,
-            rename_domain,
-            lease_binding,
-            collision_snapshot_digest,
+            durable_target_digest,
+            historical_collision_digest,
             retained_parent_identity,
             retained_parent_path,
             staging_name,
@@ -137,11 +136,23 @@ impl CatalogBootstrapRecordV1 {
         self.support_profile
     }
 
+    pub(in crate::checked_artifact) const fn durable_target_digest(
+        &self,
+    ) -> DurableCatalogTargetDigestV1 {
+        self.durable_target_digest
+    }
+
+    pub(in crate::checked_artifact) const fn historical_collision_digest(
+        &self,
+    ) -> HistoricalCollisionDigestV1 {
+        self.historical_collision_digest
+    }
+
     pub(in crate::checked_artifact) fn retained_parent_identity(&self) -> &DurableObjectIdentityV1 {
         &self.retained_parent_identity
     }
 
-    pub(in crate::checked_artifact) fn retained_parent_path(&self) -> &CanonicalPathIdentityV1 {
+    pub(in crate::checked_artifact) fn retained_parent_path(&self) -> &DurablePathV1 {
         &self.retained_parent_path
     }
 
@@ -171,10 +182,10 @@ impl CatalogBootstrapRecordV1 {
                 }
             },
             decode_profile(wire.support_profile),
-            wire.invocation_identity,
-            wire.rename_domain,
-            checked_array(wire.lease_binding)?,
-            checked_array(wire.collision_domain_digest)?,
+            DurableCatalogTargetDigestV1::owner_issue(checked_array(wire.durable_target_digest)?),
+            HistoricalCollisionDigestV1::owner_issue(checked_array(
+                wire.historical_collision_digest,
+            )?),
             decode_identity(wire.retained_parent_identity)?,
             decode_path(wire.retained_parent_path)?,
             super::codec::decode_ascii(&wire.staging_name)?,
@@ -187,8 +198,10 @@ impl CatalogBootstrapRecordV1 {
         );
         if value.record_id != stored_id
             || value.retained_parent_identity.support_profile() != value.support_profile
-            || value.invocation_identity.is_empty()
-            || value.rename_domain.is_empty()
+            || !super::codec::path_matches_profile(
+                &value.retained_parent_path,
+                value.support_profile,
+            )
             || value.staging_name != catalog_component(CatalogPrivateNameV1::BootstrapStaging)
             || value.final_name != catalog_component(CatalogPrivateNameV1::Final)
             || value.catalog_anchor_a_name.as_bytes()
@@ -225,12 +238,8 @@ impl CatalogBootstrapRecordV1 {
                 }
             },
             support_profile: encode_profile(self.support_profile),
-            invocation_identity: self.invocation_identity.clone(),
-            rename_domain: self.rename_domain.clone(),
-            lease_binding: self.lease_binding.to_vec(),
-            // The generated name is retained for wire compatibility. The value
-            // now binds the complete provider-owned collision snapshot.
-            collision_domain_digest: self.collision_snapshot_digest.to_vec(),
+            durable_target_digest: self.durable_target_digest.bytes().to_vec(),
+            historical_collision_digest: self.historical_collision_digest.bytes().to_vec(),
             retained_parent_identity: self.retained_parent_identity.to_generated(),
             retained_parent_path: self.retained_parent_path.to_generated(),
             staging_name: self.staging_name.as_bytes().to_vec(),

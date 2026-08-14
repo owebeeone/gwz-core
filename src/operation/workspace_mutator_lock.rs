@@ -40,6 +40,16 @@ impl WorkspaceMutatorLock {
     pub fn path(&self) -> &Path {
         self.lease.path()
     }
+
+    #[allow(
+        dead_code,
+        reason = "R2-C0 freezes the checked catalog borrow before the C1 owner consumes it"
+    )]
+    pub(crate) fn catalog_mutation_lease(
+        &self,
+    ) -> crate::checked_artifact::CatalogMutationLeaseV1<'_> {
+        self.lease.catalog_mutation_lease()
+    }
 }
 
 pub fn lock_path(root: &Path) -> PathBuf {

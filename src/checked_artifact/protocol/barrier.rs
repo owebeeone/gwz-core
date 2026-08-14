@@ -12,7 +12,7 @@ use super::schedule::{
 };
 use super::schedule::{checked_array, checked_usize};
 use crate::checked_artifact::capability::{
-    AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1,
+    AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, DurablePathV1,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,7 +26,7 @@ pub(in crate::checked_artifact) struct BarrierIntentV1 {
     private_home_parent_identity: DurableObjectIdentityV1,
     private_home_name: AsciiComponent,
     target_parent_identity: DurableObjectIdentityV1,
-    target_path_profile: CanonicalPathIdentityV1,
+    target_path_profile: DurablePathV1,
     reserved_target_leaf: AsciiComponent,
     intent_id: [u8; 32],
 }
@@ -62,7 +62,9 @@ impl BarrierIntentV1 {
             private_home_parent_identity,
             private_home_name,
             target_parent_identity,
-            target_path_profile,
+            DurablePathV1::from_live(&target_path_profile).map_err(|_| {
+                ProtocolCodecErrorV1::Invalid("barrier target has invalid durable path")
+            })?,
             reserved_target_leaf,
         ))
     }
@@ -80,7 +82,7 @@ impl BarrierIntentV1 {
         private_home_parent_identity: DurableObjectIdentityV1,
         private_home_name: AsciiComponent,
         target_parent_identity: DurableObjectIdentityV1,
-        target_path_profile: CanonicalPathIdentityV1,
+        target_path_profile: DurablePathV1,
         reserved_target_leaf: AsciiComponent,
     ) -> Self {
         let mut value = Self {
@@ -131,9 +133,7 @@ impl BarrierIntentV1 {
         let home_name = AsciiComponent::parse(&wire.private_home_name)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid private home name"))?;
         let target = decode_identity(wire.target_parent_identity)?;
-        let path = crate::checked_artifact::capability::decode_canonical_path_value(
-            wire.target_path_profile,
-        )?;
+        let path = super::codec::decode_path(wire.target_path_profile)?;
         let target_leaf = AsciiComponent::parse(&wire.reserved_target_leaf)
             .map_err(|_| ProtocolCodecErrorV1::Invalid("invalid reserved target leaf"))?;
         let intent_id = checked_array(wire.intent_id)?;

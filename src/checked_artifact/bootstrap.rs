@@ -2,12 +2,18 @@
 
 use std::path::Path;
 
-use super::capability::{CheckedFsError, RevalidatedPreCatalogPermitV1};
+use super::capability::CheckedFsError;
 
 mod managed;
 mod runtime;
 
 pub(super) use managed::*;
+pub(crate) use runtime::CatalogMutationLeaseV1;
+#[allow(
+    unused_imports,
+    reason = "R2-C0 freezes catalog lease interfaces before the C1 owner consumes them"
+)]
+pub(in crate::checked_artifact) use runtime::{CatalogLeaseSetV1, CatalogLeaseTargetRequestV1};
 pub(crate) use runtime::{WorkspaceRuntimeLease, try_acquire_workspace_runtime};
 
 pub(super) struct WorkspaceRuntimePaths<'a> {
@@ -41,15 +47,4 @@ pub(super) trait WorkspaceRuntimeBootstrapV1 {
         &self,
         paths: WorkspaceRuntimePaths<'_>,
     ) -> Result<Option<Self::Lease>, CheckedFsError>;
-}
-
-/// Durable first-catalog bootstrap. Only the pre-catalog owner can construct
-/// the lifetime-bound value accepted here, immediately after revalidation.
-pub(super) trait CatalogBootstrapV1<RetainedRoot> {
-    type Catalog;
-
-    fn recover_or_create(
-        &self,
-        permit: RevalidatedPreCatalogPermitV1<'_, RetainedRoot>,
-    ) -> Result<Self::Catalog, CheckedFsError>;
 }

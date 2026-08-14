@@ -6,6 +6,7 @@ mod codec_faults;
 mod contracts;
 mod coordinator_contract;
 mod coordinator_remediation;
+mod durable_path_schema;
 mod durable_records;
 mod fault_expected_keys;
 mod managed_plan_binding;

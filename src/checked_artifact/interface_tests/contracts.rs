@@ -4,9 +4,9 @@ use std::path::Path;
 use super::super::bootstrap::{WorkspaceRuntimeBootstrapV1, WorkspaceRuntimePaths};
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, GitPathBytes, IndexStage, IndexTimestampV1, LosslessIndexEntry,
-    LosslessIndexMetadataV1, PathComponentMode, PlatformCapability, PrivateControlDomain,
-    SupportedFilesystemProfile, TrackedWorktreeEntry, TrackedWorktreeKind,
+    DurableObjectIdentityV1, DurablePathV1, GitPathBytes, IndexStage, IndexTimestampV1,
+    LosslessIndexEntry, LosslessIndexMetadataV1, PathComponentMode, PlatformCapability,
+    PrivateControlDomain, SupportedFilesystemProfile, TrackedWorktreeEntry, TrackedWorktreeKind,
 };
 use super::super::leaf::{
     DurableLeafExpectation, DurableLeafProof, ExpectedLeafContent, LeafOther, LeafProof,
@@ -55,14 +55,12 @@ fn canonical_path_identity_is_nonempty_and_bounded() {
     );
     let path = CanonicalPathIdentityV1::new(vec![component]).unwrap();
     assert_eq!(path.components().len(), 1);
-    let bytes = path.encode_canonical();
-    assert_eq!(
-        CanonicalPathIdentityV1::decode_canonical_for_test(&bytes).unwrap(),
-        path
-    );
+    let durable = DurablePathV1::from_live(&path).unwrap();
+    let bytes = durable.encode_canonical();
+    assert_eq!(DurablePathV1::decode_canonical(&bytes).unwrap(), durable);
     let mut trailing = bytes;
     trailing.push(0);
-    assert!(CanonicalPathIdentityV1::decode_canonical_for_test(&trailing).is_err());
+    assert!(DurablePathV1::decode_canonical(&trailing).is_err());
     assert!(CanonicalPathIdentityV1::new(Vec::new()).is_err());
 
     let many = (0..17)
@@ -74,6 +72,29 @@ fn canonical_path_identity_is_nonempty_and_bounded() {
         })
         .collect();
     assert!(CanonicalPathIdentityV1::new(many).is_err());
+
+    let mixed_profiles = CanonicalPathIdentityV1::new(vec![
+        CanonicalComponent::try_bound(
+            AsciiComponent::parse(b"workspace").unwrap(),
+            PathComponentMode::Sensitive,
+            DurableObjectIdentityV1::linux_ext4([1; 16], 1, vec![1]).unwrap(),
+            vec![1],
+            vec![2],
+        )
+        .unwrap(),
+        CanonicalComponent::try_bound(
+            AsciiComponent::parse(b"catalog").unwrap(),
+            PathComponentMode::Sensitive,
+            DurableObjectIdentityV1::mac([3; 16], [4; 8]).unwrap(),
+            vec![3],
+            vec![4],
+        )
+        .unwrap(),
+    ]);
+    assert!(
+        mixed_profiles.is_err(),
+        "one durable path cannot mix filesystem support profiles"
+    );
 }
 
 #[test]

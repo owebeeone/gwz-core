@@ -7,7 +7,7 @@ use super::{
 };
 use crate::checked_artifact::bootstrap::{BoundManagedParentPlanV1, ManagedParentPurpose};
 use crate::checked_artifact::capability::{
-    CanonicalPathIdentityV1, DurableObjectIdentityV1, PathComponentMode,
+    DurableObjectIdentityV1, DurablePathV1, PathComponentMode,
 };
 #[cfg(test)]
 use crate::checked_artifact::protocol::ActionCapacityReservationV1;
@@ -145,7 +145,7 @@ impl ManagedParentBootstrapIntentV1 {
                     installed_path: component
                         .installed_path
                         .as_ref()
-                        .map(CanonicalPathIdentityV1::to_generated),
+                        .map(DurablePathV1::to_generated),
                     ownership_marker_object_identity: component
                         .ownership_marker_object_identity
                         .as_ref()

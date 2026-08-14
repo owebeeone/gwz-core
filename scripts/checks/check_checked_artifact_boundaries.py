@@ -38,7 +38,11 @@ PROTECTED_COMPILER_MODULES = {
 # or non-executable source change requires deliberate review and a digest
 # update; this closes aliases and new wrappers without guessing writer names.
 PROTECTED_SOURCE_DIGESTS = {
+    "checked_artifact/bootstrap.rs": "258a6d627b9de468d67b66cdc34de49485ac1703ffa094a47d76d5305a3211f1",
+    "checked_artifact/bootstrap/runtime/mod.rs": "84e692d7efde1f7d5abb59aa1fa283d4a1a55ec95053ab287f4b978926ce24c0",
+    "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
+    "checked_artifact/mod.rs": "c528abb99ae93b3b040f9dbd5fd0e67c2edb50c5cfd9c6d488b8845059b30e4a",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
@@ -47,6 +51,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
     "workspace_ops/merge/preserve/plan.rs": "880d4905eeab96ff52a746a360043628cd4c11e5324b5f92b5889419ade53c7a",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
+    "operation/workspace_mutator_lock.rs": "0d9b034edab7e66a5e83b4bc86b7325afa001666220a07e428d4fa73f9384e28",
 }
 
 CONCRETE_PRESERVATION_OBSERVER_REFERENCES = {
@@ -143,6 +148,9 @@ APPROVED_RUST_PATH_EDGES = {
 # the root module, every current descendant, and the descendant file set, so a
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
+    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "63b828fe5e8ac2fd3afcc95a29841cfb88666edc22b1546f007c2adde2477b23",
+    "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
+    "checked_artifact/capability/pre_catalog.rs": "05089e867867889bbfaf8cda717767ffbefe741b54582d50616421290e3c9703",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }
@@ -445,6 +453,42 @@ PRIVATE_CAPABILITIES = {
     "CheckedArtifactFact",
     "CheckedArtifactPolicy",
     "CheckedArtifactTransition",
+}
+
+CATALOG_LEASE_REFERENCE_SETS = {
+    "CatalogLeaseSetV1": {
+        "checked_artifact/bootstrap.rs",
+        "checked_artifact/bootstrap/runtime/catalog_lease.rs",
+        "checked_artifact/bootstrap/runtime/mod.rs",
+    },
+    "CatalogLeaseTargetRequestV1": {
+        "checked_artifact/bootstrap.rs",
+        "checked_artifact/bootstrap/runtime/catalog_lease.rs",
+        "checked_artifact/bootstrap/runtime/catalog_lease/target.rs",
+        "checked_artifact/bootstrap/runtime/mod.rs",
+    },
+    "CatalogMutationLeaseV1": {
+        "checked_artifact/bootstrap.rs",
+        "checked_artifact/bootstrap/runtime/catalog_lease.rs",
+        "checked_artifact/bootstrap/runtime/mod.rs",
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/mod.rs",
+        "operation/workspace_mutator_lock.rs",
+    },
+    "catalog_mutation_lease": {
+        "checked_artifact/bootstrap/runtime/mod.rs",
+        "operation/workspace_mutator_lock.rs",
+    },
+}
+
+FORBIDDEN_PROVISIONAL_CATALOG_INTERFACES = {
+    "CatalogBootstrapV1",
+    "PreCatalogOwnerV1",
+    "PreCatalogPermitV1",
+    "RevalidatedPreCatalogPermitV1",
+    "lease_binding",
+    "recover_or_create_git_directory",
+    "recover_or_create_workspace",
 }
 
 
@@ -758,6 +802,28 @@ def check(source: Path) -> list[str]:
                 for name, paths in sorted(escaped_capabilities.items())
             )
         )
+
+    for symbol, allowed in sorted(CATALOG_LEASE_REFERENCE_SETS.items()):
+        actual = {
+            relative
+            for relative, text in masked_sources.items()
+            if re.search(rf"\b{re.escape(symbol)}\b", text)
+        }
+        if actual != allowed:
+            findings.append(
+                f"catalog lease reference set changed: {symbol}: "
+                f"expected={sorted(allowed)} actual={sorted(actual)}"
+            )
+    for symbol in sorted(FORBIDDEN_PROVISIONAL_CATALOG_INTERFACES):
+        actual = sorted(
+            relative
+            for relative, text in masked_sources.items()
+            if re.search(rf"\b{re.escape(symbol)}\b", text)
+        )
+        if actual:
+            findings.append(
+                f"provisional catalog interface was reintroduced: {symbol}: {actual}"
+            )
 
     for relative, expected_calls in CHECKED_LEAF_ADAPTER_CALLS.items():
         adapter = masked_sources[relative]

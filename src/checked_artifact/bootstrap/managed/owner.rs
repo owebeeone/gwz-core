@@ -3,6 +3,7 @@
 use sha2::{Digest, Sha256};
 
 use super::*;
+use crate::checked_artifact::capability::DurablePathV1;
 use crate::checked_artifact::coordinator::CheckedManagedActionV1;
 use crate::checked_artifact::protocol::{
     ActionDigestV1, ActionScheduleV1, AdmittedActionV1, ManagedBootstrapInputV1,
@@ -332,7 +333,7 @@ fn digest_plan(
             PathComponentMode::Sensitive => 0,
             PathComponentMode::AsciiCaseFold => 1,
         }]);
-        append_bytes(&mut digest, &row.retained_parent_path.encode_canonical());
+        append_bytes(&mut digest, &durable_path_bytes(&row.retained_parent_path));
         append_components(&mut digest, &row.components);
         append_components(&mut digest, &row.missing_suffix);
         digest.update(row.spec_digest);
@@ -361,7 +362,7 @@ fn digest_observations(
         }]);
         append_bytes(
             &mut digest,
-            &observed.retained_parent_path.encode_canonical(),
+            &durable_path_bytes(&observed.retained_parent_path),
         );
     }
     digest.finalize().into()
@@ -377,6 +378,12 @@ fn append_components(digest: &mut Sha256, components: &[AsciiComponent]) {
 fn append_bytes(digest: &mut Sha256, value: &[u8]) {
     digest.update((value.len() as u64).to_be_bytes());
     digest.update(value);
+}
+
+fn durable_path_bytes(path: &CanonicalPathIdentityV1) -> Vec<u8> {
+    DurablePathV1::from_live(path)
+        .expect("canonical paths are validated against the durable envelope when constructed")
+        .encode_canonical()
 }
 
 fn plan_mismatch(detail: &'static str) -> CheckedFsError {

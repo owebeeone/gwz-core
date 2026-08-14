@@ -10,7 +10,8 @@ use cap_std::fs::{Dir, File};
 use super::super::*;
 use super::snapshot::{CollisionModes, SnapshotParts};
 use super::{
-    RawPreCatalogObservationV1, RawPreCatalogProviderV1, index, namespace, retained, snapshot,
+    RawCatalogRoleObservationV1, RawPreCatalogObservationV1, RawPreCatalogProviderV1, index,
+    namespace, retained, snapshot,
 };
 use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalComponent, DurableIdentityProvider, PathEquivalenceProvider,
@@ -37,7 +38,7 @@ impl<T> PlatformProviderV1 for T where
 {
 }
 
-struct FilesystemPreCatalogProvider<P> {
+pub(super) struct FilesystemPreCatalogProvider<P> {
     platform: P,
     #[cfg(test)]
     hook: Option<TestHook>,
@@ -57,36 +58,44 @@ struct Observed {
     rename_domain: Vec<u8>,
     path_profile: CanonicalPathIdentityV1,
     collision_snapshot_digest: [u8; 32],
+    raw_roles: RawCatalogRoleObservationV1,
 }
 
-pub(in crate::checked_artifact::capability::pre_catalog) fn platform_pre_catalog_owner()
--> PreCatalogOwnerV1<Path, RetainedPlatformRoot> {
-    PreCatalogOwnerV1::from_provider(FilesystemPreCatalogProvider {
+#[allow(
+    dead_code,
+    reason = "R2-C0 freezes the retained provider before C1 issues preflight permits"
+)]
+pub(in crate::checked_artifact::capability::pre_catalog) fn platform_pre_catalog_provider()
+-> FilesystemPreCatalogProvider<HostPlatform> {
+    FilesystemPreCatalogProvider {
         platform: HostPlatform,
         #[cfg(test)]
         hook: None,
-    })
+    }
 }
 
 #[cfg(test)]
-pub(super) fn filesystem_owner_for_test(
+pub(super) fn filesystem_provider_for_test(
     platform: impl PlatformProviderV1 + 'static,
-) -> PreCatalogOwnerV1<Path, RetainedPlatformRoot> {
-    filesystem_owner_with_hook_for_test(platform, None)
+) -> FilesystemPreCatalogProvider<impl PlatformProviderV1> {
+    filesystem_provider_with_hook_for_test(platform, None)
 }
 
 #[cfg(test)]
-pub(super) fn filesystem_owner_with_hook_for_test(
-    platform: impl PlatformProviderV1 + 'static,
+pub(super) fn filesystem_provider_with_hook_for_test<P>(
+    platform: P,
     hook: Option<Arc<dyn Fn() + Send + Sync>>,
-) -> PreCatalogOwnerV1<Path, RetainedPlatformRoot> {
-    PreCatalogOwnerV1::from_provider(FilesystemPreCatalogProvider {
+) -> FilesystemPreCatalogProvider<P>
+where
+    P: PlatformProviderV1 + 'static,
+{
+    FilesystemPreCatalogProvider {
         platform,
         hook: hook.map(|callback| TestHook {
             callback,
             fired: AtomicBool::new(false),
         }),
-    })
+    }
 }
 
 impl<P> RawPreCatalogProviderV1<Path, RetainedPlatformRoot> for FilesystemPreCatalogProvider<P>
@@ -114,23 +123,43 @@ where
     fn revalidate_workspace(
         &self,
         root: &Path,
-        permit: &PreCatalogPermitV1<RetainedPlatformRoot>,
+        observation: &RawPreCatalogObservationV1<RetainedPlatformRoot>,
     ) -> Result<(), CheckedFsError> {
-        permit.retained_root().revalidate(&self.platform)?;
-        self.compare(self.observe_workspace(root)?, permit)
+        observation.retained_root.revalidate(&self.platform)?;
+        self.compare(self.observe_workspace(root)?, observation)
     }
 
     fn revalidate_git_directory(
         &self,
         root: &Path,
-        permit: &PreCatalogPermitV1<RetainedPlatformRoot>,
+        observation: &RawPreCatalogObservationV1<RetainedPlatformRoot>,
     ) -> Result<(), CheckedFsError> {
-        permit.retained_root().revalidate(&self.platform)?;
-        self.compare(self.observe_git_directory(root)?, permit)
+        observation.retained_root.revalidate(&self.platform)?;
+        self.compare(self.observe_git_directory(root)?, observation)
     }
 }
 
-impl<P: PlatformProviderV1> FilesystemPreCatalogProvider<P> {
+impl<P: PlatformProviderV1 + 'static> FilesystemPreCatalogProvider<P> {
+    #[cfg(test)]
+    pub(super) fn observe_and_revalidate_workspace_for_test(
+        &self,
+        root: &Path,
+    ) -> Result<RawPreCatalogObservationV1<RetainedPlatformRoot>, CheckedFsError> {
+        let observation = self.inspect_workspace(root)?;
+        self.revalidate_workspace(root, &observation)?;
+        Ok(observation)
+    }
+
+    #[cfg(test)]
+    pub(super) fn observe_and_revalidate_git_directory_for_test(
+        &self,
+        root: &Path,
+    ) -> Result<RawPreCatalogObservationV1<RetainedPlatformRoot>, CheckedFsError> {
+        let observation = self.inspect_git_directory(root)?;
+        self.revalidate_git_directory(root, &observation)?;
+        Ok(observation)
+    }
+
     fn observe_workspace(&self, root: &Path) -> Result<Observed, CheckedFsError> {
         let mut retained = retained::retain_workspace(root, &self.platform)?;
         let (index, index_file) = index::observe(&retained, &self.platform)?;
@@ -205,25 +234,27 @@ impl<P: PlatformProviderV1> FilesystemPreCatalogProvider<P> {
             rename_domain,
             path_profile,
             collision_snapshot_digest,
+            raw_roles: RawCatalogRoleObservationV1 { rows: namespace },
         })
     }
 
     fn compare(
         &self,
         observed: Observed,
-        permit: &PreCatalogPermitV1<RetainedPlatformRoot>,
+        expected: &RawPreCatalogObservationV1<RetainedPlatformRoot>,
     ) -> Result<(), CheckedFsError> {
-        if observed.support_profile != permit.support_profile()
-            || observed.root_identity != *permit.root_identity()
-            || observed.root_invocation_identity != permit.root_invocation_identity()
-            || observed.rename_domain != permit.rename_domain()
-            || observed.path_profile != *permit.path_profile()
-            || observed.collision_snapshot_digest != permit.collision_snapshot_digest()
-            || observed.retained_root.root_path() != permit.retained_root().root_path()
+        if observed.support_profile != expected.support_profile
+            || observed.root_identity != expected.root_identity
+            || observed.root_invocation_identity != expected.root_invocation_identity
+            || observed.rename_domain != expected.rename_domain
+            || observed.path_profile != expected.path_profile
+            || observed.collision_snapshot_digest != expected.collision_snapshot_digest
+            || observed.raw_roles != expected.raw_roles
+            || observed.retained_root.root_path() != expected.retained_root.root_path()
             || observed.retained_root.git_directory_path()
-                != permit.retained_root().git_directory_path()
+                != expected.retained_root.git_directory_path()
             || observed.retained_root.common_directory_path()
-                != permit.retained_root().common_directory_path()
+                != expected.retained_root.common_directory_path()
         {
             return Err(CheckedFsError::ambiguous(
                 "pre-catalog snapshot",
@@ -256,6 +287,7 @@ impl Observed {
             rename_domain: self.rename_domain,
             path_profile: self.path_profile,
             collision_snapshot_digest: self.collision_snapshot_digest,
+            raw_roles: self.raw_roles,
         }
     }
 }

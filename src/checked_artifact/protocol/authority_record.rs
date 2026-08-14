@@ -3,6 +3,7 @@
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
+use super::ActionCapacityReservationV1;
 use super::cleanup::DurableLeafFingerprintV1;
 use super::codec::{
     BoundedCanonicalRecordV1, ProtocolCodecErrorV1, ProtocolRecordKindV1, decode_fingerprint,
@@ -10,8 +11,9 @@ use super::codec::{
 };
 use super::generated;
 use super::schedule::{ActionDigestV1, RecordDigestV1, RequestOwnerBindingV1, ScheduleDigestV1};
-use super::{ActionCapacityReservationV1, CanonicalPathIdentityV1};
-use crate::checked_artifact::capability::DurableObjectIdentityV1;
+use crate::checked_artifact::capability::{
+    CanonicalPathIdentityV1, DurableObjectIdentityV1, DurablePathV1,
+};
 
 mod owner;
 
@@ -29,7 +31,7 @@ pub(in crate::checked_artifact) struct CheckedAuthorityRecordV1 {
     request_owner_binding: RequestOwnerBindingV1,
     schedule_digest: ScheduleDigestV1,
     reservation_digest: RecordDigestV1,
-    artifact_root: CanonicalPathIdentityV1,
+    artifact_root: DurablePathV1,
     retained_parent_identity: DurableObjectIdentityV1,
     source: DurableLeafFingerprintV1,
     expected_sha256: [u8; 32],
@@ -49,7 +51,7 @@ pub(in crate::checked_artifact) struct CheckedAuthorityObservationV1 {
     request_owner_binding: RequestOwnerBindingV1,
     schedule_digest: ScheduleDigestV1,
     reservation_digest: RecordDigestV1,
-    artifact_root: CanonicalPathIdentityV1,
+    artifact_root: DurablePathV1,
     retained_parent_identity: DurableObjectIdentityV1,
     source: DurableLeafFingerprintV1,
     expected_sha256: [u8; 32],
@@ -70,7 +72,9 @@ impl CheckedAuthorityObservationV1 {
             request_owner_binding: reservation.request_owner_binding(),
             schedule_digest: reservation.schedule().digest(),
             reservation_digest: reservation.record_digest(),
-            artifact_root,
+            artifact_root: DurablePathV1::from_live(&artifact_root).map_err(|_| {
+                ProtocolCodecErrorV1::Invalid("authority observation has invalid durable path")
+            })?,
             retained_parent_identity,
             source,
             expected_sha256,
@@ -113,7 +117,7 @@ impl CheckedAuthorityRecordV1 {
         request_owner_binding: RequestOwnerBindingV1,
         schedule_digest: ScheduleDigestV1,
         reservation_digest: RecordDigestV1,
-        artifact_root: CanonicalPathIdentityV1,
+        artifact_root: DurablePathV1,
         retained_parent_identity: DurableObjectIdentityV1,
         source: DurableLeafFingerprintV1,
         expected_sha256: [u8; 32],

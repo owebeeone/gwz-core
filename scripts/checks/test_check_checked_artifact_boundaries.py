@@ -65,6 +65,53 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("checked-artifact boundary: ok", result.stdout)
 
+    def test_provisional_catalog_callback_interface_cannot_return(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/leaf.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nstruct PreCatalogOwnerV1;\n",
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("provisional catalog interface was reintroduced", result.stderr)
+
+    def test_catalog_mutation_lease_cannot_escape_its_exact_reference_set(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/leaf.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nfn unreviewed_catalog_lease(_: CatalogMutationLeaseV1<'_>) {}\n",
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("catalog lease reference set changed", result.stderr)
+
+    def test_catalog_lease_tree_rejects_an_unreviewed_target_helper(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = (
+            source
+            / "checked_artifact/bootstrap/runtime/catalog_lease/unreviewed.rs"
+        )
+        path.write_text("fn unreviewed_catalog_target() {}\n", encoding="utf-8")
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source tree changed", result.stderr)
+
+    def test_durable_path_tree_rejects_an_unreviewed_schema_helper(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/capability/path/unreviewed.rs"
+        path.write_text("fn unreviewed_durable_path_shape() {}\n", encoding="utf-8")
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source tree changed", result.stderr)
+
     def test_compiler_resolved_writer_gate_is_scoped_to_the_closed_boundary(self) -> None:
         clippy = (ROOT / "clippy.toml").read_text(encoding="utf-8")
         crate = (SOURCE / "lib.rs").read_text(encoding="utf-8")

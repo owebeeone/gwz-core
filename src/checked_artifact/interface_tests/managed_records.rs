@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, PathComponentMode,
+    DurableObjectIdentityV1, DurablePathV1, PathComponentMode,
 };
 use super::super::namespace::test_support::{
     bootstrap_target, recording_backend, retained_directory_for,
@@ -140,7 +140,7 @@ fn installed_evidence(
         identity(byte),
         PathComponentMode::Sensitive,
         installed_path(
-            intent.retained_parent_path_for_test(),
+            &intent.retained_parent_path_for_test().to_live_for_test(),
             intent.retained_parent_identity_for_test(),
             intent.retained_parent_mode_for_test(),
             intent.components()[local].final_name(),
@@ -179,7 +179,7 @@ fn installed_evidence_exact(
             &backend,
             1,
             intent.retained_parent_identity_for_test().clone(),
-            intent.retained_parent_path_for_test().clone(),
+            intent.retained_parent_path_for_test().to_live_for_test(),
         ),
         reservation,
         global,
@@ -215,7 +215,7 @@ fn retirement_evidence(
             .clone(),
         component.installed_identity().unwrap().clone(),
         component.installed_mode().unwrap(),
-        component.installed_path().unwrap().clone(),
+        component.installed_path().unwrap().to_live_for_test(),
     )
 }
 
@@ -245,18 +245,19 @@ fn retirement_evidence_exact(
     let global = component.global_component_ordinal().index();
     let (component_parent_identity, component_parent_path) =
         if let Some(installed) = component.installed_path() {
+            let live_installed = installed.to_live_for_test();
             let installed_component = installed.components().last().unwrap();
             (
                 installed_component.parent_durable_identity().clone(),
                 CanonicalPathIdentityV1::new(
-                    installed.components()[..installed.components().len() - 1].to_vec(),
+                    live_installed.components()[..live_installed.components().len() - 1].to_vec(),
                 )
                 .unwrap(),
             )
         } else {
             (
                 intent.retained_parent_identity_for_test().clone(),
-                intent.retained_parent_path_for_test().clone(),
+                intent.retained_parent_path_for_test().to_live_for_test(),
             )
         };
     let target = bootstrap_target(
@@ -372,7 +373,7 @@ fn substitutions_cannot_advance_or_bind_a_managed_chain() {
         identity(67),
         PathComponentMode::Sensitive,
         installed_path(
-            first.retained_parent_path_for_test(),
+            &first.retained_parent_path_for_test().to_live_for_test(),
             first.retained_parent_identity_for_test(),
             first.retained_parent_mode_for_test(),
             first.components()[0].final_name(),
@@ -446,7 +447,7 @@ fn exact_installed_facts_are_durable_and_every_retirement_substitution_rejects()
     let installed_identity = identity(51);
     let installed_mode = PathComponentMode::AsciiCaseFold;
     let exact_path = installed_path(
-        initial.retained_parent_path_for_test(),
+        &initial.retained_parent_path_for_test().to_live_for_test(),
         initial.retained_parent_identity_for_test(),
         initial.retained_parent_mode_for_test(),
         initial.components()[0].final_name(),
@@ -466,9 +467,10 @@ fn exact_installed_facts_are_durable_and_every_retirement_substitution_rejects()
     .unwrap();
     let retiring = initial.successor_after_component(&install).unwrap();
     let component = &retiring.components()[0];
+    let exact_durable_path = DurablePathV1::from_live(&exact_path).unwrap();
     assert_eq!(component.installed_identity(), Some(&installed_identity));
     assert_eq!(component.installed_mode(), Some(installed_mode));
-    assert_eq!(component.installed_path(), Some(&exact_path));
+    assert_eq!(component.installed_path(), Some(&exact_durable_path));
     assert_eq!(
         component.ownership_marker_object_identity(),
         Some(&marker_identity)
@@ -537,7 +539,7 @@ fn exact_installed_facts_are_durable_and_every_retirement_substitution_rejects()
             installed_identity,
             installed_mode,
             installed_path(
-                retiring.retained_parent_path_for_test(),
+                &retiring.retained_parent_path_for_test().to_live_for_test(),
                 retiring.retained_parent_identity_for_test(),
                 retiring.retained_parent_mode_for_test(),
                 retiring.components()[0].final_name(),
@@ -569,15 +571,17 @@ fn canonical_record_rejects_mutated_installed_facts_and_marker_object_identity()
         Some(generated::CheckedPathComponentMode::AsciiCaseFold);
     mutations.push(changed_mode);
     let mut changed_path = wire.clone();
+    let changed_live_path = installed_path(
+        &retiring.retained_parent_path_for_test().to_live_for_test(),
+        retiring.retained_parent_identity_for_test(),
+        retiring.retained_parent_mode_for_test(),
+        retiring.components()[0].final_name(),
+        72,
+    );
     changed_path.components[0].installed_path = Some(
-        installed_path(
-            retiring.retained_parent_path_for_test(),
-            retiring.retained_parent_identity_for_test(),
-            retiring.retained_parent_mode_for_test(),
-            retiring.components()[0].final_name(),
-            72,
-        )
-        .to_generated(),
+        DurablePathV1::from_live(&changed_live_path)
+            .unwrap()
+            .to_generated(),
     );
     mutations.push(changed_path);
     let mut changed_marker_identity = wire;
@@ -629,15 +633,16 @@ fn installation_rejects_changed_prefix_parent_identity_and_parent_mode() {
         .unwrap(),
     ])
     .unwrap();
+    let initial_live_parent = initial.retained_parent_path_for_test().to_live_for_test();
     for substituted in [
         make(
-            initial.retained_parent_path_for_test(),
+            &initial_live_parent,
             identity(62),
             initial.retained_parent_mode_for_test(),
             63,
         ),
         make(
-            initial.retained_parent_path_for_test(),
+            &initial_live_parent,
             initial.retained_parent_identity_for_test().clone(),
             PathComponentMode::AsciiCaseFold,
             64,

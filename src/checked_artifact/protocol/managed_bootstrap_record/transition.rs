@@ -18,12 +18,15 @@ impl ManagedParentBootstrapIntentV1 {
             ));
         }
         let marker = evidence.marker();
+        let installed_path = DurablePathV1::from_live(evidence.installed_path()).map_err(|_| {
+            ProtocolCodecErrorV1::Invalid("installed component has invalid durable path")
+        })?;
         let mut components = self.components.clone();
         components[self.cursor].ownership_marker_id = Some(marker.marker_id());
         components[self.cursor].ownership_marker_intent_id = Some(self.intent_id);
         components[self.cursor].installed_identity = Some(evidence.installed_identity().clone());
         components[self.cursor].installed_mode = Some(evidence.installed_mode());
-        components[self.cursor].installed_path = Some(evidence.installed_path().clone());
+        components[self.cursor].installed_path = Some(installed_path.clone());
         components[self.cursor].ownership_marker_object_identity =
             Some(evidence.marker_object_identity().clone());
         let next_cursor = self.cursor + 1;
@@ -35,7 +38,7 @@ impl ManagedParentBootstrapIntentV1 {
         self.successor(
             evidence.installed_identity().clone(),
             evidence.installed_mode(),
-            evidence.installed_path().clone(),
+            installed_path,
             components,
             next_phase,
             if next_phase == ManagedBootstrapPhaseV1::RetireMarkers {
@@ -78,7 +81,7 @@ impl ManagedParentBootstrapIntentV1 {
         &self,
         retained_parent_identity: DurableObjectIdentityV1,
         retained_parent_mode: PathComponentMode,
-        retained_parent_path: CanonicalPathIdentityV1,
+        retained_parent_path: DurablePathV1,
         components: Vec<ManagedBootstrapComponentRecordV1>,
         phase: ManagedBootstrapPhaseV1,
         cursor: usize,
@@ -110,6 +113,9 @@ impl ManagedParentBootstrapIntentV1 {
 
     fn matches_installed_component(&self, evidence: &InstalledManagedComponentV1) -> bool {
         let component = &self.components[self.cursor];
+        let Ok(installed_path) = DurablePathV1::from_live(evidence.installed_path()) else {
+            return false;
+        };
         evidence.action_digest() == self.action_digest
             && evidence.intent_id() == self.intent_id
             && evidence.reservation_digest() == self.reservation_digest
@@ -122,13 +128,10 @@ impl ManagedParentBootstrapIntentV1 {
                 == self.retained_parent_identity.support_profile()
             && evidence.marker_object_identity().support_profile()
                 == self.retained_parent_identity.support_profile()
-            && evidence.installed_path().components().len()
-                == self.retained_parent_path.components().len() + 1
-            && evidence.installed_path().components()
-                [..self.retained_parent_path.components().len()]
+            && installed_path.components().len() == self.retained_parent_path.components().len() + 1
+            && installed_path.components()[..self.retained_parent_path.components().len()]
                 == self.retained_parent_path.components()[..]
-            && evidence
-                .installed_path()
+            && installed_path
                 .components()
                 .last()
                 .is_some_and(|path_component| {
@@ -141,6 +144,10 @@ impl ManagedParentBootstrapIntentV1 {
 
     fn matches_retired_marker(&self, evidence: &RetiredManagedMarkerV1) -> bool {
         let component = &self.components[self.cursor];
+        let Ok(installed_parent_path) = DurablePathV1::from_live(evidence.installed_parent_path())
+        else {
+            return false;
+        };
         let expected_retirement =
             ActionSlotV1::RetiredBootstrapMarker(component.global_component_ordinal.index() as u8)
                 .name(self.action_digest);
@@ -159,6 +166,6 @@ impl ManagedParentBootstrapIntentV1 {
                 == Some(evidence.retired_marker_identity())
             && component.installed_identity.as_ref() == Some(evidence.installed_parent_identity())
             && component.installed_mode == Some(evidence.installed_parent_mode())
-            && component.installed_path.as_ref() == Some(evidence.installed_parent_path())
+            && component.installed_path.as_ref() == Some(&installed_parent_path)
     }
 }

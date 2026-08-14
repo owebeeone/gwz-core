@@ -6,11 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cap_fs_ext::MetadataExt;
 use cap_std::fs::{Dir, File};
 
-use super::filesystem::{
-    RetainedPlatformRoot, filesystem_owner_for_test, filesystem_owner_with_hook_for_test,
-};
+use super::filesystem::{filesystem_provider_for_test, filesystem_provider_with_hook_for_test};
 use super::*;
-use crate::checked_artifact::bootstrap::CatalogBootstrapV1;
 use crate::checked_artifact::capability::{
     ObjectIdentityFact, PathComponentMode, PathEquivalenceProvider,
 };
@@ -110,32 +107,6 @@ struct CapturedCatalog {
     path: Vec<Vec<u8>>,
 }
 
-struct CaptureBootstrap {
-    called: Arc<AtomicBool>,
-}
-
-impl CatalogBootstrapV1<RetainedPlatformRoot> for CaptureBootstrap {
-    type Catalog = CapturedCatalog;
-
-    fn recover_or_create(
-        &self,
-        permit: RevalidatedPreCatalogPermitV1<'_, RetainedPlatformRoot>,
-    ) -> Result<Self::Catalog, CheckedFsError> {
-        self.called.store(true, Ordering::SeqCst);
-        Ok(CapturedCatalog {
-            digest: permit.collision_snapshot_digest(),
-            root_kind: permit.root_kind(),
-            support_profile: permit.support_profile(),
-            path: permit
-                .path_profile()
-                .components()
-                .iter()
-                .map(|component| component.original().as_bytes().to_vec())
-                .collect(),
-        })
-    }
-}
-
 struct Fixture {
     root: PathBuf,
 }
@@ -220,15 +191,31 @@ fn run_workspace(
     hook: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> (Result<CapturedCatalog, CheckedFsError>, Arc<AtomicBool>) {
     let called = Arc::new(AtomicBool::new(false));
-    let owner = filesystem_owner_with_hook_for_test(platform, hook);
-    let result = owner.recover_or_create_workspace(
-        root,
-        [4; 32],
-        &CaptureBootstrap {
-            called: called.clone(),
-        },
-    );
+    let provider = filesystem_provider_with_hook_for_test(platform, hook);
+    let result = provider
+        .observe_and_revalidate_workspace_for_test(root)
+        .map(|observation| {
+            called.store(true, Ordering::SeqCst);
+            capture(observation, PreCatalogRootKindV1::Workspace)
+        });
     (result, called)
+}
+
+fn capture(
+    observation: RawPreCatalogObservationV1<RetainedPlatformRoot>,
+    root_kind: PreCatalogRootKindV1,
+) -> CapturedCatalog {
+    CapturedCatalog {
+        digest: observation.collision_snapshot_digest,
+        root_kind,
+        support_profile: observation.support_profile,
+        path: observation
+            .path_profile
+            .components()
+            .iter()
+            .map(|component| component.original().as_bytes().to_vec())
+            .collect(),
+    }
 }
 
 #[test]
@@ -386,14 +373,13 @@ fn git_directory_namespace_change_before_revalidation_blocks_bootstrap() {
     let private_parent = git_dir.join("gwz");
     let hook = Arc::new(move || fs::create_dir(&private_parent).unwrap());
     let called = Arc::new(AtomicBool::new(false));
-    let owner = filesystem_owner_with_hook_for_test(FakePlatform::sensitive(), Some(hook));
-    let result = owner.recover_or_create_git_directory(
-        &git_dir,
-        [4; 32],
-        &CaptureBootstrap {
-            called: called.clone(),
-        },
-    );
+    let provider = filesystem_provider_with_hook_for_test(FakePlatform::sensitive(), Some(hook));
+    let result = provider
+        .observe_and_revalidate_git_directory_for_test(&git_dir)
+        .map(|observation| {
+            called.store(true, Ordering::SeqCst);
+            capture(observation, PreCatalogRootKindV1::GitDirectory)
+        });
     assert!(result.is_err());
     assert!(!called.load(Ordering::SeqCst));
 }
@@ -420,16 +406,10 @@ fn wrong_kind_git_directory_parent_rejects_without_replacement() {
     let git_dir = fixture.repo().path().to_path_buf();
     fs::write(git_dir.join("gwz"), b"foreign\n").unwrap();
     let called = Arc::new(AtomicBool::new(false));
-    let owner = filesystem_owner_for_test(FakePlatform::sensitive());
+    let provider = filesystem_provider_for_test(FakePlatform::sensitive());
     assert!(
-        owner
-            .recover_or_create_git_directory(
-                &git_dir,
-                [4; 32],
-                &CaptureBootstrap {
-                    called: called.clone(),
-                },
-            )
+        provider
+            .observe_and_revalidate_git_directory_for_test(&git_dir)
             .is_err()
     );
     assert!(!called.load(Ordering::SeqCst));
@@ -441,15 +421,13 @@ fn git_directory_entry_requires_the_actual_git_directory() {
     let fixture = Fixture::new();
     let git_dir = fixture.repo().path().to_path_buf();
     let called = Arc::new(AtomicBool::new(false));
-    let owner = filesystem_owner_for_test(FakePlatform::sensitive());
-    let catalog = owner
-        .recover_or_create_git_directory(
-            &git_dir,
-            [4; 32],
-            &CaptureBootstrap {
-                called: called.clone(),
-            },
-        )
+    let provider = filesystem_provider_for_test(FakePlatform::sensitive());
+    let catalog = provider
+        .observe_and_revalidate_git_directory_for_test(&git_dir)
+        .map(|observation| {
+            called.store(true, Ordering::SeqCst);
+            capture(observation, PreCatalogRootKindV1::GitDirectory)
+        })
         .unwrap();
     assert!(called.load(Ordering::SeqCst));
     assert_eq!(catalog.root_kind, PreCatalogRootKindV1::GitDirectory);
@@ -458,14 +436,8 @@ fn git_directory_entry_requires_the_actual_git_directory() {
 
     let called = Arc::new(AtomicBool::new(false));
     assert!(
-        owner
-            .recover_or_create_git_directory(
-                &fixture.root,
-                [4; 32],
-                &CaptureBootstrap {
-                    called: called.clone(),
-                },
-            )
+        provider
+            .observe_and_revalidate_git_directory_for_test(&fixture.root)
             .is_err()
     );
     assert!(!called.load(Ordering::SeqCst));
@@ -500,14 +472,12 @@ fn linked_worktree_observation_retains_actual_and_common_git_directories() {
 fn native_macos_provider_issues_the_persistent_identity_profile() {
     let fixture = Fixture::new();
     let called = Arc::new(AtomicBool::new(false));
-    let catalog = super::filesystem::platform_pre_catalog_owner()
-        .recover_or_create_workspace(
-            &fixture.root,
-            [4; 32],
-            &CaptureBootstrap {
-                called: called.clone(),
-            },
-        )
+    let catalog = super::filesystem::platform_pre_catalog_provider()
+        .observe_and_revalidate_workspace_for_test(&fixture.root)
+        .map(|observation| {
+            called.store(true, Ordering::SeqCst);
+            capture(observation, PreCatalogRootKindV1::Workspace)
+        })
         .unwrap();
     assert!(called.load(Ordering::SeqCst));
     assert_eq!(

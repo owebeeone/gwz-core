@@ -165,7 +165,7 @@ pub(super) fn revalidate_child_directory(
     Ok(())
 }
 
-fn open_child_directory(
+pub(super) fn open_child_directory(
     parent: &Dir,
     name: &OsStr,
     label: &'static str,
@@ -249,6 +249,29 @@ pub(super) fn open_or_create_file(
         }
     }
     unreachable!("bounded runtime file reopen loop returns on its final attempt")
+}
+
+pub(super) fn open_existing_file(
+    parent: &Dir,
+    name: &OsStr,
+    label: &'static str,
+) -> Result<File, CheckedFsError> {
+    let observed = parent
+        .symlink_metadata(name)
+        .map_err(|source| CheckedFsError::io("observe existing runtime file", source))?;
+    if !observed.is_file() || observed.is_symlink() {
+        return Err(CheckedFsError::ambiguous(
+            label,
+            "expected an existing no-follow regular file",
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).follow(FollowSymlinks::No);
+    let file = parent
+        .open_with(name, &options)
+        .map_err(|source| CheckedFsError::io("open existing runtime file no-follow", source))?;
+    revalidate_file(parent, name, &file, label)?;
+    Ok(file)
 }
 
 pub(super) fn revalidate_file(

@@ -1,11 +1,9 @@
 use std::io::Cursor;
-use std::path::Path;
 
-use super::super::bootstrap::CatalogBootstrapV1;
 use super::super::capability::{
-    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, PathComponentMode, PreCatalogRootKindV1,
-    RevalidatedPreCatalogPermitV1, SupportedFilesystemProfile, synthetic_pre_catalog_owner,
+    AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, DurableCatalogTargetDigestV1,
+    DurableObjectIdentityV1, DurablePathV1, HistoricalCollisionDigestV1, PathComponentMode,
+    PreCatalogRootKindV1, SupportedFilesystemProfile,
 };
 use super::super::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionScheduleV1,
@@ -62,50 +60,21 @@ fn authority_observation(
     synthetic_authority_observation(reservation, root, parent, source, expected, goal).unwrap()
 }
 
-struct CatalogRecordBuilder {
-    token: CatalogBootstrapOwnershipTokenV1,
-}
-
-impl CatalogBootstrapV1<()> for CatalogRecordBuilder {
-    type Catalog = CatalogBootstrapRecordV1;
-
-    fn recover_or_create(
-        &self,
-        permit: RevalidatedPreCatalogPermitV1<'_, ()>,
-    ) -> Result<Self::Catalog, CheckedFsError> {
-        Ok(CatalogBootstrapRecordV1::from_revalidated_permit(
-            permit, self.token,
-        ))
-    }
-}
-
 fn catalog_with_token(
     root_kind: PreCatalogRootKindV1,
     byte: u8,
     token: [u8; 32],
 ) -> CatalogBootstrapRecordV1 {
-    let (owner, _) = synthetic_pre_catalog_owner(
-        (),
+    let live_path = path(byte);
+    CatalogBootstrapRecordV1::synthetic_for_test(
+        root_kind,
         SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1,
+        DurableCatalogTargetDigestV1::owner_issue([byte.wrapping_add(1); 32]),
+        HistoricalCollisionDigestV1::owner_issue([byte.wrapping_add(2); 32]),
         identity(byte),
-        vec![byte; 16],
-        vec![byte; 16],
-        path(byte),
-    );
-    let builder = CatalogRecordBuilder {
-        token: CatalogBootstrapOwnershipTokenV1::try_from_random_bytes(token).unwrap(),
-    };
-    match root_kind {
-        PreCatalogRootKindV1::Workspace => {
-            owner.recover_or_create_workspace(Path::new("."), [byte.wrapping_add(1); 32], &builder)
-        }
-        PreCatalogRootKindV1::GitDirectory => owner.recover_or_create_git_directory(
-            Path::new("."),
-            [byte.wrapping_add(1); 32],
-            &builder,
-        ),
-    }
-    .unwrap()
+        DurablePathV1::from_live(&live_path).unwrap(),
+        CatalogBootstrapOwnershipTokenV1::try_from_random_bytes(token).unwrap(),
+    )
 }
 
 fn catalog(root_kind: PreCatalogRootKindV1, byte: u8) -> CatalogBootstrapRecordV1 {

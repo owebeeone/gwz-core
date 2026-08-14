@@ -66,7 +66,7 @@ pub(super) fn digest(parts: SnapshotParts<'_>) -> [u8; 32] {
     frame(&mut digest, parts.repository_identity);
     frame(&mut digest, parts.common_directory_identity);
     frame_optional(&mut digest, parts.private_parent_fact);
-    frame(&mut digest, &parts.path_profile.encode_canonical());
+    frame(&mut digest, &parts.path_profile.fresh_digest_material());
 
     match parts.index {
         None => frame(&mut digest, &[0]),

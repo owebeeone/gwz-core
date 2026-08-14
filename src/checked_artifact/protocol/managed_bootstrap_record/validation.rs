@@ -5,7 +5,7 @@ use super::{
     managed_staging_name,
 };
 use crate::checked_artifact::capability::{
-    CanonicalPathIdentityV1, DurableObjectIdentityV1, PathComponentMode,
+    DurableObjectIdentityV1, DurablePathV1, PathComponentMode,
 };
 use crate::checked_artifact::protocol::codec::ProtocolCodecErrorV1;
 use crate::checked_artifact::protocol::codec::path_matches_profile;
@@ -26,7 +26,7 @@ pub(super) fn validate_shape(
     component_start: usize,
     retained_parent_identity: &DurableObjectIdentityV1,
     retained_parent_mode: PathComponentMode,
-    retained_parent_path: &CanonicalPathIdentityV1,
+    retained_parent_path: &DurablePathV1,
     components: &[ManagedBootstrapComponentRecordV1],
     ownership_token: [u8; 32],
     predecessor_intent_id: Option<[u8; 32]>,

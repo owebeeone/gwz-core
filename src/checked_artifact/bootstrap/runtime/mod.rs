@@ -8,6 +8,7 @@ use super::super::capability::{CheckedFsError, PlatformCapability};
 use super::{WorkspaceRuntimeBootstrapV1, WorkspaceRuntimePaths};
 
 mod advisory;
+mod catalog_lease;
 mod paths;
 
 #[cfg(test)]
@@ -16,6 +17,10 @@ mod fault;
 mod tests;
 
 use advisory::AdvisoryLock;
+pub(crate) use catalog_lease::CatalogMutationLeaseV1;
+pub(in crate::checked_artifact) use catalog_lease::{
+    CatalogLeaseSetV1, CatalogLeaseTargetRequestV1,
+};
 use paths::{
     RetainedDirectory, ensure_child_directory, open_or_create_file, resolve_workspace_paths,
     retain_ambient_directory, revalidate_ambient_directory, revalidate_child_directory,
@@ -35,11 +40,20 @@ pub(crate) struct WorkspaceRuntimeLease {
     _workspace_git_dir: RetainedDirectory,
     _runtime_dir: RetainedDirectory,
     _locks_dir: RetainedDirectory,
+    workspace_root_path: PathBuf,
 }
 
 impl WorkspaceRuntimeLease {
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn catalog_mutation_lease(&self) -> CatalogMutationLeaseV1<'_> {
+        CatalogMutationLeaseV1::from_workspace_runtime(self)
+    }
+
+    fn workspace_root_path(&self) -> &Path {
+        &self.workspace_root_path
     }
 }
 
@@ -99,12 +113,12 @@ impl WorkspaceRuntimeBootstrapV1 for RuntimeBootstrap {
             "workspace mutator lease",
         )?;
         #[cfg(test)]
-        fault::run(fault::RuntimeBootstrapFault::AfterFinalLeaseOpen);
+        fault::run(fault::RuntimeBootstrapFault::FinalLeaseOpen);
         let Some(lock) = try_advisory_lock(lease_file)? else {
             return Ok(None);
         };
         #[cfg(test)]
-        fault::run(fault::RuntimeBootstrapFault::AfterFinalLeaseLock);
+        fault::run(fault::RuntimeBootstrapFault::FinalLeaseLock);
 
         revalidate_runtime_tree(
             &paths,
@@ -128,6 +142,7 @@ impl WorkspaceRuntimeBootstrapV1 for RuntimeBootstrap {
             _workspace_git_dir: workspace_git_dir,
             _runtime_dir: runtime_dir,
             _locks_dir: locks_dir,
+            workspace_root_path: paths.workspace_root().to_path_buf(),
         }))
     }
 }
