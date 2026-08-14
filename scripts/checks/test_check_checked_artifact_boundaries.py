@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -409,12 +410,14 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         temporary, source = self.copied_source()
         self.addCleanup(temporary.cleanup)
         manifest = source.parent / "Cargo.toml"
-        manifest.write_text(
-            manifest.read_text(encoding="utf-8").replace(
-                'version = "0.10.3"', 'version = "99.0.0"', 1
-            ),
-            encoding="utf-8",
+        before = manifest.read_text(encoding="utf-8")
+        current = tomllib.loads(before)["package"]["version"]
+        replacement = "99.0.0" if current != "99.0.0" else "98.0.0"
+        after = before.replace(
+            f'version = "{current}"', f'version = "{replacement}"', 1
         )
+        self.assertNotEqual(before, after)
+        manifest.write_text(after, encoding="utf-8")
         result = run(source)
         self.assertEqual(result.returncode, 0, result.stderr)
 
