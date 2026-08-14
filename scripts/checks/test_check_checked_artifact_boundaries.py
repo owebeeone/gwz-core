@@ -91,6 +91,19 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("catalog lease reference set changed", result.stderr)
 
+    def test_catalog_physical_edge_cannot_gain_an_unreviewed_sibling_caller(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/leaf.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nfn unreviewed_catalog_writer() { let _ = prepare_or_rewrite_staging; }\n",
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("catalog lease reference set changed", result.stderr)
+
     def test_catalog_lease_tree_rejects_an_unreviewed_target_helper(self) -> None:
         temporary, source = self.copied_source()
         self.addCleanup(temporary.cleanup)

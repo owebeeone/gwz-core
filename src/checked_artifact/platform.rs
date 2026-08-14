@@ -88,7 +88,9 @@ pub(super) fn rename_relative(
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
         .follow(FollowSymlinks::No)
-        .maybe_dir(false);
+        // The same no-replace primitive publishes both regular-file records
+        // and the first-catalog staging directory.
+        .maybe_dir(true);
     let source = source_dir
         .open_with(source, &options)
         .map_err(|cause| io_error(code, label, cause))?;

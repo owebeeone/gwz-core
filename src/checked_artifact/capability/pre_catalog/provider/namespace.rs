@@ -5,17 +5,17 @@ use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
 
 use super::filesystem::PlatformProviderV1;
+use super::interior;
 use super::retained::{RetainedDirectory, RetainedPlatformRoot, encode_identity};
 use super::{
-    RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogRetiredFactV1, RawCatalogRoleObservationV1,
-    RawCatalogRoleRowV1,
+    RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogRoleObservationV1, RawCatalogRoleRowV1,
 };
 use crate::checked_artifact::capability::{CheckedFsError, PlatformCapability};
 use crate::checked_artifact::catalog::{
     CatalogParentGrammarV1, CatalogParentObservationV1, CatalogRecognizedNameV1,
 };
 use crate::checked_artifact::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
-use crate::checked_artifact::protocol::{InfrastructureSlotV1, ProtocolRecordKindV1};
+use crate::checked_artifact::protocol::ProtocolRecordKindV1;
 
 pub(super) fn observe(
     retained: &RetainedPlatformRoot,
@@ -91,7 +91,7 @@ fn relative_bytes(root: CatalogPrivateRootV1, leaf: &[u8]) -> Result<Vec<u8>, Ch
 fn observe_leaf(
     parent: &RetainedDirectory,
     name: &OsStr,
-    role: &CatalogRecognizedNameV1,
+    _role: &CatalogRecognizedNameV1,
     platform: &impl PlatformProviderV1,
 ) -> Result<RawCatalogEntryFactV1, CheckedFsError> {
     match parent.handle().symlink_metadata(name) {
@@ -106,13 +106,13 @@ fn observe_leaf(
                 let directory = parent.handle().open_dir_nofollow(name).map_err(|source| {
                     CheckedFsError::io("open catalog directory no-follow", source)
                 })?;
-                let identity = encode_identity(&platform.dir_identity(&directory)?);
-                let retired = if matches!(role, CatalogRecognizedNameV1::Final) {
-                    observe_retired(&directory, platform)?
-                } else {
-                    RawCatalogRetiredFactV1::Missing
-                };
-                return Ok(RawCatalogEntryFactV1::Directory { identity, retired });
+                let identity = platform.dir_identity(&directory)?;
+                let interior = interior::observe(&directory, platform)?;
+                return Ok(RawCatalogEntryFactV1::Directory {
+                    identity: encode_identity(&identity),
+                    durable_identity: identity.durable().clone(),
+                    interior,
+                });
             } else if metadata.is_file() && !metadata.is_symlink() {
                 let mut options = OpenOptions::new();
                 options.read(true).follow(FollowSymlinks::No);
@@ -131,39 +131,6 @@ fn observe_leaf(
                 value.extend_from_slice(&metadata.ino().to_be_bytes());
             }
             Ok(RawCatalogEntryFactV1::Other(value))
-        }
-    }
-}
-
-fn observe_retired(
-    final_directory: &cap_std::fs::Dir,
-    platform: &impl PlatformProviderV1,
-) -> Result<RawCatalogRetiredFactV1, CheckedFsError> {
-    let name = OsStr::new(InfrastructureSlotV1::CatalogBootstrapRetired.name());
-    match final_directory.symlink_metadata(name) {
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            Ok(RawCatalogRetiredFactV1::Missing)
-        }
-        Err(source) => Err(CheckedFsError::io("observe retired catalog record", source)),
-        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => {
-            let mut options = OpenOptions::new();
-            options.read(true).follow(FollowSymlinks::No);
-            let mut file = final_directory
-                .open_with(name, &options)
-                .map_err(|source| {
-                    CheckedFsError::io("open retired catalog record no-follow", source)
-                })?;
-            Ok(RawCatalogRetiredFactV1::RegularFile {
-                identity: encode_identity(&platform.file_identity(&file)?),
-                bytes: read_record_bytes(&mut file)?,
-            })
-        }
-        Ok(metadata) => {
-            let mut value = Vec::new();
-            value.push(if metadata.is_symlink() { 3 } else { 4 });
-            value.extend_from_slice(&metadata.dev().to_be_bytes());
-            value.extend_from_slice(&metadata.ino().to_be_bytes());
-            Ok(RawCatalogRetiredFactV1::Other(value))
         }
     }
 }

@@ -10,9 +10,12 @@ use crate::checked_artifact::catalog::{
 };
 
 mod aggregate;
+mod completed;
 mod digests;
+mod directory_mutation;
 mod filesystem;
 mod index;
+mod interior;
 mod mutation;
 mod namespace;
 mod platform;
@@ -35,7 +38,13 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_bound_obs
         .revalidate_bound_target(&bound.target, &bound.observation)
 }
 pub(in crate::checked_artifact::capability::pre_catalog) use aggregate::outer_aggregate_facts;
+pub(in crate::checked_artifact::capability::pre_catalog) use completed::{
+    RetainedCompletedCatalogV1, retain_completed_catalog,
+};
 pub(in crate::checked_artifact::capability::pre_catalog) use digests::ReadyObservationDigestsV1;
+pub(in crate::checked_artifact::capability::pre_catalog) use directory_mutation::{
+    prepare_or_rewrite_staging, publish_final_directory, retire_active_record,
+};
 pub(in crate::checked_artifact::capability::pre_catalog) use mutation::{
     create_git_private_parent, publish_active_record, write_or_rewrite_scratch,
 };
@@ -110,7 +119,8 @@ pub(super) struct RawCatalogRoleRowV1 {
 pub(super) enum RawCatalogEntryFactV1 {
     Directory {
         identity: Vec<u8>,
-        retired: RawCatalogRetiredFactV1,
+        durable_identity: DurableObjectIdentityV1,
+        interior: RawCatalogInteriorObservationV1,
     },
     RegularFile {
         identity: Vec<u8>,
@@ -120,10 +130,27 @@ pub(super) enum RawCatalogEntryFactV1 {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(super) enum RawCatalogRetiredFactV1 {
-    Missing,
+pub(super) struct RawCatalogInteriorObservationV1 {
+    pub(super) entry_count: usize,
+    pub(super) encoded_name_bytes: usize,
+    pub(super) rows: Vec<RawCatalogInteriorRowV1>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct RawCatalogInteriorRowV1 {
+    pub(super) slot: crate::checked_artifact::protocol::InfrastructureSlotV1,
+    pub(super) fact: RawCatalogInteriorFactV1,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum RawCatalogInteriorFactV1 {
+    EmptyDirectory {
+        identity: Vec<u8>,
+        durable_identity: DurableObjectIdentityV1,
+    },
     RegularFile {
         identity: Vec<u8>,
+        durable_identity: DurableObjectIdentityV1,
         bytes: RawCatalogBytesV1,
     },
     Other(Vec<u8>),
@@ -161,5 +188,9 @@ pub(super) trait RawPreCatalogProviderV1<Root: ?Sized, RetainedRoot> {
 
 #[cfg(test)]
 mod catalog_tests;
+#[cfg(test)]
+mod directory_mutation_tests;
+#[cfg(test)]
+mod mutation_tests;
 #[cfg(test)]
 mod production_tests;

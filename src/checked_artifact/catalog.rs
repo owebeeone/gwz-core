@@ -13,7 +13,7 @@ mod scratch;
     reason = "R2-C2 freezes the sealed catalog owner before C3 consumes its retained result"
 )]
 pub(in crate::checked_artifact) use bootstrap::{
-    CatalogOwnerV1, OpaqueRetainedCatalogV1, recover_or_create,
+    CatalogOwnerEdgeV1, CatalogOwnerV1, OpaqueRetainedCatalogV1, recover_or_create,
 };
 #[allow(
     unused_imports,

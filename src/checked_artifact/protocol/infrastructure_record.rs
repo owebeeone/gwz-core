@@ -81,6 +81,53 @@ impl InfrastructureRecordV1 {
         self.bootstrap_ownership_token
     }
 
+    /// Issues the identity-pinned record from one retained physical catalog
+    /// observation. Callers cannot supply names or a second record binding.
+    pub(in crate::checked_artifact) fn owner_issue_for_catalog(
+        catalog_bootstrap: &super::CatalogBootstrapRecordV1,
+        catalog_root_identity: DurableObjectIdentityV1,
+        catalog_anchor_identity: DurableObjectIdentityV1,
+        roaming_anchor_identity: DurableObjectIdentityV1,
+        retired_root_identity: DurableObjectIdentityV1,
+    ) -> Result<Self, ProtocolCodecErrorV1> {
+        let staging_directory_identity = catalog_root_identity.clone();
+        let value = Self::from_fields(
+            catalog_root_identity,
+            catalog_anchor_identity,
+            roaming_anchor_identity,
+            retired_root_identity,
+            staging_directory_identity,
+            catalog_bootstrap.record_id(),
+            catalog_bootstrap.bootstrap_ownership_token(),
+            slot_component(super::InfrastructureSlotV1::ActionAdmissionActive),
+            slot_component(super::InfrastructureSlotV1::ActionAdmissionScratch),
+            slot_component(super::InfrastructureSlotV1::ActionAdmissionStaging),
+        );
+        value.validate_profiles()?;
+        if value.catalog_root_identity.support_profile() != catalog_bootstrap.support_profile() {
+            return Err(ProtocolCodecErrorV1::Invalid(
+                "infrastructure profile does not match catalog bootstrap",
+            ));
+        }
+        Ok(value)
+    }
+
+    pub(in crate::checked_artifact) fn catalog_root_identity(&self) -> &DurableObjectIdentityV1 {
+        &self.catalog_root_identity
+    }
+
+    pub(in crate::checked_artifact) fn catalog_anchor_identity(&self) -> &DurableObjectIdentityV1 {
+        &self.catalog_anchor_identity
+    }
+
+    pub(in crate::checked_artifact) fn roaming_anchor_identity(&self) -> &DurableObjectIdentityV1 {
+        &self.roaming_anchor_identity
+    }
+
+    pub(in crate::checked_artifact) fn retired_root_identity(&self) -> &DurableObjectIdentityV1 {
+        &self.retired_root_identity
+    }
+
     pub(in crate::checked_artifact) fn staging_directory_identity(
         &self,
     ) -> &DurableObjectIdentityV1 {
@@ -184,26 +231,13 @@ pub(in crate::checked_artifact) fn synthetic_infrastructure_from_catalog_bootstr
     roaming_anchor_identity: DurableObjectIdentityV1,
     retired_root_identity: DurableObjectIdentityV1,
 ) -> Result<InfrastructureRecordV1, ProtocolCodecErrorV1> {
-    let staging_directory_identity = catalog_root_identity.clone();
-    let value = InfrastructureRecordV1::from_fields(
+    InfrastructureRecordV1::owner_issue_for_catalog(
+        catalog_bootstrap,
         catalog_root_identity,
         catalog_anchor_identity,
         roaming_anchor_identity,
         retired_root_identity,
-        staging_directory_identity,
-        catalog_bootstrap.record_id(),
-        catalog_bootstrap.bootstrap_ownership_token(),
-        slot_component(super::InfrastructureSlotV1::ActionAdmissionActive),
-        slot_component(super::InfrastructureSlotV1::ActionAdmissionScratch),
-        slot_component(super::InfrastructureSlotV1::ActionAdmissionStaging),
-    );
-    value.validate_profiles()?;
-    if value.catalog_root_identity.support_profile() != catalog_bootstrap.support_profile() {
-        return Err(ProtocolCodecErrorV1::Invalid(
-            "infrastructure profile does not match catalog bootstrap",
-        ));
-    }
-    Ok(value)
+    )
 }
 
 fn slot_component(slot: super::InfrastructureSlotV1) -> AsciiComponent {

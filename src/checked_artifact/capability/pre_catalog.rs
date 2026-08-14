@@ -1,7 +1,8 @@
 //! Target-bound pre-catalog authority types.
 //!
-//! R2-C0 freezes the live/durable type boundary. The C1 aggregate provider is
-//! the only future issuer; C0 deliberately exposes no catalog writer.
+//! R2-C0 freezes the live/durable type boundary, C1 supplies the pure aggregate
+//! classification, and C2 consumes these permits through the sealed catalog
+//! owner. No caller receives a raw filesystem writer.
 
 use super::{
     CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1, SupportedFilesystemProfile,
@@ -9,10 +10,10 @@ use super::{
 use crate::checked_artifact::bootstrap::CatalogLeaseTargetWitnessV1;
 use crate::checked_artifact::catalog::CatalogScratchNameV1;
 use crate::checked_artifact::catalog::{
-    CatalogAttemptBindingV1, CatalogClassificationV1, classify_catalog_attempt,
+    CatalogAttemptBindingV1, CatalogClassificationV1, CatalogOwnerEdgeV1, classify_catalog_attempt,
 };
-use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 #[cfg(test)]
+use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 use crate::checked_artifact::protocol::CatalogBootstrapRecordV1;
 
 mod provider;
@@ -92,6 +93,20 @@ pub(in crate::checked_artifact) struct CatalogPermitV1<'lease> {
     _attempt_binding: CatalogAttemptBindingV1,
 }
 
+/// Exact completed catalog retained with the same target-bound lease.
+pub(in crate::checked_artifact) struct CompletedCatalogPermitV1<'lease> {
+    catalog_target: CatalogLeaseTargetWitnessV1<'lease>,
+    retained_root: provider::RetainedPlatformRoot,
+    completed: provider::RetainedCompletedCatalogV1,
+}
+
+impl CompletedCatalogPermitV1<'_> {
+    pub(in crate::checked_artifact) fn revalidate(&self) -> Result<(), CheckedFsError> {
+        provider::revalidate_lease_root_binding(&self.catalog_target, &self.retained_root)?;
+        self.completed.revalidate(&self.retained_root)
+    }
+}
+
 /// A disjoint, live-only authorization for the one fixed Git `gwz` parent
 /// creation edge. It contains no ready-catalog digest or catalog authority.
 pub(in crate::checked_artifact) struct MissingCatalogParentPermitV1<'lease> {
@@ -147,14 +162,15 @@ impl<'lease> CatalogPermitV1<'lease> {
     pub(in crate::checked_artifact) fn classify_observed(&self) -> CatalogClassificationV1 {
         classify_catalog_attempt(
             &self._attempt_binding,
-            provider::outer_aggregate_facts(&self._raw_roles),
+            provider::outer_aggregate_facts(&self._attempt_binding, &self._raw_roles),
         )
     }
 
-    pub(in crate::checked_artifact) fn execute_write_or_rewrite_scratch(
+    pub(in crate::checked_artifact) fn execute_owner_scratch(
         self: Box<Self>,
-        token: CatalogBootstrapOwnershipTokenV1,
+        edge: CatalogOwnerEdgeV1,
     ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        let token = edge.require_scratch_token()?;
         self.revalidate_observation()?;
         let scratch = CatalogScratchNameV1::new(
             self._durable_target_digest,
@@ -183,13 +199,21 @@ impl<'lease> CatalogPermitV1<'lease> {
                 "ready permit does not authorize this scratch edge",
             ));
         }
-        provider::write_or_rewrite_scratch(&self._retained_root, &scratch, &record, create_new)?;
+        provider::write_or_rewrite_scratch(
+            &self._retained_root,
+            &self._raw_roles,
+            &scratch,
+            &record,
+            create_new,
+        )?;
         Ok(self.into_target())
     }
 
-    pub(in crate::checked_artifact) fn execute_publish_active(
+    pub(in crate::checked_artifact) fn execute_owner_publish_active(
         self: Box<Self>,
+        edge: CatalogOwnerEdgeV1,
     ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        edge.require_publish_active()?;
         self.revalidate_observation()?;
         let classification = self.classify_observed();
         if classification.decision()
@@ -211,8 +235,100 @@ impl<'lease> CatalogPermitV1<'lease> {
             record.historical_collision_digest(),
             record.bootstrap_ownership_token(),
         );
-        provider::publish_active_record(&self._retained_root, &scratch)?;
+        provider::publish_active_record(&self._retained_root, &self._raw_roles, &scratch, record)?;
         Ok(self.into_target())
+    }
+
+    pub(in crate::checked_artifact) fn execute_owner_prepare_or_rewrite_staging(
+        self: Box<Self>,
+        edge: CatalogOwnerEdgeV1,
+    ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        edge.require_prepare_or_rewrite_staging()?;
+        self.revalidate_observation()?;
+        let expected = self.expected_for(
+            crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::PrepareOrRewriteStaging,
+            "catalog staging",
+        )?;
+        provider::prepare_or_rewrite_staging(&self._retained_root, &self._raw_roles, &expected)?;
+        Ok(self.into_target())
+    }
+
+    pub(in crate::checked_artifact) fn execute_owner_publish_final(
+        self: Box<Self>,
+        edge: CatalogOwnerEdgeV1,
+    ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        edge.require_publish_final()?;
+        self.revalidate_observation()?;
+        let expected = self.expected_for(
+            crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::PublishFinal,
+            "catalog final publication",
+        )?;
+        provider::publish_final_directory(&self._retained_root, &self._raw_roles, &expected)?;
+        Ok(self.into_target())
+    }
+
+    pub(in crate::checked_artifact) fn execute_owner_retire_active(
+        self: Box<Self>,
+        edge: CatalogOwnerEdgeV1,
+    ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        edge.require_retire_active()?;
+        self.revalidate_observation()?;
+        let expected = self.expected_for(
+            crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::RetireActive,
+            "catalog active retirement",
+        )?;
+        provider::retire_active_record(&self._retained_root, &self._raw_roles, &expected)?;
+        Ok(self.into_target())
+    }
+
+    pub(in crate::checked_artifact) fn execute_owner_complete(
+        self: Box<Self>,
+        edge: CatalogOwnerEdgeV1,
+    ) -> Result<CompletedCatalogPermitV1<'lease>, CheckedFsError> {
+        edge.require_complete()?;
+        self.revalidate_observation()?;
+        let expected = self.expected_for(
+            crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::Complete,
+            "completed catalog",
+        )?;
+        let completed =
+            provider::retain_completed_catalog(&self._retained_root, &self._raw_roles, &expected)?;
+        let Self {
+            _catalog_target,
+            _retained_root,
+            _support_profile: _,
+            _root_identity: _,
+            _root_invocation_identity: _,
+            _rename_domain: _,
+            _path_profile: _,
+            _raw_roles: _,
+            _fresh_observation_digest: _,
+            _durable_target_digest: _,
+            _historical_collision_digest: _,
+            _attempt_binding: _,
+        } = *self;
+        Ok(CompletedCatalogPermitV1 {
+            catalog_target: _catalog_target,
+            retained_root: _retained_root,
+            completed,
+        })
+    }
+
+    fn expected_for(
+        &self,
+        decision: crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1,
+        fact: &'static str,
+    ) -> Result<CatalogBootstrapRecordV1, CheckedFsError> {
+        let classification = self.classify_observed();
+        if classification.decision() != decision {
+            return Err(CheckedFsError::ambiguous(
+                fact,
+                "ready permit does not authorize this owner edge",
+            ));
+        }
+        classification.expected_record().cloned().ok_or_else(|| {
+            CheckedFsError::ambiguous(fact, "authorized owner edge has no expected record")
+        })
     }
 
     fn into_target(self: Box<Self>) -> CatalogLeaseTargetWitnessV1<'lease> {
@@ -311,9 +427,11 @@ impl<'lease> MissingCatalogParentPermitV1<'lease> {
         self._missing_parent_observation_digest
     }
 
-    pub(in crate::checked_artifact) fn execute_create_and_retry(
+    pub(in crate::checked_artifact) fn execute_owner_create_and_retry(
         self: Box<Self>,
+        edge: CatalogOwnerEdgeV1,
     ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
+        edge.require_create_private_parent()?;
         self.revalidate_observation()?;
         provider::create_git_private_parent(&self._retained_root)?;
         let Self {

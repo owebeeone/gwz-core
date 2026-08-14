@@ -93,7 +93,7 @@ impl CatalogAttemptBindingV1 {
         self
     }
 
-    fn accepts(&self, record: &CatalogBootstrapRecordV1) -> bool {
+    pub(in crate::checked_artifact) fn accepts(&self, record: &CatalogBootstrapRecordV1) -> bool {
         record.matches_attempt(
             self.root_kind,
             self.support_profile,

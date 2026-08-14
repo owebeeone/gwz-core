@@ -2,7 +2,8 @@ use sha2::{Digest, Sha256};
 
 use super::super::*;
 use super::{
-    RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogRetiredFactV1, RawCatalogRoleRowV1,
+    RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogInteriorFactV1,
+    RawCatalogInteriorObservationV1, RawCatalogRoleRowV1,
 };
 use crate::checked_artifact::capability::{
     LosslessIndexEntry, PathComponentMode, PrivateControlDomain, TrackedWorktreeEntry,
@@ -180,21 +181,12 @@ pub(super) fn digest(parts: SnapshotParts<'_>) -> [u8; 32] {
 
 fn frame_catalog_fact(digest: &mut Sha256, fact: &RawCatalogEntryFactV1) {
     match fact {
-        RawCatalogEntryFactV1::Directory { identity, retired } => {
+        RawCatalogEntryFactV1::Directory {
+            identity, interior, ..
+        } => {
             frame(digest, &[1]);
             frame(digest, identity);
-            match retired {
-                RawCatalogRetiredFactV1::Missing => frame(digest, &[0]),
-                RawCatalogRetiredFactV1::RegularFile { identity, bytes } => {
-                    frame(digest, &[1]);
-                    frame(digest, identity);
-                    frame_catalog_bytes(digest, bytes);
-                }
-                RawCatalogRetiredFactV1::Other(value) => {
-                    frame(digest, &[2]);
-                    frame(digest, value);
-                }
-            }
+            frame_catalog_interior(digest, interior);
         }
         RawCatalogEntryFactV1::RegularFile { identity, bytes } => {
             frame(digest, &[2]);
@@ -204,6 +196,32 @@ fn frame_catalog_fact(digest: &mut Sha256, fact: &RawCatalogEntryFactV1) {
         RawCatalogEntryFactV1::Other(value) => {
             frame(digest, &[3]);
             frame(digest, value);
+        }
+    }
+}
+
+fn frame_catalog_interior(digest: &mut Sha256, interior: &RawCatalogInteriorObservationV1) {
+    frame(digest, &(interior.entry_count as u64).to_be_bytes());
+    frame(digest, &(interior.encoded_name_bytes as u64).to_be_bytes());
+    frame(digest, &(interior.rows.len() as u64).to_be_bytes());
+    for row in &interior.rows {
+        frame(digest, row.slot.name().as_bytes());
+        match &row.fact {
+            RawCatalogInteriorFactV1::EmptyDirectory { identity, .. } => {
+                frame(digest, &[1]);
+                frame(digest, identity);
+            }
+            RawCatalogInteriorFactV1::RegularFile {
+                identity, bytes, ..
+            } => {
+                frame(digest, &[2]);
+                frame(digest, identity);
+                frame_catalog_bytes(digest, bytes);
+            }
+            RawCatalogInteriorFactV1::Other(value) => {
+                frame(digest, &[3]);
+                frame(digest, value);
+            }
         }
     }
 }

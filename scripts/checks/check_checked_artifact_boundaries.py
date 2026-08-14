@@ -150,8 +150,8 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "d9b5d57d08be29edcc4f905a1721032db37c52fd5e040dbbc9a88a417e01d4d0",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "601913e71ef15ec5d00540ba4847ec945cdca96d003a8df48b1a5e099efdcea2",
-    "checked_artifact/catalog.rs": "cbf344c6de78be3ce04d8448d844d4c830b02c624828a1991172a9303f36bd6e",
+    "checked_artifact/capability/pre_catalog.rs": "39b29cd571bf6573ac583f10c87a9be7c300c25573a6b3c12453f09937d8bab0",
+    "checked_artifact/catalog.rs": "f6c37c22fa9934fc98e8c685a9aa9f6c9c29694888ebbec7158405505a4c32b3",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }
@@ -457,6 +457,87 @@ PRIVATE_CAPABILITIES = {
 }
 
 CATALOG_LEASE_REFERENCE_SETS = {
+    "CatalogOwnerEdgeV1": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "execute_owner_create_and_retry": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "execute_owner_publish_active": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "execute_owner_prepare_or_rewrite_staging": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "execute_owner_publish_final": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "execute_owner_retire_active": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "execute_owner_complete": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "execute_owner_scratch": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "create_git_private_parent": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/mutation.rs",
+    },
+    "write_or_rewrite_scratch": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/mutation.rs",
+    },
+    "publish_active_record": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/mutation.rs",
+    },
+    "prepare_or_rewrite_staging": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/directory_mutation.rs",
+    },
+    "publish_final_directory": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/directory_mutation.rs",
+    },
+    "retire_active_record": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/directory_mutation.rs",
+    },
+    "retain_completed_catalog": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/completed.rs",
+    },
+    "CompletedCatalogPermitV1": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/catalog/bootstrap.rs",
+    },
+    "RetainedCompletedCatalogV1": {
+        "checked_artifact/capability/pre_catalog.rs",
+        "checked_artifact/capability/pre_catalog/provider.rs",
+        "checked_artifact/capability/pre_catalog/provider/completed.rs",
+    },
+    "owner_issue_for_catalog": {
+        "checked_artifact/capability/pre_catalog/provider/interior.rs",
+        "checked_artifact/protocol/infrastructure_record.rs",
+    },
     "CatalogLeaseSetV1": {
         "checked_artifact/bootstrap.rs",
         "checked_artifact/bootstrap/runtime/catalog_lease.rs",
@@ -507,6 +588,7 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider/catalog_tests.rs",
         "checked_artifact/capability/pre_catalog/provider/catalog_tests/grammar.rs",
         "checked_artifact/capability/pre_catalog/provider/catalog_tests/preflight.rs",
+        "checked_artifact/capability/pre_catalog/provider/mutation_tests.rs",
         "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
         "checked_artifact/catalog/bootstrap.rs",
     },
@@ -528,6 +610,8 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider/catalog_tests.rs",
         "checked_artifact/capability/pre_catalog/provider/catalog_tests/grammar.rs",
         "checked_artifact/capability/pre_catalog/provider/catalog_tests/preflight.rs",
+        "checked_artifact/capability/pre_catalog/provider/directory_mutation_tests.rs",
+        "checked_artifact/capability/pre_catalog/provider/mutation_tests.rs",
         "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
         "operation/workspace_mutator_lock.rs",
     },

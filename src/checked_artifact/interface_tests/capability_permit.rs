@@ -157,6 +157,47 @@ fn catalog_owner_surface_is_sealed_and_lease_only() {
 }
 
 #[test]
+fn completed_catalog_capability_retains_the_target_and_exact_interior_handles() {
+    let pre_catalog = include_str!("../capability/pre_catalog.rs");
+    let completed = include_str!("../capability/pre_catalog/provider/completed.rs");
+    let owner = include_str!("../catalog/bootstrap.rs");
+    let permit = struct_body(pre_catalog, "CompletedCatalogPermitV1");
+    for field in ["catalog_target", "retained_root", "completed"] {
+        assert!(
+            permit.contains(field),
+            "completed permit is missing {field}"
+        );
+    }
+    let retained = struct_body(completed, "RetainedCompletedCatalogV1");
+    for field in [
+        "final_directory",
+        "catalog_format",
+        "catalog_anchor",
+        "roaming_anchor",
+        "retired_actions",
+        "retired_descriptor",
+        "retired_bootstrap",
+        "expected_bootstrap",
+    ] {
+        assert!(
+            retained.contains(field),
+            "retained completed catalog is missing {field}"
+        );
+    }
+    for required in [
+        "CatalogOwnerEdgeKindV1",
+        "execute_owner_prepare_or_rewrite_staging",
+        "execute_owner_publish_final",
+        "execute_owner_retire_active",
+        "execute_owner_complete",
+    ] {
+        assert!(owner.contains(required) || pre_catalog.contains(required));
+    }
+    assert!(!owner.contains("pub enum CatalogOwnerEdgeKindV1"));
+    assert!(!completed.contains("pub fn handle"));
+}
+
+#[test]
 fn ready_and_missing_parent_permits_have_disjoint_exact_authority_fields() {
     let source = include_str!("../capability/pre_catalog.rs");
     let ready = struct_body(source, "CatalogPermitV1");

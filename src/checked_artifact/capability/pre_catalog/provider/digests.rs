@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::snapshot::{IndexSnapshotFacts, SnapshotParts};
 use super::{
-    RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogRetiredFactV1, RawCatalogRoleObservationV1,
+    RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogInteriorFactV1, RawCatalogRoleObservationV1,
 };
 use crate::checked_artifact::capability::{
     CanonicalPathIdentityV1, CheckedFsError, DurableCatalogTargetDigestV1, DurablePathV1,
@@ -13,7 +13,7 @@ use crate::checked_artifact::capability::{
 };
 use crate::checked_artifact::catalog::CatalogRecognizedNameV1;
 use crate::checked_artifact::protocol::{
-    CatalogBootstrapOwnershipTokenV1, decode_catalog_bootstrap_record,
+    CatalogBootstrapOwnershipTokenV1, InfrastructureSlotV1, decode_catalog_bootstrap_record,
 };
 
 use super::retained::RetainedPlatformRoot;
@@ -220,25 +220,23 @@ fn select_historical(
                     ..
                 },
             ) => merge_source(&mut source, decode_source(bytes)?)?,
-            (
-                CatalogRecognizedNameV1::Final,
-                RawCatalogEntryFactV1::Directory {
-                    retired:
-                        RawCatalogRetiredFactV1::RegularFile {
+            (CatalogRecognizedNameV1::Staging, RawCatalogEntryFactV1::Directory { .. }) => {}
+            (CatalogRecognizedNameV1::Final, RawCatalogEntryFactV1::Directory { interior, .. }) => {
+                match interior
+                    .rows
+                    .iter()
+                    .find(|row| row.slot == InfrastructureSlotV1::CatalogBootstrapRetired)
+                {
+                    None => {}
+                    Some(row) => match &row.fact {
+                        RawCatalogInteriorFactV1::RegularFile {
                             bytes: RawCatalogBytesV1::Bounded(bytes),
                             ..
-                        },
-                    ..
-                },
-            ) => merge_source(&mut source, decode_source(bytes)?)?,
-            (CatalogRecognizedNameV1::Staging, RawCatalogEntryFactV1::Directory { .. })
-            | (
-                CatalogRecognizedNameV1::Final,
-                RawCatalogEntryFactV1::Directory {
-                    retired: RawCatalogRetiredFactV1::Missing,
-                    ..
-                },
-            ) => {}
+                        } => merge_source(&mut source, decode_source(bytes)?)?,
+                        _ => return Err(ambiguous_roles()),
+                    },
+                }
+            }
             _ => return Err(ambiguous_roles()),
         }
     }
