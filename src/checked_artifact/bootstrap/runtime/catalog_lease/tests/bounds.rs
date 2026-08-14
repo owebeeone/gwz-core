@@ -84,6 +84,32 @@ fn case_fold_alias_scan_has_literal_lossless_parent_budgets() {
     );
 }
 
+#[test]
+fn case_fold_alias_scan_rejects_non_ascii_names_after_charging_them() {
+    let parent = TempRepo::new("alias-native-equivalence");
+    let scan_parent = parent.path().join("scan-parent");
+    fs::create_dir(&scan_parent).unwrap();
+    fs::write(scan_parent.join("ordinary-\u{212a}"), b"").unwrap();
+    let retained = retain_ambient_directory(&scan_parent, "alias test parent").unwrap();
+
+    assert!(
+        reject_equivalent_alias_with_mode_for_test(
+            retained.handle(),
+            OsStr::new(GIT_CATALOG_MUTATOR_LOCK_NAME),
+            PathComponentMode::AsciiCaseFold,
+        )
+        .is_err()
+    );
+    assert!(
+        reject_equivalent_alias_with_mode_for_test(
+            retained.handle(),
+            OsStr::new(GIT_CATALOG_MUTATOR_LOCK_NAME),
+            PathComponentMode::Sensitive,
+        )
+        .is_ok()
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn unix_non_utf8_alias_names_are_charged_losslessly() {

@@ -626,3 +626,14 @@ fn case_fold_alias_scan_rejects_maximum_plus_one_parent_entries() {
     assert!(!called.load(Ordering::SeqCst));
     assert!(!fixture.private_catalog().exists());
 }
+
+#[test]
+fn case_fold_parent_alias_scan_rejects_non_ascii_names_before_callback() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("ordinary-\u{017f}"), []).unwrap();
+
+    let (result, called) = run_workspace(&fixture.root, FakePlatform::folded(), None);
+    assert!(result.is_err());
+    assert!(!called.load(Ordering::SeqCst));
+    assert!(!fixture.private_catalog().exists());
+}

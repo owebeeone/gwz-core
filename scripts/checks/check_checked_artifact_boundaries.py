@@ -148,10 +148,10 @@ APPROVED_RUST_PATH_EDGES = {
 # the root module, every current descendant, and the descendant file set, so a
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
-    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "913b0a6c15932c7256444b4094c2040959c087f8981005dd14b2c2b1292735db",
+    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "d9b5d57d08be29edcc4f905a1721032db37c52fd5e040dbbc9a88a417e01d4d0",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "5ff65215dec53cf5629cc4bb397d5459c69c0dbcd205d4fecb725fab7e109738",
-    "checked_artifact/catalog.rs": "82667fd306fae172af8ec172375c4aa9efa0cb23bcac5caaa5c4f850e52c8720",
+    "checked_artifact/capability/pre_catalog.rs": "f08494b13ced60a63cba0b294bd03f29d900925b895c4216df90a3a34e918576",
+    "checked_artifact/catalog.rs": "27afd2b0ff3c58a5a5ef45619ce7dbcfeb1919bfe59981fbce11d3ec68df86e4",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }

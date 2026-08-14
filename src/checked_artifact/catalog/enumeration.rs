@@ -159,6 +159,7 @@ impl CatalogParentScannerV1 {
         name: &CatalogNativeNameV1,
     ) -> Result<Option<CatalogRecognizedNameV1>, CheckedFsError> {
         self.budget.charge(name.native_units, name.encoded_bytes)?;
+        reject_non_ascii_case_fold_name(self.mode, name.ascii_bytes().is_some())?;
         self.observe_ascii(name.ascii_bytes())
     }
 
@@ -169,6 +170,7 @@ impl CatalogParentScannerV1 {
         let (native_units, encoded_bytes) = native_charge(name)?;
         self.budget.charge(native_units, encoded_bytes)?;
         let ascii = NativeAsciiNameV1::from_os_str(name);
+        reject_non_ascii_case_fold_name(self.mode, ascii.is_some())?;
         self.observe_ascii(ascii.as_ref().map(NativeAsciiNameV1::as_bytes))
     }
 
@@ -259,11 +261,23 @@ pub(in crate::checked_artifact) fn native_name_matches_ascii(
     observed: &OsStr,
     expected: &[u8],
     mode: PathComponentMode,
-) -> bool {
-    NativeAsciiNameV1::from_os_str(observed).is_some_and(|observed| match mode {
+) -> Result<bool, CheckedFsError> {
+    let observed = NativeAsciiNameV1::from_os_str(observed);
+    reject_non_ascii_case_fold_name(mode, observed.is_some())?;
+    Ok(observed.is_some_and(|observed| match mode {
         PathComponentMode::Sensitive => observed.as_bytes() == expected,
         PathComponentMode::AsciiCaseFold => observed.as_bytes().eq_ignore_ascii_case(expected),
-    })
+    }))
+}
+
+fn reject_non_ascii_case_fold_name(
+    mode: PathComponentMode,
+    is_ascii: bool,
+) -> Result<(), CheckedFsError> {
+    if mode == PathComponentMode::AsciiCaseFold && !is_ascii {
+        return Err(alias_error());
+    }
+    Ok(())
 }
 
 fn classify_ascii(

@@ -95,3 +95,50 @@ fn malformed_scratch_family_entry_is_read_only_ambiguity() {
         []
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn physical_case_fold_parent_rejects_non_ascii_equivalent_fixed_and_scratch_names() {
+    let fixed = Fixture::new();
+    let fixed_alias = "checked-artifact\u{017f}";
+    fs::write(fixed.private_parent().join(fixed_alias), b"fixed-alias\n").unwrap();
+    if fixed.private_parent().join("checked-artifacts").exists() {
+        assert!(observe(&fixed.root).is_err());
+        assert_eq!(
+            fs::read(fixed.private_parent().join(fixed_alias)).unwrap(),
+            b"fixed-alias\n"
+        );
+    }
+
+    let scratch_fixture = Fixture::new();
+    let (target, historical) = {
+        let runtime = try_acquire_workspace_runtime(&scratch_fixture.root)
+            .unwrap()
+            .expect("workspace runtime lease");
+        let witness = runtime.catalog_mutation_lease().begin_preflight().unwrap();
+        let CatalogPreflightV1::Ready(permit) = preflight_catalog_target(witness).unwrap() else {
+            panic!("workspace parent must produce a ready permit");
+        };
+        let (_, target, historical) = permit.digests();
+        (target, historical)
+    };
+    let canonical = CatalogScratchNameV1::new(
+        target,
+        historical,
+        CatalogBootstrapOwnershipTokenV1::try_from_random_bytes([11; 32]).unwrap(),
+    );
+    let canonical = std::str::from_utf8(canonical.as_bytes()).unwrap();
+    let scratch_alias = canonical.replacen('s', "\u{017f}", 1);
+    fs::write(
+        scratch_fixture.private_parent().join(&scratch_alias),
+        b"scratch-alias\n",
+    )
+    .unwrap();
+    if scratch_fixture.private_parent().join(canonical).exists() {
+        assert!(observe(&scratch_fixture.root).is_err());
+        assert_eq!(
+            fs::read(scratch_fixture.private_parent().join(scratch_alias)).unwrap(),
+            b"scratch-alias\n"
+        );
+    }
+}

@@ -367,7 +367,7 @@ fn reject_equivalent_alias(
         let entry = entry.map_err(|source| CheckedFsError::io("read retained parent", source))?;
         let observed = entry.file_name();
         budget.charge_os_str(&observed)?;
-        if native_name_matches_ascii(&observed, expected_bytes, mode)
+        if native_name_matches_ascii(&observed, expected_bytes, mode)?
             && observed.as_os_str() != expected
         {
             return Err(CheckedFsError::ambiguous(

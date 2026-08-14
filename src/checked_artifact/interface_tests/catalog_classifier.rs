@@ -129,6 +129,26 @@ fn native_windows_names_are_utf16_charged_and_ascii_classified() {
 }
 
 #[test]
+fn non_ascii_native_names_fail_closed_only_on_case_fold_parents() {
+    for name in [
+        CatalogNativeNameV1::unix("\u{017f}".as_bytes().to_vec()).unwrap(),
+        CatalogNativeNameV1::windows(vec![0x017f]).unwrap(),
+        CatalogNativeNameV1::windows(vec![0x212a]).unwrap(),
+    ] {
+        assert!(
+            CatalogParentGrammarV1::new(PathComponentMode::AsciiCaseFold)
+                .classify([name.clone()])
+                .is_err()
+        );
+        let observed = CatalogParentGrammarV1::new(PathComponentMode::Sensitive)
+            .classify([name])
+            .unwrap();
+        assert_eq!(observed.entry_count(), 1);
+        assert_eq!(observed.recognized_count(), 0);
+    }
+}
+
+#[test]
 fn malformed_duplicate_and_equivalent_reserved_names_are_ambiguous() {
     let exact = scratch();
     let malformed = CatalogNativeNameV1::unix(

@@ -51,6 +51,12 @@ fn reject_equivalent_alias_with_mode(
         if aggregate_bytes > MAX_CATALOG_ALIAS_AGGREGATE_BYTES_V1 {
             return Err(alias_capacity_error());
         }
+        if !native_name_is_ascii(&observed) {
+            return Err(CheckedFsError::ambiguous(
+                label,
+                "non-ASCII name is ambiguous on a case-fold parent",
+            ));
+        }
         if ascii_case_equivalent(&observed, expected) && observed != expected {
             return Err(CheckedFsError::ambiguous(
                 label,
@@ -59,6 +65,25 @@ fn reject_equivalent_alias_with_mode(
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn native_name_is_ascii(name: &OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    name.as_bytes().is_ascii()
+}
+
+#[cfg(windows)]
+fn native_name_is_ascii(name: &OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    name.encode_wide().all(|unit| unit <= 0x7f)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_name_is_ascii(_name: &OsStr) -> bool {
+    false
 }
 
 fn native_name_charge(name: &OsStr) -> Result<(usize, usize), CheckedFsError> {
