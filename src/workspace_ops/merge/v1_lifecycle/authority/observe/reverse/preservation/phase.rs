@@ -176,7 +176,8 @@ fn observe_plain_stash<B: GitBackend>(
             "non-root stash carries a root-only phase",
         ));
     };
-    let stashes = backend.preservation_stashes(&plan.path, &current.record().merge_id)?;
+    let stashes =
+        crate::git::observe_preservation_stashes_read_only(&plan.path, &current.record().merge_id)?;
     let image = backend.preservation_image(&plan.path, true)?;
     let attached = exact_attached_head(backend, plan, head_commit)?;
     if let [stash] = stashes.as_slice()

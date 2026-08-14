@@ -319,10 +319,19 @@ def ensure_tag(tag: str, target: str):
     log(f"created tag {tag} -> {target[:10]}")
 
 
-def push_release(branch: str, tag: str):
+def push_release(branch: str, tag: str, *, expected_head: str):
     """Push the branch + tag together, atomically (both land or neither)."""
     result = run(
-        ["git", "-C", REPO, "push", "--atomic", "origin", branch, tag],
+        [
+            "git",
+            "-C",
+            REPO,
+            "push",
+            "--atomic",
+            "origin",
+            f"{expected_head}:refs/heads/{branch}",
+            f"{expected_head}:refs/tags/{tag}",
+        ],
         capture=True,
         check=False,
     )
@@ -330,7 +339,8 @@ def push_release(branch: str, tag: str):
         if result.stderr:
             print(result.stderr, file=sys.stderr)
         fail(
-            f"`git push --atomic origin {branch} {tag}` failed -- with --atomic the remote is left "
+            f"atomic push of gated commit {expected_head[:10]} to {branch} and {tag} failed -- "
+            "with --atomic the remote is left "
             "unchanged; inspect `git ls-remote origin` and retry"
         )
     log(f"pushed {branch} + {tag} to origin (atomic)")
@@ -363,6 +373,18 @@ def gate_exact_release_commit(*, cargo_root: Path, expected_head: str):
     """Reacquire the exact commit that can be tagged, then run mandatory gates."""
     if cargo_root != REPO:
         run(["git", "reset", "--hard", expected_head], cwd=cargo_root)
+    require_exact_clean_release_tree(
+        cargo_root=cargo_root, expected_head=expected_head, phase="before"
+    )
+    run_checked_boundary_gates(cargo_root=cargo_root)
+    require_exact_clean_release_tree(
+        cargo_root=cargo_root, expected_head=expected_head, phase="after"
+    )
+
+
+def require_exact_clean_release_tree(
+    *, cargo_root: Path, expected_head: str, phase: str
+):
     observed = run(
         ["git", "rev-parse", "HEAD"], cwd=cargo_root, capture=True
     ).stdout.strip()
@@ -371,7 +393,24 @@ def gate_exact_release_commit(*, cargo_root: Path, expected_head: str):
             f"release gate tree is {observed[:10]}, expected exact tag target "
             f"{expected_head[:10]}"
         )
-    run_checked_boundary_gates(cargo_root=cargo_root)
+    dirty = run(
+        ["git", "status", "--porcelain"], cwd=cargo_root, capture=True
+    ).stdout.strip()
+    if dirty:
+        fail(f"release gate tree is dirty {phase} the exact-target gate:\n{dirty}")
+
+
+def finalize_new_release(
+    *, cargo_root: Path, expected_head: str, branch: str, tag: str, push: bool
+):
+    """Gate the exact immutable target immediately before tag publication."""
+    gate_exact_release_commit(cargo_root=cargo_root, expected_head=expected_head)
+    ensure_tag(tag, expected_head)
+    if push:
+        push_release(branch, tag, expected_head=expected_head)
+    else:
+        log("next step (not done without --push):")
+        log(f"  git -C {REPO} push origin {branch} {tag}")
 
 
 def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool):
@@ -467,7 +506,7 @@ def main():
         if release_already_cut:
             gate_exact_release_commit(cargo_root=cargo_root, expected_head=head)
             if args.push:
-                push_release(args.branch, tag)
+                push_release(args.branch, tag, expected_head=head)
             return
 
         run_gates(
@@ -492,20 +531,19 @@ def main():
             git(["commit", "-m", message])
             head = git(["rev-parse", "HEAD"], capture=True).stdout.strip()
             log(f"release commit -> {head[:10]}  (gwz-core {version})")
-            gate_exact_release_commit(cargo_root=cargo_root, expected_head=head)
         else:
             current = read_package_version()
             if current != version:
                 fail(f"Cargo.toml version is {current}, expected {version} for {tag}")
             log(f"{args.branch} already at version {version}; no new commit needed")
 
-        ensure_tag(tag, head)
-
-        if args.push:
-            push_release(args.branch, tag)
-        else:
-            log("next step (not done without --push):")
-            log(f"  git -C {REPO} push origin {args.branch} {tag}")
+        finalize_new_release(
+            cargo_root=cargo_root,
+            expected_head=head,
+            branch=args.branch,
+            tag=tag,
+            push=args.push,
+        )
     finally:
         if worktree is not None:
             if args.keep_worktree:

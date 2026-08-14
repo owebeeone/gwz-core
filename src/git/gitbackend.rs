@@ -97,7 +97,6 @@ impl GitBackend for Git2Backend {
     delegate!(stash_for_merge_preservation(path: &Path, merge_id: &str, include_untracked: bool,) -> ModelResult<GitStashPushResult> => preservation::stash_for_merge_preservation);
     delegate!(stash_for_merge_preservation_checked(path: &Path, branch: &str, expected_head: &str, expected_preimage_sha256: &str, merge_id: &str, include_untracked: bool,) -> ModelResult<GitStashPushResult> => preservation::stash_for_merge_preservation_checked);
     delegate!(preservation_image(path: &Path, include_untracked: bool,) -> ModelResult<GitPreservationImage> => preservation::preservation_image);
-    delegate!(preservation_stashes(path: &Path, merge_id: &str,) -> ModelResult<Vec<GitPreservationStashEvidence>> => preservation_image::preservation_stashes);
     delegate!(observe_direct_ref(path: &Path, name: &str,) -> ModelResult<GitDirectRefObservation> => preservation::observe_direct_ref);
     delegate!(checkout_matches_commit(path: &Path, branch: &str, commit: &str,) -> ModelResult<bool> => preservation::checkout_matches_commit);
     delegate!(checkout_matches_commit_except(path: &Path, commit: &str, allowed_paths: &[String],) -> ModelResult<bool> => preservation::checkout_matches_commit_except);
@@ -146,4 +145,31 @@ impl GitBackend for Git2Backend {
     delegate!(changed_paths_between(path: &Path, old_commit: &str, new_commit: &str,) -> ModelResult<Vec<String>> => comparison::changed_paths_between);
     delegate!(diff_manifest(path: &Path, comparison: &crate::diff::RepoDiffComparison, options: &crate::diff::RepoDiffOptions,) -> ModelResult<crate::diff::RepoDiffManifest> => comparison::diff_manifest);
     delegate!(resolve_comparison(path: &Path, spec: &crate::diff::ComparisonSpec,) -> ModelResult<crate::diff::RepoDiffComparison> => comparison::resolve_comparison);
+}
+
+impl Git2Backend {
+    /// Decode every native stash carrying this merge's stable preservation id.
+    pub fn preservation_stashes(
+        &self,
+        path: &Path,
+        merge_id: &str,
+    ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
+        preservation_image::preservation_stashes(path, merge_id)
+    }
+}
+
+/// Read native preservation evidence through the fixed production observer.
+///
+/// Authority-sensitive merge code uses this concrete seam rather than the
+/// open `GitBackend` callback, so an alternative backend cannot substitute a
+/// writer for a read-only observation.
+#[allow(
+    dead_code,
+    reason = "compiled ahead of A1 while all v1 consumers remain test-gated"
+)]
+pub(crate) fn observe_preservation_stashes_read_only(
+    path: &Path,
+    merge_id: &str,
+) -> ModelResult<Vec<GitPreservationStashEvidence>> {
+    preservation_image::preservation_stashes(path, merge_id)
 }

@@ -277,7 +277,7 @@ pub(super) fn stash_for_merge_preservation_checked(
     // removal, or reorder at the final mutation boundary invalidates the
     // prepared operation.
     let native_stashes = backend.stash_list(path)?;
-    let stashes = preservation_image::decode_stashes(backend, path, merge_id)?;
+    let stashes = preservation_image::decode_stashes(path, merge_id)?;
     let current = preservation_image::capture(path, include_untracked)?;
     match stashes.as_slice() {
         [stash]
@@ -329,7 +329,7 @@ pub(super) fn stash_for_merge_preservation_checked(
     require_attached_head(&repo, &branch_ref, expected)?;
     if backend.repository_state(path)? != GitRepositoryState::Clean
         || backend.stash_list(path)? != native_stashes
-        || !preservation_image::decode_stashes(backend, path, merge_id)?.is_empty()
+        || !preservation_image::decode_stashes(path, merge_id)?.is_empty()
         || preservation_image::capture(path, include_untracked)?.preimage_sha256
             != expected_preimage_sha256
     {
@@ -345,7 +345,7 @@ pub(super) fn stash_for_merge_preservation_checked(
         object_id: object_id.to_string(),
         message: message.clone(),
     };
-    let verified = preservation_image::decode_stashes(backend, path, merge_id)?;
+    let verified = preservation_image::decode_stashes(path, merge_id)?;
     let postimage = preservation_image::capture(path, include_untracked)?;
     if !matches!(verified.as_slice(), [stash]
         if stash.object_id == result.object_id

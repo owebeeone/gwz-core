@@ -13,7 +13,7 @@ type StashEvidence = (
 );
 
 pub(super) fn stash_evidence<B: GitBackend>(
-    backend: &B,
+    _backend: &B,
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
     action: &PendingPreservationActionV1,
@@ -27,7 +27,8 @@ pub(super) fn stash_evidence<B: GitBackend>(
     else {
         return Err(preservation_error("stash evidence received another action"));
     };
-    let stashes = backend.preservation_stashes(&plan.path, &current.record().merge_id)?;
+    let stashes =
+        crate::git::observe_preservation_stashes_read_only(&plan.path, &current.record().merge_id)?;
     let [stash] = stashes.as_slice() else {
         return Err(owner_error(
             plan,

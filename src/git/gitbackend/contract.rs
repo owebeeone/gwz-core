@@ -468,14 +468,6 @@ pub trait GitBackend {
     ) -> ModelResult<GitPreservationImage> {
         unsupported_backend("preservation_image")
     }
-    /// Decode every native stash carrying this merge's stable preservation id.
-    fn preservation_stashes(
-        &self,
-        _path: &Path,
-        _merge_id: &str,
-    ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
-        unsupported_backend("preservation_stashes")
-    }
     /// Inspect the named reference itself without peeling or resolving it.
     fn observe_direct_ref(
         &self,

@@ -25,10 +25,10 @@ PROTECTED_COMPILER_MODULES = {
 # update; this closes aliases and new wrappers without guessing writer names.
 PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
-    "git/gitbackend.rs": "de44555eb1eb3f1e3f3772528f9efb36172b80611548dee4226c54e613940658",
+    "git/gitbackend.rs": "d40b6c7163990f0ee8bdb687d15ddabc99bcdfb9ed42293a3868180a96c16bfa",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
-    "git/gitbackend/preservation_image.rs": "c034508e5ce8d3f6d16ef6d591de7be3509376d632b1fc880147b8fd19337843",
-    "workspace_ops/merge/preserve/checked_bundle.rs": "9d667f0ccaa7189d8e436be2573bda858bf4ebbb6c3c846be19e72e7b5909c57",
+    "git/gitbackend/preservation_image.rs": "1a96e1921052895c836837def6d7c3c19fb6bf383ad8df9482a5960c1b2cbdac",
+    "workspace_ops/merge/preserve/checked_bundle.rs": "19b65bc727b514bb88a1bbcbdce2f2f710926c6a27cfce396eac097a30911709",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
 }
 
@@ -219,6 +219,7 @@ CHECKED_LEAF_ADAPTER_CALLS = {
         "crate::checked_artifact::entry::observe_merge_preservation_bundle",
         "crate::checked_artifact::entry::replace_merge_preservation_bundle",
         "crate::git::GitPreservationDirtySummary::default",
+        "crate::git::observe_preservation_stashes_read_only",
         "expected_bundle",
         "format!",
         "get",
@@ -237,7 +238,6 @@ CHECKED_LEAF_ADAPTER_CALLS = {
         "owner_index",
         "owner_parts_error",
         "position",
-        "preservation_stashes",
         "push",
         "sort",
         "sort_by",
@@ -442,25 +442,30 @@ def check(source: Path) -> list[str]:
     backend = mask_non_code(
         (source / "git/gitbackend.rs").read_text(encoding="utf-8")
     )
-    expected_observer_delegate = re.compile(
-        r"delegate!\(\s*preservation_stashes\b[\s\S]*?"
-        r"=>\s*preservation_image::preservation_stashes\s*\);"
+    expected_concrete_observer = re.compile(
+        r"pub\(crate\)\s+fn\s+observe_preservation_stashes_read_only\b[\s\S]*?"
+        r"\{\s*preservation_image::preservation_stashes\(path,\s*merge_id\)\s*\}"
     )
-    if expected_observer_delegate.search(backend) is None:
+    if expected_concrete_observer.search(backend) is None:
         findings.append(
             "production preservation observer no longer terminates in its protected leaf"
         )
-    production_implementations = []
-    for path in production_rust_files(source):
-        text = mask_non_code(path.read_text(encoding="utf-8"))
-        count = len(re.findall(r"\bimpl\s+GitBackend\s+for\b", text))
-        production_implementations.extend(
-            [path.relative_to(source).as_posix()] * count
-        )
-    if production_implementations != ["git/gitbackend.rs"]:
+    contract = mask_non_code(
+        (source / "git/gitbackend/contract.rs").read_text(encoding="utf-8")
+    )
+    if re.search(r"\bfn\s+preservation_stashes\s*\(", contract):
         findings.append(
-            "production GitBackend implementation set changed: "
-            f"actual={production_implementations}"
+            "open GitBackend preservation observer was reintroduced into the trait contract"
+        )
+    open_merge_observer_calls = []
+    for path in production_rust_files(source / "workspace_ops/merge"):
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        if re.search(r"\bpreservation_stashes\b", text):
+            open_merge_observer_calls.append(path.relative_to(source).as_posix())
+    if open_merge_observer_calls:
+        findings.append(
+            "authority-sensitive merge code reintroduced the open GitBackend "
+            f"preservation observer: {open_merge_observer_calls}"
         )
     entry_path = source / "checked_artifact/entry.rs"
     entry_text = mask_non_code(entry_path.read_text(encoding="utf-8"))

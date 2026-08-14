@@ -252,7 +252,7 @@ fn observe_create_stash(
     {
         return Ok(GitRootPreservationStepObservation::Ambiguous);
     }
-    let stashes = preservation_image::decode_stashes(backend, root, merge_id)?;
+    let stashes = preservation_image::decode_stashes(root, merge_id)?;
     if let [stash] = stashes.as_slice()
         && stash.head_commit == spec.attached_commit
         && stash.image.preimage_sha256 == *sha256

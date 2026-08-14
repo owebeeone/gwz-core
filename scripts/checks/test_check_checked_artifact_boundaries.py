@@ -181,8 +181,8 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         path = source / "git/gitbackend.rs"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
-                "=> preservation_image::preservation_stashes);",
-                "=> preservation::preservation_stashes);",
+                "pub(crate) fn observe_preservation_stashes_read_only(",
+                "pub(crate) fn unreviewed_preservation_stashes_read_only(",
                 1,
             ),
             encoding="utf-8",
@@ -194,14 +194,38 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             result.stderr,
         )
 
-    def test_second_production_git_backend_is_rejected(self) -> None:
+    def test_checked_bundle_observer_does_not_dispatch_through_open_backend(self) -> None:
+        checked_bundle = (
+            SOURCE / "workspace_ops/merge/preserve/checked_bundle.rs"
+        ).read_text(encoding="utf-8")
+        gitbackend = (SOURCE / "git/gitbackend.rs").read_text(encoding="utf-8")
+        contract = (SOURCE / "git/gitbackend/contract.rs").read_text(encoding="utf-8")
+        self.assertNotIn("backend.preservation_stashes", checked_bundle)
+        self.assertNotIn("fn preservation_stashes(", contract)
+        self.assertIn(
+            "crate::git::observe_preservation_stashes_read_only", checked_bundle
+        )
+        self.assertIn(
+            "pub(crate) fn observe_preservation_stashes_read_only", gitbackend
+        )
+
+    def test_open_backend_observer_cannot_reenter_merge_authority(self) -> None:
         result = self.append(
-            "workspace_ops/handle_stash/shared.rs",
-            "\nstruct UnreviewedBackend;\n"
-            "impl GitBackend for UnreviewedBackend {}\n",
+            "workspace_ops/merge/preserve/plan.rs",
+            "\nfn unreviewed<B: crate::git::GitBackend>(backend: &B, root: &Path) {\n"
+            "    let _ = backend.preservation_stashes(root, \"merge_1\");\n"
+            "}\n",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("production GitBackend implementation set changed", result.stderr)
+        self.assertIn("reintroduced the open GitBackend preservation observer", result.stderr)
+
+    def test_preservation_observer_cannot_reenter_the_open_trait(self) -> None:
+        result = self.append(
+            "git/gitbackend/contract.rs",
+            "\nfn preservation_stashes(path: &Path, merge_id: &str);\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("reintroduced into the trait contract", result.stderr)
 
     def copied_source(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temporary = tempfile.TemporaryDirectory()

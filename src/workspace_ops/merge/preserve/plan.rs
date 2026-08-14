@@ -515,9 +515,9 @@ pub(in crate::workspace_ops::merge) fn v1_preservation_owners<B: GitBackend>(
             }
         }
 
-        let stashes = backend
-            .preservation_stashes(&plan.path, &record.merge_id)
-            .map_err(|error| attach_v1(error, plan))?;
+        let stashes =
+            crate::git::observe_preservation_stashes_read_only(&plan.path, &record.merge_id)
+                .map_err(|error| attach_v1(error, plan))?;
         let expected_stash = evidence.and_then(|row| row.stash_object_id.as_deref());
         let pending_stash = match record.pending_preservation.as_ref() {
             Some(action @ PendingPreservationActionV1::Stash { owner, .. })

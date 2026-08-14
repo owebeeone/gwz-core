@@ -283,7 +283,6 @@ fn substitute(
 }
 
 pub(super) fn decode_stashes(
-    _backend: &Git2Backend,
     root: &Path,
     merge_id: &str,
 ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
@@ -303,12 +302,11 @@ pub(super) fn decode_stashes(
 }
 
 pub(super) fn preservation_stashes(
-    backend: &Git2Backend,
     root: &Path,
     merge_id: &str,
 ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
     validate_merge_id(merge_id)?;
-    decode_stashes(backend, root, merge_id)
+    decode_stashes(root, merge_id)
 }
 
 pub(super) fn canonical_stash_message(native: &str, expected: &str) -> bool {

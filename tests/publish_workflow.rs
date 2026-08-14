@@ -42,6 +42,7 @@ fn checked_artifact_boundary_runs_before_merge_and_on_main_push() {
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("check_checked_artifact_boundaries.py"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("test_check_checked_artifact_boundaries.py"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("test_release_boundary.py"));
+    assert!(CHECKED_ARTIFACT_WORKFLOW.contains("python-version: \"3.11\""));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains(
         "CLIPPY_CONF_DIR=\"$PWD\" cargo clippy --all-targets --all-features -- -D warnings"
     ));
@@ -71,12 +72,19 @@ fn local_release_cannot_skip_or_tag_a_commit_before_the_boundary_gate() {
     let commit = release
         .find("git([\"commit\", \"-m\", message])")
         .expect("release script creates its version commit");
+    let finalizer = release
+        .find("def finalize_new_release(")
+        .expect("release script has one new-tag finalizer");
     let exact_gate = release
-        .rfind("gate_exact_release_commit(cargo_root=cargo_root, expected_head=head)")
-        .expect("release script gates the exact version commit");
+        .find("gate_exact_release_commit(cargo_root=cargo_root, expected_head=expected_head)")
+        .expect("new-tag finalizer gates its exact target");
     let tag = release
-        .find("ensure_tag(tag, head)")
+        .find("ensure_tag(tag, expected_head)")
         .expect("release script creates the tag");
-    assert!(commit < exact_gate);
+    let finalizer_call = release
+        .rfind("finalize_new_release(")
+        .expect("main routes a new tag through the finalizer");
+    assert!(finalizer < exact_gate);
     assert!(exact_gate < tag);
+    assert!(commit < finalizer_call);
 }
