@@ -20,7 +20,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn dispatcher_routes_status_and_open_work_without_consumer_branching() {
-    let root = TempDir::new("merge-v1-dispatch-routing");
+    let root = TempDir::new_git("merge-v1-dispatch-routing");
     let current = StoredV1Record::for_test(&root.path, record()).unwrap();
     assert!(matches!(
         next_action(&current, V1LifecycleRequest::Status).unwrap(),
@@ -45,7 +45,7 @@ fn dispatcher_routes_status_and_open_work_without_consumer_branching() {
 
 #[test]
 fn completed_observation_is_the_only_authority_for_a_prepared_result() {
-    let root = TempDir::new("merge-v1-dispatch-completed");
+    let root = TempDir::new_git("merge-v1-dispatch-completed");
     let current = StoredV1Record::for_test(&root.path, record()).unwrap();
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let V1NextAction::Observe(request) =
@@ -89,7 +89,7 @@ fn completed_observation_is_the_only_authority_for_a_prepared_result() {
 
 #[test]
 fn ambiguity_halts_retained_failure_before_recording_literal_recovery_origin() {
-    let root = TempDir::new("merge-v1-dispatch-ambiguity-order");
+    let root = TempDir::new_git("merge-v1-dispatch-ambiguity-order");
     let mut executing = record();
     let participant = executing.participants.get_mut("mem_a").unwrap();
     participant.state = ParticipantState::Failed;
@@ -174,7 +174,7 @@ fn ambiguity_halts_retained_failure_before_recording_literal_recovery_origin() {
 
 #[test]
 fn dispatcher_responses_rejections_and_success_without_progress_are_closed() {
-    let root = TempDir::new("merge-v1-dispatch-closed-results");
+    let root = TempDir::new_git("merge-v1-dispatch-closed-results");
     let current = StoredV1Record::for_test(&root.path, record()).unwrap();
 
     let V1NextAction::Reject(error) = next_action(&current, V1LifecycleRequest::Archive).unwrap()
@@ -307,7 +307,7 @@ fn dispatcher_responses_rejections_and_success_without_progress_are_closed() {
 
 #[test]
 pub(super) fn failed_attempt_is_not_outcome_authority_and_halts_through_a_bound_batch() {
-    let root = TempDir::new("merge-v1-dispatch-attempt");
+    let root = TempDir::new_git("merge-v1-dispatch-attempt");
     let mut pending = record();
     pending
         .participants
@@ -377,7 +377,7 @@ pub(super) fn failed_attempt_is_not_outcome_authority_and_halts_through_a_bound_
 
 #[test]
 pub(super) fn failed_resolution_retains_the_authoritative_conflict_and_owner() {
-    let root = TempDir::new("merge-v1-dispatch-resolution-attempt");
+    let root = TempDir::new_git("merge-v1-dispatch-resolution-attempt");
     let mut model = record();
     let row = model.participants.get_mut("mem_a").unwrap();
     row.state = ParticipantState::Conflicted;

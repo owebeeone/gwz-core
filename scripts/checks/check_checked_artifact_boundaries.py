@@ -128,7 +128,7 @@ APPROVED_RUST_PATH_EDGES = {
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "56c96f601db9f709ace68b5a1959bf2fc657481741c131d0da4c02d8d3fb8d27",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }
 
 ENTRY_REFERENCES = {

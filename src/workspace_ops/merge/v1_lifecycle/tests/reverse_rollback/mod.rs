@@ -26,7 +26,7 @@ struct ParticipantFixture {
 }
 
 fn integrated_fixture(name: &str) -> ParticipantFixture {
-    let root = TempDir::new(name);
+    let root = TempDir::new_git(name);
     let backend = Git2Backend::new();
     let member = root.path.join("members/a");
     backend.create_repo(&member).unwrap();

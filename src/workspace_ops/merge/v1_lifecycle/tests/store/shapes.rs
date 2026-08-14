@@ -10,7 +10,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn same_byte_source_replacement_retains_identical_durable_authority() {
-    let root = TempDir::new("merge-v1-store-same-byte-replacement");
+    let root = TempDir::new_git("merge-v1-store-same-byte-replacement");
     let mut model = record();
     model.participants.get_mut("mem_a").unwrap().pending_action =
         Some(super::super::fixtures::up_to_date_action());
@@ -33,7 +33,7 @@ fn same_byte_source_replacement_retains_identical_durable_authority() {
 
 #[test]
 fn nonregular_open_source_and_archive_destination_fail_closed() {
-    let root = TempDir::new("merge-v1-store-nonregular-open");
+    let root = TempDir::new_git("merge-v1-store-nonregular-open");
     let mut model = record();
     model.participants.get_mut("mem_a").unwrap().pending_action =
         Some(super::super::fixtures::up_to_date_action());
@@ -50,7 +50,7 @@ fn nonregular_open_source_and_archive_destination_fail_closed() {
     );
     assert!(current.location().path().is_dir());
 
-    let terminal_root = TempDir::new("merge-v1-store-nonregular-archive");
+    let terminal_root = TempDir::new_git("merge-v1-store-nonregular-archive");
     let mut terminal = record();
     terminal.state = OperationState::Aborted;
     terminal.participants.get_mut("mem_a").unwrap().state = ParticipantState::Aborted;

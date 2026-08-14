@@ -20,7 +20,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn every_admitted_request_reaches_both_reverse_physical_relations() {
-    let root = TempDir::new("merge-v1-c7-request-dispatch");
+    let root = TempDir::new_git("merge-v1-c7-request-dispatch");
 
     for request in REQUESTS {
         let current = StoredV1Record::for_test(&root.path, preservation_record()).unwrap();
@@ -69,7 +69,7 @@ fn operational_observer_errors_retain_both_reverse_owners_for_every_request() {
             ("preserving", preservation_record()),
             ("rolling-back", rollback_record()),
         ] {
-            let root = TempDir::new(&format!("merge-v1-c7-operational-{lane}-{request_index}"));
+            let root = TempDir::new_git(&format!("merge-v1-c7-operational-{lane}-{request_index}"));
             let merge_root = root.path.join(".gwz/merge");
             std::fs::create_dir_all(&merge_root).unwrap();
             let record_path = merge_root.join(format!("{}.yaml", model.merge_id));

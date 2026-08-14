@@ -148,7 +148,7 @@ fn every_open_merge_state_and_start_mode_is_bracketed_by_one_outer_lifecycle() {
         "finalizing",
     ] {
         for dry_run in [false, true] {
-            let root = TempDir::new(&format!("merge-lifecycle-{state}-{dry_run}"));
+            let root = TempDir::new_git(&format!("merge-lifecycle-{state}-{dry_run}"));
             let directory = root.path().join(".gwz/merge");
             fs::create_dir_all(&directory).unwrap();
             fs::write(

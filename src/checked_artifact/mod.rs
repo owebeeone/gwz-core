@@ -63,6 +63,8 @@ mod transition;
 
 use policy::CheckedArtifactPolicy;
 
+pub(crate) use bootstrap::{WorkspaceRuntimeLease, try_acquire_workspace_runtime};
+
 #[cfg(test)]
 pub(crate) use fault::{
     CheckedArtifactFault, fail_next_checked_artifact_at, fail_next_checked_artifact_at_for,

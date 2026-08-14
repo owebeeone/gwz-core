@@ -21,7 +21,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn read_only_status_responds_without_observation_or_execution() {
-    let root = TempDir::new("merge-v1-service-status");
+    let root = TempDir::new_git("merge-v1-service-status");
     seed_open(&root, &test_record());
     let mut runtime = PanicRuntime;
 
@@ -40,7 +40,7 @@ fn read_only_status_responds_without_observation_or_execution() {
 
 #[test]
 fn continue_selects_conflict_and_crosses_each_durable_owner_once() {
-    let root = TempDir::new("merge-v1-service-continue-conflict");
+    let root = TempDir::new_git("merge-v1-service-continue-conflict");
     let mut model = test_record();
     model.state = OperationState::AwaitingResolution;
     let row = model.participants.get_mut("mem_a").unwrap();
@@ -73,7 +73,7 @@ fn continue_selects_conflict_and_crosses_each_durable_owner_once() {
 
 #[test]
 fn failed_owned_action_is_not_executed_twice_in_one_invocation() {
-    let root = TempDir::new("merge-v1-service-attempt-fence");
+    let root = TempDir::new_git("merge-v1-service-attempt-fence");
     let mut model = test_record();
     let action = up_to_date_action(&model);
     model.participants.get_mut("mem_a").unwrap().pending_action = Some(action);
@@ -109,7 +109,7 @@ fn failed_owned_action_is_not_executed_twice_in_one_invocation() {
 
 #[test]
 fn preparation_failure_halts_and_returns_without_same_invocation_retry() {
-    let root = TempDir::new("merge-v1-service-preparation-fence");
+    let root = TempDir::new_git("merge-v1-service-preparation-fence");
     seed_open(&root, &test_record());
     let mut runtime = PreparationFailureRuntime::default();
 
@@ -138,7 +138,7 @@ fn preparation_failure_halts_and_returns_without_same_invocation_retry() {
 
 #[test]
 fn resume_start_returns_the_new_stopped_state_without_redispatching() {
-    let root = TempDir::new("merge-v1-service-resume-start-stop");
+    let root = TempDir::new_git("merge-v1-service-resume-start-stop");
     let mut model = test_record();
     let row = model.participants.get_mut("mem_a").unwrap();
     row.state = ParticipantState::Conflicted;

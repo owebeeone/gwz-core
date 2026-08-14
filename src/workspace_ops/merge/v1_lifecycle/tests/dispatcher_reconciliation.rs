@@ -32,7 +32,7 @@ use crate::workspace_ops::merge::{
 use crate::workspace_ops::tests::TempDir;
 
 #[rustfmt::skip] #[test] fn halted_completion_resumes_only_after_the_final_halt_cause_is_removed() {
-    let root = TempDir::new("merge-v1-halted-outcome-aggregate");
+    let root = TempDir::new_git("merge-v1-halted-outcome-aggregate");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let mut model = record();
     add_second_participant(&mut model);
@@ -67,7 +67,7 @@ use crate::workspace_ops::tests::TempDir;
 }
 
 #[rustfmt::skip] #[test] fn preparation_failure_must_match_the_requested_participant() {
-    let root = TempDir::new("merge-v1-preparation-failure-owner");
+    let root = TempDir::new_git("merge-v1-preparation-failure-owner");
     let mut model = record();
     add_second_participant(&mut model);
     let current = StoredV1Record::for_test(&root.path, model).unwrap();
@@ -87,7 +87,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn abort_and_preserve_record_live_evidence_before_their_entry() {
-    let root = TempDir::new("merge-v1-finalizing-handoff-evidence");
+    let root = TempDir::new_git("merge-v1-finalizing-handoff-evidence");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     for lifecycle in [V1LifecycleRequest::Abort, V1LifecycleRequest::Preserve] {
         let current = StoredV1Record::for_test(&root.path, publication_record(&root)).unwrap();
@@ -131,7 +131,7 @@ fn abort_and_preserve_record_live_evidence_before_their_entry() {
 
 #[test]
 fn completed_preservation_enters_rollback_for_every_mutating_resume_request() {
-    let root = TempDir::new("merge-v1-preservation-exhausted-request-matrix");
+    let root = TempDir::new_git("merge-v1-preservation-exhausted-request-matrix");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     for lifecycle in [
         V1LifecycleRequest::ResumeStart,
@@ -188,7 +188,7 @@ fn completed_preservation_enters_rollback_for_every_mutating_resume_request() {
 #[rustfmt::skip] #[test] fn preservation_durability_pending_is_causal_and_fail_closed() {
     assert_eq!(super::super::reverse::preservation_durability_diagnostic(
         Ok(GitCheckedPreservationMutation::AlreadyComplete)), ExecutionDiagnostic::Success);
-    let root = TempDir::new("merge-v1-preservation-durability-pending");
+    let root = TempDir::new_git("merge-v1-preservation-durability-pending");
     for action in [root_stash(S::NormalizeParent), root_reset(R::PrepareParent),
         root_stash(S::RestoreParent), root_reset(R::RestoreParent)] {
         assert_causal_parent_case(&root, action);
@@ -344,7 +344,7 @@ fn completed_preservation_enters_rollback_for_every_mutating_resume_request() {
 #[test]
 fn ambiguous_observations_override_both_executor_diagnostics_for_every_action_owner() {
     use super::dispatcher_attempt_matrix as attempts;
-    let root = TempDir::new("merge-v1-ambiguous-after-diagnostic-matrix");
+    let root = TempDir::new_git("merge-v1-ambiguous-after-diagnostic-matrix");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let mut resolution = attempts::participant_record();
     let row = resolution.participants.get_mut("mem_a").unwrap();

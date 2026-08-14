@@ -21,7 +21,7 @@ use crate::workspace_ops::tests::TempDir;
 #[test]
 fn request_state_dispatch_matrix_is_closed_and_precedence_ordered() {
     use V1LifecycleRequest as R;
-    let root = TempDir::new("merge-v1-dispatch-request-state-matrix");
+    let root = TempDir::new_git("merge-v1-dispatch-request-state-matrix");
     let requests = [
         R::ResumeStart,
         R::Continue,
@@ -56,7 +56,7 @@ fn request_state_dispatch_matrix_is_closed_and_precedence_ordered() {
 #[test]
 fn request_binding_and_between_action_ambiguity_reject_replay() {
     use V1LifecycleRequest as R;
-    let root = TempDir::new("merge-v1-dispatch-request-binding");
+    let root = TempDir::new_git("merge-v1-dispatch-request-binding");
     let mut pending = record();
     pending
         .participants
@@ -115,7 +115,7 @@ fn request_binding_and_between_action_ambiguity_reject_replay() {
 
 #[test]
 fn recovery_resolver_restores_each_literal_recorded_origin() {
-    let root = TempDir::new("merge-v1-recovery-origin-matrix");
+    let root = TempDir::new_git("merge-v1-recovery-origin-matrix");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let cases = [
         (RecoveryOriginStateV1::Executing, OperationState::Executing),

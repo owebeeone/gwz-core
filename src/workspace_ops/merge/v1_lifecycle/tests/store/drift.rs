@@ -15,7 +15,7 @@ use crate::workspace_ops::tests::TempDir;
 #[test]
 fn clearing_either_duplicate_drift_preserves_the_survivors_own_unknowns() {
     for cleared in 0..2 {
-        let root = TempDir::new(&format!("merge-v1-drift-clear-{cleared}"));
+        let root = TempDir::new_git(&format!("merge-v1-drift-clear-{cleared}"));
         let first = drift("first");
         let second = drift("second");
         let mut model = record();
@@ -70,7 +70,7 @@ fn clearing_either_duplicate_drift_preserves_the_survivors_own_unknowns() {
 
 #[test]
 fn recording_participant_drift_replaces_only_the_exact_semantic_identity() {
-    let root = TempDir::new("merge-v1-drift-record-identity");
+    let root = TempDir::new_git("merge-v1-drift-record-identity");
     let existing = drift("existing");
     let mut distinct = drift("distinct");
     distinct.live_head = Some("f".repeat(40));

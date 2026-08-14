@@ -55,7 +55,7 @@ fn rejects(
 
 #[test]
 fn prefixed_stash_accepts_only_each_exact_successor_and_owner_prefix() {
-    let root = TempDir::new("merge-v1-prefixed-preservation");
+    let root = TempDir::new_git("merge-v1-prefixed-preservation");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let mut model = evidence_rollback_record(&root);
     model.state = crate::workspace_ops::merge::OperationState::Preserving;
@@ -178,7 +178,7 @@ fn prefixed_stash_accepts_only_each_exact_successor_and_owner_prefix() {
 
 #[test]
 fn prefixed_reset_accepts_only_each_exact_successor() {
-    let root = TempDir::new("merge-v1-prefixed-reset");
+    let root = TempDir::new_git("merge-v1-prefixed-reset");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let mut model = evidence_rollback_record(&root);
     model.state = crate::workspace_ops::merge::OperationState::Preserving;
@@ -286,7 +286,7 @@ fn prefixed_reset_accepts_only_each_exact_successor() {
 
 #[test]
 fn no_prefix_stash_and_reset_reject_every_non_successor_phase() {
-    let root = TempDir::new("merge-v1-no-prefix-preservation-negative-matrix");
+    let root = TempDir::new_git("merge-v1-no-prefix-preservation-negative-matrix");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
 
     for (current_phase, next_phase, with_evidence) in [

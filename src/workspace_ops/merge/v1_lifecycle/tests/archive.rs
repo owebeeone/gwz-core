@@ -14,14 +14,14 @@ fn terminal_archive_restarts_from_source_both_and_destination_only() {
     let context = context();
     let (bytes, merge_id) = archived_fixture_for_test(RecordVersion::V1);
 
-    let source_only = TempDir::new("merge-v1-archive-source-only");
+    let source_only = TempDir::new_git("merge-v1-archive-source-only");
     write_open(&source_only, merge_id, &bytes);
     let result = archive_terminal(&backend, &store, &source_only.path, merge_id, &context).unwrap();
     assert_eq!(result.destination_bytes(), bytes);
     assert!(!open_path(&source_only, merge_id).exists());
     assert_eq!(fs::read(done_path(&source_only, merge_id)).unwrap(), bytes);
 
-    let both = TempDir::new("merge-v1-archive-both");
+    let both = TempDir::new_git("merge-v1-archive-both");
     write_open(&both, merge_id, &bytes);
     write_done(&both, merge_id, &bytes);
     let result = archive_terminal(&backend, &store, &both.path, merge_id, &context).unwrap();
@@ -30,7 +30,7 @@ fn terminal_archive_restarts_from_source_both_and_destination_only() {
 
     for version in [RecordVersion::V0, RecordVersion::V1] {
         let (bytes, merge_id) = archived_fixture_for_test(version);
-        let destination_only = TempDir::new(&format!("merge-archive-destination-{version:?}"));
+        let destination_only = TempDir::new_git(&format!("merge-archive-destination-{version:?}"));
         write_done(&destination_only, merge_id, &bytes);
         let result =
             archive_terminal(&backend, &store, &destination_only.path, merge_id, &context).unwrap();
@@ -46,7 +46,7 @@ fn archive_rejects_mismatch_malformed_and_nonterminal_without_deletion() {
     let context = context();
     let (bytes, merge_id) = archived_fixture_for_test(RecordVersion::V1);
 
-    let mismatch = TempDir::new("merge-v1-archive-mismatch");
+    let mismatch = TempDir::new_git("merge-v1-archive-mismatch");
     write_open(&mismatch, merge_id, &bytes);
     let mut different = bytes.clone();
     different.extend_from_slice(b"# same model, different authority bytes\n");
@@ -62,7 +62,7 @@ fn archive_rejects_mismatch_malformed_and_nonterminal_without_deletion() {
     assert!(open_path(&mismatch, merge_id).is_file());
     assert_eq!(fs::read(done_path(&mismatch, merge_id)).unwrap(), different);
 
-    let malformed = TempDir::new("merge-v1-archive-malformed");
+    let malformed = TempDir::new_git("merge-v1-archive-malformed");
     write_open(&malformed, merge_id, &bytes);
     write_done(&malformed, merge_id, b"not: [valid");
     let error = expect_error(archive_terminal(
@@ -76,7 +76,7 @@ fn archive_rejects_mismatch_malformed_and_nonterminal_without_deletion() {
     assert!(open_path(&malformed, merge_id).is_file());
     assert!(done_path(&malformed, merge_id).is_file());
 
-    let nonterminal = TempDir::new("merge-v1-archive-nonterminal");
+    let nonterminal = TempDir::new_git("merge-v1-archive-nonterminal");
     let model = test_record();
     write_open(
         &nonterminal,
@@ -104,8 +104,8 @@ fn archive_rejects_symlinked_destination_parent_and_leaf() {
     let context = context();
     let (bytes, merge_id) = archived_fixture_for_test(RecordVersion::V1);
 
-    let parent = TempDir::new("merge-v1-archive-symlink-parent");
-    let outside = TempDir::new("merge-v1-archive-symlink-outside");
+    let parent = TempDir::new_git("merge-v1-archive-symlink-parent");
+    let outside = TempDir::new_git("merge-v1-archive-symlink-outside");
     write_open(&parent, merge_id, &bytes);
     fs::create_dir_all(parent.path.join(".gwz/merge")).unwrap();
     symlink(&outside.path, parent.path.join(".gwz/merge/done")).unwrap();
@@ -120,7 +120,7 @@ fn archive_rejects_symlinked_destination_parent_and_leaf() {
     assert!(open_path(&parent, merge_id).is_file());
     assert!(!outside.path.join(format!("{merge_id}.yaml")).exists());
 
-    let leaf = TempDir::new("merge-v1-archive-symlink-leaf");
+    let leaf = TempDir::new_git("merge-v1-archive-symlink-leaf");
     let outside_file = outside.path.join("archive.yaml");
     fs::write(&outside_file, &bytes).unwrap();
     fs::create_dir_all(leaf.path.join(".gwz/merge/done")).unwrap();

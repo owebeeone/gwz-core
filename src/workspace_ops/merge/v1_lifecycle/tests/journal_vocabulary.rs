@@ -30,7 +30,7 @@ macro_rules! preserve {
 
 #[test]
 pub(super) fn preservation_reducers_enforce_the_exact_no_prefix_phase_graph() {
-    let root = TempDir::new("merge-v1-preservation-phase-reducers");
+    let root = TempDir::new_git("merge-v1-preservation-phase-reducers");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let current = StoredV1Record::for_test(&root.path, preserving_record()).unwrap();
 
@@ -182,7 +182,7 @@ pub(super) fn preservation_reducers_enforce_the_exact_no_prefix_phase_graph() {
 
 #[test]
 pub(super) fn rollback_reducers_follow_only_exact_cursor_successors() {
-    let root = TempDir::new("merge-v1-rollback-phase-reducers");
+    let root = TempDir::new_git("merge-v1-rollback-phase-reducers");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let mut current =
         StoredV1Record::for_test(&root.path, evidence_rollback_record(&root)).unwrap();

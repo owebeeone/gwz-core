@@ -9,7 +9,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 pub(super) fn participant_prepare_and_outcome_are_checked_reducers() {
-    let root = TempDir::new("merge-v1-reducer-participant");
+    let root = TempDir::new_git("merge-v1-reducer-participant");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let current = StoredV1Record::for_test(&root.path, record()).unwrap();
     let mut prepared_row = current.record().participants["mem_a"].clone();
@@ -75,8 +75,8 @@ pub(super) fn participant_prepare_and_outcome_are_checked_reducers() {
 
 #[test]
 fn reducer_rejects_wrong_authority_and_wrong_predecessor_before_rewrite() {
-    let first = TempDir::new("merge-v1-reducer-authority-first");
-    let second = TempDir::new("merge-v1-reducer-authority-second");
+    let first = TempDir::new_git("merge-v1-reducer-authority-first");
+    let second = TempDir::new_git("merge-v1-reducer-authority-second");
     let current = StoredV1Record::for_test(&first.path, record()).unwrap();
     let wrong_lease = V1MutationLease::acquire_for_test(&second.path).unwrap();
     let mut row = current.record().participants["mem_a"].clone();
@@ -104,7 +104,7 @@ fn reducer_rejects_wrong_authority_and_wrong_predecessor_before_rewrite() {
 
 #[test]
 pub(super) fn operation_reducers_cover_every_direct_state_edge() {
-    let root = TempDir::new("merge-v1-operation-reducers");
+    let root = TempDir::new_git("merge-v1-operation-reducers");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
 
     let mut halted = record();
@@ -303,7 +303,7 @@ pub(super) fn operation_reducers_cover_every_direct_state_edge() {
 
 #[test]
 pub(super) fn participant_compounds_preserve_write_ahead_ownership() {
-    let root = TempDir::new("merge-v1-participant-compounds");
+    let root = TempDir::new_git("merge-v1-participant-compounds");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     for destination in [
         OperationState::Executing,

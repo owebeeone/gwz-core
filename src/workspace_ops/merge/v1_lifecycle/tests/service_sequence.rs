@@ -26,7 +26,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn new_conflict_does_not_block_later_targets_before_awaiting_resolution() {
-    let root = TempDir::new("merge-v1-service-conflict-sequence");
+    let root = TempDir::new_git("merge-v1-service-conflict-sequence");
     let mut model = test_record();
     add_second_participant(&mut model);
     model.state = OperationState::Halted;
@@ -66,7 +66,7 @@ fn new_conflict_does_not_block_later_targets_before_awaiting_resolution() {
 
 #[test]
 fn ambiguous_halt_cause_commits_halt_reobserves_and_stops_in_recovery() {
-    let root = TempDir::new("merge-v1-service-ambiguity-sequence");
+    let root = TempDir::new_git("merge-v1-service-ambiguity-sequence");
     let mut model = test_record();
     let row = model.participants.get_mut("mem_a").unwrap();
     row.state = ParticipantState::Failed;
@@ -110,7 +110,7 @@ fn ambiguous_halt_cause_commits_halt_reobserves_and_stops_in_recovery() {
 
 #[test]
 fn physical_execution_rejects_an_intervening_record_rewrite() {
-    let root = TempDir::new("merge-v1-service-execution-record-drift");
+    let root = TempDir::new_git("merge-v1-service-execution-record-drift");
     let mut model = test_record();
     let row = model.participants.get_mut("mem_a").unwrap();
     row.pending_action = Some(up_to_date_action(row));
@@ -136,7 +136,7 @@ fn physical_execution_rejects_an_intervening_record_rewrite() {
 
 #[test]
 fn resume_start_reconciles_completed_halted_owner_before_continuing() {
-    let root = TempDir::new("merge-v1-service-resume-halted-owner");
+    let root = TempDir::new_git("merge-v1-service-resume-halted-owner");
     let mut model = test_record();
     model.state = OperationState::Halted;
     let row = model.participants.get_mut("mem_a").unwrap();

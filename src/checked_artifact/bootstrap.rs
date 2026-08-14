@@ -5,8 +5,10 @@ use std::path::Path;
 use super::capability::{CheckedFsError, RevalidatedPreCatalogPermitV1};
 
 mod managed;
+mod runtime;
 
 pub(super) use managed::*;
+pub(crate) use runtime::{WorkspaceRuntimeLease, try_acquire_workspace_runtime};
 
 pub(super) struct WorkspaceRuntimePaths<'a> {
     workspace_root: &'a Path,

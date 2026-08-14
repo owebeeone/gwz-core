@@ -146,7 +146,7 @@ fn observation_route_matrix_is_closed_without_replaceable_lane_traits() {
 
 #[test]
 fn runtime_delegates_to_the_authority_owned_reverse_and_archive_observers() {
-    let root = TempDir::new("merge-v1-reverse-runtime-delegates");
+    let root = TempDir::new_git("merge-v1-reverse-runtime-delegates");
     let backend = Git2Backend::new();
     let operation_context = context();
     let current = StoredV1Record::for_test(&root.path, test_record()).unwrap();
@@ -197,8 +197,8 @@ fn runtime_delegates_to_the_authority_owned_reverse_and_archive_observers() {
 
 #[test]
 fn physical_router_has_only_two_closed_reverse_delegates() {
-    let root = TempDir::new("merge-v1-reverse-physical-router");
-    let other = TempDir::new("merge-v1-reverse-physical-router-other");
+    let root = TempDir::new_git("merge-v1-reverse-physical-router");
+    let other = TempDir::new_git("merge-v1-reverse-physical-router-other");
     let backend = Git2Backend::new();
     let operation_context = context();
     let current = StoredV1Record::for_test(&root.path, preserving_record()).unwrap();

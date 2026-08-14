@@ -4,8 +4,8 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn checked_record_and_lease_are_bound_to_exact_root_and_bytes() {
-    let first = TempDir::new("merge-v1-checked-first");
-    let second = TempDir::new("merge-v1-checked-second");
+    let first = TempDir::new_git("merge-v1-checked-first");
+    let second = TempDir::new_git("merge-v1-checked-second");
     let checked = StoredV1Record::for_test(&first.path, record()).unwrap();
     let same = StoredV1Record::for_test(&first.path, record()).unwrap();
     let mut changed_record = record();

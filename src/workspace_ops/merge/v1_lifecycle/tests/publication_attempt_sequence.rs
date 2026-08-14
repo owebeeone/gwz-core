@@ -11,7 +11,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn completed_publication_rejects_a_different_same_owner_attempt() {
-    let root = TempDir::new("merge-v1-publication-attempt-exactness");
+    let root = TempDir::new_git("merge-v1-publication-attempt-exactness");
     let current = StoredV1Record::for_test(&root.path, publishing_record(&root)).unwrap();
     let attempt = publication_attempt(&current, PublicationPhysicalAction::WriteMarker);
     let V1NextAction::Observe(request) =
@@ -49,7 +49,7 @@ fn completed_publication_rejects_a_different_same_owner_attempt() {
 
 #[test]
 fn same_publication_action_after_attempt_is_rejected_as_no_progress() {
-    let root = TempDir::new("merge-v1-publication-same-action-no-progress");
+    let root = TempDir::new_git("merge-v1-publication-same-action-no-progress");
     let current = StoredV1Record::for_test(&root.path, publishing_record(&root)).unwrap();
     let attempt = publication_attempt(&current, PublicationPhysicalAction::WriteMarker);
     let V1NextAction::Observe(request) =
@@ -87,7 +87,7 @@ fn same_publication_action_after_attempt_is_rejected_as_no_progress() {
 
 #[test]
 fn exact_stage_attempt_can_record_candidate_publication_completion() {
-    let root = TempDir::new("merge-v1-publication-stage-completion");
+    let root = TempDir::new_git("merge-v1-publication-stage-completion");
     let current = StoredV1Record::for_test(&root.path, publishing_record(&root)).unwrap();
     let attempt = publication_attempt(&current, PublicationPhysicalAction::StageIndex);
     let V1NextAction::Observe(request) =
@@ -127,7 +127,7 @@ fn exact_stage_attempt_can_record_candidate_publication_completion() {
 
 #[test]
 fn exact_publication_prefix_progress_authorizes_the_next_same_owner_action() {
-    let root = TempDir::new("merge-v1-publication-prefix-progress");
+    let root = TempDir::new_git("merge-v1-publication-prefix-progress");
     let current = StoredV1Record::for_test(&root.path, publishing_record(&root)).unwrap();
     let attempt = publication_attempt(&current, PublicationPhysicalAction::WriteMarker);
     let V1NextAction::Observe(request) =

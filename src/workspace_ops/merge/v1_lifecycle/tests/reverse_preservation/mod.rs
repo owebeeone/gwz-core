@@ -66,7 +66,7 @@ impl PreservationFixture {
 }
 
 fn integrated_fixture(name: &str) -> PreservationFixture {
-    let root = TempDir::new(name);
+    let root = TempDir::new_git(name);
     fs::create_dir_all(root.path.join(crate::stash::STASH_BUNDLE_DIR)).unwrap();
     let backend = Git2Backend::new();
     let member = root.path.join("members/a");
@@ -229,7 +229,9 @@ fn dirty_root_handoff_fixture_with_owner(
     if include_later_member {
         add_integrated_member(&mut base, "mem_z", "members/z");
     }
-    base.backend.create_repo(&base.root.path).unwrap();
+    if git2::Repository::open(&base.root.path).is_err() {
+        base.backend.create_repo(&base.root.path).unwrap();
+    }
     fs::create_dir_all(base.root.path.join("gwz.conf")).unwrap();
     let manifest = base.model.baseline.manifest_yaml.clone().unwrap();
     if degenerate_candidate {

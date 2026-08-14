@@ -103,7 +103,7 @@ enum OperationCase {
 
 #[test]
 fn every_operation_transition_accepts_only_its_listed_predecessor_states() {
-    let root = TempDir::new("merge-v1-operation-predecessor-matrix");
+    let root = TempDir::new_git("merge-v1-operation-predecessor-matrix");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     for case in [
         OperationCase::BeginExecution,
@@ -129,7 +129,7 @@ fn every_operation_transition_accepts_only_its_listed_predecessor_states() {
 
 #[test]
 fn publication_physical_action_phase_matrix_is_closed() {
-    let root = TempDir::new("merge-v1-publication-physical-phase-matrix");
+    let root = TempDir::new_git("merge-v1-publication-physical-phase-matrix");
     for (step, evidence_absent) in [
         (PublicationStep::CommittingEvidence, true),
         (PublicationStep::PublishingCandidate, false),

@@ -34,7 +34,7 @@ mod shapes;
 
 #[test]
 fn commit_preserves_survivors_and_retires_only_the_owned_action_container() {
-    let root = TempDir::new("merge-v1-store-unknowns");
+    let root = TempDir::new_git("merge-v1-store-unknowns");
     let mut model = record();
     model.participants.get_mut("mem_a").unwrap().pending_action = Some(up_to_date_action());
     seed_open(&root, &model, |raw| {
@@ -63,7 +63,7 @@ fn commit_preserves_survivors_and_retires_only_the_owned_action_container() {
 
 #[test]
 fn rollback_retires_only_the_typed_pending_conflict_and_error_containers() {
-    let root = TempDir::new("merge-v1-store-rollback-retirement");
+    let root = TempDir::new_git("merge-v1-store-rollback-retirement");
     let mut model = record();
     model.state = OperationState::RollingBack;
     let row = model.participants.get_mut("mem_a").unwrap();
@@ -140,7 +140,7 @@ fn rollback_retires_only_the_typed_pending_conflict_and_error_containers() {
 
 #[test]
 fn first_acceptance_write_preserves_derived_lock_member_extensions() {
-    let root = TempDir::new("merge-v1-store-acceptance-extensions");
+    let root = TempDir::new_git("merge-v1-store-acceptance-extensions");
     let mut model = record();
     model.state = OperationState::Finalizing;
     let row = model.participants.get_mut("mem_a").unwrap();
@@ -210,8 +210,8 @@ fn first_acceptance_write_preserves_derived_lock_member_extensions() {
 
 #[test]
 fn contention_and_wrong_root_are_rejected_before_mutation() {
-    let root = TempDir::new("merge-v1-store-contention");
-    let other = TempDir::new("merge-v1-store-wrong-root");
+    let root = TempDir::new_git("merge-v1-store-contention");
+    let other = TempDir::new_git("merge-v1-store-wrong-root");
     let mut model = record();
     model.participants.get_mut("mem_a").unwrap().pending_action = Some(up_to_date_action());
     let original = seed_open(&root, &model, |_| {});
@@ -238,7 +238,7 @@ fn contention_and_wrong_root_are_rejected_before_mutation() {
 
 #[test]
 fn fault_before_publish_keeps_source_and_cleans_temporary() {
-    let root = TempDir::new("merge-v1-store-temp-fault");
+    let root = TempDir::new_git("merge-v1-store-temp-fault");
     let mut model = record();
     model.participants.get_mut("mem_a").unwrap().pending_action = Some(up_to_date_action());
     let original = seed_open(&root, &model, |_| {});
@@ -258,7 +258,7 @@ fn fault_before_publish_keeps_source_and_cleans_temporary() {
 
 #[test]
 fn fault_after_publish_is_recoverable_by_reopen_and_stale_retry_is_rejected() {
-    let root = TempDir::new("merge-v1-store-publish-fault");
+    let root = TempDir::new_git("merge-v1-store-publish-fault");
     let mut model = record();
     model.participants.get_mut("mem_a").unwrap().pending_action = Some(up_to_date_action());
     seed_open(&root, &model, |_| {});
@@ -280,7 +280,7 @@ fn fault_after_publish_is_recoverable_by_reopen_and_stale_retry_is_rejected() {
 
 #[test]
 fn archive_moves_exact_bytes_and_reconciles_both_crash_shapes() {
-    let root = TempDir::new("merge-v1-store-archive");
+    let root = TempDir::new_git("merge-v1-store-archive");
     let mut terminal = record();
     terminal.state = OperationState::Aborted;
     terminal.participants.get_mut("mem_a").unwrap().state = ParticipantState::Aborted;
@@ -315,7 +315,7 @@ fn archive_moves_exact_bytes_and_reconciles_both_crash_shapes() {
 
 #[test]
 fn archive_rejects_nonterminal_and_mismatched_destination_without_deleting_source() {
-    let root = TempDir::new("merge-v1-store-archive-reject");
+    let root = TempDir::new_git("merge-v1-store-archive-reject");
     let original = seed_open(&root, &record(), |_| {});
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let store = CheckedV1Store::default();
@@ -350,7 +350,7 @@ fn archive_rejects_nonterminal_and_mismatched_destination_without_deleting_sourc
 ))]
 #[test]
 fn archive_rename_primitive_never_clobbers_an_existing_destination() {
-    let root = TempDir::new("merge-v1-archive-rename-noreplace");
+    let root = TempDir::new_git("merge-v1-archive-rename-noreplace");
     let source = root.path.join("source");
     let destination = root.path.join("destination");
     fs::write(&source, b"source").unwrap();
@@ -371,8 +371,8 @@ fn archive_rename_primitive_never_clobbers_an_existing_destination() {
 fn archive_rejects_symlinked_done_directory_before_renaming_outside_the_workspace() {
     use std::os::unix::fs::symlink;
 
-    let root = TempDir::new("merge-v1-store-archive-done-symlink");
-    let outside = TempDir::new("merge-v1-store-archive-outside");
+    let root = TempDir::new_git("merge-v1-store-archive-done-symlink");
+    let outside = TempDir::new_git("merge-v1-store-archive-outside");
     let mut terminal = record();
     terminal.state = OperationState::Aborted;
     terminal.participants.get_mut("mem_a").unwrap().state = ParticipantState::Aborted;
@@ -399,7 +399,7 @@ fn archive_rejects_symlinked_done_directory_before_renaming_outside_the_workspac
 fn open_rejects_symlink_and_noncanonical_record_identity() {
     use std::os::unix::fs::symlink;
 
-    let root = TempDir::new("merge-v1-store-open-shape");
+    let root = TempDir::new_git("merge-v1-store-open-shape");
     let bytes = serde_yaml::to_string(&record()).unwrap().into_bytes();
     let merge_root = root.path.join(".gwz/merge");
     fs::create_dir_all(&merge_root).unwrap();

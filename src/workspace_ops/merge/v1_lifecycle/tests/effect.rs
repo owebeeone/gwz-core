@@ -245,7 +245,7 @@ fn stash_effect_requires_evidence_only_after_create_stash() {
 
 #[test]
 pub(super) fn publication_reducers_follow_every_exact_forward_phase() {
-    let root = TempDir::new("merge-v1-publication-reducer");
+    let root = TempDir::new_git("merge-v1-publication-reducer");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let current = frozen(&root, &lease, false);
 
@@ -378,7 +378,7 @@ pub(super) fn publication_reducers_follow_every_exact_forward_phase() {
 
 #[test]
 pub(super) fn migrated_publication_compatibility_has_only_the_two_named_successors() {
-    let root = TempDir::new("merge-v1-migrated-publication-reducer");
+    let root = TempDir::new_git("merge-v1-migrated-publication-reducer");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     for (required, phase, expected) in [
         (

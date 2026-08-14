@@ -8,7 +8,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 pub(super) fn preparation_failure_and_no_mutation_abort_reduce_exactly_once() {
-    let root = TempDir::new("merge-v1-stop-transition-vocabulary");
+    let root = TempDir::new_git("merge-v1-stop-transition-vocabulary");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let current = StoredV1Record::for_test(&root.path, record()).unwrap();
     let mut row = current.record().participants["mem_a"].clone();

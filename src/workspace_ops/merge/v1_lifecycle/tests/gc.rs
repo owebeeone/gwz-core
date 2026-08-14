@@ -11,7 +11,7 @@ use crate::workspace_ops::tests::{TempDir, commit_file};
 fn gc_deletes_valid_no_ref_v0_and_v1_archives() {
     let backend = Git2Backend::new();
     for version in [RecordVersion::V0, RecordVersion::V1] {
-        let root = TempDir::new(&format!("merge-gc-empty-{version:?}"));
+        let root = TempDir::new_git(&format!("merge-gc-empty-{version:?}"));
         let (bytes, merge_id) = archived_fixture_for_test(version);
         write_done(&root, merge_id, &bytes);
 
@@ -26,7 +26,7 @@ fn gc_deletes_valid_no_ref_v0_and_v1_archives() {
 #[test]
 fn gc_requires_global_open_record_absence_and_a_supported_archive() {
     let backend = Git2Backend::new();
-    let blocked = TempDir::new("merge-gc-open-blocker");
+    let blocked = TempDir::new_git("merge-gc-open-blocker");
     let (bytes, merge_id) = archived_fixture_for_test(RecordVersion::V1);
     write_done(&blocked, merge_id, &bytes);
     let open = blocked.path.join(".gwz/merge/merge_other.yaml");
@@ -42,7 +42,7 @@ fn gc_requires_global_open_record_absence_and_a_supported_archive() {
             b"schema: gwz.merge-operation/v2\nrecord_schema_version: 2\n".as_slice(),
         ),
     ] {
-        let root = TempDir::new(&format!("merge-gc-{name}"));
+        let root = TempDir::new_git(&format!("merge-gc-{name}"));
         write_done(&root, "merge_archive", bytes);
         assert!(gc_archived(&backend, &root.path, "merge_archive").is_err());
         assert!(done_path(&root, "merge_archive").is_file());

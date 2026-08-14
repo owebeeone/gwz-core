@@ -12,7 +12,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn open_status_retries_the_complete_snapshot_after_lineage_changes() {
-    let root = TempDir::new("merge-v1-status-lineage");
+    let root = TempDir::new_git("merge-v1-status-lineage");
     let path = root.path.join(".gwz/merge/merge_1.yaml");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     write(&path, &test_record());
@@ -57,7 +57,7 @@ fn open_v0_projection_is_present_without_invented_acceptance_or_recovery() {
 
 #[test]
 fn open_status_is_byte_exact_and_projects_read_only_live_facts() {
-    let root = TempDir::new("merge-v1-status-read-only");
+    let root = TempDir::new_git("merge-v1-status-read-only");
     let path = root.path.join(".gwz/merge/merge_1.yaml");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     write(&path, &test_record());
@@ -83,7 +83,7 @@ fn open_status_is_byte_exact_and_projects_read_only_live_facts() {
 
 #[test]
 fn open_status_rejects_a_second_lineage_change_without_mixing_snapshots() {
-    let root = TempDir::new("merge-v1-status-repeated-contention");
+    let root = TempDir::new_git("merge-v1-status-repeated-contention");
     let path = root.path.join(".gwz/merge/merge_1.yaml");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     write(&path, &test_record());
@@ -110,7 +110,7 @@ fn open_status_rejects_a_second_lineage_change_without_mixing_snapshots() {
 
 #[test]
 fn open_status_normalizes_source_disappearance_to_typed_contention() {
-    let root = TempDir::new("merge-v1-status-disappearance");
+    let root = TempDir::new_git("merge-v1-status-disappearance");
     let path = root.path.join(".gwz/merge/merge_1.yaml");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     write(&path, &test_record());
@@ -138,7 +138,7 @@ fn open_status_retries_after_an_archived_copy_appears() {
     use crate::workspace_ops::merge::model::v1::RecordVersion;
     use crate::workspace_ops::merge::record_wire::archived_fixture_for_test;
 
-    let root = TempDir::new("merge-v1-status-archive-appearance");
+    let root = TempDir::new_git("merge-v1-status-archive-appearance");
     let (bytes, merge_id) = archived_fixture_for_test(RecordVersion::V1);
     let open = root.path.join(format!(".gwz/merge/{merge_id}.yaml"));
     let archived = root.path.join(format!(".gwz/merge/done/{merge_id}.yaml"));
@@ -168,7 +168,7 @@ fn open_status_retries_after_an_archived_copy_appears() {
 
 #[test]
 fn open_status_retries_after_byte_identical_leaf_replacement() {
-    let root = TempDir::new("merge-v1-status-leaf-replacement");
+    let root = TempDir::new_git("merge-v1-status-leaf-replacement");
     let path = root.path.join(".gwz/merge/merge_1.yaml");
     let replacement = root.path.join(".gwz/merge/replacement.yaml");
     fs::create_dir_all(path.parent().unwrap()).unwrap();

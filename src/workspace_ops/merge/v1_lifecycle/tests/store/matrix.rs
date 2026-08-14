@@ -30,7 +30,7 @@ fn every_transition_effect_commits_its_exact_unknown_manifest() {
 }
 
 fn commit_case(name: &str, mut case: StoreEffectCase) {
-    let root = TempDir::new(&format!("merge-v1-store-matrix-{name}"));
+    let root = TempDir::new_git(&format!("merge-v1-store-matrix-{name}"));
     let seed_accepted_lock_members = case
         .next
         .publication

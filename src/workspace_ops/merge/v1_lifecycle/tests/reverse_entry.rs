@@ -31,7 +31,7 @@ fn context() -> OperationContext {
 
 #[test]
 fn preview_uses_the_reducer_outcome_shape_and_binds_the_f_handoff() {
-    let root = TempDir::new("merge-v1-reverse-entry-outcome-preview");
+    let root = TempDir::new_git("merge-v1-reverse-entry-outcome-preview");
     let mut model = test_record();
     model.state = OperationState::Halted;
     let row = model.participants.get_mut("mem_a").unwrap();
@@ -83,7 +83,7 @@ fn preview_uses_the_reducer_outcome_shape_and_binds_the_f_handoff() {
 
 #[test]
 fn preview_rejects_stale_lineage_and_cross_kind_reuse() {
-    let root = TempDir::new("merge-v1-reverse-entry-stale-preview");
+    let root = TempDir::new_git("merge-v1-reverse-entry-stale-preview");
     let current = StoredV1Record::for_test(&root.path, test_record()).unwrap();
     let preview = preview_reverse_entry(
         &current,
@@ -136,7 +136,7 @@ fn preview_rejects_stale_lineage_and_cross_kind_reuse() {
 
 #[test]
 fn production_entry_constructors_require_matching_preview_handoff_and_preflight() {
-    let root = TempDir::new("merge-v1-reverse-entry-production-constructors");
+    let root = TempDir::new_git("merge-v1-reverse-entry-production-constructors");
     let backend = Git2Backend::new();
     let operation_context = context();
 
@@ -204,7 +204,7 @@ fn production_entry_constructors_require_matching_preview_handoff_and_preflight(
 
 #[test]
 fn action_free_preview_rejects_a_retained_forward_owner() {
-    let root = TempDir::new("merge-v1-reverse-entry-action-free");
+    let root = TempDir::new_git("merge-v1-reverse-entry-action-free");
     let mut model = test_record();
     model.participants.get_mut("mem_a").unwrap().pending_action = Some(up_to_date_action());
     let current = StoredV1Record::for_test(&root.path, model).unwrap();
@@ -307,7 +307,7 @@ fn preview_succeeds(
     request: V1LifecycleRequest,
     predecessor: PredecessorCase,
 ) -> bool {
-    let root = TempDir::new("merge-v1-reverse-entry-predecessor-matrix");
+    let root = TempDir::new_git("merge-v1-reverse-entry-predecessor-matrix");
     let mut model = record_for_state(state);
     if !matches!(predecessor, PredecessorCase::ActionFree)
         && matches!(state, OperationState::Executing | OperationState::Halted)
@@ -364,7 +364,7 @@ fn preview_succeeds(
 
 #[test]
 fn exhausted_rollback_rejects_cross_request_replay_at_the_production_constructor() {
-    let root = TempDir::new("merge-v1-reverse-entry-cross-request");
+    let root = TempDir::new_git("merge-v1-reverse-entry-cross-request");
     let backend = Git2Backend::new();
     let operation_context = context();
     let current =
@@ -423,7 +423,7 @@ fn exhausted_rollback_rejects_cross_request_replay_at_the_production_constructor
 
 #[test]
 fn production_constructor_rejects_wrong_digest_and_reducer_rejects_stale_prepared_entry() {
-    let root = TempDir::new("merge-v1-reverse-entry-digest-and-stale");
+    let root = TempDir::new_git("merge-v1-reverse-entry-digest-and-stale");
     let backend = Git2Backend::new();
     let operation_context = context();
     let current = StoredV1Record::for_test(&root.path, test_record()).unwrap();
@@ -473,7 +473,7 @@ fn production_constructor_rejects_wrong_digest_and_reducer_rejects_stale_prepare
 
 #[test]
 fn production_constructor_rejects_stale_handoff_and_preflight_independently() {
-    let root = TempDir::new("merge-v1-reverse-entry-stale-authorities");
+    let root = TempDir::new_git("merge-v1-reverse-entry-stale-authorities");
     let backend = Git2Backend::new();
     let operation_context = context();
     let current = StoredV1Record::for_test(&root.path, test_record()).unwrap();

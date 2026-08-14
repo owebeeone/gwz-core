@@ -169,7 +169,7 @@ struct PrefixFixture {
 }
 
 fn prefix_fixture(terminal: ParticipantState, drift: Drift) -> PrefixFixture {
-    let root = TempDir::new(&format!("rollback-prefix-{terminal:?}-{drift:?}"));
+    let root = TempDir::new_git(&format!("rollback-prefix-{terminal:?}-{drift:?}"));
     let backend = Git2Backend::new();
     let later = root.path.join("members/later");
     let completed = root.path.join("members/completed");

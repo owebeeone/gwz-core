@@ -25,7 +25,7 @@ use crate::workspace_ops::tests::TempDir;
 
 #[test]
 fn exact_owner_attempt_classification_matrix_is_closed() {
-    let root = TempDir::new("merge-v1-exact-owner-attempt-matrix");
+    let root = TempDir::new_git("merge-v1-exact-owner-attempt-matrix");
     let cases = [
         (
             "participant",
@@ -137,7 +137,7 @@ fn ambiguity_fact(current: &StoredV1Record, proof: BoundAmbiguityEvidence) -> Ex
 
 #[test]
 fn completed_observations_override_late_executor_diagnostics_for_every_owner() {
-    let root = TempDir::new("merge-v1-completed-after-diagnostic-matrix");
+    let root = TempDir::new_git("merge-v1-completed-after-diagnostic-matrix");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
 
     let current = StoredV1Record::for_test(&root.path, participant_record()).unwrap();
@@ -235,7 +235,7 @@ fn completed_observations_override_late_executor_diagnostics_for_every_owner() {
 
 #[test]
 fn abort_and_preserve_abandon_only_their_bound_not_started_owner() {
-    let root = TempDir::new("merge-v1-abandon-request-matrix");
+    let root = TempDir::new_git("merge-v1-abandon-request-matrix");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     for request in [V1LifecycleRequest::Abort, V1LifecycleRequest::Preserve] {
         let current = StoredV1Record::for_test(&root.path, participant_record()).unwrap();

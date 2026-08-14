@@ -26,4 +26,10 @@ impl TempDir {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+
+    pub(crate) fn new_git(prefix: &str) -> Self {
+        let temp = Self::new(prefix);
+        git2::Repository::init(temp.path()).unwrap();
+        temp
+    }
 }

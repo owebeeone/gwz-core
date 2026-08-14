@@ -25,7 +25,7 @@ const PRESERVE: &str = "begin_preservation";
 const CURSOR_CHECKED: &str = "cursor_checked";
 
 fn checked(name: &str) -> (TempDir, StoredV1Record) {
-    let root = TempDir::new(name);
+    let root = TempDir::new_git(name);
     let stored = StoredV1Record::for_test(&root.path, record()).unwrap();
     (root, stored)
 }
@@ -56,8 +56,8 @@ fn bound_payload_rejects_stale_record_and_value_tampering() {
 
 #[test]
 fn every_authority_binding_rejects_an_identical_record_from_another_root() {
-    let first_root = TempDir::new("merge-v1-binding-location-first");
-    let second_root = TempDir::new("merge-v1-binding-location-second");
+    let first_root = TempDir::new_git("merge-v1-binding-location-first");
+    let second_root = TempDir::new_git("merge-v1-binding-location-second");
     let mut model = record();
     let action = up_to_date_action();
     model.participants.get_mut("mem_a").unwrap().pending_action = Some(action.clone());
@@ -279,7 +279,7 @@ fn payload(owner: PreservationOwnerV1, phase: S, exact_goal: bool) -> Preservati
 
 #[test]
 fn rollback_observers_consume_the_shared_exact_cursor() {
-    let root = TempDir::new("merge-v1-rollback-cursor-authority");
+    let root = TempDir::new_git("merge-v1-rollback-cursor-authority");
     let mut current = record();
     current.state = OperationState::RollingBack;
     let mut manifest =
@@ -321,7 +321,7 @@ fn rollback_observers_consume_the_shared_exact_cursor() {
 
 #[test]
 fn selected_root_exhaustion_requires_the_exact_live_baseline() {
-    let root = TempDir::new("merge-v1-selected-root-exhaustion");
+    let root = TempDir::new_git("merge-v1-selected-root-exhaustion");
     let mut current = record();
     current.state = OperationState::RollingBack;
     let mut selected_root = current.participants["mem_a"].clone();
@@ -365,7 +365,7 @@ fn selected_root_exhaustion_requires_the_exact_live_baseline() {
 
 #[test]
 pub(super) fn recovery_and_drift_proofs_drive_only_their_exact_reducers() {
-    let root = TempDir::new("merge-v1-recovery-drift-authority");
+    let root = TempDir::new_git("merge-v1-recovery-drift-authority");
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     let current = StoredV1Record::for_test(&root.path, record()).unwrap();
     let ambiguity = BoundAmbiguityEvidence::for_test(

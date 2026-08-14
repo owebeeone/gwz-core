@@ -251,6 +251,7 @@ fn archived_v0_b_through_g_status_uses_only_archive_bytes() {
 fn id_qualified_gc_returns_the_validated_archived_record_projection() {
     let (archive_only, merge_id) =
         archived_shape("gc_projection", ArchiveShape::CompletedNoPublication);
+    git2::Repository::init(archive_only.path()).unwrap();
 
     let response = archived_gc(archive_only.path(), &merge_id).unwrap();
 

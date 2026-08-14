@@ -5,6 +5,7 @@ use std::path::Path;
 #[test]
 fn authoritative_guard_retains_mutator_lock_until_drop() {
     let root = TempDir::new("merge-retained-guard");
+    git2::Repository::init(root.path()).unwrap();
     let workspace = crate::WorkspaceRef {
         root: Some(root.path().to_string_lossy().into_owned()),
         workspace_id: None,
@@ -31,6 +32,7 @@ fn authoritative_guard_retains_mutator_lock_until_drop() {
 #[test]
 fn dry_run_guard_checks_the_effective_root_without_taking_the_mutator_lock() {
     let root = TempDir::new("merge-dry-run-no-lock");
+    git2::Repository::init(root.path()).unwrap();
     let workspace = crate::WorkspaceRef {
         root: Some(root.path().to_string_lossy().into_owned()),
         workspace_id: None,
@@ -46,6 +48,7 @@ fn dry_run_guard_checks_the_effective_root_without_taking_the_mutator_lock() {
 
     assert!(guard.is_none());
     assert_eq!(resolved, root.path());
+    assert!(!root.path().join(crate::workspace::RUNTIME_DIR).exists());
     assert!(
         crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
             .unwrap()
