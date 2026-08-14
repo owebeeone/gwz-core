@@ -9,6 +9,7 @@ use super::{BOOTSTRAP_GUARD_NAME, WorkspaceRuntimeLease, try_advisory_lock};
 use crate::checked_artifact::capability::{CheckedFsError, PlatformCapability};
 
 mod alias;
+mod association;
 mod target;
 mod witness;
 
@@ -18,15 +19,26 @@ use alias::{
     MAX_CATALOG_ALIAS_PARENT_ENTRIES_V1, native_name_charge_for_test,
     reject_equivalent_alias_with_mode_for_test,
 };
+use association::CatalogGitAssociationBindingV1;
 pub(in crate::checked_artifact) use target::CatalogLeaseTargetRequestV1;
 #[cfg(test)]
 use target::GIT_CATALOG_MUTATOR_LOCK_NAME;
 use target::{CatalogTargetBindingV1, HeldCatalogTargetV1, RetainedCatalogTargetV1};
 pub(crate) use witness::CatalogLeaseTargetWitnessV1;
 
-struct PreparedCatalogTargetV1 {
+struct PreparedCatalogRequestV1 {
     request: CatalogLeaseTargetRequestV1,
+    git_association: Option<CatalogGitAssociationBindingV1>,
+}
+
+struct PreparedCatalogTargetV1 {
+    requests: Vec<PreparedCatalogRequestV1>,
     binding: CatalogTargetBindingV1,
+}
+
+struct RetainedCatalogTargetGroupV1 {
+    primary: RetainedCatalogTargetV1,
+    associated_targets: Vec<RetainedCatalogTargetV1>,
 }
 
 pub(in crate::checked_artifact) const MAX_CATALOG_LEASE_TARGETS_V1: usize = 4_096;
@@ -77,19 +89,25 @@ impl CatalogLeaseSetV1 {
         try_reserve_batch(&mut prepared, batch.requests.len())?;
         for request in batch.requests {
             let target = RetainedCatalogTargetV1::retain(&request)?;
-            prepared.push(PreparedCatalogTargetV1 {
+            let (binding, git_association) = target.into_prepared_bindings();
+            let mut requests = Vec::new();
+            try_reserve_batch(&mut requests, 1)?;
+            requests.push(PreparedCatalogRequestV1 {
                 request,
-                binding: target.binding,
+                git_association,
             });
+            prepared.push(PreparedCatalogTargetV1 { requests, binding });
         }
+        #[cfg(test)]
+        super::fault::run(super::fault::RuntimeBootstrapFault::CatalogInitialRetentionComplete);
         prepared = deduplicate_exact_locations(prepared)?;
-        prepared.sort_by(|left, right| left.binding.order_key.cmp(&right.binding.order_key));
+        prepared
+            .sort_unstable_by(|left, right| left.binding.order_key.cmp(&right.binding.order_key));
 
         // Phase one may converge only the fixed runtime lock grammar. Every
         // transient guard is released before the next target is visited.
         for expected in &prepared {
-            let target = RetainedCatalogTargetV1::retain(&expected.request)?;
-            require_same_binding(&expected.binding, &target.binding)?;
+            let target = RetainedCatalogTargetGroupV1::retain(expected)?;
             reject_equivalent_alias(
                 target.guard_parent(),
                 OsStr::new(BOOTSTRAP_GUARD_NAME),
@@ -122,11 +140,13 @@ impl CatalogLeaseSetV1 {
         let mut held = Vec::new();
         try_reserve_batch(&mut held, prepared.len())?;
         for expected in &prepared {
-            let target = RetainedCatalogTargetV1::retain(&expected.request)?;
-            if let Err(error) = require_same_binding(&expected.binding, &target.binding) {
-                release_reverse(&mut held);
-                return Err(error);
-            }
+            let target = match RetainedCatalogTargetGroupV1::retain(expected) {
+                Ok(target) => target,
+                Err(error) => {
+                    release_reverse(&mut held);
+                    return Err(error);
+                }
+            };
             match target.acquire_final() {
                 Ok(Some(lease)) => held.push(lease),
                 Ok(None) => {
@@ -141,7 +161,7 @@ impl CatalogLeaseSetV1 {
         }
         for (expected, lease) in prepared.iter().zip(&held) {
             if let Err(error) = require_same_binding(&expected.binding, &lease.target.binding)
-                .and_then(|()| lease.target.revalidate())
+                .and_then(|()| lease.revalidate_held())
             {
                 release_reverse(&mut held);
                 return Err(error);
@@ -207,23 +227,111 @@ impl<'lease> CatalogMutationLeaseV1<'lease> {
 fn deduplicate_exact_locations(
     mut targets: Vec<PreparedCatalogTargetV1>,
 ) -> Result<Vec<PreparedCatalogTargetV1>, CheckedFsError> {
-    targets.sort_by(|left, right| {
+    targets.sort_unstable_by(|left, right| {
         left.binding
             .canonical_path
             .cmp(&right.binding.canonical_path)
     });
     let mut unique: Vec<PreparedCatalogTargetV1> = Vec::new();
     try_reserve_batch(&mut unique, targets.len())?;
-    for target in targets {
-        if let Some(previous) = unique.last()
+    for mut target in targets {
+        if let Some(previous) = unique.last_mut()
             && previous.binding.canonical_path == target.binding.canonical_path
         {
             require_same_binding(&previous.binding, &target.binding)?;
+            merge_prepared_requests(&mut previous.requests, &mut target.requests)?;
             continue;
         }
         unique.push(target);
     }
     Ok(unique)
+}
+
+impl RetainedCatalogTargetGroupV1 {
+    fn retain(expected: &PreparedCatalogTargetV1) -> Result<Self, CheckedFsError> {
+        let mut requests = expected.requests.iter();
+        let first = requests.next().expect("prepared target has a request");
+        let primary = retain_prepared_request(&expected.binding, first)?;
+        let mut associated_targets = Vec::new();
+        try_reserve_batch(
+            &mut associated_targets,
+            expected.requests.len().saturating_sub(1),
+        )?;
+        for request in requests {
+            associated_targets.push(retain_prepared_request(&expected.binding, request)?);
+        }
+        let group = Self {
+            primary,
+            associated_targets,
+        };
+        group.revalidate()?;
+        Ok(group)
+    }
+
+    fn revalidate(&self) -> Result<(), CheckedFsError> {
+        self.primary.revalidate()?;
+        for target in &self.associated_targets {
+            target.revalidate()?;
+        }
+        Ok(())
+    }
+
+    fn guard_parent(&self) -> &cap_std::fs::Dir {
+        self.primary.guard_parent()
+    }
+
+    fn prepare_final_slot(&self) -> Result<(), CheckedFsError> {
+        self.primary.prepare_final_slot()
+    }
+
+    fn acquire_final(self) -> Result<Option<HeldCatalogTargetV1>, CheckedFsError> {
+        self.primary.acquire_final(self.associated_targets)
+    }
+}
+
+fn retain_prepared_request(
+    binding: &CatalogTargetBindingV1,
+    expected: &PreparedCatalogRequestV1,
+) -> Result<RetainedCatalogTargetV1, CheckedFsError> {
+    let target = RetainedCatalogTargetV1::retain(&expected.request)?;
+    require_same_binding(binding, &target.binding)?;
+    if expected.git_association.as_ref() != target.git_association_binding() {
+        return Err(CheckedFsError::ambiguous(
+            "catalog repository/worktree membership",
+            "request association changed after initial retention",
+        ));
+    }
+    Ok(target)
+}
+
+fn merge_prepared_requests(
+    existing: &mut Vec<PreparedCatalogRequestV1>,
+    incoming: &mut Vec<PreparedCatalogRequestV1>,
+) -> Result<(), CheckedFsError> {
+    for request in incoming.drain(..) {
+        let duplicate = existing
+            .iter()
+            .find(|candidate| request_location(candidate) == request_location(&request));
+        if let Some(previous) = duplicate {
+            if previous.git_association != request.git_association {
+                return Err(CheckedFsError::ambiguous(
+                    "catalog repository/worktree membership",
+                    "one request location has different retained membership",
+                ));
+            }
+            continue;
+        }
+        try_reserve_batch(existing, 1)?;
+        existing.push(request);
+    }
+    Ok(())
+}
+
+fn request_location(request: &PreparedCatalogRequestV1) -> Option<&std::path::Path> {
+    request
+        .git_association
+        .as_ref()
+        .map(CatalogGitAssociationBindingV1::request_path)
 }
 
 fn batch_allocation_error(_: std::collections::TryReserveError) -> CheckedFsError {

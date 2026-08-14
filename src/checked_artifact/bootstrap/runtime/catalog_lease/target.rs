@@ -12,6 +12,7 @@ use super::super::paths::{
 };
 use super::super::{LOCKS_DIRECTORY_NAME, WORKSPACE_MUTATOR_LOCK_NAME, try_advisory_lock};
 use super::alias::reject_equivalent_alias;
+use super::association::{CatalogGitAssociationBindingV1, RetainedCatalogGitAssociationV1};
 use crate::checked_artifact::capability::{
     CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1, HostPlatform,
     PathComponentMode, PathEquivalenceProvider, PreCatalogRootKindV1, SupportedFilesystemProfile,
@@ -77,6 +78,7 @@ pub(super) struct RetainedCatalogTargetV1 {
     pub(super) binding: CatalogTargetBindingV1,
     pub(super) target: RetainedDirectory,
     pub(super) related_git_directory: RetainedDirectory,
+    git_association: Option<RetainedCatalogGitAssociationV1>,
 }
 
 impl RetainedCatalogTargetV1 {
@@ -122,16 +124,11 @@ impl RetainedCatalogTargetV1 {
     }
 
     fn retain_repository_common_git_directory(path: &Path) -> Result<Self, CheckedFsError> {
-        let repository = git2::Repository::open(path).map_err(|error| {
-            CheckedFsError::io(
-                "open catalog target repository",
-                std::io::Error::other(error.message().to_owned()),
-            )
-        })?;
-        let common = std::fs::canonicalize(repository.commondir()).map_err(|source| {
-            CheckedFsError::io("canonicalize catalog common Git directory", source)
-        })?;
-        Self::retain_git_directory(&common)
+        let association = RetainedCatalogGitAssociationV1::retain(path)?;
+        let mut target = Self::retain_git_directory(association.common_directory_path())?;
+        target.git_association = Some(association);
+        target.revalidate()?;
+        Ok(target)
     }
 
     fn finish(
@@ -187,6 +184,7 @@ impl RetainedCatalogTargetV1 {
             },
             target,
             related_git_directory,
+            git_association: None,
         })
     }
 
@@ -234,7 +232,29 @@ impl RetainedCatalogTargetV1 {
                 "stable or live target or related Git binding changed",
             ));
         }
+        if let Some(association) = &self.git_association {
+            association.revalidate()?;
+        }
         Ok(())
+    }
+
+    pub(super) fn git_association_binding(&self) -> Option<&CatalogGitAssociationBindingV1> {
+        self.git_association
+            .as_ref()
+            .map(RetainedCatalogGitAssociationV1::binding)
+    }
+
+    pub(super) fn into_prepared_bindings(
+        self,
+    ) -> (
+        CatalogTargetBindingV1,
+        Option<CatalogGitAssociationBindingV1>,
+    ) {
+        (
+            self.binding,
+            self.git_association
+                .map(RetainedCatalogGitAssociationV1::into_binding),
+        )
     }
 
     pub(super) fn guard_parent(&self) -> &Dir {
@@ -281,7 +301,10 @@ impl RetainedCatalogTargetV1 {
         Ok(())
     }
 
-    pub(super) fn acquire_final(self) -> Result<Option<HeldCatalogTargetV1>, CheckedFsError> {
+    pub(super) fn acquire_final(
+        self,
+        associated_targets: Vec<RetainedCatalogTargetV1>,
+    ) -> Result<Option<HeldCatalogTargetV1>, CheckedFsError> {
         let (runtime_dir, locks_dir, lock_file) = match self.binding.root_kind {
             PreCatalogRootKindV1::Workspace => {
                 let runtime = open_child_directory(
@@ -329,6 +352,7 @@ impl RetainedCatalogTargetV1 {
         super::super::fault::run(super::super::fault::RuntimeBootstrapFault::CatalogFinalLeaseLock);
         let held = HeldCatalogTargetV1 {
             target: self,
+            associated_targets,
             _runtime_dir: runtime_dir,
             _locks_dir: locks_dir,
             _lock: lock,
@@ -340,6 +364,7 @@ impl RetainedCatalogTargetV1 {
 
 pub(super) struct HeldCatalogTargetV1 {
     pub(super) target: RetainedCatalogTargetV1,
+    associated_targets: Vec<RetainedCatalogTargetV1>,
     _runtime_dir: Option<RetainedDirectory>,
     _locks_dir: Option<RetainedDirectory>,
     _lock: AdvisoryLock,
@@ -348,6 +373,9 @@ pub(super) struct HeldCatalogTargetV1 {
 impl HeldCatalogTargetV1 {
     pub(super) fn revalidate_held(&self) -> Result<(), CheckedFsError> {
         self.target.revalidate()?;
+        for target in &self.associated_targets {
+            target.revalidate()?;
+        }
         match self.target.binding.root_kind {
             PreCatalogRootKindV1::Workspace => {
                 let runtime = self

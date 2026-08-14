@@ -4,6 +4,7 @@ use std::cell::RefCell;
 pub(super) enum RuntimeBootstrapFault {
     FinalLeaseOpen,
     FinalLeaseLock,
+    CatalogInitialRetentionComplete,
     CatalogPreparation,
     CatalogFinalLeaseOpen,
     CatalogFinalLeaseLock,

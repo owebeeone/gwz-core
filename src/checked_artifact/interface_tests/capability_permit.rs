@@ -87,6 +87,13 @@ fn catalog_preflight_surface_has_no_path_plus_lease_or_callback_seam() {
 }
 
 #[test]
+fn catalog_batch_ordering_has_no_allocating_stable_sort() {
+    let lease = include_str!("../bootstrap/runtime/catalog_lease.rs");
+    assert!(!lease.contains(".sort_by("));
+    assert_eq!(lease.matches(".sort_unstable_by(").count(), 2);
+}
+
+#[test]
 fn ready_and_missing_parent_permits_have_disjoint_exact_authority_fields() {
     let source = include_str!("../capability/pre_catalog.rs");
     let ready = struct_body(source, "CatalogPermitV1");

@@ -148,7 +148,7 @@ APPROVED_RUST_PATH_EDGES = {
 # the root module, every current descendant, and the descendant file set, so a
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
-    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "dc475fe3b2e28b584ee48ef82074fb138935195b4c453d9a6cba166fb2e0be1e",
+    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "913b0a6c15932c7256444b4094c2040959c087f8981005dd14b2c2b1292735db",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
     "checked_artifact/capability/pre_catalog.rs": "dd69b335c71fd5b35ff11c9d93842c8f7da49dbabf71aa67fcb6b23e2953893c",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
@@ -864,6 +864,15 @@ def check(source: Path) -> list[str]:
     ):
         findings.append(
             "catalog Git lease target must be derived from repository common-directory state"
+        )
+    catalog_lease = masked_sources[
+        "checked_artifact/bootstrap/runtime/catalog_lease.rs"
+    ]
+    if re.search(r"\.sort_by\s*\(", catalog_lease) or len(
+        re.findall(r"\.sort_unstable_by\s*\(", catalog_lease)
+    ) != 2:
+        findings.append(
+            "catalog lease batch ordering must use exactly two allocation-free unstable sorts"
         )
 
     for relative, expected_calls in CHECKED_LEAF_ADAPTER_CALLS.items():

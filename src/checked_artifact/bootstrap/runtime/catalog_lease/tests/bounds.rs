@@ -25,6 +25,22 @@ fn target_batch_is_nonempty_bounded_and_stops_an_infinite_iterator() {
 }
 
 #[test]
+fn maximum_batch_orders_and_deduplicates_without_hidden_sort_allocation() {
+    let repo = TempRepo::new("maximum-batch-ordering");
+    let request = CatalogLeaseTargetRequestV1::workspace(repo.path());
+    let batch = CatalogLeaseTargetBatchV1::try_new(std::iter::repeat_n(
+        request,
+        MAX_CATALOG_LEASE_TARGETS_V1,
+    ))
+    .unwrap();
+    let leases = CatalogLeaseSetV1::try_acquire(batch)
+        .unwrap()
+        .expect("maximum exact-duplicate batch");
+    assert_eq!(leases.len(), 1);
+    assert_catalog_roles_absent(&repo.path().join(crate::workspace::RUNTIME_DIR));
+}
+
+#[test]
 fn batch_allocation_failure_rejects_before_runtime_or_catalog_mutation() {
     let repo = TempRepo::new("batch-allocation-failure");
     let request = CatalogLeaseTargetRequestV1::repository_common_git_directory(repo.path());
