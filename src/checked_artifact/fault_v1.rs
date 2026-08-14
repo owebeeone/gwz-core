@@ -195,6 +195,42 @@ define_fault_keys! {
     TerminalAuthorityRelease => "terminal.authority_release",
 }
 
+#[cfg(test)]
+type FaultCallbackV1 = (CheckedArtifactFaultKeyV1, Box<dyn FnOnce()>);
+
+#[cfg(test)]
+thread_local! {
+    static NEXT_FAULT: std::cell::RefCell<Option<FaultCallbackV1>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn run_next_at(key: CheckedArtifactFaultKeyV1, callback: impl FnOnce() + 'static) {
+    NEXT_FAULT.with(|slot| {
+        let previous = slot.replace(Some((key, Box::new(callback))));
+        assert!(
+            previous.is_none(),
+            "checked-artifact fault already installed"
+        );
+    });
+}
+
+#[cfg(test)]
+pub(super) fn hit(key: CheckedArtifactFaultKeyV1) {
+    NEXT_FAULT.with(|slot| {
+        let execute = {
+            let mut slot = slot.borrow_mut();
+            match slot.as_ref() {
+                Some((expected, _)) if *expected == key => slot.take(),
+                _ => None,
+            }
+        };
+        if let Some((_, callback)) = execute {
+            callback();
+        }
+    });
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct FaultInstanceV1 {
     key: CheckedArtifactFaultKeyV1,

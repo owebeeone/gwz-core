@@ -43,6 +43,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
     "checked_artifact/mod.rs": "ab520e0ea5868e033aec015530281ebd274642918fc82b77279f2a5c921c05b0",
+    "checked_artifact/platform.rs": "a3c3c36a7e3008618b8b33526b62f16ae23ce4cf9c054a8767fc2eb3aba194dd",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
@@ -150,8 +151,8 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "d9b5d57d08be29edcc4f905a1721032db37c52fd5e040dbbc9a88a417e01d4d0",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "39b29cd571bf6573ac583f10c87a9be7c300c25573a6b3c12453f09937d8bab0",
-    "checked_artifact/catalog.rs": "f6c37c22fa9934fc98e8c685a9aa9f6c9c29694888ebbec7158405505a4c32b3",
+    "checked_artifact/capability/pre_catalog.rs": "325f3804c1ee25983f58602de7e581a600e628282ca34841cd3c62b757e5a7b7",
+    "checked_artifact/catalog.rs": "9574ea931b825ed093e7944b89c2ce4f0946178a8f4fb5edfa699adc2bf13f62",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }
@@ -627,6 +628,11 @@ FORBIDDEN_PROVISIONAL_CATALOG_INTERFACES = {
     "recover_or_create_workspace",
 }
 
+CATALOG_PUBLICATION_CALL_COUNTS = {
+    "checked_artifact/capability/pre_catalog/provider/mutation.rs": 1,
+    "checked_artifact/capability/pre_catalog/provider/directory_mutation.rs": 5,
+}
+
 
 def production_rust_files(source: Path) -> list[Path]:
     return sorted(
@@ -776,6 +782,53 @@ def check(source: Path) -> list[str]:
     for relative, expected_digest in sorted(PROTECTED_SOURCE_TREE_DIGESTS.items()):
         if source_tree_digest(source, relative) != expected_digest:
             findings.append(f"protected source tree changed: {relative}")
+    publication_relative = (
+        "checked_artifact/capability/pre_catalog/provider/publication.rs"
+    )
+    publication = mask_non_code(
+        (source / publication_relative).read_text(encoding="utf-8")
+    )
+    publication_callers = {
+        path.relative_to(source).as_posix()
+        for path in production_rust_files(
+            source / "checked_artifact/capability/pre_catalog/provider"
+        )
+        if "publish_verified_no_replace"
+        in calls(mask_non_code(path.read_text(encoding="utf-8")))
+    }
+    publication_shape_is_exact = (
+        len(re.findall(r"\bfn\s+publish_verified_no_replace\s*\(", publication)) == 1
+        and len(
+            re.findall(
+                r"\bcrate::checked_artifact::platform::open_rename_source\s*\(",
+                publication,
+            )
+        )
+        == 1
+        and len(
+            re.findall(
+                r"\bcrate::checked_artifact::platform::rename_open_source\s*\(",
+                publication,
+            )
+        )
+        == 1
+        and "rename_relative" not in publication
+    )
+    for relative, expected_count in CATALOG_PUBLICATION_CALL_COUNTS.items():
+        text = mask_non_code((source / relative).read_text(encoding="utf-8"))
+        actual_count = len(
+            re.findall(r"(?m)^\s*publish_verified_no_replace\s*\(", text)
+        )
+        if actual_count != expected_count or "rename_relative" in text:
+            publication_shape_is_exact = False
+    if (
+        not publication_shape_is_exact
+        or publication_callers != set(CATALOG_PUBLICATION_CALL_COUNTS)
+    ):
+        findings.append(
+            "catalog publication seam changed: all six physical moves must use "
+            "the single source-associated publication primitive"
+        )
     for relative in sorted(PROTECTED_COMPILER_MODULES):
         raw = (source / relative).read_bytes()
         if forbid not in mask_non_code(raw.decode("utf-8")):

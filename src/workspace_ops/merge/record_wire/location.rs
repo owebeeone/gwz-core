@@ -268,7 +268,7 @@ fn read_leaf(path: &Path, kind: CanonicalRecordKind) -> ModelResult<CanonicalRec
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct FileIdentity {
+pub(in crate::workspace_ops::merge) struct FileIdentity {
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -280,12 +280,18 @@ struct FileIdentity {
 }
 
 #[cfg(unix)]
-fn identity_at_named_path(_path: &Path, metadata: &Metadata) -> io::Result<Option<FileIdentity>> {
+pub(in crate::workspace_ops::merge) fn identity_at_named_path(
+    _path: &Path,
+    metadata: &Metadata,
+) -> io::Result<Option<FileIdentity>> {
     Ok(Some(identity_from_metadata(metadata)))
 }
 
 #[cfg(windows)]
-fn identity_at_named_path(path: &Path, metadata: &Metadata) -> io::Result<Option<FileIdentity>> {
+pub(in crate::workspace_ops::merge) fn identity_at_named_path(
+    path: &Path,
+    metadata: &Metadata,
+) -> io::Result<Option<FileIdentity>> {
     let file = open_named_path(path)?;
     let opened = file.metadata()?;
     if metadata.file_type() != opened.file_type() {
@@ -295,12 +301,12 @@ fn identity_at_named_path(path: &Path, metadata: &Metadata) -> io::Result<Option
 }
 
 #[cfg(unix)]
-fn open_named_path(path: &Path) -> io::Result<File> {
+pub(in crate::workspace_ops::merge) fn open_named_path(path: &Path) -> io::Result<File> {
     File::open(path)
 }
 
 #[cfg(windows)]
-fn open_named_path(path: &Path) -> io::Result<File> {
+pub(in crate::workspace_ops::merge) fn open_named_path(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
@@ -316,7 +322,10 @@ fn open_named_path(path: &Path) -> io::Result<File> {
 }
 
 #[cfg(unix)]
-fn identity_from_file(_file: &File, metadata: &Metadata) -> io::Result<FileIdentity> {
+pub(in crate::workspace_ops::merge) fn identity_from_file(
+    _file: &File,
+    metadata: &Metadata,
+) -> io::Result<FileIdentity> {
     Ok(identity_from_metadata(metadata))
 }
 
@@ -331,7 +340,10 @@ fn identity_from_metadata(metadata: &Metadata) -> FileIdentity {
 }
 
 #[cfg(windows)]
-fn identity_from_file(file: &File, _metadata: &Metadata) -> io::Result<FileIdentity> {
+pub(in crate::workspace_ops::merge) fn identity_from_file(
+    file: &File,
+    _metadata: &Metadata,
+) -> io::Result<FileIdentity> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,

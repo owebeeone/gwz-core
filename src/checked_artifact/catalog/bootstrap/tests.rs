@@ -9,7 +9,9 @@ use crate::checked_artifact::bootstrap::{
 };
 use crate::checked_artifact::catalog::CatalogScratchNameV1;
 use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
-use crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1 as Fault;
+use crate::checked_artifact::fault_v1::{
+    CheckedArtifactFaultKeyV1 as Fault, run_next_at as run_next_catalog_fault,
+};
 use crate::checked_artifact::protocol::{InfrastructureSlotV1, decode_catalog_bootstrap_record};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -323,45 +325,29 @@ fn unowned_staging_and_final_directories_are_read_only_ambiguity() {
 #[test]
 fn restart_and_substitution_matrix_covers_every_catalog_bootstrap_fault_key() {
     let mapped = [
-        (Fault::CatalogBootstrapScratchCreate, "partial scratch"),
-        (Fault::CatalogBootstrapScratchWrite, "partial scratch"),
-        (Fault::CatalogBootstrapScratchFlush, "edge restart"),
-        (Fault::CatalogBootstrapActivePublish, "active substitution"),
-        (Fault::CatalogBootstrapActiveReobserve, "edge restart"),
-        (Fault::CatalogBootstrapStagingCreate, "edge restart"),
-        (
-            Fault::CatalogBootstrapInfrastructurePopulate,
-            "partial staging files",
-        ),
-        (
-            Fault::CatalogBootstrapInfrastructureFlush,
-            "partial staging files",
-        ),
-        (
-            Fault::CatalogBootstrapAnchorScratchCreate,
-            "partial anchor B",
-        ),
-        (
-            Fault::CatalogBootstrapAnchorScratchFlush,
-            "partial anchor B",
-        ),
-        (Fault::CatalogBootstrapAnchorPublish, "edge restart"),
-        (Fault::CatalogBootstrapAnchorReobserve, "edge restart"),
-        (Fault::CatalogBootstrapAnchorHomeAExercise, "edge restart"),
-        (Fault::CatalogBootstrapAnchorHomeBExercise, "edge restart"),
-        (Fault::CatalogBootstrapStagingFlush, "edge restart"),
-        (Fault::CatalogBootstrapFinalPublish, "final substitution"),
-        (Fault::CatalogBootstrapFinalReopen, "final substitution"),
-        (Fault::CatalogBootstrapFinalReobserve, "final content drift"),
-        (Fault::CatalogBootstrapActiveRetire, "active substitution"),
-        (Fault::CatalogBootstrapRetiredReobserve, "edge restart"),
-        (Fault::CatalogBootstrapCatalogEnumerate, "unowned directory"),
+        Fault::CatalogBootstrapScratchCreate,
+        Fault::CatalogBootstrapScratchWrite,
+        Fault::CatalogBootstrapScratchFlush,
+        Fault::CatalogBootstrapActivePublish,
+        Fault::CatalogBootstrapActiveReobserve,
+        Fault::CatalogBootstrapStagingCreate,
+        Fault::CatalogBootstrapInfrastructurePopulate,
+        Fault::CatalogBootstrapInfrastructureFlush,
+        Fault::CatalogBootstrapAnchorScratchCreate,
+        Fault::CatalogBootstrapAnchorScratchFlush,
+        Fault::CatalogBootstrapAnchorPublish,
+        Fault::CatalogBootstrapAnchorReobserve,
+        Fault::CatalogBootstrapAnchorHomeAExercise,
+        Fault::CatalogBootstrapAnchorHomeBExercise,
+        Fault::CatalogBootstrapStagingFlush,
+        Fault::CatalogBootstrapFinalPublish,
+        Fault::CatalogBootstrapFinalReopen,
+        Fault::CatalogBootstrapFinalReobserve,
+        Fault::CatalogBootstrapActiveRetire,
+        Fault::CatalogBootstrapRetiredReobserve,
+        Fault::CatalogBootstrapCatalogEnumerate,
     ];
-    assert!(mapped.iter().all(|(_, evidence)| !evidence.is_empty()));
-    let mut actual = mapped
-        .iter()
-        .map(|(key, _)| key.stable_key())
-        .collect::<Vec<_>>();
+    let mut actual = mapped.iter().map(Fault::stable_key).collect::<Vec<_>>();
     let mut expected = Fault::all()
         .into_iter()
         .filter_map(|key| {
@@ -372,6 +358,28 @@ fn restart_and_substitution_matrix_covers_every_catalog_bootstrap_fault_key() {
     actual.sort_unstable();
     expected.sort_unstable();
     assert_eq!(actual, expected);
+
+    for key in mapped {
+        let fixture = Fixture::new(&format!("fault-{}", key.stable_key()));
+        run_next_catalog_fault(key, || panic!("simulated catalog process stop"));
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let runtime = try_acquire_workspace_runtime(fixture.path())
+                .unwrap()
+                .expect("workspace runtime lease");
+            let _ = recover_or_create(runtime.catalog_mutation_lease());
+        }));
+        assert!(
+            interrupted.is_err(),
+            "fault point was not reached: {}",
+            key.stable_key()
+        );
+
+        let runtime = try_acquire_workspace_runtime(fixture.path())
+            .unwrap()
+            .expect("reacquired workspace runtime lease");
+        let retained = recover_or_create(runtime.catalog_mutation_lease()).unwrap();
+        retained.revalidate_for_test().unwrap();
+    }
 }
 
 fn run_retry_edges(fixture: &Fixture, count: usize) {

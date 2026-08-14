@@ -7,6 +7,7 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
 
 use super::interior::{self, StagingPlanV1};
+use super::publication::{PublicationSourceV1, publish_verified_no_replace};
 use super::retained::encode_identity;
 use super::{
     RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogInteriorFactV1,
@@ -18,7 +19,6 @@ use crate::checked_artifact::capability::{
 use crate::checked_artifact::catalog::CatalogRecognizedNameV1;
 use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 use crate::checked_artifact::protocol::{CatalogBootstrapRecordV1, InfrastructureSlotV1};
-use crate::model::ErrorCode;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +83,10 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn prepare_or_rewrite_s
             .handle()
             .create_dir(staging_name)
             .map_err(|source| CheckedFsError::io("create catalog staging no-replace", source))?;
+        #[cfg(test)]
+        crate::checked_artifact::fault_v1::hit(
+            crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapStagingCreate,
+        );
         let directory = parent
             .handle()
             .open_dir_nofollow(staging_name)
@@ -150,7 +154,16 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn prepare_or_rewrite_s
             ));
         }
     }
-    sync_directory_edge(&staging, "flush catalog staging edge")
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapInfrastructurePopulate,
+    );
+    sync_directory_edge(&staging, "flush catalog staging edge")?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapInfrastructureFlush,
+    );
+    Ok(())
 }
 
 pub(in crate::checked_artifact::capability::pre_catalog) fn publish_final_directory(
@@ -195,6 +208,10 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_final_direct
     )?;
     sync_directory_edge(&staging, "flush exact catalog staging")?;
     #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapStagingFlush,
+    );
+    #[cfg(test)]
     run_fault(CatalogDirectoryMutationFaultV1::FinalPublishBeforeRename);
     verify_named_directory(
         parent.handle(),
@@ -212,22 +229,35 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_final_direct
             "staging contents changed before final publication",
         ));
     }
-    rename_no_replace(
+    publish_verified_no_replace(
         parent.handle(),
         staging_name,
         parent.handle(),
         final_name,
+        PublicationSourceV1::directory(staging_observed.identity),
         "publish final catalog",
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapFinalPublish,
+    );
     let final_directory = parent
         .handle()
         .open_dir_nofollow(final_name)
         .map_err(|source| CheckedFsError::io("reopen published final catalog", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapFinalReopen,
+    );
     verify_directory_identity(
         &final_directory,
         staging_observed.identity,
         "published final catalog",
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapFinalReobserve,
+    );
     sync_directory_edge(parent.handle(), "flush final catalog publication")
 }
 
@@ -285,25 +315,28 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn retire_active_record
             "final catalog changed before active retirement",
         ));
     }
-    verify_named_file(
-        parent.handle(),
-        OsStr::new(private_name(CatalogPrivateNameV1::BootstrapActive)),
-        active,
-        "catalog active retirement",
-    )?;
-    rename_no_replace(
+    publish_verified_no_replace(
         parent.handle(),
         OsStr::new(private_name(CatalogPrivateNameV1::BootstrapActive)),
         &final_directory,
         OsStr::new(InfrastructureSlotV1::CatalogBootstrapRetired.name()),
+        PublicationSourceV1::regular_file(active.identity, active.bytes),
         "retire catalog bootstrap record",
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapActiveRetire,
+    );
     verify_named_file(
         &final_directory,
         OsStr::new(InfrastructureSlotV1::CatalogBootstrapRetired.name()),
         active,
         "retired catalog bootstrap record",
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapRetiredReobserve,
+    );
     sync_directory_edge(&final_directory, "flush retired catalog record")?;
     sync_directory_edge(parent.handle(), "flush active catalog retirement")
 }
@@ -467,6 +500,12 @@ fn write_slot(
     let mut file = directory
         .open_with(name, &options)
         .map_err(|source| CheckedFsError::io("open catalog infrastructure file", source))?;
+    #[cfg(test)]
+    if slot == InfrastructureSlotV1::CatalogAnchorB && create_new {
+        crate::checked_artifact::fault_v1::hit(
+            crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapAnchorScratchCreate,
+        );
+    }
     if let Some(observed) = observed {
         let RawCatalogInteriorFactV1::RegularFile {
             identity,
@@ -494,6 +533,12 @@ fn write_slot(
         .map_err(|source| CheckedFsError::io("write catalog infrastructure file", source))?;
     file.sync_all()
         .map_err(|source| CheckedFsError::io("flush catalog infrastructure file", source))?;
+    #[cfg(test)]
+    if slot == InfrastructureSlotV1::CatalogAnchorB {
+        crate::checked_artifact::fault_v1::hit(
+            crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapAnchorScratchFlush,
+        );
+    }
     let identity = encode_identity(&super::HostPlatform.file_identity(&file)?);
     let written = ObservedFileV1 {
         identity: &identity,
@@ -526,19 +571,53 @@ fn exercise_catalog_anchor(
     };
     let expected = ObservedFileV1 { identity, bytes };
     if row(interior, InfrastructureSlotV1::CatalogAnchorB).is_some() {
-        verify_named_file(directory, b, expected, "catalog anchor B")?;
-        rename_no_replace(directory, b, directory, a, "publish catalog anchor A")?;
+        publish_verified_no_replace(
+            directory,
+            b,
+            directory,
+            a,
+            PublicationSourceV1::regular_file(expected.identity, expected.bytes),
+            "publish catalog anchor A",
+        )?;
+        #[cfg(test)]
+        crate::checked_artifact::fault_v1::hit(
+            crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapAnchorPublish,
+        );
         verify_named_file(directory, a, expected, "catalog anchor A")?;
         #[cfg(test)]
+        crate::checked_artifact::fault_v1::hit(
+            crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapAnchorReobserve,
+        );
+        #[cfg(test)]
         run_fault(CatalogDirectoryMutationFaultV1::AnchorAfterPublishA);
-    } else {
-        verify_named_file(directory, a, expected, "catalog anchor A")?;
     }
-    rename_no_replace(directory, a, directory, b, "exercise catalog anchor B")?;
+    publish_verified_no_replace(
+        directory,
+        a,
+        directory,
+        b,
+        PublicationSourceV1::regular_file(expected.identity, expected.bytes),
+        "exercise catalog anchor B",
+    )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapAnchorHomeAExercise,
+    );
     verify_named_file(directory, b, expected, "catalog anchor B")?;
     #[cfg(test)]
     run_fault(CatalogDirectoryMutationFaultV1::AnchorAfterMoveToB);
-    rename_no_replace(directory, b, directory, a, "return catalog anchor A")?;
+    publish_verified_no_replace(
+        directory,
+        b,
+        directory,
+        a,
+        PublicationSourceV1::regular_file(expected.identity, expected.bytes),
+        "return catalog anchor A",
+    )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapAnchorHomeBExercise,
+    );
     verify_named_file(directory, a, expected, "catalog anchor A")?;
     #[cfg(test)]
     run_fault(CatalogDirectoryMutationFaultV1::AnchorAfterReturnA);
@@ -606,25 +685,6 @@ fn durable_write_options(create_new: bool) -> OpenOptions {
         options.custom_flags(FILE_FLAG_WRITE_THROUGH);
     }
     options
-}
-
-fn rename_no_replace(
-    source_dir: &cap_std::fs::Dir,
-    source: &OsStr,
-    destination_dir: &cap_std::fs::Dir,
-    destination: &OsStr,
-    label: &'static str,
-) -> Result<(), CheckedFsError> {
-    crate::checked_artifact::platform::rename_relative(
-        source_dir,
-        source,
-        destination_dir,
-        destination,
-        false,
-        ErrorCode::IoError,
-        label,
-    )
-    .map_err(|source| CheckedFsError::ambiguous("catalog namespace publication", source.message))
 }
 
 fn private_name(name: CatalogPrivateNameV1) -> &'static str {

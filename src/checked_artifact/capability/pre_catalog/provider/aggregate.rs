@@ -23,6 +23,10 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn outer_aggregate_fact
     binding: &CatalogAttemptBindingV1,
     observed: &RawCatalogRoleObservationV1,
 ) -> CatalogAggregateFactsV1 {
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapCatalogEnumerate,
+    );
     let mut scratch = Vec::new();
     let mut active = CatalogRecordFactV1::Missing;
     let mut staging_raw = RawDirectoryV1::Missing;

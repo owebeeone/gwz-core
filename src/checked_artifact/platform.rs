@@ -1,8 +1,132 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 
 use cap_std::fs::Dir;
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
+
+pub(super) struct OpenedRenameSource<'a> {
+    file: cap_std::fs::File,
+    source_dir: &'a Dir,
+    source: OsString,
+}
+
+impl OpenedRenameSource<'_> {
+    pub(super) const fn file(&self) -> &cap_std::fs::File {
+        &self.file
+    }
+
+    pub(super) const fn file_mut(&mut self) -> &mut cap_std::fs::File {
+        &mut self.file
+    }
+}
+
+#[cfg(not(windows))]
+pub(super) fn open_rename_source<'a>(
+    source_dir: &'a Dir,
+    source: &OsStr,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<OpenedRenameSource<'a>> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
+    use cap_std::fs::OpenOptions;
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .follow(FollowSymlinks::No)
+        .maybe_dir(true);
+    let file = source_dir
+        .open_with(source, &options)
+        .map_err(|cause| io_error(code, label, cause))?;
+    Ok(OpenedRenameSource {
+        file,
+        source_dir,
+        source: source.to_os_string(),
+    })
+}
+
+#[cfg(windows)]
+pub(super) fn open_rename_source<'a>(
+    source_dir: &'a Dir,
+    source: &OsStr,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<OpenedRenameSource<'a>> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
+    use cap_std::fs::{OpenOptions, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::*;
+
+    let mut options = OpenOptions::new();
+    options
+        .access_mode(GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
+        .follow(FollowSymlinks::No)
+        .maybe_dir(true);
+    let file = source_dir
+        .open_with(source, &options)
+        .map_err(|cause| io_error(code, label, cause))?;
+    Ok(OpenedRenameSource {
+        file,
+        source_dir,
+        source: source.to_os_string(),
+    })
+}
+
+#[cfg(not(windows))]
+pub(super) fn rename_open_source(
+    source: &OpenedRenameSource<'_>,
+    destination_dir: &Dir,
+    destination: &OsStr,
+    replace: bool,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
+    rename_relative(
+        source.source_dir,
+        &source.source,
+        destination_dir,
+        destination,
+        replace,
+        code,
+        label,
+    )
+}
+
+#[cfg(windows)]
+pub(super) fn rename_open_source(
+    source: &OpenedRenameSource<'_>,
+    destination_dir: &Dir,
+    destination: &OsStr,
+    replace: bool,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
+    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::*;
+
+    let name = destination.encode_wide().collect::<Vec<_>>();
+    let size = std::mem::offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
+    let mut storage = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = replace;
+        (*info).RootDirectory = destination_dir.as_raw_handle();
+        (*info).FileNameLength = u32::try_from(name.len() * 2)
+            .map_err(|_| error(code, label, "destination name is too long"))?;
+        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
+        if SetFileInformationByHandle(
+            source.file.as_raw_handle(),
+            FileRenameInfo,
+            info.cast(),
+            u32::try_from(size).map_err(|_| error(code, label, "rename buffer is too large"))?,
+        ) == 0
+        {
+            return Err(io_error(code, label, std::io::Error::last_os_error()));
+        }
+    }
+    Ok(())
+}
 
 #[cfg(not(windows))]
 pub(super) fn prepare_private(
@@ -77,44 +201,15 @@ pub(super) fn rename_relative(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
-    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
-    use cap_std::fs::{OpenOptions, OpenOptionsExt};
-    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::*;
-
-    let mut options = OpenOptions::new();
-    options
-        .access_mode(DELETE)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
-        .follow(FollowSymlinks::No)
-        // The same no-replace primitive publishes both regular-file records
-        // and the first-catalog staging directory.
-        .maybe_dir(true);
-    let source = source_dir
-        .open_with(source, &options)
-        .map_err(|cause| io_error(code, label, cause))?;
-    let name = destination.encode_wide().collect::<Vec<_>>();
-    let size = std::mem::offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
-    let mut storage = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
-    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    unsafe {
-        (*info).Anonymous.ReplaceIfExists = replace;
-        (*info).RootDirectory = destination_dir.as_raw_handle();
-        (*info).FileNameLength = u32::try_from(name.len() * 2)
-            .map_err(|_| error(code, label, "destination name is too long"))?;
-        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        if SetFileInformationByHandle(
-            source.as_raw_handle(),
-            FileRenameInfo,
-            info.cast(),
-            u32::try_from(size).map_err(|_| error(code, label, "rename buffer is too large"))?,
-        ) == 0
-        {
-            return Err(io_error(code, label, std::io::Error::last_os_error()));
-        }
-    }
-    Ok(())
+    let source_handle = open_rename_source(source_dir, source, code, label)?;
+    rename_open_source(
+        &source_handle,
+        destination_dir,
+        destination,
+        replace,
+        code,
+        label,
+    )
 }
 
 #[cfg(all(not(unix), not(windows)))]
@@ -238,7 +333,7 @@ pub(super) fn private_barrier(dir: &Dir, code: ErrorCode, label: &str) -> ModelR
     let AnchorState::Ready { final_name } = anchor_state(dir, code, label)? else {
         return Err(error(code, label, "private durability anchor is not ready"));
     };
-    let roundtrip = format!("{final_name}.roundtrip");
+    let roundtrip = anchor_roundtrip_name(&final_name);
     fault(CheckedArtifactFault::BeforeAnchorRoundTrip, code, label)?;
     rename_relative(
         dir,
@@ -315,12 +410,12 @@ fn anchor_state(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorSt
     let mut roundtrip_entry = None;
     for name in anchors {
         let identity = verify_anchor(dir, &name, code, label)?;
-        let expected = anchor_name(&identity.name_digest());
+        let expected = std::ffi::OsString::from(anchor_name(&identity.name_digest()));
         if name == expected {
             if final_entry.replace((name, identity)).is_some() {
                 return Ok(AnchorState::Invalid);
             }
-        } else if name == format!("{expected}.roundtrip") {
+        } else if name == anchor_roundtrip_name(&expected) {
             if roundtrip_entry
                 .replace((name, expected, identity))
                 .is_some()
@@ -335,7 +430,7 @@ fn anchor_state(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorSt
         (Some((final_name, _)), None) => Ok(AnchorState::Ready { final_name }),
         (None, Some((roundtrip, final_name, _))) => Ok(AnchorState::NeedsReturn {
             roundtrip,
-            final_name: final_name.into(),
+            final_name,
         }),
         (Some((final_name, final_identity)), Some((alias, expected, alias_identity)))
             if final_name == expected && final_identity == alias_identity =>
@@ -344,6 +439,13 @@ fn anchor_state(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorSt
         }
         _ => Ok(AnchorState::Invalid),
     }
+}
+
+#[cfg(windows)]
+fn anchor_roundtrip_name(final_name: &OsStr) -> std::ffi::OsString {
+    let mut roundtrip = final_name.to_os_string();
+    roundtrip.push(".roundtrip");
+    roundtrip
 }
 
 #[cfg(windows)]
@@ -369,6 +471,56 @@ fn verify_anchor(
 #[cfg(windows)]
 fn anchor_name(identity: &[u8; 16]) -> String {
     format!("{ANCHOR_PREFIX}{}", hex(identity))
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::{anchor_roundtrip_name, open_rename_source, rename_open_source};
+    use cap_std::{ambient_authority, fs::Dir};
+    use std::ffi::{OsStr, OsString};
+
+    use crate::model::ErrorCode;
+
+    #[test]
+    fn anchor_roundtrip_name_remains_native() {
+        assert_eq!(
+            anchor_roundtrip_name(OsStr::new(".ca1-durability-anchor-0123")),
+            OsString::from(".ca1-durability-anchor-0123.roundtrip")
+        );
+    }
+
+    #[test]
+    fn rename_open_source_moves_the_checked_object_after_path_substitution() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source_path = temporary.path().join("source");
+        let displaced_path = temporary.path().join("displaced");
+        let destination_path = temporary.path().join("destination");
+        std::fs::write(&source_path, b"checked\n").unwrap();
+        let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+        let source = open_rename_source(
+            &directory,
+            OsStr::new("source"),
+            ErrorCode::IoError,
+            "Windows publication test",
+        )
+        .unwrap();
+
+        std::fs::rename(&source_path, &displaced_path).unwrap();
+        std::fs::write(&source_path, b"foreign\n").unwrap();
+        rename_open_source(
+            &source,
+            &directory,
+            OsStr::new("destination"),
+            false,
+            ErrorCode::IoError,
+            "Windows publication test",
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(destination_path).unwrap(), b"checked\n");
+        assert_eq!(std::fs::read(source_path).unwrap(), b"foreign\n");
+        assert!(!displaced_path.exists());
+    }
 }
 
 #[cfg(windows)]

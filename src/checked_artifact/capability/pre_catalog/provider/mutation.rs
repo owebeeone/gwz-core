@@ -7,6 +7,7 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
 
 use super::platform::HostPlatform;
+use super::publication::{PublicationSourceV1, publish_verified_no_replace};
 use super::retained::encode_identity;
 use super::{
     RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogRoleObservationV1, RetainedPlatformRoot,
@@ -17,7 +18,6 @@ use crate::checked_artifact::capability::{
 use crate::checked_artifact::catalog::{CatalogRecognizedNameV1, CatalogScratchNameV1};
 use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 use crate::checked_artifact::protocol::{CatalogBootstrapRecordV1, ProtocolRecordKindV1};
-use crate::model::ErrorCode;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,6 +120,12 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn write_or_rewrite_scr
         .handle()
         .open_with(OsStr::new(leaf), &options)
         .map_err(|source| CheckedFsError::io("open catalog scratch no-follow", source))?;
+    #[cfg(test)]
+    if create_new {
+        crate::checked_artifact::fault_v1::hit(
+            crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapScratchCreate,
+        );
+    }
     if let Some(observed_source) = observed_source {
         verify_open_file(&mut file, observed_source, "catalog scratch")?;
         #[cfg(test)]
@@ -137,8 +143,16 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn write_or_rewrite_scr
     }
     file.write_all(&bytes)
         .map_err(|source| CheckedFsError::io("write catalog scratch", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapScratchWrite,
+    );
     file.sync_all()
         .map_err(|source| CheckedFsError::io("flush catalog scratch", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapScratchFlush,
+    );
     let written_identity = encode_identity(&HostPlatform.file_identity(&file)?);
     let written = ObservedRegularFileV1 {
         identity: &written_identity,
@@ -196,28 +210,28 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_active_recor
     drop(file);
     #[cfg(test)]
     run_fault(CatalogMutationFaultV1::PublishBeforeRename);
-    verify_named_file(
-        parent.handle(),
-        OsStr::new(source),
-        expected,
-        "catalog active publication",
-    )?;
-    crate::checked_artifact::platform::rename_relative(
+    publish_verified_no_replace(
         parent.handle(),
         OsStr::new(source),
         parent.handle(),
         OsStr::new(destination),
-        false,
-        ErrorCode::IoError,
+        PublicationSourceV1::regular_file(expected.identity, expected.bytes),
         "catalog active publication",
-    )
-    .map_err(|source| CheckedFsError::ambiguous("catalog active publication", source.message))?;
+    )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapActivePublish,
+    );
     verify_named_file(
         parent.handle(),
         OsStr::new(destination),
         expected,
         "catalog active publication",
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapActiveReobserve,
+    );
     sync_published_namespace(parent.handle())
 }
 

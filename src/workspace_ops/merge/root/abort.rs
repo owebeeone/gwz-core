@@ -99,7 +99,10 @@ pub(in crate::workspace_ops::merge) use v1_rollback::{
 #[cfg(test)]
 mod v1_rollback {
     use super::*;
-    use std::fs::{self, File, Metadata};
+    use crate::workspace_ops::merge::record_wire::{
+        FileIdentity, identity_at_named_path, identity_from_file, open_named_path,
+    };
+    use std::fs::{self, Metadata};
     use std::io::Read;
     use std::path::Component;
 
@@ -242,7 +245,8 @@ mod v1_rollback {
         if !before.file_type().is_file() || executable(&before) {
             return Err(noncanonical_artifact(&path));
         }
-        let mut file = File::open(&path).map_err(|error| {
+        let before_identity = named_identity(&path, &before)?;
+        let mut file = open_named_path(&path).map_err(|error| {
             root_metadata_error(format!(
                 "failed to open selected-root artifact '{}': {error}",
                 path.display()
@@ -254,7 +258,13 @@ mod v1_rollback {
                 path.display()
             ))
         })?;
-        if !same_file(&before, &opened) {
+        let opened_identity = identity_from_file(&file, &opened).map_err(|error| {
+            root_metadata_error(format!(
+                "failed to identify opened selected-root artifact '{}': {error}",
+                path.display()
+            ))
+        })?;
+        if before_identity != opened_identity {
             return Err(noncanonical_artifact(&path));
         }
         let mut bytes = Vec::new();
@@ -265,24 +275,25 @@ mod v1_rollback {
             ))
         })?;
         let after = fs::symlink_metadata(&path).map_err(|_| noncanonical_artifact(&path))?;
+        let after_identity = named_identity(&path, &after)?;
         if !after.file_type().is_file()
             || executable(&after)
-            || !same_file(&before, &after)
-            || !same_file(&opened, &after)
+            || before_identity != after_identity
+            || opened_identity != after_identity
             || opened.len() != bytes.len() as u64
         {
             return Err(noncanonical_artifact(&path));
         }
         for (parent, expected) in parents {
             let actual = require_real_directory(&parent)?;
-            if !same_file(&expected, &actual) {
+            if expected != actual {
                 return Err(noncanonical_artifact(&parent));
             }
         }
         Ok(bytes)
     }
 
-    fn require_real_directory(path: &Path) -> ModelResult<Metadata> {
+    fn require_real_directory(path: &Path) -> ModelResult<FileIdentity> {
         let metadata = fs::symlink_metadata(path).map_err(|error| {
             root_metadata_error(format!(
                 "failed to inspect selected-root parent '{}': {error}",
@@ -290,28 +301,21 @@ mod v1_rollback {
             ))
         })?;
         if metadata.file_type().is_dir() {
-            Ok(metadata)
+            named_identity(path, &metadata)
         } else {
             Err(noncanonical_artifact(path))
         }
     }
 
-    #[cfg(unix)]
-    fn same_file(left: &Metadata, right: &Metadata) -> bool {
-        use std::os::unix::fs::MetadataExt;
-
-        left.dev() == right.dev()
-            && left.ino() == right.ino()
-            && left.file_type() == right.file_type()
-    }
-
-    #[cfg(windows)]
-    fn same_file(left: &Metadata, right: &Metadata) -> bool {
-        use std::os::windows::fs::MetadataExt;
-
-        left.volume_serial_number() == right.volume_serial_number()
-            && left.file_index() == right.file_index()
-            && left.file_type() == right.file_type()
+    fn named_identity(path: &Path, metadata: &Metadata) -> ModelResult<FileIdentity> {
+        identity_at_named_path(path, metadata)
+            .map_err(|error| {
+                root_metadata_error(format!(
+                    "failed to identify selected-root path '{}': {error}",
+                    path.display()
+                ))
+            })?
+            .ok_or_else(|| noncanonical_artifact(path))
     }
 
     #[cfg(unix)]

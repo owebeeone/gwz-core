@@ -104,6 +104,50 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("catalog lease reference set changed", result.stderr)
 
+    def test_catalog_publication_cannot_bypass_the_shared_source_seam(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/capability/pre_catalog/provider/mutation.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "publish_verified_no_replace(",
+                "crate::checked_artifact::platform::rename_relative(",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("catalog publication seam changed", result.stderr)
+
+    def test_catalog_publication_seam_cannot_drop_the_open_source_rename(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/capability/pre_catalog/provider/publication.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "rename_open_source(", "rename_relative(", 1
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("catalog publication seam changed", result.stderr)
+
+    def test_windows_exact_handle_publication_is_source_protected(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/platform.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "SetFileInformationByHandle(", "unreviewed_path_rename(", 1
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected source allowlist changed", result.stderr)
+
     def test_catalog_lease_tree_rejects_an_unreviewed_target_helper(self) -> None:
         temporary, source = self.copied_source()
         self.addCleanup(temporary.cleanup)

@@ -19,6 +19,7 @@ mod interior;
 mod mutation;
 mod namespace;
 mod platform;
+mod publication;
 mod retained;
 mod snapshot;
 

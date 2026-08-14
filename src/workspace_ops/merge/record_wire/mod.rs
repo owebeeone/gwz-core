@@ -45,6 +45,10 @@ pub(crate) use archive::decode_archived_for_r3_tests as decode_archived;
 #[cfg(test)]
 pub(crate) use archive::{archived_fixture_for_test, decode_archived_for_r3_tests};
 #[cfg(test)]
+pub(in crate::workspace_ops::merge) use location::{
+    FileIdentity, identity_at_named_path, identity_from_file, open_named_path,
+};
+#[cfg(test)]
 pub(crate) use location::{
     appear_archived_before_final_check_for_test, appear_open_before_final_check_for_test,
     replace_open_before_final_check_for_test, replace_parent_before_final_check_for_test,
