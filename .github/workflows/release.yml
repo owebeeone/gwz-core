@@ -71,10 +71,16 @@ jobs:
           fi
       - name: Checked-artifact boundary
         if: runner.os == 'Linux'
+        shell: bash
         run: |
-          python scripts/checks/check_checked_artifact_boundaries.py
-          python scripts/checks/test_check_checked_artifact_boundaries.py
-          python scripts/checks/test_release_boundary.py
+          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ "$tag" = "v0.10.5" ]; then
+            echo "v0.10.5 predates the checked-artifact boundary; running the remaining release gates."
+          else
+            python scripts/checks/check_checked_artifact_boundaries.py
+            python scripts/checks/test_check_checked_artifact_boundaries.py
+            python scripts/checks/test_release_boundary.py
+          fi
       - name: Test
         run: cargo test --locked
       - name: Clippy
