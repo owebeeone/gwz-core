@@ -11,8 +11,8 @@ use super::authority::{
 };
 use super::fault::{CheckedArtifactFault, fault};
 use super::identity::{self, ObjectIdentity};
-use super::observation::{LeafObservation, observe_leaf_exact};
-use super::{CheckedArtifact, CheckedArtifactFact, ParentState, error, io_error};
+use super::observation::{LeafObservation, io_op_error, observe_leaf_exact};
+use super::{CheckedArtifact, CheckedArtifactFact, ParentState, error};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 const MAX_FAMILY_ENTRIES: usize = 64;
@@ -51,8 +51,10 @@ impl CheckedArtifact {
                 &self.label,
             )?;
         }
-        let root = Dir::open_ambient_dir(&self.private_root, ambient_authority())
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        let root =
+            Dir::open_ambient_dir(&self.private_root, ambient_authority()).map_err(|cause| {
+                io_op_error(self.code, &self.label, "open ambient private root", cause)
+            })?;
         let mut current = root;
         for component in self.quarantine_parent.components() {
             let Component::Normal(component) = component else {
@@ -67,7 +69,14 @@ impl CheckedArtifact {
                 Err(cause) if cause.kind() == std::io::ErrorKind::NotFound && !create => {
                     return Ok(None);
                 }
-                Err(cause) => return Err(io_error(self.code, &self.label, cause)),
+                Err(cause) => {
+                    return Err(io_op_error(
+                        self.code,
+                        &self.label,
+                        "open private component no-follow",
+                        cause,
+                    ));
+                }
             };
         }
         let ParentState::Open { dir: parent, .. } = &self.parent else {
@@ -108,11 +117,12 @@ impl CheckedArtifact {
         let expected_authority_name = authority_name(&family, &action);
         let mut names = Vec::new();
         let mut total_bytes = 0_u64;
-        for entry in dir
-            .entries()
-            .map_err(|cause| io_error(self.code, &self.label, cause))?
-        {
-            let entry = entry.map_err(|cause| io_error(self.code, &self.label, cause))?;
+        for entry in dir.entries().map_err(|cause| {
+            io_op_error(self.code, &self.label, "list private family entries", cause)
+        })? {
+            let entry = entry.map_err(|cause| {
+                io_op_error(self.code, &self.label, "read private family entry", cause)
+            })?;
             let name = entry.file_name();
             if !name.to_string_lossy().starts_with(&prefix) {
                 continue;
@@ -333,8 +343,9 @@ impl CheckedArtifact {
             self.rebarrier_exact(&dir, &goal.name)?;
             return Ok(goal);
         }
-        let scratch =
-            scratch_name("goal").map_err(|cause| io_error(self.code, &self.label, cause))?;
+        let scratch = scratch_name("goal").map_err(|cause| {
+            io_op_error(self.code, &self.label, "derive goal scratch name", cause)
+        })?;
         let mut options = OpenOptions::new();
         options
             .write(true)
@@ -347,23 +358,25 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        let mut file = dir
-            .open_with(&scratch, &options)
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        let mut file = dir.open_with(&scratch, &options).map_err(|cause| {
+            io_op_error(self.code, &self.label, "create goal scratch file", cause)
+        })?;
         fault(
             CheckedArtifactFault::AfterGoalScratchCreate,
             self.code,
             &self.label,
         )?;
-        file.write_all(goal)
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        file.write_all(goal).map_err(|cause| {
+            io_op_error(self.code, &self.label, "write goal scratch bytes", cause)
+        })?;
         fault(
             CheckedArtifactFault::AfterGoalScratchWrite,
             self.code,
             &self.label,
         )?;
-        file.sync_all()
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        file.sync_all().map_err(|cause| {
+            io_op_error(self.code, &self.label, "sync goal scratch file", cause)
+        })?;
         fault(
             CheckedArtifactFault::AfterGoalScratchFlush,
             self.code,
@@ -415,8 +428,14 @@ impl CheckedArtifact {
     }
 
     fn publish_scratch(&self, dir: &Dir, kind: &str, name: &str, bytes: &[u8]) -> ModelResult<()> {
-        let scratch =
-            scratch_name(kind).map_err(|cause| io_error(self.code, &self.label, cause))?;
+        let scratch = scratch_name(kind).map_err(|cause| {
+            io_op_error(
+                self.code,
+                &self.label,
+                "derive authority scratch name",
+                cause,
+            )
+        })?;
         let mut options = OpenOptions::new();
         options
             .write(true)
@@ -429,23 +448,35 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        let mut file = dir
-            .open_with(&scratch, &options)
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        let mut file = dir.open_with(&scratch, &options).map_err(|cause| {
+            io_op_error(
+                self.code,
+                &self.label,
+                "create authority scratch file",
+                cause,
+            )
+        })?;
         fault(
             CheckedArtifactFault::AfterAuthorityScratchCreate,
             self.code,
             &self.label,
         )?;
-        file.write_all(bytes)
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        file.write_all(bytes).map_err(|cause| {
+            io_op_error(
+                self.code,
+                &self.label,
+                "write authority scratch bytes",
+                cause,
+            )
+        })?;
         fault(
             CheckedArtifactFault::AfterAuthorityScratchWrite,
             self.code,
             &self.label,
         )?;
-        file.sync_all()
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        file.sync_all().map_err(|cause| {
+            io_op_error(self.code, &self.label, "sync authority scratch file", cause)
+        })?;
         fault(
             CheckedArtifactFault::AfterAuthorityScratchFlush,
             self.code,
@@ -478,11 +509,16 @@ impl CheckedArtifact {
         let before = observe_leaf_exact(dir, name, self.code, &self.label)?;
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
-        let file = dir
-            .open_with(name, &options)
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        let file = dir.open_with(name, &options).map_err(|cause| {
+            io_op_error(
+                self.code,
+                &self.label,
+                "reopen family entry no-follow",
+                cause,
+            )
+        })?;
         file.sync_all()
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+            .map_err(|cause| io_op_error(self.code, &self.label, "sync family entry", cause))?;
         drop(file);
         super::platform::private_barrier(dir, self.code, &self.label)?;
         let after = observe_leaf_exact(dir, name, self.code, &self.label)?;

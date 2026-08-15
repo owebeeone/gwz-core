@@ -4,10 +4,8 @@ use std::sync::atomic::AtomicU64;
 use super::authority::{ArtifactOperation, CheckedArtifactAuthority, RetainedSource};
 use super::classification::ExactTransition;
 use super::fault::{CheckedArtifactFault, fault};
-use super::observation::observe_leaf_exact;
-use super::{
-    CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition, ParentState, error, io_error,
-};
+use super::observation::{io_op_error, observe_leaf_exact};
+use super::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition, ParentState, error};
 use crate::model::ModelResult;
 
 #[cfg(test)]
@@ -233,8 +231,9 @@ impl CheckedArtifact {
                 return Ok(());
             }
             if leaf.fact == *expected && leaf.identity.as_ref() == Some(&source.identity) {
-                dir.remove_file(&self.leaf)
-                    .map_err(|cause| io_error(self.code, &self.label, cause))?;
+                dir.remove_file(&self.leaf).map_err(|cause| {
+                    io_op_error(self.code, &self.label, "remove managed source leaf", cause)
+                })?;
                 self.sync_dir(
                     dir,
                     CheckedArtifactFault::BeforeSourceRetirement,
@@ -407,8 +406,14 @@ impl CheckedArtifact {
         after: CheckedArtifactFault,
     ) -> ModelResult<()> {
         fault(before, self.code, &self.label)?;
-        super::platform::sync_parent(dir)
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        super::platform::sync_parent(dir).map_err(|cause| {
+            io_op_error(
+                self.code,
+                &self.label,
+                "sync managed parent directory",
+                cause,
+            )
+        })?;
         fault(after, self.code, &self.label)
     }
 

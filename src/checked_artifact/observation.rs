@@ -8,9 +8,7 @@ use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, ambi
 use cap_std::fs::{Dir, OpenOptions};
 
 use super::identity::{self, ObjectIdentity};
-use super::{
-    CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, ParentState, error, io_error,
-};
+use super::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, ParentState, error};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 impl CheckedArtifact {
@@ -30,8 +28,9 @@ impl CheckedArtifact {
         {
             return Err(error(code, &label, "parent path is noncanonical"));
         }
-        let mut current = Dir::open_ambient_dir(root, ambient_authority())
-            .map_err(|cause| io_error(code, &label, cause))?;
+        let mut current = Dir::open_ambient_dir(root, ambient_authority()).map_err(|cause| {
+            io_op_error(code, &label, "open root for parent preparation", cause)
+        })?;
         for component in relative.components() {
             let Component::Normal(component) = component else {
                 return Err(error(code, &label, "parent path is noncanonical"));
@@ -39,29 +38,35 @@ impl CheckedArtifact {
             let metadata = match current.symlink_metadata(component) {
                 Ok(metadata) => metadata,
                 Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
-                    current
-                        .create_dir(component)
-                        .map_err(|cause| io_error(code, &label, cause))?;
-                    super::platform::sync_parent(&current)
-                        .map_err(|cause| io_error(code, &label, cause))?;
-                    current
-                        .symlink_metadata(component)
-                        .map_err(|cause| io_error(code, &label, cause))?
+                    current.create_dir(component).map_err(|cause| {
+                        io_op_error(code, &label, "create parent component", cause)
+                    })?;
+                    super::platform::sync_parent(&current).map_err(|cause| {
+                        io_op_error(code, &label, "sync parent after creating component", cause)
+                    })?;
+                    current.symlink_metadata(component).map_err(|cause| {
+                        io_op_error(code, &label, "reread created component metadata", cause)
+                    })?
                 }
-                Err(cause) => return Err(io_error(code, &label, cause)),
+                Err(cause) => {
+                    return Err(io_op_error(
+                        code,
+                        &label,
+                        "read parent component metadata",
+                        cause,
+                    ));
+                }
             };
             if !metadata.is_dir() || metadata.is_symlink() {
                 return Err(error(code, &label, "parent component is noncanonical"));
             }
-            let next = current
-                .open_dir_nofollow(component)
-                .map_err(|cause| io_error(code, &label, cause))?;
+            let next = current.open_dir_nofollow(component).map_err(|cause| {
+                io_op_error(code, &label, "open parent component no-follow", cause)
+            })?;
             if metadata_identity(&metadata)
-                != metadata_identity(
-                    &next
-                        .dir_metadata()
-                        .map_err(|cause| io_error(code, &label, cause))?,
-                )
+                != metadata_identity(&next.dir_metadata().map_err(|cause| {
+                    io_op_error(code, &label, "stat opened parent component", cause)
+                })?)
             {
                 return Err(error(
                     code,
@@ -87,12 +92,12 @@ impl CheckedArtifact {
         let private_root = policy.artifact_root().to_path_buf();
         let quarantine_parent = policy.private_parent();
         let root = Dir::open_ambient_dir(policy.artifact_root(), ambient_authority())
-            .map_err(|cause| io_error(code, &label, cause))?;
+            .map_err(|cause| io_op_error(code, &label, "open ambient artifact root", cause))?;
         let root_identity = durable_identity(&root, &label)?;
         let canonical_path_identity = identity::canonical_path_identity(&root, &relative)
             .map_err(|cause| unsupported(&label, cause))?;
         let parent = match traverse(&root, &parent_relative)
-            .map_err(|cause| io_error(code, &label, cause))?
+            .map_err(|cause| io_op_error(code, &label, "traverse to artifact parent", cause))?
         {
             Traversal::Missing => ParentState::Missing,
             Traversal::Invalid => ParentState::Invalid,
@@ -159,8 +164,9 @@ impl CheckedArtifact {
     }
 
     pub(super) fn parent_is_current(&self, expected: &ObjectIdentity) -> ModelResult<bool> {
-        let current = traverse(&self.root, &self.parent_relative)
-            .map_err(|cause| io_error(self.code, &self.label, cause))?;
+        let current = traverse(&self.root, &self.parent_relative).map_err(|cause| {
+            io_op_error(self.code, &self.label, "retraverse artifact parent", cause)
+        })?;
         let Traversal::Open(current) = current else {
             return Ok(false);
         };
@@ -198,7 +204,14 @@ pub(super) fn observe_leaf_exact(
                 identity: None,
             });
         }
-        Err(cause) => return Err(io_error(code, label, cause)),
+        Err(cause) => {
+            return Err(io_op_error(
+                code,
+                label,
+                "read artifact leaf metadata",
+                cause,
+            ));
+        }
     };
     if !metadata.is_file() || metadata.is_symlink() || executable(&metadata) {
         return Ok(LeafObservation {
@@ -221,11 +234,11 @@ pub(super) fn observe_leaf_exact(
                 identity: None,
             });
         }
-        Err(cause) => return Err(io_error(code, label, cause)),
+        Err(cause) => return Err(io_op_error(code, label, "open artifact no-follow", cause)),
     };
     let opened = file
         .metadata()
-        .map_err(|cause| io_error(code, label, cause))?;
+        .map_err(|cause| io_op_error(code, label, "read opened artifact metadata", cause))?;
     if metadata_identity(&opened) != metadata_identity(&metadata) {
         return Ok(LeafObservation {
             fact: CheckedArtifactFact::Invalid,
@@ -234,7 +247,7 @@ pub(super) fn observe_leaf_exact(
     }
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
-        .map_err(|cause| io_error(code, label, cause))?;
+        .map_err(|cause| io_op_error(code, label, "read artifact bytes", cause))?;
     let after = match dir.symlink_metadata(leaf) {
         Ok(after) => after,
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
@@ -243,7 +256,14 @@ pub(super) fn observe_leaf_exact(
                 identity: None,
             });
         }
-        Err(cause) => return Err(io_error(code, label, cause)),
+        Err(cause) => {
+            return Err(io_op_error(
+                code,
+                label,
+                "reread artifact leaf metadata",
+                cause,
+            ));
+        }
     };
     if !after.is_file()
         || after.is_symlink()
@@ -306,6 +326,15 @@ fn traverse(root: &Dir, relative: &Path) -> std::io::Result<Traversal> {
 
 fn durable_identity(dir: &Dir, label: &str) -> ModelResult<ObjectIdentity> {
     identity::object_identity(dir).map_err(|cause| unsupported(label, cause))
+}
+
+pub(super) fn io_op_error(
+    code: ErrorCode,
+    label: &str,
+    operation: &'static str,
+    cause: std::io::Error,
+) -> ModelError {
+    error(code, label, format_args!("{operation}: {cause}"))
 }
 
 fn unsupported(label: &str, cause: std::io::Error) -> ModelError {
