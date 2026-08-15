@@ -234,6 +234,13 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_final_direct
             "staging contents changed before final publication",
         ));
     }
+    // Release the caller's staging capability before the rename edge: on
+    // Windows a directory rename fails with a sharing violation while any
+    // handle into the source tree survives, and the sealed primitive
+    // re-establishes source identity and interior through its own
+    // capabilities, so nothing is verified through this handle past this
+    // point (W4 catalog slice, GwzWindowsMatrix-Classification.md).
+    drop(staging);
     #[cfg(test)]
     run_fault(CatalogDirectoryMutationFaultV1::FinalPublishAfterInteriorRecheck);
     publish_verified_no_replace(
