@@ -55,6 +55,7 @@ define_fault_keys! {
     CatalogBootstrapScratchCreate => "catalog_bootstrap.scratch_create",
     CatalogBootstrapScratchWrite => "catalog_bootstrap.scratch_write",
     CatalogBootstrapScratchFlush => "catalog_bootstrap.scratch_flush",
+    CatalogBootstrapScratchRootFlush => "catalog_bootstrap.scratch_root_flush",
     CatalogBootstrapActivePublish => "catalog_bootstrap.active_publish",
     CatalogBootstrapActiveReobserve => "catalog_bootstrap.active_reobserve",
     CatalogBootstrapStagingCreate => "catalog_bootstrap.staging_create",

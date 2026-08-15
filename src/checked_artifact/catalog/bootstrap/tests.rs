@@ -328,6 +328,7 @@ fn restart_and_substitution_matrix_covers_every_catalog_bootstrap_fault_key() {
         Fault::CatalogBootstrapScratchCreate,
         Fault::CatalogBootstrapScratchWrite,
         Fault::CatalogBootstrapScratchFlush,
+        Fault::CatalogBootstrapScratchRootFlush,
         Fault::CatalogBootstrapActivePublish,
         Fault::CatalogBootstrapActiveReobserve,
         Fault::CatalogBootstrapStagingCreate,
@@ -398,6 +399,7 @@ fn restart_and_substitution_matrix_covers_git_directory_targets() {
         Fault::CatalogBootstrapScratchCreate,
         Fault::CatalogBootstrapScratchWrite,
         Fault::CatalogBootstrapScratchFlush,
+        Fault::CatalogBootstrapScratchRootFlush,
         Fault::CatalogBootstrapActivePublish,
         Fault::CatalogBootstrapActiveReobserve,
         Fault::CatalogBootstrapStagingCreate,
@@ -443,6 +445,19 @@ fn restart_and_substitution_matrix_covers_git_directory_targets() {
 
         drive_git_directory_recovery(&fixture).unwrap();
     }
+}
+
+#[test]
+fn entrant_git_parent_inside_the_creation_window_converges() {
+    let fixture = Fixture::new("entrant-git-parent");
+    let repository = git2::Repository::open(fixture.path()).unwrap();
+    let git_directory = repository.commondir().to_path_buf();
+    run_next_catalog_fault(Fault::CatalogBootstrapGitParentCreate, {
+        let parent = git_directory.join("gwz");
+        move || fs::create_dir(&parent).unwrap()
+    });
+
+    drive_git_directory_recovery(&fixture).unwrap();
 }
 
 fn drive_git_directory_recovery(fixture: &Fixture) -> Result<(), CheckedFsError> {

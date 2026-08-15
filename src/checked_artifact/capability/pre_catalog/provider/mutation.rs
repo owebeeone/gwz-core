@@ -86,7 +86,12 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn create_git_private_p
             );
             finish_private_parent_edge(parent)
         }
-        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+            // An entrant parent's dirent durability is unknown; issue the
+            // same idempotent barrier the create arm issues before the owner
+            // adopts it on re-entry (State-2 [P3-1]).
+            finish_private_parent_edge(parent)
+        }
         Err(source) => Err(CheckedFsError::io(
             "create Git GWZ parent no-replace",
             source,
@@ -174,7 +179,18 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn write_or_rewrite_scr
         written,
         "catalog scratch",
     )?;
-    sync_created_file_namespace(parent.handle())
+    sync_created_file_namespace(parent.handle())?;
+    // The scratch is the first durable ownership declaration (amendment §5),
+    // so the containing-root dirent barrier anchors here: it closes the
+    // adopted-parent and AlreadyExists windows in which the private parent
+    // is VFS-visible but its dirent durability is unknown (State-2 [P3-1]).
+    // Windows intentionally remains a no-op per the §6 durability model.
+    finish_private_parent_edge(retained.root().handle())?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapScratchRootFlush,
+    );
+    Ok(())
 }
 
 pub(in crate::checked_artifact::capability::pre_catalog) fn publish_active_record(
