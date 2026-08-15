@@ -1,0 +1,43 @@
+name: Platform matrix
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+# Dispatch-only full-suite runs for the platforms release.yml does not
+# cover (R5 evidence: macOS and Linux ARM64 — GwzM5-8R2F-EvidenceMap.md).
+jobs:
+  matrix:
+    name: Full suite on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Run the complete test suite
+        shell: bash
+        run: cargo test --locked --no-fail-fast 2>&1 | tee platform-matrix.log || true
+      - name: Summarize failures
+        shell: bash
+        run: |
+          echo '== failure names =='
+          grep -E '^test .* \.\.\. FAILED' platform-matrix.log | sort || true
+          echo '== results =='
+          grep -E '^test result' platform-matrix.log
+          if grep -qE '^test result: FAILED' platform-matrix.log; then exit 1; fi
