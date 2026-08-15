@@ -7,7 +7,10 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
 
 use super::interior::{self, StagingPlanV1};
-use super::publication::{PublicationSourceV1, publish_verified_no_replace};
+use super::publication::{
+    DestinationRecheckV1, DirectoryInteriorRecheckV1, PublicationSourceV1,
+    publish_verified_no_replace,
+};
 use super::retained::encode_identity;
 use super::{
     RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogInteriorFactV1,
@@ -28,7 +31,9 @@ pub(super) enum CatalogDirectoryMutationFaultV1 {
     AnchorAfterMoveToB,
     AnchorAfterReturnA,
     FinalPublishBeforeRename,
+    FinalPublishAfterInteriorRecheck,
     ActiveRetireBeforeRename,
+    ActiveRetireAfterInteriorRecheck,
     CompleteAfterFinalOpen,
 }
 
@@ -229,12 +234,21 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_final_direct
             "staging contents changed before final publication",
         ));
     }
+    #[cfg(test)]
+    run_fault(CatalogDirectoryMutationFaultV1::FinalPublishAfterInteriorRecheck);
     publish_verified_no_replace(
         parent.handle(),
         staging_name,
         parent.handle(),
         final_name,
-        PublicationSourceV1::directory(staging_observed.identity),
+        PublicationSourceV1::directory(
+            staging_observed.identity,
+            DirectoryInteriorRecheckV1 {
+                durable_identity: staging_observed.durable_identity,
+                expected,
+            },
+        ),
+        DestinationRecheckV1::None,
         "publish final catalog",
     )?;
     #[cfg(test)]
@@ -315,12 +329,18 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn retire_active_record
             "final catalog changed before active retirement",
         ));
     }
+    #[cfg(test)]
+    run_fault(CatalogDirectoryMutationFaultV1::ActiveRetireAfterInteriorRecheck);
     publish_verified_no_replace(
         parent.handle(),
         OsStr::new(private_name(CatalogPrivateNameV1::BootstrapActive)),
         &final_directory,
         OsStr::new(InfrastructureSlotV1::CatalogBootstrapRetired.name()),
         PublicationSourceV1::regular_file(active.identity, active.bytes),
+        DestinationRecheckV1::PreRetirementFinal {
+            durable_identity: final_observed.durable_identity,
+            expected,
+        },
         "retire catalog bootstrap record",
     )?;
     #[cfg(test)]
@@ -577,6 +597,7 @@ fn exercise_catalog_anchor(
             directory,
             a,
             PublicationSourceV1::regular_file(expected.identity, expected.bytes),
+            DestinationRecheckV1::None,
             "publish catalog anchor A",
         )?;
         #[cfg(test)]
@@ -597,6 +618,7 @@ fn exercise_catalog_anchor(
         directory,
         b,
         PublicationSourceV1::regular_file(expected.identity, expected.bytes),
+        DestinationRecheckV1::None,
         "exercise catalog anchor B",
     )?;
     #[cfg(test)]
@@ -612,6 +634,7 @@ fn exercise_catalog_anchor(
         directory,
         a,
         PublicationSourceV1::regular_file(expected.identity, expected.bytes),
+        DestinationRecheckV1::None,
         "return catalog anchor A",
     )?;
     #[cfg(test)]

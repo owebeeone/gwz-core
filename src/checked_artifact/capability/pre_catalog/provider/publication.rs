@@ -3,11 +3,16 @@
 use std::ffi::OsStr;
 use std::io::Read;
 
+use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 
+use super::interior::{self, StagingPlanV1};
 use super::platform::HostPlatform;
 use super::retained::encode_identity;
-use crate::checked_artifact::capability::{CheckedFsError, DurableIdentityProvider};
+use crate::checked_artifact::capability::{
+    CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1, PlatformCapability,
+};
+use crate::checked_artifact::protocol::{CatalogBootstrapRecordV1, InfrastructureSlotV1};
 use crate::model::ErrorCode;
 
 pub(super) enum PublicationSourceV1<'a> {
@@ -17,6 +22,27 @@ pub(super) enum PublicationSourceV1<'a> {
     },
     Directory {
         expected_identity: &'a [u8],
+        interior: DirectoryInteriorRecheckV1<'a>,
+    },
+}
+
+/// Source-interior expectation re-verified through the primitive's own
+/// directory capability inside the acquisition window, so pre-acquisition
+/// interior drift rejects before publication (amendment §4.1 ¶2); the
+/// remaining residue after this re-check is post-acquisition and falls
+/// inside the accepted same-user namespace boundary.
+pub(super) struct DirectoryInteriorRecheckV1<'a> {
+    pub(super) durable_identity: &'a DurableObjectIdentityV1,
+    pub(super) expected: &'a CatalogBootstrapRecordV1,
+}
+
+/// Destination-interior expectation re-verified through the retained
+/// destination capability immediately before the rename edge.
+pub(super) enum DestinationRecheckV1<'a> {
+    None,
+    PreRetirementFinal {
+        durable_identity: &'a DurableObjectIdentityV1,
+        expected: &'a CatalogBootstrapRecordV1,
     },
 }
 
@@ -31,8 +57,14 @@ impl<'a> PublicationSourceV1<'a> {
         }
     }
 
-    pub(super) const fn directory(expected_identity: &'a [u8]) -> Self {
-        Self::Directory { expected_identity }
+    pub(super) const fn directory(
+        expected_identity: &'a [u8],
+        interior: DirectoryInteriorRecheckV1<'a>,
+    ) -> Self {
+        Self::Directory {
+            expected_identity,
+            interior,
+        }
     }
 
     const fn expected_identity(&self) -> &[u8] {
@@ -40,7 +72,9 @@ impl<'a> PublicationSourceV1<'a> {
             Self::RegularFile {
                 expected_identity, ..
             }
-            | Self::Directory { expected_identity } => expected_identity,
+            | Self::Directory {
+                expected_identity, ..
+            } => expected_identity,
         }
     }
 }
@@ -51,6 +85,7 @@ pub(super) fn publish_verified_no_replace(
     destination_dir: &Dir,
     destination: &OsStr,
     expected: PublicationSourceV1<'_>,
+    destination_recheck: DestinationRecheckV1<'_>,
     label: &'static str,
 ) -> Result<(), CheckedFsError> {
     let mut source_handle = crate::checked_artifact::platform::open_rename_source(
@@ -68,19 +103,70 @@ pub(super) fn publish_verified_no_replace(
             "publication source identity changed",
         ));
     }
-    if let PublicationSourceV1::RegularFile { expected_bytes, .. } = expected {
-        let mut bytes = Vec::with_capacity(expected_bytes.len() + 1);
-        source_handle
-            .file_mut()
-            .by_ref()
-            .take((expected_bytes.len() + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|source| CheckedFsError::io("read publication source", source))?;
-        if bytes != expected_bytes {
-            return Err(CheckedFsError::ambiguous(
-                label,
-                "publication source bytes changed",
-            ));
+    match &expected {
+        PublicationSourceV1::RegularFile { expected_bytes, .. } => {
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(expected_bytes.len() + 1)
+                .map_err(|_| {
+                    CheckedFsError::unsupported(
+                        PlatformCapability::PrivateNamespaceCollisionScan,
+                        "publication source verification allocation failed",
+                    )
+                })?;
+            source_handle
+                .file_mut()
+                .by_ref()
+                .take((expected_bytes.len() + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|source| CheckedFsError::io("read publication source", source))?;
+            if bytes != *expected_bytes {
+                return Err(CheckedFsError::ambiguous(
+                    label,
+                    "publication source bytes changed",
+                ));
+            }
+        }
+        PublicationSourceV1::Directory {
+            expected_identity,
+            interior: recheck,
+        } => {
+            let directory = source_dir.open_dir_nofollow(source).map_err(|source| {
+                CheckedFsError::io("reopen publication source directory", source)
+            })?;
+            if encode_identity(&HostPlatform.dir_identity(&directory)?) != *expected_identity {
+                return Err(CheckedFsError::ambiguous(
+                    label,
+                    "publication source identity changed",
+                ));
+            }
+            let fresh = interior::observe(&directory, &HostPlatform)?;
+            if !matches!(
+                interior::staging_plan(recheck.durable_identity, &fresh, recheck.expected),
+                StagingPlanV1::Complete(_)
+            ) {
+                return Err(CheckedFsError::ambiguous(
+                    label,
+                    "publication source interior changed inside the acquisition window",
+                ));
+            }
+        }
+    }
+    match &destination_recheck {
+        DestinationRecheckV1::None => {}
+        DestinationRecheckV1::PreRetirementFinal {
+            durable_identity,
+            expected,
+        } => {
+            let fresh = interior::observe(destination_dir, &HostPlatform)?;
+            if interior::completed_record(durable_identity, &fresh, expected).is_none()
+                || interior::row(&fresh, InfrastructureSlotV1::CatalogBootstrapRetired).is_some()
+            {
+                return Err(CheckedFsError::ambiguous(
+                    label,
+                    "publication destination interior changed inside the acquisition window",
+                ));
+            }
         }
     }
     crate::checked_artifact::platform::rename_open_source(

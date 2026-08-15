@@ -7,7 +7,7 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
 
 use super::platform::HostPlatform;
-use super::publication::{PublicationSourceV1, publish_verified_no_replace};
+use super::publication::{DestinationRecheckV1, PublicationSourceV1, publish_verified_no_replace};
 use super::retained::encode_identity;
 use super::{
     RawCatalogBytesV1, RawCatalogEntryFactV1, RawCatalogRoleObservationV1, RetainedPlatformRoot,
@@ -224,6 +224,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_active_recor
         parent.handle(),
         OsStr::new(destination),
         PublicationSourceV1::regular_file(expected.identity, expected.bytes),
+        DestinationRecheckV1::None,
         "catalog active publication",
     )?;
     #[cfg(test)]

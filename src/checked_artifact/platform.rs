@@ -119,9 +119,15 @@ pub(super) fn rename_open_source(
     unsafe {
         (*info).Anonymous.ReplaceIfExists = replace;
         // SetFileInformationByHandle rejects a non-null RootDirectory on
-        // supported Windows runners. The absolute path is derived from the
-        // retained directory handle, whose cap-std open prevents the target
-        // directory from being renamed or deleted while this operation runs.
+        // supported Windows runners, so the destination is an absolute path
+        // derived from the retained directory handle immediately before the
+        // rename. The handle does NOT prevent a same-user process from
+        // renaming the destination directory or a path ancestor inside this
+        // window (directory opens share FILE_SHARE_DELETE); that residual is
+        // assigned to the amendment's cooperating-same-user boundary, and
+        // the mandatory post-publish verification through the retained
+        // destination handle detects a redirect read-only (§4.1 erratum
+        // 2026-08-15; native window test executes at R2-F).
         (*info).RootDirectory = std::ptr::null_mut();
         (*info).FileNameLength = u32::try_from(name.len() * 2)
             .map_err(|_| error(code, label, "destination name is too long"))?;

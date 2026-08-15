@@ -117,6 +117,28 @@ fn changed_staging_contents_before_final_publish_are_not_published() {
 }
 
 #[test]
+fn interior_drift_after_final_recheck_is_rejected_inside_the_primitive() {
+    let fixture = Fixture::new("final-drift-after-recheck");
+    let staging = fixture.private(CatalogPrivateNameV1::BootstrapStaging);
+    let final_directory = fixture.private(CatalogPrivateNameV1::Final);
+    run_next_at(
+        CatalogDirectoryMutationFaultV1::FinalPublishAfterInteriorRecheck,
+        {
+            let staging = staging.clone();
+            move || fs::write(staging.join("foreign"), b"sliver drift\n").unwrap()
+        },
+    );
+
+    assert!(fixture.run().is_err());
+
+    assert_eq!(
+        fs::read(staging.join("foreign")).unwrap(),
+        b"sliver drift\n"
+    );
+    assert!(!final_directory.exists());
+}
+
+#[test]
 fn every_anchor_namespace_prefix_converges_after_restart() {
     for point in [
         CatalogDirectoryMutationFaultV1::AnchorAfterPublishA,
@@ -176,6 +198,33 @@ fn changed_final_contents_before_retirement_leave_active_in_place() {
     assert_eq!(
         fs::read(final_directory.join("foreign")).unwrap(),
         b"content drift\n"
+    );
+    assert!(
+        !final_directory
+            .join(InfrastructureSlotV1::CatalogBootstrapRetired.name())
+            .exists()
+    );
+}
+
+#[test]
+fn destination_drift_after_retire_recheck_is_rejected_inside_the_primitive() {
+    let fixture = Fixture::new("retire-drift-after-recheck");
+    let active = fixture.private(CatalogPrivateNameV1::BootstrapActive);
+    let final_directory = fixture.private(CatalogPrivateNameV1::Final);
+    run_next_at(
+        CatalogDirectoryMutationFaultV1::ActiveRetireAfterInteriorRecheck,
+        {
+            let final_directory = final_directory.clone();
+            move || fs::write(final_directory.join("foreign"), b"sliver drift\n").unwrap()
+        },
+    );
+
+    assert!(fixture.run().is_err());
+
+    assert!(active.exists());
+    assert_eq!(
+        fs::read(final_directory.join("foreign")).unwrap(),
+        b"sliver drift\n"
     );
     assert!(
         !final_directory

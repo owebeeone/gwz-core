@@ -151,11 +151,33 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "d9b5d57d08be29edcc4f905a1721032db37c52fd5e040dbbc9a88a417e01d4d0",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "dd476465c963a5221db46cd7f64d0e8b05ebbde62e191874b1aca4b54a5e05f4",
+    "checked_artifact/capability/pre_catalog.rs": "3a1a72b0f2090d11829a25c01d08a6f1b276a3de90808b71426058967bf74bea",
     "checked_artifact/catalog.rs": "4cc6e99d4a9c881e08a1cb3790b02bbb2f73df0433f748753c636d51a5c35e73",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }
+
+# Every permitted raw-rename call site in production checked-artifact source,
+# by masked-source token count. publication.rs is the sealed primitive's own
+# platform pair; platform.rs is internal composition, the legacy Windows
+# durability anchor, and its in-file windows test module; transition.rs and
+# residue.rs are the four legacy leaf edges, retired by R2-D. Any other
+# caller anywhere in the subsystem violates the single-seam rule (RemPlan
+# publication-correction clause; amendment §8.13) and fails closed here.
+RAW_RENAME_CALL_ALLOWLIST = {
+    "checked_artifact/capability/pre_catalog/provider/publication.rs": {
+        "open_rename_source": 1,
+        "rename_open_source": 1,
+    },
+    "checked_artifact/platform.rs": {
+        "open_rename_source": 2,
+        "rename_open_source": 2,
+        "rename_relative": 5,
+    },
+    "checked_artifact/residue.rs": {"rename_relative": 2},
+    "checked_artifact/transition.rs": {"rename_relative": 2},
+}
+RAW_RENAME_TOKENS = ("open_rename_source", "rename_open_source", "rename_relative")
 
 ENTRY_REFERENCES = {
     "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
@@ -829,6 +851,23 @@ def check(source: Path) -> list[str]:
             "catalog publication seam changed: all six physical moves must use "
             "the single source-associated publication primitive"
         )
+    for path in production_rust_files(source / "checked_artifact"):
+        relative = path.relative_to(source).as_posix()
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        expected_counts = RAW_RENAME_CALL_ALLOWLIST.get(relative, {})
+        for token in RAW_RENAME_TOKENS:
+            actual = len(
+                [
+                    match
+                    for match in re.finditer(r"\b" + token + r"\s*\(", text)
+                    if text[max(0, match.start() - 3) : match.start()] != "fn "
+                ]
+            )
+            if actual != expected_counts.get(token, 0):
+                findings.append(
+                    "raw rename caller outside the sealed publication seam: "
+                    f"{relative} ({token})"
+                )
     for relative in sorted(PROTECTED_COMPILER_MODULES):
         raw = (source / relative).read_bytes()
         if forbid not in mask_non_code(raw.decode("utf-8")):

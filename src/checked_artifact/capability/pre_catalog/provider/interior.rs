@@ -426,7 +426,7 @@ fn file_prefix<'a>(
     }
 }
 
-fn row(
+pub(super) fn row(
     interior: &RawCatalogInteriorObservationV1,
     slot: InfrastructureSlotV1,
 ) -> Option<&RawCatalogInteriorFactV1> {
