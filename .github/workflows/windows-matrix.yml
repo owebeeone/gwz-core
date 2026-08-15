@@ -6,28 +6,26 @@ permissions:
 on:
   workflow_dispatch:
 
+# PROBE BRANCH ONLY: trimmed to the CRLF environment diagnostic for the
+# exact-evidence investigation (dev-docs/GwzWindowsMatrix-ExactEvidenceDiagnosis.md).
+# The full-suite workflow lives on main.
 jobs:
   matrix:
-    name: Full suite on Windows
+    name: Environment probe (CRLF preconditions)
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-      - name: Run the complete test suite
-        shell: bash
-        run: cargo test --locked --no-fail-fast 2>&1 | tee windows-matrix.log || true
-      - name: Summarize failures
+      - name: Probe git CRLF configuration
         shell: bash
         run: |
-          echo '== failure names =='
-          grep -E '^test .* \.\.\. FAILED' windows-matrix.log | sort || true
-          echo '== results =='
-          grep -E '^test result' windows-matrix.log
-          if grep -qE '^test result: FAILED' windows-matrix.log; then exit 1; fi
+          git --version
+          echo '== system =='
+          git config --show-origin --system --get-all core.autocrlf || true
+          echo '== global =='
+          git config --show-origin --global --get-all core.autocrlf || true
+          echo '== effective (repo) =='
+          git config --show-origin --get-all core.autocrlf || true
+          echo '== all line-ending/filter config =='
+          git config --list --show-origin | grep -iE 'autocrlf|eol|safecrlf|filter' || true
