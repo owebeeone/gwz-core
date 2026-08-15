@@ -778,6 +778,37 @@ fn checked_clean_rollback_rejects_current_oid_and_dirt_then_is_idempotent() {
 }
 
 #[test]
+fn checked_rollback_tolerates_checked_artifact_private_residue() {
+    let temp = TempDir::new("merge-checked-rollback-private-residue");
+    let repo = temp.path().join("repo");
+    let (_, before, source) = seed_divergence(&repo);
+    let backend = Git2Backend::new();
+    let merged = backend
+        .merge_upstream_checked(&repo, "main", &before, &source, "merge", None)
+        .unwrap()
+        .commit
+        .unwrap();
+    // The checked-artifact private area retains a durability anchor for the
+    // life of the repository on Windows. It is product infrastructure, not
+    // user work: rollback preflight and post-verification must stay available
+    // over it, while real untracked work keeps rejecting (covered above).
+    let private = repo.join(".gwz/checked-artifacts");
+    fs::create_dir_all(&private).unwrap();
+    let anchor = private.join(".ca1-durability-anchor-deadbeefdeadbeefdeadbeefdeadbeef");
+    fs::write(&anchor, b"GWZ-CHECKED-ARTIFACT-DURABILITY-ANCHOR-V1\n").unwrap();
+    let result = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap();
+    assert!(result.updated);
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
+    // The rollback must neither remove nor rewrite the anchor.
+    assert_eq!(
+        fs::read(&anchor).unwrap(),
+        b"GWZ-CHECKED-ARTIFACT-DURABILITY-ANCHOR-V1\n"
+    );
+}
+
+#[test]
 fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
     let temp = TempDir::new("merge-checked-resolution");
     let repo = temp.path().join("repo");

@@ -150,7 +150,11 @@ pub(super) fn abort_merge(
     checkout
         .force()
         .remove_untracked(false)
-        .remove_ignored(false);
+        .remove_ignored(false)
+        // Recovery-grade checkout: the restored worktree must be blob-exact
+        // (raw ODB bytes, no CRLF/smudge filters) so raw-byte recovery
+        // verification classifies the exact before state.
+        .disable_filters(true);
     repo.checkout_tree(target.as_object(), Some(&mut checkout))
         .map_err(git_error)?;
     let target_tree = target.tree().map_err(git_error)?;
@@ -201,7 +205,10 @@ pub(super) fn set_branch_target_checked(
 
     let target_object = repo.find_object(target, None).map_err(git_error)?;
     let mut checkout = git2::build::CheckoutBuilder::new();
-    checkout.safe();
+    // Recovery-grade checkout: the rolled-back worktree must be blob-exact
+    // (raw ODB bytes, no CRLF/smudge filters) so raw-byte recovery
+    // verification classifies the exact after state.
+    checkout.safe().disable_filters(true);
     repo.checkout_tree(&target_object, Some(&mut checkout))
         .map_err(git_error)?;
     transaction

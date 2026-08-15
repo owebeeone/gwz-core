@@ -1,5 +1,8 @@
 use super::merge_support::{prepared_merge_mismatch, signature_from_prepared};
-use super::repository_support::{branch_ref_name, parse_existing_commit, verify_merge_result};
+use super::repository_support::{
+    branch_ref_name, parse_existing_commit, status_dirty_outside_checked_artifact_private,
+    verify_merge_result,
+};
 use super::*;
 
 pub(super) fn recovery_drift(message: impl Into<String>) -> ModelError {
@@ -245,7 +248,10 @@ pub(super) fn ensure_clean_recovery_state(
             "rollback target is not the attached branch '{branch}'"
         )));
     }
-    if backend.status(path)?.is_dirty {
+    // Rollback availability: untracked checked-artifact private residue (the
+    // permanent Windows durability anchor) is product infrastructure, never a
+    // reason to refuse a checked rollback.
+    if status_dirty_outside_checked_artifact_private(&backend.status(path)?) {
         return Err(recovery_dirty(
             "rollback requires a clean index and worktree",
         ));

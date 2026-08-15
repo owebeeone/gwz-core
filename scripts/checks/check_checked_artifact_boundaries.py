@@ -47,7 +47,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
-    "git/gitbackend/preservation_image.rs": "1a96e1921052895c836837def6d7c3c19fb6bf383ad8df9482a5960c1b2cbdac",
+    "git/gitbackend/preservation_image.rs": "b1f193279069fd84492c423ccead5ac051415550c0024b01d4c75f4e51c93981",
     "workspace_ops/merge/preserve/artifacts.rs": "489006a9a7550503fd051b2d6136f8a08728ab9355e6281ede684047732f6da5",
     "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
     "workspace_ops/merge/preserve/plan.rs": "880d4905eeab96ff52a746a360043628cd4c11e5324b5f92b5889419ade53c7a",
@@ -154,7 +154,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/capability/pre_catalog.rs": "d336d72150c8ac1ba685a4798f4440472824bfca7b902987bcfa9a07096cacd2",
     "checked_artifact/catalog.rs": "3b257e24ba154f1cc133220d2740f0417821b0b7396050e92af202fb72d2c5ed",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "4cd0fed394ec1efce0c0d007d802b5d058484a9c1955a15eedf9b42c35f6903f",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,

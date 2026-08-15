@@ -62,7 +62,7 @@ pub(crate) fn verify_merge_result(
     let status = backend.status(path)?;
     if observed.branch.as_deref() != Some(branch)
         || observed.commit.as_deref() != Some(expected_commit)
-        || status.is_dirty
+        || status_dirty_outside_checked_artifact_private(&status)
         || open_repo(path)?.state() != git2::RepositoryState::Clean
     {
         return Err(ModelError::new(
@@ -71,6 +71,35 @@ pub(crate) fn verify_merge_result(
         ));
     }
     Ok(())
+}
+
+/// Checked-mutation cleanliness: dirty state outside the checked-artifact
+/// private area. The private area (`.gwz/checked-artifacts`) is permanent
+/// product infrastructure — on Windows it retains a durability anchor for the
+/// life of the repository — so checked rollback/recovery preflights and
+/// post-verifications must not classify its untracked residue as user work.
+/// Any staged, unstaged, or unresolved entry (anywhere, including the private
+/// area) and any untracked entry outside the private area remain dirt.
+pub(crate) fn status_dirty_outside_checked_artifact_private(status: &GitStatus) -> bool {
+    // `files` omits paths git2 cannot report as UTF-8; private-area names are
+    // ASCII by construction, so every private untracked entry is counted and
+    // any uncounted (non-UTF-8) untracked entry stays classified as dirt.
+    let private_untracked = status
+        .files
+        .iter()
+        .filter(|file| {
+            file.worktree_status == "?" && checked_artifact_private_status_path(&file.path)
+        })
+        .count();
+    status.staged > 0
+        || status.unstaged > 0
+        || status.unresolved > 0
+        || status.untracked > private_untracked
+}
+
+fn checked_artifact_private_status_path(path: &str) -> bool {
+    path.strip_prefix(super::preservation_image::CHECKED_ARTIFACT_PRIVATE_PATH)
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
 }
 
 /// Create `branch` at `oid` when missing. If it exists, require it already points

@@ -293,6 +293,57 @@ fn checked_stash_round_trip(format: &str) {
 }
 
 #[test]
+fn create_stash_remains_exact_over_checked_artifact_private_residue() {
+    let fixture = fixture();
+    fs::write(fixture.root.join("user.txt"), b"user\n").unwrap();
+    let prepared = prepare(&fixture);
+    let guard = guard(&prepared);
+    normalize(&fixture, &guard);
+    // Crash-retained checked-artifact private residue in the exact shape of
+    // the Windows durability anchor. The private area is invisible to the
+    // preservation-image model everywhere, so its presence must not change
+    // the exact stash evidence even though the native stash sweeps it.
+    let private = fixture.root.join(".gwz/checked-artifacts");
+    fs::create_dir_all(&private).unwrap();
+    fs::write(
+        private.join(".ca1-durability-anchor-deadbeefdeadbeefdeadbeefdeadbeef"),
+        b"GWZ-CHECKED-ARTIFACT-DURABILITY-ANCHOR-V1\n",
+    )
+    .unwrap();
+    let step = create_stash_step();
+    assert_eq!(
+        fixture
+            .backend
+            .observe_root_preservation_step(&fixture.root, &fixture.spec, &step, &guard)
+            .unwrap(),
+        GitRootPreservationStepObservation::Before
+    );
+    assert!(matches!(
+        fixture
+            .backend
+            .execute_root_preservation_step_checked(&fixture.root, &fixture.spec, &step, &guard,)
+            .unwrap(),
+        GitCheckedPreservationMutation::StashCreated(_)
+    ));
+    assert_eq!(
+        fixture
+            .backend
+            .observe_root_preservation_step(&fixture.root, &fixture.spec, &step, &guard)
+            .unwrap(),
+        GitRootPreservationStepObservation::After
+    );
+    // The decoded stash image is anchor-blind and equals the durable preimage.
+    assert_eq!(
+        fixture
+            .backend
+            .preservation_stashes(&fixture.root, "merge_1")
+            .unwrap()[0]
+            .image,
+        prepared.normalized_image
+    );
+}
+
+#[test]
 fn late_included_image_changes_reject_without_mutation() {
     let cases = vec![
         LateImageChange::Staged,

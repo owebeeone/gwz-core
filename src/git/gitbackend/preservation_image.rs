@@ -5,7 +5,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 const PREIMAGE_FRAME: &[u8] = b"gwz.merge-preservation-preimage/v1\0";
-const CHECKED_ARTIFACT_PRIVATE_PATH: &str = ".gwz/checked-artifacts";
+pub(super) const CHECKED_ARTIFACT_PRIVATE_PATH: &str = ".gwz/checked-artifacts";
 
 #[derive(Default, Eq, PartialEq)]
 struct ImageEntry {
@@ -47,7 +47,10 @@ fn capture_inner(
     include_untracked: bool,
     managed: Option<&GitRootManagedForm>,
 ) -> ModelResult<GitPreservationImage> {
-    let (entries, dirty) = live_entries(root, include_untracked, managed, &[])?;
+    // The checked-artifact private area is invisible to the preservation-image
+    // model on every capture path, uniform with capture_normalized.
+    let excluded_paths = raw_excluded_paths(&[])?;
+    let (entries, dirty) = live_entries(root, include_untracked, managed, &excluded_paths)?;
     encode(entries, dirty)
 }
 
@@ -332,10 +335,10 @@ fn decode_stash(
     }
     let head = stash.parent(0).map_err(preservation_git_error)?;
     let index = stash.parent(1).map_err(preservation_git_error)?;
-    let head_tree = flatten_tree(repo, &head.tree().map_err(preservation_git_error)?)?;
-    let index_tree = flatten_tree(repo, &index.tree().map_err(preservation_git_error)?)?;
-    let worktree = flatten_tree(repo, &stash.tree().map_err(preservation_git_error)?)?;
-    let untracked = if stash.parent_count() == 3 {
+    let mut head_tree = flatten_tree(repo, &head.tree().map_err(preservation_git_error)?)?;
+    let mut index_tree = flatten_tree(repo, &index.tree().map_err(preservation_git_error)?)?;
+    let mut worktree = flatten_tree(repo, &stash.tree().map_err(preservation_git_error)?)?;
+    let mut untracked = if stash.parent_count() == 3 {
         flatten_tree(
             repo,
             &stash
@@ -347,6 +350,22 @@ fn decode_stash(
     } else {
         BTreeMap::new()
     };
+    // The checked-artifact private area is invisible to the preservation-image
+    // model on every decode path: the native stash may sweep its residue (the
+    // Windows durability anchor), but that residue is never exact evidence.
+    let excluded_paths = raw_excluded_paths(&[])?;
+    for tree in [
+        &mut head_tree,
+        &mut index_tree,
+        &mut worktree,
+        &mut untracked,
+    ] {
+        tree.retain(|path, _| {
+            !excluded_paths
+                .iter()
+                .any(|excluded| path_is_at_or_below(path, excluded))
+        });
+    }
     let mut entries = BTreeMap::new();
     for (path, item) in &index_tree {
         entries.insert(

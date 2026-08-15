@@ -53,6 +53,59 @@ fn integrated_participant_classifies_exact_before_after_and_ambiguous() {
 }
 
 #[test]
+fn integrated_rollback_remains_exact_under_repo_local_autocrlf() {
+    let fixture = integrated_fixture("v1-rollback-participant-autocrlf");
+    // Windows runners resolve system-level `core.autocrlf=true`; libgit2 honors
+    // the same key at repository scope, so pinning it repo-locally here (after
+    // the fixture commits, which are LF blob + LF worktree with no checkout in
+    // between) reproduces the Windows platform semantics on any host.
+    git2::Repository::open(&fixture.member)
+        .unwrap()
+        .config()
+        .unwrap()
+        .set_bool("core.autocrlf", true)
+        .unwrap();
+    let row = &fixture.model.participants["mem_a"];
+    // The config flip alone rewrites nothing: the live worktree is still the
+    // fixture's own LF bytes, so the exact before state must still hold.
+    assert_eq!(
+        observe_v1_participant_rollback(
+            &fixture.backend,
+            &fixture.root.path,
+            &fixture.model,
+            "mem_a",
+            row,
+            ParticipantRollbackKindV1::ResetIntegrated,
+        )
+        .unwrap(),
+        O::Before
+    );
+    fixture
+        .backend
+        .set_branch_target_checked(&fixture.member, "main", &fixture.result, &fixture.before)
+        .unwrap();
+    // Recovery-grade rollback must land blob-exact bytes even under an active
+    // CRLF filter, so recovery-time re-verification classifies the exact
+    // after state instead of Ambiguous.
+    assert_eq!(
+        observe_v1_participant_rollback(
+            &fixture.backend,
+            &fixture.root.path,
+            &fixture.model,
+            "mem_a",
+            row,
+            ParticipantRollbackKindV1::ResetIntegrated,
+        )
+        .unwrap(),
+        O::After
+    );
+    assert_eq!(
+        std::fs::read(fixture.member.join("README.md")).unwrap(),
+        b"before\n"
+    );
+}
+
+#[test]
 fn evidence_rollback_steps_accept_only_their_exact_before_and_after_states() {
     let fixture = staged_evidence_fixture("v1-rollback-evidence-phases", true, true);
     let steps = [
