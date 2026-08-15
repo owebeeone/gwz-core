@@ -65,6 +65,49 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("checked-artifact boundary: ok", result.stdout)
 
+    def test_alias_bound_raw_rename_in_catalog_provider_is_rejected(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = (
+            source
+            / "checked_artifact/capability/pre_catalog/provider/retained.rs"
+        )
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nuse crate::checked_artifact::platform::rename_relative as relocate_entry;\n"
+            + "fn probe_alias_publish(dir: &cap_std::fs::Dir) {\n"
+            + "    let _ = relocate_entry(\n"
+            + "        dir, std::ffi::OsStr::new(\"a\"), dir,\n"
+            + "        std::ffi::OsStr::new(\"b\"), false,\n"
+            + "        crate::model::ErrorCode::IoError, \"probe\");\n}\n",
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "raw rename caller outside the sealed publication seam", result.stderr
+        )
+
+    def test_fn_pointer_bound_raw_rename_in_legacy_interior_is_rejected(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/cleanup.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nfn probe_pointer_cleanup(dir: &cap_std::fs::Dir) {\n"
+            + "    let publish = crate::checked_artifact::platform::rename_relative;\n"
+            + "    let _ = publish(\n"
+            + "        dir, std::ffi::OsStr::new(\"a\"), dir,\n"
+            + "        std::ffi::OsStr::new(\"b\"), false,\n"
+            + "        crate::model::ErrorCode::IoError, \"probe\");\n}\n",
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "raw rename caller outside the sealed publication seam", result.stderr
+        )
+
     def test_raw_rename_caller_in_catalog_provider_is_rejected(self) -> None:
         temporary, source = self.copied_source()
         self.addCleanup(temporary.cleanup)

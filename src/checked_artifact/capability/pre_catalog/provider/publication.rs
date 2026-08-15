@@ -28,7 +28,8 @@ pub(super) enum PublicationSourceV1<'a> {
 
 /// Source-interior expectation re-verified through the primitive's own
 /// directory capability inside the acquisition window, so pre-acquisition
-/// interior drift rejects before publication (amendment §4.1 ¶2); the
+/// interior drift rejects before publication (amendment §4.1
+/// drift-rejection paragraph, as clarified by the 2026-08-15 erratum); the
 /// remaining residue after this re-check is post-acquisition and falls
 /// inside the accepted same-user namespace boundary.
 pub(super) struct DirectoryInteriorRecheckV1<'a> {
