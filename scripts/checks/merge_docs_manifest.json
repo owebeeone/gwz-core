@@ -155,7 +155,20 @@
           "value": "prepare_parent -> prepare_marker -> prepare_lock -> prepare_index"
         }
       ],
-      "forbidden": []
+      "forbidden": [
+        {
+          "id": "i2_journal_no_retired_compound_stash_phase",
+          "value": "NormalizeRoot"
+        },
+        {
+          "id": "i2_journal_no_retired_compound_reset_phase",
+          "value": "RestoreRoot"
+        },
+        {
+          "id": "i2_journal_no_retired_prefix_field",
+          "value": "root_publication_prefix"
+        }
+      ]
     },
     {
       "id": "i2_record_contract",
@@ -178,7 +191,16 @@
           "value": "five top-level v1 collisions"
         }
       ],
-      "forbidden": []
+      "forbidden": [
+        {
+          "id": "i2_record_no_four_field_claim",
+          "value": "adds four top-level fields"
+        },
+        {
+          "id": "i2_record_no_retired_prefix_field",
+          "value": "root_publication_prefix"
+        }
+      ]
     },
     {
       "id": "merge_plan",
