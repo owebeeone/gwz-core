@@ -16,9 +16,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Per-commit lane gate over the pushed range
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: bash scripts/checks/check_lane_commits.sh "${{ github.event.before }}" "${{ github.sha }}"
       - name: Install Rust toolchain
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component clippy
