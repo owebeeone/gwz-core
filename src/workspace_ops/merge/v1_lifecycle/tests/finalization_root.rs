@@ -342,6 +342,9 @@ fn unborn_fixture(
     let root = TempDir::new(name);
     let backend = Git2Backend::new();
     backend.create_repo(&root.path).unwrap();
+    // Pin conversion off at creation (safe: created empty, never cloned) —
+    // this suite compares worktree bytes with blob bytes on Windows runners.
+    crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
     fs::create_dir_all(root.path.join("gwz.conf")).unwrap();
     let mut model = test_record();
     fs::write(
@@ -362,6 +365,7 @@ fn unborn_fixture(
     model.baseline.root_branch = head.branch.clone();
     let member = root.path.join("members/a");
     backend.create_repo(&member).unwrap();
+    crate::workspace_ops::tests::pin_fixture_autocrlf(&member);
     let before = commit_file(&member, "README.md", "before\n", "before", &[]).unwrap();
     let after = if changed {
         commit_file(

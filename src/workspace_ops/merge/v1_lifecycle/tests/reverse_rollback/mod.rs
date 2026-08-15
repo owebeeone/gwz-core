@@ -27,9 +27,13 @@ struct ParticipantFixture {
 
 fn integrated_fixture(name: &str) -> ParticipantFixture {
     let root = TempDir::new_git(name);
+    // Pin conversion off at creation (safe: created empty, never cloned) —
+    // these suites compare worktree bytes with blob bytes on Windows runners.
+    crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
     let backend = Git2Backend::new();
     let member = root.path.join("members/a");
     backend.create_repo(&member).unwrap();
+    crate::workspace_ops::tests::pin_fixture_autocrlf(&member);
     let before = commit_file(&member, "README.md", "before\n", "before", &[]).unwrap();
     let result = commit_file(
         &member,
@@ -79,6 +83,7 @@ fn staged_evidence_fixture(
     let root = TempDir::new(name);
     let backend = Git2Backend::new();
     backend.create_repo(&root.path).unwrap();
+    crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     if change_lock {
         use std::io::Write;
@@ -89,6 +94,7 @@ fn staged_evidence_fixture(
         writeln!(exclude, "/members/a/").unwrap();
         let member = root.path.join("members/a");
         backend.create_repo(&member).unwrap();
+        crate::workspace_ops::tests::pin_fixture_autocrlf(&member);
         let member_before = commit_file(&member, "README.md", "before\n", "before", &[]).unwrap();
         let member_result = commit_file(
             &member,

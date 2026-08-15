@@ -67,10 +67,14 @@ impl PreservationFixture {
 
 fn integrated_fixture(name: &str) -> PreservationFixture {
     let root = TempDir::new_git(name);
+    // Pin conversion off at creation (safe: created empty, never cloned) —
+    // these suites compare worktree bytes with blob bytes on Windows runners.
+    crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
     fs::create_dir_all(root.path.join(crate::stash::STASH_BUNDLE_DIR)).unwrap();
     let backend = Git2Backend::new();
     let member = root.path.join("members/a");
     backend.create_repo(&member).unwrap();
+    crate::workspace_ops::tests::pin_fixture_autocrlf(&member);
     let before = commit_file(&member, "README.md", "before\n", "before", &[]).unwrap();
     let result = commit_file(
         &member,
@@ -144,6 +148,7 @@ fn add_integrated_member(
 ) -> (std::path::PathBuf, String, String, String) {
     let path = fixture.root.path.join(relative_path);
     fixture.backend.create_repo(&path).unwrap();
+    crate::workspace_ops::tests::pin_fixture_autocrlf(&path);
     let before = commit_file(&path, "README.md", "before b\n", "before b", &[]).unwrap();
     let result = commit_file(
         &path,
@@ -231,6 +236,7 @@ fn dirty_root_handoff_fixture_with_owner(
     }
     if git2::Repository::open(&base.root.path).is_err() {
         base.backend.create_repo(&base.root.path).unwrap();
+        crate::workspace_ops::tests::pin_fixture_autocrlf(&base.root.path);
     }
     fs::create_dir_all(base.root.path.join("gwz.conf")).unwrap();
     let manifest = base.model.baseline.manifest_yaml.clone().unwrap();

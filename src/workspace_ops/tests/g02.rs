@@ -806,11 +806,6 @@ pub(crate) fn commit_file(
     let mut config = repo.config()?;
     config.set_str("user.name", "GWZ Test")?;
     config.set_str("user.email", "gwz@example.invalid")?;
-    // Runners inherit machine-level core.autocrlf=true; fixture repos compare
-    // worktree bytes with blob bytes, so pin conversion off at the same place
-    // every fixture already writes its identity config (Windows matrix). Tests
-    // that need an active filter set it explicitly after their fixture commits.
-    config.set_bool("core.autocrlf", false)?;
     let mut index = repo.index()?;
     index.add_path(Path::new(relative_path))?;
     index.write()?;
@@ -832,6 +827,21 @@ pub(crate) fn commit_file(
             &parent_refs,
         )?
         .to_string())
+}
+
+/// Pin conversion off in a fixture repo, safe ONLY at creation time —
+/// before any filtered materialization. Flipping the key mid-life turns
+/// files a filtered checkout/clone already wrote (CRLF under the Windows
+/// runners' machine-level autocrlf=true) into permanent manufactured dirt
+/// against their LF blobs (matrix run 9 regression). Clone-based fixtures
+/// must NOT use this; they stay consistently filter-aware.
+pub(crate) fn pin_fixture_autocrlf(repo_path: &Path) {
+    git2::Repository::open(repo_path)
+        .unwrap()
+        .config()
+        .unwrap()
+        .set_bool("core.autocrlf", false)
+        .unwrap();
 }
 
 pub(crate) fn request_meta() -> crate::RequestMeta {
