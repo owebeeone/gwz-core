@@ -517,6 +517,12 @@ impl CheckedArtifact {
                 cause,
             )
         })?;
+        // Unix re-barriers the entry through its file handle; Windows cannot
+        // FlushFileBuffers a read-access handle (os error 5) and its
+        // durability model is write-through at write time plus the anchor
+        // barrier issued just below, so the per-file re-sync is Unix-only
+        // (W3, GwzWindowsMatrix-Classification.md).
+        #[cfg(not(windows))]
         file.sync_all()
             .map_err(|cause| io_op_error(self.code, &self.label, "sync family entry", cause))?;
         drop(file);
