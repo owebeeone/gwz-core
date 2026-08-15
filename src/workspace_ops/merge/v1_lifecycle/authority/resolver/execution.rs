@@ -17,7 +17,13 @@ pub(super) fn no_progress(
         if matches!(key.action, PhysicalActionKind::Preservation(_)) {
             return Ok(ResolvedV1Action::Reject(ModelError::new(code, message)));
         }
-        return reject("owned non-participant action made no progress");
+        // The underlying cause must survive into the reject: the bare label
+        // here masked a config failure across a full Windows-matrix
+        // diagnosis cycle (classification run 10 → probe).
+        return Ok(ResolvedV1Action::Reject(ModelError::new(
+            code,
+            format!("owned non-participant action made no progress: {message}"),
+        )));
     };
     let row = current
         .record()

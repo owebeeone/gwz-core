@@ -345,6 +345,9 @@ fn unborn_fixture(
     // Pin conversion off at creation (safe: created empty, never cloned) —
     // this suite compares worktree bytes with blob bytes on Windows runners.
     crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
+    // The unborn-root scenarios drive PRODUCTION first-commits, so the
+    // identity commit_file would otherwise install must be pinned here.
+    crate::workspace_ops::tests::pin_fixture_identity(&root.path);
     fs::create_dir_all(root.path.join("gwz.conf")).unwrap();
     let mut model = test_record();
     fs::write(

@@ -844,6 +844,17 @@ pub(crate) fn pin_fixture_autocrlf(repo_path: &Path) {
         .unwrap();
 }
 
+/// Set the commit identity in a fixture repo. `commit_file` does this as a
+/// side effect, but fixtures whose commits are created by PRODUCTION code
+/// (e.g. the unborn-root first-commit publication) never pass through it,
+/// and CI runners carry no machine-level git identity.
+pub(crate) fn pin_fixture_identity(repo_path: &Path) {
+    let repo = git2::Repository::open(repo_path).unwrap();
+    let mut config = repo.config().unwrap();
+    config.set_str("user.name", "GWZ Test").unwrap();
+    config.set_str("user.email", "gwz@example.invalid").unwrap();
+}
+
 pub(crate) fn request_meta() -> crate::RequestMeta {
     crate::RequestMeta {
         request_id: "req_ops".to_owned(),
