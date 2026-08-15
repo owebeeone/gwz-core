@@ -19,11 +19,25 @@ pub(super) fn observe(
 ) -> Result<(IndexSnapshotFacts, Option<RetainedFile>), CheckedFsError> {
     let repository = git2::Repository::open(retained.root_path()).map_err(git_error)?;
     let index = repository.index().map_err(git_error)?;
-    let expected_path = retained.git_directory_path().join("index");
     let actual_path = index.path().ok_or_else(|| {
         CheckedFsError::ambiguous("Git index", "repository returned an in-memory index")
     })?;
-    if actual_path != expected_path {
+    // Compare canonicalized parents rather than raw spellings: libgit2 may
+    // report the index under a different-but-equivalent spelling of the
+    // same directory (Windows 8.3 short names, case, separators), and the
+    // index file itself may not exist yet, so the always-present parent
+    // directory is the canonicalization anchor (W1,
+    // GwzWindowsMatrix-Classification.md).
+    let actual_parent = actual_path.parent().ok_or_else(|| {
+        CheckedFsError::ambiguous("Git index", "index path has no parent directory")
+    })?;
+    let expected_parent = std::fs::canonicalize(retained.git_directory_path())
+        .map_err(|source| CheckedFsError::io("canonicalize the actual Git directory", source))?;
+    let actual_parent = std::fs::canonicalize(actual_parent)
+        .map_err(|source| CheckedFsError::io("canonicalize the reported index parent", source))?;
+    if actual_parent != expected_parent
+        || actual_path.file_name() != Some(std::ffi::OsStr::new("index"))
+    {
         return Err(CheckedFsError::ambiguous(
             "Git index",
             "index path is not inside the actual Git directory",
