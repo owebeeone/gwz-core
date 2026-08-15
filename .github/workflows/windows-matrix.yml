@@ -1,0 +1,31 @@
+name: Windows matrix
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  matrix:
+    name: Full suite on Windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Run the complete test suite
+        shell: bash
+        run: cargo test --locked --no-fail-fast 2>&1 | tee windows-matrix.log || true
+      - name: Summarize failures
+        shell: bash
+        run: |
+          echo '== failure names =='
+          grep -E '^test .* \.\.\. FAILED' windows-matrix.log | sort || true
+          echo '== results =='
+          grep -E '^test result' windows-matrix.log
+          if grep -qE '^test result: FAILED' windows-matrix.log; then exit 1; fi
