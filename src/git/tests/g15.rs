@@ -11,6 +11,14 @@ fn seeded_repo(name: &str) -> (TempDir, Git2Backend, std::path::PathBuf, String)
     let backend = Git2Backend::new();
     let repo = temp.path().join("repo");
     backend.create_repo(&repo).unwrap();
+    // Pin conversion off: these tests compare worktree bytes to blob bytes,
+    // and Windows CI inherits core.autocrlf=true from the runner image.
+    git2::Repository::open(&repo)
+        .unwrap()
+        .config()
+        .unwrap()
+        .set_bool("core.autocrlf", false)
+        .unwrap();
     let head = commit_file(&repo, "tracked.txt", "base\n", "base", &[]).unwrap();
     (temp, backend, repo, head)
 }

@@ -112,6 +112,12 @@ impl PinnedConfig {
         }
         #[cfg(unix)]
         sync_dir(&stage)?;
+        // Windows denies renaming a directory whose handle lacks DELETE
+        // sharing, and `stage` is our own such handle; release it before the
+        // publish rename (same edge as the staging-capability drop in
+        // pre_catalog/provider/directory_mutation.rs).
+        drop(entries);
+        drop(stage);
         fault(FaultBoundary::BeforeParentPublish)?;
         rename_no_replace(&self.dir, staging, FINAL_NAME)?;
         fault(FaultBoundary::AfterParentPublish)?;
@@ -308,7 +314,7 @@ fn barrier_platform(dir: &Dir, staging: &str, final_name: &str) -> ModelResult<(
 fn rename_windows(dir: &Dir, source: &str, destination: &str) -> ModelResult<()> {
     use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
     use cap_std::fs::{OpenOptions, OpenOptionsExt};
-    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
     use windows_sys::Win32::Storage::FileSystem::*;
 
     let mut options = OpenOptions::new();
@@ -323,13 +329,24 @@ fn rename_windows(dir: &Dir, source: &str, destination: &str) -> ModelResult<()>
     let source = dir
         .open_with(source, &options)
         .map_err(crate::git::io_error)?;
-    let name = destination.encode_utf16().collect::<Vec<_>>();
-    let size = std::mem::offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
+    // SetFileInformationByHandle rejects a non-null RootDirectory on
+    // supported Windows runners (os error 87) — same class as the
+    // checked-artifact platform.rs correction: pass an absolute destination
+    // derived from the retained directory handle and a null RootDirectory.
+    // The post-publish `is_current` checks detect a same-user redirect
+    // inside the unavoidable window.
+    let destination_path =
+        windows_destination_path(dir, destination).map_err(crate::git::io_error)?;
+    let name = destination_path.encode_wide().collect::<Vec<_>>();
+    // Windows requires at least the fixed structure size plus the variable
+    // name bytes, even though the fixed structure already contains its
+    // one-element FileName placeholder.
+    let size = std::mem::size_of::<FILE_RENAME_INFO>() + name.len() * 2;
     let mut storage = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     unsafe {
         (*info).Anonymous.ReplaceIfExists = false;
-        (*info).RootDirectory = dir.as_raw_handle();
+        (*info).RootDirectory = std::ptr::null_mut();
         (*info).FileNameLength = u32::try_from(name.len() * 2)
             .map_err(|_| evidence_error("marker-parent staging name is too long"))?;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
@@ -344,6 +361,69 @@ fn rename_windows(dir: &Dir, source: &str, destination: &str) -> ModelResult<()>
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn windows_destination_path(dir: &Dir, destination: &str) -> std::io::Result<std::ffi::OsString> {
+    use std::ffi::OsString;
+    use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
+    };
+
+    const MAX_PATH_UNITS: usize = 32_768;
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(512)
+        .map_err(|_| std::io::Error::other("allocate Windows destination path"))?;
+    buffer.resize(512, 0);
+    loop {
+        let capacity = u32::try_from(buffer.len()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows destination path buffer is too large",
+            )
+        })?;
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                dir.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                capacity,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        };
+        if length == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let length = usize::try_from(length).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows destination path length is invalid",
+            )
+        })?;
+        if length < buffer.len() {
+            buffer.truncate(length);
+            let mut path = std::path::PathBuf::from(OsString::from_wide(&buffer));
+            path.push(destination);
+            return Ok(path.into_os_string());
+        }
+        let required = length.checked_add(1).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows destination path length overflowed",
+            )
+        })?;
+        if required > MAX_PATH_UNITS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows destination path exceeds the platform bound",
+            ));
+        }
+        buffer
+            .try_reserve_exact(required - buffer.len())
+            .map_err(|_| std::io::Error::other("grow Windows destination path"))?;
+        buffer.resize(required, 0);
+    }
 }
 
 fn evidence_error(detail: impl Into<String>) -> ModelError {

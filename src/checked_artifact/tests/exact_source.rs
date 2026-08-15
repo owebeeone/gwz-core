@@ -49,6 +49,8 @@ fn same_byte_new_inode_after_final_proof_is_not_accepted_as_the_source() {
     assert_eq!(fs::read(path).unwrap(), b"owned");
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn parent_move_after_final_proof_restores_the_retained_source_and_rejects() {
     let root = TempRoot::new("post-proof-parent");

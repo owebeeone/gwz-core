@@ -59,6 +59,11 @@ pub(super) fn fixture_with_markers(
             &format!("--object-format={format}"),
         ],
     );
+    // Windows CI: staged checked-artifact sources under repo/.gwz exceed
+    // MAX_PATH in the runner temp tree; libgit2 workdir walks honor
+    // core.longpaths. Pin autocrlf off for byte-exact comparisons.
+    git(&root, &["config", "core.longpaths", "true"]);
+    git(&root, &["config", "core.autocrlf", "false"]);
     fs::create_dir_all(root.join("gwz.conf")).unwrap();
     fs::write(root.join(crate::artifact::LOCK_PATH), b"restore lock\n").unwrap();
     write_marker(&root, restore_clean_marker);

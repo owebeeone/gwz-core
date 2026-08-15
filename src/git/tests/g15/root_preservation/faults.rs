@@ -1,5 +1,7 @@
 use super::{support::*, *};
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn restore_parent_rejects_a_path_replacement_after_observation() {
     let fixture = fixture();

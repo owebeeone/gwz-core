@@ -51,6 +51,8 @@ impl Drop for Fixture {
     }
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn substituted_staging_after_open_is_not_mutated() {
     let fixture = Fixture::new("staging-after-open");
@@ -73,6 +75,8 @@ fn substituted_staging_after_open_is_not_mutated() {
     assert_eq!(fs::read(staging.join("foreign")).unwrap(), sentinel);
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn substituted_staging_before_final_publish_is_not_published() {
     let fixture = Fixture::new("final-before-rename");
@@ -233,6 +237,8 @@ fn destination_drift_after_retire_recheck_is_rejected_inside_the_primitive() {
     );
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn substituted_final_during_completion_is_not_returned() {
     let fixture = Fixture::new("final-during-complete");

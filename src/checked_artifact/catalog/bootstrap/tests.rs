@@ -202,6 +202,8 @@ fn git_directory_target_creates_its_parent_then_converges_to_completion() {
     );
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn returned_catalog_rejects_named_final_substitution() {
     let fixture = Fixture::new("retained-final-substitution");

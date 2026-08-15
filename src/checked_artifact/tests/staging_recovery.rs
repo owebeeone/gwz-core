@@ -68,6 +68,8 @@ fn every_missing_source_fault_restarts_to_one_exact_goal() {
     }
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn staged_missing_source_cannot_rebind_to_a_replacement_parent() {
     let root = TempRoot::new("missing-staged-parent-replacement");
@@ -99,6 +101,8 @@ fn staged_missing_source_cannot_rebind_to_a_replacement_parent() {
     assert!(family_entries(&root, &family).len() >= 2);
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn staged_existing_source_cannot_rebind_to_a_same_byte_foreign_parent() {
     let root = TempRoot::new("existing-staged-parent-replacement");

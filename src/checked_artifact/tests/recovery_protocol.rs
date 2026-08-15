@@ -63,12 +63,18 @@ fn source_equals_goal_rejects_and_retains_preexisting_family_state() {
     let residue = private.join(format!("ca1-{}-foreign", checked.family_key()));
     fs::write(&residue, b"retained").unwrap();
 
-    assert_eq!(
-        checked
-            .classify_replace(&CheckedArtifactFact::Bytes(b"same".to_vec()), b"same")
-            .unwrap(),
-        CheckedArtifactTransition::Ambiguous
-    );
+    let classified =
+        checked.classify_replace(&CheckedArtifactFact::Bytes(b"same".to_vec()), b"same");
+    if cfg!(windows) {
+        // Hand-planted residue carries no Windows durability anchor, so the
+        // platform layer fails closed instead of returning a classification.
+        assert_eq!(
+            classified.unwrap_err().code,
+            crate::model::ErrorCode::MergeRecoveryRequired
+        );
+    } else {
+        assert_eq!(classified.unwrap(), CheckedArtifactTransition::Ambiguous);
+    }
     assert!(
         checked
             .replace_exact(&CheckedArtifactFact::Bytes(b"same".to_vec()), b"same")
@@ -244,6 +250,8 @@ fn cleanup_faults_restart_without_replacing_the_managed_goal() {
     }
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn parent_replacement_after_detach_is_ambiguous_and_retains_family_state() {
     let root = TempRoot::new("parent-after-detach");

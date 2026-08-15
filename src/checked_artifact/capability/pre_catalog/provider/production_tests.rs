@@ -8,9 +8,11 @@ use cap_std::fs::{Dir, File};
 
 use super::filesystem::{filesystem_provider_for_test, filesystem_provider_with_hook_for_test};
 use super::*;
+use crate::checked_artifact::bootstrap::try_acquire_workspace_runtime;
+// The lease types feed only the gated substitution test below.
+#[cfg(not(windows))]
 use crate::checked_artifact::bootstrap::{
     CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
-    try_acquire_workspace_runtime,
 };
 use crate::checked_artifact::capability::{
     ObjectIdentityFact, PathComponentMode, PathEquivalenceProvider,
@@ -175,7 +177,32 @@ impl Fixture {
                 path: path.to_vec(),
             })
             .unwrap();
+        Self::displace_git_index(root);
         index.write().unwrap();
+    }
+
+    /// Frees the `.git/index` name before a git2 lockfile publication.
+    ///
+    /// The revalidation hooks rewrite the index while production still
+    /// retains the observed `.git/index` open. git2 publishes by renaming
+    /// `index.lock` over `.git/index`, and on Windows that rename fails
+    /// (os error 5/32) while the destination name is occupied by a file
+    /// with surviving handles, so the current file is displaced to a
+    /// foreign name first: a rename frees the name immediately, where a
+    /// delete would leave it delete-pending. The in-memory index is
+    /// already loaded, so the written bytes — the injected state — are
+    /// identical on every platform.
+    fn displace_git_index(root: &Path) {
+        static NEXT_DISPLACED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let displaced = root.join(".git").join(format!(
+            "displaced-index-{}",
+            NEXT_DISPLACED.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::rename(root.join(".git/index"), displaced) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("displace .git/index before rewrite: {error}"),
+        }
     }
 
     fn private_catalog(&self) -> PathBuf {
@@ -303,6 +330,7 @@ fn complete_index_change_between_observation_and_revalidation_blocks_bootstrap()
                 path: b"changed-after-observe.txt".to_vec(),
             })
             .unwrap();
+        Fixture::displace_git_index(&root);
         index.write().unwrap();
     });
     let (result, called) = run_workspace(&fixture.root, FakePlatform::sensitive(), Some(hook));
@@ -513,6 +541,8 @@ fn production_provider_observation_is_derived_from_the_workspace_lease() {
     );
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn provider_rejects_target_substitution_after_witness_issuance() {
     let fixture = Fixture::new();

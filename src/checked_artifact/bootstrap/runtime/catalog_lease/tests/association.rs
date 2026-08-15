@@ -4,6 +4,8 @@ use crate::checked_artifact::bootstrap::runtime::{
     LOCKS_DIRECTORY_NAME, WORKSPACE_MUTATOR_LOCK_NAME,
 };
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn post_return_git_target_replacement_invalidates_preflight_authority() {
     let repo = TempRepo::new("post-return-target-replacement");
@@ -79,6 +81,8 @@ fn workspace_compatibility_borrow_revalidates_its_named_slot() {
     assert_catalog_roles_absent(&repo.path().join(crate::workspace::RUNTIME_DIR));
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn workspace_compatibility_borrow_rejects_post_return_root_replacement() {
     let repo = TempRepo::new("workspace-borrow-root-replacement");
@@ -105,6 +109,8 @@ fn workspace_compatibility_borrow_rejects_post_return_root_replacement() {
     fs::remove_dir_all(&retired).unwrap();
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn duplicate_location_with_changed_identity_rejects_before_preparation_in_both_orders() {
     let repo = TempRepo::new("duplicate-location-identity-race");

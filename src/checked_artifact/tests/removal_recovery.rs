@@ -64,6 +64,8 @@ fn every_removal_fault_restarts_to_exact_absence() {
     }
 }
 
+// Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
+#[cfg(not(windows))]
 #[test]
 fn removal_parent_replacement_retains_the_quarantined_source() {
     let root = TempRoot::new("remove-parent-replacement");
