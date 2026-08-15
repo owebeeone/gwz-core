@@ -806,6 +806,11 @@ pub(crate) fn commit_file(
     let mut config = repo.config()?;
     config.set_str("user.name", "GWZ Test")?;
     config.set_str("user.email", "gwz@example.invalid")?;
+    // Runners inherit machine-level core.autocrlf=true; fixture repos compare
+    // worktree bytes with blob bytes, so pin conversion off at the same place
+    // every fixture already writes its identity config (Windows matrix). Tests
+    // that need an active filter set it explicitly after their fixture commits.
+    config.set_bool("core.autocrlf", false)?;
     let mut index = repo.index()?;
     index.add_path(Path::new(relative_path))?;
     index.write()?;
