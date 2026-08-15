@@ -29,7 +29,13 @@ impl TempDir {
 
     pub(crate) fn new_git(prefix: &str) -> Self {
         let temp = Self::new(prefix);
-        git2::Repository::init(temp.path()).unwrap();
+        // Runners have no init.defaultBranch config, so libgit2 would name
+        // the unborn branch `master` there while developer machines name it
+        // `main`; fixtures assert `refs/heads/main`, so pin it (W2 class,
+        // GwzWindowsMatrix-Classification.md).
+        let mut options = git2::RepositoryInitOptions::new();
+        options.initial_head("main");
+        git2::Repository::init_opts(temp.path(), &options).unwrap();
         temp
     }
 }
