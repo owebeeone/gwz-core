@@ -203,6 +203,21 @@
       ]
     },
     {
+      "id": "i2_compatibility_contract",
+      "path": "dev-docs/GwzM5-8I2CompatibilityContract.md",
+      "required": [
+        {
+          "id": "i2_compat_a1_production_archive_split",
+          "value": "the archived-v0 decoder, neutral archive projection, and canonical record-location acquisition are normal-build code consumed by ordinary status and GC"
+        },
+        {
+          "id": "i2_compat_amended_boundary_authority",
+          "value": "this document is boundary-authoritative only as amended by that accepted interface."
+        }
+      ],
+      "forbidden": []
+    },
+    {
       "id": "merge_plan",
       "path": "gwz-core/dev-docs/GwzMergePlan.md",
       "required": [
