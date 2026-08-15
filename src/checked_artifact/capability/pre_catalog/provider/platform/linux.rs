@@ -173,12 +173,7 @@ fn persistent_handle(fd: RawFd) -> Result<(i32, Vec<u8>), CheckedFsError> {
 fn query_error(capability: PlatformCapability, operation: &'static str) -> CheckedFsError {
     let source = io::Error::last_os_error();
     match source.raw_os_error() {
-        Some(code)
-            if matches!(
-                code,
-                libc::EOPNOTSUPP | libc::ENOSYS | libc::ENOTTY | libc::EINVAL
-            ) =>
-        {
+        Some(libc::EOPNOTSUPP | libc::ENOSYS | libc::ENOTTY | libc::EINVAL) => {
             CheckedFsError::unsupported(capability, source.to_string())
         }
         _ => CheckedFsError::io(operation, source),
