@@ -18,6 +18,8 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
       - name: Run the complete test suite
         shell: bash
         run: cargo test --locked --no-fail-fast 2>&1 | tee windows-matrix.log || true
