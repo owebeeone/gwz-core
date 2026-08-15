@@ -180,11 +180,14 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn write_or_rewrite_scr
         "catalog scratch",
     )?;
     sync_created_file_namespace(parent.handle())?;
-    // The scratch is the first durable ownership declaration (amendment §5),
-    // so the containing-root dirent barrier anchors here: it closes the
-    // adopted-parent and AlreadyExists windows in which the private parent
-    // is VFS-visible but its dirent durability is unknown (State-2 [P3-1]).
-    // Windows intentionally remains a no-op per the §6 durability model.
+    // The scratch is the first durable ownership declaration (amendment §3,
+    // restated in §6), so the containing-root dirent barrier anchors here:
+    // it closes the adopted-parent and AlreadyExists windows in which the
+    // private parent is VFS-visible but its dirent durability is unknown
+    // (State-2 [P3-1]). Windows intentionally remains a no-op per the §6
+    // durability model. Resume paths that re-enter after the scratch bytes
+    // are complete skip this anchor; that narrower residual is tracked as
+    // the DirentBarrier review's [P3-1].
     finish_private_parent_edge(retained.root().handle())?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(
@@ -372,13 +375,16 @@ fn durable_write_options(create_new: bool) -> OpenOptions {
 #[cfg(not(windows))]
 fn finish_private_parent_edge(directory: &cap_std::fs::Dir) -> Result<(), CheckedFsError> {
     crate::checked_artifact::platform::sync_parent(directory)
-        .map_err(|source| CheckedFsError::io("flush created Git GWZ parent", source))
+        .map_err(|source| CheckedFsError::io("flush private-parent containing dirent", source))
 }
 
 #[cfg(windows)]
 fn finish_private_parent_edge(_directory: &cap_std::fs::Dir) -> Result<(), CheckedFsError> {
-    // This edge publishes no durable authority. The owner must fully re-enter
-    // preflight; loss of the empty parent is the original Missing state.
+    // Deliberate no-op for every caller. For the parent-create arms, loss of
+    // the empty parent is the original Missing state (§6 waiver). For the
+    // scratch-edge root anchor, dirent durability rests on §5's
+    // write-through model and NTFS metadata-journal ordering, exercised at
+    // the R2-F native matrix.
     Ok(())
 }
 
