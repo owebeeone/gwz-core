@@ -3,7 +3,7 @@ use super::merge_support::{
 };
 use super::recovery_support::{
     attached_head_ref, comparable_index_entries, ensure_clean_recovery_state,
-    expected_conflicts_and_index, recovery_dirty, recovery_drift,
+    expected_conflicts_and_index, recovery_dirty, recovery_drift, refuse_foreign_filtered_rewrites,
     validate_abort_index_and_worktree, validate_expected_native_merge,
     validate_expected_resolution_repository_state, validate_prepared_merge_resolution_in_repo,
     validate_resolution_index_and_worktree, verify_restored_merge_state,
@@ -146,6 +146,23 @@ pub(super) fn abort_merge(
     validate_abort_index_and_worktree(backend, path, &repo, before, merge_head)?;
 
     let target = repo.find_commit(before).map_err(git_error)?;
+    // Decision 2 (A′) preflight — refuse the recovery-grade checkout before
+    // any mutation when its rewrite set crosses a configured foreign clean
+    // filter (see refuse_foreign_filtered_rewrites). Rewrite-set bound: the
+    // validations above pinned the index to the expected merge shape and
+    // worktree changes to the conflict set, and every such path lies in
+    // diff(merge_head → before) — auto-merged and conflicted paths all
+    // differ between those two trees — so that delta bounds what the force
+    // restore below can rewrite (its deletions write no bytes).
+    {
+        let from = repo
+            .find_commit(merge_head)
+            .map_err(git_error)?
+            .tree()
+            .map_err(git_error)?;
+        let to = target.tree().map_err(git_error)?;
+        refuse_foreign_filtered_rewrites(&repo, &from, &to)?;
+    }
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout
         .force()
@@ -204,6 +221,28 @@ pub(super) fn set_branch_target_checked(
     }
 
     let target_object = repo.find_object(target, None).map_err(git_error)?;
+    // Decision 2 (A′) preflight — refuse the recovery-grade checkout before
+    // ANY mutation (worktree rewrite and `transaction.set_target` alike) when
+    // its rewrite set crosses a configured foreign clean filter. This
+    // replaces the post-commit wedge (`verify_merge_result` failing after
+    // `transaction.commit()`, the retry stuck in the idempotent arm above)
+    // with a typed pre-mutation refusal; the post-verification below stays
+    // untouched. Rewrite set: `ensure_clean_recovery_state` pinned a clean
+    // worktree at `current`, so the SAFE checkout rewrites exactly
+    // diff(current → target).
+    {
+        let from = repo
+            .find_commit(current)
+            .map_err(git_error)?
+            .tree()
+            .map_err(git_error)?;
+        let to = repo
+            .find_commit(target)
+            .map_err(git_error)?
+            .tree()
+            .map_err(git_error)?;
+        refuse_foreign_filtered_rewrites(&repo, &from, &to)?;
+    }
     let mut checkout = git2::build::CheckoutBuilder::new();
     // Recovery-grade checkout: the rolled-back worktree must be blob-exact
     // (raw ODB bytes, no CRLF/smudge filters) so raw-byte recovery

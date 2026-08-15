@@ -107,8 +107,19 @@ pub(super) fn rename_open_source(
     use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
     use windows_sys::Win32::Storage::FileSystem::*;
 
+    use super::fault::{CheckedArtifactFault, fault};
+
     let destination_path = windows_destination_path(destination_dir, destination)
         .map_err(|cause| io_error(code, label, cause))?;
+    // Destination-window hook (R2-F, amendment §4.1 erratum): the residual
+    // window opens once the absolute destination path is derived and closes
+    // at the handle rename below. Observation-only: outside cfg(test) this
+    // compiles to Ok(()), and no production behavior changes.
+    fault(
+        CheckedArtifactFault::AfterDestinationPathDerivation,
+        code,
+        label,
+    )?;
     let name = destination_path.encode_wide().collect::<Vec<_>>();
     // Windows requires at least the fixed structure size plus the variable
     // name bytes, even though the fixed structure already contains its
@@ -594,9 +605,14 @@ fn anchor_name(identity: &[u8; 16]) -> String {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::{anchor_roundtrip_name, hex, open_rename_source, rename_open_source};
+    use super::super::fault::{CheckedArtifactFault, run_next_checked_artifact_at};
+    use super::{
+        anchor_roundtrip_name, hex, open_dir_share_delete, open_rename_source, rename_open_source,
+    };
     use cap_std::{ambient_authority, fs::Dir};
     use std::ffi::{OsStr, OsString};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use crate::model::ErrorCode;
 
@@ -654,6 +670,174 @@ mod windows_tests {
         assert_eq!(std::fs::read(destination_path).unwrap(), b"checked\n");
         assert_eq!(std::fs::read(source_path).unwrap(), b"foreign\n");
         assert!(!displaced_path.exists());
+    }
+
+    fn window_fixture(label: &str) -> (std::path::PathBuf, impl Drop) {
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random).unwrap();
+        let temporary = std::env::temp_dir().join(format!(
+            "gwz-platform-{label}-{}-{}",
+            std::process::id(),
+            hex(&random)
+        ));
+        std::fs::create_dir(&temporary).unwrap();
+        let cleanup = Cleanup(temporary.clone());
+        (temporary, cleanup)
+    }
+
+    // Native destination-window test (R2-F; amendment §4.1 erratum,
+    // GwzM5-8R2CCatalogBootstrapAmendment.md:315-316). A same-user actor
+    // renames the destination directory away and plants a replacement at
+    // the same absolute path inside the window between destination-path
+    // derivation and the handle rename. Per the recorded residual the
+    // primitive itself cannot prevent the re-binding; the mandatory
+    // post-publish verification through the retained destination handle
+    // must detect the redirect read-only (or the primitive fails with the
+    // source untouched — either outcome is the specified rejection).
+    #[test]
+    fn destination_window_substitution_is_detected_through_the_retained_handle() {
+        let (temporary, _cleanup) = window_fixture("destination-window");
+        let source_path = temporary.join("source");
+        let original = temporary.join("destination-dir");
+        let displaced = temporary.join("displaced-destination");
+        std::fs::write(&source_path, b"checked\n").unwrap();
+        std::fs::create_dir(&original).unwrap();
+        let root = Dir::open_ambient_dir(&temporary, ambient_authority()).unwrap();
+        // Production retains destination directories with DELETE sharing
+        // (open_dir_share_delete), which is exactly what leaves the window
+        // open to a same-user rename of the destination directory.
+        let destination_dir = open_dir_share_delete(&root, OsStr::new("destination-dir")).unwrap();
+        let source = open_rename_source(
+            &root,
+            OsStr::new("source"),
+            ErrorCode::IoError,
+            "Windows destination-window test",
+        )
+        .unwrap();
+
+        let substituted = Arc::new(AtomicBool::new(false));
+        run_next_checked_artifact_at(CheckedArtifactFault::AfterDestinationPathDerivation, {
+            let substituted = Arc::clone(&substituted);
+            let original = original.clone();
+            let displaced = displaced.clone();
+            move || {
+                std::fs::rename(&original, &displaced).unwrap();
+                std::fs::create_dir(&original).unwrap();
+                substituted.store(true, Ordering::SeqCst);
+            }
+        });
+        let result = rename_open_source(
+            &source,
+            &destination_dir,
+            OsStr::new("delivered"),
+            false,
+            ErrorCode::IoError,
+            "Windows destination-window test",
+        );
+        assert!(
+            substituted.load(Ordering::SeqCst),
+            "destination-window hook was not reached"
+        );
+
+        // The retained destination handle follows the displaced original
+        // directory, so the read-only verification through it must reject
+        // the published name regardless of where the stale absolute path
+        // delivered the object.
+        assert!(
+            destination_dir.metadata("delivered").is_err(),
+            "retained-handle verification must reject the redirect"
+        );
+        assert!(!displaced.join("delivered").exists());
+        match result {
+            Ok(()) => {
+                // The recorded §4.1 residual: the rename resolved the stale
+                // absolute path into the replacement directory. Detection is
+                // the retained-handle rejection asserted above.
+                assert_eq!(
+                    std::fs::read(original.join("delivered")).unwrap(),
+                    b"checked\n"
+                );
+                assert!(!source_path.exists());
+            }
+            Err(_) => {
+                // Also within the specified rejection: the primitive failed
+                // with the source untouched and never delivered into the
+                // replacement directory.
+                assert_eq!(std::fs::read(&source_path).unwrap(), b"checked\n");
+                assert!(!original.join("delivered").exists());
+            }
+        }
+    }
+
+    // Ancestor variant of the destination-window test
+    // (GwzM5-8R2C2OwnerInterface-ReviewState-2.md:291-296): renaming a path
+    // ancestor inside the window must fail the publication with the source
+    // untouched and never deliver into the replacement ancestor.
+    #[test]
+    fn destination_window_ancestor_substitution_fails_with_the_source_untouched() {
+        let (temporary, _cleanup) = window_fixture("destination-ancestor");
+        let source_path = temporary.join("source");
+        let ancestor = temporary.join("ancestor");
+        let displaced = temporary.join("displaced-ancestor");
+        std::fs::write(&source_path, b"checked\n").unwrap();
+        std::fs::create_dir(&ancestor).unwrap();
+        std::fs::create_dir(ancestor.join("destination-dir")).unwrap();
+        let root = Dir::open_ambient_dir(&temporary, ambient_authority()).unwrap();
+        let ancestor_dir = Dir::open_ambient_dir(&ancestor, ambient_authority()).unwrap();
+        let destination_dir =
+            open_dir_share_delete(&ancestor_dir, OsStr::new("destination-dir")).unwrap();
+        // Release the plain (non-share-delete) ancestor handle before the
+        // window; production never retains such a handle across the edge.
+        drop(ancestor_dir);
+        let source = open_rename_source(
+            &root,
+            OsStr::new("source"),
+            ErrorCode::IoError,
+            "Windows destination-window test",
+        )
+        .unwrap();
+
+        let substituted = Arc::new(AtomicBool::new(false));
+        run_next_checked_artifact_at(CheckedArtifactFault::AfterDestinationPathDerivation, {
+            let substituted = Arc::clone(&substituted);
+            let ancestor = ancestor.clone();
+            let displaced = displaced.clone();
+            move || {
+                std::fs::rename(&ancestor, &displaced).unwrap();
+                // Empty replacement ancestor: the stale absolute path can
+                // no longer resolve, and nothing may be delivered into it.
+                std::fs::create_dir(&ancestor).unwrap();
+                substituted.store(true, Ordering::SeqCst);
+            }
+        });
+        let result = rename_open_source(
+            &source,
+            &destination_dir,
+            OsStr::new("delivered"),
+            false,
+            ErrorCode::IoError,
+            "Windows destination-window test",
+        );
+        assert!(
+            substituted.load(Ordering::SeqCst),
+            "destination-window hook was not reached"
+        );
+
+        assert!(
+            result.is_err(),
+            "ancestor substitution inside the window must fail the publication"
+        );
+        assert_eq!(std::fs::read(&source_path).unwrap(), b"checked\n");
+        assert_eq!(std::fs::read_dir(&ancestor).unwrap().count(), 0);
+        assert!(!displaced.join("destination-dir").join("delivered").exists());
+        assert!(destination_dir.metadata("delivered").is_err());
     }
 }
 

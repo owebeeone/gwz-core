@@ -30,6 +30,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install taut-proto
+        # The protocol-currency tests regenerate via the taut generator;
+        # mirror release.yml's pinned install (same fix as windows-matrix).
+        run: python -m pip install --upgrade pip "taut-proto==0.8.1"
       - name: Run the complete test suite
         shell: bash
         run: cargo test --locked --no-fail-fast 2>&1 | tee platform-matrix.log || true

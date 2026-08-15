@@ -45,10 +45,42 @@ pub(super) fn fixture_with_markers(
     restore_clean_marker: Option<&[u8]>,
     handoff_marker: Option<&[u8]>,
 ) -> RootFixture {
+    fixture_configured(
+        format,
+        attached_clean_marker,
+        restore_clean_marker,
+        handoff_marker,
+        true,
+        0,
+    )
+}
+
+/// Same fixture with the two Windows CI pins under test control.
+/// `longpaths` toggles the `core.longpaths=true` pin; `minimum_root_length`
+/// pads the workspace root with one filler component until the root path
+/// reaches at least that many bytes (0 keeps the plain layout). The
+/// MAX_PATH negative test builds a root deep enough that a staged
+/// `ca1-*.source` path breaches MAX_PATH while every fixture-build path
+/// stays comfortably below it.
+pub(super) fn fixture_configured(
+    format: &str,
+    attached_clean_marker: Option<&[u8]>,
+    restore_clean_marker: Option<&[u8]>,
+    handoff_marker: Option<&[u8]>,
+    longpaths: bool,
+    minimum_root_length: usize,
+) -> RootFixture {
     let id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
     let temp = TempDir::new(&format!("root-preservation-{format}-{id}"));
     let backend = Git2Backend::new();
-    let root = temp.path().join("repo");
+    let mut root_parent = temp.path().to_path_buf();
+    let current = root_parent.as_os_str().len() + "repo".len() + 1;
+    if current < minimum_root_length {
+        let pad = (minimum_root_length - current).clamp(1, 200);
+        root_parent = root_parent.join("p".repeat(pad));
+        fs::create_dir_all(&root_parent).unwrap();
+    }
+    let root = root_parent.join("repo");
     fs::create_dir_all(&root).unwrap();
     git(
         &root,
@@ -62,7 +94,9 @@ pub(super) fn fixture_with_markers(
     // Windows CI: staged checked-artifact sources under repo/.gwz exceed
     // MAX_PATH in the runner temp tree; libgit2 workdir walks honor
     // core.longpaths. Pin autocrlf off for byte-exact comparisons.
-    git(&root, &["config", "core.longpaths", "true"]);
+    if longpaths {
+        git(&root, &["config", "core.longpaths", "true"]);
+    }
     git(&root, &["config", "core.autocrlf", "false"]);
     fs::create_dir_all(root.join("gwz.conf")).unwrap();
     fs::write(root.join(crate::artifact::LOCK_PATH), b"restore lock\n").unwrap();

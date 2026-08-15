@@ -808,6 +808,257 @@ fn checked_rollback_tolerates_checked_artifact_private_residue() {
     );
 }
 
+/// Seed a rollback fixture whose rewrite set crosses an attribute-covered
+/// path: `secret.txt` (covered by `attributes`) differs between `before` and
+/// the returned merge commit, so a checked rollback must rewrite it.
+/// Returns `(before, merged)`.
+fn seed_filtered_rollback(repo: &Path, attributes: &str) -> (String, String) {
+    let backend = Git2Backend::new();
+    backend.create_repo(repo).unwrap();
+    let base = commit_file(repo, "secret.txt", "plain-v1\n", "base", &[]).unwrap();
+    let base_oid = git2::Oid::from_str(&base).unwrap();
+    let attrs = commit_file(repo, ".gitattributes", attributes, "attrs", &[base_oid]).unwrap();
+    let attrs_oid = git2::Oid::from_str(&attrs).unwrap();
+    run_git(repo, &["branch", "feature"]);
+    run_git(repo, &["checkout", "feature"]);
+    let source = commit_file(repo, "secret.txt", "plain-v2\n", "feature", &[attrs_oid]).unwrap();
+    run_git(repo, &["checkout", "main"]);
+    let before = commit_file(repo, "main.txt", "target\n", "target", &[attrs_oid]).unwrap();
+    let merged = backend
+        .merge_upstream_checked(repo, "main", &before, &source, "merge", None)
+        .unwrap()
+        .commit
+        .unwrap();
+    (before, merged)
+}
+
+fn configure_filter_driver(repo: &Path, key: &str, value: &str) {
+    let repository = git2::Repository::open(repo).unwrap();
+    let mut config = repository.config().unwrap();
+    config.set_str(key, value).unwrap();
+}
+
+#[test]
+fn checked_rollback_refuses_configured_foreign_filter_before_any_mutation() {
+    // M5-8 A1 Decision Packet, Decision 2 (A′): a recovery-grade checkout
+    // whose rewrite set is covered by a CONFIGURED, non-passthrough foreign
+    // clean filter (the git-crypt class) must refuse pre-mutation with a
+    // typed error naming path and filter — replacing the post-commit
+    // `verify_merge_result` wedge with a clean preflight refusal. The driver
+    // command never runs under libgit2; its configuration is the hazard.
+    let temp = TempDir::new("rollback-foreign-filter");
+    let repo = temp.path().join("repo");
+    let (before, merged) = seed_filtered_rollback(&repo, "secret.txt filter=crypt\n");
+    let backend = Git2Backend::new();
+    configure_filter_driver(&repo, "filter.crypt.clean", "crypt-clean %f");
+
+    let error = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::DirtyMember);
+    assert!(
+        error.message.contains("secret.txt"),
+        "refusal must name the covered path: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("'crypt'"),
+        "refusal must name the foreign filter: {}",
+        error.message
+    );
+    // Pre-mutation refusal: ref unmoved, HEAD unmoved, worktree untouched.
+    assert_eq!(rev_parse(&repo, "refs/heads/main"), merged);
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(merged.clone()));
+    assert_eq!(fs::read(repo.join("secret.txt")).unwrap(), b"plain-v2\n");
+    // Nothing moved, so a retry re-refuses identically instead of sliding
+    // into the idempotent-arm wedge the packet documents.
+    let retry = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap_err();
+    assert_eq!(retry.code, ErrorCode::DirtyMember);
+    assert_eq!(rev_parse(&repo, "refs/heads/main"), merged);
+
+    // The `process`-only driver form is refused the same way.
+    let temp_process = TempDir::new("rollback-foreign-filter-process");
+    let repo_process = temp_process.path().join("repo");
+    let (before, merged) = seed_filtered_rollback(&repo_process, "secret.txt filter=scrub\n");
+    configure_filter_driver(&repo_process, "filter.scrub.process", "scrub-process");
+    let error = backend
+        .set_branch_target_checked(&repo_process, "main", &merged, &before)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::DirtyMember);
+    assert!(error.message.contains("'scrub'"));
+    assert_eq!(rev_parse(&repo_process, "refs/heads/main"), merged);
+}
+
+#[test]
+fn checked_rollback_proceeds_over_lfs_and_unconfigured_filter_attributes() {
+    // Decision 2 (A′) refinements: the `lfs` driver is allowlisted by name
+    // (pointer blobs round-trip clean; the pointer-bytes-on-disk surprise is
+    // disclosed doctrine, not a refusal), and a foreign attribute with NO
+    // configured clean/process driver is passthrough by definition — no
+    // wedge is possible, so rollback availability is preserved.
+    let backend = Git2Backend::new();
+
+    let temp = TempDir::new("rollback-lfs-allowlist");
+    let repo = temp.path().join("repo");
+    let (before, merged) = seed_filtered_rollback(&repo, "secret.txt filter=lfs\n");
+    configure_filter_driver(&repo, "filter.lfs.clean", "git-lfs clean -- %f");
+    configure_filter_driver(&repo, "filter.lfs.process", "git-lfs filter-process");
+    let result = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap();
+    assert!(result.updated);
+    assert_eq!(rev_parse(&repo, "refs/heads/main"), before);
+    assert_eq!(fs::read(repo.join("secret.txt")).unwrap(), b"plain-v1\n");
+
+    let temp_unconfigured = TempDir::new("rollback-unconfigured-filter");
+    let repo_unconfigured = temp_unconfigured.path().join("repo");
+    let (before, merged) = seed_filtered_rollback(&repo_unconfigured, "secret.txt filter=crypt\n");
+    let result = backend
+        .set_branch_target_checked(&repo_unconfigured, "main", &merged, &before)
+        .unwrap();
+    assert!(result.updated);
+    assert_eq!(rev_parse(&repo_unconfigured, "refs/heads/main"), before);
+    assert_eq!(
+        fs::read(repo_unconfigured.join("secret.txt")).unwrap(),
+        b"plain-v1\n"
+    );
+}
+
+#[test]
+fn checked_native_abort_refuses_configured_foreign_filter_before_any_mutation() {
+    // Decision 2 (A′), second recovery-grade site: the checked native-merge
+    // abort restore. A conflict ON the filter-covered path puts it in the
+    // restore's rewrite set; with a configured foreign driver the abort must
+    // refuse before touching the worktree or the merge state.
+    let temp = TempDir::new("abort-foreign-filter");
+    let repo = temp.path().join("repo");
+    let backend = Git2Backend::new();
+    backend.create_repo(&repo).unwrap();
+    let base = commit_file(&repo, "secret.txt", "plain-base\n", "base", &[]).unwrap();
+    let base_oid = git2::Oid::from_str(&base).unwrap();
+    let attrs = commit_file(
+        &repo,
+        ".gitattributes",
+        "secret.txt filter=crypt\n",
+        "attrs",
+        &[base_oid],
+    )
+    .unwrap();
+    let attrs_oid = git2::Oid::from_str(&attrs).unwrap();
+    run_git(&repo, &["branch", "feature"]);
+    run_git(&repo, &["checkout", "feature"]);
+    let source = commit_file(&repo, "secret.txt", "feature\n", "feature", &[attrs_oid]).unwrap();
+    run_git(&repo, &["checkout", "main"]);
+    let before = commit_file(&repo, "secret.txt", "main\n", "main", &[attrs_oid]).unwrap();
+    let result = backend.merge_upstream(&repo, "main", "feature").unwrap();
+    assert_eq!(result.conflicts, vec!["secret.txt".to_owned()]);
+    configure_filter_driver(&repo, "filter.crypt.clean", "crypt-clean %f");
+
+    let conflicted_bytes = fs::read(repo.join("secret.txt")).unwrap();
+    let error = backend.abort_merge(&repo, &before, &source).unwrap_err();
+    assert_eq!(error.code, ErrorCode::DirtyMember);
+    assert!(
+        error.message.contains("secret.txt") && error.message.contains("'crypt'"),
+        "refusal must name path and filter: {}",
+        error.message
+    );
+    // Pre-mutation refusal: still mid-merge, conflict intact, worktree and
+    // HEAD untouched.
+    assert!(backend.merge_state(&repo).unwrap().is_some());
+    assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
+    assert_eq!(fs::read(repo.join("secret.txt")).unwrap(), conflicted_bytes);
+}
+
+/// DOCTRINE SENTINEL — real-Windows CRLF fail-closed classification.
+///
+/// An ADOPTED-style repository (raw `git2` init, NOT gwz `create_repo`, with
+/// repo-local `core.autocrlf=true` set before any materialization — the
+/// ordinary porcelain-clone shape on a Windows autocrlf host) keeps
+/// filter-smudged CRLF bytes on disk for every path the recovery checkouts do
+/// not rewrite. The v1 reverse observers (`observe_v1_participant_rollback`
+/// and siblings) reduce to the raw-byte `checkout_matches_commit_*` compare;
+/// a worktree matching NEITHER candidate commit is their
+/// `(before=false, after=false)` arm — classification `Ambiguous`, rollback
+/// never starts: availability loss, never wrong evidence.
+///
+/// This test exists to END the windows-matrix CI blindness to that class
+/// (it is the only fixture whose worktree is filter-SMUDGED before feeding
+/// the raw-byte classification — other autocrlf=true fixtures pin the key
+/// after LF materialization — so matrix-green otherwise says nothing about
+/// ambient-CRLF worktrees). It PINS today's fail-closed
+/// doctrine: `GwzM5-8ExactEvidencePlatformAmendment.md` Clause A scope
+/// limits ("ordinary Windows-CRLF worktrees remain unsatisfiable for the
+/// raw-byte model") and the `GwzWindowsMatrix-Classification.md` standing
+/// residual tripwire. Decision 1 Option B deliberately leaves adopted repos
+/// in this class (fail-closed), serving them later via the renormalize
+/// operator command. If this test ever FAILS — the smudged worktree stops
+/// classifying Ambiguous — someone changed the raw-byte doctrine (clean-side
+/// comparison, entry re-materialization, …) and MUST update those frozen
+/// texts together with this sentinel.
+#[cfg(windows)]
+#[test]
+fn doctrine_sentinel_adopted_crlf_worktree_classifies_ambiguous_in_the_reverse_observer() {
+    let temp = TempDir::new("crlf-doctrine-sentinel");
+    let repo_path = temp.path().join("repo");
+    let mut opts = git2::RepositoryInitOptions::new();
+    opts.bare(false).no_reinit(true).initial_head("main");
+    let repository = git2::Repository::init_opts(&repo_path, &opts).unwrap();
+    repository
+        .config()
+        .unwrap()
+        .set_bool("core.autocrlf", true)
+        .unwrap();
+    drop(repository);
+    // A text file UNCHANGED between the two candidate commits: recovery
+    // checkouts rewrite deltas only, so no recovery edge ever rewrites it.
+    let before = commit_file(&repo_path, "unchanged.txt", "stable-line\n", "before", &[]).unwrap();
+    let before_oid = git2::Oid::from_str(&before).unwrap();
+    let result = commit_file(
+        &repo_path,
+        "moving.txt",
+        "result\n",
+        "result",
+        &[before_oid],
+    )
+    .unwrap();
+    // Filter-materialize the worktree the way the adopted clone/checkout did:
+    // missing files rewritten through the ACTIVE smudge filter land as CRLF.
+    fs::remove_file(repo_path.join("unchanged.txt")).unwrap();
+    fs::remove_file(repo_path.join("moving.txt")).unwrap();
+    let repository = git2::Repository::open(&repo_path).unwrap();
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force();
+    repository.checkout_head(Some(&mut checkout)).unwrap();
+    drop(repository);
+    assert_eq!(
+        fs::read(repo_path.join("unchanged.txt")).unwrap(),
+        b"stable-line\r\n",
+        "precondition: the ambient-style smudge materialized CRLF on disk"
+    );
+
+    let backend = Git2Backend::new();
+    // Filter-aware status stays clean (clean direction strips CRLF): the
+    // exposure is invisible to porcelain and bites only raw-byte evidence.
+    assert!(!backend.status(&repo_path).unwrap().is_dirty);
+    // Raw-byte observation: the worktree matches NEITHER candidate commit —
+    // the reverse observer's Ambiguous arm. Fail-closed: rollback never
+    // starts, wrong evidence is never accepted.
+    assert!(
+        !backend
+            .checkout_matches_commit_except(&repo_path, &result, &[])
+            .unwrap(),
+        "doctrine change detected: smudged worktree raw-matched the result commit"
+    );
+    assert!(
+        !backend
+            .checkout_matches_commit_except(&repo_path, &before, &[])
+            .unwrap(),
+        "doctrine change detected: smudged worktree raw-matched the before commit"
+    );
+}
+
 #[test]
 fn checked_resolution_binds_parents_and_rejects_unsafe_index_states() {
     let temp = TempDir::new("merge-checked-resolution");

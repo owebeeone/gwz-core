@@ -52,6 +52,7 @@ define_fault_keys! {
     RuntimeCapabilityProof => "runtime.capability_proof",
     CatalogBootstrapGitParentCreate => "catalog_bootstrap.git_parent_create",
     CatalogBootstrapGitParentReobserve => "catalog_bootstrap.git_parent_reobserve",
+    CatalogBootstrapReadyEdgeRootFlush => "catalog_bootstrap.ready_edge_root_flush",
     CatalogBootstrapScratchCreate => "catalog_bootstrap.scratch_create",
     CatalogBootstrapScratchWrite => "catalog_bootstrap.scratch_write",
     CatalogBootstrapScratchFlush => "catalog_bootstrap.scratch_flush",

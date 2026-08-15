@@ -20,6 +20,78 @@ pub(crate) fn creates_and_detects_ordinary_non_bare_repositories() {
 }
 
 #[test]
+pub(crate) fn create_repo_pins_repo_local_filter_neutralization_at_creation() {
+    // M5-8 A1 Decision Packet, Decision 1 Option B: gwz-born repositories pin
+    // `core.autocrlf=false` + `core.eol=lf` REPO-LOCALLY at creation, before
+    // any content exists, so every forward materialization is blob-exact
+    // regardless of ambient host filter config. Creation-time-only pin — the
+    // windows-matrix run-9 regression proved flipping these keys mid-life
+    // manufactures dirt; this test pins the safe (creation-time) placement.
+    let temp = TempDir::new("create-filter-pins");
+    let backend = Git2Backend::new();
+    let repo_path = temp.path().join("repo");
+    backend.create_repo(&repo_path).unwrap();
+
+    // Read the repo-LOCAL config file only (not the merged stack): the pin
+    // must hold without help from any ambient level.
+    let local = git2::Config::open(&repo_path.join(".git/config")).unwrap();
+    assert!(!local.get_bool("core.autocrlf").unwrap());
+    assert_eq!(local.get_string("core.eol").unwrap(), "lf");
+}
+
+#[test]
+pub(crate) fn created_repo_forward_materialization_is_blob_exact_under_ambient_autocrlf() {
+    // Mechanism pair for the creation-time pins. CONTROL: an adopted-style
+    // repo (raw git2 init, repo-local autocrlf=true — the ambient Windows
+    // host shape) proves the smudge machinery is live in this environment: a
+    // default filtered re-materialization writes CRLF. SUBJECT: the identical
+    // re-materialization in a gwz-created repo stays blob-exact because the
+    // repo-local pins neutralize the filter (local config outranks every
+    // ambient level, so the control's smudge source cannot reach a gwz-born
+    // worktree).
+    let temp = TempDir::new("create-filter-forward");
+
+    let control = temp.path().join("control");
+    let mut opts = git2::RepositoryInitOptions::new();
+    opts.bare(false).no_reinit(true).initial_head("main");
+    let repository = git2::Repository::init_opts(&control, &opts).unwrap();
+    repository
+        .config()
+        .unwrap()
+        .set_bool("core.autocrlf", true)
+        .unwrap();
+    drop(repository);
+    commit_file(&control, "file.txt", "line1\nline2\n", "seed", &[]).unwrap();
+    rematerialize_through_filters(&control, "file.txt");
+    assert_eq!(
+        fs::read(control.join("file.txt")).unwrap(),
+        b"line1\r\nline2\r\n",
+        "control: the filtered re-materialization must smudge to CRLF"
+    );
+
+    let subject = temp.path().join("subject");
+    Git2Backend::new().create_repo(&subject).unwrap();
+    commit_file(&subject, "file.txt", "line1\nline2\n", "seed", &[]).unwrap();
+    rematerialize_through_filters(&subject, "file.txt");
+    assert_eq!(
+        fs::read(subject.join("file.txt")).unwrap(),
+        b"line1\nline2\n",
+        "gwz-born worktrees stay blob-exact through forward materialization"
+    );
+}
+
+/// Delete `relative` and force-checkout HEAD with FILTERS ACTIVE — the
+/// ordinary forward-materialization edge (missing files are rewritten through
+/// whatever smudge filters the repo config activates).
+pub(crate) fn rematerialize_through_filters(repo_path: &Path, relative: &str) {
+    fs::remove_file(repo_path.join(relative)).unwrap();
+    let repository = git2::Repository::open(repo_path).unwrap();
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force();
+    repository.checkout_head(Some(&mut checkout)).unwrap();
+}
+
+#[test]
 fn commit_exists_requires_a_local_object_that_peels_to_commit() {
     let temp = TempDir::new("commit-exists");
     let backend = Git2Backend::new();
@@ -257,6 +329,70 @@ pub(crate) fn clones_local_repo_and_rejects_non_empty_targets_before_mutation() 
     assert_eq!(err.code, ErrorCode::PathCollision);
     assert!(blocked_path.join("keep.txt").is_file());
     assert!(!blocked_path.join(".git").exists());
+}
+
+#[test]
+pub(crate) fn clone_funnel_materializes_blob_exact_and_pins_filter_neutralization() {
+    // M5-8 A1 Decision Packet, Decision 1 Option B, clone edge: the single
+    // production clone funnel (`clone_repo_with_progress`) must (1) run its
+    // initial materialization with checkout filters DISABLED so the worktree
+    // is blob-exact from birth, and (2) pin `core.autocrlf=false` +
+    // `core.eol=lf` repo-locally on the fresh clone before anything else can
+    // materialize files. Invariant: no file is ever written through a smudge
+    // filter into a gwz-created repository.
+    let temp = TempDir::new("clone-filter-pins");
+    let backend = Git2Backend::new();
+    let source = temp.path().join("source");
+    backend.create_repo(&source).unwrap();
+    // An attribute-driven smudge source (`eol=crlf`) is active on EVERY OS,
+    // so this test exercises the same class a Windows `autocrlf=true` host
+    // would, hermetically. The blob itself stays LF (clean direction).
+    let attrs = commit_file(
+        &source,
+        ".gitattributes",
+        "*.txt text eol=crlf\n",
+        "attrs",
+        &[],
+    )
+    .unwrap();
+    let attrs_oid = git2::Oid::from_str(&attrs).unwrap();
+    commit_file(
+        &source,
+        "file.txt",
+        "line1\nline2\n",
+        "content",
+        &[attrs_oid],
+    )
+    .unwrap();
+
+    // CONTROL: a porcelain-equivalent clone (filters active) smudges the
+    // covered file to CRLF — proof the smudge source is live here, so the
+    // funnel assertion below is load-bearing and not vacuous.
+    let control = temp.path().join("control");
+    git2::build::RepoBuilder::new()
+        .clone(source.to_str().unwrap(), &control)
+        .unwrap();
+    assert_eq!(
+        fs::read(control.join("file.txt")).unwrap(),
+        b"line1\r\nline2\r\n",
+        "control: a filtered clone must smudge the covered file"
+    );
+
+    // FUNNEL: blob-exact initial materialization, creation-time pins present
+    // in the repo-LOCAL config, and status clean (clean-idempotence on LF).
+    let clone = temp.path().join("clone");
+    backend
+        .clone_repo(source.to_str().unwrap(), &clone)
+        .unwrap();
+    assert_eq!(
+        fs::read(clone.join("file.txt")).unwrap(),
+        b"line1\nline2\n",
+        "gwz clone funnel must materialize exact blob bytes"
+    );
+    let local = git2::Config::open(&clone.join(".git/config")).unwrap();
+    assert!(!local.get_bool("core.autocrlf").unwrap());
+    assert_eq!(local.get_string("core.eol").unwrap(), "lf");
+    assert!(!backend.status(&clone).unwrap().is_dirty);
 }
 
 #[test]

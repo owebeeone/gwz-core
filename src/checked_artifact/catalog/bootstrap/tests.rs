@@ -327,6 +327,7 @@ fn unowned_staging_and_final_directories_are_read_only_ambiguity() {
 #[test]
 fn restart_and_substitution_matrix_covers_every_catalog_bootstrap_fault_key() {
     let mapped = [
+        Fault::CatalogBootstrapReadyEdgeRootFlush,
         Fault::CatalogBootstrapScratchCreate,
         Fault::CatalogBootstrapScratchWrite,
         Fault::CatalogBootstrapScratchFlush,
@@ -398,6 +399,7 @@ fn restart_and_substitution_matrix_covers_git_directory_targets() {
     let mapped = [
         Fault::CatalogBootstrapGitParentCreate,
         Fault::CatalogBootstrapGitParentReobserve,
+        Fault::CatalogBootstrapReadyEdgeRootFlush,
         Fault::CatalogBootstrapScratchCreate,
         Fault::CatalogBootstrapScratchWrite,
         Fault::CatalogBootstrapScratchFlush,
@@ -447,6 +449,44 @@ fn restart_and_substitution_matrix_covers_git_directory_targets() {
 
         drive_git_directory_recovery(&fixture).unwrap();
     }
+}
+
+#[test]
+fn resume_after_scratch_interrupt_reissues_the_root_barrier_before_completion() {
+    // DirentBarrier [P3-1] regression: a drive interrupted at
+    // `catalog_bootstrap.scratch_write` leaves a VFS-complete exact scratch,
+    // so the restart classifies past the scratch edge and never reaches the
+    // scratch-tail root anchor. The Ready-edge prologue must issue the
+    // containing-root barrier on that resume drive before `Complete`.
+    let fixture = Fixture::new("resume-root-barrier");
+    run_next_catalog_fault(Fault::CatalogBootstrapScratchWrite, || {
+        panic!("simulated catalog process stop")
+    });
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let runtime = try_acquire_workspace_runtime(fixture.path())
+            .unwrap()
+            .expect("workspace runtime lease");
+        let _ = recover_or_create(runtime.catalog_mutation_lease());
+    }));
+    assert!(
+        interrupted.is_err(),
+        "scratch-write fault point was not reached"
+    );
+
+    let barrier_issued = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    run_next_catalog_fault(Fault::CatalogBootstrapReadyEdgeRootFlush, {
+        let barrier_issued = std::sync::Arc::clone(&barrier_issued);
+        move || barrier_issued.store(true, Ordering::SeqCst)
+    });
+    let runtime = try_acquire_workspace_runtime(fixture.path())
+        .unwrap()
+        .expect("reacquired workspace runtime lease");
+    let retained = recover_or_create(runtime.catalog_mutation_lease()).unwrap();
+    retained.revalidate_for_test().unwrap();
+    assert!(
+        barrier_issued.load(Ordering::SeqCst),
+        "resume drive converged without issuing the containing-root barrier"
+    );
 }
 
 #[test]

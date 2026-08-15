@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::merge_support::{prepared_merge_mismatch, signature_from_prepared};
 use super::repository_support::{
     branch_ref_name, parse_existing_commit, status_dirty_outside_checked_artifact_private,
@@ -11,6 +13,113 @@ pub(super) fn recovery_drift(message: impl Into<String>) -> ModelError {
 
 pub(super) fn recovery_dirty(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::DirtyMember, message)
+}
+
+/// M5-8 A1 Decision Packet, Decision 2 (A′) — refined foreign-filter refusal.
+///
+/// Before a recovery-grade (filters-disabled) checkout moves the worktree
+/// from `from` to `to`, refuse when any path it would WRITE is covered by a
+/// configured, non-passthrough foreign `filter` driver. Writing raw blob
+/// bytes through such a driver breaks Clause A's clean-idempotence
+/// precondition (`clean(blob_bytes) != blob_bytes`, the git-crypt class): the
+/// exact post-verification then fails only AFTER `transaction.commit()`, and
+/// the retry re-fails in the idempotent arm — a retry-proof recovery wedge
+/// (`GwzM5-8ExactEvidencePlatformAmendment.md`, Clause A OPEN DECISION,
+/// closed by the A1 packet as A′). This preflight replaces that post-commit
+/// wedge with a typed refusal before any ref or worktree mutation.
+///
+/// Predicate, per written path — deltas whose new (`to`) side exists;
+/// deletions write no bytes through any filter:
+/// - the `filter` attribute names a driver (bare/boolean or unset attributes
+///   cannot run one),
+/// - the name is foreign — not the allowlisted `lfs`, whose pointer blobs
+///   round-trip clean (the pointer-bytes-on-disk surprise is disclosed
+///   doctrine, not a refusal),
+/// - and the driver is configured non-passthrough: `filter.<name>.clean` or
+///   `filter.<name>.process` present in the effective config. An attribute
+///   whose driver has neither is passthrough and cannot wedge, so it does
+///   not cost rollback availability.
+///
+/// Cost: one tree diff (the checkout walks the same delta anyway) plus
+/// O(rewrite set) attribute lookups (libgit2 caches attribute stacks) and one
+/// config probe per distinct driver name (memoized here).
+pub(super) fn refuse_foreign_filtered_rewrites(
+    repo: &git2::Repository,
+    from: &git2::Tree<'_>,
+    to: &git2::Tree<'_>,
+) -> ModelResult<()> {
+    let diff = repo
+        .diff_tree_to_tree(Some(from), Some(to), None)
+        .map_err(git_error)?;
+    let mut probed: BTreeMap<String, bool> = BTreeMap::new();
+    let mut config: Option<git2::Config> = None;
+    for delta in diff.deltas() {
+        if delta.status() == git2::Delta::Deleted {
+            continue;
+        }
+        let Some(path) = delta.new_file().path() else {
+            continue;
+        };
+        let attr = repo
+            .get_attr_bytes(path, "filter", git2::AttrCheckFlags::default())
+            .map_err(git_error)?;
+        let name = match git2::AttrValue::from_bytes(attr) {
+            git2::AttrValue::String(name) => name,
+            // A non-UTF-8 driver name cannot be probed in config; fail closed
+            // rather than guess at what it might run.
+            git2::AttrValue::Bytes(_) => {
+                return Err(foreign_filter_refusal(path, "<non-utf8 filter name>"));
+            }
+            _ => continue,
+        };
+        if name == "lfs" {
+            continue;
+        }
+        let configured = match probed.get(name) {
+            Some(known) => *known,
+            None => {
+                if config.is_none() {
+                    config = Some(open_repo_config_snapshot(repo)?);
+                }
+                let snapshot = config.as_ref().expect("config snapshot just opened");
+                let known = foreign_filter_is_configured(snapshot, name)?;
+                probed.insert(name.to_owned(), known);
+                known
+            }
+        };
+        if configured {
+            return Err(foreign_filter_refusal(path, name));
+        }
+    }
+    Ok(())
+}
+
+fn open_repo_config_snapshot(repo: &git2::Repository) -> ModelResult<git2::Config> {
+    repo.config()
+        .and_then(|mut config| config.snapshot())
+        .map_err(git_error)
+}
+
+fn foreign_filter_is_configured(config: &git2::Config, name: &str) -> ModelResult<bool> {
+    for key in [
+        format!("filter.{name}.clean"),
+        format!("filter.{name}.process"),
+    ] {
+        match config.get_entry(&key) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+            Err(error) => return Err(git_error(error)),
+        }
+    }
+    Ok(false)
+}
+
+fn foreign_filter_refusal(path: &Path, filter: &str) -> ModelError {
+    recovery_dirty(format!(
+        "recovery checkout would rewrite '{}' through configured foreign filter '{filter}' \
+         (filter.{filter}.clean/process); refusing before any ref or worktree mutation",
+        path.display()
+    ))
 }
 
 pub(super) fn attached_head_ref(repo: &git2::Repository) -> ModelResult<String> {

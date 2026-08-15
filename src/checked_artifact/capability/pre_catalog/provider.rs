@@ -47,7 +47,8 @@ pub(in crate::checked_artifact::capability::pre_catalog) use directory_mutation:
     prepare_or_rewrite_staging, publish_final_directory, retire_active_record,
 };
 pub(in crate::checked_artifact::capability::pre_catalog) use mutation::{
-    create_git_private_parent, publish_active_record, write_or_rewrite_scratch,
+    create_git_private_parent, finish_ready_edge_root_barrier, publish_active_record,
+    write_or_rewrite_scratch,
 };
 pub(in crate::checked_artifact) use platform::HostPlatform;
 pub(in crate::checked_artifact::capability::pre_catalog) use retained::RetainedPlatformRoot;

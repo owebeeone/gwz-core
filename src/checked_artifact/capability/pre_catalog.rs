@@ -166,12 +166,25 @@ impl<'lease> CatalogPermitV1<'lease> {
         )
     }
 
+    /// Common Ready-edge mutation prologue: revalidate the retained
+    /// observation, then issue the idempotent containing-root dirent
+    /// barrier (DirentBarrier [P3-1] correction (a)). Every Ready owner
+    /// edge passes through here, so a resume drive that re-enters after
+    /// the scratch edge still anchors the private parent's dirent before
+    /// any later durable role: `Complete` is unreachable without a root
+    /// barrier issued by the completing process. Preflight stays
+    /// read-only; the barrier lives only inside owner mutation edges.
+    fn ready_edge_prologue(&self) -> Result<(), CheckedFsError> {
+        self.revalidate_observation()?;
+        provider::finish_ready_edge_root_barrier(&self._retained_root)
+    }
+
     pub(in crate::checked_artifact) fn execute_owner_scratch(
         self: Box<Self>,
         edge: CatalogOwnerEdgeV1,
     ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
         let token = edge.require_scratch_token()?;
-        self.revalidate_observation()?;
+        self.ready_edge_prologue()?;
         let scratch = CatalogScratchNameV1::new(
             self._durable_target_digest,
             self._historical_collision_digest,
@@ -214,7 +227,7 @@ impl<'lease> CatalogPermitV1<'lease> {
         edge: CatalogOwnerEdgeV1,
     ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
         edge.require_publish_active()?;
-        self.revalidate_observation()?;
+        self.ready_edge_prologue()?;
         let classification = self.classify_observed();
         if classification.decision()
             != crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::PublishActive
@@ -244,7 +257,7 @@ impl<'lease> CatalogPermitV1<'lease> {
         edge: CatalogOwnerEdgeV1,
     ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
         edge.require_prepare_or_rewrite_staging()?;
-        self.revalidate_observation()?;
+        self.ready_edge_prologue()?;
         let expected = self.expected_for(
             crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::PrepareOrRewriteStaging,
             "catalog staging",
@@ -258,7 +271,7 @@ impl<'lease> CatalogPermitV1<'lease> {
         edge: CatalogOwnerEdgeV1,
     ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
         edge.require_publish_final()?;
-        self.revalidate_observation()?;
+        self.ready_edge_prologue()?;
         let expected = self.expected_for(
             crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::PublishFinal,
             "catalog final publication",
@@ -272,7 +285,7 @@ impl<'lease> CatalogPermitV1<'lease> {
         edge: CatalogOwnerEdgeV1,
     ) -> Result<CatalogLeaseTargetWitnessV1<'lease>, CheckedFsError> {
         edge.require_retire_active()?;
-        self.revalidate_observation()?;
+        self.ready_edge_prologue()?;
         let expected = self.expected_for(
             crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::RetireActive,
             "catalog active retirement",
@@ -286,7 +299,7 @@ impl<'lease> CatalogPermitV1<'lease> {
         edge: CatalogOwnerEdgeV1,
     ) -> Result<CompletedCatalogPermitV1<'lease>, CheckedFsError> {
         edge.require_complete()?;
-        self.revalidate_observation()?;
+        self.ready_edge_prologue()?;
         let expected = self.expected_for(
             crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1::Complete,
             "completed catalog",

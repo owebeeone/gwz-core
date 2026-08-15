@@ -186,8 +186,9 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn write_or_rewrite_scr
     // private parent is VFS-visible but its dirent durability is unknown
     // (State-2 [P3-1]). Windows intentionally remains a no-op per the §6
     // durability model. Resume paths that re-enter after the scratch bytes
-    // are complete skip this anchor; that narrower residual is tracked as
-    // the DirentBarrier review's [P3-1].
+    // are complete are covered by the same idempotent barrier issued in the
+    // common Ready-edge mutation prologue (`finish_ready_edge_root_barrier`,
+    // the DirentBarrier review's [P3-1] correction (a)).
     finish_private_parent_edge(retained.root().handle())?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(
@@ -261,6 +262,24 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_active_recor
         crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapActiveReobserve,
     );
     sync_published_namespace(parent.handle())
+}
+
+/// Idempotent containing-root dirent barrier for the common Ready-edge
+/// mutation prologue (DirentBarrier [P3-1] correction (a)). Resume drives
+/// whose classification re-enters after the scratch edge never pass the
+/// scratch-tail anchor above; issuing the same barrier at the head of every
+/// Ready owner edge makes `Complete` unreachable without a root barrier
+/// issued by the completing process. Windows remains the deliberate no-op
+/// documented on `finish_private_parent_edge`.
+pub(in crate::checked_artifact::capability::pre_catalog) fn finish_ready_edge_root_barrier(
+    retained: &RetainedPlatformRoot,
+) -> Result<(), CheckedFsError> {
+    finish_private_parent_edge(retained.root().handle())?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapReadyEdgeRootFlush,
+    );
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

@@ -8,6 +8,30 @@ pub(crate) fn branch_ref_name(branch: &str) -> String {
     format!("refs/heads/{branch}")
 }
 
+/// Creation-time filter neutralization (M5-8 A1 Decision Packet, Decision 1
+/// Option B): pin `core.autocrlf=false` + `core.eol=lf` in the repo-local
+/// config of a repository gwz just created, before any content has been
+/// materialized. Repo-local config outranks every ambient level, so all
+/// subsequent forward checkouts in a gwz-born repo are blob-exact regardless
+/// of host filter config, and libgit2 `stash_save`'s internal filtered reset
+/// becomes a filter no-op — closing both tripwired real-Windows exposures
+/// for gwz-born repos (`GwzWindowsMatrix-Classification.md` standing residual
+/// tripwire). Attribute-driven smudge (`eol=crlf`, `ident`, foreign
+/// `filter=`) is deliberately untouched: it stays the frozen fail-closed
+/// residual on every OS.
+///
+/// CREATION-TIME ONLY. The windows-matrix run-9 regression proved these keys
+/// are safe to pin only at repo creation, before any filtered
+/// materialization: flipping them mid-life turns already-smudged worktree
+/// files into permanent manufactured dirt against their blobs. Never call
+/// this on a repository that may already have materialized content.
+pub(super) fn pin_creation_time_filter_neutralization(repo: &git2::Repository) -> ModelResult<()> {
+    let mut config = repo.config().map_err(git_error)?;
+    config.set_bool("core.autocrlf", false).map_err(git_error)?;
+    config.set_str("core.eol", "lf").map_err(git_error)?;
+    Ok(())
+}
+
 pub(crate) fn resolve_commit_oid(
     repo: &git2::Repository,
     ref_spec: &str,

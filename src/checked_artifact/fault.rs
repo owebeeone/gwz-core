@@ -29,6 +29,8 @@ pub(crate) enum CheckedArtifactFault {
     BeforeAuthorityCleanup,
     AfterAuthorityCleanup,
     #[cfg(windows)]
+    AfterDestinationPathDerivation,
+    #[cfg(windows)]
     BeforeAnchorRoundTrip,
     #[cfg(windows)]
     AfterAnchorOutboundRename,

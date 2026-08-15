@@ -96,7 +96,9 @@ fn malformed_scratch_family_entry_is_read_only_ambiguity() {
     );
 }
 
-#[cfg(target_os = "macos")]
+// Fold-mode semantics with an existence guard, not APFS specifics: the same
+// scenario applies to default case-insensitive NTFS parents (R2-F map G-3).
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn physical_case_fold_parent_rejects_non_ascii_equivalent_fixed_and_scratch_names() {
     let fixed = Fixture::new();

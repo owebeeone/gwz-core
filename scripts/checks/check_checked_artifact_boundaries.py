@@ -43,7 +43,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
     "checked_artifact/mod.rs": "ab520e0ea5868e033aec015530281ebd274642918fc82b77279f2a5c921c05b0",
-    "checked_artifact/platform.rs": "096e7e0ca1b14b9750d8db6b94ada5337a6942f4bf38d95cd112a4cd45a75766",
+    "checked_artifact/platform.rs": "8003a880abbd01efe40a9a2db6345dc1ad0e7d7f404d02c24bdfb16d58830d93",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
@@ -149,10 +149,10 @@ APPROVED_RUST_PATH_EDGES = {
 # the root module, every current descendant, and the descendant file set, so a
 # nested helper, a new source file, or a changed module edge fails closed.
 PROTECTED_SOURCE_TREE_DIGESTS = {
-    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "2d298dcdb4743c0cbc3fa7b4316e63c5c56d72329e3a0f44fb8078ac2a2c277d",
+    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "d336d72150c8ac1ba685a4798f4440472824bfca7b902987bcfa9a07096cacd2",
-    "checked_artifact/catalog.rs": "3b257e24ba154f1cc133220d2740f0417821b0b7396050e92af202fb72d2c5ed",
+    "checked_artifact/capability/pre_catalog.rs": "0eaad012d86d83f9b169f94fcf821279a4a16345d85002f6198b46de032d1819",
+    "checked_artifact/catalog.rs": "f131ab5c82c099acb1048ace8d67efdefac06b79c5444f0df6418eceffc53d95",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "e3e44124f11cfcf12df33705e76c8ae98c6861ed145adfa445672f8b08f0ddb3",
 }
@@ -174,8 +174,8 @@ RAW_RENAME_CALL_ALLOWLIST = {
         "rename_open_source": 1,
     },
     "checked_artifact/platform.rs": {
-        "open_rename_source": 3,
-        "rename_open_source": 3,
+        "open_rename_source": 5,
+        "rename_open_source": 5,
         "rename_relative": 5,
     },
     "checked_artifact/residue.rs": {"rename_relative": 2},

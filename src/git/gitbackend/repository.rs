@@ -1,5 +1,6 @@
 use super::repository_support::{
     branch_ref_name, ensure_branch_at_commit, git_file_status, open_repo,
+    pin_creation_time_filter_neutralization,
 };
 use super::*;
 
@@ -63,7 +64,10 @@ pub(super) fn read_file_at_commit(
 pub(super) fn create_repo(_backend: &Git2Backend, path: &Path) -> ModelResult<GitCreateResult> {
     let mut opts = git2::RepositoryInitOptions::new();
     opts.bare(false).no_reinit(true).initial_head("main");
-    git2::Repository::init_opts(path, &opts).map_err(git_error)?;
+    let repo = git2::Repository::init_opts(path, &opts).map_err(git_error)?;
+    // Immediately after init, before any content exists: gwz-born worktrees
+    // are blob-exact from birth (see the helper's doctrine comment).
+    pin_creation_time_filter_neutralization(&repo)?;
     Ok(GitCreateResult {
         path: path.to_path_buf(),
     })

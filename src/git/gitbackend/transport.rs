@@ -1,4 +1,4 @@
-use super::repository_support::open_repo;
+use super::repository_support::{open_repo, pin_creation_time_filter_neutralization};
 use super::transport_support::{
     fetch_options_with_progress, remote_callbacks, remote_fetch_options, remote_push_options,
 };
@@ -20,11 +20,22 @@ pub(super) fn clone_repo_with_progress(
 ) -> ModelResult<GitCloneResult> {
     ensure_clone_target_is_empty(path)?;
     let mut builder = git2::build::RepoBuilder::new();
+    // Creation-time filter neutralization (Decision 1 Option B), clone edge:
+    // this is the single production clone funnel, and `RepoBuilder::clone`
+    // materializes the initial worktree itself — so the initial checkout runs
+    // with content filters DISABLED (blob bytes verbatim; the strategy stays
+    // the clone default, SAFE) and the repo-local pins land immediately
+    // after, before anything else can materialize files. Invariant: no file
+    // is ever written through a smudge filter into a gwz-created repository.
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.disable_filters(true);
+    builder.with_checkout(checkout);
     builder.fetch_options(fetch_options_with_progress(
         backend.credential_helpers,
         Some(progress),
     ));
-    builder.clone(url, path).map_err(git_error)?;
+    let repo = builder.clone(url, path).map_err(git_error)?;
+    pin_creation_time_filter_neutralization(&repo)?;
     Ok(GitCloneResult {
         path: path.to_path_buf(),
         head: backend.head(path)?,
