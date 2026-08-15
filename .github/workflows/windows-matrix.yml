@@ -6,9 +6,13 @@ permissions:
 on:
   workflow_dispatch:
 
+# PROBE BRANCH ONLY: trimmed to the single surviving matrix failure with the
+# resolver's discarded cause propagated into the reject message
+# (finalization_root diagnosis; see GwzWindowsMatrix-Classification.md run 10).
+# The full-suite workflow lives on main.
 jobs:
   matrix:
-    name: Full suite on Windows
+    name: Finalization-root diagnosis (single test)
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v6
@@ -18,28 +22,15 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-      - name: Install taut-proto
-        # The protocol-currency tests regenerate via the taut generator;
-        # mirror release.yml's pinned install so Windows keeps that signal.
-        run: python -m pip install --upgrade pip "taut-proto==0.8.1"
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          # The suite step exits red while the burn-down tail exists; still
-          # save the cache so later runs and probe branches start warm.
           cache-on-failure: true
-      - name: Run the complete test suite
+      - name: Run the surviving test with full output
         shell: bash
-        run: cargo test --locked --no-fail-fast 2>&1 | tee windows-matrix.log || true
-      - name: Summarize failures
+        run: cargo test --locked --lib workspace_ops::merge::v1_lifecycle::finalization::root_tests::unborn_publication_uses_the_exact_checked_first_commit_candidate -- --nocapture 2>&1 | tee windows-matrix.log || true
+      - name: Show result
         shell: bash
         run: |
-          echo '== failure names =='
-          grep -E '^test .* \.\.\. FAILED' windows-matrix.log | sort || true
-          echo '== results =='
           grep -E '^test result' windows-matrix.log
           if grep -qE '^test result: FAILED' windows-matrix.log; then exit 1; fi
