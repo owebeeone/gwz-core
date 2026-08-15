@@ -68,6 +68,10 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn create_git_private_p
 ) -> Result<(), CheckedFsError> {
     let parent = retained.root().handle();
     let name = OsStr::new("gwz");
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapGitParentCreate,
+    );
     match parent.create_dir(name) {
         Ok(()) => {
             let opened = parent.open_dir_nofollow(name).map_err(|source| {
@@ -76,6 +80,10 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn create_git_private_p
             opened
                 .dir_metadata()
                 .map_err(|source| CheckedFsError::io("identify created Git GWZ parent", source))?;
+            #[cfg(test)]
+            crate::checked_artifact::fault_v1::hit(
+                crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapGitParentReobserve,
+            );
             finish_private_parent_edge(parent)
         }
         Err(source) if source.kind() == io::ErrorKind::AlreadyExists => Ok(()),

@@ -151,8 +151,8 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "d9b5d57d08be29edcc4f905a1721032db37c52fd5e040dbbc9a88a417e01d4d0",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "325f3804c1ee25983f58602de7e581a600e628282ca34841cd3c62b757e5a7b7",
-    "checked_artifact/catalog.rs": "9574ea931b825ed093e7944b89c2ce4f0946178a8f4fb5edfa699adc2bf13f62",
+    "checked_artifact/capability/pre_catalog.rs": "dd476465c963a5221db46cd7f64d0e8b05ebbde62e191874b1aca4b54a5e05f4",
+    "checked_artifact/catalog.rs": "4cc6e99d4a9c881e08a1cb3790b02bbb2f73df0433f748753c636d51a5c35e73",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "c1b914f2f96a60285b1b655995566a63baa4a4e1de7f080185b67de866eaa8db",
 }

@@ -21,6 +21,8 @@ const EXPECTED_STABLE_KEYS: &[&str] = &[
     "runtime.path_walk",
     "runtime.collision_scan",
     "runtime.capability_proof",
+    "catalog_bootstrap.git_parent_create",
+    "catalog_bootstrap.git_parent_reobserve",
     "catalog_bootstrap.scratch_create",
     "catalog_bootstrap.scratch_write",
     "catalog_bootstrap.scratch_flush",
@@ -165,7 +167,7 @@ const EXPECTED_STABLE_KEYS: &[&str] = &[
     "terminal.terminal_revalidate",
     "terminal.authority_release",
 ];
-const EXPECTED_KEY_COUNT: usize = 161;
+const EXPECTED_KEY_COUNT: usize = 163;
 
 #[derive(Debug, Eq, PartialEq)]
 struct KeySetMismatch {

@@ -347,7 +347,15 @@ fn restart_and_substitution_matrix_covers_every_catalog_bootstrap_fault_key() {
         Fault::CatalogBootstrapRetiredReobserve,
         Fault::CatalogBootstrapCatalogEnumerate,
     ];
-    let mut actual = mapped.iter().map(Fault::stable_key).collect::<Vec<_>>();
+    let git_directory_only = [
+        Fault::CatalogBootstrapGitParentCreate,
+        Fault::CatalogBootstrapGitParentReobserve,
+    ];
+    let mut actual = mapped
+        .iter()
+        .chain(git_directory_only.iter())
+        .map(Fault::stable_key)
+        .collect::<Vec<_>>();
     let mut expected = Fault::all()
         .into_iter()
         .filter_map(|key| {
@@ -380,6 +388,72 @@ fn restart_and_substitution_matrix_covers_every_catalog_bootstrap_fault_key() {
         let retained = recover_or_create(runtime.catalog_mutation_lease()).unwrap();
         retained.revalidate_for_test().unwrap();
     }
+}
+
+#[test]
+fn restart_and_substitution_matrix_covers_git_directory_targets() {
+    let mapped = [
+        Fault::CatalogBootstrapGitParentCreate,
+        Fault::CatalogBootstrapGitParentReobserve,
+        Fault::CatalogBootstrapScratchCreate,
+        Fault::CatalogBootstrapScratchWrite,
+        Fault::CatalogBootstrapScratchFlush,
+        Fault::CatalogBootstrapActivePublish,
+        Fault::CatalogBootstrapActiveReobserve,
+        Fault::CatalogBootstrapStagingCreate,
+        Fault::CatalogBootstrapInfrastructurePopulate,
+        Fault::CatalogBootstrapInfrastructureFlush,
+        Fault::CatalogBootstrapAnchorScratchCreate,
+        Fault::CatalogBootstrapAnchorScratchFlush,
+        Fault::CatalogBootstrapAnchorPublish,
+        Fault::CatalogBootstrapAnchorReobserve,
+        Fault::CatalogBootstrapAnchorHomeAExercise,
+        Fault::CatalogBootstrapAnchorHomeBExercise,
+        Fault::CatalogBootstrapStagingFlush,
+        Fault::CatalogBootstrapFinalPublish,
+        Fault::CatalogBootstrapFinalReopen,
+        Fault::CatalogBootstrapFinalReobserve,
+        Fault::CatalogBootstrapActiveRetire,
+        Fault::CatalogBootstrapRetiredReobserve,
+        Fault::CatalogBootstrapCatalogEnumerate,
+    ];
+    let mut actual = mapped.iter().map(Fault::stable_key).collect::<Vec<_>>();
+    let mut expected = Fault::all()
+        .into_iter()
+        .filter_map(|key| {
+            let value = key.stable_key();
+            value.starts_with("catalog_bootstrap.").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
+
+    for key in mapped {
+        let fixture = Fixture::new(&format!("git-fault-{}", key.stable_key()));
+        run_next_catalog_fault(key, || panic!("simulated catalog process stop"));
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = drive_git_directory_recovery(&fixture);
+        }));
+        assert!(
+            interrupted.is_err(),
+            "fault point was not reached: {}",
+            key.stable_key()
+        );
+
+        drive_git_directory_recovery(&fixture).unwrap();
+    }
+}
+
+fn drive_git_directory_recovery(fixture: &Fixture) -> Result<(), CheckedFsError> {
+    let request = CatalogLeaseTargetRequestV1::repository_common_git_directory(fixture.path());
+    let batch = CatalogLeaseTargetBatchV1::try_new([request]).unwrap();
+    let leases = CatalogLeaseSetV1::try_acquire(batch)
+        .unwrap()
+        .expect("Git catalog lease");
+    let lease = leases.leases().next().unwrap();
+    let retained = recover_or_create(lease)?;
+    retained.revalidate_for_test()
 }
 
 fn run_retry_edges(fixture: &Fixture, count: usize) {

@@ -50,6 +50,8 @@ define_fault_keys! {
     RuntimePathWalk => "runtime.path_walk",
     RuntimeCollisionScan => "runtime.collision_scan",
     RuntimeCapabilityProof => "runtime.capability_proof",
+    CatalogBootstrapGitParentCreate => "catalog_bootstrap.git_parent_create",
+    CatalogBootstrapGitParentReobserve => "catalog_bootstrap.git_parent_reobserve",
     CatalogBootstrapScratchCreate => "catalog_bootstrap.scratch_create",
     CatalogBootstrapScratchWrite => "catalog_bootstrap.scratch_write",
     CatalogBootstrapScratchFlush => "catalog_bootstrap.scratch_flush",
