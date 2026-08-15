@@ -145,6 +145,43 @@ pub(super) fn rename_open_source(
     Ok(())
 }
 
+#[cfg(not(windows))]
+pub(super) fn open_dir_share_delete(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
+    use cap_fs_ext::DirExt;
+    parent.open_dir_nofollow(name)
+}
+
+#[cfg(windows)]
+pub(super) fn open_dir_share_delete(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
+    // A plain directory open does not request DELETE sharing, so it
+    // collides (os error 32) with the retained rename-source handle, which
+    // holds DELETE access across the publication edge. Mirror the
+    // open_rename_source sharing recipe and no-follow discipline (W4,
+    // GwzWindowsMatrix-Classification.md).
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+    use cap_std::fs::{OpenOptions, OpenOptionsExt};
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = OpenOptions::new();
+    options
+        .access_mode(GENERIC_READ)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .follow(FollowSymlinks::No);
+    let file = parent.open_with(name, &options)?;
+    if !file.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "publication source is not a directory",
+        ));
+    }
+    Ok(Dir::from_std_file(file.into_std()))
+}
+
 #[cfg(windows)]
 fn windows_destination_path(
     destination_dir: &Dir,
