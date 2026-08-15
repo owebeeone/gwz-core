@@ -144,3 +144,83 @@ fn replacement_before_active_rename_is_not_published() {
             .exists()
     );
 }
+
+#[test]
+fn in_place_byte_drift_with_unchanged_identity_is_rejected_before_publication() {
+    let fixture = Fixture::new("byte-drift-at-window");
+    let record = expected_record(&fixture, 34);
+    let path = scratch_path(&fixture, &record);
+    let canonical = record.encode_canonical();
+    fs::write(&path, &canonical).unwrap();
+    let mut drifted = canonical.clone();
+    let last = drifted.len() - 1;
+    drifted[last] ^= 0x01;
+    run_next_at(CatalogMutationFaultV1::PublishBeforeRename, {
+        let path = path.clone();
+        let drifted = drifted.clone();
+        move || {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            file.write_all(&drifted).unwrap();
+            file.sync_all().unwrap();
+        }
+    });
+
+    run_recovery(&fixture);
+
+    assert_eq!(fs::read(&path).unwrap(), drifted);
+    assert!(
+        !fixture
+            .private_parent()
+            .join(std::str::from_utf8(CatalogPrivateNameV1::BootstrapActive.leaf_bytes()).unwrap())
+            .exists()
+    );
+}
+
+#[test]
+fn destination_created_inside_the_window_is_not_replaced() {
+    let fixture = Fixture::new("destination-at-window");
+    let record = expected_record(&fixture, 35);
+    let path = scratch_path(&fixture, &record);
+    fs::write(&path, record.encode_canonical()).unwrap();
+    let active = fixture
+        .private_parent()
+        .join(std::str::from_utf8(CatalogPrivateNameV1::BootstrapActive.leaf_bytes()).unwrap());
+    let foreign = b"foreign-active\n".to_vec();
+    run_next_at(CatalogMutationFaultV1::PublishBeforeRename, {
+        let active = active.clone();
+        let foreign = foreign.clone();
+        move || fs::write(&active, &foreign).unwrap()
+    });
+
+    run_recovery(&fixture);
+
+    assert_eq!(fs::read(&active).unwrap(), foreign);
+    assert_eq!(fs::read(&path).unwrap(), record.encode_canonical());
+}
+
+#[test]
+fn kind_swap_inside_the_window_is_left_untouched() {
+    let fixture = Fixture::new("kind-swap-at-window");
+    let record = expected_record(&fixture, 36);
+    let path = scratch_path(&fixture, &record);
+    fs::write(&path, record.encode_canonical()).unwrap();
+    run_next_at(CatalogMutationFaultV1::PublishBeforeRename, {
+        let path = path.clone();
+        move || {
+            fs::remove_file(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+        }
+    });
+
+    run_recovery(&fixture);
+
+    assert!(fs::metadata(&path).unwrap().is_dir());
+    assert!(
+        !fixture
+            .private_parent()
+            .join(std::str::from_utf8(CatalogPrivateNameV1::BootstrapActive.leaf_bytes()).unwrap())
+            .exists()
+    );
+}
