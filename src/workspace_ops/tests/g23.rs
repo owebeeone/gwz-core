@@ -27,6 +27,7 @@ mod characterization_v0;
 mod compatibility_v0;
 mod compatibility_v0_edges;
 mod continue_merge;
+mod continue_v0_gate;
 mod drift;
 mod finalization;
 mod fixtures;

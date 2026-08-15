@@ -50,12 +50,14 @@ pub(super) fn observe_reverse_handoff<B: MergeAuthorityBackend>(
             require_handoff_exact(verification_is_exact(verify_accepted_inputs(
                 backend, current,
             ))?)?;
-            let observed = snapshot(backend, current)?;
+            let Some(observed) = snapshot(backend, current)? else {
+                return Err(reverse_handoff_error());
+            };
             require_handoff_exact(
-                observed == Some((CandidatePublicationPrefix::Baseline, IndexForm::Pre)),
+                observed == (CandidatePublicationPrefix::Baseline, IndexForm::Pre),
             )?;
             Ok(ReversePublicationHandoffObservation::Ready(
-                candidate_handoff_fact(observed.expect("exact candidate snapshot")),
+                candidate_handoff_fact(observed),
             ))
         }
         PublicationStep::CommittingEvidence if progress.composition_commit.is_none() => {
@@ -83,12 +85,14 @@ pub(super) fn observe_reverse_handoff<B: MergeAuthorityBackend>(
         }
         PublicationStep::CommittingEvidence => {
             require_post_evidence_handoff(backend, current)?;
-            let observed = snapshot(backend, current)?;
+            let Some(observed) = snapshot(backend, current)? else {
+                return Err(reverse_handoff_error());
+            };
             require_handoff_exact(
-                observed == Some((CandidatePublicationPrefix::Baseline, IndexForm::Pre)),
+                observed == (CandidatePublicationPrefix::Baseline, IndexForm::Pre),
             )?;
             Ok(ReversePublicationHandoffObservation::Ready(
-                candidate_handoff_fact(observed.expect("exact candidate snapshot")),
+                candidate_handoff_fact(observed),
             ))
         }
         PublicationStep::PublishingCandidate => {
@@ -457,7 +461,12 @@ fn verify_publication<B: MergeAuthorityBackend>(
     current: &StoredV1Record,
     operation_complete: bool,
 ) -> ModelResult<ExactObservationFact> {
-    let progress = current.record().publication.as_ref().unwrap();
+    let progress = current.record().publication.as_ref().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "publication verification requires publication progress",
+        )
+    })?;
     let exact = if progress.candidate.is_none() {
         verification_is_exact(verify_accepted_inputs(backend, current))?
     } else {
@@ -617,7 +626,12 @@ fn recorded_evidence_is_live<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<bool> {
-    let progress = current.record().publication.as_ref().unwrap();
+    let progress = current.record().publication.as_ref().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "recorded evidence verification requires publication progress",
+        )
+    })?;
     let Some(recorded_commit) = progress.composition_commit.as_deref() else {
         return Ok(false);
     };

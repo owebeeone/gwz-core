@@ -15,6 +15,7 @@ pub(crate) fn handle_continue<B: GitBackend, S: MergeStore>(
         return closed_or_missing(store, root, request.merge_id.as_deref(), context);
     };
     super::super::validate::validate_open_merge_id(request.merge_id.as_deref(), &record.merge_id)?;
+    reject_unsupported_legacy_v0(backend, root, &record)?;
     match record.state {
         OperationState::Finalizing | OperationState::Completed => {
             let completed = super::super::finalize::finalize(

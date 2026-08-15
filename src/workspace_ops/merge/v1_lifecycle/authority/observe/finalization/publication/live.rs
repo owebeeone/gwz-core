@@ -29,15 +29,29 @@ pub(super) fn publication_resolution(
     current: &StoredV1Record,
     observed: Option<(CandidatePublicationPrefix, IndexForm)>,
 ) -> ModelResult<PublicationResolution> {
-    let candidate = current
-        .record()
-        .publication
-        .as_ref()
-        .unwrap()
-        .candidate
-        .as_ref()
-        .unwrap();
+    let (_, candidate) = candidate_progress(current)?;
     Ok(resolve_candidate(candidate, observed))
+}
+
+fn candidate_progress(
+    current: &StoredV1Record,
+) -> ModelResult<(
+    &crate::workspace_ops::merge::PublicationProgress,
+    &crate::workspace_ops::merge::PublicationCandidate,
+)> {
+    let progress = current.record().publication.as_ref().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "candidate publication requires publication progress",
+        )
+    })?;
+    let candidate = progress.candidate.as_ref().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "candidate publication requires a prepared candidate",
+        )
+    })?;
+    Ok((progress, candidate))
 }
 
 fn resolve_candidate(
@@ -82,9 +96,13 @@ pub(super) fn snapshot<B: MergeAuthorityBackend>(
     current: &StoredV1Record,
 ) -> ModelResult<Option<(CandidatePublicationPrefix, IndexForm)>> {
     let record = current.record();
-    let progress = record.publication.as_ref().unwrap();
-    let candidate = progress.candidate.as_ref().unwrap();
-    let marker_path = progress.candidate_marker_path.as_ref().unwrap();
+    let (progress, candidate) = candidate_progress(current)?;
+    let marker_path = progress.candidate_marker_path.as_ref().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::MergeRecordUnreadable,
+            "candidate publication requires the recorded marker path",
+        )
+    })?;
     let root = current.location().root();
     let lock = regular_digest(&root.join(LOCK_PATH))?;
     let marker = regular_digest(&root.join(marker_path))?;

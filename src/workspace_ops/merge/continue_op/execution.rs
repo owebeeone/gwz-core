@@ -3,6 +3,86 @@ use super::super::participant_semantics::continue_eligibility::{
 };
 use super::*;
 
+/// The v0 forged-action resume gate (M5b-IF review finding Code F-1).
+///
+/// The amended I2 contracts promise `UnsupportedLegacyMode` for legacy no-ff
+/// v0 rows before resume or mutation (`GwzM5-8I2CompatibilityContract.md`
+/// §5, `GwzM5-8I2RecordContract.md` §7). No supported v0 writer produces
+/// `mode: no_ff` (start refuses it before record creation) and none freezes a
+/// durable two-parent commit action over a fast-forwardable pair — that
+/// durable shape exists only for v1 no-ff semantics. Both are refusable only
+/// by forgery, so continue rejects them at its earliest point with the whole
+/// record in hand: before finalization, before pending-action reconciliation
+/// hands the frozen action to the Git backend or adopts an outcome into the
+/// record, and before any ref, worktree, or record write.
+pub(super) fn reject_unsupported_legacy_v0<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &MergeOperationRecord,
+) -> ModelResult<()> {
+    match record.mode {
+        MergeExecutionMode::Normal | MergeExecutionMode::FfOnly => {}
+        MergeExecutionMode::NoFf => {
+            return Err(ModelError::new(
+                ErrorCode::UnsupportedLegacyMode,
+                format!(
+                    "merge record '{}' carries v0 mode 'no_ff'; no supported v0 \
+                     writer produces no-ff records, so v0 refuses it before \
+                     resume or mutation",
+                    record.merge_id
+                ),
+            ));
+        }
+    }
+    for (target_id, participant) in &record.participants {
+        let Some(pending) = participant.pending_action.as_ref() else {
+            continue;
+        };
+        if pending.kind != PendingMergeActionKind::TrueMerge
+            || pending.expected_result != Some(PendingMergeExpectedResult::Commit)
+        {
+            continue;
+        }
+        // Classify the recorded (before, source) pair. `merge_analysis`
+        // resolves the live branch tip, so its verdict counts only when that
+        // tip is exactly the recorded `before_commit` — the one shape the
+        // executable NotStarted resume lane accepts. Every other observation
+        // (mismatched frozen intent, missing repository, moved tip) already
+        // fails closed through reconciliation with its established errors,
+        // so this gate deliberately skips instead of replacing those codes.
+        if pending.target_branch != participant.target_branch
+            || pending.before_commit != participant.before_commit
+            || pending.source_commit != participant.source_commit
+        {
+            continue;
+        }
+        let Ok(path) =
+            super::super::status::validated_participant_path(root, target_id, participant)
+        else {
+            continue;
+        };
+        let Ok(analysis) = backend.merge_analysis(
+            &path,
+            &participant.target_branch,
+            &participant.source_commit,
+        ) else {
+            continue;
+        };
+        if analysis.target_commit == participant.before_commit
+            && analysis.kind == GitMergeAnalysisKind::FastForward
+        {
+            return Err(ModelError::new(
+                ErrorCode::UnsupportedLegacyMode,
+                "durable pending action freezes a two-parent merge commit over a \
+                 fast-forwardable pair; no supported v0 writer produces this \
+                 no-ff shape, so v0 refuses it before resume or mutation",
+            )
+            .with_member(target_id, &participant.path));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn preflight<B: GitBackend>(
     backend: &B,
     root: &Path,

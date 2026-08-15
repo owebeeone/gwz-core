@@ -60,8 +60,15 @@ impl V1Invocation {
             .preparation_owners
             .iter()
             .any(|owner| owner == member_id)
-            || current.record().participants[member_id].state != ParticipantState::Conflicted
         {
+            return Ok(action);
+        }
+        let row = current
+            .record()
+            .participants
+            .get(member_id)
+            .ok_or_else(|| dispatch_error("preparation owner is missing from the record"))?;
+        if row.state != ParticipantState::Conflicted {
             return Ok(action);
         }
         let record = current.record();

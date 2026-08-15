@@ -82,19 +82,9 @@ mod v1_rollback {
         root: &Path,
         record: &MergeOperationRecordV1,
     ) -> ModelResult<bool> {
-        let publication = publication_v1(record)?;
-        let candidate = publication
-            .candidate
-            .as_ref()
-            .ok_or_else(|| root_error("publication evidence has no immutable candidate"))?;
+        let candidate = candidate_v1(record)?;
         let boundary = artifact_facts::observe(root, &boundary_relative(root)?)?;
-        let marker = artifact_facts::observe(
-            root,
-            publication
-                .candidate_marker_path
-                .as_deref()
-                .ok_or_else(|| root_error("publication evidence has no marker path"))?,
-        )?;
+        let marker = artifact_facts::observe(root, marker_path_v1(record)?)?;
         Ok(boundary
             == super::artifact_facts::RegularFileFact::Bytes(
                 candidate.baseline_boundary_text.as_bytes().to_vec(),
@@ -149,13 +139,12 @@ mod v1_rollback {
                 "publication-evidence rollback is not at the exact before state",
             ));
         }
-        let publication = publication_v1(record)?;
-        let candidate = publication.candidate.as_ref().unwrap();
+        let candidate = candidate_v1(record)?;
         match step {
             EvidenceRollbackStepV1::EvidenceCommit => backend.rollback_gwz_paths_commit_checked(
                 root,
                 &candidate.root_branch,
-                publication.composition_commit.as_deref().unwrap(),
+                composition_commit_v1(record)?,
                 evidence_parent_v1(record)?,
                 &crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?,
                 &crate::workspace_ops::merge::acceptance::v1_composition_message(record),
@@ -174,17 +163,11 @@ mod v1_rollback {
             ),
             EvidenceRollbackStepV1::Marker => artifact_facts::remove_exact(
                 root,
-                publication.candidate_marker_path.as_deref().unwrap(),
+                marker_path_v1(record)?,
                 candidate.marker_yaml.as_bytes(),
             ),
             EvidenceRollbackStepV1::Index => backend
-                .stage_paths(
-                    root,
-                    &[
-                        artifact::LOCK_PATH,
-                        publication.candidate_marker_path.as_deref().unwrap(),
-                    ],
-                )
+                .stage_paths(root, &[artifact::LOCK_PATH, marker_path_v1(record)?])
                 .map(|_| ()),
             EvidenceRollbackStepV1::Complete => Err(root_error(
                 "complete evidence rollback has no physical mutation",
@@ -292,8 +275,7 @@ mod v1_rollback {
         record: &MergeOperationRecordV1,
         pending: Option<EvidenceRollbackStepV1>,
     ) -> ModelResult<EvidenceFileStates> {
-        let publication = publication_v1(record)?;
-        let candidate = publication.candidate.as_ref().unwrap();
+        let candidate = candidate_v1(record)?;
         Ok(EvidenceFileStates {
             boundary: if pending == Some(EvidenceRollbackStepV1::Boundary) {
                 transition_file(artifact_facts::classify_write(
@@ -328,15 +310,12 @@ mod v1_rollback {
             marker: if pending == Some(EvidenceRollbackStepV1::Marker) {
                 transition_file(artifact_facts::classify_remove(
                     root,
-                    publication.candidate_marker_path.as_deref().unwrap(),
+                    marker_path_v1(record)?,
                     candidate.marker_yaml.as_bytes(),
                 )?)
             } else {
                 classify_file(
-                    artifact_facts::observe(
-                        root,
-                        publication.candidate_marker_path.as_deref().unwrap(),
-                    )?,
+                    artifact_facts::observe(root, marker_path_v1(record)?)?,
                     candidate.marker_yaml.as_bytes(),
                     &[],
                     true,
@@ -390,9 +369,8 @@ mod v1_rollback {
         root: &Path,
         record: &MergeOperationRecordV1,
     ) -> ModelResult<FileState> {
-        let publication = publication_v1(record)?;
-        let candidate = publication.candidate.as_ref().unwrap();
-        let marker = publication.candidate_marker_path.as_ref().unwrap();
+        let candidate = candidate_v1(record)?;
+        let marker = marker_path_v1(record)?;
         let before = backend.index_entries_match_candidate_files(
             root,
             &crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?,
@@ -439,7 +417,7 @@ mod v1_rollback {
             return Ok(false);
         }
         let publication = publication_v1(record)?;
-        let candidate = publication.candidate.as_ref().unwrap();
+        let candidate = candidate_v1(record)?;
         let expected = if before {
             publication.composition_commit.as_deref()
         } else {
@@ -452,7 +430,7 @@ mod v1_rollback {
         if before && head_matches {
             match backend.verify_gwz_paths_commit(
                 root,
-                publication.composition_commit.as_deref().unwrap(),
+                composition_commit_v1(record)?,
                 evidence_parent_v1(record)?,
                 &crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?,
                 &crate::workspace_ops::merge::acceptance::v1_composition_message(record),
@@ -483,6 +461,29 @@ mod v1_rollback {
             .publication
             .as_ref()
             .ok_or_else(|| root_error("publication progress is missing"))
+    }
+
+    fn candidate_v1(
+        record: &MergeOperationRecordV1,
+    ) -> ModelResult<&crate::workspace_ops::merge::PublicationCandidate> {
+        publication_v1(record)?
+            .candidate
+            .as_ref()
+            .ok_or_else(|| root_error("publication evidence has no immutable candidate"))
+    }
+
+    fn composition_commit_v1(record: &MergeOperationRecordV1) -> ModelResult<&str> {
+        publication_v1(record)?
+            .composition_commit
+            .as_deref()
+            .ok_or_else(|| root_error("publication evidence has no composition commit"))
+    }
+
+    fn marker_path_v1(record: &MergeOperationRecordV1) -> ModelResult<&String> {
+        publication_v1(record)?
+            .candidate_marker_path
+            .as_ref()
+            .ok_or_else(|| root_error("publication evidence has no marker path"))
     }
 
     fn classify(before: bool, after: bool) -> V1EvidenceRollbackObservation {

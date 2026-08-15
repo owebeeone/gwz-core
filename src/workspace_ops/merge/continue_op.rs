@@ -7,8 +7,9 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext, WorkspaceMutatorLock};
 
 use super::{
-    ConflictFileEvidence, MergeOperationRecord, MergeParticipantRecord, MergeRecordError,
-    MergeStore, OperationState, ParticipantState, PendingMergeActionKind,
+    ConflictFileEvidence, MergeExecutionMode, MergeOperationRecord, MergeParticipantRecord,
+    MergeRecordError, MergeStore, OperationState, ParticipantState, PendingMergeActionKind,
+    PendingMergeExpectedResult,
 };
 
 mod coordinator;

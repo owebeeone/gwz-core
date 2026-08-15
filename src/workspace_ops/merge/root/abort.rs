@@ -357,13 +357,31 @@ mod v1_rollback {
                     (
                         WORKSPACE_MANIFEST,
                         before.0.as_bytes(),
-                        record.baseline.manifest_yaml.as_deref().unwrap().as_bytes(),
+                        record
+                            .baseline
+                            .manifest_yaml
+                            .as_deref()
+                            .ok_or_else(|| {
+                                root_metadata_error(
+                                    "selected-root operation baseline has no manifest bytes",
+                                )
+                            })?
+                            .as_bytes(),
                     )
                 } else {
                     (
                         LOCK_PATH,
                         before.1.as_bytes(),
-                        record.baseline.lock_yaml.as_deref().unwrap().as_bytes(),
+                        record
+                            .baseline
+                            .lock_yaml
+                            .as_deref()
+                            .ok_or_else(|| {
+                                root_metadata_error(
+                                    "selected-root operation baseline has no lock bytes",
+                                )
+                            })?
+                            .as_bytes(),
                     )
                 };
                 artifact_facts::write_checked(root, relative, expected, target)

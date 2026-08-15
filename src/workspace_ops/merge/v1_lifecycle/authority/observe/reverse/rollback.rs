@@ -332,19 +332,26 @@ impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for RollbackEntryHandof
 fn observe_pending<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
-    action: &PendingRollbackActionV1,
+    pending: &PendingRollbackActionV1,
 ) -> ModelResult<ExactObservationFact> {
-    match action {
+    match pending {
         PendingRollbackActionV1::Participant {
             member_id,
             action,
             terminal_state,
-        } => observe_participant(backend, current, member_id, *action, *terminal_state),
+        } => observe_participant(
+            backend,
+            current,
+            pending,
+            member_id,
+            *action,
+            *terminal_state,
+        ),
         PendingRollbackActionV1::PublicationEvidence { next_step } => {
-            observe_evidence(backend, current, *next_step)
+            observe_evidence(backend, current, pending, *next_step)
         }
         PendingRollbackActionV1::SelectedRootMetadata { next_step } => {
-            observe_root(backend, current, *next_step)
+            observe_root(backend, current, pending, *next_step)
         }
     }
 }
@@ -375,6 +382,7 @@ fn participant_intent(
 fn observe_participant<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
+    pending: &PendingRollbackActionV1,
     member_id: &str,
     action: ParticipantRollbackKindV1,
     terminal_state: ParticipantState,
@@ -388,11 +396,9 @@ fn observe_participant<B: MergeAuthorityBackend>(
         row,
         action,
     )? {
-        crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::Before => {
-            Ok(ExactObservationFact::NotStarted(
-                NotStartedObservation::Rollback(current.record().pending_rollback.clone().unwrap()),
-            ))
-        }
+        crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::Before => Ok(
+            ExactObservationFact::NotStarted(NotStartedObservation::Rollback(pending.clone())),
+        ),
         crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::After => {
             let mut next = row.clone();
             next.state = terminal_state;
@@ -436,6 +442,7 @@ fn evidence_intent(current: &StoredV1Record) -> ModelResult<ExactObservationFact
 fn observe_evidence<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
+    pending: &PendingRollbackActionV1,
     step: EvidenceRollbackStepV1,
 ) -> ModelResult<ExactObservationFact> {
     use crate::workspace_ops::merge::abort::V1EvidenceRollbackObservation as O;
@@ -446,7 +453,7 @@ fn observe_evidence<B: MergeAuthorityBackend>(
         step,
     )? {
         O::Before => Ok(ExactObservationFact::NotStarted(
-            NotStartedObservation::Rollback(current.record().pending_rollback.clone().unwrap()),
+            NotStartedObservation::Rollback(pending.clone()),
         )),
         O::After if step == EvidenceRollbackStepV1::Complete => {
             let proof = VerifiedEvidenceRollbackCompletion::issue(
@@ -461,7 +468,8 @@ fn observe_evidence<B: MergeAuthorityBackend>(
             )))
         }
         O::After => {
-            let next = next_evidence(step).unwrap();
+            let next = next_evidence(step)
+                .ok_or_else(|| recovery_error("evidence rollback step has no successor"))?;
             let proof = VerifiedEvidenceRollbackStep::issue(
                 &AuthorityIssuer::for_observer(current),
                 "@publication",
@@ -496,6 +504,7 @@ fn root_intent(current: &StoredV1Record) -> ModelResult<ExactObservationFact> {
 fn observe_root<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
+    pending: &PendingRollbackActionV1,
     step: RootMetadataRollbackStepV1,
 ) -> ModelResult<ExactObservationFact> {
     use crate::workspace_ops::merge::root::V1RootRollbackObservation as O;
@@ -506,7 +515,7 @@ fn observe_root<B: MergeAuthorityBackend>(
         step,
     )? {
         O::Before => Ok(ExactObservationFact::NotStarted(
-            NotStartedObservation::Rollback(current.record().pending_rollback.clone().unwrap()),
+            NotStartedObservation::Rollback(pending.clone()),
         )),
         O::After if step == RootMetadataRollbackStepV1::Complete => {
             let proof = VerifiedRootMetadataRollbackCompletion::issue(
@@ -521,7 +530,8 @@ fn observe_root<B: MergeAuthorityBackend>(
             )))
         }
         O::After => {
-            let next = next_root(step).unwrap();
+            let next = next_root(step)
+                .ok_or_else(|| recovery_error("root metadata rollback step has no successor"))?;
             let proof = VerifiedRootMetadataRollbackStep::issue(
                 &AuthorityIssuer::for_observer(current),
                 "@root",

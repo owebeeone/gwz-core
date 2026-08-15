@@ -153,8 +153,8 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
     "checked_artifact/capability/pre_catalog.rs": "0eaad012d86d83f9b169f94fcf821279a4a16345d85002f6198b46de032d1819",
     "checked_artifact/catalog.rs": "f131ab5c82c099acb1048ace8d67efdefac06b79c5444f0df6418eceffc53d95",
-    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ff6574fc1bde70c81dc72bd58373eaa50ef7d1b26fc6468412f9e041a1e90788",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "e3e44124f11cfcf12df33705e76c8ae98c6861ed145adfa445672f8b08f0ddb3",
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "b4cfea0bd46ef595e0f83d34cc47deabb68011bfff032060c109de5f05dccbe3",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "00a10319372ba8d6136fb690251c2049e47c2f473361396b86e86f090de9ac94",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
