@@ -815,6 +815,7 @@ fn checked_rollback_tolerates_checked_artifact_private_residue() {
 fn seed_filtered_rollback(repo: &Path, attributes: &str) -> (String, String) {
     let backend = Git2Backend::new();
     backend.create_repo(repo).unwrap();
+    pin_hermetic_lfs_passthrough(repo);
     let base = commit_file(repo, "secret.txt", "plain-v1\n", "base", &[]).unwrap();
     let base_oid = git2::Oid::from_str(&base).unwrap();
     let attrs = commit_file(repo, ".gitattributes", attributes, "attrs", &[base_oid]).unwrap();
@@ -836,6 +837,37 @@ fn configure_filter_driver(repo: &Path, key: &str, value: &str) {
     let repository = git2::Repository::open(repo).unwrap();
     let mut config = repository.config().unwrap();
     config.set_str(key, value).unwrap();
+}
+
+/// Fixture hermeticity, not subject matter: neutralize any AMBIENT `git-lfs`
+/// install for the porcelain checkouts these fixtures run.
+///
+/// `seed_filtered_rollback` attributes `secret.txt` with a `filter=` driver
+/// over ordinary text. On a host where `git lfs install --system` has run
+/// (the Windows and macOS GitHub runners both ship one), system config
+/// supplies `filter.lfs.{clean,smudge,process}` plus
+/// `filter.lfs.required=true`, so the `git checkout` calls below hand
+/// non-pointer bytes to the real smudge driver and the checkout hard-fails.
+/// Repo-local config outranks every ambient level, so pin a passthrough
+/// driver BEFORE any checkout materializes an lfs-attributed path. An empty
+/// `process` is git's "no process filter" spelling and is what displaces the
+/// system `git-lfs filter-process`, which would otherwise supersede
+/// smudge/clean.
+///
+/// This cannot move the subject under test. The gate
+/// (`refuse_foreign_filtered_rewrites` in `gitbackend/recovery_support.rs`)
+/// allowlists the driver NAME — `if name == "lfs" { continue; }` — and
+/// returns before it probes `filter.<name>.clean`/`.process` at all, so its
+/// decision for `lfs` is identical with or without these pins. The tests that
+/// assert the allowlist still configure the real driver names themselves
+/// afterwards, and those values are what the gate would see.
+fn pin_hermetic_lfs_passthrough(repo: &Path) {
+    let repository = git2::Repository::open(repo).unwrap();
+    let mut config = repository.config().unwrap();
+    config.set_str("filter.lfs.smudge", "cat").unwrap();
+    config.set_str("filter.lfs.clean", "cat").unwrap();
+    config.set_str("filter.lfs.process", "").unwrap();
+    config.set_bool("filter.lfs.required", false).unwrap();
 }
 
 #[test]

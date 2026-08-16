@@ -611,8 +611,8 @@ mod windows_tests {
     };
     use cap_std::{ambient_authority, fs::Dir};
     use std::ffi::{OsStr, OsString};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use crate::model::ErrorCode;
 
@@ -780,6 +780,18 @@ mod windows_tests {
     // (GwzM5-8R2C2OwnerInterface-ReviewState-2.md:291-296): renaming a path
     // ancestor inside the window must fail the publication with the source
     // untouched and never deliver into the replacement ancestor.
+    //
+    // On real Windows the OS itself supplies that guarantee one level
+    // earlier, so the DENIAL is what this test asserts: the retained
+    // destination handle lives under `ancestor`, and Windows refuses to
+    // rename a directory that still has an open handle anywhere beneath it
+    // (os error 5, or 32 when the collision is spelled as a sharing
+    // violation on the renamed directory itself — the same OS-level pin
+    // asserted positively by `retained_directory_blocks_substitution_rename_windows`
+    // in src/checked_artifact/tests.rs). Both outcomes are covered below:
+    // when the OS denies the substitution there is no replacement ancestor
+    // to deliver into at all, and when it permits one the original
+    // source-untouched assertions apply unchanged.
     #[test]
     fn destination_window_ancestor_substitution_fails_with_the_source_untouched() {
         let (temporary, _cleanup) = window_fixture("destination-ancestor");
@@ -805,15 +817,21 @@ mod windows_tests {
         .unwrap();
 
         let substituted = Arc::new(AtomicBool::new(false));
+        let denial: Arc<Mutex<Option<std::io::Error>>> = Arc::new(Mutex::new(None));
         run_next_checked_artifact_at(CheckedArtifactFault::AfterDestinationPathDerivation, {
             let substituted = Arc::clone(&substituted);
+            let denial = Arc::clone(&denial);
             let ancestor = ancestor.clone();
             let displaced = displaced.clone();
             move || {
-                std::fs::rename(&ancestor, &displaced).unwrap();
-                // Empty replacement ancestor: the stale absolute path can
-                // no longer resolve, and nothing may be delivered into it.
-                std::fs::create_dir(&ancestor).unwrap();
+                match std::fs::rename(&ancestor, &displaced) {
+                    // Empty replacement ancestor: the stale absolute path can
+                    // no longer resolve, and nothing may be delivered into it.
+                    Ok(()) => std::fs::create_dir(&ancestor).unwrap(),
+                    // The retained destination handle beneath `ancestor` makes
+                    // the OS refuse the substitution outright.
+                    Err(error) => *denial.lock().unwrap() = Some(error),
+                }
                 substituted.store(true, Ordering::SeqCst);
             }
         });
@@ -830,14 +848,45 @@ mod windows_tests {
             "destination-window hook was not reached"
         );
 
-        assert!(
-            result.is_err(),
-            "ancestor substitution inside the window must fail the publication"
-        );
-        assert_eq!(std::fs::read(&source_path).unwrap(), b"checked\n");
-        assert_eq!(std::fs::read_dir(&ancestor).unwrap().count(), 0);
-        assert!(!displaced.join("destination-dir").join("delivered").exists());
-        assert!(destination_dir.metadata("delivered").is_err());
+        let denial = denial.lock().unwrap().take();
+        match denial {
+            Some(error) => {
+                // The asserted guarantee: the OS denied the ancestor rename,
+                // so the substitution never happened.
+                assert!(
+                    matches!(error.raw_os_error(), Some(5 | 32)),
+                    "ancestor rename over a retained descendant handle must be \
+                     denied as a Windows sharing collision: {error:?}"
+                );
+                // No replacement ancestor exists, so nothing can have been
+                // delivered into one, and the intact path published through
+                // the retained destination handle exactly once.
+                assert!(!displaced.exists());
+                assert!(
+                    result.is_ok(),
+                    "a denied substitution must leave the publication intact: {result:?}"
+                );
+                assert!(!source_path.exists());
+                assert_eq!(
+                    std::fs::read(ancestor.join("destination-dir").join("delivered")).unwrap(),
+                    b"checked\n"
+                );
+                assert!(destination_dir.metadata("delivered").is_ok());
+            }
+            None => {
+                // The substitution landed: the recorded property applies —
+                // the publication fails with the source untouched and nothing
+                // reaches either the replacement or the displaced ancestor.
+                assert!(
+                    result.is_err(),
+                    "ancestor substitution inside the window must fail the publication"
+                );
+                assert_eq!(std::fs::read(&source_path).unwrap(), b"checked\n");
+                assert_eq!(std::fs::read_dir(&ancestor).unwrap().count(), 0);
+                assert!(!displaced.join("destination-dir").join("delivered").exists());
+                assert!(destination_dir.metadata("delivered").is_err());
+            }
+        }
     }
 }
 
