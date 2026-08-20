@@ -42,7 +42,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/mod.rs": "1bddf4b40e4bd6454300e7b08b54119875ec19daacb819a14dbd0c483784230d",
     "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
-    "checked_artifact/mod.rs": "ab520e0ea5868e033aec015530281ebd274642918fc82b77279f2a5c921c05b0",
+    "checked_artifact/mod.rs": "85a7e2c485686118da2a52870e02ed35078f1f4ee1caa7c941839876a6c0ea3f",
     "checked_artifact/platform.rs": "11590273e6ebebd92f203f8dbbd73b29acd20f462eb4b0c9bb9a9a77b9acf130",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
@@ -151,7 +151,7 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "0eaad012d86d83f9b169f94fcf821279a4a16345d85002f6198b46de032d1819",
+    "checked_artifact/capability/pre_catalog.rs": "d0bc02527f961b7cdd590b77336c2a08a2e835f5a2befc1e1a3412009586e0d5",
     "checked_artifact/catalog.rs": "f131ab5c82c099acb1048ace8d67efdefac06b79c5444f0df6418eceffc53d95",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "b4cfea0bd46ef595e0f83d34cc47deabb68011bfff032060c109de5f05dccbe3",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "00a10319372ba8d6136fb690251c2049e47c2f473361396b86e86f090de9ac94",

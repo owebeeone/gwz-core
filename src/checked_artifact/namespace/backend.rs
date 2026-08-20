@@ -408,60 +408,52 @@ pub(in crate::checked_artifact) trait RawNamespaceBackend {
         destination: &ActionDestination,
     ) -> Result<RetiredIdentity<Self::Identity>, CheckedFsError>;
 
+    // R2-D Step 0.1 freeze: the four managed operations below carried
+    // fail-closed defaults through R1. They are required methods from this
+    // freeze forward, so a namespace provider cannot reach production while
+    // silently inheriting an unavailable managed post-observation (adopted
+    // plan §9.3; ConsumerCheckpoint §8 "Default 'unavailable' managed
+    // operations are not reachable in production"). The refusal itself now
+    // exists only in the test-only legacy adapter.
     fn install_managed_component(
         &mut self,
-        _source: &RetainedNamespaceObject<
+        source: &RetainedNamespaceObject<
             Self::DirectoryHandle,
             Self::ObjectHandle,
             Self::Identity,
             Self::PathProfile,
         >,
-        _destination: &ActionDestination,
-        _request: &ManagedInstallRequestV1,
-    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
-        Err(managed_operation_unavailable())
-    }
+        destination: &ActionDestination,
+        request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError>;
 
     fn observe_installed_managed_component(
         &mut self,
-        _request: &ManagedInstallRequestV1,
-    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
-        Err(managed_operation_unavailable())
-    }
+        request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError>;
 
     fn retire_managed_marker(
         &mut self,
-        _source: &RetainedNamespaceObject<
+        source: &RetainedNamespaceObject<
             Self::DirectoryHandle,
             Self::ObjectHandle,
             Self::Identity,
             Self::PathProfile,
         >,
-        _destination: &ActionDestination,
-        _request: &ManagedMarkerRetirementRequestV1,
-    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
-        Err(managed_operation_unavailable())
-    }
+        destination: &ActionDestination,
+        request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError>;
 
     fn observe_retired_managed_marker(
         &mut self,
-        _request: &ManagedMarkerRetirementRequestV1,
-    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
-        Err(managed_operation_unavailable())
-    }
+        request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError>;
 
     fn barrier(
         &mut self,
         parent: &RetainedDirectory<Self::DirectoryHandle, Self::Identity, Self::PathProfile>,
         ordinal: BarrierOrdinalV1,
     ) -> Result<DurableNamespace, CheckedFsError>;
-}
-
-fn managed_operation_unavailable() -> CheckedFsError {
-    CheckedFsError::ambiguous(
-        "managed namespace operation",
-        "provider does not implement exact post-observation",
-    )
 }
 
 pub(in crate::checked_artifact) trait SealedActionNamespace {}

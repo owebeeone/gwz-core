@@ -178,6 +178,52 @@ impl<Protocol: NamespaceProtocol> RawNamespaceBackend for Protocol {
         Err(legacy_forwarding_error())
     }
 
+    // The R2-D Step 0.1 freeze made these four managed operations required on
+    // `RawNamespaceBackend`. The legacy adapter states the same refusal the
+    // removed trait defaults produced, byte for byte, so the observable
+    // behaviour of every legacy test backend is unchanged by the delta.
+    fn install_managed_component(
+        &mut self,
+        _source: &RetainedNamespaceObject<
+            Self::DirectoryHandle,
+            Self::ObjectHandle,
+            Self::Identity,
+            Self::PathProfile,
+        >,
+        _destination: &ActionDestination,
+        _request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        Err(managed_operation_unavailable())
+    }
+
+    fn observe_installed_managed_component(
+        &mut self,
+        _request: &ManagedInstallRequestV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        Err(managed_operation_unavailable())
+    }
+
+    fn retire_managed_marker(
+        &mut self,
+        _source: &RetainedNamespaceObject<
+            Self::DirectoryHandle,
+            Self::ObjectHandle,
+            Self::Identity,
+            Self::PathProfile,
+        >,
+        _destination: &ActionDestination,
+        _request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        Err(managed_operation_unavailable())
+    }
+
+    fn observe_retired_managed_marker(
+        &mut self,
+        _request: &ManagedMarkerRetirementRequestV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        Err(managed_operation_unavailable())
+    }
+
     fn barrier(
         &mut self,
         _parent: &RetainedDirectory<Self::DirectoryHandle, Self::Identity, Self::PathProfile>,
@@ -191,6 +237,13 @@ fn legacy_forwarding_error() -> CheckedFsError {
     CheckedFsError::ambiguous(
         "legacy namespace test backend",
         "raw forwarding is unavailable",
+    )
+}
+
+fn managed_operation_unavailable() -> CheckedFsError {
+    CheckedFsError::ambiguous(
+        "managed namespace operation",
+        "provider does not implement exact post-observation",
     )
 }
 

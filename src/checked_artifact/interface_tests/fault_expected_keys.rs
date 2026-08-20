@@ -171,6 +171,196 @@ const EXPECTED_STABLE_KEYS: &[&str] = &[
 ];
 const EXPECTED_KEY_COUNT: usize = 165;
 
+/// Per-family activation map frozen by R2-D Step 0.1
+/// (`dev-docs/GwzM5-8R2DInterfaceFreeze.md`; adopted plan §4-end and §9.4;
+/// RemPlan §10 :1025-1038).
+///
+/// `Executed` means the family has injection sites and an executed
+/// interruption/restart/convergence matrix on both target variants.
+/// `Reserved(owner)` means the family is declared-reserved and has no
+/// injection sites by design; the named package is the one that must add both
+/// the injection sites and the matrix rows when it converts that family's
+/// edges. Flipping a row to `Executed` is therefore a deliberate edit in the
+/// converting package, reviewed with its evidence, and never a side effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FaultFamilyActivationV1 {
+    Executed(&'static str),
+    Reserved(&'static str),
+}
+
+const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
+    (
+        "runtime",
+        FaultFamilyActivationV1::Executed("R2-A/R2-B runtime bootstrap and catalog lease"),
+        18,
+    ),
+    (
+        "catalog_bootstrap",
+        FaultFamilyActivationV1::Executed("R2-C2 physical first-catalog owner"),
+        25,
+    ),
+    (
+        "admission",
+        FaultFamilyActivationV1::Reserved("R2-D phase 1 (R2-C3 admission)"),
+        19,
+    ),
+    (
+        "durable_leaf",
+        FaultFamilyActivationV1::Reserved("R2-D step 2.1 (leaf observer)"),
+        11,
+    ),
+    (
+        "namespace",
+        FaultFamilyActivationV1::Reserved("R2-D steps 2.2/2.3 (namespace backend)"),
+        11,
+    ),
+    (
+        "record",
+        FaultFamilyActivationV1::Reserved("R2-D step 2.4 (authority record split)"),
+        13,
+    ),
+    (
+        "managed_bootstrap",
+        FaultFamilyActivationV1::Reserved("R2-D phase 3 (managed-parent provider)"),
+        30,
+    ),
+    (
+        "cleanup",
+        FaultFamilyActivationV1::Reserved("R2-D phase 4 (legacy leaf edge conversion)"),
+        11,
+    ),
+    (
+        "barrier",
+        FaultFamilyActivationV1::Reserved("R2-D phase 4 (Windows retirement closure)"),
+        16,
+    ),
+    (
+        "terminal",
+        FaultFamilyActivationV1::Reserved("R2-D phase 4 (terminal retirement edges)"),
+        11,
+    ),
+];
+
+/// The complete set of production sources that hold `CheckedArtifactFaultKeyV1`
+/// injection sites today. `runtime.*` edges are executed through the separate
+/// `bootstrap/runtime/fault.rs` mechanism, so they are executed without a key
+/// reference here (`GwzM5-8R2C2OwnerInterface-ReviewState-2.md:160-169`).
+const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
+    (
+        "capability/pre_catalog/provider/mutation.rs",
+        include_str!("../capability/pre_catalog/provider/mutation.rs"),
+    ),
+    (
+        "capability/pre_catalog/provider/directory_mutation.rs",
+        include_str!("../capability/pre_catalog/provider/directory_mutation.rs"),
+    ),
+];
+
+fn family_of(stable_key: &str) -> &str {
+    stable_key
+        .split_once('.')
+        .expect("every stable fault key is family-qualified")
+        .0
+}
+
+fn variant_prefix(family: &str) -> String {
+    family
+        .split('_')
+        .map(|word| {
+            let mut characters = word.chars();
+            match characters.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + characters.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn every_fault_family_declares_its_owning_activation_package() {
+    let declared = FAULT_FAMILY_ACTIVATION
+        .iter()
+        .map(|(family, _, _)| *family)
+        .collect::<BTreeSet<_>>();
+    let actual = EXPECTED_STABLE_KEYS
+        .iter()
+        .map(|key| family_of(key))
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        declared, actual,
+        "a fault family gained or lost keys without declaring its owning R2-D package"
+    );
+    assert_eq!(
+        declared.len(),
+        FAULT_FAMILY_ACTIVATION.len(),
+        "the activation map declares a family twice"
+    );
+    for (family, _, expected_keys) in FAULT_FAMILY_ACTIVATION {
+        let actual_keys = EXPECTED_STABLE_KEYS
+            .iter()
+            .filter(|key| family_of(key) == *family)
+            .count();
+        assert_eq!(
+            actual_keys, *expected_keys,
+            "family {family} changed size without updating its activation row"
+        );
+    }
+    assert_eq!(
+        FAULT_FAMILY_ACTIVATION
+            .iter()
+            .map(|(_, _, keys)| keys)
+            .sum::<usize>(),
+        EXPECTED_KEY_COUNT,
+        "the activation map does not cover the whole fault vocabulary"
+    );
+}
+
+#[test]
+fn reserved_fault_families_have_no_injection_sites_before_their_package() {
+    for (family, activation, _) in FAULT_FAMILY_ACTIVATION {
+        let prefix = format!("CheckedArtifactFaultKeyV1::{}", variant_prefix(family));
+        let sites = FAULT_INJECTION_SOURCES
+            .iter()
+            .filter(|(_, source)| source.contains(&prefix))
+            .map(|(relative, _)| *relative)
+            .collect::<Vec<_>>();
+        match activation {
+            FaultFamilyActivationV1::Reserved(owner) => assert!(
+                sites.is_empty(),
+                "reserved family {family} gained injection sites in {sites:?} but is still \
+                 declared for {owner}; the converting package must flip its activation row \
+                 and land its matrix rows in the same package (RemPlan §10)"
+            ),
+            FaultFamilyActivationV1::Executed(owner) => {
+                if *family != "runtime" {
+                    assert!(
+                        !sites.is_empty(),
+                        "family {family} is declared executed by {owner} but has no injection \
+                         sites in the declared production sources"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn only_the_runtime_and_catalog_bootstrap_families_are_executed_today() {
+    let executed = FAULT_FAMILY_ACTIVATION
+        .iter()
+        .filter(|(_, activation, _)| matches!(activation, FaultFamilyActivationV1::Executed(_)))
+        .map(|(family, _, _)| *family)
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        executed,
+        ["catalog_bootstrap", "runtime"].into_iter().collect(),
+        "a fault family changed activation state; the converting package owns that edit \
+         together with its executed matrix evidence"
+    );
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct KeySetMismatch {
     actual_duplicates: Vec<String>,

@@ -5,6 +5,11 @@ use cap_std::fs::Dir;
 
 use crate::model::{ErrorCode, ModelError};
 
+#[allow(
+    dead_code,
+    reason = "R2-D Step 0.1 freezes the admission owner seam before phase 1 implements its driver"
+)]
+mod admission;
 mod authority;
 #[allow(
     dead_code,

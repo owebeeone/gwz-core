@@ -13,5 +13,6 @@ mod fault_expected_keys;
 mod managed_plan_binding;
 mod managed_records;
 mod namespace_roles;
+mod r2d_seam_freeze;
 mod schedule_records;
 mod semantic_vectors;
