@@ -436,8 +436,30 @@ fn observe_slot(
         .symlink_metadata(name)
         .map_err(|source| CheckedFsError::io("observe catalog interior slot", source))?;
     if metadata.is_dir() && !metadata.is_symlink() {
-        let child = directory
-            .open_dir_nofollow(name)
+        // Share-delete open, not a plain no-follow one. This enumeration runs
+        // inside the sealed publication's destination recheck, which holds the
+        // retained rename-source handle open across the whole edge -- and R2-D
+        // Phase 1's `PublishStagingAction` is the first publication whose
+        // source is a *directory child of the very root being enumerated here*
+        // (`ActionAdmissionStaging`). On Windows that handle carries DELETE
+        // access, so any later open of the same object that does not itself
+        // grant DELETE sharing fails with a sharing violation (os error 32);
+        // cap-std's plain directory open omits `FILE_SHARE_DELETE`, so it is
+        // exactly such an open. `platform::open_dir_share_delete` is the
+        // established recipe for this collision (`platform.rs`, the
+        // `FILE_SHARE_DELETE` arm; freeze 4.1 P3 records it as "so the
+        // directory open does not collide with the retained rename-source
+        // handle"). Dropping the source handle instead is not available: the
+        // primitive renames that exact identity-checked handle, so its lifetime
+        // is the seam's guarantee.
+        //
+        // Non-Windows arm is byte-identical to the previous call -- the helper
+        // is `open_dir_nofollow` there -- so macOS and Linux behaviour is
+        // unchanged. The sibling regular-file open below needs no counterpart:
+        // it inherits std's default share mode, which already includes
+        // `FILE_SHARE_DELETE`, which is why only the directory label appeared
+        // in the Windows failures.
+        let child = crate::checked_artifact::platform::open_dir_share_delete(directory, name)
             .map_err(|source| CheckedFsError::io("open catalog interior directory", source))?;
         let identity = platform.dir_identity(&child)?;
         if probe_empty_directory {
