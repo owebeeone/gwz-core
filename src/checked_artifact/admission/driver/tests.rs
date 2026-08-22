@@ -30,7 +30,7 @@ use crate::checked_artifact::catalog_names::{CatalogPrivateNameV1, CatalogPrivat
 use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionDirectoryAdmissionV1, ActionScheduleV1,
     AdmittedActionV1, CleanupAliasSetV1, InfrastructureSlotV1, ManagedBootstrapInputV1,
-    RequestOwnerBindingV1,
+    RequestOwnerBindingV1, RootEntryNameV1,
 };
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -159,9 +159,17 @@ fn a_second_distinct_action_admits_and_leaves_both_actions_resumable() {
 }
 
 /// Each durable window the retire-then-publish install opens, reconstructed on
-/// disk and re-entered as a fresh process. Every window converges to the same
-/// settled state and hands back the same action, so the kernel is restart-closed
-/// across the whole transition rather than only at its endpoints.
+/// disk and re-entered as a fresh process. Every window converges to the
+/// settled state and hands back the expected action, so the kernel is
+/// restart-closed across the whole transition rather than only at its
+/// endpoints.
+///
+/// The rows cover both transition directions and both record kinds: step 7's
+/// pre- and post-retire windows (the installed record is `idle`), step 3's
+/// pre-retire window (`(Idle, preparing)`, otherwise crossed only inside an
+/// uninterrupted settle) and its post-retire window with the action row not yet
+/// published, the fully absent triad, and the torn-scratch shape a mid-write
+/// power loss leaves behind.
 #[test]
 fn every_admission_record_install_window_converges_to_the_settled_state() {
     let fixture = Fixture::new("install-windows");
@@ -197,6 +205,22 @@ fn every_admission_record_install_window_converges_to_the_settled_state() {
             label: "preparing, scratch idle",
             active: Some(&preparing),
             scratch: Some(&idle),
+            installs: true,
+        },
+        // Step 3's pre-retire window, the mirror of the row above: an *idle*
+        // active record resident beside a durable `preparing` scratch. Outside
+        // this row that state is only ever crossed inside an uninterrupted
+        // settle (the second-action case), and the fault matrix is
+        // virgin-per-key so its `preparing_scratch_flush` row leaves the active
+        // slot missing rather than idle. `resolve` shares one arm with
+        // `(Preparing, Idle)`, so restart-entering it directly is what turns
+        // that shared arm from an argument into evidence — and `installs: true`
+        // demands continuation all the way to the settled state, not merely a
+        // completed install.
+        InstallWindowV1 {
+            label: "idle, scratch preparing",
+            active: Some(&idle),
+            scratch: Some(&preparing),
             installs: true,
         },
         // The whole triad lost after the action was already published.
@@ -237,6 +261,68 @@ fn every_admission_record_install_window_converges_to_the_settled_state() {
         assert!(
             !scratch.exists(),
             "install window `{label}` left the admission scratch resident"
+        );
+    }
+
+    // Two windows only a *not yet published* action can reach: instead of
+    // admitting straight away, the driver has to resume from the front of the
+    // sequence. Each takes its own reservation, so the row it publishes is
+    // fresh, and each is reconstructed against whatever the previous rows left
+    // behind.
+    let unpublished = [
+        // E4's retire half, `preparing` variant. The rows above instantiate
+        // step 7's post-retire window, where the record being installed is
+        // `idle`; this is step 3's, where it is `preparing` and the action row
+        // does not exist yet. Both record kinds' post-retire windows are now
+        // reconstructed on disk rather than one of them resting on the
+        // structural argument that `resolve` shares an arm.
+        ("post-retire, scratch preparing", 0xAAu8, false),
+        // The torn-scratch shape set, completed on the path that actually
+        // rewrites it. The 12-round `admission.preparing_scratch_create` rounds
+        // prove the empty-file shape; truncated canonical bytes are the other
+        // shape a real power loss can leave mid-write. A valid record must
+        // carry a self-digest and re-encode byte-identically, so no proper
+        // prefix can alias a different valid record: it decodes `Other`,
+        // `(Missing, Other)` drives Idle, and step 3 truncate-rewrites the
+        // *same* compile-time slot name rather than allocating a retry name.
+        ("scratch undecodable", 0xABu8, true),
+    ];
+    let active_name = InfrastructureSlotV1::ActionAdmissionActive.name();
+    let scratch_name = InfrastructureSlotV1::ActionAdmissionScratch.name();
+    for (label, action, torn) in unpublished {
+        let fresh = reservation(action, 1);
+        let mut bytes = encoded(&ActionDirectoryAdmissionV1::preparing(&fresh));
+        if torn {
+            bytes.truncate(bytes.len() / 2);
+            assert!(!bytes.is_empty(), "the torn shape must be non-empty");
+        }
+        let _ = fs::remove_file(&active);
+        fs::write(&scratch, &bytes).unwrap();
+
+        // What the window must converge to: whatever is resident now, minus the
+        // consumed scratch, plus the reinstalled active record and the one
+        // newly published action row.
+        let mut expected_children = fixture.children();
+        expected_children.retain(|name| name != scratch_name);
+        expected_children.push(active_name.to_owned());
+        expected_children.push(RootEntryNameV1::ActiveAction(fresh.action_digest()).name());
+        expected_children.sort();
+
+        let handoff = attempt(&fixture, &fresh)
+            .unwrap_or_else(|error| panic!("window `{label}` must converge: {error:?}"));
+        assert_eq!(
+            handoff.reservation(),
+            &fresh,
+            "window `{label}` admitted a different reservation"
+        );
+        assert_eq!(
+            fixture.children(),
+            expected_children,
+            "window `{label}` did not converge to the expected catalog"
+        );
+        assert!(
+            !scratch.exists(),
+            "window `{label}` left the admission scratch resident"
         );
     }
 }

@@ -15,10 +15,6 @@ use crate::checked_artifact::capability::DurableObjectIdentityV1;
 mod owner;
 #[cfg(test)]
 mod test_support;
-#[allow(
-    unused_imports,
-    reason = "R1 exports the admission classifier before its R2-D physical half consumes it"
-)]
 pub(in crate::checked_artifact) use owner::*;
 #[cfg(test)]
 pub(in crate::checked_artifact) use test_support::*;

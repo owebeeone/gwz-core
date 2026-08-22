@@ -13,7 +13,8 @@ use crate::checked_artifact::capability::{
 };
 use crate::checked_artifact::catalog::CatalogRecordFactV1;
 use crate::checked_artifact::protocol::{
-    ActionCapacityReservationV1, CatalogBootstrapRecordV1, InfrastructureSlotV1, RootEntryNameV1,
+    ActionCapacityReservationV1, CatalogBootstrapRecordV1, InfrastructureSlotV1,
+    MAX_ACTIVE_ACTION_DIRS, RootEntryNameV1,
 };
 use crate::model::ErrorCode;
 
@@ -218,10 +219,29 @@ pub(super) fn publish_verified_no_replace(
             absent,
         } => {
             let fresh = interior::observe(destination_dir, &HostPlatform)?;
-            let occupied = match absent {
-                RootEntryNameV1::Infrastructure(slot) => interior::row(&fresh, *slot).is_some(),
-                RootEntryNameV1::ActiveAction(action) => fresh.action_rows.contains(action),
+            let (occupied, full) = match absent {
+                RootEntryNameV1::Infrastructure(slot) => {
+                    (interior::row(&fresh, *slot).is_some(), false)
+                }
+                RootEntryNameV1::ActiveAction(action) => (
+                    fresh.action_rows.contains(action),
+                    fresh.action_rows.len() >= MAX_ACTIVE_ACTION_DIRS,
+                ),
             };
+            // The frozen active-action budget, re-proved inside the acquisition
+            // window. `interior::observe` refuses a root that already exceeds it,
+            // and no admission edge can remove an action row, so publishing the
+            // 65th row would leave a catalog that no sealed path — including
+            // `recover_or_create` — can observe again. This is the race-free
+            // half of the refusal: it also closes an admission resumed after
+            // other admissions filled the root, which never re-enters the
+            // driver's new-admission gate.
+            if full {
+                return Err(CheckedFsError::ambiguous(
+                    label,
+                    "publication would exceed the frozen active-action bound",
+                ));
+            }
             if occupied
                 || interior::completed_record(durable_identity, &fresh, expected).is_none()
                 || !matches!(

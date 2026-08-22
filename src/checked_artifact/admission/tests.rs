@@ -21,8 +21,8 @@ use crate::checked_artifact::catalog::recover_or_create;
 use crate::checked_artifact::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
 use crate::checked_artifact::protocol::{
     ActionDigestV1, ActionDirectoryAdmissionV1, ActionScheduleV1, ActionSlotV1, BaseActionSlotV1,
-    CatalogNameClassificationV1, CleanupAliasSetV1, InfrastructureSlotV1, ManagedBootstrapInputV1,
-    RequestOwnerBindingV1, RootEntryNameV1, read_bounded_record,
+    CatalogNameClassificationV1, CleanupAliasSetV1, InfrastructureSlotV1, MAX_ACTIVE_ACTION_DIRS,
+    ManagedBootstrapInputV1, RequestOwnerBindingV1, RootEntryNameV1, read_bounded_record,
 };
 
 /// The typed refusal the frozen seam answers until Step 1.2 lands
@@ -146,6 +146,22 @@ fn stopped(result: Result<AdmittedActionV1, CheckedFsError>, property: &str) {
              the frozen seam still answers {ADMISSION_FACT}: {DRIVER_UNAVAILABLE}"
         ),
         Err(_) => {}
+    }
+}
+
+/// Asserts a stop carrying exactly the typed refusal named, so a capacity case
+/// cannot pass on the strength of some unrelated ambiguity.
+#[track_caller]
+fn stopped_with(
+    result: Result<AdmittedActionV1, CheckedFsError>,
+    expected_fact: &str,
+    expected_detail: &str,
+) {
+    match result {
+        Ok(_) => panic!("admission must stop rather than hand back an action: {expected_detail}"),
+        Err(CheckedFsError::Ambiguous { fact, detail })
+            if fact == expected_fact && detail.as_str() == expected_detail => {}
+        Err(error) => panic!("admission stopped for the wrong reason: {error:?}"),
     }
 }
 
@@ -459,6 +475,190 @@ fn a_retried_admission_reuses_the_deterministic_names_and_never_chooses_a_nonce(
         expected,
         "retry must reuse the same capacity"
     );
+}
+
+/// Round-2 remediation of the settled State-axis [P1-1]. ConsumerCheckpoint §7's
+/// capacity rule and the C-3 widening's zero-headroom premise ("capacity refusal
+/// fires first") require that a full catalog root refuse a **new** admission
+/// rather than publish a 65th active-action row.
+///
+/// The row budget is zero-headroom by construction — `MAX_ROOT_ENTRIES` is
+/// exactly `MAX_INFRASTRUCTURE_ENTRIES + MAX_ACTIVE_ACTION_DIRS` — so an
+/// over-published row is not a recoverable overflow: `interior::observe` refuses
+/// the root from then on, no admission edge can remove an action row, and every
+/// sealed path including `recover_or_create` runs through that observation. The
+/// catalog would be durably unobservable.
+///
+/// The distinction this case pins is new-versus-resume. Refusal applies only to
+/// admitting a new action; an action already published stays resumable at full
+/// capacity, the catalog stays recoverable, and once a row leaves the root the
+/// previously refused admission succeeds.
+#[test]
+fn a_full_catalog_root_refuses_a_new_admission_and_still_resumes_and_recovers() {
+    let fixture = Fixture::new("capacity-full");
+    let resident = reservation(0x77, 2);
+    let overflowing = reservation(0x78, 2);
+    assert_ne!(resident.action_digest(), overflowing.action_digest());
+
+    // One genuinely admitted action, then the root filled to the frozen budget
+    // with grammar-legal action rows. `exact_row` classifies a root child by
+    // name alone, so a bare directory in the frozen `action-<hex>-v1` grammar is
+    // exactly what the census counts.
+    let resident_handoff = admitted(
+        attempt(&fixture, &resident),
+        "a first admission publishes the action",
+    );
+    let filler = (0..u8::try_from(MAX_ACTIVE_ACTION_DIRS - 1).unwrap())
+        .map(|index| RootEntryNameV1::ActiveAction(ActionDigestV1::new([index; 32])).name())
+        .collect::<Vec<_>>();
+    for name in &filler {
+        fs::create_dir(fixture.catalog_root().join(name)).unwrap();
+    }
+    let full = fixture.catalog_children();
+    assert_eq!(
+        full.iter().filter(|name| is_action_row(name)).count(),
+        MAX_ACTIVE_ACTION_DIRS,
+        "the fixture must fill the root to exactly the frozen active-action budget: {full:?}"
+    );
+
+    // The 65th admission refuses cleanly, before any durable write.
+    stopped_with(
+        attempt(&fixture, &overflowing),
+        ADMISSION_FACT,
+        "the catalog root already holds the frozen active-action budget",
+    );
+    assert_eq!(
+        fixture.catalog_children(),
+        full,
+        "a refused admission must leave the catalog root untouched"
+    );
+    assert!(
+        !fixture.action_directory(&overflowing).exists(),
+        "a refused admission must not publish its action row"
+    );
+
+    // The catalog stays observable through the sealed recovery path, and the
+    // already-published action stays resumable at full capacity: the refusal
+    // gates new admissions only, and `admit` runs before it.
+    recover_catalog(&fixture);
+    assert_eq!(
+        admitted(
+            attempt(&fixture, &resident),
+            "an existing action still resumes at full capacity",
+        ),
+        resident_handoff,
+    );
+    assert_eq!(
+        fixture.catalog_children(),
+        full,
+        "resuming at full capacity must not mutate the catalog"
+    );
+
+    // Retiring one row (Phase 4's edge, performed here as the out-of-band state
+    // it produces) restores headroom, and the previously refused admission
+    // completes.
+    fs::remove_dir(fixture.catalog_root().join(&filler[0])).unwrap();
+    let overflow_handoff = admitted(
+        attempt(&fixture, &overflowing),
+        "the refused admission succeeds once a row is retired",
+    );
+    assert_eq!(overflow_handoff.reservation(), &overflowing);
+    assert!(fixture.action_directory(&overflowing).is_dir());
+    assert_eq!(
+        admission_record(&fixture),
+        ActionDirectoryAdmissionV1::idle(),
+        "the retried admission must settle the record back to idle"
+    );
+}
+
+/// The commit-point half of the same remediation. The driver's gate gets the
+/// *new*-admission case, but an admission already `Preparing` when other
+/// admissions filled the root never re-enters that arm — it drives `Preparing`
+/// straight to `PublishStagingAction`. The `AdmissionCatalogInterior`
+/// destination recheck is what closes that path, re-proving the frozen
+/// active-action bound inside the acquisition window, where it is race-free.
+///
+/// The in-flight state is reconstructed on disk rather than fault-injected:
+/// publish an action, move its published directory back onto the staging name
+/// (an exact staging interior carrying the derived reservation), restore the
+/// `Preparing` record, and only then fill the root. The sequence resumes from
+/// step 6 with capacity already gone.
+#[test]
+fn a_resumed_in_flight_admission_refuses_at_the_publish_when_the_root_filled() {
+    let fixture = Fixture::new("capacity-in-flight");
+    let resident = reservation(0x79, 2);
+    let mid_flight = reservation(0x7A, 2);
+
+    admitted(attempt(&fixture, &resident), "the first action publishes");
+    admitted(
+        attempt(&fixture, &mid_flight),
+        "the second action publishes before it is rewound",
+    );
+
+    // Rewind the second action to its pre-publish state: its published
+    // directory becomes the staging directory again, and the durable record
+    // goes back to `Preparing`.
+    fs::rename(
+        fixture.action_directory(&mid_flight),
+        fixture.slot(InfrastructureSlotV1::ActionAdmissionStaging),
+    )
+    .unwrap();
+    fs::write(
+        fixture.slot(InfrastructureSlotV1::ActionAdmissionActive),
+        ActionDirectoryAdmissionV1::preparing(&mid_flight)
+            .encode_canonical()
+            .expect("the preparing record encodes canonically"),
+    )
+    .unwrap();
+    assert!(
+        !fixture
+            .slot(InfrastructureSlotV1::ActionAdmissionScratch)
+            .exists()
+    );
+
+    // Fill the root to the frozen budget while that admission is in flight.
+    for index in 0..u8::try_from(MAX_ACTIVE_ACTION_DIRS - 1).unwrap() {
+        let name = RootEntryNameV1::ActiveAction(ActionDigestV1::new([index; 32])).name();
+        fs::create_dir(fixture.catalog_root().join(name)).unwrap();
+    }
+    let full = fixture.catalog_children();
+    assert_eq!(
+        full.iter().filter(|name| is_action_row(name)).count(),
+        MAX_ACTIVE_ACTION_DIRS,
+        "the fixture must fill the root to exactly the frozen budget: {full:?}"
+    );
+
+    // The driver's new-admission gate is bypassed by construction here, so the
+    // refusal has to come from the destination recheck at the rename.
+    stopped_with(
+        attempt(&fixture, &mid_flight),
+        "publish admission action directory",
+        "publication would exceed the frozen active-action bound",
+    );
+    assert_eq!(
+        fixture.catalog_children(),
+        full,
+        "a refusal inside the acquisition window must publish nothing"
+    );
+    assert!(
+        !fixture.action_directory(&mid_flight).exists(),
+        "the over-filling action row must not reach the catalog root"
+    );
+    assert!(
+        fixture
+            .slot(InfrastructureSlotV1::ActionAdmissionStaging)
+            .is_dir(),
+        "the refusal must leave the staging directory intact for a later retry"
+    );
+}
+
+/// Whether a catalog-root child classifies as an active-action row under the
+/// frozen grammar — the same predicate the interior census charges.
+fn is_action_row(name: &str) -> bool {
+    matches!(
+        RootEntryNameV1::parse(name.as_bytes()),
+        CatalogNameClassificationV1::Valid(RootEntryNameV1::ActiveAction(_))
+    )
 }
 
 /// Step 1.1 (e). Capacity includes all barrier, managed-generation, marker,

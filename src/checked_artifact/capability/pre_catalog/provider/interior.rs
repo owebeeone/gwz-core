@@ -89,6 +89,13 @@ pub(super) fn observe(
             action_rows.push(action);
             continue;
         }
+        // `exact_row` above refuses every `MalformedRecognized` and `Foreign`
+        // child before it can be classified onto this path, so the only classes
+        // that reach here are the slot-bearing ones and this cannot panic. Any
+        // future widening of that refusal must keep the guarantee or convert
+        // this into a typed refusal — the same invariant the driver's
+        // `census.has_unowned_row()` stop is deliberately kept for
+        // (`admission/driver.rs`).
         let slot = class
             .infrastructure_slot()
             .expect("a classified non-action catalog row owns an infrastructure slot");
@@ -180,13 +187,30 @@ pub(super) fn staging_plan(
     expected: &CatalogBootstrapRecordV1,
 ) -> StagingPlanV1 {
     use InfrastructureSlotV1 as Slot;
-    // C-3 widening (interface freeze §4.4 Class 2 fact 2): the three
-    // `ActionAdmission*` slots no longer un-complete a catalog. Their durable
-    // home was already frozen at R1+C0 (§3.1), and R2-D Phase 1 owns the states
-    // they encode, so a catalog carrying an in-flight or settled admission is
-    // still an exact catalog. `CatalogBootstrapRetired` keeps its refusal: it is
-    // the bootstrap owner's own pre-retirement discriminator.
-    if any_present(interior, &[Slot::CatalogBootstrapRetired]) {
+    // The C-3 widening (interface freeze §4.4 Class 2 fact 2) is deliberately
+    // **not** applied here. Admission runs only against a complete catalog's
+    // root, never into a bootstrap-staging interior, so no cooperating history
+    // ever places an `ActionAdmission*` slot inside a staging directory: the
+    // recorded breakage chain (`recover_or_create` -> `execute_owner_complete`
+    // -> `retain_completed_catalog`) runs through `completed_record`, which is
+    // where the drop is owed and taken. Dropping the triad here instead widened
+    // the bootstrap's *adoption* grammar with no flow that needs it — a staging
+    // directory planted with a stray-but-valid admission record alongside the
+    // six exact roles would classify `Complete`, pass the CatalogStaging
+    // source-interior recheck, and publish as a live catalog carrying an
+    // unexplained admission row. Beyond the amendment §4.1 trust boundary the
+    // R1 posture is to fail closed, so the refusal stays.
+    // `CatalogBootstrapRetired` keeps its own refusal: it is the bootstrap
+    // owner's pre-retirement discriminator.
+    if any_present(
+        interior,
+        &[
+            Slot::CatalogBootstrapRetired,
+            Slot::ActionAdmissionActive,
+            Slot::ActionAdmissionScratch,
+            Slot::ActionAdmissionStaging,
+        ],
+    ) {
         return StagingPlanV1::Other;
     }
     let retired = match row(interior, Slot::RetiredActions) {

@@ -19,7 +19,8 @@ use crate::checked_artifact::catalog::OpaqueRetainedCatalogV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
     ActionDirectoryAdmissionV1, AdmissionHandoffDecisionV1, AdmittedActionV1,
-    CatalogAdmissionOwnerV1, ObservedActionDirectoryV1, RecordObservationV1,
+    CatalogAdmissionOwnerV1, MAX_ACTIVE_ACTION_DIRS, ObservedActionDirectoryV1,
+    RecordObservationV1,
 };
 
 const ADMISSION_FACT: &str = "action admission";
@@ -42,6 +43,12 @@ pub(super) fn resume_or_admit(
         // Steps 1-2 and step 8: the plan and schedule are derived from
         // read-only observations, so this path mutates nothing.
         let observed = catalog.observe_admission(expected)?;
+        // Defence in depth, deliberately kept unreachable: `interior::exact_row`
+        // refuses a malformed-recognized or foreign child before the census can
+        // charge one, so no observation that reaches here can carry an unowned
+        // row (`provider/interior.rs`, the unowned-child refusal). The stop
+        // stands so a future widening of that refusal cannot silently make the
+        // driver admit against an unclassified root.
         if observed.census.has_unowned_row() {
             return Err(stop(
                 "bounded global classification found a malformed or foreign catalog row",
@@ -73,6 +80,37 @@ pub(super) fn resume_or_admit(
                 if !matches!(observed.final_directory, ObservedActionDirectoryV1::Missing) {
                     return Err(stop(
                         "a conflicting or ambiguous action occupies the derived final action name",
+                    ));
+                }
+                // §7's capacity rule, applied to **new** admissions only. The
+                // catalog root is zero-headroom by construction
+                // (`MAX_ROOT_ENTRIES = MAX_INFRASTRUCTURE_ENTRIES +
+                // MAX_ACTIVE_ACTION_DIRS`), so a 65th active action would
+                // publish a row that the very next bounded observation refuses
+                // — and keeps refusing, because no Phase-1 edge removes an
+                // action row and every sealed path, `recover_or_create`
+                // included, runs through that observation. Refusing before the
+                // first durable write is the only place the catalog is still
+                // recoverable.
+                //
+                // Resume is unaffected: `admit` above has already returned for
+                // an exact existing action, and a *resumed in-flight* admission
+                // never reaches this arm (it drives `Preparing`). That path is
+                // closed structurally instead, at the commit point, by the
+                // `AdmissionCatalogInterior` destination recheck
+                // (`provider/publication.rs`), which re-proves the same bound
+                // inside the acquisition window.
+                //
+                // Owed to Phase 4: `CatalogOccupancyV1::can_admit_new`
+                // (`protocol/bounds.rs`) additionally charges the
+                // retirement-credit inequality against the retired root, whose
+                // bounded count this observation does not carry. Wiring it
+                // belongs to the phase that lands retirement; unlike the active
+                // bound, exhausting retirement credit cannot make the catalog
+                // unobservable.
+                if observed.census.active_actions >= MAX_ACTIVE_ACTION_DIRS {
+                    return Err(stop(
+                        "the catalog root already holds the frozen active-action budget",
                     ));
                 }
                 // Step 3: persist `Idle -> Preparing`.

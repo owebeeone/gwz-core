@@ -58,3 +58,5 @@ impl<'lease> ActionAdmissionOwnerV1<'lease> {
 mod tests;
 #[cfg(test)]
 mod tests_fault_matrix;
+#[cfg(test)]
+mod tests_namer_pin;

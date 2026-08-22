@@ -321,18 +321,33 @@ fn run_interruption_matrix(variant: TargetVariantV1) {
 /// fresh retry name.
 ///
 /// A boundary is repeatable only when the durable state its crash leaves
-/// resolves back to the same edge; most `admission.*` boundaries are crossed
-/// once because the state they leave is exactly the one that advances the
-/// sequence, which is the convergence property the matrix above proves. The two
-/// crossed here are the repeatable ones, and they are also the two rows a retry
-/// could be tempted to re-name:
+/// resolves back to the same edge. The three *write* boundaries are not: the
+/// harness stops the process after the syscall, so the record is complete and
+/// the restart resolves past the edge. The rest are repeatable, and the three
+/// crossed here are selected from them because each leaves a **resident row a
+/// retry could be tempted to re-name**, which is the property
+/// ConsumerCheckpoint §12 (:346) and the R2 stop clause (:1089-1092) are about:
 ///
 /// * `admission.preparing_scratch_create` leaves the reusable global admission
 ///   scratch resident but undecodable, so every restart re-enters
-///   `WriteAdmissionScratch` and must reopen the *same* slot name; and
+///   `WriteAdmissionScratch` and must reopen the *same* slot name;
+/// * `admission.reservation_create` leaves an empty resident reservation inside
+///   the indexed staging directory, which `classify_expected_prefix` calls
+///   `PartialExpectedPrefix`, so every restart routes back through
+///   `WriteOrRewriteReservation` and must reuse the same derived slot name; and
 /// * `admission.staging_flush` leaves the indexed staging action directory
 ///   resident and exact, so every restart re-enters `PublishStagingAction` and
 ///   must reuse the same staging name and the same derived reservation row.
+///
+/// The selection is **not** an exclusivity claim, and the boundaries it leaves
+/// out are named so a future reader does not mistake the choice for the set.
+/// `admission.idle_scratch_create` is equally repeatable — an empty scratch
+/// decodes `Other`, so `(Preparing, Other)` resolves to
+/// `ReplacePreparingWithIdle` and re-enters the same helper — but it re-crosses
+/// the same slot name `preparing_scratch_create` already proves stable. The two
+/// observation boundaries, `admission.occupancy_observe` and
+/// `admission.capacity_check`, are trivially re-crossable and mutate nothing,
+/// so repeating them would prove nothing about slot stability.
 fn run_repeated_boundary_crashes(variant: TargetVariantV1) {
     let expected = reservation(0xB2, 2);
     let reservation_row =
@@ -344,6 +359,7 @@ fn run_repeated_boundary_crashes(variant: TargetVariantV1) {
 
     for key in [
         Fault::AdmissionPreparingScratchCreate,
+        Fault::AdmissionReservationCreate,
         Fault::AdmissionStagingFlush,
     ] {
         let stable = key.stable_key();
