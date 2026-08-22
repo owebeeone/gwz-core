@@ -56,3 +56,5 @@ impl<'lease> ActionAdmissionOwnerV1<'lease> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_fault_matrix;

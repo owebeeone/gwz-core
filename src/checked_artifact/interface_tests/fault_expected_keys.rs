@@ -203,7 +203,7 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
     ),
     (
         "admission",
-        FaultFamilyActivationV1::Reserved("R2-D phase 1 (R2-C3 admission)"),
+        FaultFamilyActivationV1::Executed("R2-D phase 1 step 1.3 (R2-C3 admission)"),
         19,
     ),
     (
@@ -244,7 +244,11 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
 ];
 
 /// The complete set of production sources that hold `CheckedArtifactFaultKeyV1`
-/// injection sites today — three files, all holding `catalog_bootstrap.*` sites.
+/// injection sites today — four files: three holding `catalog_bootstrap.*`
+/// sites, and `admission_mutation.rs` holding all nineteen `admission.*` sites
+/// converted by R2-D Phase 1 Step 1.3. `admission/driver.rs` deliberately holds
+/// none: it decides and never mutates (`admission/driver.rs:8-9`), so every
+/// durable admission edge is announced from the owner-private mutation file.
 /// `runtime.*` edges are executed through the separate
 /// `bootstrap/runtime/fault.rs` mechanism, so they are executed without a key
 /// reference here (`GwzM5-8R2C2OwnerInterface-ReviewState-2.md:160-169`).
@@ -266,6 +270,10 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
     (
         "capability/pre_catalog/provider/aggregate.rs",
         include_str!("../capability/pre_catalog/provider/aggregate.rs"),
+    ),
+    (
+        "capability/pre_catalog/provider/admission_mutation.rs",
+        include_str!("../capability/pre_catalog/provider/admission_mutation.rs"),
     ),
 ];
 
@@ -431,8 +439,13 @@ fn the_declared_injection_sources_are_every_production_source_holding_sites() {
     );
 }
 
+/// R2-D Phase 1 Step 1.3 added `admission` to this set, together with its
+/// nineteen injection sites and the executed matrix on both target variants
+/// (`admission/tests_fault_matrix.rs`). The remaining seven families stay
+/// reserved for the packages the frozen map names
+/// (`GwzM5-8R2DInterfaceFreeze.md` §3.5).
 #[test]
-fn only_the_runtime_and_catalog_bootstrap_families_are_executed_today() {
+fn only_the_runtime_catalog_bootstrap_and_admission_families_are_executed_today() {
     let executed = FAULT_FAMILY_ACTIVATION
         .iter()
         .filter(|(_, activation, _)| matches!(activation, FaultFamilyActivationV1::Executed(_)))
@@ -441,7 +454,9 @@ fn only_the_runtime_and_catalog_bootstrap_families_are_executed_today() {
 
     assert_eq!(
         executed,
-        ["catalog_bootstrap", "runtime"].into_iter().collect(),
+        ["admission", "catalog_bootstrap", "runtime"]
+            .into_iter()
+            .collect(),
         "a fault family changed activation state; the converting package owns that edit \
          together with its executed matrix evidence"
     );

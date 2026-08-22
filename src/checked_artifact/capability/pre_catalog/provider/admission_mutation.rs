@@ -29,6 +29,8 @@ use super::{RawCatalogBytesV1, RawCatalogInteriorFactV1, RawCatalogInteriorObser
 use crate::checked_artifact::capability::{
     CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1, PlatformCapability,
 };
+#[cfg(test)]
+use crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
     ActionDirectoryAdmissionV1, ActionSlotV1, BaseActionSlotV1, CatalogBootstrapRecordV1,
@@ -45,6 +47,8 @@ pub(super) fn observe(
     expected: &ActionCapacityReservationV1,
 ) -> Result<ActionAdmissionObservationV1, CheckedFsError> {
     let fresh = interior::observe(final_directory, &super::HostPlatform)?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionOccupancyObserve);
     let record = admission_record_row(&fresh, InfrastructureSlotV1::ActionAdmissionActive)?;
     let scratch = admission_record_row(&fresh, InfrastructureSlotV1::ActionAdmissionScratch)?;
     let staging = interior::observe_action_directory(
@@ -60,6 +64,8 @@ pub(super) fn observe(
         expected,
         &super::HostPlatform,
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionCapacityCheck);
     Ok(ActionAdmissionObservationV1 {
         record,
         scratch,
@@ -134,7 +140,7 @@ fn write_admission_scratch(
         final_directory,
         OsStr::new(InfrastructureSlotV1::ActionAdmissionScratch.name()),
         &bytes,
-        "admission scratch",
+        AdmissionRecordRowV1::of_admission_record(record),
     )
 }
 
@@ -162,6 +168,8 @@ fn publish_admission_record(
     let scratch = OsStr::new(InfrastructureSlotV1::ActionAdmissionScratch.name());
     let active = OsStr::new(InfrastructureSlotV1::ActionAdmissionActive.name());
     let (identity, bytes) = observed_record(final_directory, scratch, "admission scratch")?;
+    #[cfg(test)]
+    let faults = install_faults(&bytes);
     let source = ObservedFileV1 {
         identity: &identity,
         bytes: &bytes,
@@ -179,12 +187,16 @@ fn publish_admission_record(
         },
         "publish admission record",
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(faults[0]);
     verify_named_file(
         final_directory,
         active,
         source,
         "published admission record",
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(faults[1]);
     sync_directory_edge(final_directory, "flush admission record publication")
 }
 
@@ -196,6 +208,8 @@ fn create_staging_directory(final_directory: &Dir) -> Result<(), CheckedFsError>
     final_directory
         .create_dir(staging)
         .map_err(|source| CheckedFsError::io("create admission staging no-replace", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionStagingCreate);
     let directory = final_directory
         .open_dir_nofollow(staging)
         .map_err(|source| CheckedFsError::io("reopen admission staging", source))?;
@@ -227,7 +241,7 @@ fn write_resident_reservation(
         &staging,
         OsStr::new(name.as_str()),
         &bytes,
-        "resident reservation",
+        AdmissionRecordRowV1::Reservation,
     )
 }
 
@@ -250,6 +264,8 @@ fn publish_staging_action(
     let identity = encode_identity(&fact);
     let durable_identity = fact.durable().clone();
     sync_directory_edge(&staging, "flush exact admission staging")?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionStagingFlush);
     // Release the caller's staging capability before the rename edge: on
     // Windows a directory rename fails with a sharing violation while any
     // handle into the source tree survives, and the sealed primitive
@@ -276,6 +292,8 @@ fn publish_staging_action(
         },
         "publish admission action directory",
     )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionFinalPublish);
     let republished = final_directory
         .open_dir_nofollow(OsStr::new(published.as_str()))
         .map_err(|source| CheckedFsError::io("reopen published action directory", source))?;
@@ -285,11 +303,89 @@ fn publish_staging_action(
             "opened directory identity does not match the published staging object",
         ));
     }
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionFinalReobserve);
     sync_directory_edge(final_directory, "flush admission action publication")
 }
 
 fn final_action_name(expected: &ActionCapacityReservationV1) -> String {
     RootEntryNameV1::ActiveAction(expected.action_digest()).name()
+}
+
+/// Which durable admission row a shared edge is crossing.
+///
+/// Three durable rows share one record-write helper, so the row — never a name
+/// minted at runtime — selects the stable `admission.*` boundaries that helper
+/// announces (`fault_v1.rs:3-5`). The row also carries the diagnostic fact each
+/// call site named before, so the shared helper keeps reporting exactly the
+/// fact it reported when the fact was passed literally.
+#[derive(Clone, Copy)]
+enum AdmissionRecordRowV1 {
+    Preparing,
+    Idle,
+    Reservation,
+}
+
+impl AdmissionRecordRowV1 {
+    /// The durable state a §7 step 3 / step 7 scratch write installs: the
+    /// frozen `idle()` record, or this action's `preparing` record. The two are
+    /// already distinguished by the same equality the driver resolves on
+    /// (`admission/driver.rs:157`), so no new predicate is introduced.
+    fn of_admission_record(record: &ActionDirectoryAdmissionV1) -> Self {
+        if *record == ActionDirectoryAdmissionV1::idle() {
+            Self::Idle
+        } else {
+            Self::Preparing
+        }
+    }
+
+    const fn fact(self) -> &'static str {
+        match self {
+            Self::Preparing | Self::Idle => "admission scratch",
+            Self::Reservation => "resident reservation",
+        }
+    }
+
+    /// The create / write / flush boundaries this row's durable write crosses.
+    #[cfg(test)]
+    const fn write_faults(self) -> [CheckedArtifactFaultKeyV1; 3] {
+        match self {
+            Self::Preparing => [
+                CheckedArtifactFaultKeyV1::AdmissionPreparingScratchCreate,
+                CheckedArtifactFaultKeyV1::AdmissionPreparingScratchWrite,
+                CheckedArtifactFaultKeyV1::AdmissionPreparingScratchFlush,
+            ],
+            Self::Idle => [
+                CheckedArtifactFaultKeyV1::AdmissionIdleScratchCreate,
+                CheckedArtifactFaultKeyV1::AdmissionIdleScratchWrite,
+                CheckedArtifactFaultKeyV1::AdmissionIdleScratchFlush,
+            ],
+            Self::Reservation => [
+                CheckedArtifactFaultKeyV1::AdmissionReservationCreate,
+                CheckedArtifactFaultKeyV1::AdmissionReservationWrite,
+                CheckedArtifactFaultKeyV1::AdmissionReservationFlush,
+            ],
+        }
+    }
+}
+
+/// The publish / reobserve boundaries of the shared install half of §7 steps 3
+/// and 7. `ActionAdmissionEdgeV1::PublishAdmissionRecord` carries no
+/// discriminator and the seam is frozen, so the row is read from the scratch
+/// bytes the edge is about to publish — the same durable fact the driver
+/// resolved the edge from.
+#[cfg(test)]
+fn install_faults(bytes: &[u8]) -> [CheckedArtifactFaultKeyV1; 2] {
+    match decode_action_directory_admission(std::io::Cursor::new(bytes)) {
+        Ok(record) if record == ActionDirectoryAdmissionV1::idle() => [
+            CheckedArtifactFaultKeyV1::AdmissionIdlePublish,
+            CheckedArtifactFaultKeyV1::AdmissionIdleReobserve,
+        ],
+        _ => [
+            CheckedArtifactFaultKeyV1::AdmissionPreparingPublish,
+            CheckedArtifactFaultKeyV1::AdmissionPreparingReobserve,
+        ],
+    }
 }
 
 /// Write-through create-or-rewrite plus handle flush plus parent flush — the
@@ -300,19 +396,26 @@ fn write_durable_record(
     parent: &Dir,
     name: &OsStr,
     bytes: &[u8],
-    fact: &'static str,
+    row: AdmissionRecordRowV1,
 ) -> Result<(), CheckedFsError> {
+    let fact = row.fact();
+    #[cfg(test)]
+    let faults = row.write_faults();
     let mut options = durable_write_options(false);
     options.create(true);
     let mut file = parent
         .open_with(name, &options)
         .map_err(|source| CheckedFsError::io("open admission record", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(faults[0]);
     file.set_len(0)
         .map_err(|source| CheckedFsError::io("truncate admission record", source))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|source| CheckedFsError::io("rewind admission record", source))?;
     file.write_all(bytes)
         .map_err(|source| CheckedFsError::io("write admission record", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(faults[1]);
     file.sync_all()
         .map_err(|source| CheckedFsError::io("flush admission record", source))?;
     let identity = encode_identity(&super::HostPlatform.file_identity(&file)?);
@@ -323,7 +426,10 @@ fn write_durable_record(
     verify_open_file(&mut file, written, fact)?;
     drop(file);
     verify_named_file(parent, name, written, fact)?;
-    sync_directory_edge(parent, "flush admission record write")
+    sync_directory_edge(parent, "flush admission record write")?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(faults[2]);
+    Ok(())
 }
 
 fn observed_record(
