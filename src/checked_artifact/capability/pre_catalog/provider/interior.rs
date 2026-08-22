@@ -18,13 +18,26 @@ use crate::checked_artifact::catalog::{
 };
 use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 use crate::checked_artifact::protocol::{
-    CatalogBootstrapRecordV1, InfrastructureRecordV1, InfrastructureSlotV1, ProtocolRecordKindV1,
-    ScratchBytesV1, classify_expected_prefix, decode_catalog_bootstrap_record,
+    ActionCapacityReservationV1, ActionSlotV1, BaseActionSlotV1, CatalogBootstrapRecordV1,
+    CatalogRootRowCensusV1, CatalogRootRowClassV1, InfrastructureRecordV1, InfrastructureSlotV1,
+    MAX_ACTION_SLOTS, MAX_ACTIVE_ACTION_DIRS, MAX_INFRASTRUCTURE_ENTRIES, MAX_ROOT_ENTRIES,
+    ObservedActionDirectoryV1, ProtocolRecordKindV1, RecordObservationV1, ScratchBytesV1,
+    classify_expected_prefix, decode_catalog_bootstrap_record,
 };
 
 const ROAMING_ANCHOR_BYTES: &[u8] = b"GWZ-ROAMING-ANCHOR-V1\n";
 const CATALOG_ANCHOR_BYTES: &[u8] = b"GWZ-CATALOG-ANCHOR-V1\n";
-const MAX_INTERIOR_ENTRIES: usize = 10;
+/// The catalog root's bound, widened from the ten infrastructure slots to the
+/// already-frozen `MAX_ROOT_ENTRIES` (= 74 = 10 infrastructure + 64 active
+/// action directories, `protocol/bounds.rs:21-23`) so a published
+/// `RootEntryNameV1::ActiveAction` row survives reobservation.
+///
+/// `GwzM5-8R2DInterfaceFreeze.md` §4.4 Class 2 (C-3) fact 3: "Ten is exactly
+/// `|InfrastructureSlotV1::ALL|`, so a fully-populated catalog root has zero
+/// headroom: the cap and the grammar have to move together." Both move here,
+/// and both move only onto vocabulary R1+C0 already froze. Widening only: the
+/// per-family caps below keep every previously-accepted interior accepted.
+const MAX_INTERIOR_ENTRIES: usize = MAX_ROOT_ENTRIES;
 
 pub(super) enum StagingPlanV1 {
     CreateRetiredActions,
@@ -54,6 +67,8 @@ pub(super) fn observe(
     let mode = platform.parent_mode(directory)?;
     let mut budget = CatalogNameBudgetV1::new();
     let mut rows = Vec::new();
+    let mut action_rows = Vec::new();
+    let mut census = CatalogRootRowCensusV1::default();
     for entry in directory
         .entries()
         .map_err(|source| CheckedFsError::io("enumerate catalog interior", source))?
@@ -61,20 +76,35 @@ pub(super) fn observe(
         let entry = entry.map_err(|source| CheckedFsError::io("read catalog interior", source))?;
         let name = entry.file_name();
         budget.charge_os_str(&name)?;
-        if rows.len() == MAX_INTERIOR_ENTRIES {
+        if rows.len() + action_rows.len() == MAX_INTERIOR_ENTRIES {
+            return Err(interior_bound_exceeded());
+        }
+        let class = exact_row(&name, mode)?;
+        census.charge(class);
+        if let CatalogRootRowClassV1::ActiveAction(action) = class {
+            if action_rows.len() == MAX_ACTIVE_ACTION_DIRS {
+                return Err(interior_bound_exceeded());
+            }
+            reserve_one(&mut action_rows)?;
+            action_rows.push(action);
+            continue;
+        }
+        let slot = class
+            .infrastructure_slot()
+            .expect("a classified non-action catalog row owns an infrastructure slot");
+        if rows.len() == MAX_INFRASTRUCTURE_ENTRIES {
             return Err(CheckedFsError::unsupported(
                 PlatformCapability::PrivateNamespaceCollisionScan,
                 "catalog interior exceeds the ten-slot bound",
             ));
         }
-        let slot = exact_slot(&name, mode)?;
-        let fact = observe_slot(directory, &name, slot, platform)?;
-        rows.try_reserve_exact(1).map_err(|_| {
-            CheckedFsError::unsupported(
-                PlatformCapability::PrivateNamespaceCollisionScan,
-                "catalog interior row allocation failed",
-            )
-        })?;
+        let fact = observe_slot(
+            directory,
+            &name,
+            slot == InfrastructureSlotV1::RetiredActions,
+            platform,
+        )?;
+        reserve_one(&mut rows)?;
         rows.push(RawCatalogInteriorRowV1 { slot, fact });
     }
     rows.sort_unstable_by_key(|row| slot_index(row.slot));
@@ -84,10 +114,35 @@ pub(super) fn observe(
             "multiple native entries resolve to one infrastructure slot",
         ));
     }
+    action_rows.sort_unstable_by_key(|action| action.bytes());
+    if action_rows.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(CheckedFsError::ambiguous(
+            "catalog interior",
+            "multiple native entries resolve to one action row",
+        ));
+    }
     Ok(RawCatalogInteriorObservationV1 {
         entry_count: budget.entry_count(),
         encoded_name_bytes: budget.encoded_name_bytes(),
         rows,
+        action_rows,
+        census,
+    })
+}
+
+fn interior_bound_exceeded() -> CheckedFsError {
+    CheckedFsError::unsupported(
+        PlatformCapability::PrivateNamespaceCollisionScan,
+        "catalog interior exceeds the frozen root-entry bound",
+    )
+}
+
+fn reserve_one<T>(values: &mut Vec<T>) -> Result<(), CheckedFsError> {
+    values.try_reserve_exact(1).map_err(|_| {
+        CheckedFsError::unsupported(
+            PlatformCapability::PrivateNamespaceCollisionScan,
+            "catalog interior row allocation failed",
+        )
     })
 }
 
@@ -125,15 +180,13 @@ pub(super) fn staging_plan(
     expected: &CatalogBootstrapRecordV1,
 ) -> StagingPlanV1 {
     use InfrastructureSlotV1 as Slot;
-    if any_present(
-        interior,
-        &[
-            Slot::CatalogBootstrapRetired,
-            Slot::ActionAdmissionActive,
-            Slot::ActionAdmissionScratch,
-            Slot::ActionAdmissionStaging,
-        ],
-    ) {
+    // C-3 widening (interface freeze §4.4 Class 2 fact 2): the three
+    // `ActionAdmission*` slots no longer un-complete a catalog. Their durable
+    // home was already frozen at R1+C0 (§3.1), and R2-D Phase 1 owns the states
+    // they encode, so a catalog carrying an in-flight or settled admission is
+    // still an exact catalog. `CatalogBootstrapRetired` keeps its refusal: it is
+    // the bootstrap owner's own pre-retirement discriminator.
+    if any_present(interior, &[Slot::CatalogBootstrapRetired]) {
         return StagingPlanV1::Other;
     }
     let retired = match row(interior, Slot::RetiredActions) {
@@ -259,15 +312,14 @@ pub(super) fn completed_record(
     expected: &CatalogBootstrapRecordV1,
 ) -> Option<InfrastructureRecordV1> {
     use InfrastructureSlotV1 as Slot;
-    if any_present(
-        interior,
-        &[
-            Slot::CatalogAnchorB,
-            Slot::ActionAdmissionActive,
-            Slot::ActionAdmissionScratch,
-            Slot::ActionAdmissionStaging,
-        ],
-    ) {
+    // C-3 widening (interface freeze §4.4 Class 2 facts 2 and the "Consequence"
+    // paragraph): with an `ActionAdmissionActive` slot resident — the steady
+    // state after a successful admission — this predicate used to be `None`,
+    // which broke `retain_completed_catalog` (`completed.rs:61`) and therefore
+    // ConsumerCheckpoint §7 step 8's reobservation. The admission triad is now
+    // admitted; `CatalogAnchorB` keeps its refusal because an unexercised
+    // B anchor still means the catalog is mid-bootstrap.
+    if any_present(interior, &[Slot::CatalogAnchorB]) {
         return None;
     }
     let retired = empty_directory_identity(interior, Slot::RetiredActions)?;
@@ -306,14 +358,23 @@ pub(super) fn retired_record(
         .unwrap_or(CatalogRecordFactV1::Other)
 }
 
-fn exact_slot(
+/// Classifies one catalog-root child into the §6 (:199-201) grammar.
+///
+/// C-3 widening (`GwzM5-8R2DInterfaceFreeze.md` §4.4 Class 2 fact 1): the
+/// observer previously walked `InfrastructureSlotV1::ALL` alone and refused
+/// every other child, so it "does not yet admit the very row E3 publishes".
+/// It now walks the whole frozen `RootEntryNameV1` grammar, whose second arm is
+/// the active-action row. Widening only: the platform-alias and unowned-child
+/// refusals are byte-identical, so every interior that classified before still
+/// classifies the same way, and only `action-<hex>-v1` rows are newly admitted.
+fn exact_row(
     name: &OsStr,
     mode: crate::checked_artifact::capability::PathComponentMode,
-) -> Result<InfrastructureSlotV1, CheckedFsError> {
+) -> Result<CatalogRootRowClassV1, CheckedFsError> {
     for slot in InfrastructureSlotV1::ALL.iter().copied() {
         if native_name_matches_ascii(name, slot.name().as_bytes(), mode)? {
             return if name == OsStr::new(slot.name()) {
-                Ok(slot)
+                Ok(CatalogRootRowClassV1::classify(slot.name().as_bytes()))
             } else {
                 Err(CheckedFsError::ambiguous(
                     "catalog interior",
@@ -322,16 +383,29 @@ fn exact_slot(
             };
         }
     }
+    let class = CatalogRootRowClassV1::classify(native_ascii_bytes(name).unwrap_or(&[]));
+    if matches!(class, CatalogRootRowClassV1::ActiveAction(_)) {
+        return Ok(class);
+    }
     Err(CheckedFsError::ambiguous(
         "catalog interior",
         "catalog directory contains an unowned child",
     ))
 }
 
+/// The canonical ASCII spelling of a native name, or `None` when the platform
+/// name is not ASCII. An action row's grammar is ASCII-only
+/// (`protocol/slots.rs:385-400`), so a non-ASCII child can never be one and
+/// falls through to the unchanged unowned-child refusal.
+fn native_ascii_bytes(name: &OsStr) -> Option<&[u8]> {
+    let bytes = name.to_str()?.as_bytes();
+    bytes.is_ascii().then_some(bytes)
+}
+
 fn observe_slot(
     directory: &cap_std::fs::Dir,
     name: &OsStr,
-    slot: InfrastructureSlotV1,
+    probe_empty_directory: bool,
     platform: &impl PlatformProviderV1,
 ) -> Result<RawCatalogInteriorFactV1, CheckedFsError> {
     let metadata = directory
@@ -342,7 +416,7 @@ fn observe_slot(
             .open_dir_nofollow(name)
             .map_err(|source| CheckedFsError::io("open catalog interior directory", source))?;
         let identity = platform.dir_identity(&child)?;
-        if slot == InfrastructureSlotV1::RetiredActions {
+        if probe_empty_directory {
             let mut entries = child
                 .entries()
                 .map_err(|source| CheckedFsError::io("enumerate retired-action root", source))?;
@@ -373,10 +447,144 @@ fn observe_slot(
     Ok(RawCatalogInteriorFactV1::Other(value))
 }
 
+/// Bounded observation of one action directory through the frozen
+/// [`ActionSlotV1`] grammar.
+///
+/// It lives in this file because `GwzM5-8R2DInterfaceFreeze.md` §4.4 Class 1
+/// records that the verification a recheck arm drives "lives in a different
+/// file of the same owner" — `publication.rs` decides, `interior.rs` verifies.
+/// It returns the frozen R1 observation type, so neither the admission driver
+/// nor the sealed primitive receives a handle or a raw row.
+pub(super) fn observe_action_directory(
+    parent: &cap_std::fs::Dir,
+    name: &OsStr,
+    expected: &ActionCapacityReservationV1,
+    platform: &impl PlatformProviderV1,
+) -> Result<ObservedActionDirectoryV1, CheckedFsError> {
+    let metadata = match parent.symlink_metadata(name) {
+        Ok(value) => value,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ObservedActionDirectoryV1::Missing);
+        }
+        Err(source) => return Err(CheckedFsError::io("observe action directory", source)),
+    };
+    if !metadata.is_dir() || metadata.is_symlink() {
+        return Ok(ObservedActionDirectoryV1::Other);
+    }
+    let directory = parent
+        .open_dir_nofollow(name)
+        .map_err(|source| CheckedFsError::io("open action directory", source))?;
+    let identity = platform.dir_identity(&directory)?;
+    let observed = observe_action_interior(&directory, expected)?;
+    Ok(ObservedActionDirectoryV1::exact(
+        identity.durable().clone(),
+        observed.reservation,
+        observed.extra_children,
+    ))
+}
+
+/// Bounded interior of an already-open action directory, so the sealed
+/// publication primitive can re-verify its retained source handle without
+/// reopening the name it is about to consume.
+pub(super) struct ActionInteriorObservationV1 {
+    pub(super) reservation: RecordObservationV1<ActionCapacityReservationV1>,
+    pub(super) extra_children: usize,
+}
+
+impl ActionInteriorObservationV1 {
+    /// The §7 (:220-221) exactness predicate: the deterministic resident
+    /// reservation and no extra children.
+    pub(super) fn is_exact(&self, expected: &ActionCapacityReservationV1) -> bool {
+        self.extra_children == 0
+            && matches!(&self.reservation, RecordObservationV1::Exact(value) if value == expected)
+    }
+}
+
+pub(super) fn observe_action_interior(
+    directory: &cap_std::fs::Dir,
+    expected: &ActionCapacityReservationV1,
+) -> Result<ActionInteriorObservationV1, CheckedFsError> {
+    let reservation_name =
+        ActionSlotV1::Base(BaseActionSlotV1::Reservation).name(expected.action_digest());
+    let reservation_name = OsStr::new(reservation_name.as_str());
+    let expected_bytes = expected.encode_canonical().map_err(|_| {
+        CheckedFsError::ambiguous(
+            "action capacity reservation",
+            "expected capacity record is not canonically encodable",
+        )
+    })?;
+    let mut budget = CatalogNameBudgetV1::new();
+    let mut reservation = RecordObservationV1::Missing;
+    let mut extra_children = 0_usize;
+    let mut seen = 0_usize;
+    for entry in directory
+        .entries()
+        .map_err(|source| CheckedFsError::io("enumerate action directory", source))?
+    {
+        let entry = entry.map_err(|source| CheckedFsError::io("read action directory", source))?;
+        let child = entry.file_name();
+        budget.charge_os_str(&child)?;
+        seen += 1;
+        if seen > MAX_ACTION_SLOTS {
+            return Err(CheckedFsError::unsupported(
+                PlatformCapability::PrivateNamespaceCollisionScan,
+                "action directory exceeds the frozen action-slot bound",
+            ));
+        }
+        if child == reservation_name {
+            reservation = observe_reservation(directory, &child, &expected_bytes, expected)?;
+            continue;
+        }
+        extra_children += 1;
+    }
+    Ok(ActionInteriorObservationV1 {
+        reservation,
+        extra_children,
+    })
+}
+
+fn observe_reservation(
+    directory: &cap_std::fs::Dir,
+    name: &OsStr,
+    expected_bytes: &[u8],
+    expected: &ActionCapacityReservationV1,
+) -> Result<RecordObservationV1<ActionCapacityReservationV1>, CheckedFsError> {
+    let metadata = directory
+        .symlink_metadata(name)
+        .map_err(|source| CheckedFsError::io("observe resident reservation", source))?;
+    if !metadata.is_file() || metadata.is_symlink() {
+        return Ok(RecordObservationV1::Other);
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let mut file = directory
+        .open_with(name, &options)
+        .map_err(|source| CheckedFsError::io("open resident reservation", source))?;
+    let RawCatalogBytesV1::Bounded(bytes) =
+        read_bounded_with(&mut file, ProtocolRecordKindV1::Capacity.max_bytes())?
+    else {
+        return Ok(RecordObservationV1::Other);
+    };
+    Ok(match classify_expected_prefix(&bytes, expected_bytes) {
+        ScratchBytesV1::Exact => RecordObservationV1::Exact(expected.clone()),
+        ScratchBytesV1::PartialExpectedPrefix => RecordObservationV1::PartialExpectedPrefix,
+        ScratchBytesV1::Missing | ScratchBytesV1::Other => RecordObservationV1::Other,
+    })
+}
+
 fn read_bounded(file: &mut cap_std::fs::File) -> Result<RawCatalogBytesV1, CheckedFsError> {
-    let limit = ProtocolRecordKindV1::Infrastructure
-        .max_bytes()
-        .max(ProtocolRecordKindV1::CatalogBootstrap.max_bytes());
+    read_bounded_with(
+        file,
+        ProtocolRecordKindV1::Infrastructure
+            .max_bytes()
+            .max(ProtocolRecordKindV1::CatalogBootstrap.max_bytes()),
+    )
+}
+
+fn read_bounded_with(
+    file: &mut cap_std::fs::File,
+    limit: usize,
+) -> Result<RawCatalogBytesV1, CheckedFsError> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(limit).map_err(|_| {
         CheckedFsError::unsupported(

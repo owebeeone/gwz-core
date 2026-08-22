@@ -11,7 +11,10 @@ use super::retained::encode_identity;
 use crate::checked_artifact::capability::{
     CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1, PlatformCapability,
 };
-use crate::checked_artifact::protocol::{CatalogBootstrapRecordV1, InfrastructureSlotV1};
+use crate::checked_artifact::catalog::CatalogRecordFactV1;
+use crate::checked_artifact::protocol::{
+    ActionCapacityReservationV1, CatalogBootstrapRecordV1, InfrastructureSlotV1, RootEntryNameV1,
+};
 use crate::model::ErrorCode;
 
 pub(super) enum PublicationSourceV1<'a> {
@@ -33,7 +36,26 @@ pub(super) enum PublicationSourceV1<'a> {
 /// inside the accepted same-user namespace boundary.
 pub(super) struct DirectoryInteriorRecheckV1<'a> {
     pub(super) durable_identity: &'a DurableObjectIdentityV1,
-    pub(super) expected: &'a CatalogBootstrapRecordV1,
+    pub(super) expected: DirectoryInteriorExpectationV1<'a>,
+}
+
+/// C-2, the recheck-arm class, source-interior half
+/// (`GwzM5-8R2DInterfaceFreeze.md` §4.4 Class 1: "the `expected` field is
+/// mandatory and catalog-typed, so the admission arm is a *generalization of
+/// that struct or its field type*, not the addition of a variant"; §6 restates
+/// it as "a generalization of the `DirectoryInteriorRecheckV1` **struct**'s
+/// `expected` field").
+///
+/// Both arms are lifetime-parameterized reference holders with no encode path:
+/// they are built by the mutation owners, consumed read-only inside
+/// [`publish_verified_no_replace`], and dropped. Nothing is serialized and
+/// nothing is reachable from a durable-record root.
+pub(super) enum DirectoryInteriorExpectationV1<'a> {
+    /// R2-C2's arm: the interior is a completed catalog staging layout.
+    CatalogStaging(&'a CatalogBootstrapRecordV1),
+    /// R2-D Phase 1's arm (edge E3): the interior is a resident
+    /// `ActionCapacityReservationV1`, not a `CatalogBootstrapRecordV1`.
+    AdmissionStaging(&'a ActionCapacityReservationV1),
 }
 
 /// Destination-interior expectation re-verified through the retained
@@ -43,6 +65,18 @@ pub(super) enum DestinationRecheckV1<'a> {
     PreRetirementFinal {
         durable_identity: &'a DurableObjectIdentityV1,
         expected: &'a CatalogBootstrapRecordV1,
+    },
+    /// C-2, the recheck-arm class, destination half (interface freeze §4.4
+    /// Class 1 row "admission destination", edges E3 and E7; §6: "a variant on
+    /// the `DestinationRecheckV1` **enum**"). The destination of every
+    /// admission edge is the completed catalog interior itself, so the arm
+    /// re-verifies that the catalog is still exactly complete *and* that the
+    /// deterministic destination row is still free — the no-replace property
+    /// restated as an in-window expectation rather than only as a rename flag.
+    AdmissionCatalogInterior {
+        durable_identity: &'a DurableObjectIdentityV1,
+        expected: &'a CatalogBootstrapRecordV1,
+        absent: RootEntryNameV1,
     },
 }
 
@@ -142,11 +176,19 @@ pub(super) fn publish_verified_no_replace(
                     "publication source identity changed",
                 ));
             }
-            let fresh = interior::observe(&directory, &HostPlatform)?;
-            if !matches!(
-                interior::staging_plan(recheck.durable_identity, &fresh, recheck.expected),
-                StagingPlanV1::Complete(_)
-            ) {
+            let exact = match recheck.expected {
+                DirectoryInteriorExpectationV1::CatalogStaging(expected) => {
+                    let fresh = interior::observe(&directory, &HostPlatform)?;
+                    matches!(
+                        interior::staging_plan(recheck.durable_identity, &fresh, expected),
+                        StagingPlanV1::Complete(_)
+                    )
+                }
+                DirectoryInteriorExpectationV1::AdmissionStaging(expected) => {
+                    interior::observe_action_interior(&directory, expected)?.is_exact(expected)
+                }
+            };
+            if !exact {
                 return Err(CheckedFsError::ambiguous(
                     label,
                     "publication source interior changed inside the acquisition window",
@@ -163,6 +205,29 @@ pub(super) fn publish_verified_no_replace(
             let fresh = interior::observe(destination_dir, &HostPlatform)?;
             if interior::completed_record(durable_identity, &fresh, expected).is_none()
                 || interior::row(&fresh, InfrastructureSlotV1::CatalogBootstrapRetired).is_some()
+            {
+                return Err(CheckedFsError::ambiguous(
+                    label,
+                    "publication destination interior changed inside the acquisition window",
+                ));
+            }
+        }
+        DestinationRecheckV1::AdmissionCatalogInterior {
+            durable_identity,
+            expected,
+            absent,
+        } => {
+            let fresh = interior::observe(destination_dir, &HostPlatform)?;
+            let occupied = match absent {
+                RootEntryNameV1::Infrastructure(slot) => interior::row(&fresh, *slot).is_some(),
+                RootEntryNameV1::ActiveAction(action) => fresh.action_rows.contains(action),
+            };
+            if occupied
+                || interior::completed_record(durable_identity, &fresh, expected).is_none()
+                || !matches!(
+                    interior::retired_record(&fresh),
+                    CatalogRecordFactV1::Exact(value) if value.as_ref() == *expected
+                )
             {
                 return Err(CheckedFsError::ambiguous(
                     label,

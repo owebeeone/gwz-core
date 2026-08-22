@@ -8,8 +8,8 @@ use cap_std::fs::OpenOptions;
 
 use super::interior::{self, StagingPlanV1};
 use super::publication::{
-    DestinationRecheckV1, DirectoryInteriorRecheckV1, PublicationSourceV1,
-    publish_verified_no_replace,
+    DestinationRecheckV1, DirectoryInteriorExpectationV1, DirectoryInteriorRecheckV1,
+    PublicationSourceV1, publish_verified_no_replace,
 };
 use super::retained::encode_identity;
 use super::{
@@ -252,7 +252,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_final_direct
             staging_observed.identity,
             DirectoryInteriorRecheckV1 {
                 durable_identity: staging_observed.durable_identity,
-                expected,
+                expected: DirectoryInteriorExpectationV1::CatalogStaging(expected),
             },
         ),
         DestinationRecheckV1::None,
@@ -668,7 +668,7 @@ pub(super) fn verify_named_file(
     verify_open_file(&mut file, expected, fact)
 }
 
-fn verify_open_file(
+pub(super) fn verify_open_file(
     file: &mut cap_std::fs::File,
     expected: ObservedFileV1<'_>,
     fact: &'static str,
@@ -700,7 +700,7 @@ fn verify_open_file(
     Ok(())
 }
 
-fn durable_write_options(create_new: bool) -> OpenOptions {
+pub(super) fn durable_write_options(create_new: bool) -> OpenOptions {
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -722,7 +722,7 @@ fn private_name(name: CatalogPrivateNameV1) -> &'static str {
 }
 
 #[cfg(not(windows))]
-fn sync_directory_edge(
+pub(super) fn sync_directory_edge(
     directory: &cap_std::fs::Dir,
     operation: &'static str,
 ) -> Result<(), CheckedFsError> {
@@ -731,7 +731,7 @@ fn sync_directory_edge(
 }
 
 #[cfg(windows)]
-fn sync_directory_edge(
+pub(super) fn sync_directory_edge(
     _directory: &cap_std::fs::Dir,
     _operation: &'static str,
 ) -> Result<(), CheckedFsError> {

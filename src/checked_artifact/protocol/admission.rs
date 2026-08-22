@@ -2,17 +2,24 @@
 
 use sha2::{Digest, Sha256};
 
-use super::codec::{BoundedCanonicalRecordV1, ProtocolCodecErrorV1, ProtocolRecordKindV1};
+use super::codec::{
+    BoundedCanonicalRecordV1, ProtocolCodecErrorV1, ProtocolRecordKindV1, read_bounded_record_inner,
+};
 use super::generated;
 use super::schedule::{
     ActionDigestV1, ActionScheduleV1, RecordDigestV1, RequestOwnerBindingV1, checked_array,
 };
-use super::slots::{InfrastructureSlotV1, RootEntryNameV1};
+use super::slots::{CatalogRootRowClassV1, InfrastructureSlotV1, RootEntryNameV1};
 use crate::checked_artifact::capability::DurableObjectIdentityV1;
 
 mod owner;
 #[cfg(test)]
 mod test_support;
+#[allow(
+    unused_imports,
+    reason = "R1 exports the admission classifier before its R2-D physical half consumes it"
+)]
+pub(in crate::checked_artifact) use owner::*;
 #[cfg(test)]
 pub(in crate::checked_artifact) use test_support::*;
 
@@ -381,4 +388,91 @@ pub(in crate::checked_artifact) enum AdmissionHandoffDecisionV1 {
     PublishStaging,
     ReplacePreparingWithIdle,
     Ambiguous,
+}
+
+/// Reads one bounded canonical admission record, so the physical driver decodes
+/// the durable `ActionAdmission*` triad without reaching into this owner's
+/// private codec (the `decode_catalog_bootstrap_record` idiom,
+/// `protocol/catalog_bootstrap_record.rs:375-378`).
+pub(in crate::checked_artifact) fn decode_action_directory_admission(
+    reader: impl std::io::Read,
+) -> Result<ActionDirectoryAdmissionV1, ProtocolCodecErrorV1> {
+    read_bounded_record_inner::<ActionDirectoryAdmissionV1>(reader)
+}
+
+/// Reads one bounded canonical resident capacity reservation.
+pub(in crate::checked_artifact) fn decode_action_capacity_reservation(
+    reader: impl std::io::Read,
+) -> Result<ActionCapacityReservationV1, ProtocolCodecErrorV1> {
+    read_bounded_record_inner::<ActionCapacityReservationV1>(reader)
+}
+
+/// One bounded physical edge of the `GwzM5-8R4bR2ConsumerCheckpoint.md` §7
+/// (:209-221) durable sequence.
+///
+/// Pure transition vocabulary over the already-frozen `ActionAdmission*` triad
+/// and the already-frozen `RootEntryNameV1::ActiveAction` row: it mints no
+/// durable record, slot, purpose, or phase (interface freeze §6).
+pub(in crate::checked_artifact) enum ActionAdmissionEdgeV1<'a> {
+    /// Step 3/7 write-ahead half: write or rewrite the admission scratch to the
+    /// next durable state.
+    WriteAdmissionScratch(&'a ActionDirectoryAdmissionV1),
+    /// Step 3/7 install half, part one: retire the superseded active record so
+    /// the no-replace publication has a free destination.
+    RetireAdmissionRecord,
+    /// Step 3/7 install half, part two: publish the scratch onto the active
+    /// admission name without replacement.
+    PublishAdmissionRecord,
+    /// Step 4: create the one indexed staging action directory.
+    CreateStagingDirectory,
+    /// Step 5: write and flush the resident reservation inside staging.
+    WriteResidentReservation,
+    /// Step 6: publish staging to the deterministic final action name without
+    /// replacement.
+    PublishStagingAction,
+}
+
+/// Bounded census of the §6 (:199-201) global classification over the catalog
+/// root, carried alongside the admission observation so a caller can see the
+/// interior action rows without receiving raw rows or handles.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::checked_artifact) struct CatalogRootRowCensusV1 {
+    pub(in crate::checked_artifact) infrastructure: usize,
+    pub(in crate::checked_artifact) scheduled_scratch: usize,
+    pub(in crate::checked_artifact) retired: usize,
+    pub(in crate::checked_artifact) active_actions: usize,
+    pub(in crate::checked_artifact) malformed_recognized: usize,
+    pub(in crate::checked_artifact) foreign: usize,
+}
+
+impl CatalogRootRowCensusV1 {
+    pub(in crate::checked_artifact) fn charge(&mut self, class: CatalogRootRowClassV1) {
+        let counter = match class {
+            CatalogRootRowClassV1::Infrastructure(_) => &mut self.infrastructure,
+            CatalogRootRowClassV1::ScheduledScratch(_) => &mut self.scheduled_scratch,
+            CatalogRootRowClassV1::Retired(_) => &mut self.retired,
+            CatalogRootRowClassV1::ActiveAction(_) => &mut self.active_actions,
+            CatalogRootRowClassV1::MalformedRecognized(_) => &mut self.malformed_recognized,
+            CatalogRootRowClassV1::Foreign => &mut self.foreign,
+        };
+        *counter = counter.saturating_add(1);
+    }
+
+    /// True when the bounded global classification found a child outside the
+    /// owned catalog-root grammar (§6's malformed-recognized and foreign
+    /// classes), which stops admission.
+    pub(in crate::checked_artifact) const fn has_unowned_row(self) -> bool {
+        self.malformed_recognized > 0 || self.foreign > 0
+    }
+}
+
+/// The complete owner-private admission observation of one catalog root: the
+/// durable `ActionAdmission*` triad, the deterministic final action row, and the
+/// bounded global row census. Carries no handle and no mutation capability.
+pub(in crate::checked_artifact) struct ActionAdmissionObservationV1 {
+    pub(in crate::checked_artifact) record: RecordObservationV1<ActionDirectoryAdmissionV1>,
+    pub(in crate::checked_artifact) scratch: RecordObservationV1<ActionDirectoryAdmissionV1>,
+    pub(in crate::checked_artifact) staging: ObservedActionDirectoryV1,
+    pub(in crate::checked_artifact) final_directory: ObservedActionDirectoryV1,
+    pub(in crate::checked_artifact) census: CatalogRootRowCensusV1,
 }

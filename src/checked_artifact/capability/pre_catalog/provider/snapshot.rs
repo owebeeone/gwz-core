@@ -224,6 +224,14 @@ fn frame_catalog_interior(digest: &mut Sha256, interior: &RawCatalogInteriorObse
             }
         }
     }
+    // C-3 widening: the catalog root's active-action rows join the fresh
+    // observation digest, so a same-length substitution of one action row for
+    // another is caught by `revalidate_ready_observation` exactly as an
+    // infrastructure-row substitution already is.
+    frame(digest, &(interior.action_rows.len() as u64).to_be_bytes());
+    for action in &interior.action_rows {
+        frame(digest, &action.bytes());
+    }
 }
 
 fn frame_catalog_bytes(digest: &mut Sha256, bytes: &RawCatalogBytesV1) {

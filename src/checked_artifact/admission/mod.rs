@@ -15,10 +15,13 @@
 //!   mutation capability, per amendment §7 ("without returning raw handles or
 //!   mutation capability to callers").
 //!
-//! No filesystem edge exists here yet. Phase 1.2 fills `resume_or_admit` with
-//! the nine-step durable sequence in `GwzM5-8R4bR2ConsumerCheckpoint.md` §7
-//! and routes every namespace edge through the sealed source-associated
-//! publication family (amendment §4.1, §8.13).
+//! Phase 1.2 fills `resume_or_admit` with the nine-step durable sequence in
+//! `GwzM5-8R4bR2ConsumerCheckpoint.md` §7 and routes every namespace edge
+//! through the sealed source-associated publication family (amendment §4.1,
+//! §8.13). The sequence itself lives in the private `driver` submodule, so the
+//! frozen seam above stays the module's whole exposed surface.
+
+mod driver;
 
 use super::capability::CheckedFsError;
 use super::catalog::OpaqueRetainedCatalogV1;
@@ -43,22 +46,13 @@ impl<'lease> ActionAdmissionOwnerV1<'lease> {
     /// publish -> Preparing -> Idle -> reobserve` sequence, returning the
     /// opaque handoff only from idle + missing staging + exact final
     /// reservation with no extra children.
-    ///
-    /// Phase 1.2 implements the body. Until then the owner refuses, so no
-    /// production path can obtain an admitted action from an unimplemented
-    /// driver.
     pub(in crate::checked_artifact) fn resume_or_admit(
         &mut self,
         expected: &ActionCapacityReservationV1,
     ) -> Result<AdmittedActionV1, CheckedFsError> {
-        let _ = (&self.catalog, expected);
-        Err(admission_driver_unavailable())
+        driver::resume_or_admit(&self.catalog, expected)
     }
 }
 
-fn admission_driver_unavailable() -> CheckedFsError {
-    CheckedFsError::ambiguous(
-        "action admission",
-        "physical admission driver is implemented in R2-D phase 1",
-    )
-}
+#[cfg(test)]
+mod tests;

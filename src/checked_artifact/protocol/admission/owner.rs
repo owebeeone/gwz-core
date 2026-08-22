@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ObservedActionDirectoryV1 {
+pub(in crate::checked_artifact) enum ObservedActionDirectoryV1 {
     Missing,
     Exact {
         identity: DurableObjectIdentityV1,
@@ -14,7 +14,7 @@ pub(super) enum ObservedActionDirectoryV1 {
 }
 
 impl ObservedActionDirectoryV1 {
-    pub(super) fn exact(
+    pub(in crate::checked_artifact) fn exact(
         identity: DurableObjectIdentityV1,
         reservation: RecordObservationV1<ActionCapacityReservationV1>,
         extra_children: usize,
@@ -70,16 +70,20 @@ impl ObservedActionDirectoryV1 {
 
 /// Sole production issuer for the action-directory authority handoff.
 ///
-/// The platform observer will live beneath this private module, so neither raw
-/// observations nor this issuer can be named by a checked-artifact sibling.
-pub(super) struct CatalogAdmissionOwnerV1;
+/// The physical half of this classifier is the R2-D `checked_artifact/admission`
+/// owner, frozen at `GwzM5-8R2DInterfaceFreeze.md` §3.1 ("The physical driver is
+/// the missing half of that classifier, not a second decision surface"). Only
+/// that owner and this issuer can mint an `AdmittedActionV1`: the raw
+/// observations below still carry no handle and no mutation capability, so the
+/// amendment §7 (:576-577) boundary is unchanged by the widened visibility.
+pub(in crate::checked_artifact) struct CatalogAdmissionOwnerV1;
 
 impl CatalogAdmissionOwnerV1 {
-    pub(super) const fn new() -> Self {
+    pub(in crate::checked_artifact) const fn new() -> Self {
         Self
     }
 
-    pub(super) fn classify_handoff(
+    pub(in crate::checked_artifact) fn classify_handoff(
         &self,
         admission: &ActionDirectoryAdmissionV1,
         expected: &ActionCapacityReservationV1,
@@ -107,7 +111,7 @@ impl CatalogAdmissionOwnerV1 {
         }
     }
 
-    pub(super) fn admit(
+    pub(in crate::checked_artifact) fn admit(
         &self,
         admission: &ActionDirectoryAdmissionV1,
         expected: &ActionCapacityReservationV1,

@@ -6,6 +6,9 @@ use crate::checked_artifact::capability::{
 };
 use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 use crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1;
+use crate::checked_artifact::protocol::{
+    ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
+};
 
 /// The only physical first-catalog owner.
 pub(in crate::checked_artifact) struct CatalogOwnerV1;
@@ -133,6 +136,26 @@ impl OpaqueRetainedCatalogV1<'_> {
     #[cfg(test)]
     fn revalidate_for_test(&self) -> Result<(), CheckedFsError> {
         self.permit.revalidate()
+    }
+
+    /// The R2-D Phase 1 admission observation, forwarded through the retained
+    /// completion permit. The opaque catalog stays opaque: the admission owner
+    /// receives typed observations and never the permit, a root, or a handle
+    /// (`GwzM5-8R2DInterfaceFreeze.md` §3.1).
+    pub(in crate::checked_artifact) fn observe_admission(
+        &self,
+        expected: &ActionCapacityReservationV1,
+    ) -> Result<ActionAdmissionObservationV1, CheckedFsError> {
+        self.permit.observe_admission(expected)
+    }
+
+    /// One bounded durable admission edge, forwarded through the same permit.
+    pub(in crate::checked_artifact) fn execute_admission_edge(
+        &self,
+        edge: ActionAdmissionEdgeV1<'_>,
+        expected: &ActionCapacityReservationV1,
+    ) -> Result<(), CheckedFsError> {
+        self.permit.execute_admission_edge(edge, expected)
     }
 }
 

@@ -151,8 +151,8 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "877e9d1867de17c8b6778ed2506888ead515cde75947e2d6ccfcb8c2b3a3e3c1",
-    "checked_artifact/catalog.rs": "f131ab5c82c099acb1048ace8d67efdefac06b79c5444f0df6418eceffc53d95",
+    "checked_artifact/capability/pre_catalog.rs": "04623a4cee86b035b0ed27e963228c87b01405648d61a0a1067843db40327bfb",
+    "checked_artifact/catalog.rs": "74dc9e0c8aaf253f29f9f03b2c7cbf855d228e7528ebaebfe297389b4eb23588",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "b4cfea0bd46ef595e0f83d34cc47deabb68011bfff032060c109de5f05dccbe3",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "ea60bb615701e83dcd62f81d20741cc8f1798874796102b5a7a80047988aa18d",
 }
@@ -654,9 +654,16 @@ FORBIDDEN_PROVISIONAL_CATALOG_INTERFACES = {
     "recover_or_create_workspace",
 }
 
+# R2-D Phase 1 Step 1.2 extends this inventory deliberately, as
+# GwzM5-8R2D-Plan.md §4 Step 1.2 and GwzM5-8R2DInterfaceFreeze.md §4.4 Class 1
+# require ("The caller count stays at six production sites until a phase
+# deliberately extends it"). Admission edges E4 (scratch -> active admission
+# record) and E3 (staging -> deterministic final action name) add one more
+# production caller file, holding both admission publications.
 CATALOG_PUBLICATION_CALL_COUNTS = {
     "checked_artifact/capability/pre_catalog/provider/mutation.rs": 1,
     "checked_artifact/capability/pre_catalog/provider/directory_mutation.rs": 5,
+    "checked_artifact/capability/pre_catalog/provider/admission_mutation.rs": 2,
 }
 
 

@@ -14,7 +14,10 @@ use crate::checked_artifact::catalog::{
 };
 #[cfg(test)]
 use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
-use crate::checked_artifact::protocol::CatalogBootstrapRecordV1;
+use crate::checked_artifact::protocol::{
+    ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
+    CatalogBootstrapRecordV1,
+};
 
 mod provider;
 
@@ -104,6 +107,28 @@ impl CompletedCatalogPermitV1<'_> {
     pub(in crate::checked_artifact) fn revalidate(&self) -> Result<(), CheckedFsError> {
         provider::revalidate_lease_root_binding(&self.catalog_target, &self.retained_root)?;
         self.completed.revalidate(&self.retained_root)
+    }
+
+    /// R2-D Phase 1 admission observation. Revalidating first is the
+    /// `ready_edge_prologue` discipline applied to the completed permit: every
+    /// admission observation and every admission edge re-proves the lease/root
+    /// binding and the exact retained catalog before it looks at anything.
+    pub(in crate::checked_artifact) fn observe_admission(
+        &self,
+        expected: &ActionCapacityReservationV1,
+    ) -> Result<ActionAdmissionObservationV1, CheckedFsError> {
+        self.revalidate()?;
+        self.completed.observe_admission(expected)
+    }
+
+    /// One bounded durable admission edge.
+    pub(in crate::checked_artifact) fn execute_admission_edge(
+        &self,
+        edge: ActionAdmissionEdgeV1<'_>,
+        expected: &ActionCapacityReservationV1,
+    ) -> Result<(), CheckedFsError> {
+        self.revalidate()?;
+        self.completed.execute_admission_edge(edge, expected)
     }
 }
 

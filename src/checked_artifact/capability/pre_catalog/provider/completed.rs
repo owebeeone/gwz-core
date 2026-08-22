@@ -19,7 +19,10 @@ use crate::checked_artifact::capability::{
 };
 use crate::checked_artifact::catalog::{CatalogRecognizedNameV1, CatalogRecordFactV1};
 use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
-use crate::checked_artifact::protocol::{CatalogBootstrapRecordV1, InfrastructureSlotV1};
+use crate::checked_artifact::protocol::{
+    ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
+    CatalogBootstrapRecordV1, InfrastructureSlotV1,
+};
 
 type IdentityV1 =
     ObjectIdentityFact<crate::checked_artifact::capability::DurableObjectIdentityV1, Vec<u8>>;
@@ -132,6 +135,32 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn retain_completed_cat
 }
 
 impl RetainedCompletedCatalogV1 {
+    /// R2-D Phase 1's read-only admission observation, driven through the
+    /// retained final-catalog capability this owner already holds. The caller
+    /// receives the typed observation only — never a handle
+    /// (`GwzM5-8R2CCatalogBootstrapAmendment.md` §7 :576-577).
+    pub(in crate::checked_artifact::capability::pre_catalog) fn observe_admission(
+        &self,
+        expected: &ActionCapacityReservationV1,
+    ) -> Result<ActionAdmissionObservationV1, CheckedFsError> {
+        super::admission_mutation::observe(&self.final_directory.handle, expected)
+    }
+
+    /// One bounded durable admission edge, executed inside this owner.
+    pub(in crate::checked_artifact::capability::pre_catalog) fn execute_admission_edge(
+        &self,
+        edge: ActionAdmissionEdgeV1<'_>,
+        expected: &ActionCapacityReservationV1,
+    ) -> Result<(), CheckedFsError> {
+        super::admission_mutation::execute(
+            &self.final_directory.handle,
+            self.final_directory.identity.durable(),
+            &self.expected_bootstrap,
+            edge,
+            expected,
+        )
+    }
+
     pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate(
         &self,
         retained: &RetainedPlatformRoot,

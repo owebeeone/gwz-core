@@ -92,3 +92,109 @@ fn root_name_parser_is_ascii_canonical_and_versioned() {
     assert_eq!(RootEntryNameV1::parse(b"action-v2-00"), None);
     assert_eq!(RootEntryNameV1::parse(&[0xff, 0xfe]), None);
 }
+
+/// R2-D Phase 1 (C-3, `GwzM5-8R2DInterfaceFreeze.md` §4.4 Class 2). The
+/// pre-catalog interior observer now reads the catalog root through this
+/// classification instead of walking `InfrastructureSlotV1::ALL` alone. Every
+/// arm is derived from the already-frozen `RootEntryNameV1` grammar, so the
+/// widening mints no name; this pins the mapping onto the six
+/// `GwzM5-8R4bR2ConsumerCheckpoint.md` §6 (:199-201) classes.
+#[test]
+fn catalog_root_rows_classify_into_the_six_global_enumeration_classes() {
+    use super::super::protocol::{CatalogNameInvalidReasonV1, CatalogRootRowClassV1};
+    use CatalogRootRowClassV1 as Class;
+
+    let action = ActionDigestV1::new([0x5a; 32]);
+    let cases: [(&[u8], Class); 8] = [
+        (
+            b"catalog-format-v1",
+            Class::Infrastructure(InfrastructureSlotV1::CatalogFormat),
+        ),
+        (
+            b"action-admission-active-v1",
+            Class::Infrastructure(InfrastructureSlotV1::ActionAdmissionActive),
+        ),
+        (
+            b"action-admission-scratch-v1",
+            Class::ScheduledScratch(InfrastructureSlotV1::ActionAdmissionScratch),
+        ),
+        (
+            b"action-admission-staging-v1",
+            Class::ScheduledScratch(InfrastructureSlotV1::ActionAdmissionStaging),
+        ),
+        (
+            b"retired-actions-v1",
+            Class::Retired(InfrastructureSlotV1::RetiredActions),
+        ),
+        (
+            b"catalog-bootstrap-retired-v1",
+            Class::Retired(InfrastructureSlotV1::CatalogBootstrapRetired),
+        ),
+        (
+            b"action-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a-v1",
+            Class::ActiveAction(action),
+        ),
+        (b"README.md", Class::Foreign),
+    ];
+    for (name, expected) in cases {
+        assert_eq!(
+            CatalogRootRowClassV1::classify(name),
+            expected,
+            "catalog root row misclassified: {}",
+            String::from_utf8_lossy(name)
+        );
+    }
+    // A recognized-but-invalid row is its own class and never collapses into
+    // `Foreign`: the action prefix is owned, so the row is ours and malformed.
+    assert_eq!(
+        CatalogRootRowClassV1::classify(b"action-00-v1"),
+        Class::MalformedRecognized(CatalogNameInvalidReasonV1::InvalidActionDigestWidth)
+    );
+    assert_eq!(
+        CatalogRootRowClassV1::classify(b"catalog-format-v2"),
+        Class::MalformedRecognized(CatalogNameInvalidReasonV1::UnsupportedVersion)
+    );
+    // Only the three infrastructure-bearing arms carry a slot.
+    assert_eq!(
+        CatalogRootRowClassV1::classify(
+            b"action-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a-v1"
+        )
+        .infrastructure_slot(),
+        None
+    );
+    assert_eq!(
+        CatalogRootRowClassV1::classify(b"retired-actions-v1").infrastructure_slot(),
+        Some(InfrastructureSlotV1::RetiredActions)
+    );
+}
+
+/// C-3's third fact: the ten-slot interior cap and the root grammar had to move
+/// together, and both move only onto vocabulary R1+C0 already froze. The
+/// observer's bound is the frozen `MAX_ROOT_ENTRIES`, and the two per-family
+/// caps below it partition that budget exactly.
+#[test]
+fn the_widened_interior_bound_is_the_frozen_root_entry_budget() {
+    use super::super::protocol::{MAX_ACTIVE_ACTION_DIRS, MAX_INFRASTRUCTURE_ENTRIES};
+
+    assert_eq!(
+        MAX_ROOT_ENTRIES,
+        MAX_INFRASTRUCTURE_ENTRIES + MAX_ACTIVE_ACTION_DIRS
+    );
+    assert_eq!(MAX_INFRASTRUCTURE_ENTRIES, InfrastructureSlotV1::ALL.len());
+
+    let interior = include_str!("../capability/pre_catalog/provider/interior.rs");
+    assert!(
+        interior.contains("const MAX_INTERIOR_ENTRIES: usize = MAX_ROOT_ENTRIES;"),
+        "the interior observer no longer bounds the catalog root by the frozen root budget"
+    );
+    for required in [
+        "MAX_INFRASTRUCTURE_ENTRIES",
+        "MAX_ACTIVE_ACTION_DIRS",
+        "CatalogRootRowClassV1::ActiveAction",
+    ] {
+        assert!(
+            interior.contains(required),
+            "the C-3 interior widening lost {required}"
+        );
+    }
+}

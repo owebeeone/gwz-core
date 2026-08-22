@@ -446,3 +446,52 @@ impl RootEntryNameV1 {
         }
     }
 }
+
+/// Exhaustive classification of one catalog-root child into the
+/// `GwzM5-8R4bR2ConsumerCheckpoint.md` §6 (:199-201) grammar — infrastructure,
+/// active action, scheduled scratch, retired, malformed-recognized, or foreign.
+///
+/// Every arm is derived from the already-frozen [`RootEntryNameV1`] grammar and
+/// the already-frozen [`InfrastructureSlotV1`] vocabulary, so R2-D Phase 1 mints
+/// no name (`GwzM5-8R2DInterfaceFreeze.md` §3.1 persisted-home pin, §4.4 Class 2
+/// "reads the durable vocabulary that already exists ... and mints nothing").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) enum CatalogRootRowClassV1 {
+    Infrastructure(InfrastructureSlotV1),
+    ScheduledScratch(InfrastructureSlotV1),
+    Retired(InfrastructureSlotV1),
+    ActiveAction(ActionDigestV1),
+    MalformedRecognized(CatalogNameInvalidReasonV1),
+    Foreign,
+}
+
+impl CatalogRootRowClassV1 {
+    pub(in crate::checked_artifact) fn classify(value: &[u8]) -> Self {
+        use CatalogNameClassificationV1::{Foreign, RecognizedInvalid, Valid};
+        match RootEntryNameV1::parse(value) {
+            Valid(RootEntryNameV1::Infrastructure(slot)) => match slot {
+                InfrastructureSlotV1::ActionAdmissionScratch
+                | InfrastructureSlotV1::ActionAdmissionStaging => Self::ScheduledScratch(slot),
+                InfrastructureSlotV1::RetiredActions
+                | InfrastructureSlotV1::CatalogBootstrapRetired => Self::Retired(slot),
+                _ => Self::Infrastructure(slot),
+            },
+            Valid(RootEntryNameV1::ActiveAction(action)) => Self::ActiveAction(action),
+            RecognizedInvalid(reason) => Self::MalformedRecognized(reason),
+            Foreign => Self::Foreign,
+        }
+    }
+
+    /// The owned infrastructure slot behind the three infrastructure-bearing
+    /// arms; `None` for an action row or any unowned child.
+    pub(in crate::checked_artifact) const fn infrastructure_slot(
+        self,
+    ) -> Option<InfrastructureSlotV1> {
+        match self {
+            Self::Infrastructure(slot) | Self::ScheduledScratch(slot) | Self::Retired(slot) => {
+                Some(slot)
+            }
+            _ => None,
+        }
+    }
+}

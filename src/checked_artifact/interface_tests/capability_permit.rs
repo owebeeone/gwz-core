@@ -100,14 +100,19 @@ fn catalog_batch_ordering_has_no_allocating_stable_sort() {
 fn catalog_publication_uses_one_source_associated_seam() {
     let mutation = include_str!("../capability/pre_catalog/provider/mutation.rs");
     let directory = include_str!("../capability/pre_catalog/provider/directory_mutation.rs");
+    // R2-D Phase 1 Step 1.2 extends the caller inventory deliberately, per
+    // `GwzM5-8R2D-Plan.md` §4 Step 1.2 and `GwzM5-8R2DInterfaceFreeze.md` §4.4
+    // Class 1: admission edges E3 and E4 are the two added production sites,
+    // and they publish through the same one primitive.
+    let admission = include_str!("../capability/pre_catalog/provider/admission_mutation.rs");
     let publication = include_str!("../capability/pre_catalog/provider/publication.rs");
-    let callers = format!("{mutation}\n{directory}");
+    let callers = format!("{mutation}\n{directory}\n{admission}");
 
     assert!(publication.contains("fn publish_verified_no_replace("));
     assert!(publication.contains("open_rename_source("));
     assert!(publication.contains("rename_open_source("));
     assert!(publication.contains("expected_identity"));
-    assert_eq!(callers.matches("publish_verified_no_replace(").count(), 6);
+    assert_eq!(callers.matches("publish_verified_no_replace(").count(), 8);
     assert!(!callers.contains("platform::rename_relative"));
     assert!(!callers.contains("fn rename_no_replace("));
 }

@@ -9,6 +9,7 @@ use crate::checked_artifact::catalog::{
     CatalogAttemptBindingV1, CatalogParentObservationV1, CatalogRecognizedNameV1,
 };
 
+mod admission_mutation;
 mod aggregate;
 mod completed;
 mod digests;
@@ -136,6 +137,16 @@ pub(super) struct RawCatalogInteriorObservationV1 {
     pub(super) entry_count: usize,
     pub(super) encoded_name_bytes: usize,
     pub(super) rows: Vec<RawCatalogInteriorRowV1>,
+    /// The catalog root's `RootEntryNameV1::ActiveAction` rows, sorted by
+    /// digest. C-3 widening (interface freeze §4.4 Class 2): the observer now
+    /// records the second arm of the frozen root grammar instead of refusing
+    /// it. Only the row's identity is retained here — the admission owner
+    /// re-verifies each action directory's interior through its own bounded
+    /// observation before every edge.
+    pub(super) action_rows: Vec<crate::checked_artifact::protocol::ActionDigestV1>,
+    /// The bounded global classification of every child into the
+    /// `GwzM5-8R4bR2ConsumerCheckpoint.md` §6 (:199-201) grammar.
+    pub(super) census: crate::checked_artifact::protocol::CatalogRootRowCensusV1,
 }
 
 #[derive(Debug, Eq, PartialEq)]
