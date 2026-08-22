@@ -404,7 +404,12 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        super::platform::private_barrier(&dir, self.code, &self.label)?;
+        super::platform::private_barrier(
+            &dir,
+            super::platform::DirentBarrierClass::AnchoredPrivateArea,
+            self.code,
+            &self.label,
+        )?;
         fault(
             CheckedArtifactFault::AfterGoalParentBarrier,
             self.code,
@@ -497,7 +502,12 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        super::platform::private_barrier(dir, self.code, &self.label)?;
+        super::platform::private_barrier(
+            dir,
+            super::platform::DirentBarrierClass::AnchoredPrivateArea,
+            self.code,
+            &self.label,
+        )?;
         fault(
             CheckedArtifactFault::AfterAuthorityParentBarrier,
             self.code,
@@ -526,7 +536,12 @@ impl CheckedArtifact {
         file.sync_all()
             .map_err(|cause| io_op_error(self.code, &self.label, "sync family entry", cause))?;
         drop(file);
-        super::platform::private_barrier(dir, self.code, &self.label)?;
+        super::platform::private_barrier(
+            dir,
+            super::platform::DirentBarrierClass::AnchoredPrivateArea,
+            self.code,
+            &self.label,
+        )?;
         let after = observe_leaf_exact(dir, name, self.code, &self.label)?;
         if before.fact != after.fact || before.identity != after.identity {
             return Err(error(

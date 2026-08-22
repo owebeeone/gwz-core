@@ -313,11 +313,23 @@ fn flush_observed_leaf(_file: &File) -> Result<(), CheckedFsError> {
     // `FILE_FLAG_WRITE_THROUGH` (`directory_mutation.rs`), so the bytes this
     // observation reads are already through the cache before the observation
     // begins — there is no unflushed writer state for the observer to order.
-    // What the observer still owes the caller is ordering against what follows,
-    // and that is edge E10's scheduled namespace barrier, which on Windows is
-    // the P5 anchor round-trip rather than a directory fsync. So the observer
-    // adds no ordering of its own here, deliberately and by argument, instead
-    // of failing to add any.
+    // What the observer would otherwise owe the caller is ordering against what
+    // follows, and that is edge E10's scheduled namespace barrier. On Windows
+    // that ordering is now *nothing*, for every target E10 has: `host.rs` pins
+    // the barrier to the retained action directory and `namespace_mutation.rs`
+    // hardcodes `DirentBarrierClass::ExactInterior`, whose Windows arm is the
+    // documented no-op, so E10 can never take the anchor round trip from here.
+    //
+    // That is sound only under the writer-class condition, which is why the
+    // condition is a gate and not a comment. For a gwz-written leaf nothing is
+    // left to order: the writer's own write-through carried the bytes, and no
+    // portable directory flush exists on Windows to add to it. For a
+    // FOREIGN-written leaf the residual is *empty* rather than merely weaker —
+    // no byte flush, and no namespace ordering either — so that class is
+    // refused as authority rather than accepted at a reduced strength
+    // (`authority_record_binding::FOREIGN_EXACT_DURABLE_IS_WEAKER` and
+    // `require_authority_strength`). So the observer adds no ordering of its
+    // own here, deliberately and by argument, instead of failing to add any.
     Ok(())
 }
 

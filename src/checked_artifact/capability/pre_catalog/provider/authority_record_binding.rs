@@ -31,6 +31,19 @@
 //! > (namespace ordering via the E10/P5 anchor round-trip only, no byte-flush
 //! > claim). Step 2.4's production caller binding must carry this condition.
 //!
+//! **One clause of that quotation is superseded** (2026-08-22, by the E10/E14
+//! anchor-readiness arm). The parenthetical "namespace ordering via the E10/P5
+//! anchor round-trip only" describes no production path any more: E10 and E14
+//! both barrier the retained action directory, which is an *exact interior* and
+//! may retain no durability anchor, so their Windows arm is the documented
+//! no-op (`platform::private_barrier`, `DirentBarrierClass::ExactInterior`).
+//! The residual is therefore **empty, not weaker** — on Windows a
+//! foreign-written leaf's `ExactDurable` carries no byte-flush claim *and* no
+//! namespace-ordering claim. That strengthens this carriage rather than
+//! disturbing it: the condition was always carried as a refusal, never as a
+//! reduced-strength acceptance, so the gate below is exactly as sound with the
+//! residual empty as it was with the residual overstated.
+//!
 //! This binding carries it in both required forms. In the doc contract: the
 //! payload slots this owner observes are `SourcePayload` and `GoalPayload`
 //! *inside an admitted action directory*, which only gwz writers reach, so the
@@ -39,7 +52,7 @@
 //! nominal case is a claim rather than a proof: the writer class is a required
 //! argument, never a default, and [`ObservedLeafWriterClassV1::Foreign`] is
 //! handled explicitly — on Windows a foreign-written leaf's `ExactDurable`
-//! carries no byte-flush claim, so it is refused as authority rather than
+//! carries no durable proof at all, so it is refused as authority rather than
 //! silently accepted at a weaker strength.
 //!
 //! The same annotation's negative space is carried too: `MissingDurable` is a
@@ -96,8 +109,11 @@ pub(in crate::checked_artifact) enum ObservedLeafWriterClassV1 {
     /// same on every platform.
     GwzWritten,
     /// Written by something outside gwz. On Windows the observation handle is
-    /// read-only and no handle flush is available, so `ExactDurable` is
-    /// strictly weaker there — namespace ordering only, no byte-flush claim.
+    /// read-only so no handle flush is available, and E10's barrier over an
+    /// exact interior is the documented no-op, so `ExactDurable` carries
+    /// neither a byte-flush claim nor a namespace-ordering one there. The
+    /// residual is empty, which is why this class is refused rather than
+    /// accepted at a reduced strength.
     Foreign,
 }
 
@@ -307,7 +323,7 @@ pub(super) const FOREIGN_EXACT_DURABLE_IS_WEAKER: bool = cfg!(windows);
 /// The refusal the weaker platform issues, hoisted so both the gate and its
 /// test name the same string.
 pub(super) const FOREIGN_AUTHORITY_REFUSAL: &str =
-    "a foreign-written leaf's durable proof is namespace ordering only on this platform";
+    "a foreign-written leaf carries no durable proof on this platform";
 
 /// The E9 writer-class condition, as a gate rather than a comment.
 ///
@@ -315,9 +331,12 @@ pub(super) const FOREIGN_AUTHORITY_REFUSAL: &str =
 /// `ExactDurable` is the full claim regardless of who wrote the leaf. Where it
 /// did not — Windows, whose read-only observation handle cannot
 /// `FlushFileBuffers` — the substituting property is the *writer's*
-/// write-through, which only holds for gwz writers. A foreign leaf's
-/// `ExactDurable` is therefore strictly weaker there and is refused, because an
-/// authority record is exactly a durability claim.
+/// write-through, which only holds for gwz writers. A foreign leaf keeps no
+/// residual at all there: E10's barrier runs over an exact interior, whose
+/// Windows arm is the documented no-op, so there is no namespace ordering to
+/// fall back on either. It is refused rather than downgraded, because an
+/// authority record is exactly a durability claim and this platform can supply
+/// none for that class.
 fn require_authority_strength(
     writer_class: ObservedLeafWriterClassV1,
     fact: &'static str,

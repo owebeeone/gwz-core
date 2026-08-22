@@ -364,8 +364,9 @@ fn the_e9_writer_class_condition_is_carried_on_this_platform() {
                 "the refusal must be the E9 one, not an unrelated ambiguity"
             ),
             other => panic!(
-                "no handle flush is available here, so a foreign leaf's ExactDurable is \
-                 namespace ordering only and cannot carry authority: {other:?}"
+                "no handle flush is available here and E10's exact-interior barrier is the \
+                 documented no-op, so a foreign leaf's ExactDurable carries no durable proof \
+                 and cannot carry authority: {other:?}"
             ),
         }
     } else {
