@@ -33,3 +33,7 @@ jobs:
           python -m unittest scripts/checks/test_check_checked_artifact_boundaries.py -v
           python -m unittest scripts/checks/test_release_boundary.py -v
           CLIPPY_CONF_DIR="$PWD" cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run the M5b structural tripwire scans on every push
+        # M5b State [P2-1] / Code P3: the T-3/T-4 source-surface scans must
+        # execute in the push lane, not only under full cargo-test runs.
+        run: cargo test --lib workspace_ops::merge::v1_lifecycle::tests::no_ff_wire

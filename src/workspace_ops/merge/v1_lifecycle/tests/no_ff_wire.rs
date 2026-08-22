@@ -171,6 +171,53 @@ fn no_writer_output_or_positive_fixture_serializes_the_no_ff_wire_row() {
     );
 }
 
+/// T-3 second needle (M5b Code review round-1 [P2-1]): the literal scan
+/// above cannot trip on a writer that serializes the no-ff mode variant
+/// programmatically, so the variant token's whole source surface is pinned
+/// here — any new file mentioning it, constructor or pattern alike, joins
+/// this list only through deliberate review. Semantic drift inside an
+/// already-listed production file is closed by subsumption pre-A1: the v1
+/// writer is `cfg(test)` (no production path writes any v1 row), and durable
+/// no-ff rows arriving from outside are refused by the F-1 resume gate
+/// (`continue_op/execution.rs`) and the validators. The variant is spelled
+/// at runtime so this suite is not its own hit.
+#[test]
+fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
+    let variant = format!("{}Ff", "No");
+    assert_eq!(
+        files_containing(&variant),
+        [
+            // Protocol enum declaration (accepted wire vocabulary).
+            "protocol/generated.rs",
+            // Production refusals: the F-1 v0 resume gate.
+            "workspace_ops/merge/continue_op/execution.rs",
+            // Model enum declaration.
+            "workspace_ops/merge/model/lifecycle.rs",
+            // Validator arms refusing durable no-ff rows pre-A1.
+            "workspace_ops/merge/model/v1/validate/action.rs",
+            "workspace_ops/merge/model/v1/validate/action_tests.rs",
+            // v0 archive corpus fixtures.
+            "workspace_ops/merge/record_wire/archive/tests/v0.rs",
+            // v0 readers recognizing-and-classifying the foreign row.
+            "workspace_ops/merge/record_wire/open_v0/adapter.rs",
+            "workspace_ops/merge/record_wire/open_v0/structural.rs",
+            // Dispatch arm (refusal routing).
+            "workspace_ops/merge/runtime/dispatch.rs",
+            // The only construction site: the cfg(test) v1 lifecycle.
+            "workspace_ops/merge/v1_lifecycle/authority/observe/forward.rs",
+            // This package's own suites (cfg(test)).
+            "workspace_ops/merge/v1_lifecycle/tests/forward.rs",
+            // Production refusal: validate surface.
+            "workspace_ops/merge/validate.rs",
+            // The gate package's v0 suites (T-6) and compatibility corpora.
+            "workspace_ops/tests/g23/atomic_upgrade_v0.rs",
+            "workspace_ops/tests/g23/compatibility_v0.rs",
+            "workspace_ops/tests/g23/compatibility_v0_edges.rs",
+            "workspace_ops/tests/g23/continue_v0_gate.rs",
+        ]
+    );
+}
+
 /// T-4 (design §6): every mention of the forced merge-commit preparation mode
 /// stays inside the declaration, its default-trait rejection arm, the
 /// `cfg(test)` v1 lifecycle, and the backend test — no production caller
