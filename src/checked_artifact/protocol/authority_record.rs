@@ -192,6 +192,24 @@ impl CheckedAuthorityRecordV1 {
         self.goal_sha256
     }
 
+    /// The durable identity of the retained action directory this record's
+    /// payloads were **observed through**.
+    ///
+    /// This is the one binding field that does *not* come from the reservation a
+    /// caller passed to the issuer: `CheckedAuthorityObservationV1::owner_issue`
+    /// copies the four reservation fields from its argument, but takes this one
+    /// from the observation facts, which `observe_streamed_payloads` mints from
+    /// the capability it actually streamed through
+    /// (`capability/pre_catalog/provider/authority_record_binding.rs`). It is
+    /// therefore the record's observed provenance, and the only field a consumer
+    /// can check an observation's *origin* against rather than its caller's
+    /// restatement of it (R2-D Step-3.3 review [P1-1]).
+    pub(in crate::checked_artifact) const fn retained_parent_identity(
+        &self,
+    ) -> &DurableObjectIdentityV1 {
+        &self.retained_parent_identity
+    }
+
     pub(in crate::checked_artifact) fn matches_reservation(
         &self,
         reservation: &ActionCapacityReservationV1,

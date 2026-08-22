@@ -3,16 +3,30 @@
 mod owner;
 mod plan;
 /// R2-D Phase 3 Step 3.1 — the production `ManagedParentBootstrap` provider.
+///
+/// Step 3.3 gave it a production caller inside the crate boundary
+/// (`coordinator::execution`), which is what the earlier forward reference in
+/// this allow was waiting for. The allow itself stays because *entry-point*
+/// reachability is still gated: `entry.rs` calls `CheckedArtifact::prepare_parent`
+/// until R2-E converts it. Note also that this inner allow is inert either way —
+/// `mod bootstrap` carries a blanket `#[allow(dead_code)]`
+/// (`checked_artifact/mod.rs`), so it documents intent rather than suppressing a
+/// live lint.
 #[allow(
     dead_code,
-    reason = "Step 3.1 lands the provider; plan §4 Step 3.3 wires its production consumer"
+    reason = "Step 3.3 wires the coordinator caller; reachability from an entry point is R2-E"
 )]
 mod provider;
 
 #[cfg(test)]
 mod tests_intent_matrix;
+/// R2-D Phase 3 Step 3.3 reaches this module's fixture from
+/// `coordinator/tests_execution.rs`: the coordinator's glue is exercised against
+/// the same real lease / catalog / target the provider's own suites use, rather
+/// than against a third copy of the same sixty lines. Only the fixture and the
+/// session helper are widened; every assertion helper stays `pub(super)`.
 #[cfg(test)]
-mod tests_provider;
+pub(in crate::checked_artifact) mod tests_provider;
 #[cfg(test)]
 mod tests_purpose_policy;
 #[cfg(test)]
@@ -26,7 +40,7 @@ pub(in crate::checked_artifact) use owner::*;
 pub(in crate::checked_artifact) use plan::*;
 #[allow(
     unused_imports,
-    reason = "Step 3.1 lands the provider; plan §4 Step 3.3 wires its production consumer"
+    reason = "Step 3.3 wires the coordinator caller; reachability from an entry point is R2-E"
 )]
 pub(in crate::checked_artifact) use provider::*;
 

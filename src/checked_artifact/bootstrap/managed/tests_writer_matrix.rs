@@ -42,11 +42,18 @@ use crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1 as Fault;
 /// **once per component**. On a two-component row a crash at the first
 /// component's crossing leaves the second component's crossing ahead, so the
 /// boundary is re-entered once more and then never again — neither repeatable
-/// nor single-crossing under the stated criterion. A one-component row crosses
-/// each boundary exactly once per drive, which is the shape the criterion is
-/// written for. (The probe below is what caught this: the classification these
-/// constants carried on a two-component row was wrong, and it failed loudly
-/// rather than passing quietly.)
+/// nor single-crossing under the stated criterion. A one-component row is the
+/// shape the criterion is written for: each boundary is crossed once per
+/// drive — *except* `staging_directory_flush`, whose two sites both fire on a
+/// creating drive. That exception is benign for the criterion because the order
+/// is fixed: the staged interior's flush always precedes the managed parent's
+/// (site B runs only when `created` is true, and a freshly created row always
+/// has an inexact interior, so the rewrite — and its flush — always runs
+/// first), so an arm on the key always resolves to the interior's site and the
+/// parent's is announced but never the interruption point. See that key's entry
+/// in [`SINGLE_CROSSING_BOUNDARIES`]. (The probe below is what caught the
+/// original two-component misclassification: it failed loudly rather than
+/// passing quietly.)
 const SHAPE: RowShapeV1 = RowShapeV1::OneComponent;
 
 /// Every activated writer boundary, in the order one virgin drive crosses them.
@@ -97,10 +104,16 @@ const SINGLE_CROSSING_BOUNDARIES: [Fault; 4] = [
     Fault::ManagedBootstrapOwnershipMarkerWrite,
     // Same state, one boundary later: exact interior, rewrite skipped.
     Fault::ManagedBootstrapOwnershipMarkerFlush,
-    // Both instances of this key sit at or after the point where the interior is
-    // already exact — the staged interior's flush ends the rewrite, and the
-    // managed parent's flush runs only on a creating drive. Either way the next
-    // drive finds the row staged and enters neither.
+    // This key has two sites and the arm always resolves to the first. Site A,
+    // the staged interior's flush, ends the rewrite; site B, the managed
+    // parent's, runs only on a creating drive and therefore only *after* A has
+    // already fired on that drive. So an interruption at this key is always at
+    // A, and after it the interior is exact, the rewrite is skipped and
+    // `created` is false for ever on that row — the next drive enters neither
+    // site. Site B is announced but is not independently interruptible; making
+    // it so would need a site-ordinal-aware arm or a sixth key, and a sixth key
+    // would move the frozen 165 census, so that is a settle question rather than
+    // this matrix's (Step-3.2 review [P3-1]).
     Fault::ManagedBootstrapStagingDirectoryFlush,
 ];
 

@@ -8,7 +8,7 @@ mod evidence;
 /// R2-D Phase 2 Step 2.2 — the retained-handle production backend.
 #[allow(
     dead_code,
-    reason = "Step 2.2 lands the backend; plan §4 Step 3.3 wires its production consumer"
+    reason = "the managed-parent provider has driven this backend since Step 3.1; entry-point reachability is R2-E"
 )]
 mod host;
 mod managed;
@@ -29,7 +29,7 @@ mod tests_managed_matrix;
 
 #[allow(
     unused_imports,
-    reason = "the sole production namespace backend; plan §4 Step 3.3 binds it to execution"
+    reason = "the sole production namespace backend; the Step-3.1 provider binds it, and entry-point reachability is R2-E"
 )]
 pub(in crate::checked_artifact) use host::{HostActionNamespaceV1, retain_action_namespace};
 

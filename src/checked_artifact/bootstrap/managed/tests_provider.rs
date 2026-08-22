@@ -56,7 +56,7 @@ pub(super) const OWNER: RequestOwnerBindingV1 = RequestOwnerBindingV1::new([0x71
 
 /// The two frozen target variants (`GwzM5-8R2D-Plan.md` §4 Step 1.3).
 #[derive(Clone, Copy, Debug)]
-pub(super) enum TargetVariantV1 {
+pub(in crate::checked_artifact) enum TargetVariantV1 {
     Workspace,
     GitDirectory,
 }
@@ -70,12 +70,12 @@ impl TargetVariantV1 {
     }
 }
 
-pub(super) struct Fixture {
+pub(in crate::checked_artifact) struct Fixture {
     root: PathBuf,
 }
 
 impl Fixture {
-    pub(super) fn new(label: &str) -> Self {
+    pub(in crate::checked_artifact) fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "gwz-r2d-managed-provider-{label}-{}-{}",
             std::process::id(),
@@ -86,7 +86,7 @@ impl Fixture {
         Self { root }
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(in crate::checked_artifact) fn path(&self) -> &Path {
         &self.root
     }
 
@@ -122,7 +122,7 @@ impl Fixture {
     /// The variant axis being exercised is the *catalog target* — its lease, its
     /// catalog, its action directory, and therefore every intent record — not the
     /// managed parent's home.
-    pub(super) fn target_root(&self, variant: TargetVariantV1) -> PathBuf {
+    pub(in crate::checked_artifact) fn target_root(&self, variant: TargetVariantV1) -> PathBuf {
         match variant {
             TargetVariantV1::Workspace => self.root.clone(),
             TargetVariantV1::GitDirectory => git2::Repository::open(&self.root)
@@ -132,25 +132,18 @@ impl Fixture {
         }
     }
 
-    /// The `.gwz` managed parent every merge-family purpose hangs off, resolved
-    /// against [`Self::target_root`].
-    pub(super) fn managed_root(&self, variant: TargetVariantV1) -> PathBuf {
-        self.target_root(variant).join(".gwz")
-    }
-
     /// Creates one declared managed-path prefix component under the target root,
     /// which is what a Git-directory arm needs and what
     /// `RootPreservationMarkers` (`gwz.conf/markers`) needs on every target.
-    pub(super) fn prepare_prefix(&self, variant: TargetVariantV1, component: &str) {
+    pub(in crate::checked_artifact) fn prepare_prefix(
+        &self,
+        variant: TargetVariantV1,
+        component: &str,
+    ) {
         let root = self.target_root(variant).join(component);
         if !root.exists() {
             fs::create_dir_all(&root).expect("the managed prefix is creatable");
         }
-    }
-
-    /// Creates the managed root a Git-directory arm needs; a no-op elsewhere.
-    pub(super) fn prepare_managed_root(&self, variant: TargetVariantV1) {
-        self.prepare_prefix(variant, ".gwz");
     }
 }
 
@@ -162,7 +155,7 @@ impl Drop for Fixture {
 
 /// One fresh-process catalog session on the requested target, mirroring
 /// `namespace/tests_fault_matrix.rs`'s own two arms.
-pub(super) fn with_catalog<T>(
+pub(in crate::checked_artifact) fn with_catalog<T>(
     fixture: &Fixture,
     variant: TargetVariantV1,
     body: impl FnOnce(OpaqueRetainedCatalogV1<'_>) -> Result<T, CheckedFsError>,
@@ -232,7 +225,10 @@ pub(super) fn reservation(plan: &ManagedParentPlanV1) -> ActionCapacityReservati
 
 /// The one real admission per fixture, followed by the test-only handoff a fresh
 /// session rebuilds — the `namespace/tests_fault_matrix.rs` pattern, and for the
-/// same reason: resuming a durable handoff is plan §4 Step 3.3's coordinator.
+/// same reason: resuming a durable handoff after the first namespace edge has no
+/// production route, and no landed step owns one. Step 3.3 declined it (its plan
+/// sentence does not name it, and closing it needs a freeze edit to the admission
+/// classifier), so it is item 6 of the Phase 3 settle docket.
 pub(super) fn admit(
     fixture: &Fixture,
     variant: TargetVariantV1,
@@ -351,7 +347,11 @@ pub(super) mod matrix {
     /// single-crossing. The criterion is written for a boundary crossed once per
     /// drive, so the writer matrix drives a one-component row and the intent
     /// matrix, which must reach a *mid-retirement* interruption, drives a
-    /// two-component one.
+    /// two-component one. One key is still crossed twice on a one-component
+    /// drive — `staging_directory_flush` has two sites — and the criterion
+    /// survives it only because their order is fixed and the arm always resolves
+    /// to the first; `tests_writer_matrix.rs` states that where the key is
+    /// classified.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(in crate::checked_artifact::bootstrap::managed) enum RowShapeV1 {
         /// `.gwz/stash/bundles` — two missing components, five generations.

@@ -14,7 +14,7 @@ mod aggregate;
 /// R2-D Phase 2 Step 2.4 — the authority parse / streamed proof split.
 #[allow(
     dead_code,
-    reason = "Step 2.4 lands the binding; plan §4 Step 3.3 wires its production consumer"
+    reason = "Step 2.4 lands the binding; its consumer is the replacement path R2-E converts, not Step 3.3"
 )]
 mod authority_record_binding;
 mod completed;
@@ -25,10 +25,12 @@ mod index;
 mod interior;
 /// R2-D Step 2.1. Its production caller is Step 2.4's
 /// `authority_record_binding`; the allow remains because that binding's own
-/// consumer is wired by plan §4 Step 3.3.
+/// consumer is the *replacement* path — Step 3.3 wired the coordinator glue and
+/// deliberately did not convert it, so the streamed-payload consumer is R2-E's
+/// (plan §4 Step 3.3: "wires machinery; it does not convert consumers").
 #[allow(
     dead_code,
-    reason = "Step 2.4 binds the observer; plan §4 Step 3.3 wires the binding's consumer"
+    reason = "Step 2.4 binds the observer; the binding's consumer is the replacement path R2-E converts"
 )]
 mod leaf_observation;
 mod managed_mutation;

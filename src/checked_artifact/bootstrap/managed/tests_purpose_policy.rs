@@ -171,10 +171,23 @@ fn merge_archive_is_refused_without_an_existing_merge_store(variant: TargetVaria
     let request = ManagedParentBootstrapRequest::for_archive(archive_prerequisite());
     let run = PurposeRun::plan(variant, "archive-refused", &request, &[".gwz"]);
 
-    assert!(
-        run.plan.is_err(),
-        "an archive over a missing merge store must be refused"
-    );
+    // Pin the *reason*, not just the failure: this test exists to discharge the
+    // ownership-policy clause, and a bare `is_err()` would pass for a lease
+    // failure or a bad prerequisite without anyone noticing (Step-3.2 review
+    // [P3-3]). The refusal must be the owner's purpose-ownership one, raised
+    // because the provider observed a retained count below this purpose's
+    // minimum of two.
+    match run.plan.as_ref() {
+        Err(CheckedFsError::Ambiguous { fact, detail }) => {
+            assert_eq!(*fact, "managed-parent plan");
+            assert_eq!(
+                detail,
+                "provider retained prefix violates the purpose ownership policy"
+            );
+        }
+        Err(other) => panic!("the archive refusal is not the ownership policy: {other:?}"),
+        Ok(_) => panic!("an archive over a missing merge store must be refused"),
+    }
     assert!(
         !run.exists(".gwz/merge"),
         "a refused archive plan must create nothing"

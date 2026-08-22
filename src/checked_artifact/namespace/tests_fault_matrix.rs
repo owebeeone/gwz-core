@@ -24,9 +24,14 @@
 //! admission issuer rather than by re-running `resume_or_admit`: once a
 //! namespace edge has published its first row the action directory is no longer
 //! *exact* (`protocol/admission/owner.rs:29-38`), which is precisely the state a
-//! second admission must refuse. Resuming that handoff from durable state is the
-//! coordinator glue of plan §4 Step 3.3, not this step; `retain_action_namespace`
-//! still fails closed if the reconstructed identity is not the resident one.
+//! second admission must refuse. Resuming that handoff from durable state is
+//! **not owned by any landed step**: Step 3.3 considered it and declined — the
+//! plan's 3.3 sentence does not name it, and the only route to reconstruct an
+//! `AdmittedActionV1` in that state is `protocol/admission/test_support.rs`,
+//! so closing it means widening the frozen admission classifier
+//! (`GwzM5-8R2DInterfaceFreeze.md` §3.1). It is item 6 of the Phase 3 settle
+//! docket. `retain_action_namespace` still fails closed if the reconstructed
+//! identity is not the resident one.
 //!
 //! Living in a `tests`-prefixed file keeps this out of `production_rust_files`
 //! (`scripts/checks/check_checked_artifact_boundaries.py:670-677`) and out of the
