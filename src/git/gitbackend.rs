@@ -48,6 +48,9 @@ pub(crate) use merge_support::{conflict_paths, render_git_path};
 pub(crate) use preservation_image::raw_path_preimage_for_test;
 #[cfg(test)]
 pub(crate) use preservation_root::{FaultBoundary, fail_next_at, run_next_at};
+// PROBE (diagnosis branch only): g15 per-gate dump entry point.
+#[cfg(test)]
+pub(crate) use preservation_root::gate_dump::dump as dump_prepare_gates;
 #[cfg(test)]
 pub(crate) use stash_support::stash_message_matches_gwz_prefix;
 #[cfg(test)]

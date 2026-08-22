@@ -1,6 +1,9 @@
 use super::*;
 use crate::checked_artifact::entry::MergeArtifactTransition;
 pub(super) mod files;
+// PROBE (diagnosis branch only): test-only per-gate dump for the g15 Linux class.
+#[cfg(test)]
+pub(super) mod gate_dump;
 pub(super) mod index;
 pub(super) mod index_format;
 pub(super) mod parent;
@@ -19,6 +22,10 @@ pub(super) fn prepare_root_preservation_stash(
         || !full_form_matches(root, spec, &spec.handoff_form)?
         || !files::observe_boundary(root, &spec.handoff_boundary)?
     {
+        // PROBE (diagnosis branch only): name the false gate and its divergent
+        // field on the runner before the composite collapses to one message.
+        #[cfg(test)]
+        gate_dump::dump_failed_prepare(backend, root, spec);
         return Err(evidence_error(
             "root preservation preparation requires the exact durable handoff",
         ));
