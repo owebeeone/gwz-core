@@ -424,7 +424,12 @@ impl CheckedArtifact {
         after: CheckedArtifactFault,
     ) -> ModelResult<()> {
         fault(before, self.code, &self.label)?;
-        super::platform::private_barrier(dir, self.code, &self.label)?;
+        super::platform::private_barrier(
+            dir,
+            super::platform::DirentBarrierClass::AnchoredPrivateArea,
+            self.code,
+            &self.label,
+        )?;
         fault(after, self.code, &self.label)
     }
 }

@@ -314,10 +314,12 @@ fn flush_observed_leaf(_file: &File) -> Result<(), CheckedFsError> {
     // observation reads are already through the cache before the observation
     // begins — there is no unflushed writer state for the observer to order.
     // What the observer still owes the caller is ordering against what follows,
-    // and that is edge E10's scheduled namespace barrier, which on Windows is
-    // the P5 anchor round-trip rather than a directory fsync. So the observer
-    // adds no ordering of its own here, deliberately and by argument, instead
-    // of failing to add any.
+    // and that is edge E10's scheduled namespace barrier — family P5, whose
+    // Windows column is the anchor round trip for the anchored private area and
+    // the writer-class-conditional arm documented at
+    // `platform::private_barrier` for an exact interior, never a directory
+    // fsync. So the observer adds no ordering of its own here, deliberately and
+    // by argument, instead of failing to add any.
     Ok(())
 }
 

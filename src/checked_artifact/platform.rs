@@ -268,8 +268,35 @@ pub(super) fn prepare_private(
     Ok(())
 }
 
+/// Which writer class a P5 dirent barrier is serving
+/// (`GwzM5-8R2DInterfaceFreeze.md` §4.1 row P5, §4.3 rows E10/E14 and the E9
+/// activation annotation).
+///
+/// The distinction exists on Windows alone — on every other platform both
+/// classes are the same directory `fsync` — and it is a *caller* fact rather
+/// than one the directory's own contents may be trusted to reveal: only the
+/// checked-artifact private area is allowed to retain the durability anchor the
+/// Windows round-trip barrier renames, so only its callers may demand one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DirentBarrierClass {
+    /// The checked-artifact private area, which deliberately retains a
+    /// permanent `.ca1-durability-anchor-<32hex>` file as product
+    /// infrastructure (`finish()` never removes it), and whose barrier is
+    /// therefore the anchor round trip on Windows.
+    AnchoredPrivateArea,
+    /// A directory whose children are exact evidence — an admitted action
+    /// directory, a catalog interior — and which may therefore retain no
+    /// anchor of its own. Its Windows arm is documented at the barrier.
+    ExactInterior,
+}
+
 #[cfg(not(windows))]
-pub(super) fn private_barrier(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<()> {
+pub(super) fn private_barrier(
+    dir: &Dir,
+    _class: DirentBarrierClass,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
     sync_parent(dir).map_err(|cause| io_error(code, label, cause))
 }
 
@@ -427,7 +454,7 @@ pub(super) fn prepare_private(
             verify_anchor(dir, &final_name, code, label)?;
             dir.remove_file(&alias)
                 .map_err(|cause| io_error(code, label, cause))?;
-            private_barrier(dir, code, label)
+            private_barrier(dir, DirentBarrierClass::AnchoredPrivateArea, code, label)
         }
         AnchorState::Missing { family_state } if !family_state && !create => Ok(()),
         AnchorState::Missing {
@@ -476,8 +503,45 @@ pub(super) fn prepare_private(
 }
 
 #[cfg(windows)]
-pub(super) fn private_barrier(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<()> {
+pub(super) fn private_barrier(
+    dir: &Dir,
+    class: DirentBarrierClass,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
     use super::fault::{CheckedArtifactFault, fault};
+
+    if matches!(class, DirentBarrierClass::ExactInterior) {
+        // The writer-class-conditional Windows arm of P5 — the twin of E9's
+        // `flush_observed_leaf` no-op, and recorded in the same form
+        // (`GwzM5-8R2DInterfaceFreeze.md` §4.3, the E9 activation annotation).
+        //
+        // The round trip below is *unavailable* to this class, not merely
+        // skipped: it renames a resident `.ca1-durability-anchor-<32hex>` file,
+        // and this class of directory may retain none. Its children are exact
+        // evidence — admission refuses an action directory whose
+        // `extra_children` is nonzero (`protocol/admission/owner.rs:29-38`) —
+        // and the anchor is permanent by design, so planting one per catalog
+        // directory would reproduce the exact-evidence contamination class
+        // already diagnosed and fixed for the private area
+        // (`GwzWindowsMatrix-ExactEvidenceDiagnosis.md` §3 Class B). Preparing
+        // an anchor here would trade a durability claim for the very exactness
+        // the barrier exists to protect.
+        //
+        // The property that substitutes is the P2 family's own, stated once for
+        // `sync_parent` above and again for `sync_directory_edge`
+        // (`capability/pre_catalog/provider/directory_mutation.rs`), and it is
+        // writer-class-conditional exactly as E9's is: every row of an exact
+        // interior is gwz-written through `durable_write_options`
+        // (`FILE_FLAG_WRITE_THROUGH`) and moved by the sealed exact-handle
+        // rename, and a normal directory handle cannot be flushed portably on
+        // Windows. So this barrier adds no ordering of its own, deliberately
+        // and by argument, instead of refusing an ordering the platform cannot
+        // give it. For a FOREIGN-written row the claim would be strictly weaker
+        // — the same negative space E9's annotation records — but an exact
+        // interior admits none by construction.
+        return Ok(());
+    }
 
     prepare_private(dir, false, code, label)?;
     let AnchorState::Ready { final_name } = anchor_state(dir, code, label)? else {

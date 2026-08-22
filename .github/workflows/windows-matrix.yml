@@ -32,9 +32,10 @@ jobs:
           # The suite step exits red while the burn-down tail exists; still
           # save the cache so later runs and probe branches start warm.
           cache-on-failure: true
-      - name: Run the complete test suite
+      - name: Run the namespace suite (probe branch trim)
         shell: bash
-        run: cargo test --locked --no-fail-fast 2>&1 | tee windows-matrix.log || true
+        run: |
+          cargo test --locked --lib checked_artifact::namespace:: -- --nocapture 2>&1 | tee windows-matrix.log || true
       - name: Summarize failures
         shell: bash
         run: |

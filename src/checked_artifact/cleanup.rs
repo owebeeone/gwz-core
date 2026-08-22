@@ -86,7 +86,12 @@ impl CheckedArtifact {
             private
                 .remove_file(&staged.name)
                 .map_err(|cause| io_error(self.code, &self.label, cause))?;
-            super::platform::private_barrier(&private, self.code, &self.label)?;
+            super::platform::private_barrier(
+                &private,
+                super::platform::DirentBarrierClass::AnchoredPrivateArea,
+                self.code,
+                &self.label,
+            )?;
         }
         if let Some(source) = residue.source {
             let RetainedSource::Existing(expected_identity) = &authority.retained_source else {
@@ -126,7 +131,12 @@ impl CheckedArtifact {
             private
                 .remove_file(&source.name)
                 .map_err(|cause| io_error(self.code, &self.label, cause))?;
-            super::platform::private_barrier(&private, self.code, &self.label)?;
+            super::platform::private_barrier(
+                &private,
+                super::platform::DirentBarrierClass::AnchoredPrivateArea,
+                self.code,
+                &self.label,
+            )?;
             fault(
                 CheckedArtifactFault::AfterSourceCleanup,
                 self.code,
@@ -156,7 +166,12 @@ impl CheckedArtifact {
         private
             .remove_file(&authority_name)
             .map_err(|cause| io_error(self.code, &self.label, cause))?;
-        super::platform::private_barrier(&private, self.code, &self.label)?;
+        super::platform::private_barrier(
+            &private,
+            super::platform::DirentBarrierClass::AnchoredPrivateArea,
+            self.code,
+            &self.label,
+        )?;
         fault(
             CheckedArtifactFault::AfterAuthorityCleanup,
             self.code,

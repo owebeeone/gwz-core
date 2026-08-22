@@ -313,9 +313,19 @@ impl RetainedActionNamespaceV1 {
 
     /// Edge E14 — the admitted dirent-barrier family (§4.1 row P5) over the
     /// retained action directory itself.
+    ///
+    /// The retained action directory is an **exact interior**: its children are
+    /// the admitted action's own evidence and admission refuses a nonzero
+    /// `extra_children` (`protocol/admission/owner.rs:29-38`), so it may retain
+    /// none of the permanent durability anchor the Windows arm of P5 renames.
+    /// The class is therefore passed explicitly, and P5's Windows arm documents
+    /// what stands in its place there (`platform.rs`, the writer-class-
+    /// conditional arm recorded in the freeze §4.3 E9 form). On every other
+    /// platform the class selects nothing: both are the same directory `fsync`.
     pub(in crate::checked_artifact) fn barrier(&self) -> Result<(), CheckedFsError> {
         crate::checked_artifact::platform::private_barrier(
             &self.handle,
+            crate::checked_artifact::platform::DirentBarrierClass::ExactInterior,
             ErrorCode::IoError,
             "action namespace barrier",
         )
