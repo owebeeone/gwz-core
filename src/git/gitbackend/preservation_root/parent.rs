@@ -246,7 +246,31 @@ fn directory_state(
     })
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+fn sync_dir(dir: &Dir) -> ModelResult<()> {
+    // Same O_PATH substrate as `checked_artifact::platform::sync_parent`
+    // (`GwzArm64EbadfDiagnosis.md`): cap-std directory capabilities are
+    // `O_PATH` on Linux and the kernel refuses `fsync` on them with `EBADF`
+    // before any filesystem code runs, so a dup of the capability cannot
+    // carry the barrier. Reopening `.` through the capability performs no
+    // path re-resolution — the descriptor anchors the lookup, so the result
+    // names the same directory object — and yields a descriptor `fsync`
+    // accepts. Failures stay closed: a dead capability reports the raw OS
+    // error from the reopen itself.
+    let flushable = rustix::fs::openat(
+        dir,
+        c".",
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(std::io::Error::from)
+    .map_err(crate::git::io_error)?;
+    rustix::fs::fsync(&flushable)
+        .map_err(std::io::Error::from)
+        .map_err(crate::git::io_error)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
 fn sync_dir(dir: &Dir) -> ModelResult<()> {
     dir.try_clone()
         .and_then(|value| value.into_std_file().sync_all())
