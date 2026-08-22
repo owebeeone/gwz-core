@@ -472,6 +472,8 @@ fn retention_exempts_a_valid_v1_archive_that_owns_a_backup_ref() {
             backup_commit: Some("d".repeat(40)),
             stash_id: None,
             stash_object_id: None,
+            noop_commit: None,
+            reset_commit: None,
         }])
         .unwrap();
     write_raw_archived(&temp, merge_id, &serde_yaml::to_string(&raw).unwrap());

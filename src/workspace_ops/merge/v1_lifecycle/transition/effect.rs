@@ -63,6 +63,8 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum EffectKind {
     BeginResetAttachedRef,
     AdvanceResetAttachedRef,
     FinishResetAttachedRef,
+    RecordArtifactNoop,
+    RecordResetNoop,
     BeginParticipantRollback,
     FinishParticipantRollback,
     BeginEvidenceRollback,

@@ -160,6 +160,8 @@ fn explicit_gc_rejects_cross_merge_ref_ownership_before_deleting_any_ref() {
             backup_commit: Some(app_commit.clone()),
             stash_id: None,
             stash_object_id: None,
+            noop_commit: None,
+            reset_commit: None,
         }])
         .unwrap();
     yaml["participants"]["mem_lib"]["preservation"][0]["backup_ref"] =
@@ -243,6 +245,8 @@ fn assert_gc_rejects_later_target_before_deleting_earlier_ref(invalid_commit: &s
             backup_commit: Some(app_commit.clone()),
             stash_id: None,
             stash_object_id: None,
+            noop_commit: None,
+            reset_commit: None,
         }])
         .unwrap();
     yaml["participants"]["mem_lib"]["preservation"][0]["backup_commit"] =

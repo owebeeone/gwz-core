@@ -118,7 +118,57 @@ fn validate_owner_evidence(
         }
         _ => return Err(preservation_exactness_error(record)),
     };
-    if !backup_pair && !stash_pair {
+    // An empty row remains invalid; absence of the row is the empty state.
+    // A marker alone is now legitimate content, so it counts here.
+    if !backup_pair
+        && !stash_pair
+        && evidence.noop_commit.is_none()
+        && evidence.reset_commit.is_none()
+    {
+        return Err(preservation_exactness_error(record));
+    }
+    validate_markers(record, owner, evidence, backup_pair, stash_pair)
+}
+
+/// The durable preservation-cursor markers of
+/// `GwzM5-8DurableCursorAmendment.md` §2.2: two structural rules plus the two
+/// value equations. Every check here is decidable from record bytes alone —
+/// no repository read is involved (§3.3).
+fn validate_markers(
+    record: &MergeOperationRecordV1,
+    owner: &PreservationOwnerV1,
+    evidence: &PreservationEvidence,
+    backup_pair: bool,
+    stash_pair: bool,
+) -> ModelResult<()> {
+    // Rule 1: a stash pair and `noop_commit` may never coexist, regardless of
+    // any other field on the row — a stash pair contradicts "no artifact
+    // needed".
+    if stash_pair && evidence.noop_commit.is_some() {
+        return Err(preservation_exactness_error(record));
+    }
+    // Rule 2: `reset_commit` requires artifact-pass completion evidence on the
+    // same row — `noop_commit` or a stash pair.
+    if evidence.reset_commit.is_some() && !(evidence.noop_commit.is_some() || stash_pair) {
+        return Err(preservation_exactness_error(record));
+    }
+    let anchor = owner_anchor(record, owner);
+    // `noop_commit` equals the recorded `backup_commit` when the backup pair
+    // is present, and otherwise the immutable owner anchor.
+    if let Some(noop) = evidence.noop_commit.as_deref() {
+        let expected = if backup_pair {
+            evidence.backup_commit.as_deref()
+        } else {
+            anchor
+        };
+        if !is_oid(noop) || Some(noop) != expected {
+            return Err(preservation_exactness_error(record));
+        }
+    }
+    // `reset_commit` equals the immutable owner anchor.
+    if let Some(reset) = evidence.reset_commit.as_deref()
+        && (!is_oid(reset) || Some(reset) != anchor)
+    {
         return Err(preservation_exactness_error(record));
     }
     Ok(())
@@ -139,6 +189,10 @@ fn validate_action(
                 || !is_oid(target_commit)
                 || owner_anchor(record, owner).is_none()
                 || recorded_backup_target(record, owner).is_some()
+                // §2.2: a pending artifact-pass action for an owner whose row
+                // already carries `noop_commit` is an owner/phase/pass
+                // contradiction.
+                || has_noop_marker(record, owner)
             {
                 return Err(preservation_error(record));
             }
@@ -192,6 +246,10 @@ fn validate_action(
                 || root_publication_handoff.as_ref().copied()
                     != expected_root_handoff(record, owner)
                 || !phase_valid
+                // §2.2: a pending `ResetAttachedRef` for an owner whose row
+                // carries `reset_commit` contradicts the retired position.
+                || owner_evidence(record, owner)
+                    .is_some_and(|row| row.reset_commit.is_some())
             {
                 return Err(preservation_exactness_error(record));
             }
@@ -243,6 +301,10 @@ fn validate_stash(
         }
     };
     if !owner_is_valid(record, owner)
+        // §2.2: a pending `Stash` for an owner whose row carries `noop_commit`
+        // is an owner/phase/pass contradiction — and rule 1 would make the
+        // resulting stash pair illegal beside the marker.
+        || has_noop_marker(record, owner)
         || recorded_backup_target(record, owner).or_else(|| owner_anchor(record, owner))
             != Some(head_commit)
         || message != format!("gwz:{exact_id}: merge preservation")
@@ -254,6 +316,10 @@ fn validate_stash(
         return Err(preservation_exactness_error(record));
     }
     Ok(())
+}
+
+fn has_noop_marker(record: &MergeOperationRecordV1, owner: &PreservationOwnerV1) -> bool {
+    owner_evidence(record, owner).is_some_and(|row| row.noop_commit.is_some())
 }
 
 fn owner_evidence<'a>(

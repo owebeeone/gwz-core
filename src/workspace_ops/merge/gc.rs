@@ -362,7 +362,16 @@ fn preflight_direct_ref<B: GitBackend>(
     }
 }
 
-fn post_gc_record(mut record: MergeOperationRecord) -> MergeOperationRecord {
+/// Shapes the GC **response projection** only — there is no post-GC durable
+/// record rewrite (the archive is deleted at the `store.gc` call above). The
+/// durable-cursor amendment's "post-GC record rewrite" phrasing is an erratum;
+/// this is the retention edge its §2.2 terminal-plane fate actually rides.
+///
+/// Visibility is module-internal so the §8.6 acceptance pin can drive marker
+/// rows through it directly; no behavior changes.
+pub(in crate::workspace_ops::merge) fn post_gc_record(
+    mut record: MergeOperationRecord,
+) -> MergeOperationRecord {
     for participant in record.participants.values_mut() {
         retain_remaining_stashes(&mut participant.preservation);
     }

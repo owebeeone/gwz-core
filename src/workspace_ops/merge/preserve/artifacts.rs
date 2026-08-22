@@ -382,6 +382,8 @@ pub(super) fn update_evidence(
             backup_commit: None,
             stash_id: None,
             stash_object_id: None,
+            noop_commit: None,
+            reset_commit: None,
         });
     }
     if evidence.len() != 1 {
@@ -658,6 +660,22 @@ fn blob_oid(commit: &str, bytes: &[u8]) -> ModelResult<String> {
     }
 }
 
+// Counts live preservation-image captures for the §8.2(a) acceptance suite of
+// `GwzM5-8DurableCursorAmendment.md`, which requires the durable-marker path
+// proven image-capture-free for earlier owners. `MergeAuthorityBackend` is a
+// sealed trait, so a counting backend cannot be written outside `git`; this
+// counter sits at the real capture seam instead.
+//
+// Thread-local because the test harness runs suites in parallel and each test
+// drives its whole operation on one thread — a process-global counter would be
+// raced by concurrent suites. Test-only: the function it guards is itself
+// `#[cfg(test)]`.
+#[cfg(test)]
+thread_local! {
+    pub(in crate::workspace_ops::merge) static V1_PRESERVATION_IMAGE_CAPTURES:
+        std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[cfg(test)]
 #[forbid(clippy::disallowed_methods)]
 pub(in crate::workspace_ops::merge) fn v1_preservation_image<
@@ -668,6 +686,7 @@ pub(in crate::workspace_ops::merge) fn v1_preservation_image<
     plan: &super::plan::V1PreservationOwnerPlan,
     attached_commit: &str,
 ) -> ModelResult<crate::git::GitPreservationImage> {
+    V1_PRESERVATION_IMAGE_CAPTURES.with(|count| count.set(count.get() + 1));
     match v1_root_preservation_spec(backend, record, plan, attached_commit)? {
         Some(spec) => backend
             .prepare_root_preservation_stash(&plan.path, &spec)

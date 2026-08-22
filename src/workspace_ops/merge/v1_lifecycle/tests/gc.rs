@@ -282,12 +282,16 @@ fn with_cleanup_evidence(
         backup_commit: Some(member_commit.to_owned()),
         stash_id: stash.then(|| format!("stash_{merge_id}")),
         stash_object_id: stash.then(|| member_commit.to_owned()),
+        noop_commit: None,
+        reset_commit: None,
     };
     let root = PreservationEvidence {
         backup_ref: Some(format!("refs/gwz/merge/{merge_id}/root/head")),
         backup_commit: Some(root_commit.to_owned()),
         stash_id: None,
         stash_object_id: None,
+        noop_commit: None,
+        reset_commit: None,
     };
     raw["participants"]["mem_a"]["preservation"] = serde_yaml::to_value(vec![member]).unwrap();
     raw["publication"]["root_preservation"] = serde_yaml::to_value(vec![root]).unwrap();
@@ -310,5 +314,77 @@ fn expect_error<T>(result: ModelResult<T>) -> ModelError {
     match result {
         Err(error) => error,
         Ok(_) => panic!("operation unexpectedly succeeded"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §8.6 post-GC half — `GwzM5-8DurableCursorAmendment.md` §2.2 terminal-plane
+// fate, driven through the retention edge itself.
+// ---------------------------------------------------------------------------
+
+/// §2.2: "a row whose remaining content is markers only retires at that
+/// existing edge — while a marker on a surviving stash-bearing row (`S+R`;
+/// `B+S+R` before the field clearing) persists in the archived record, inert
+/// thereafter." Driven directly through `post_gc_record`, the retention edge
+/// the erratum-corrected reading identifies (response projection only).
+#[test]
+fn post_gc_retention_retires_marker_only_rows_and_keeps_markers_on_stash_rows() {
+    use crate::workspace_ops::merge::gc::post_gc_record;
+
+    let anchor = "c".repeat(40);
+    let target = "d".repeat(40);
+    let stash = "e".repeat(40);
+    let row = |backup: bool, stash_pair: bool, noop: Option<&str>, reset: Option<&str>| {
+        PreservationEvidence {
+            backup_ref: backup.then(|| "refs/gwz/merge/merge_1/mem_a/head".to_owned()),
+            backup_commit: backup.then(|| target.clone()),
+            stash_id: stash_pair.then(|| "stash_merge_1".to_owned()),
+            stash_object_id: stash_pair.then(|| stash.clone()),
+            noop_commit: noop.map(str::to_owned),
+            reset_commit: reset.map(str::to_owned),
+        }
+    };
+
+    for (label, before, survives) in [
+        // Marker-only shapes retire with their row at the existing edge.
+        ("N", row(false, false, Some(&anchor), None), false),
+        (
+            "N+R",
+            row(false, false, Some(&anchor), Some(&anchor)),
+            false,
+        ),
+        // `B+N`/`B+N+R` become marker-only after the backup clearing and
+        // retire the same way.
+        ("B+N", row(true, false, Some(&target), None), false),
+        (
+            "B+N+R",
+            row(true, false, Some(&target), Some(&anchor)),
+            false,
+        ),
+        // Stash-bearing rows survive, and the marker rides the surviving row.
+        ("S+R", row(false, true, None, Some(&anchor)), true),
+        ("B+S+R", row(true, true, None, Some(&anchor)), true),
+    ] {
+        let mut record = crate::workspace_ops::merge::model::v1::test_record();
+        record.participants.get_mut("mem_a").unwrap().preservation = vec![before.clone()];
+        let projected =
+            post_gc_record(serde_yaml::from_str(&serde_yaml::to_string(&record).unwrap()).unwrap());
+        let rows = &projected.participants["mem_a"].preservation;
+        if survives {
+            assert_eq!(rows.len(), 1, "{label} row must survive");
+            // The backup half is cleared unconditionally at this edge...
+            assert_eq!(rows[0].backup_ref, None, "{label}");
+            assert_eq!(rows[0].backup_commit, None, "{label}");
+            // ...the stash pair is what keeps the row...
+            assert!(rows[0].stash_id.is_some(), "{label}");
+            // ...and the marker persists on it, inert thereafter.
+            assert_eq!(
+                rows[0].reset_commit.as_deref(),
+                Some(anchor.as_str()),
+                "{label} lost its marker across the retention edge"
+            );
+        } else {
+            assert!(rows.is_empty(), "{label} row must retire at this edge");
+        }
     }
 }

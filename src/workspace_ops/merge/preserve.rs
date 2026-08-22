@@ -23,7 +23,7 @@ use plan::*;
 
 #[cfg(test)]
 pub(in crate::workspace_ops::merge) use artifacts::{
-    v1_preservation_image, v1_root_preservation_spec,
+    V1_PRESERVATION_IMAGE_CAPTURES, v1_preservation_image, v1_root_preservation_spec,
 };
 #[cfg(test)]
 pub(in crate::workspace_ops::merge) use checked_bundle::{

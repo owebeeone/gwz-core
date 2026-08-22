@@ -165,7 +165,9 @@ fn expected_diff(
             | K::FinishStash
             | K::BeginResetAttachedRef
             | K::AdvanceResetAttachedRef
-            | K::FinishResetAttachedRef,
+            | K::FinishResetAttachedRef
+            | K::RecordArtifactNoop
+            | K::RecordResetNoop,
             EffectSubject::Preservation(owner),
         ) => preservation_diff(kind, owner, old, new),
         (K::BeginParticipantRollback, EffectSubject::Participant(_))
@@ -203,6 +205,18 @@ fn preservation_diff(
 ) -> ModelResult<BTreeSet<KnownField>> {
     use EffectKind as K;
     use KnownField as F;
+    // `GwzM5-8DurableCursorAmendment.md` §3.1: the two marker writes are
+    // evidence-only and action-free — no pending action is journaled for them,
+    // so the journal does not move at all and the whole footprint is the
+    // owner's evidence row.
+    if matches!(kind, K::RecordArtifactNoop | K::RecordResetNoop) {
+        if old.pending_preservation.is_some() || new.pending_preservation.is_some() {
+            return Err(rejected(
+                "preservation effect does not match its typed owner or phase",
+            ));
+        }
+        return Ok(fields([preservation_owner(owner)]));
+    }
     let mut expected = fields([F::PendingPreservation]);
     let before = old.pending_preservation.as_ref();
     let after = new.pending_preservation.as_ref();
@@ -247,6 +261,10 @@ fn preservation_diff(
             (Some(PendingPreservationActionV1::ResetAttachedRef { owner: prior, .. }), Some(PendingPreservationActionV1::ResetAttachedRef { owner: next, .. }))
             if prior == owner && next == owner),
         K::FinishResetAttachedRef => {
+            // §3.1 edge 1: the reset retirement write now also carries the
+            // completion marker, and backfills the artifact-pass marker on a
+            // marker-less row, so the owner's evidence row joins the footprint.
+            expected.insert(preservation_owner(owner));
             matches!(before,
             Some(PendingPreservationActionV1::ResetAttachedRef { owner: actual, phase: PreservationRefResetPhaseV1::Complete, .. }) if actual == owner)
                 && after.is_none()

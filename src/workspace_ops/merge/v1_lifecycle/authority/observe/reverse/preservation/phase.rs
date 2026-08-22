@@ -270,11 +270,17 @@ fn backup_done(
         owner: plan.owner.clone(),
         observed_position: PreservationCursorPosition::BackupRef,
         pending: None,
+        // `GwzM5-8DurableCursorAmendment.md` §2.2: both markers are immutable
+        // once written. This whole-row successor therefore carries any marker
+        // the prior row already holds rather than dropping it — the artifact
+        // edges install artifact evidence, they never retire a marker.
         evidence: Some(PreservationEvidence {
             backup_ref: Some(name.clone()),
             backup_commit: Some(target_commit.clone()),
             stash_id: None,
             stash_object_id: None,
+            noop_commit: prior_marker(current, plan, |row| row.noop_commit.clone())?,
+            reset_commit: prior_marker(current, plan, |row| row.reset_commit.clone())?,
         }),
         publication_prefix: None,
     };
@@ -388,6 +394,20 @@ fn reset_done(
     )))
 }
 
+/// The marker a prior evidence row already holds, if any. §2.2 makes both
+/// markers immutable once written, so every whole-row successor built at a
+/// non-marker evidence edge must carry them forward.
+fn prior_marker(
+    current: &StoredV1Record,
+    plan: &V1PreservationOwnerPlan,
+    field: impl Fn(&PreservationEvidence) -> Option<String>,
+) -> ModelResult<Option<String>> {
+    Ok(
+        crate::workspace_ops::merge::preserve::v1_owner_evidence(current.record(), &plan.owner)?
+            .and_then(field),
+    )
+}
+
 fn reset_completion(
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
@@ -405,11 +425,34 @@ fn reset_completion(
         let next = steps::next_reset(*phase, plan.root_handoff.is_some())?;
         Some(steps::with_reset_phase(action, next)?)
     };
+    // `GwzM5-8DurableCursorAmendment.md` §3.1 edge 1: the reset completion bit
+    // rides the same atomic rewrite as the reset journal's retirement — the
+    // one action that today retires with no durable trace anywhere. When the
+    // owner's row carries neither `noop_commit` nor a stash pair (the shape a
+    // pre-amendment record presents after §4's live re-proof, where the
+    // retained pending action blocked any earlier marker write), the same
+    // write backfills `noop_commit`, so the result is only ever a §2.2-legal
+    // `B+N+R` / `N+R` / `B+S+R` / `S+R` — never `B+R` or `R` alone.
+    let evidence = if *phase == R::Complete {
+        let row = crate::workspace_ops::merge::preserve::v1_owner_evidence(
+            current.record(),
+            &plan.owner,
+        )?;
+        let backfill = !row.is_some_and(|row| row.noop_commit.is_some() || row.stash_id.is_some());
+        Some(super::cursor::marker_row(
+            current.record(),
+            plan,
+            backfill,
+            true,
+        )?)
+    } else {
+        None
+    };
     let payload = PreservationPayload {
         owner: plan.owner.clone(),
         observed_position: action_position(action),
         pending,
-        evidence: None,
+        evidence,
         publication_prefix: None,
     };
     if *phase == R::Complete {

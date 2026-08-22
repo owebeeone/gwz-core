@@ -362,6 +362,8 @@ fn preserve_abort_resumes_from_recorded_ref_and_native_stash_without_duplicates(
             backup_commit: Some(extra.clone()),
             stash_id: Some(format!("stash_{merge_id}")),
             stash_object_id: Some(stash.object_id.clone()),
+            noop_commit: None,
+            reset_commit: None,
         }];
     FileMergeStore.write_open(temp.path(), &record).unwrap();
     let mut abort = recovery_request(crate::MergeOp::Abort, Some(merge_id));

@@ -274,10 +274,10 @@ fn completed_preservation_enters_rollback_for_every_mutating_resume_request() {
     if matches!(action, PendingPreservationActionV1::ResetAttachedRef { .. }) {
         model.publication.as_mut().unwrap().root_preservation.push(PreservationEvidence {
             backup_ref: Some("refs/gwz/merge/merge_1/root/head".into()), backup_commit: Some("d".repeat(40)),
-            stash_id: None, stash_object_id: None });
+            stash_id: None, stash_object_id: None, noop_commit: None, reset_commit: None, });
     } else if matches!(action, PendingPreservationActionV1::Stash { phase: S::RestoreParent, .. }) {
         model.publication.as_mut().unwrap().root_preservation.push(PreservationEvidence {
-            backup_ref: None, backup_commit: None, stash_id: Some("stash_merge_1".into()), stash_object_id: Some("b".repeat(40)) });
+            backup_ref: None, backup_commit: None, stash_id: Some("stash_merge_1".into()), stash_object_id: Some("b".repeat(40)), noop_commit: None, reset_commit: None, });
     }
     model.pending_preservation = Some(action);
     StoredV1Record::for_test(&root.path, model).unwrap()

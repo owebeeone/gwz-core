@@ -36,10 +36,23 @@ fn clean_owner_at_anchor_creates_no_fake_preservation_artifact() {
         response.disposition(),
         V1ResponseDisposition::Terminal(OperationState::Aborted)
     );
+    // `GwzM5-8DurableCursorAmendment.md` §3.1: a clean owner at its anchor no
+    // longer writes nothing — the artifact pass persists its per-owner no-op
+    // skip marker as its one durable step. The marker is not an artifact: the
+    // row carries `noop_commit` and neither a backup pair nor a stash pair.
+    let rows = &response.current().record().participants["mem_a"].preservation;
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected exactly the durable skip marker row"
+    );
+    assert!(rows[0].noop_commit.is_some(), "skip marker was not written");
     assert!(
-        response.current().record().participants["mem_a"]
-            .preservation
-            .is_empty()
+        rows[0].backup_ref.is_none()
+            && rows[0].backup_commit.is_none()
+            && rows[0].stash_id.is_none()
+            && rows[0].stash_object_id.is_none(),
+        "a skip marker must never fabricate a preservation artifact"
     );
     assert!(
         fixture

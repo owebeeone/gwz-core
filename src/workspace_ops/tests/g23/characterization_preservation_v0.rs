@@ -406,6 +406,8 @@ fn v0_preservation_restart_rebuilds_missing_stash_bundle_from_recorded_evidence(
         backup_commit: None,
         stash_id: Some(stash_id.clone()),
         stash_object_id: Some(stash.object_id.clone()),
+        noop_commit: None,
+        reset_commit: None,
     }];
     FileMergeStore.write_open(temp.path(), &record).unwrap();
     super::compatibility_v0::assert_i2_valid_unlisted_fixture(

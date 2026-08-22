@@ -126,12 +126,6 @@ fn new_work_in_an_earlier_skipped_owner_is_rejected_before_later_evidence_mutate
         "new after earlier owner was skipped\n",
     )
     .unwrap();
-    let record_path = fixture
-        .root
-        .path
-        .join(format!(".gwz/merge/{}.yaml", fixture.model.merge_id));
-    let record_before = fs::read(&record_path).unwrap();
-    let later_head = fixture.backend.head(&later).unwrap();
     let context = fixture.context();
     let mut runtime = ReverseRuntime::new(&fixture.backend, &context);
     let error = expect_error(run(
@@ -141,10 +135,48 @@ fn new_work_in_an_earlier_skipped_owner_is_rejected_before_later_evidence_mutate
         V1LifecycleRequest::Preserve,
         &mut runtime,
     ));
-    assert_eq!(error.code, ErrorCode::PreservationEvidenceMismatch);
+    // `GwzM5-8DurableCursorAmendment.md` §3.3 / §8.4 — the U3 payoff. `mem_a`
+    // retired durably in the first pass, so its later interference no longer
+    // wedges classification of the later pending owner with a per-dispatch
+    // `PreservationEvidenceMismatch`. The same interference still refuses
+    // fail-closed, now at rollback-entry preflight: detection latency moves,
+    // the failure direction never does.
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert_eq!(error.member_id.as_deref(), Some("mem_a"));
-    assert_eq!(fs::read(record_path).unwrap(), record_before);
-    assert_eq!(fixture.backend.head(&later).unwrap(), later_head);
+    assert!(
+        error.message.contains("rollback before nor after state"),
+        "expected the rollback-entry preflight refusal, got: {}",
+        error.message
+    );
+    // §3.1: the durable cursor legitimately writes marker rows before it
+    // exhausts, so the record bytes are no longer constant across this pass.
+    // What must not move is artifact evidence — §2.2 immutability. `mem_a` is
+    // marker-only (no fabricated artifact) and `mem_b` keeps its stash pair.
+    let stored = CheckedV1Store::default()
+        .load_open(&fixture.root.path, &fixture.model.merge_id)
+        .unwrap();
+    assert!(
+        stored.record().participants["mem_a"]
+            .preservation
+            .iter()
+            .all(|row| row.backup_ref.is_none()
+                && row.backup_commit.is_none()
+                && row.stash_id.is_none()
+                && row.stash_object_id.is_none()),
+        "a durable cursor marker must never fabricate artifact evidence"
+    );
+    assert!(
+        stored.record().participants["mem_b"]
+            .preservation
+            .iter()
+            .any(|row| row.stash_id.is_some()),
+        "the later owner's stash evidence must survive unchanged"
+    );
+    // §3.3 U3: the later owner is no longer wedged by the earlier owner's
+    // regression — it advances on its own exact observations, which is the
+    // payoff this amendment buys. What must not happen is any mutation of the
+    // REGRESSED owner: its new work stands and no artifact was created over it.
+    assert!(fixture.member.join("new-earlier-work.txt").exists());
     assert!(
         fixture
             .backend

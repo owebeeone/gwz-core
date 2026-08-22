@@ -161,6 +161,15 @@ pub(crate) struct PreservationEvidence {
     pub backup_commit: Option<String>,
     pub stash_id: Option<String>,
     pub stash_object_id: Option<String>,
+    /// Per-owner no-op skip marker. Absent-by-default on the wire; no v0
+    /// writer ever emits it. See `GwzM5-8DurableCursorAmendment.md` §2.1/§2.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noop_commit: Option<String>,
+    /// Reset completion marker, spelled as the owner anchor commit id rather
+    /// than a boolean so a decoder can reject a fabricated value without any
+    /// live observation. See `GwzM5-8DurableCursorAmendment.md` §2.1/§2.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_commit: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

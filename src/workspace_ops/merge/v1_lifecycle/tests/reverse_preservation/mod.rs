@@ -1,3 +1,4 @@
+mod durable_cursor;
 mod entry;
 mod faults;
 mod invariants;

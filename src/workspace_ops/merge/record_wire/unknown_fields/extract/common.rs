@@ -9,14 +9,50 @@ use super::super::support::{
 };
 use super::super::{SemanticIdentity, UnknownFieldManifest, UnknownFieldManifestError};
 
+/// The preservation evidence row's known-key set forks by record version.
+///
+/// `GwzM5-8DurableCursorAmendment.md` §2.3: manifest membership is governed by
+/// the extractor's known-key set, not the typed serde parse. The v1 set adopts
+/// `noop_commit`/`reset_commit` — without which the first marker write fails
+/// the overlay's unauthorized-unknown-field check. The v0 set must NOT adopt
+/// them, or the v0 collision rule loses its trigger.
+#[derive(Clone, Copy)]
+pub(super) enum EvidenceKeys {
+    V0,
+    V1,
+}
+
+/// The four inherited v0 field names, unchanged.
+const EVIDENCE_KEYS_V0: &[&str] = &["backup_ref", "backup_commit", "stash_id", "stash_object_id"];
+
+/// The v0 names plus this amendment's two markers.
+const EVIDENCE_KEYS_V1: &[&str] = &[
+    "backup_ref",
+    "backup_commit",
+    "stash_id",
+    "stash_object_id",
+    "noop_commit",
+    "reset_commit",
+];
+
+impl EvidenceKeys {
+    fn names(self) -> &'static [&'static str] {
+        match self {
+            Self::V0 => EVIDENCE_KEYS_V0,
+            Self::V1 => EVIDENCE_KEYS_V1,
+        }
+    }
+}
+
 pub(super) fn extract(
     root: &Mapping,
     path: &Path,
+    evidence_keys: EvidenceKeys,
     manifest: &mut UnknownFieldManifest,
 ) -> Result<(), UnknownFieldManifestError> {
     extract_baseline(root, path, manifest)?;
-    extract_participants(root, path, manifest)?;
-    extract_publication(root, path, manifest)?;
+    extract_participants(root, path, evidence_keys, manifest)?;
+    extract_publication(root, path, evidence_keys, manifest)?;
     extract_operation_drift(root, path, manifest)
 }
 
@@ -48,6 +84,7 @@ fn extract_baseline(
 fn extract_participants(
     root: &Mapping,
     path: &Path,
+    evidence_keys: EvidenceKeys,
     manifest: &mut UnknownFieldManifest,
 ) -> Result<(), UnknownFieldManifestError> {
     let Some(value) = field(root, "participants") else {
@@ -62,6 +99,7 @@ fn extract_participants(
             member_id,
             mapping(value, "participant")?,
             &map_child(&participants_path, member_id),
+            evidence_keys,
             manifest,
         )?;
     }
@@ -72,6 +110,7 @@ fn extract_participant(
     member_id: &str,
     participant: &Mapping,
     path: &Path,
+    evidence_keys: EvidenceKeys,
     manifest: &mut UnknownFieldManifest,
 ) -> Result<(), UnknownFieldManifestError> {
     collect_unknown(
@@ -103,6 +142,7 @@ fn extract_participant(
         participant,
         path,
         &format!("participant:{member_id}"),
+        evidence_keys,
         manifest,
     )?;
     extract_participant_drift(participant, path, manifest)
@@ -211,18 +251,26 @@ fn extract_preservation(
     parent: &Mapping,
     path: &Path,
     owner: &str,
+    evidence_keys: EvidenceKeys,
     manifest: &mut UnknownFieldManifest,
 ) -> Result<(), UnknownFieldManifestError> {
     let Some(value) = field(parent, "preservation") else {
         return Ok(());
     };
-    extract_preservation_rows(value, &child(path, "preservation"), owner, manifest)
+    extract_preservation_rows(
+        value,
+        &child(path, "preservation"),
+        owner,
+        evidence_keys,
+        manifest,
+    )
 }
 
 fn extract_preservation_rows(
     value: &serde_yaml::Value,
     sequence_path: &Path,
     owner: &str,
+    evidence_keys: EvidenceKeys,
     manifest: &mut UnknownFieldManifest,
 ) -> Result<(), UnknownFieldManifestError> {
     let rows = sequence(value, "preservation")?;
@@ -234,7 +282,7 @@ fn extract_preservation_rows(
     for value in rows {
         collect_unknown(
             mapping(value, "preservation evidence")?,
-            &["backup_ref", "backup_commit", "stash_id", "stash_object_id"],
+            evidence_keys.names(),
             &identity_child(sequence_path, identity::preservation_owner(owner)),
             manifest,
         )?;
@@ -279,6 +327,7 @@ fn extract_participant_drift(
 fn extract_publication(
     root: &Mapping,
     path: &Path,
+    evidence_keys: EvidenceKeys,
     manifest: &mut UnknownFieldManifest,
 ) -> Result<(), UnknownFieldManifestError> {
     let Some(value) = field(root, "publication").filter(|value| !value.is_null()) else {
@@ -311,6 +360,7 @@ fn extract_publication(
             value,
             &child(&publication_path, "root_preservation"),
             "publication-root",
+            evidence_keys,
             manifest,
         )?;
     }

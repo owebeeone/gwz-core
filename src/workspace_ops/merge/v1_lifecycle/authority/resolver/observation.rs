@@ -31,6 +31,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum PreservationObservation {
     ResetIntent(B<PreparedRefResetIntent>),
     ResetPhase(B<VerifiedRefResetPhase>),
     ResetDone(B<VerifiedRefResetCompletion>),
+    /// §3.1 durable cursor marker writes: evidence-only, action-free.
+    ArtifactNoop(B<PreparedArtifactNoop>),
+    ResetNoop(B<PreparedResetNoop>),
     Exhausted(B<PreparedRollbackEntry>),
 }
 pub(in crate::workspace_ops::merge::v1_lifecycle) enum RollbackObservation {

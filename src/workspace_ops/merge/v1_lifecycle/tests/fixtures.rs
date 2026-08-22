@@ -343,6 +343,20 @@ pub(super) fn preservation_evidence(with_stash: bool) -> PreservationEvidence {
         backup_commit: Some(oid('a')),
         stash_id: with_stash.then(|| "stash_merge_1".into()),
         stash_object_id: with_stash.then(|| oid('b')),
+        noop_commit: None,
+        reset_commit: None,
+    }
+}
+
+/// The marker-bearing row a reset retirement writes per
+/// `GwzM5-8DurableCursorAmendment.md` §3.1 edge 1. This fixture owner carries a
+/// stash pair, so its artifact pass is already decode-evidenced (§3.2) and no
+/// `noop_commit` backfill fires — the retirement adds `reset_commit` alone,
+/// yielding the §2.2-legal `B+S+R`.
+pub(super) fn reset_completion_evidence() -> PreservationEvidence {
+    PreservationEvidence {
+        reset_commit: Some(oid('a')),
+        ..preservation_evidence(true)
     }
 }
 

@@ -209,6 +209,8 @@ fn journal_pending_kinds_are_legal_only_in_their_owned_phase() {
         backup_commit: Some(oid('a')),
         stash_id: None,
         stash_object_id: None,
+        noop_commit: None,
+        reset_commit: None,
     });
     preserving.pending_preservation =
         Some(preservation_action(PreservationStashPhaseV1::CreateStash));
@@ -313,6 +315,8 @@ fn journal_backup_ref_and_stash_phase_fields_are_derived() {
                     backup_commit: Some(oid('a')),
                     stash_id: None,
                     stash_object_id: None,
+                    noop_commit: None,
+                    reset_commit: None,
                 });
         }
         if matches!(

@@ -171,6 +171,8 @@ fn preservation_effects_require_exact_phase_owned_evidence() {
             backup_commit: Some("a".repeat(40)),
             stash_id: None,
             stash_object_id: None,
+            noop_commit: None,
+            reset_commit: None,
         });
     finish_backup.verify_known_diff(&backup, &finished).unwrap();
 
@@ -192,6 +194,8 @@ fn preservation_effects_require_exact_phase_owned_evidence() {
             backup_commit: None,
             stash_id: Some("stash_merge_1".into()),
             stash_object_id: Some("b".repeat(40)),
+            noop_commit: None,
+            reset_commit: None,
         });
     let finish_stash = TransitionEffect::preservation_for_test(EffectKind::FinishStash, owner);
     assert!(
@@ -229,6 +233,8 @@ fn stash_effect_requires_evidence_only_after_create_stash() {
             backup_commit: None,
             stash_id: Some("stash_merge_1".into()),
             stash_object_id: Some("b".repeat(40)),
+            noop_commit: None,
+            reset_commit: None,
         });
     effect.verify_known_diff(&old, &next).unwrap();
 

@@ -146,6 +146,108 @@ pending_preservation:
     }
 }
 
+/// A record body carrying `noop_commit`/`reset_commit` inside the single
+/// `mem_a` preservation evidence row, plus an unknown descendant beside them.
+fn marker_record(markers: &str) -> Value {
+    raw(&format!(
+        r#"
+participants:
+  mem_a:
+    preservation:
+      - backup_ref: refs/gwz/merge/merge_1/mem_a/head
+        backup_commit: dddddddddddddddddddddddddddddddddddddddd
+        stash_id: null
+        stash_object_id: null
+{markers}
+        future_row: retained
+"#
+    ))
+}
+
+const BOTH_MARKERS: &str = "        noop_commit: dddddddddddddddddddddddddddddddddddddddd\n        reset_commit: cccccccccccccccccccccccccccccccccccccccc";
+
+#[test]
+fn v1_known_key_set_adopts_the_markers_so_they_never_reach_a_v1_manifest() {
+    // §2.3 / §8.3: the v1 evidence-row known-key set gains the two names —
+    // without which the first marker write fails the overlay's
+    // unauthorized-unknown-field check.
+    let manifest = UnknownFieldManifest::extract_v1(&marker_record(BOTH_MARKERS)).unwrap();
+    for name in ["noop_commit", "reset_commit"] {
+        assert!(
+            unknown_value(&manifest, name).is_none(),
+            "typed v1 marker '{name}' leaked into the v1 unknown manifest"
+        );
+    }
+    // The genuine unknown beside them still survives by stable-owner identity.
+    assert_eq!(
+        unknown_value(&manifest, "future_row"),
+        Some(&Value::String("retained".into()))
+    );
+}
+
+#[test]
+fn v0_known_key_set_does_not_adopt_the_markers_so_they_surface_in_the_v0_manifest() {
+    // §2.3: the evidence-row known-key set forks by version. In a v0 record
+    // the two names DO surface in the v0 unknown manifest, and that manifest
+    // membership is the collision trigger.
+    let manifest = UnknownFieldManifest::extract_v0(&marker_record(BOTH_MARKERS)).unwrap();
+    assert_eq!(
+        unknown_value(&manifest, "noop_commit"),
+        Some(&Value::String("d".repeat(40)))
+    );
+    assert_eq!(
+        unknown_value(&manifest, "reset_commit"),
+        Some(&Value::String("c".repeat(40)))
+    );
+}
+
+#[test]
+fn a_marker_inside_a_v0_evidence_row_makes_migration_ineligible() {
+    // §2.3: presence of either name inside a v0 record's preservation evidence
+    // row makes migration ineligible; the value is never adopted, overwritten,
+    // or moved — the same doctrine as the five top-level v1 names.
+    for markers in [
+        "        noop_commit: dddddddddddddddddddddddddddddddddddddddd",
+        "        reset_commit: cccccccccccccccccccccccccccccccccccccccc",
+        BOTH_MARKERS,
+    ] {
+        let manifest = UnknownFieldManifest::extract_v0(&marker_record(markers)).unwrap();
+        assert!(
+            manifest.map_v0_to_v1().is_err(),
+            "v0 in-row marker did not trigger migration ineligibility: {markers}"
+        );
+    }
+}
+
+#[test]
+fn a_v0_record_without_markers_still_migrates() {
+    // The collision leg must not fire on the legitimate pre-amendment shape.
+    let manifest = UnknownFieldManifest::extract_v0(&marker_record("")).unwrap();
+    let mapped = manifest.map_v0_to_v1().unwrap();
+    assert_eq!(
+        mapped.entries().len(),
+        1,
+        "the unknown descendant beside the row must still survive migration"
+    );
+}
+
+#[test]
+fn unknown_descendants_beside_the_markers_survive_by_stable_owner_identity() {
+    // §2.3: sequence identity remains the stable owner, so an unknown beside
+    // the markers survives a rewrite that fills them in.
+    let manifest = UnknownFieldManifest::extract_v1(&marker_record("")).unwrap();
+    let mut filled = marker_record(BOTH_MARKERS);
+    filled["participants"]["mem_a"]["preservation"][0]
+        .as_mapping_mut()
+        .unwrap()
+        .remove("future_row");
+    manifest.apply_surviving(&mut filled).unwrap();
+    assert_eq!(
+        filled["participants"]["mem_a"]["preservation"][0]["future_row"], "retained",
+        "unknown descendant lost across a marker write"
+    );
+}
+
 fn remove_unknowns(value: &mut Value) {
     value["pending_preservation"]
         .as_mapping_mut()

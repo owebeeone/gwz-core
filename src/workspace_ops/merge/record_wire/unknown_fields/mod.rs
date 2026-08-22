@@ -77,6 +77,24 @@ impl UnknownFieldManifest {
                 locator.field
             )));
         }
+        // `GwzM5-8DurableCursorAmendment.md` §2.3: the collision doctrine
+        // extends into preservation evidence rows. Presence of either durable
+        // cursor marker inside a v0 record's evidence row makes migration
+        // ineligible; the value is never adopted, overwritten, or moved.
+        const V1_EVIDENCE_ROW: [&str; 2] = ["noop_commit", "reset_commit"];
+        if let Some(locator) = self.entries.keys().find(|locator| {
+            V1_EVIDENCE_ROW.contains(&locator.field.as_str())
+                && matches!(
+                    locator.container.last(),
+                    Some(ContainerSegment::Identity(identity))
+                        if identity.kind == "preservation_evidence"
+                )
+        }) {
+            return Err(error(format!(
+                "v0 unknown field '{}' collides with a v1 preservation evidence field",
+                locator.field
+            )));
+        }
         Ok(self.clone())
     }
 

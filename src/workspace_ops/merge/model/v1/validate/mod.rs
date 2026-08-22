@@ -60,6 +60,8 @@ mod journal_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
+mod preservation_marker_tests;
+#[cfg(test)]
 mod preservation_tests;
 #[cfg(test)]
 mod publication_tests;

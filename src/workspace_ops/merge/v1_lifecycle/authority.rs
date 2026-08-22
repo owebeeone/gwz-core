@@ -691,6 +691,12 @@ preservation_token!(VerifiedStashCompletion);
 preservation_token!(PreparedRefResetIntent);
 preservation_token!(VerifiedRefResetPhase);
 preservation_token!(VerifiedRefResetCompletion);
+// `GwzM5-8DurableCursorAmendment.md` §3.1: the two durable cursor marker
+// writes. These are evidence-only record rewrites inside `Preserving` — no
+// physical mutation occurs, so no pending action is journaled for them and the
+// durable write IS the step.
+preservation_token!(PreparedArtifactNoop);
+preservation_token!(PreparedResetNoop);
 
 token!(PreparedParticipantRollback, PendingRollbackActionV1);
 token!(VerifiedParticipantRollback, ParticipantActionPayload);

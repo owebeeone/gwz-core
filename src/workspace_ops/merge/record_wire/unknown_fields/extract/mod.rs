@@ -33,7 +33,7 @@ pub(super) fn extract_v0(raw: &Value) -> Result<UnknownFieldManifest, UnknownFie
         &path,
         &mut manifest,
     )?;
-    common::extract(root, &path, &mut manifest)?;
+    common::extract(root, &path, common::EvidenceKeys::V0, &mut manifest)?;
     Ok(manifest)
 }
 
@@ -68,7 +68,7 @@ pub(super) fn extract_v1(raw: &Value) -> Result<UnknownFieldManifest, UnknownFie
         &path,
         &mut manifest,
     )?;
-    common::extract(root, &path, &mut manifest)?;
+    common::extract(root, &path, common::EvidenceKeys::V1, &mut manifest)?;
     accepted::extract(root, &child(&path, "accepted_workspace"), &mut manifest)?;
     journals::extract(root, &path, &mut manifest)?;
     Ok(manifest)

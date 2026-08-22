@@ -26,6 +26,8 @@ fn non_root_owner_cannot_carry_a_root_publication_handoff() {
         backup_commit: Some(oid('c')),
         stash_id: None,
         stash_object_id: None,
+        noop_commit: None,
+        reset_commit: None,
     });
     case.pending_preservation = Some(PendingPreservationActionV1::Stash {
         owner: PreservationOwnerV1::Participant {
@@ -59,6 +61,8 @@ fn preservation_rows_require_one_canonical_complete_owner_row() {
         backup_commit: Some(oid('c')),
         stash_id: None,
         stash_object_id: None,
+        noop_commit: None,
+        reset_commit: None,
     });
     assert_eq!(
         validate_v1_preservation(&case).unwrap_err().code,
@@ -81,6 +85,8 @@ fn selected_root_and_publication_root_preservation_owners_cannot_collide() {
         backup_commit: Some(oid('e')),
         stash_id: None,
         stash_object_id: None,
+        noop_commit: None,
+        reset_commit: None,
     });
     case.selected_targets.push("@root".to_owned());
     case.participants.insert("@root".to_owned(), root);
@@ -93,6 +99,8 @@ fn selected_root_and_publication_root_preservation_owners_cannot_collide() {
             backup_commit: Some(oid('e')),
             stash_id: None,
             stash_object_id: None,
+            noop_commit: None,
+            reset_commit: None,
         });
 
     assert_eq!(
@@ -114,6 +122,8 @@ fn pending_stash_result_must_equal_the_stable_owner_evidence_row() {
         backup_commit: Some(oid('c')),
         stash_id: Some("stash_merge_1".to_owned()),
         stash_object_id: Some(oid('d')),
+        noop_commit: None,
+        reset_commit: None,
     });
     case.pending_preservation = Some(PendingPreservationActionV1::Stash {
         owner: PreservationOwnerV1::Participant {
@@ -174,6 +184,8 @@ fn stash_only_owner_does_not_require_a_backup_ref() {
         backup_commit: None,
         stash_id: Some("stash_merge_1".to_owned()),
         stash_object_id: Some(oid('d')),
+        noop_commit: None,
+        reset_commit: None,
     });
     validate_v1_preservation(&case).unwrap();
 
@@ -486,6 +498,8 @@ fn add_root_evidence(
         backup_commit: Some(oid('e')),
         stash_id: with_stash.then(|| "stash_merge_1".into()),
         stash_object_id: with_stash.then(|| oid('d')),
+        noop_commit: None,
+        reset_commit: None,
     });
 }
 

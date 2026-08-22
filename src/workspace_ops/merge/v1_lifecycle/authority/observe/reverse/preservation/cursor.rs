@@ -35,10 +35,24 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: MergeAuth
             reject_later_durable_owner(current.record(), &plans, index, plan)?;
             return stash_intent(backend, current, plan);
         }
+        // §3.1: the artifact pass has proven this owner's remaining positions
+        // unnecessary. Persist the skip marker as this dispatch's one durable
+        // step, write-ahead of cursor advancement — only a subsequent dispatch
+        // may classify, journal, or execute anything at a later position. The
+        // same discipline runs on degraded (pre-amendment) records, so they
+        // converge to marker-bearing rows as the cursor revisits them.
+        if artifact_noop_needed(current.record(), plan)? {
+            return artifact_noop_intent(current, plan);
+        }
     }
     for plan in &plans {
         if !reset_complete(backend, current, plan)? {
             return reset_intent(current, plan);
+        }
+        // §3.1 edge 2: the reset pass proved this position unnecessary live;
+        // persist `reset_commit` write-ahead, exactly like the skip marker.
+        if reset_noop_needed(current.record(), plan)? {
+            return reset_noop_intent(current, plan);
         }
     }
     exhausted(backend, context, current)
@@ -242,9 +256,27 @@ fn backup_complete(
     record: &MergeOperationRecordV1,
     plan: &V1PreservationOwnerPlan,
 ) -> ModelResult<bool> {
-    Ok(
-        v1_owner_evidence(record, &plan.owner)?.is_some_and(|row| row.backup_ref.is_some())
-            || plan.protected_commit == plan.anchor,
+    // `GwzM5-8DurableCursorAmendment.md` §3.2: the backup position is complete
+    // at decode when a durable backup pair is present, or when `noop_commit`
+    // retires the artifact pass. §4 item 2 keeps today's live re-proof verbatim
+    // where no durable fact covers the position.
+    Ok(v1_owner_evidence(record, &plan.owner)?
+        .is_some_and(|row| row.backup_ref.is_some() || row.noop_commit.is_some())
+        || plan.protected_commit == plan.anchor)
+}
+
+/// §3.2: a stash pair is decode-terminal only while no preservation action
+/// sits at the stash position for this owner. Ids install mid-action atomically
+/// with phase advancement, so "ids present, action retired" is decodable; a
+/// crash between `CreateStash` and retirement leaves the pending action in the
+/// record and is classified by the action's own observer, unchanged.
+fn stash_action_pending_for(
+    record: &MergeOperationRecordV1,
+    owner: &crate::workspace_ops::merge::model::v1::PreservationOwnerV1,
+) -> bool {
+    matches!(
+        record.pending_preservation.as_ref(),
+        Some(PendingPreservationActionV1::Stash { owner: pending, .. }) if pending == owner
     )
 }
 
@@ -255,27 +287,20 @@ pub(super) fn stash_complete<B: MergeAuthorityBackend>(
     plan: &V1PreservationOwnerPlan,
 ) -> ModelResult<bool> {
     let evidence = v1_owner_evidence(current.record(), &plan.owner)?;
-    if evidence.is_some_and(|row| row.stash_id.is_some()) {
-        // The caller has already proved either the exact action-free durable
-        // bundle cursor or the pending owner's exact before/after bundle row.
-        // Reclassifying an earlier owner against the complete durable set here
-        // would reject the legitimate prior prefix while a later WriteBundle
-        // action is pending.
-        if matches!(
-            current.record().pending_preservation.as_ref(),
-            Some(PendingPreservationActionV1::ResetAttachedRef { owner, .. })
-                if owner == &plan.owner && plan.root_handoff.is_some()
-        ) {
-            // A non-degenerate root reset deliberately moves its managed
-            // files between handoff and clean forms. Requiring the original
-            // handoff here would reject that journaled intermediate state;
-            // observe_reset_phase proves the exact form and otherwise-clean
-            // guard immediately after this prefix check.
-            return Ok(true);
-        }
-        let image = v1_preservation_image(backend, current.record(), plan, &plan.live_commit)?;
-        return Ok(image.dirty == GitPreservationDirtySummary::default());
+    // §3.2: `noop_commit` retires both artifact positions at decode.
+    if evidence.is_some_and(|row| row.noop_commit.is_some()) {
+        return Ok(true);
     }
+    // §3.2: a durable stash pair with no action at that position is
+    // decode-terminal. This subsumes the former root-reset carve-out: with the
+    // pending action sitting at the reset position, the stash position reads
+    // decode-complete under the general rule.
+    if evidence.is_some_and(|row| row.stash_id.is_some())
+        && !stash_action_pending_for(current.record(), &plan.owner)
+    {
+        return Ok(true);
+    }
+    // §4 item 2: graceful degradation — today's full live re-proof, verbatim.
     Ok(
         v1_preservation_image(backend, current.record(), plan, &plan.live_commit)?.dirty
             == GitPreservationDirtySummary::default(),
@@ -287,9 +312,14 @@ pub(super) fn reset_complete<B: MergeAuthorityBackend>(
     current: &StoredV1Record,
     plan: &V1PreservationOwnerPlan,
 ) -> ModelResult<bool> {
-    let Some(target) = v1_owner_evidence(current.record(), &plan.owner)?
-        .and_then(|row| row.backup_commit.as_deref())
-    else {
+    let evidence = v1_owner_evidence(current.record(), &plan.owner)?;
+    // §3.2: `reset_commit` retires the reset position at decode.
+    if evidence.is_some_and(|row| row.reset_commit.is_some()) {
+        return Ok(true);
+    }
+    // §4 item 2: today's live re-proof, verbatim, where no durable fact covers
+    // the position.
+    let Some(target) = evidence.and_then(|row| row.backup_commit.as_deref()) else {
         return Ok(plan.live_commit == plan.anchor);
     };
     if target == plan.anchor {
@@ -302,6 +332,129 @@ pub(super) fn reset_complete<B: MergeAuthorityBackend>(
         v1_preservation_image(backend, current.record(), plan, &plan.anchor)?.dirty
             == GitPreservationDirtySummary::default(),
     )
+}
+
+/// §3.1: an owner needs a skip marker when the artifact pass retired it with no
+/// stash created. Owners whose stash was actually created get no `noop_commit`
+/// — their artifact-pass completion is decode-derivable (§3.2), and a stash
+/// pair preceded by no backup pair entails the backup position was a no-op,
+/// because the stash journal was only writable after that position passed.
+fn artifact_noop_needed(
+    record: &MergeOperationRecordV1,
+    plan: &V1PreservationOwnerPlan,
+) -> ModelResult<bool> {
+    Ok(v1_owner_evidence(record, &plan.owner)?
+        .is_none_or(|row| row.stash_id.is_none() && row.noop_commit.is_none()))
+}
+
+/// §3.1: an executed reset writes `reset_commit` on its own retirement edge, so
+/// only the no-op reset edge needs a standalone write.
+fn reset_noop_needed(
+    record: &MergeOperationRecordV1,
+    plan: &V1PreservationOwnerPlan,
+) -> ModelResult<bool> {
+    Ok(v1_owner_evidence(record, &plan.owner)?.is_none_or(|row| row.reset_commit.is_none()))
+}
+
+/// The marker-bearing successor of an owner's row, valued per the §2.2
+/// equations. The four inherited fields are carried across byte-constant, and
+/// a marker already present is never revalued (§2.2 immutability).
+pub(super) fn marker_row(
+    record: &MergeOperationRecordV1,
+    plan: &V1PreservationOwnerPlan,
+    noop: bool,
+    reset: bool,
+) -> ModelResult<PreservationEvidence> {
+    let mut row =
+        v1_owner_evidence(record, &plan.owner)?
+            .cloned()
+            .unwrap_or(PreservationEvidence {
+                backup_ref: None,
+                backup_commit: None,
+                stash_id: None,
+                stash_object_id: None,
+                noop_commit: None,
+                reset_commit: None,
+            });
+    if noop && row.noop_commit.is_none() {
+        // §2.2: the recorded `backup_commit` when the backup pair is present,
+        // and otherwise the immutable owner anchor.
+        row.noop_commit = Some(
+            row.backup_commit
+                .clone()
+                .unwrap_or_else(|| plan.anchor.clone()),
+        );
+    }
+    if reset && row.reset_commit.is_none() {
+        // §2.2: `reset_commit` equals the immutable owner anchor.
+        row.reset_commit = Some(plan.anchor.clone());
+    }
+    Ok(row)
+}
+
+fn artifact_noop_intent(
+    current: &StoredV1Record,
+    plan: &V1PreservationOwnerPlan,
+) -> ModelResult<ExactObservationFact> {
+    let position = PreservationCursorPosition::Stash(S::Complete);
+    let prefix = issue_prefix(current, plan, position)?;
+    let payload = PreservationPayload {
+        owner: plan.owner.clone(),
+        observed_position: position,
+        pending: None,
+        evidence: Some(marker_row(current.record(), plan, true, false)?),
+        publication_prefix: None,
+    };
+    let proof = PreparedArtifactNoop {
+        bound: BoundValue::new(
+            current,
+            owner_binding(&plan.owner),
+            "record_artifact_noop",
+            "recorded",
+            payload,
+        )?,
+        prefix,
+    };
+    Ok(completed(CompletedObservation::Preservation(
+        PreservationObservation::ArtifactNoop(Box::new(proof)),
+    )))
+}
+
+fn reset_noop_intent(
+    current: &StoredV1Record,
+    plan: &V1PreservationOwnerPlan,
+) -> ModelResult<ExactObservationFact> {
+    let position = PreservationCursorPosition::ResetAttachedRef(R::Complete);
+    let prefix = issue_prefix(current, plan, position)?;
+    // §3.1 prescribes the marker backfill "at both reset edges". Under the
+    // current loop order this edge can never need it — the artifact loop
+    // (`observe_cursor`) gives every owner a stash pair or a `noop_commit`
+    // before the reset loop runs — so the predicate is a theorem, not an
+    // accident: computing it here (rather than hard-coding `false`) mirrors
+    // the retirement edge and keeps the §2.2 rule-2 guarantee true by
+    // construction if that ordering is ever refactored.
+    let backfill = v1_owner_evidence(current.record(), &plan.owner)?
+        .is_none_or(|row| row.noop_commit.is_none() && row.stash_id.is_none());
+    let payload = PreservationPayload {
+        owner: plan.owner.clone(),
+        observed_position: position,
+        pending: None,
+        evidence: Some(marker_row(current.record(), plan, backfill, true)?),
+        publication_prefix: None,
+    };
+    let proof = PreparedResetNoop {
+        bound: BoundValue::new(
+            current,
+            owner_binding(&plan.owner),
+            "record_reset_noop",
+            "recorded",
+            payload,
+        )?,
+        prefix,
+    };
+    Ok(completed(CompletedObservation::Preservation(
+        PreservationObservation::ResetNoop(Box::new(proof)),
+    )))
 }
 
 fn backup_intent(

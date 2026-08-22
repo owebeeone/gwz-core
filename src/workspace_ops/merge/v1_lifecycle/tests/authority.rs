@@ -272,6 +272,8 @@ fn payload(owner: PreservationOwnerV1, phase: S, exact_goal: bool) -> Preservati
         evidence: Some(PreservationEvidence {
             backup_ref: Some("refs/gwz/merge/merge_1/root/head".into()), backup_commit: Some(oid('e')),
             stash_id: Some("stash_merge_1".into()), stash_object_id: Some(oid('b')),
+            noop_commit: None,
+            reset_commit: None,
         }),
         publication_prefix: Some("boundary".into()),
     }

@@ -53,6 +53,10 @@ pub(super) fn stash_evidence<B: MergeAuthorityBackend>(
         backup_commit: prior.and_then(|row| row.backup_commit.clone()),
         stash_id: Some(stable_id.clone()),
         stash_object_id: Some(stash.object_id.clone()),
+        // §2.2: markers are immutable once written — carry them across this
+        // whole-row successor exactly as the backup pair is carried above.
+        noop_commit: prior.and_then(|row| row.noop_commit.clone()),
+        reset_commit: prior.and_then(|row| row.reset_commit.clone()),
     };
     Ok((
         super::steps::next_stash(S::CreateStash, plan.root_handoff.is_some())?,

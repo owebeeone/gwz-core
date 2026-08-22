@@ -52,6 +52,14 @@ pub(super) fn apply(
             finish(current, next, &*proof, proof.value(), Action::Reset)?;
             proof.value().owner.clone()
         }
+        PreservationTransition::RecordArtifactNoop(proof) => {
+            record_marker(current, next, &*proof, proof.value(), Marker::Artifact)?;
+            proof.value().owner.clone()
+        }
+        PreservationTransition::RecordResetNoop(proof) => {
+            record_marker(current, next, &*proof, proof.value(), Marker::Reset)?;
+            proof.value().owner.clone()
+        }
     };
     Ok(TransitionEffect::preservation(kind, owner))
 }
@@ -218,10 +226,26 @@ fn finish(
         Action::Stash => {
             stash_phase(old)? == PreservationStashPhaseV1::Complete && payload.evidence.is_none()
         }
+        // `GwzM5-8DurableCursorAmendment.md` §3.1 edge 1: the reset completion
+        // bit rides the same atomic rewrite as the reset journal's retirement,
+        // which today discards the fact. The footprint extends to up to two
+        // fields — `reset_commit`, plus `noop_commit` when the §3.1 backfill
+        // fires on a marker-less (pre-amendment) row.
         Action::Reset => {
-            reset_phase(old)? == PreservationRefResetPhaseV1::Complete && payload.evidence.is_none()
+            reset_phase(old)? == PreservationRefResetPhaseV1::Complete
+                && payload
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.reset_commit.is_some())
         }
     })?;
+    if matches!(action, Action::Reset) {
+        let evidence = payload.evidence.as_ref().ok_or_else(rejected)?;
+        require(marker_write_preserves_prior_row(
+            owner_row(current.record(), &payload.owner),
+            evidence,
+        ))?;
+    }
     let name = match action {
         Action::Backup => "finish_backup_ref",
         Action::Stash => "finish_stash",
@@ -233,6 +257,104 @@ fn finish(
         set_evidence(next, &payload.owner, evidence)?;
     }
     Ok(())
+}
+
+/// The two durable cursor marker writes of
+/// `GwzM5-8DurableCursorAmendment.md` §3.1.
+#[derive(Clone, Copy)]
+enum Marker {
+    Artifact,
+    Reset,
+}
+
+/// §3.1: an evidence-only record rewrite inside `Preserving`. No physical
+/// mutation occurs, so no pending action is journaled for it — the durable
+/// write IS the step, and only a subsequent dispatch may classify, journal, or
+/// execute anything at a later position.
+fn record_marker(
+    current: &StoredV1Record,
+    next: &mut MergeOperationRecordV1,
+    token: &impl BoundAuthority,
+    payload: &PreservationPayload,
+    marker: Marker,
+) -> ModelResult<()> {
+    // Action-free by construction: a marker write may never ride, begin, or
+    // retire a journaled action.
+    require(current.record().pending_preservation.is_none())?;
+    require(next.pending_preservation.is_none())?;
+    require(payload.pending.is_none())?;
+    let evidence = payload.evidence.as_ref().ok_or_else(rejected)?;
+    let (name, position) = match marker {
+        Marker::Artifact => (
+            "record_artifact_noop",
+            PreservationCursorPosition::Stash(PreservationStashPhaseV1::Complete),
+        ),
+        Marker::Reset => (
+            "record_reset_noop",
+            PreservationCursorPosition::ResetAttachedRef(PreservationRefResetPhaseV1::Complete),
+        ),
+    };
+    require(payload.observed_position == position)?;
+    // The write must actually install the marker it claims.
+    require(match marker {
+        Marker::Artifact => evidence.noop_commit.is_some(),
+        Marker::Reset => evidence.reset_commit.is_some(),
+    })?;
+    require(marker_write_preserves_prior_row(
+        owner_row(current.record(), &payload.owner),
+        evidence,
+    ))?;
+    bound(token, current, owner_id(&payload.owner), name, "recorded")?;
+    set_evidence(next, &payload.owner, evidence.clone())
+}
+
+/// §2.2: both markers are immutable once written, joining the row's existing
+/// immutability discipline. The whole-row `set_evidence` replacement makes
+/// constancy discipline-enforced rather than structural (§9), so every marker
+/// write edge checks it here: the four inherited fields stay byte-constant and
+/// a marker already present may neither change nor disappear.
+fn marker_write_preserves_prior_row(
+    previous: Option<&PreservationEvidence>,
+    next: &PreservationEvidence,
+) -> bool {
+    let Some(previous) = previous else {
+        // A row created by a marker write carries markers only. Artifact pairs
+        // are installed by their own action finishes, never by a marker write.
+        return next.backup_ref.is_none()
+            && next.backup_commit.is_none()
+            && next.stash_id.is_none()
+            && next.stash_object_id.is_none();
+    };
+    previous.backup_ref == next.backup_ref
+        && previous.backup_commit == next.backup_commit
+        && previous.stash_id == next.stash_id
+        && previous.stash_object_id == next.stash_object_id
+        && immutable_marker(previous.noop_commit.as_deref(), next.noop_commit.as_deref())
+        && immutable_marker(
+            previous.reset_commit.as_deref(),
+            next.reset_commit.as_deref(),
+        )
+}
+
+fn immutable_marker(previous: Option<&str>, next: Option<&str>) -> bool {
+    previous.is_none_or(|value| next == Some(value))
+}
+
+fn owner_row<'a>(
+    record: &'a MergeOperationRecordV1,
+    owner: &PreservationOwnerV1,
+) -> Option<&'a PreservationEvidence> {
+    let rows = match owner {
+        PreservationOwnerV1::Participant { member_id } => record
+            .participants
+            .get(member_id)
+            .map(|participant| participant.preservation.as_slice())?,
+        PreservationOwnerV1::PublicationRoot => record
+            .publication
+            .as_ref()
+            .map(|publication| publication.root_preservation.as_slice())?,
+    };
+    (rows.len() == 1).then(|| &rows[0])
 }
 
 fn set_evidence(

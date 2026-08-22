@@ -261,6 +261,9 @@ pub(super) enum PreservationTransition {
     BeginResetAttachedRef(Box<PreparedRefResetIntent>),
     AdvanceResetAttachedRef(Box<VerifiedRefResetPhase>),
     FinishResetAttachedRef(Box<VerifiedRefResetCompletion>),
+    /// `GwzM5-8DurableCursorAmendment.md` §3.1: the two evidence-write arms.
+    RecordArtifactNoop(Box<PreparedArtifactNoop>),
+    RecordResetNoop(Box<PreparedResetNoop>),
 }
 
 impl PreservationTransition {
@@ -272,6 +275,8 @@ impl PreservationTransition {
             Self::AdvanceStash(_) => EffectKind::AdvanceStash,
             Self::FinishStash(_) => EffectKind::FinishStash,
             Self::BeginResetAttachedRef(_) => EffectKind::BeginResetAttachedRef,
+            Self::RecordArtifactNoop(_) => EffectKind::RecordArtifactNoop,
+            Self::RecordResetNoop(_) => EffectKind::RecordResetNoop,
             Self::AdvanceResetAttachedRef(_) => EffectKind::AdvanceResetAttachedRef,
             Self::FinishResetAttachedRef(_) => EffectKind::FinishResetAttachedRef,
         }

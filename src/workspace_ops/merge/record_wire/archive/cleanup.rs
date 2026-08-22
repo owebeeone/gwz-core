@@ -55,6 +55,27 @@ impl ArchivedBackupRefOwner {
     }
 }
 
+/// Whether the record being derived knows the durable preservation-cursor
+/// markers of `GwzM5-8DurableCursorAmendment.md` §2.1.
+///
+/// The amendment's §2.2/§5 terminal-plane text asserts the marker-aware arm is
+/// "v0-inert: no v0 record carries markers, so the `from_v0` leg of the shared
+/// derivation never sees the new arm". The shared row struct parses the two
+/// names for v0 records too, so that inertness has to be enforced here rather
+/// than assumed: v0 knows no markers, and a fabricated marker must never
+/// legitimize an otherwise-empty v0 row (§2.3 — "the value is never adopted").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CleanupMarkers {
+    /// v0: markers are not row content. A marker-only row stays an empty row.
+    Unknown,
+    /// v1: markers are legitimate row content per §5.
+    #[allow(
+        dead_code,
+        reason = "constructed only by the test-gated from_v1 leg until A1 enables v1"
+    )]
+    Known,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CleanupError {
     ContradictoryEvidence,
@@ -80,6 +101,7 @@ pub(super) fn from_v0(
             &participant.path,
             key,
             &participant.preservation,
+            CleanupMarkers::Unknown,
             &mut owners,
             &mut seen,
             &mut has_stash_evidence,
@@ -92,6 +114,7 @@ pub(super) fn from_v0(
             ".",
             "root",
             &publication.root_preservation,
+            CleanupMarkers::Unknown,
             &mut owners,
             &mut seen,
             &mut has_stash_evidence,
@@ -122,6 +145,7 @@ pub(super) fn from_v1(
             &participant.path,
             key,
             &participant.preservation,
+            CleanupMarkers::Known,
             &mut owners,
             &mut seen,
             &mut has_stash_evidence,
@@ -134,6 +158,7 @@ pub(super) fn from_v1(
             ".",
             "root",
             &publication.root_preservation,
+            CleanupMarkers::Known,
             &mut owners,
             &mut seen,
             &mut has_stash_evidence,
@@ -152,6 +177,7 @@ fn collect_owner(
     path: &str,
     key: &str,
     rows: &[PreservationEvidence],
+    markers: CleanupMarkers,
     owners: &mut BTreeSet<ArchivedBackupRefOwner>,
     seen: &mut BTreeSet<(String, String)>,
     has_stash_evidence: &mut bool,
@@ -160,9 +186,23 @@ fn collect_owner(
         return Err(CleanupError::DuplicateOwner);
     }
     for row in rows {
+        // `GwzM5-8DurableCursorAmendment.md` §5: on the v1 leg, marker-only
+        // rows (`N`, `N+R`) are a legitimate archived shape and must not error
+        // — otherwise one fully-noop owner would fail every archived merge's
+        // worklist derivation, blocking all targeted cleanup. Markers
+        // contribute no worklist entries and never block backup-ref deletion.
+        //
+        // On the v0 leg the arm is forked off, keeping the amendment's
+        // "v0-inert" assertion true of the acceptance surface and not merely of
+        // legitimate writers: v0 knows no markers, so a fabricated marker never
+        // legitimizes an otherwise-empty v0 row. That row stays
+        // `ContradictoryEvidence` and retention refuses fail-closed, exactly as
+        // before this amendment.
+        let marker_content = matches!(markers, CleanupMarkers::Known)
+            && (row.noop_commit.is_some() || row.reset_commit.is_some());
         if row.backup_ref.is_some() != row.backup_commit.is_some()
             || row.stash_id.is_some() != row.stash_object_id.is_some()
-            || row.backup_ref.is_none() && row.stash_id.is_none()
+            || row.backup_ref.is_none() && row.stash_id.is_none() && !marker_content
         {
             return Err(CleanupError::ContradictoryEvidence);
         }

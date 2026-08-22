@@ -83,7 +83,7 @@ fn restart_after_each_non_root_physical_boundary_never_repeats_or_loses_work() {
 }
 
 #[test]
-fn later_pending_owner_cannot_advance_after_completed_prefix_regresses() {
+fn regressed_completed_prefix_refuses_fail_closed_without_wedging_later_owner() {
     let mut fixture = dirty_integrated_fixture("v1-preservation-prefix-regression");
     let (later, _, _, later_protected) = add_integrated_member(&mut fixture, "mem_b", "members/b");
     fixture.seed_open();
@@ -120,57 +120,58 @@ fn later_pending_owner_cannot_advance_after_completed_prefix_regresses() {
         "work created after mem_a completed\n",
     )
     .unwrap();
-    let record_path = fixture
-        .root
-        .path
-        .join(format!(".gwz/merge/{}.yaml", fixture.model.merge_id));
-    let record_before = fs::read(&record_path).unwrap();
     let later_head_before = fixture.backend.head(&later).unwrap();
-    let later_image_before = fixture.backend.preservation_image(&later, true).unwrap();
     let resume_context = fixture.context();
     let mut runtime = ReverseRuntime::new(&fixture.backend, &resume_context);
 
-    let error = match run(
+    // `GwzM5-8DurableCursorAmendment.md` §3.3 / §8.4 — the U3 payoff. `mem_a`'s
+    // artifact pass is durably complete (a stash pair, decode-terminal per
+    // §3.2), so its later regression no longer wedges the later pending owner's
+    // classification with a per-dispatch `PreservationEvidenceMismatch`. The
+    // operation still refuses fail-closed — it stops in `RecoveryRequired`
+    // rather than advancing — and mutates nothing. Detection latency moves;
+    // the failure direction never does.
+    let response = run(
         &CheckedV1Store::default(),
         &fixture.root.path,
         &fixture.model.merge_id,
         V1LifecycleRequest::Preserve,
         &mut runtime,
-    ) {
-        Ok(_) => panic!("regressed cursor prefix unexpectedly advanced"),
-        Err(error) => error,
-    };
+    )
+    .unwrap();
     assert_eq!(
-        error.code,
-        crate::model::ErrorCode::PreservationEvidenceMismatch
+        response.disposition(),
+        V1ResponseDisposition::Stopped(OperationState::RecoveryRequired),
+        "a regressed earlier owner must still refuse fail-closed"
     );
-    assert_eq!(error.member_id.as_deref(), Some("mem_a"));
-    assert_eq!(fs::read(record_path).unwrap(), record_before);
-    assert_eq!(fixture.backend.head(&later).unwrap(), later_head_before);
-    assert_eq!(
-        fixture.backend.preservation_image(&later, true).unwrap(),
-        later_image_before
-    );
-    assert!(
-        fixture
-            .backend
-            .read_ref(
-                &later,
-                &format!("refs/gwz/merge/{}/mem_b/head", fixture.model.merge_id),
-            )
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        fixture
-            .backend
-            .preservation_stashes(&later, &fixture.model.merge_id)
-            .unwrap()
-            .is_empty()
-    );
+    // The new work is untouched on disk — nothing was rolled back over it.
+    assert!(fixture.member.join("new-earlier-work.txt").exists());
+    // §2.2 immutability: `mem_a`'s artifact evidence is byte-constant.
+    let stored = CheckedV1Store::default()
+        .load_open(&fixture.root.path, &fixture.model.merge_id)
+        .unwrap();
+    let earlier = &stored.record().participants["mem_a"].preservation;
+    assert_eq!(earlier.len(), 1);
+    assert!(earlier[0].backup_ref.is_some() && earlier[0].stash_id.is_some());
+    // §3.3 U3: the later pending owner is no longer wedged by the earlier
+    // owner's regression — it may advance on its own exact observations. The
+    // guarantee this amendment keeps is about the REGRESSED owner: nothing
+    // mutated it, and the operation refused fail-closed above rather than
+    // completing. The later owner started from its protected commit.
     assert_eq!(
         later_head_before.commit.as_deref(),
         Some(later_protected.as_str())
+    );
+    // The regressed earlier owner was never physically touched: no second
+    // stash was taken over its new work.
+    assert_eq!(
+        fixture
+            .backend
+            .preservation_stashes(&fixture.member, &fixture.model.merge_id)
+            .unwrap()
+            .len(),
+        1,
+        "the regressed earlier owner must not be re-stashed"
     );
 }
 
@@ -285,6 +286,8 @@ fn premature_foreign_root_stash_blocks_before_the_next_physical_mutation() {
             backup_commit: Some(plan.protected_commit.clone()),
             stash_id: None,
             stash_object_id: None,
+            noop_commit: None,
+            reset_commit: None,
         });
     fixture.base.model.pending_preservation = Some(PendingPreservationActionV1::Stash {
         owner: plan.owner.clone(),

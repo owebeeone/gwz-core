@@ -4,7 +4,7 @@ use super::super::transition::*;
 use super::fixtures::{
     apply_preservation, backup_action, evidence_rollback_record, preservation_evidence,
     preservation_payload, preservation_prefix, preserving_record, reset_action,
-    selected_root_rollback_record, stash_action,
+    reset_completion_evidence, selected_root_rollback_record, stash_action,
 };
 use crate::workspace_ops::merge::model::v1::{
     EvidenceRollbackStepV1, ParticipantRollbackKindV1, PendingRollbackActionV1,
@@ -169,7 +169,9 @@ pub(super) fn preservation_reducers_enforce_the_exact_no_prefix_phase_graph() {
         "completed",
         complete,
         None,
-        None
+        // `GwzM5-8DurableCursorAmendment.md` §3.1 edge 1: the reset retirement
+        // write now also carries the reset completion bit.
+        Some(reset_completion_evidence())
     );
     let next = apply_preservation(
         &root,
