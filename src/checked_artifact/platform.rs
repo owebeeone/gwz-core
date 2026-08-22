@@ -364,7 +364,27 @@ pub(super) fn rename_relative(
         .map_err(|cause| io_error(code, label, cause))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub(super) fn sync_parent(dir: &Dir) -> std::io::Result<()> {
+    // cap-std directory capabilities are `O_PATH` descriptors on Linux, and
+    // the kernel resolves `fsync` through the descriptor lookup that refuses
+    // `O_PATH` files with `EBADF` before any filesystem code runs, so a dup
+    // of the capability cannot carry the barrier. Reopening `.` through the
+    // capability performs no path re-resolution — the descriptor itself
+    // anchors the lookup, so the result names the same directory object —
+    // and yields a descriptor `fsync` accepts. Failures stay closed: a dead
+    // capability reports the raw OS error from the reopen itself.
+    let flushable = rustix::fs::openat(
+        dir,
+        c".",
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    rustix::fs::fsync(&flushable)?;
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub(super) fn sync_parent(dir: &Dir) -> std::io::Result<()> {
     dir.try_clone()?.into_std_file().sync_all()
 }
@@ -901,4 +921,27 @@ fn io_error(code: ErrorCode, label: &str, cause: std::io::Error) -> ModelError {
 
 fn error(code: ErrorCode, label: &str, detail: impl std::fmt::Display) -> ModelError {
     ModelError::new(code, format!("checked {label}: {detail}"))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use cap_std::fs::Dir;
+
+    #[test]
+    fn sync_parent_flushes_a_live_linux_directory_capability() {
+        // Red before the reopen seam: cap-std directory capabilities are
+        // `O_PATH` on Linux, and syncing a dup of the capability reported
+        // `EBADF` on every Linux filesystem — the ARM64 matrix substrate
+        // class (observation.rs / transition.rs sync sites).
+        let root = std::env::temp_dir().join(format!(
+            "gwz-sync-parent-linux-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let dir = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let synced = super::sync_parent(&dir);
+        let _ = std::fs::remove_dir_all(&root);
+        synced.expect("sync_parent must flush a live cap-std directory capability on Linux");
+    }
 }
