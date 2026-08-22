@@ -135,6 +135,34 @@ fn installed_but_disabled_v1_reports_a1_compatibility_context() {
     );
 }
 
+/// M5b tripwire T-2 (design §6): a v1 record whose *body* carries the no-ff
+/// intent and a frozen two-parent action is still rejected at the envelope,
+/// with the typed `A1` wave — no body row is ever reachable before A1.
+#[test]
+fn installed_but_disabled_v1_no_ff_body_reports_a1_before_any_row_is_read() {
+    let temp = temp("merge-store-v1-no-ff-body");
+    write_raw_open(
+        &temp,
+        "merge_v1_no_ff",
+        concat!(
+            "schema: gwz.merge-operation/v1\nrecord_schema_version: 1\n",
+            "mode: no_ff\nparticipants:\n  mem_a:\n",
+            "    pending_action:\n      kind: true_merge\n      expected_result: commit\n"
+        ),
+    );
+
+    let error = FileMergeStore.discover_open(&temp.path).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::UnsupportedRecordVersion);
+    assert_record_context(
+        &error,
+        "merge_v1_no_ff",
+        "gwz.merge-operation/v1",
+        1,
+        Some(crate::MergeRecordRequiredWave::A1),
+    );
+}
+
 #[test]
 fn allocated_archived_v2_reports_a2_compatibility_context() {
     let temp = temp("merge-store-v2-archived");

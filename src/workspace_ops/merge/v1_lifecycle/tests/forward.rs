@@ -20,7 +20,10 @@ use crate::workspace_ops::merge::model::v1::{
     MergeOperationRecordV1, ParticipantRollbackKindV1, PendingRollbackActionV1, RecoveryContextV1,
     RecoveryOriginStateV1, test_record,
 };
-use crate::workspace_ops::merge::{OperationState, ParticipantState, PendingMergeAction};
+use crate::workspace_ops::merge::{
+    OperationState, ParticipantState, PendingMergeAction, PendingMergeActionKind,
+    PendingMergeExpectedResult,
+};
 use crate::workspace_ops::tests::{TempDir, commit_file};
 
 #[test]
@@ -136,6 +139,321 @@ fn no_ff_restart_adopts_the_exact_prepared_merge_commit() {
         Some(committed.as_str())
     );
     assert_eq!(resumed.executions, 5, "only finalization actions execute");
+}
+
+#[test]
+fn no_ff_up_to_date_adopts_verify_up_to_date_without_execution() {
+    let mut fixture = fixture("merge-v1-forward-no-ff-up-to-date", Kind::FastForward);
+    fixture.model.mode = MergeExecutionMode::NoFf;
+    fixture
+        .model
+        .participants
+        .get_mut("mem_a")
+        .unwrap()
+        .source_commit = fixture.before.clone();
+    seed_open(&fixture);
+    let context = context();
+    let mut runtime = CountingRuntime {
+        inner: ForwardRuntime::new(&fixture.backend, &context),
+        executions: 0,
+    };
+
+    let response = run(&fixture, &mut runtime).unwrap();
+
+    let row = &response.current().record().participants["mem_a"];
+    assert_eq!(response.current().record().state, OperationState::Completed);
+    assert_eq!(row.state, ParticipantState::UpToDate);
+    assert_eq!(
+        row.resulting_commit.as_deref(),
+        Some(fixture.before.as_str())
+    );
+    assert_eq!(
+        runtime.executions, 0,
+        "the no-ff up-to-date row requires no Git action"
+    );
+    assert_eq!(
+        head_commit(&fixture).as_deref(),
+        Some(fixture.before.as_str())
+    );
+}
+
+#[test]
+fn no_ff_clean_true_merge_matches_normal_mode_bytes() {
+    let mut trees = Vec::new();
+    for (index, mode) in [MergeExecutionMode::Normal, MergeExecutionMode::NoFf]
+        .into_iter()
+        .enumerate()
+    {
+        let mut fixture = fixture(
+            &format!("merge-v1-forward-clean-true-merge-{index}"),
+            Kind::CleanDivergent,
+        );
+        fixture.model.mode = mode;
+        seed_open(&fixture);
+
+        let frozen = freeze_without_mutation(&fixture);
+        assert_eq!(frozen.kind, PendingMergeActionKind::TrueMerge);
+        assert_eq!(
+            frozen.expected_result,
+            Some(PendingMergeExpectedResult::Commit)
+        );
+        let tree = frozen.commit_spec.as_ref().unwrap().tree_oid.clone();
+        assert_ne!(
+            tree,
+            commit_tree(&fixture.member, &fixture.source),
+            "a clean true merge freezes the merge-index tree, never the source tree"
+        );
+
+        let context = context();
+        let mut runtime = ForwardRuntime::new(&fixture.backend, &context);
+        let response =
+            run_production(&fixture, &mut runtime, V1LifecycleRequest::Continue).unwrap();
+
+        let row = &response.current().record().participants["mem_a"];
+        assert_eq!(row.state, ParticipantState::Merged);
+        let facts = commit_facts(&fixture.member, row.resulting_commit.as_deref().unwrap());
+        assert_eq!(
+            facts.parents,
+            [fixture.before.clone(), fixture.source.clone()]
+        );
+        assert_eq!(facts.tree, tree);
+        trees.push(tree);
+    }
+    assert_eq!(
+        trees[0], trees[1],
+        "the clean-true-merge matrix cell is mode-blind"
+    );
+}
+
+#[test]
+fn no_ff_true_merge_conflict_row_and_resolution_commit() {
+    let mut rows = Vec::new();
+    for (index, mode) in [MergeExecutionMode::Normal, MergeExecutionMode::NoFf]
+        .into_iter()
+        .enumerate()
+    {
+        let mut fixture = fixture(
+            &format!("merge-v1-forward-no-ff-conflict-{index}"),
+            Kind::Conflict,
+        );
+        fixture.model.mode = mode;
+        seed_open(&fixture);
+        let context = context();
+        let mut stopping =
+            CapturingRuntime::new(ForwardRuntime::new(&fixture.backend, &context), Crash::None);
+
+        let stopped = run(&fixture, &mut stopping).unwrap();
+
+        assert_eq!(
+            stopped.current().record().state,
+            OperationState::AwaitingResolution
+        );
+        assert_eq!(
+            stopped.current().record().participants["mem_a"].state,
+            ParticipantState::Conflicted
+        );
+        let conflict = stopping.frozen.take().expect("the conflict row is frozen");
+
+        fs::write(fixture.member.join("README.md"), "resolved\n").unwrap();
+        fixture
+            .backend
+            .stage_paths(&fixture.member, &["README.md"])
+            .unwrap();
+        let mut resolving =
+            CapturingRuntime::new(ForwardRuntime::new(&fixture.backend, &context), Crash::None);
+        let completed = run(&fixture, &mut resolving).unwrap();
+
+        let row = &completed.current().record().participants["mem_a"];
+        assert_eq!(row.state, ParticipantState::Continued);
+        let resolution = resolving.frozen.take().expect("the resolution is frozen");
+        let facts = commit_facts(&fixture.member, row.resulting_commit.as_deref().unwrap());
+        assert_eq!(
+            facts.parents,
+            [fixture.before.clone(), fixture.source.clone()]
+        );
+        rows.push((conflict, resolution));
+    }
+
+    let (normal_conflict, normal_resolution) = &rows[0];
+    let (no_ff_conflict, no_ff_resolution) = &rows[1];
+    assert_eq!(no_ff_conflict.kind, PendingMergeActionKind::TrueMerge);
+    assert_eq!(
+        no_ff_conflict.expected_result,
+        Some(PendingMergeExpectedResult::ExpectedConflict)
+    );
+    assert!(no_ff_conflict.commit_spec.is_none());
+    assert_eq!(
+        no_ff_resolution.kind,
+        PendingMergeActionKind::ResolveConflict
+    );
+    for (no_ff, normal) in [
+        (no_ff_conflict, normal_conflict),
+        (no_ff_resolution, normal_resolution),
+    ] {
+        assert_eq!(no_ff.kind, normal.kind, "the divergent row is mode-blind");
+        assert_eq!(no_ff.expected_result, normal.expected_result);
+        assert_eq!(no_ff.commit_message, normal.commit_message);
+        assert_eq!(
+            no_ff.commit_spec.as_ref().map(|spec| &spec.tree_oid),
+            normal.commit_spec.as_ref().map(|spec| &spec.tree_oid)
+        );
+    }
+}
+
+#[test]
+fn no_ff_external_fast_forward_is_ambiguous_never_adopted() {
+    let mut fixture = fixture("merge-v1-forward-no-ff-external-ff", Kind::FastForward);
+    fixture.model.mode = MergeExecutionMode::NoFf;
+    seed_open(&fixture);
+    let frozen = freeze_without_mutation(&fixture);
+    assert_eq!(frozen.kind, PendingMergeActionKind::TrueMerge);
+    assert_eq!(
+        head_commit(&fixture).as_deref(),
+        Some(fixture.before.as_str())
+    );
+
+    // An external agent fast-forwards the target to the source commit while
+    // the two-parent action is still pending (design §5.2).
+    fixture
+        .backend
+        .fast_forward(&fixture.member, "main", &fixture.source)
+        .unwrap();
+
+    let context = context();
+    let mut runtime = ForwardRuntime::new(&fixture.backend, &context);
+    let response = run_production(&fixture, &mut runtime, V1LifecycleRequest::Continue).unwrap();
+
+    let row = &response.current().record().participants["mem_a"];
+    assert_eq!(
+        response.current().record().state,
+        OperationState::RecoveryRequired
+    );
+    assert_ne!(row.state, ParticipantState::Merged);
+    assert!(
+        row.resulting_commit.is_none(),
+        "an external fast-forward is never adopted as the frozen two-parent result"
+    );
+    assert!(
+        row.pending_action.is_some(),
+        "the frozen action stays pending under ambiguity"
+    );
+    assert_eq!(
+        head_commit(&fixture).as_deref(),
+        Some(fixture.source.as_str())
+    );
+}
+
+#[test]
+fn no_ff_preparation_persists_the_frozen_action_before_any_git_mutation() {
+    let mut fixture = fixture("merge-v1-forward-no-ff-freeze-first", Kind::FastForward);
+    fixture.model.mode = MergeExecutionMode::NoFf;
+    seed_open(&fixture);
+
+    let frozen = freeze_without_mutation(&fixture);
+
+    assert_eq!(stored_action(&fixture).as_ref(), Some(&frozen));
+    assert_eq!(frozen.kind, PendingMergeActionKind::TrueMerge);
+    assert_eq!(
+        frozen.expected_result,
+        Some(PendingMergeExpectedResult::Commit)
+    );
+    assert_eq!(
+        head_commit(&fixture).as_deref(),
+        Some(fixture.before.as_str()),
+        "the action is durable before any Git mutation"
+    );
+    let spec = frozen.commit_spec.clone().unwrap();
+
+    let context = context();
+    let mut runtime = ForwardRuntime::new(&fixture.backend, &context);
+    let response = run_production(&fixture, &mut runtime, V1LifecycleRequest::Continue).unwrap();
+
+    let row = &response.current().record().participants["mem_a"];
+    assert_eq!(row.state, ParticipantState::Merged);
+    let facts = commit_facts(&fixture.member, row.resulting_commit.as_deref().unwrap());
+    assert_eq!(
+        facts.parents,
+        [fixture.before.clone(), fixture.source.clone()]
+    );
+    assert_eq!(facts.tree, spec.tree_oid);
+    assert_eq!(facts.author.2, spec.author.time_seconds);
+    assert_eq!(facts.committer.2, spec.committer.time_seconds);
+}
+
+#[test]
+fn ff_only_and_normal_matrices_are_unchanged_under_the_m5b_tree() {
+    let rows = [
+        (
+            MergeExecutionMode::Normal,
+            Kind::FastForward,
+            Some(PendingMergeActionKind::FastForward),
+            ParticipantState::FastForwarded,
+        ),
+        (
+            MergeExecutionMode::Normal,
+            Kind::CleanDivergent,
+            Some(PendingMergeActionKind::TrueMerge),
+            ParticipantState::Merged,
+        ),
+        (
+            MergeExecutionMode::FfOnly,
+            Kind::FastForward,
+            Some(PendingMergeActionKind::FastForward),
+            ParticipantState::FastForwarded,
+        ),
+        (
+            MergeExecutionMode::NoFf,
+            Kind::FastForward,
+            Some(PendingMergeActionKind::TrueMerge),
+            ParticipantState::Merged,
+        ),
+        (
+            MergeExecutionMode::FfOnly,
+            Kind::CleanDivergent,
+            None,
+            ParticipantState::Failed,
+        ),
+    ];
+    for (index, (mode, kind, expected_kind, expected_state)) in rows.into_iter().enumerate() {
+        let mut fixture = fixture(&format!("merge-v1-forward-mode-matrix-{index}"), kind);
+        fixture.model.mode = mode;
+        seed_open(&fixture);
+        let context = context();
+        let mut runtime =
+            CapturingRuntime::new(ForwardRuntime::new(&fixture.backend, &context), Crash::None);
+
+        let response = run(&fixture, &mut runtime).unwrap();
+
+        let row = &response.current().record().participants["mem_a"];
+        assert_eq!(row.state, expected_state, "row {index} ({mode:?}) state");
+        match expected_kind {
+            Some(kind) => {
+                let frozen = runtime.frozen.as_ref().expect("an action was frozen");
+                assert_eq!(frozen.kind, kind, "row {index} ({mode:?}) durable kind");
+                assert_eq!(
+                    frozen.commit_spec.is_some(),
+                    kind == PendingMergeActionKind::TrueMerge,
+                    "row {index} ({mode:?}) commit spec"
+                );
+            }
+            None => {
+                assert!(
+                    runtime.frozen.is_none(),
+                    "ff_only must never freeze a true-merge action"
+                );
+                assert_eq!(
+                    response.current().record().state,
+                    OperationState::Halted,
+                    "row {index}"
+                );
+                assert_eq!(
+                    row.error.as_ref().unwrap().code,
+                    ErrorCode::MergeValidationFailed,
+                    "row {index}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -596,7 +914,7 @@ fn executor_error_with_no_progress_is_durably_halted_once() {
     );
 }
 
-fn run<R: ExactObserver + PhysicalExecutor>(
+pub(super) fn run<R: ExactObserver + PhysicalExecutor>(
     fixture: &Fixture,
     runtime: &mut R,
 ) -> ModelResult<super::super::service::V1ServiceResponse> {
@@ -609,22 +927,231 @@ fn run<R: ExactObserver + PhysicalExecutor>(
     )
 }
 
-#[derive(Clone, Copy)]
-enum Kind {
+/// Drive an unwrapped production runtime through the production
+/// `service::run` seam. M5b design §7 (Q5) requires the no-ff forward and
+/// determinism suites to enter the lifecycle here, so A1 can re-point them
+/// at production dispatch without rewriting them; only fault-injecting
+/// wrappers (which cannot be `V1Runtime`) go through `run_test`.
+#[allow(private_bounds)]
+pub(super) fn run_production<R: super::super::service::V1Runtime>(
+    fixture: &Fixture,
+    runtime: &mut R,
+    request: V1LifecycleRequest,
+) -> ModelResult<super::super::service::V1ServiceResponse> {
+    super::super::service::run(
+        &CheckedV1Store::default(),
+        &fixture.root.path,
+        &fixture.model.merge_id,
+        request,
+        runtime,
+    )
+}
+
+/// Where an injected crash lands relative to the participant Git mutation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum Crash {
+    None,
+    /// After the durable action write, before any Git mutation.
+    BeforeExecution,
+    /// After ref publication, before the durable outcome write.
+    AfterExecution,
+}
+
+/// Snapshot the durable participant action at the instant the physical
+/// executor is invoked — the frozen action of design §4.1 — and optionally
+/// stop on either side of the Git mutation it authorizes.
+pub(super) struct CapturingRuntime<'a> {
+    pub(super) inner: ForwardRuntime<'a, Git2Backend>,
+    pub(super) frozen: Option<PendingMergeAction>,
+    pub(super) crash: Crash,
+}
+
+impl<'a> CapturingRuntime<'a> {
+    pub(super) fn new(inner: ForwardRuntime<'a, Git2Backend>, crash: Crash) -> Self {
+        Self {
+            inner,
+            frozen: None,
+            crash,
+        }
+    }
+}
+
+impl ExactObserver for CapturingRuntime<'_> {
+    fn observe(
+        &mut self,
+        current: &StoredV1Record,
+        request: &BoundObservationRequest,
+    ) -> ModelResult<BoundExactObservation> {
+        self.inner.observe(current, request)
+    }
+}
+
+impl PhysicalExecutor for CapturingRuntime<'_> {
+    fn execute(
+        &mut self,
+        lease: &V1MutationLease,
+        current: &StoredV1Record,
+        action: &PhysicalActionKind,
+    ) -> ExecutionDiagnostic {
+        let participant_action = matches!(action, PhysicalActionKind::Participant { .. });
+        if let PhysicalActionKind::Participant {
+            action: participant,
+            ..
+        } = action
+        {
+            self.frozen = Some(participant.as_ref().clone());
+            if self.crash == Crash::BeforeExecution {
+                panic!("injected crash after the durable action write, before Git mutation");
+            }
+        }
+        let result = self.inner.execute(lease, current, action);
+        if participant_action && self.crash == Crash::AfterExecution {
+            assert_eq!(result, ExecutionDiagnostic::Success);
+            panic!("injected crash after ref publication, before the outcome write");
+        }
+        result
+    }
+}
+
+/// Run a no-ff continue that stops immediately after the durable action
+/// write, returning the frozen action the store now carries.
+pub(super) fn freeze_without_mutation(fixture: &Fixture) -> PendingMergeAction {
+    let context = context();
+    let mut runtime = CapturingRuntime::new(
+        ForwardRuntime::new(&fixture.backend, &context),
+        Crash::BeforeExecution,
+    );
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(fixture, &mut runtime)
+        }))
+        .is_err(),
+        "the injected pre-mutation crash must unwind"
+    );
+    runtime.frozen.expect("a participant action was dispatched")
+}
+
+/// A no-ff fast-forwardable fixture whose two-parent action is frozen and
+/// durable, with the member repository still untouched.
+pub(super) fn frozen_no_ff(name: &str) -> (Fixture, PendingMergeAction) {
+    let mut fixture = fixture(name, Kind::FastForward);
+    fixture.model.mode = MergeExecutionMode::NoFf;
+    seed_open(&fixture);
+    let frozen = freeze_without_mutation(&fixture);
+    (fixture, frozen)
+}
+
+/// Execute the frozen action, then stop before the durable outcome write.
+pub(super) fn execute_then_crash(fixture: &Fixture) -> String {
+    let context = context();
+    let mut crashing = CapturingRuntime::new(
+        ForwardRuntime::new(&fixture.backend, &context),
+        Crash::AfterExecution,
+    );
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(fixture, &mut crashing)
+        }))
+        .is_err()
+    );
+    head_commit(fixture).unwrap()
+}
+
+pub(super) fn record_path(fixture: &Fixture) -> std::path::PathBuf {
+    fixture
+        .root
+        .path
+        .join(".gwz/merge")
+        .join(format!("{}.yaml", fixture.model.merge_id))
+}
+
+pub(super) fn record_text(fixture: &Fixture) -> String {
+    fs::read_to_string(record_path(fixture)).unwrap()
+}
+
+/// Plant an unknown field inside a durable container reached by `path` under
+/// the participant row, so its survival and retirement can be observed
+/// (record contract §8, row 382).
+pub(super) fn inject_unknown_field(fixture: &Fixture, path: &[&str], key: &str) {
+    let file = record_path(fixture);
+    let mut document: serde_yaml::Value = serde_yaml::from_str(&record_text(fixture)).unwrap();
+    let mut cursor = &mut document["participants"]["mem_a"];
+    for step in path {
+        cursor = &mut cursor[*step];
+    }
+    cursor[key] = serde_yaml::Value::Bool(true);
+    fs::write(file, serde_yaml::to_string(&document).unwrap()).unwrap();
+}
+
+/// The durable action the store holds for `mem_a`, read back from disk.
+pub(super) fn stored_action(fixture: &Fixture) -> Option<PendingMergeAction> {
+    CheckedV1Store::default()
+        .load_open(&fixture.root.path, &fixture.model.merge_id)
+        .unwrap()
+        .record()
+        .participants["mem_a"]
+        .pending_action
+        .clone()
+}
+
+pub(super) fn head_commit(fixture: &Fixture) -> Option<String> {
+    fixture.backend.head(&fixture.member).unwrap().commit
+}
+
+/// Every commit-object input design §4.1 enumerates, read back from Git.
+pub(super) struct CommitFacts {
+    pub(super) parents: Vec<String>,
+    pub(super) tree: String,
+    pub(super) message: Vec<u8>,
+    pub(super) author: (String, String, i64, i32),
+    pub(super) committer: (String, String, i64, i32),
+}
+
+pub(super) fn commit_facts(member: &std::path::Path, commit: &str) -> CommitFacts {
+    let repository = git2::Repository::open(member).unwrap();
+    let commit = repository
+        .find_commit(git2::Oid::from_str(commit).unwrap())
+        .unwrap();
+    let identity = |signature: &git2::Signature<'_>| {
+        (
+            signature.name().unwrap().to_owned(),
+            signature.email().unwrap().to_owned(),
+            signature.when().seconds(),
+            signature.when().offset_minutes(),
+        )
+    };
+    CommitFacts {
+        parents: commit.parent_ids().map(|id| id.to_string()).collect(),
+        tree: commit.tree_id().to_string(),
+        message: commit.message_bytes().to_vec(),
+        author: identity(&commit.author()),
+        committer: identity(&commit.committer()),
+    }
+}
+
+pub(super) fn commit_tree(member: &std::path::Path, commit: &str) -> String {
+    commit_facts(member, commit).tree
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum Kind {
     FastForward,
     Conflict,
+    /// Divergent histories that merge cleanly: the frozen tree is the merge
+    /// index tree, never the source tree (M5b design §4.1).
+    CleanDivergent,
 }
 
-struct Fixture {
-    root: TempDir,
-    backend: Git2Backend,
-    member: std::path::PathBuf,
-    model: MergeOperationRecordV1,
-    before: String,
-    source: String,
+pub(super) struct Fixture {
+    pub(super) root: TempDir,
+    pub(super) backend: Git2Backend,
+    pub(super) member: std::path::PathBuf,
+    pub(super) model: MergeOperationRecordV1,
+    pub(super) before: String,
+    pub(super) source: String,
 }
 
-fn fixture(name: &str, kind: Kind) -> Fixture {
+pub(super) fn fixture(name: &str, kind: Kind) -> Fixture {
     let root = TempDir::new(name);
     let backend = Git2Backend::new();
     backend.create_repo(&root.path).unwrap();
@@ -671,17 +1198,20 @@ fn fixture(name: &str, kind: Kind) -> Fixture {
     )
     .unwrap();
     backend.switch_branch(&member, "main").unwrap();
-    let before = if matches!(kind, Kind::Conflict) {
-        commit_file(
+    let before = match kind {
+        Kind::FastForward => common,
+        Kind::Conflict | Kind::CleanDivergent => commit_file(
             &member,
-            "README.md",
+            if kind == Kind::Conflict {
+                "README.md"
+            } else {
+                "local.txt"
+            },
             "local\n",
             "local",
             &[git2::Oid::from_str(&common).unwrap()],
         )
-        .unwrap()
-    } else {
-        common
+        .unwrap(),
     };
     let row = model.participants.get_mut("mem_a").unwrap();
     row.before_commit = before.clone();
@@ -700,7 +1230,7 @@ fn fixture(name: &str, kind: Kind) -> Fixture {
     }
 }
 
-fn seed_open(fixture: &Fixture) {
+pub(super) fn seed_open(fixture: &Fixture) {
     let directory = fixture.root.path.join(".gwz/merge");
     fs::create_dir_all(&directory).unwrap();
     fs::write(
@@ -719,7 +1249,7 @@ fn fast_forward_action(model: &MergeOperationRecordV1) -> PendingMergeAction {
     .to_pending()
 }
 
-fn context() -> OperationContext {
+pub(super) fn context() -> OperationContext {
     OperationContext {
         operation_id: "op_1".into(),
         request_id: "req_1".into(),
@@ -730,9 +1260,9 @@ fn context() -> OperationContext {
     }
 }
 
-struct CrashAfterParticipant<'a> {
-    inner: ForwardRuntime<'a, Git2Backend>,
-    executions: usize,
+pub(super) struct CrashAfterParticipant<'a> {
+    pub(super) inner: ForwardRuntime<'a, Git2Backend>,
+    pub(super) executions: usize,
 }
 
 impl ExactObserver for CrashAfterParticipant<'_> {
@@ -763,9 +1293,9 @@ impl PhysicalExecutor for CrashAfterParticipant<'_> {
     }
 }
 
-struct CountingRuntime<'a> {
-    inner: ForwardRuntime<'a, Git2Backend>,
-    executions: usize,
+pub(super) struct CountingRuntime<'a> {
+    pub(super) inner: ForwardRuntime<'a, Git2Backend>,
+    pub(super) executions: usize,
 }
 
 impl ExactObserver for CountingRuntime<'_> {
