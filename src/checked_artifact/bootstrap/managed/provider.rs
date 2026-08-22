@@ -17,29 +17,50 @@
 //!   frozen managed vocabulary, and the retirement rows from the resident
 //!   schedule. Nothing here mints a name, a record, or a retry name
 //!   (RemPlan-4 §4 R2 stop clause).
-//! * **A drive is derived from durable state, never replanned.** Each component
-//!   asks the durable namespace which half of its sequence is already there and
-//!   enters only the half that is not, so a restart re-derives the identical
-//!   intent chain and the identical slots (plan §4 Step 3.1: "restart consumes
-//!   the resident intent and scheduled slots, never replans a partially
-//!   completed live path").
+//! * **A drive resumes the resident intent, and never replans.** The row's state
+//!   is the durable intent record; a restart reads it and continues from the
+//!   phase and cursor it names, entering only the half of the component sequence
+//!   whose durable row is absent (plan §4 Step 3.1: "restart consumes the
+//!   resident intent and scheduled slots, never replans a partially completed
+//!   live path").
 //!
-//! **What Step 3.1 does not land, stated once.** The intent record's own
-//! durable lifecycle — the initial intent publication, the per-generation
-//! successor publication, the prior-generation retirement and the final intent
-//! retirement (freeze §4.3 row E17 and the `managed_bootstrap.*` keys the §3.5
-//! annotation reserves for them) — is not written here. In its place the intent
-//! chain is re-derived deterministically from the bound plan and the *durable
-//! evidence* of each completed component, which closes the restart everywhere
-//! except one window: replaying an install needs the ownership marker still
-//! inside its component, and edge E16 removes it, so a row whose markers are
-//! only *partly* retired cannot be replayed and is refused, typed and unmutated,
-//! rather than re-attempted (`execute_row`). Persisting the chain is what closes
-//! that window, and it is the named follow-up, together with E17's §4.4 Class 1
-//! arms. No `managed_bootstrap.*` key changes activation state in this step: the
-//! plan assigns `managed_bootstrap.*` activation and its matrix to Step 3.2.
+//! **Step 3.1b — what the intent record's own lifecycle adds** (plan §4 Step
+//! 3.1's "durable successor" and "prior-generation retirement" items; freeze
+//! §4.3 row E17). Each generation of the chain is written to the scheduled
+//! `BootstrapIntentScratch` row, published onto `BootstrapIntentActive(g)`,
+//! reobserved, and its predecessor retired onto `BootstrapIntentRetired(g-1)`;
+//! the last generation retires as the row's completion record. Step 3.1 could
+//! only *re-derive* the chain from evidence, and the only evidence that closes an
+//! install is the ownership marker still inside its component — which edge E16
+//! removes — so a row interrupted inside the marker-retirement phase could never
+//! converge. With the record resident that interruption resumes at its cursor,
+//! and the refusal Step 3.1 carried is gone.
+//!
+//! **Both §4.4 Class 1 arms resolve to none, and why.** Freeze §4.3 makes E17's
+//! arms conditional in the same form row E16's were. Every move this lifecycle
+//! makes is a *regular-file protocol record* travelling between two deterministic
+//! slots of one retained action directory, through the Step-2.2 backend's
+//! role-validated `publish_bootstrap_generation` / `retire_bootstrap_generation`
+//! — which carry `PublicationSourceV1::regular_file` and
+//! `DestinationRecheckV1::None`, exactly as E12/E13 do. No directory is
+//! published, so no source-interior arm exists to add; no retirement destination
+//! is re-checked, so no destination arm is either. `PublicationSourceV1` and
+//! `DestinationRecheckV1` are unchanged by this step, and it adds no
+//! `publish_verified_no_replace` caller.
+//!
+//! **The ownership token's boundary, carried forward from the Step-3.1 review
+//! §9.** A resumed drive takes the token from the resident record rather than
+//! re-deriving it. That read-back is *self-consistency* — "this chain is the one
+//! this admitted action's plan describes" — and it is **not** an adoption or
+//! exclusion proof. `read_and_bind_managed_bootstrap_intent` binds the record to
+//! this bound plan, purpose, generation and predecessor; it does not, and must
+//! not be read to, establish that no other writer produced the chain. Anything
+//! inside the permit-retained root is the same-user boundary the E16 record
+//! already declares outside scope. A later step that uses a resident record to
+//! decide adoption of state this action did not create makes determinism
+//! load-bearing for exclusion, and must re-litigate the token then.
 
-use std::ops::Range;
+use std::io::Cursor;
 
 use sha2::{Digest, Sha256};
 
@@ -48,16 +69,27 @@ use super::plan::{BoundManagedParentPlanRowV1, BoundManagedParentPlanV1, Managed
 use super::{ManagedParentBootstrapRequest, ManagedParentObservationV1, ManagedParentPurpose};
 use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1,
-    PathComponentMode, PlatformCapability,
+    ManagedIntentEdgeV1, PathComponentMode, PlatformCapability,
 };
 use crate::checked_artifact::catalog::OpaqueRetainedCatalogV1;
 use crate::checked_artifact::namespace::{
-    ActionNamespace, HostActionNamespaceV1, retain_action_namespace,
+    ActionNamespace, BootstrapGenerationSlots, BootstrapIntentRowV1, HostActionNamespaceV1,
+    retain_action_namespace,
 };
 use crate::checked_artifact::protocol::{
-    ActionDigestV1, ActionSlotV1, ManagedBootstrapPhaseV1, ManagedParentBootstrapIntentV1,
-    OwnershipMarkerV1,
+    BootstrapGenerationV1, ManagedBootstrapPhaseV1, ManagedParentBootstrapIntentV1,
+    OwnershipMarkerV1, ProtocolRecordKindV1, read_and_bind_managed_bootstrap_intent,
 };
+
+/// The generation rows this drive names, spelled once so the two classification
+/// sites and the four edge sites cannot drift apart.
+const ROW_ACTIVE: BootstrapIntentRowV1 = BootstrapIntentRowV1::Active;
+const ROW_RETIRED: BootstrapIntentRowV1 = BootstrapIntentRowV1::Retired;
+
+/// The managed intent record's frozen protocol kind. Every bounded read and
+/// every retained source of this lifecycle is budgeted against it, never against
+/// a file's own length (ConsumerCheckpoint §8 :236-237).
+const RECORD_KIND: ProtocolRecordKindV1 = ProtocolRecordKindV1::BootstrapIntent;
 
 /// One bootstrapped managed parent, as the writer receives it: the opaque
 /// retained-parent proof of ConsumerCheckpoint §9 (:264-266). It carries the
@@ -126,30 +158,148 @@ impl<'catalog, 'lease> RetainedManagedParentProviderV1<'catalog, 'lease> {
         Ok(Self { catalog, instance })
     }
 
-    /// Which of the three resumable states a row's scheduled retirement rows
-    /// put it in. Read-only, and derived from the schedule's own deterministic
-    /// slot names, so it allocates nothing and probes nothing else.
-    fn classify_resume(
+    /// One generation's three scheduled rows, from the resident schedule.
+    fn generation_slots(
         &self,
         namespace: &ActionNamespace<HostActionNamespaceV1>,
-        action: ActionDigestV1,
-        component_range: &Range<usize>,
-    ) -> Result<RowResumeV1, CheckedFsError> {
-        let mut retired = 0;
-        for ordinal in component_range.clone() {
-            if namespace.scheduled_row_is_resident(&retirement_leaf(action, ordinal)?) {
-                retired += 1;
+        bootstrap_index: usize,
+        generation: usize,
+    ) -> Result<BootstrapGenerationSlots, CheckedFsError> {
+        namespace
+            .bootstrap_slots(bootstrap_index)
+            .map_err(|_| provider_refusal("bootstrap row is not scheduled"))?
+            .generation(generation)
+            .map_err(|_| provider_refusal("bootstrap generation is not scheduled"))
+    }
+
+    /// R2-D Phase 3 Step 3.1b — the resume, read from the durable intent chain
+    /// rather than re-derived from evidence.
+    ///
+    /// The walk is the reason the retired generations are kept at all: each
+    /// record names its predecessor's `intent_id`, and
+    /// `read_and_bind_managed_bootstrap_intent` refuses a record whose
+    /// predecessor is not the one just read — so the chain is verified link by
+    /// link from its first generation, not adopted from whichever row happens to
+    /// be resident. It is bounded by the row's own scheduled generation range.
+    ///
+    /// Classification is exact rather than heuristic, because the publish/retire
+    /// order makes the durable states disjoint: a generation is retired only
+    /// after its successor is published, so "some row retired and no row active"
+    /// can only be the row's completion.
+    fn resume_intent(
+        &self,
+        namespace: &ActionNamespace<HostActionNamespaceV1>,
+        plan: &BoundManagedParentPlanV1,
+        row: &BoundManagedParentPlanRowV1,
+    ) -> Result<IntentResumeV1, CheckedFsError> {
+        let bootstrap_index = row.bootstrap_ordinal().index();
+        let mut predecessor = None;
+        let mut current = None;
+        let mut retired_any = false;
+        for generation in row.generation_range() {
+            let slots = self.generation_slots(namespace, bootstrap_index, generation)?;
+            let active = namespace.bootstrap_intent_row_is_resident(&slots, ROW_ACTIVE);
+            let retired = namespace.bootstrap_intent_row_is_resident(&slots, ROW_RETIRED);
+            if !active && !retired {
+                break;
+            }
+            let bytes = namespace
+                .read_bootstrap_intent_row(&slots, if active { ROW_ACTIVE } else { ROW_RETIRED })?;
+            let ordinal = BootstrapGenerationV1::new(generation)
+                .map_err(|_| provider_refusal("bootstrap generation is not scheduled"))?;
+            let bound = read_and_bind_managed_bootstrap_intent(
+                Cursor::new(&bytes),
+                plan,
+                row.purpose(),
+                ordinal,
+                predecessor,
+            )
+            .map_err(|_| {
+                provider_refusal("resident managed intent does not bind this plan's chain")
+            })?;
+            let intent = bound.value().clone();
+            predecessor = Some(intent.intent_id());
+            retired_any |= retired;
+            if active {
+                current = Some(intent);
             }
         }
-        if retired == 0 {
-            Ok(RowResumeV1::FromFirstGeneration)
-        } else if retired == component_range.len() {
-            Ok(RowResumeV1::Settled)
+        Ok(match (current, retired_any) {
+            (Some(intent), _) => IntentResumeV1::Current(Box::new(intent)),
+            (None, true) => IntentResumeV1::Settled,
+            (None, false) => IntentResumeV1::Fresh,
+        })
+    }
+
+    /// R2-D Phase 3 Step 3.1b — one generation made durable, and its predecessor
+    /// retired.
+    ///
+    /// Both halves are guarded by residency, so a fresh drive performs both, a
+    /// restart between them performs the second only, and a restart after both
+    /// performs neither — and every one of the three re-crosses the same two
+    /// observation boundaries, which is what makes them repeatable rather than
+    /// single-crossing. The record reaches its active row through the Step-2.2
+    /// backend's role-validated `publish_bootstrap_generation`, so this step adds
+    /// no publication call site.
+    fn settle_generation(
+        &self,
+        namespace: &mut ActionNamespace<HostActionNamespaceV1>,
+        row: &BoundManagedParentPlanRowV1,
+        intent: &ManagedParentBootstrapIntentV1,
+    ) -> Result<(), CheckedFsError> {
+        let bootstrap_index = row.bootstrap_ordinal().index();
+        let generation = intent.generation_ordinal().index();
+        let start = row.generation_range().start;
+        let edge = if generation == start {
+            ManagedIntentEdgeV1::Initial
         } else {
-            Err(provider_refusal(
-                "managed bootstrap row is partially retired and needs its resident intent to resume",
-            ))
+            ManagedIntentEdgeV1::Successor
+        };
+        let bytes = intent.encode_canonical();
+        let slots = self.generation_slots(namespace, bootstrap_index, generation)?;
+        if !namespace.bootstrap_intent_row_is_resident(&slots, ROW_ACTIVE) {
+            namespace.write_bootstrap_intent_scratch(&slots, &bytes, edge)?;
+            let source = namespace
+                .retain_scheduled_source(slots.scratch_leaf().clone(), RECORD_KIND)
+                .map_err(|_| provider_refusal("managed intent scratch is not retainable"))?;
+            namespace.publish_bootstrap_generation(&source, &slots)?;
         }
+        if namespace.observe_bootstrap_intent_row(&slots, ROW_ACTIVE, edge)? != bytes {
+            return Err(provider_refusal(
+                "resident managed intent is not the generation just published",
+            ));
+        }
+        if generation > start {
+            self.retire_generation(
+                namespace,
+                row,
+                generation - 1,
+                ManagedIntentEdgeV1::PriorGeneration,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// R2-D Phase 3 Step 3.1b — one generation's active record retired onto its
+    /// scheduled retirement row, then reobserved. Guarded, so a restart past the
+    /// rename reaches the same two boundaries without re-entering the edge.
+    fn retire_generation(
+        &self,
+        namespace: &mut ActionNamespace<HostActionNamespaceV1>,
+        row: &BoundManagedParentPlanRowV1,
+        generation: usize,
+        edge: ManagedIntentEdgeV1,
+    ) -> Result<(), CheckedFsError> {
+        let slots =
+            self.generation_slots(namespace, row.bootstrap_ordinal().index(), generation)?;
+        if namespace.bootstrap_intent_row_is_resident(&slots, ROW_ACTIVE) {
+            let source = namespace
+                .retain_scheduled_source(slots.active_leaf().clone(), RECORD_KIND)
+                .map_err(|_| provider_refusal("managed intent generation is not retainable"))?;
+            namespace.retire_bootstrap_generation(&source, &slots)?;
+        }
+        namespace.observe_bootstrap_intent_row(&slots, ROW_RETIRED, edge)?;
+        Ok(())
     }
 
     /// The facts of the deepest durably present ancestor of one declared
@@ -173,96 +323,120 @@ impl<'catalog, 'lease> RetainedManagedParentProviderV1<'catalog, 'lease> {
         ))
     }
 
+    /// One component's half of the sequence, driven once, returning the
+    /// successor its durable evidence closes.
+    ///
+    /// Each half is entered only when its own durable row is absent, so a
+    /// restart on either side of a physical edge replays through the restart
+    /// observation instead of re-crossing the edge.
+    fn advance_one(
+        &self,
+        namespace: &mut ActionNamespace<HostActionNamespaceV1>,
+        plan: &BoundManagedParentPlanV1,
+        row: &BoundManagedParentPlanRowV1,
+        intent: &ManagedParentBootstrapIntentV1,
+    ) -> Result<ManagedParentBootstrapIntentV1, CheckedFsError> {
+        let cursor = intent.cursor();
+        let component = intent
+            .components()
+            .get(cursor)
+            .ok_or_else(|| provider_refusal("managed intent has no current component"))?;
+        let staging_leaf = component.staging_name().clone();
+        let final_leaf = component.final_name().clone();
+        let parent = self.catalog.retain_managed_prefix(
+            row.components(),
+            row.retained_existing_parent_count() + cursor,
+            plan.reservation_digest(),
+        )?;
+        let installed_resident = parent.row_is_resident(&final_leaf);
+        if intent.phase() == ManagedBootstrapPhaseV1::InstallComponents && !installed_resident {
+            let marker = OwnershipMarkerV1::for_current_component(intent)
+                .map_err(|_| provider_refusal("managed install intent cannot issue its marker"))?;
+            parent.stage_component(&staging_leaf, &marker)?;
+        }
+        let slots = namespace.retain_managed_component_slots(
+            parent,
+            row.bootstrap_ordinal().index(),
+            row.component_range().start + cursor,
+            final_leaf,
+        )?;
+        match intent.phase() {
+            ManagedBootstrapPhaseV1::InstallComponents => {
+                if !installed_resident {
+                    let source = namespace.retain_managed_staging_source(intent, &slots)?;
+                    namespace.install_bootstrap_component(&source, intent, &slots)?;
+                }
+                let installed = namespace.recover_installed_bootstrap_component(intent, &slots)?;
+                intent.successor_after_component(&installed)
+            }
+            ManagedBootstrapPhaseV1::RetireMarkers => {
+                let retired = if namespace.scheduled_row_is_resident(slots.marker_retired_leaf()) {
+                    namespace.recover_retired_bootstrap_marker(intent, &slots)?
+                } else {
+                    let source = namespace.retain_managed_marker_source(&slots)?;
+                    namespace.retire_bootstrap_marker(&source, intent, &slots)?
+                };
+                intent.successor_after_marker_retirement(&retired)
+            }
+            ManagedBootstrapPhaseV1::Complete => {
+                return Err(provider_refusal("managed intent is complete mid-drive"));
+            }
+        }
+        .map_err(|_| provider_refusal("managed evidence does not close the current component"))
+    }
+
     /// One plan row, driven to completion.
     ///
-    /// The loop is the whole restart story: the intent's own phase and cursor
-    /// select the next boundary, both are re-derived from durable evidence on
-    /// every drive, and each half is entered only when its durable row is
-    /// absent.
+    /// **The restart story, in one place.** The row's state is the *resident
+    /// intent chain*, not a re-derivation: [`Self::resume_intent`] reads it,
+    /// verified link by link, and the drive continues from whatever phase and
+    /// cursor that record names. Each generation is made durable before the next
+    /// component's work begins, and its predecessor is retired immediately after,
+    /// so at most two active records exist at once and the resume always finds
+    /// the newest.
     ///
-    /// **Where the re-derivation stops, stated exactly.** The chain is
-    /// re-derived by *replaying evidence*, and the only evidence that closes an
-    /// install is the ownership marker still inside the installed component —
-    /// which edge E16 deliberately removes. So a row whose retirement rows are
-    /// all resident is already settled and short-circuits to the final reproof
-    /// (the common restart, and the whole restart for a one-component row), a
-    /// row with none of them re-derives from the first generation, and a row
-    /// with *some* of them is the one window a re-derivation cannot cross: it
-    /// is refused, typed and unmutated, until the resident intent record lands
-    /// (see the module header's named follow-up). It is refused rather than
-    /// re-attempted precisely because re-attempting would ask
-    /// `observe_installed` for a marker the retirement already moved, and that
-    /// refusal would look like drift rather than an unfinished sequence.
+    /// This is what closes the window Step 3.1 could only refuse. Re-deriving the
+    /// chain from evidence required the ownership marker to still be inside its
+    /// installed component, which edge E16 removes — so a row interrupted *inside*
+    /// the marker-retirement phase (any row with two or more missing components:
+    /// the ordinary first-merge `.gwz/stash/bundles`) could never converge. With
+    /// the record resident, that same interruption resumes at exactly its cursor.
     fn execute_row(
         &self,
         plan: &BoundManagedParentPlanV1,
         row: &BoundManagedParentPlanRowV1,
     ) -> Result<RetainedManagedParentRowV1, CheckedFsError> {
-        let reservation = plan.reservation_digest();
-        let mut intent =
-            ManagedParentBootstrapIntentV1::try_initial(plan, row.purpose(), ownership_token(plan))
-                .map_err(|_| {
-                    provider_refusal("managed bootstrap intent does not bind the admitted plan")
-                })?;
+        let components = row.components();
         let mut namespace: ActionNamespace<HostActionNamespaceV1> =
             retain_action_namespace(self.catalog, plan.admitted_action().clone())?;
-        let bootstrap_index = row.bootstrap_ordinal().index();
-        let component_range = row.component_range();
-        let base_depth = row.retained_existing_parent_count();
-        let components = row.components();
-        let resume = self.classify_resume(&namespace, plan.action_digest(), &component_range)?;
 
-        while resume == RowResumeV1::FromFirstGeneration && !intent.is_complete() {
-            let cursor = intent.cursor();
-            let component = intent
-                .components()
-                .get(cursor)
-                .ok_or_else(|| provider_refusal("managed intent has no current component"))?;
-            let staging_leaf = component.staging_name().clone();
-            let final_leaf = component.final_name().clone();
-            let parent =
-                self.catalog
-                    .retain_managed_prefix(components, base_depth + cursor, reservation)?;
-            let installed_resident = parent.row_is_resident(&final_leaf);
-            if intent.phase() == ManagedBootstrapPhaseV1::InstallComponents && !installed_resident {
-                let marker = OwnershipMarkerV1::for_current_component(&intent).map_err(|_| {
-                    provider_refusal("managed install intent cannot issue its marker")
-                })?;
-                parent.stage_component(&staging_leaf, &marker)?;
+        let mut pending = match self.resume_intent(&namespace, plan, row)? {
+            IntentResumeV1::Settled => None,
+            IntentResumeV1::Current(intent) => Some(*intent),
+            IntentResumeV1::Fresh => Some(
+                ManagedParentBootstrapIntentV1::try_initial(
+                    plan,
+                    row.purpose(),
+                    ownership_token(plan),
+                )
+                .map_err(|_| {
+                    provider_refusal("managed bootstrap intent does not bind the admitted plan")
+                })?,
+            ),
+        };
+
+        while let Some(intent) = pending {
+            self.settle_generation(&mut namespace, row, &intent)?;
+            if intent.is_complete() {
+                self.retire_generation(
+                    &mut namespace,
+                    row,
+                    intent.generation_ordinal().index(),
+                    ManagedIntentEdgeV1::FinalRetirement,
+                )?;
+                break;
             }
-            let slots = namespace.retain_managed_component_slots(
-                parent,
-                bootstrap_index,
-                component_range.start + cursor,
-                final_leaf,
-            )?;
-            intent = match intent.phase() {
-                ManagedBootstrapPhaseV1::InstallComponents => {
-                    if !installed_resident {
-                        let source = namespace.retain_managed_staging_source(&intent, &slots)?;
-                        namespace.install_bootstrap_component(&source, &intent, &slots)?;
-                    }
-                    let installed =
-                        namespace.recover_installed_bootstrap_component(&intent, &slots)?;
-                    intent.successor_after_component(&installed)
-                }
-                ManagedBootstrapPhaseV1::RetireMarkers => {
-                    let retired =
-                        if namespace.scheduled_row_is_resident(slots.marker_retired_leaf()) {
-                            namespace.recover_retired_bootstrap_marker(&intent, &slots)?
-                        } else {
-                            let source = namespace.retain_managed_marker_source(&slots)?;
-                            namespace.retire_bootstrap_marker(&source, &intent, &slots)?
-                        };
-                    intent.successor_after_marker_retirement(&retired)
-                }
-                ManagedBootstrapPhaseV1::Complete => {
-                    return Err(provider_refusal("managed intent is complete mid-drive"));
-                }
-            }
-            .map_err(|_| {
-                provider_refusal("managed evidence does not close the current component")
-            })?;
+            pending = Some(self.advance_one(&mut namespace, plan, row, &intent)?);
         }
 
         // The final reproof (plan §4 Step 3.1): the whole declared path is
@@ -354,28 +528,21 @@ struct ManagedParentFactsV1 {
     path: CanonicalPathIdentityV1,
 }
 
-/// The two resumable states a row can be driven from. The third — partially
-/// retired — is a typed refusal rather than a state, so it has no variant.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RowResumeV1 {
-    FromFirstGeneration,
+/// What the resident intent chain says a row's next drive must do.
+///
+/// The three states are disjoint by construction of the publish/retire order: a
+/// generation is retired only after its successor is published, so "a retired
+/// generation and no active one" can only be the row's own completion.
+enum IntentResumeV1 {
+    /// No generation of this row is resident: the drive starts the chain.
+    Fresh,
+    /// The newest resident active generation, verified link by link from the
+    /// row's first. Boxed because the intent record is by far the largest thing
+    /// this enum carries.
+    Current(Box<ManagedParentBootstrapIntentV1>),
+    /// Every generation is retired: the row is complete and only owes its final
+    /// reproof.
     Settled,
-}
-
-/// One scheduled marker-retirement row name, derived from the frozen slot
-/// grammar. Nothing is minted: this is the same name
-/// `BootstrapSlots::component` binds into the component's slots.
-fn retirement_leaf(
-    action: ActionDigestV1,
-    ordinal: usize,
-) -> Result<AsciiComponent, CheckedFsError> {
-    let ordinal = u8::try_from(ordinal)
-        .map_err(|_| provider_refusal("managed component ordinal is not scheduled"))?;
-    AsciiComponent::parse(
-        ActionSlotV1::RetiredBootstrapMarker(ordinal)
-            .name(action)
-            .as_bytes(),
-    )
 }
 
 /// The intent chain's ownership token, derived rather than allocated.

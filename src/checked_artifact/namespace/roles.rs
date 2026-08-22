@@ -156,6 +156,27 @@ impl BootstrapGenerationSlots {
     }
 }
 
+/// Which of one generation's three scheduled rows a managed intent operation
+/// names (R2-D Phase 3 Step 3.1b). The selector exists so the intent lifecycle
+/// names rows by *role* and never by leaf: every name still comes from
+/// [`BootstrapGenerationSlots`], which is schedule-derived.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::checked_artifact) enum BootstrapIntentRowV1 {
+    Active,
+    Retired,
+    Scratch,
+}
+
+impl BootstrapIntentRowV1 {
+    pub(super) fn leaf(self, slots: &BootstrapGenerationSlots) -> &AsciiComponent {
+        match self {
+            Self::Active => slots.active_leaf(),
+            Self::Retired => slots.retired_leaf(),
+            Self::Scratch => slots.scratch_leaf(),
+        }
+    }
+}
+
 pub(in crate::checked_artifact) struct BootstrapComponentSlots<
     DirectoryHandle,
     Identity,

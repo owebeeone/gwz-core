@@ -37,6 +37,9 @@ use crate::checked_artifact::bootstrap::{
 use crate::checked_artifact::capability::{CheckedFsError, DurableObjectIdentityV1};
 use crate::checked_artifact::catalog::{OpaqueRetainedCatalogV1, recover_or_create};
 use crate::checked_artifact::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
+use crate::checked_artifact::fault_v1::{
+    CheckedArtifactFaultKeyV1 as Fault, run_next_at as run_next_fault,
+};
 use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionDirectoryAdmissionV1,
     ActionDirectoryObservationV1, ActionScheduleV1, ActionSlotV1, AdmittedActionV1,
@@ -53,7 +56,7 @@ const OWNER: RequestOwnerBindingV1 = RequestOwnerBindingV1::new([0x71; 32]);
 
 /// The two frozen target variants (`GwzM5-8R2D-Plan.md` §4 Step 1.3).
 #[derive(Clone, Copy, Debug)]
-enum TargetVariantV1 {
+pub(super) enum TargetVariantV1 {
     Workspace,
     GitDirectory,
 }
@@ -67,12 +70,12 @@ impl TargetVariantV1 {
     }
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     root: PathBuf,
 }
 
 impl Fixture {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "gwz-r2d-managed-provider-{label}-{}-{}",
             std::process::id(),
@@ -83,11 +86,11 @@ impl Fixture {
         Self { root }
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.root
     }
 
-    fn action_directory(&self, variant: TargetVariantV1) -> PathBuf {
+    pub(super) fn action_directory(&self, variant: TargetVariantV1) -> PathBuf {
         let base = match variant {
             TargetVariantV1::Workspace => self.root.clone(),
             TargetVariantV1::GitDirectory => git2::Repository::open(&self.root)
@@ -99,9 +102,42 @@ impl Fixture {
             .join(RootEntryNameV1::ActiveAction(ACTION).name())
     }
 
-    fn retirement_row(&self, variant: TargetVariantV1, ordinal: u8) -> PathBuf {
+    pub(super) fn retirement_row(&self, variant: TargetVariantV1, ordinal: u8) -> PathBuf {
         self.action_directory(variant)
             .join(ActionSlotV1::RetiredBootstrapMarker(ordinal).name(ACTION))
+    }
+
+    /// The root the provider's managed-path walk starts from: the retained root
+    /// of *this catalog target*.
+    ///
+    /// For a workspace target that is the workspace root, where `.gwz` already
+    /// exists because the catalog lives under it. For a Git-directory target it
+    /// is the actual Git directory, whose private root is `gwz` and which has no
+    /// `.gwz` at all — the boundary
+    /// `a_git_directory_target_refuses_the_workspace_rooted_managed_paths` pins
+    /// as production behaviour, and follow-up 3 (a Git-directory catalog bound to
+    /// its workspace root) is the owner decision that would change it. Until then
+    /// a Git-directory arm of any managed matrix has to place the prefix under
+    /// that target's own root, which is exactly what the production walk reads.
+    /// The variant axis being exercised is the *catalog target* — its lease, its
+    /// catalog, its action directory, and therefore every intent record — not the
+    /// managed parent's home.
+    pub(super) fn managed_root(&self, variant: TargetVariantV1) -> PathBuf {
+        match variant {
+            TargetVariantV1::Workspace => self.root.join(".gwz"),
+            TargetVariantV1::GitDirectory => git2::Repository::open(&self.root)
+                .unwrap()
+                .path()
+                .join(".gwz"),
+        }
+    }
+
+    /// Creates the managed root a Git-directory arm needs; a no-op elsewhere.
+    pub(super) fn prepare_managed_root(&self, variant: TargetVariantV1) {
+        let root = self.managed_root(variant);
+        if !root.exists() {
+            fs::create_dir_all(&root).expect("the managed root is creatable");
+        }
     }
 }
 
@@ -113,7 +149,7 @@ impl Drop for Fixture {
 
 /// One fresh-process catalog session on the requested target, mirroring
 /// `namespace/tests_fault_matrix.rs`'s own two arms.
-fn with_catalog<T>(
+pub(super) fn with_catalog<T>(
     fixture: &Fixture,
     variant: TargetVariantV1,
     body: impl FnOnce(OpaqueRetainedCatalogV1<'_>) -> Result<T, CheckedFsError>,
@@ -150,17 +186,25 @@ fn merge_start() -> ManagedParentBootstrapRequest {
     ManagedParentBootstrapRequest::for_merge_start()
 }
 
+pub(super) fn plan_for(
+    fixture: &Fixture,
+    variant: TargetVariantV1,
+    request: &ManagedParentBootstrapRequest,
+) -> Result<ManagedParentPlanV1, CheckedFsError> {
+    with_catalog(fixture, variant, |catalog| {
+        let provider = RetainedManagedParentProviderV1::from_retained_catalog(&catalog)?;
+        ManagedParentBootstrapOwnerV1::new(&provider).preflight(request, ACTION, OWNER)
+    })
+}
+
 fn preflight(
     fixture: &Fixture,
     variant: TargetVariantV1,
 ) -> Result<ManagedParentPlanV1, CheckedFsError> {
-    with_catalog(fixture, variant, |catalog| {
-        let provider = RetainedManagedParentProviderV1::from_retained_catalog(&catalog)?;
-        ManagedParentBootstrapOwnerV1::new(&provider).preflight(&merge_start(), ACTION, OWNER)
-    })
+    plan_for(fixture, variant, &merge_start())
 }
 
-fn reservation(plan: &ManagedParentPlanV1) -> ActionCapacityReservationV1 {
+pub(super) fn reservation(plan: &ManagedParentPlanV1) -> ActionCapacityReservationV1 {
     ActionCapacityReservationV1::new(
         ACTION,
         OWNER,
@@ -176,7 +220,7 @@ fn reservation(plan: &ManagedParentPlanV1) -> ActionCapacityReservationV1 {
 /// The one real admission per fixture, followed by the test-only handoff a fresh
 /// session rebuilds — the `namespace/tests_fault_matrix.rs` pattern, and for the
 /// same reason: resuming a durable handoff is plan §4 Step 3.3's coordinator.
-fn admit(
+pub(super) fn admit(
     fixture: &Fixture,
     variant: TargetVariantV1,
     expected: &ActionCapacityReservationV1,
@@ -190,7 +234,7 @@ fn admit(
     .expect("the frozen admission seam must admit the action")
 }
 
-fn handoff(
+pub(super) fn handoff(
     expected: &ActionCapacityReservationV1,
     identity: &DurableObjectIdentityV1,
 ) -> AdmittedActionV1 {
@@ -208,7 +252,7 @@ fn handoff(
 
 /// One fresh-process bind-and-execute over the durable state a previous session
 /// left. Every session re-binds the plan, which re-runs `revalidate_plan`.
-fn execute(
+pub(super) fn execute(
     fixture: &Fixture,
     variant: TargetVariantV1,
     plan: &ManagedParentPlanV1,
@@ -247,7 +291,10 @@ fn bootstrap(label: &str) -> Bootstrapped {
     }
 }
 
-fn children(directory: &Path) -> Vec<String> {
+pub(super) fn children(directory: &Path) -> Vec<String> {
+    if !directory.is_dir() {
+        return Vec::new();
+    }
     let mut names = fs::read_dir(directory)
         .expect("the directory must exist")
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -431,17 +478,75 @@ fn a_settled_row_re_executes_to_the_identical_proof_without_touching_the_namespa
     }
 }
 
-/// The one window the evidence-replay drive cannot cross, pinned so that closing
-/// it is a deliberate edit: a row whose retirement rows are only partly resident
-/// is refused, typed, with nothing mutated.
+/// **The window Step 3.1b exists to close** (Step-3.1 review [P1-1], §6's "one
+/// window that does not close").
+///
+/// A row with two or more missing components — `.gwz/stash/bundles` whenever only
+/// `.gwz` exists, i.e. the ordinary first merge — interrupted *inside* the
+/// marker-retirement phase leaves some markers retired and some not. Step 3.1
+/// re-derived its chain from evidence, and the evidence that closes an install is
+/// the marker edge E16 has already moved, so every retry re-entered the same
+/// refusal for ever. With the intent record resident the same interruption
+/// resumes at its cursor and converges.
 #[test]
-fn a_partially_retired_row_is_refused_rather_than_replanned() {
-    let bootstrapped = bootstrap("partial-retire");
+fn a_row_interrupted_inside_marker_retirement_resumes_from_its_resident_intent() {
+    let fixture = Fixture::new("mid-retire-resume");
     let variant = TargetVariantV1::Workspace;
-    // Component 2 is the deepest component of the two-component row.
-    fs::remove_file(bootstrapped.fixture.retirement_row(variant, 2))
-        .expect("the scheduled retirement row is removable");
-    let before = children(&bootstrapped.fixture.path().join(".gwz/stash/bundles"));
+    let request = ManagedParentBootstrapRequest::try_for_durable_merge(&[
+        ManagedParentPurpose::PreservationBundles,
+    ])
+    .expect("the durable-merge constructor admits the bundles purpose");
+    let plan = plan_for(&fixture, variant, &request).expect("the managed prefix is observable");
+    let expected = reservation(&plan);
+    let identity = admit(&fixture, variant, &expected);
+    let admitted = handoff(&expected, &identity);
+
+    // Stop the process on the boundary immediately after the *first* component's
+    // marker retirement rename: component 0 retired, component 1 not.
+    run_next_fault(Fault::ManagedBootstrapMarkerRetire, || {
+        panic!("simulated managed process stop")
+    });
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = execute(&fixture, variant, &plan, &admitted);
+    }));
+    assert!(
+        interrupted.is_err(),
+        "the retirement boundary was not reached"
+    );
+    assert!(
+        fixture.retirement_row(variant, 0).is_file(),
+        "the first component's marker must have retired"
+    );
+    assert!(
+        !fixture.retirement_row(variant, 1).exists(),
+        "the second component's marker must not have retired"
+    );
+
+    let resumed = execute(&fixture, variant, &plan, &admitted)
+        .expect("a mid-retirement interruption must resume from the resident intent");
+
+    assert!(fixture.retirement_row(variant, 1).is_file());
+    assert!(fixture.path().join(".gwz/stash/bundles").is_dir());
+    assert_eq!(
+        resumed
+            .row(ManagedParentPurpose::PreservationBundles)
+            .expect("the bundles parent is bootstrapped")
+            .path()
+            .components()
+            .len(),
+        3
+    );
+}
+
+/// [P3-2] — the settled short-circuit's own guard. A row whose intent chain says
+/// "complete" but whose component has since vanished must refuse at the final
+/// reproof rather than report a parent that is not there.
+#[test]
+fn a_settled_row_whose_component_vanished_refuses_at_the_final_reproof() {
+    let bootstrapped = bootstrap("settled-vanished");
+    let variant = TargetVariantV1::Workspace;
+    fs::remove_dir(bootstrapped.fixture.path().join(".gwz/merge"))
+        .expect("the installed component is removable");
 
     let refused = execute(
         &bootstrapped.fixture,
@@ -451,11 +556,9 @@ fn a_partially_retired_row_is_refused_rather_than_replanned() {
     )
     .is_err();
 
-    assert!(refused, "a partially retired row must be refused");
-    assert_eq!(
-        children(&bootstrapped.fixture.path().join(".gwz/stash/bundles")),
-        before,
-        "a refused resume must mutate nothing"
+    assert!(
+        refused,
+        "a settled row whose component vanished must not short-circuit"
     );
 }
 

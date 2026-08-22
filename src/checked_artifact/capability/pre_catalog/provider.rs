@@ -71,13 +71,20 @@ pub(in crate::checked_artifact) use managed_mutation::retain_managed_parent_at_f
 ///
 /// R2-D Phase 3 Step 3.1 adds the managed-prefix observation the provider's
 /// `observe_preflight`/`revalidate_plan` are built from, and drops
-/// `retain_managed_parent` from this hop: its production caller is
-/// `managed_mutation::retain_managed_prefix` inside this owner, because the
-/// constructor takes a `&Dir` and no `Dir` leaves the owner — so no consumer
-/// outside it could ever have called it.
+/// `retain_managed_parent` from this hop: a managed parent can only be retained
+/// under a `&Dir`, no `Dir` leaves this owner, and the production route is
+/// `managed_mutation::retain_managed_prefix` — so no consumer outside the owner
+/// could ever have called the re-exported constructor (Step-3.1 review [P3-1]
+/// corrects an earlier claim here that named it `retain_managed_parent`'s
+/// caller; it calls `retain_managed_child`).
+///
+/// R2-D Phase 3 Step 3.1b adds the managed intent record's owner-private
+/// lifecycle surface, driven by the `namespace` owner exactly as the E15/E16
+/// edges are.
 pub(in crate::checked_artifact) use managed_mutation::{
-    ManagedInstalledFactsV1, ManagedPrefixObservationV1, ManagedRetiredFactsV1,
-    ObservedManagedObjectV1, RetainedManagedParentV1,
+    ManagedInstalledFactsV1, ManagedIntentEdgeV1, ManagedPrefixObservationV1,
+    ManagedRetiredFactsV1, ObservedManagedObjectV1, RetainedManagedParentV1,
+    observe_managed_intent_row, read_managed_intent_row, write_managed_intent_scratch,
 };
 pub(in crate::checked_artifact::capability::pre_catalog) use managed_mutation::{
     managed_provider_instance, observe_managed_prefix, retain_managed_prefix,

@@ -38,14 +38,15 @@ use super::managed::{
     ManagedMarkerRetirementRequestV1,
 };
 use super::{
-    ActionNamespace, DurableNamespace, PublishedIdentity, RetainedDirectory,
+    ActionNamespace, BootstrapIntentRowV1, DurableNamespace, PublishedIdentity, RetainedDirectory,
     RetainedNamespaceObject, RetiredIdentity, binding_error,
 };
 use crate::checked_artifact::capability::{
     ActionNamespaceEdgeV1, AsciiComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, ManagedInstalledFactsV1, ManagedRetiredFactsV1,
+    DurableObjectIdentityV1, ManagedInstalledFactsV1, ManagedIntentEdgeV1, ManagedRetiredFactsV1,
     ObservedManagedObjectV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
-    RetainedManagedParentV1,
+    RetainedManagedParentV1, observe_managed_intent_row, read_managed_intent_row,
+    write_managed_intent_scratch,
 };
 use crate::checked_artifact::catalog::OpaqueRetainedCatalogV1;
 use crate::checked_artifact::protocol::{
@@ -270,6 +271,74 @@ impl ActionNamespace<HostActionNamespaceV1> {
         );
         managed.source = Some(observed);
         Ok(object)
+    }
+
+    /// R2-D Phase 3 Step 3.1b — the managed intent record's scheduled scratch
+    /// row, written through the provider owner.
+    ///
+    /// The leaf is taken from the schedule-derived generation slots rather than
+    /// from the caller, and the slots are re-proved against this action's own
+    /// binding first, so a consumer cannot name a row the schedule did not
+    /// reserve. This owner still holds no injection site: the boundaries are
+    /// announced from `managed_mutation.rs`, exactly as the E15/E16 ones are.
+    pub(in crate::checked_artifact) fn write_bootstrap_intent_scratch(
+        &self,
+        slots: &super::BootstrapGenerationSlots,
+        bytes: &[u8],
+        edge: ManagedIntentEdgeV1,
+    ) -> Result<(), CheckedFsError> {
+        self.validate_generation_slots(slots)?;
+        write_managed_intent_scratch(&self.backend.retained, slots.scratch_leaf(), bytes, edge)
+    }
+
+    /// R2-D Phase 3 Step 3.1b — the post-edge proof of one scheduled intent row,
+    /// and the two boundaries around it.
+    pub(in crate::checked_artifact) fn observe_bootstrap_intent_row(
+        &self,
+        slots: &super::BootstrapGenerationSlots,
+        row: BootstrapIntentRowV1,
+        edge: ManagedIntentEdgeV1,
+    ) -> Result<Vec<u8>, CheckedFsError> {
+        self.validate_generation_slots(slots)?;
+        observe_managed_intent_row(&self.backend.retained, row.leaf(slots), edge)
+    }
+
+    /// R2-D Phase 3 Step 3.1b — a bounded read of one resident scheduled intent
+    /// row, for the resume's own chain walk. No durable edge, no boundary.
+    pub(in crate::checked_artifact) fn read_bootstrap_intent_row(
+        &self,
+        slots: &super::BootstrapGenerationSlots,
+        row: BootstrapIntentRowV1,
+    ) -> Result<Vec<u8>, CheckedFsError> {
+        self.validate_generation_slots(slots)?;
+        read_managed_intent_row(
+            &self.backend.retained,
+            row.leaf(slots),
+            "read resident managed intent",
+        )
+    }
+
+    /// Whether one scheduled intent row is durably resident.
+    pub(in crate::checked_artifact) fn bootstrap_intent_row_is_resident(
+        &self,
+        slots: &super::BootstrapGenerationSlots,
+        row: BootstrapIntentRowV1,
+    ) -> bool {
+        self.backend.row_is_resident(row.leaf(slots))
+    }
+
+    /// The generation slots must belong to this admitted action, for the same
+    /// reason every other managed entry point re-proves its binding.
+    fn validate_generation_slots(
+        &self,
+        slots: &super::BootstrapGenerationSlots,
+    ) -> Result<(), CheckedFsError> {
+        if slots.binding != self.binding() {
+            return Err(binding_error(
+                "bootstrap generation slots do not belong to the admitted action",
+            ));
+        }
+        Ok(())
     }
 
     /// Retains the installed component's ownership marker as this backend's

@@ -151,7 +151,7 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "e6d8fc12b8666194da2e85e4470b9b35a6665e221b6049c92dbed27c6f2e484c",
+    "checked_artifact/capability/pre_catalog.rs": "05e4d2482f303c39069df8c6587e9fcd9be52b3007931c3d8e5d88c403c107e2",
     "checked_artifact/catalog.rs": "9efa557b5f74329af2bea5569d0e6fc137fe221a8f9b45847fa58b36549c0f94",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "f0f097012f20bad8c06a6ebc13c93c1b98a302b7d811d23b13ba4a4f6bfcca68",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "0719565eccdcfa56e440e31bf8d165130ec095d40b275942e5b41c456daa9f8f",

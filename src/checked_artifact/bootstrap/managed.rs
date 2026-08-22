@@ -10,6 +10,8 @@ mod plan;
 mod provider;
 
 #[cfg(test)]
+mod tests_intent_matrix;
+#[cfg(test)]
 mod tests_provider;
 
 #[allow(

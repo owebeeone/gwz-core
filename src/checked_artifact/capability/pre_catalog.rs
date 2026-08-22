@@ -35,14 +35,19 @@ pub(in crate::checked_artifact) use provider::{
 /// 3.1's managed-prefix observation.
 ///
 /// Step 2.3's `allow(unused_imports)` is discharged here rather than carried:
-/// its one unused item was `retain_managed_parent`, whose production caller is
-/// now `provider::retain_managed_prefix` *inside* the provider owner. The
-/// constructor takes a `&Dir` and no `Dir` leaves that owner, so re-exporting
-/// it to `crate::checked_artifact` never made it callable; Step 3.1 removes the
-/// re-export instead of keeping an allow alive for an unreachable item.
+/// its one unused item was `retain_managed_parent`. A managed parent can only be
+/// retained under a `&Dir`, and no `Dir` leaves the provider owner, so
+/// re-exporting the constructor to `crate::checked_artifact` never made it
+/// callable; Step 3.1 removes the re-export instead of keeping an allow alive
+/// for an unreachable item. (Step-3.1 review [P3-1]: the production route is
+/// `provider::retain_managed_prefix`, which calls `retain_managed_child`, not
+/// the removed wrapper — an earlier revision of this comment said otherwise.)
+///
+/// R2-D Phase 3 Step 3.1b adds the managed intent record's lifecycle surface.
 pub(in crate::checked_artifact) use provider::{
-    ManagedInstalledFactsV1, ManagedPrefixObservationV1, ManagedRetiredFactsV1,
-    ObservedManagedObjectV1, RetainedManagedParentV1,
+    ManagedInstalledFactsV1, ManagedIntentEdgeV1, ManagedPrefixObservationV1,
+    ManagedRetiredFactsV1, ObservedManagedObjectV1, RetainedManagedParentV1,
+    observe_managed_intent_row, read_managed_intent_row, write_managed_intent_scratch,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
