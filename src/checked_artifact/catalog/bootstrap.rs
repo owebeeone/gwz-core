@@ -2,14 +2,15 @@
 
 use crate::checked_artifact::bootstrap::{CatalogLeaseTargetWitnessV1, CatalogMutationLeaseV1};
 use crate::checked_artifact::capability::{
-    CatalogPreflightV1, CheckedFsError, CompletedCatalogPermitV1, RetainedActionNamespaceV1,
+    AsciiComponent, CatalogPreflightV1, CheckedFsError, CompletedCatalogPermitV1,
+    ManagedPrefixObservationV1, RetainedActionNamespaceV1, RetainedManagedParentV1,
     preflight_catalog_target,
 };
 use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 use crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
-    AdmittedActionV1,
+    AdmittedActionV1, RecordDigestV1,
 };
 
 /// The only physical first-catalog owner.
@@ -169,6 +170,37 @@ impl OpaqueRetainedCatalogV1<'_> {
         admitted: &AdmittedActionV1,
     ) -> Result<RetainedActionNamespaceV1, CheckedFsError> {
         self.permit.retain_action_namespace(admitted)
+    }
+
+    /// R2-D Phase 3 Step 3.1's managed-parent prefix observation, forwarded
+    /// through the same permit. The catalog stays opaque: the managed-parent
+    /// provider receives typed durable facts and never the permit, a root, or a
+    /// handle (`GwzM5-8R2DInterfaceFreeze.md` §3.1).
+    pub(in crate::checked_artifact) fn observe_managed_prefix(
+        &self,
+        components: &[AsciiComponent],
+    ) -> Result<ManagedPrefixObservationV1, CheckedFsError> {
+        self.permit.observe_managed_prefix(components)
+    }
+
+    /// R2-D Phase 3 Step 3.1's retained managed parent, forwarded through the
+    /// same permit under the same rule.
+    pub(in crate::checked_artifact) fn retain_managed_prefix(
+        &self,
+        components: &[AsciiComponent],
+        depth: usize,
+        reservation: RecordDigestV1,
+    ) -> Result<RetainedManagedParentV1, CheckedFsError> {
+        self.permit
+            .retain_managed_prefix(components, depth, reservation)
+    }
+
+    /// R2-D Phase 3 Step 3.1's provider instance binding, forwarded through the
+    /// same permit.
+    pub(in crate::checked_artifact) fn managed_provider_instance(
+        &self,
+    ) -> Result<[u8; 32], CheckedFsError> {
+        self.permit.managed_provider_instance()
     }
 }
 

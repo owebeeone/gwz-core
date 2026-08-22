@@ -5,7 +5,8 @@
 //! owner. No caller receives a raw filesystem writer.
 
 use super::{
-    CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1, SupportedFilesystemProfile,
+    AsciiComponent, CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1,
+    SupportedFilesystemProfile,
 };
 use crate::checked_artifact::bootstrap::CatalogLeaseTargetWitnessV1;
 use crate::checked_artifact::catalog::CatalogScratchNameV1;
@@ -16,7 +17,7 @@ use crate::checked_artifact::catalog::{
 use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
-    AdmittedActionV1, CatalogBootstrapRecordV1,
+    AdmittedActionV1, CatalogBootstrapRecordV1, RecordDigestV1,
 };
 
 mod provider;
@@ -30,17 +31,18 @@ pub(in crate::checked_artifact) use provider::{
     ActionNamespaceEdgeV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
 };
 /// R2-D Phase 2 Step 2.3 — the retained managed-parent capability the
-/// `namespace` owner drives edges E15 and E16 with. `retain_managed_parent` is
-/// the constructor plan §4 Step 3.1's `ManagedParentBootstrap::execute_bound`
-/// calls; Step 2.3 lands the capability, exactly as Step 2.2 landed its backend
-/// before Step 3.3's consumer.
-#[allow(
-    unused_imports,
-    reason = "Step 2.3 lands the managed capability; plan §4 Step 3.1 wires its production caller"
-)]
+/// `namespace` owner drives edges E15 and E16 with, plus R2-D Phase 3 Step
+/// 3.1's managed-prefix observation.
+///
+/// Step 2.3's `allow(unused_imports)` is discharged here rather than carried:
+/// its one unused item was `retain_managed_parent`, whose production caller is
+/// now `provider::retain_managed_prefix` *inside* the provider owner. The
+/// constructor takes a `&Dir` and no `Dir` leaves that owner, so re-exporting
+/// it to `crate::checked_artifact` never made it callable; Step 3.1 removes the
+/// re-export instead of keeping an allow alive for an unreachable item.
 pub(in crate::checked_artifact) use provider::{
-    ManagedInstalledFactsV1, ManagedRetiredFactsV1, ObservedManagedObjectV1,
-    RetainedManagedParentV1, retain_managed_parent,
+    ManagedInstalledFactsV1, ManagedPrefixObservationV1, ManagedRetiredFactsV1,
+    ObservedManagedObjectV1, RetainedManagedParentV1,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -161,6 +163,41 @@ impl CompletedCatalogPermitV1<'_> {
     ) -> Result<provider::RetainedActionNamespaceV1, CheckedFsError> {
         self.revalidate()?;
         self.completed.retain_action_namespace(admitted)
+    }
+
+    /// R2-D Phase 3 Step 3.1 — the bounded, read-only managed-parent prefix
+    /// observation, under the same `ready_edge_prologue` discipline: the
+    /// lease/root binding and the exact retained catalog are re-proved before
+    /// the walk, so a preflight can never read through a substituted root.
+    pub(in crate::checked_artifact) fn observe_managed_prefix(
+        &self,
+        components: &[AsciiComponent],
+    ) -> Result<provider::ManagedPrefixObservationV1, CheckedFsError> {
+        self.revalidate()?;
+        provider::observe_managed_prefix(&self.retained_root, components)
+    }
+
+    /// R2-D Phase 3 Step 3.1 — the retained managed parent at one declared
+    /// depth of the same prefix, revalidated first for the same reason. The
+    /// caller receives the retained capability only — never the root handle and
+    /// never a path.
+    pub(in crate::checked_artifact) fn retain_managed_prefix(
+        &self,
+        components: &[AsciiComponent],
+        depth: usize,
+        reservation: RecordDigestV1,
+    ) -> Result<provider::RetainedManagedParentV1, CheckedFsError> {
+        self.revalidate()?;
+        provider::retain_managed_prefix(&self.retained_root, components, depth, reservation)
+    }
+
+    /// R2-D Phase 3 Step 3.1 — the managed-parent provider's instance binding,
+    /// derived inside the owner from the retained root it already proved.
+    pub(in crate::checked_artifact) fn managed_provider_instance(
+        &self,
+    ) -> Result<[u8; 32], CheckedFsError> {
+        self.revalidate()?;
+        Ok(provider::managed_provider_instance(&self.retained_root))
     }
 }
 

@@ -68,9 +68,19 @@ pub(in crate::checked_artifact) use managed_mutation::retain_managed_parent_at_f
 /// R2-D Phase 2 Step 2.3 — the retained managed-parent capability and the
 /// durable facts its two edges observe. Same rule as the row above: what leaves
 /// this owner is a capability, never a path and never a raw mutation surface.
+///
+/// R2-D Phase 3 Step 3.1 adds the managed-prefix observation the provider's
+/// `observe_preflight`/`revalidate_plan` are built from, and drops
+/// `retain_managed_parent` from this hop: its production caller is
+/// `managed_mutation::retain_managed_prefix` inside this owner, because the
+/// constructor takes a `&Dir` and no `Dir` leaves the owner — so no consumer
+/// outside it could ever have called it.
 pub(in crate::checked_artifact) use managed_mutation::{
-    ManagedInstalledFactsV1, ManagedRetiredFactsV1, ObservedManagedObjectV1,
-    RetainedManagedParentV1, retain_managed_parent,
+    ManagedInstalledFactsV1, ManagedPrefixObservationV1, ManagedRetiredFactsV1,
+    ObservedManagedObjectV1, RetainedManagedParentV1,
+};
+pub(in crate::checked_artifact::capability::pre_catalog) use managed_mutation::{
+    managed_provider_instance, observe_managed_prefix, retain_managed_prefix,
 };
 pub(in crate::checked_artifact::capability::pre_catalog) use mutation::{
     create_git_private_parent, finish_ready_edge_root_barrier, publish_active_record,

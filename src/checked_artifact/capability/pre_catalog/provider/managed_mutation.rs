@@ -25,9 +25,18 @@
 //! `managed_marker_name`, the component's `final_name`, and the schedule's
 //! `ActionSlotV1::RetiredBootstrapMarker` row. This file mints no name and no
 //! record.
+//!
+//! R2-D Phase 3 Step 3.1 adds the two halves the provider needs and nothing
+//! else: the bounded read-only managed-prefix walk
+//! ([`observe_managed_prefix`], [`retain_managed_prefix`]) that is the only
+//! route from the permit-retained root to a `Dir` a managed parent can be
+//! retained under, and the P2 staged-component writer
+//! ([`RetainedManagedParentV1::stage_component`]). Neither adds a namespace
+//! edge, so the `CATALOG_PUBLICATION_CALL_COUNTS` companion and the
+//! `capability_permit.rs` caller inventory are unchanged by that step.
 
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
@@ -104,28 +113,48 @@ pub(in crate::checked_artifact) struct RetainedManagedParentV1 {
 ///
 /// This is the managed analogue of `namespace_mutation::retain_action_namespace`
 /// and follows the identical rule: one no-follow hop, identity proved at
-/// acquisition, and a one-component canonical path profile bound to the
-/// enclosing directory's own observed identity. Plan §4 Step 3.1 supplies the
-/// enclosing retained directory in production; this owner never opens a path.
+/// acquisition, and a canonical path profile bound to the enclosing directory's
+/// own observed identity — one component here, because this entry point takes
+/// the enclosure as the profile root. Plan §4 Step 3.1 supplies the enclosing
+/// retained directory in production through [`retain_managed_prefix`], the only
+/// route that reaches a `Dir` at all; this owner never opens a path.
 pub(in crate::checked_artifact) fn retain_managed_parent(
     enclosing: &Dir,
     leaf: &str,
     reservation: RecordDigestV1,
 ) -> Result<RetainedManagedParentV1, CheckedFsError> {
-    let leaf_name = OsString::from(leaf);
+    retain_managed_child(
+        enclosing,
+        &[],
+        &AsciiComponent::parse(leaf.as_bytes())?,
+        reservation,
+    )
+}
+
+/// The one-hop retainer both managed entry points share.
+///
+/// `prefix` is the canonical path profile of `enclosing` itself, so a managed
+/// parent reached at depth *d* carries a *d*-component profile rather than the
+/// one-component profile a single hop would produce. That is not cosmetic: the
+/// resident intent binds each component to its parent's profile
+/// (`protocol/managed_bootstrap_record.rs` `matches_component_parent`), and the
+/// installed component's profile is the parent's plus exactly one component
+/// (`installed_path`), so a truncated prefix would refuse every managed
+/// component below the first.
+fn retain_managed_child(
+    enclosing: &Dir,
+    prefix: &[CanonicalComponent],
+    leaf: &AsciiComponent,
+    reservation: RecordDigestV1,
+) -> Result<RetainedManagedParentV1, CheckedFsError> {
+    let leaf_name = os_name(leaf);
     let handle = enclosing
         .open_dir_nofollow(&leaf_name)
         .map_err(|source| CheckedFsError::io("open managed parent", source))?;
     let fact = super::HostPlatform.dir_identity(&handle)?;
-    let enclosing_fact = super::HostPlatform.dir_identity(enclosing)?;
-    let parent_mode = super::HostPlatform.parent_mode(enclosing)?;
-    let path_profile = CanonicalPathIdentityV1::new(vec![CanonicalComponent::try_bound(
-        AsciiComponent::parse(leaf.as_bytes())?,
-        parent_mode,
-        enclosing_fact.durable().clone(),
-        enclosing_fact.invocation().clone(),
-        super::HostPlatform.rename_domain(enclosing)?,
-    )?])?;
+    let mut components = prefix.to_vec();
+    components.push(bind_child_component(enclosing, leaf)?);
+    let path_profile = CanonicalPathIdentityV1::new(components)?;
     let parent = enclosing
         .try_clone()
         .map_err(|source| CheckedFsError::io("retain managed parent enclosure", source))?;
@@ -143,14 +172,203 @@ pub(in crate::checked_artifact) fn retain_managed_parent(
     })
 }
 
+/// One canonical component bound to the observed facts of its own enclosure.
+fn bind_child_component(
+    enclosing: &Dir,
+    leaf: &AsciiComponent,
+) -> Result<CanonicalComponent, CheckedFsError> {
+    let enclosing_fact = super::HostPlatform.dir_identity(enclosing)?;
+    CanonicalComponent::try_bound(
+        leaf.clone(),
+        super::HostPlatform.parent_mode(enclosing)?,
+        enclosing_fact.durable().clone(),
+        enclosing_fact.invocation().clone(),
+        super::HostPlatform.rename_domain(enclosing)?,
+    )
+}
+
+/// The durable facts one managed-path prefix depth observed. Nothing here is a
+/// handle or a path string: it is the same typed triple the plan row and the
+/// resident intent already carry (`bootstrap/managed/plan.rs`,
+/// `protocol/managed_bootstrap_record.rs`), so a consumer outside this owner
+/// still receives only facts.
+pub(in crate::checked_artifact) struct ManagedPrefixDepthV1 {
+    identity: DurableObjectIdentityV1,
+    mode: PathComponentMode,
+    path: CanonicalPathIdentityV1,
+}
+
+impl ManagedPrefixDepthV1 {
+    pub(in crate::checked_artifact) const fn identity(&self) -> &DurableObjectIdentityV1 {
+        &self.identity
+    }
+
+    /// The mode governing this directory's *children*, which is the mode the
+    /// plan row and the intent both record for a retained managed parent
+    /// (`retain_managed_child`'s `installed_mode`).
+    pub(in crate::checked_artifact) const fn mode(&self) -> PathComponentMode {
+        self.mode
+    }
+
+    pub(in crate::checked_artifact) const fn path(&self) -> &CanonicalPathIdentityV1 {
+        &self.path
+    }
+}
+
+/// One bounded observation of a managed-parent path prefix: the facts of every
+/// depth that is durably present, in order, stopping at the first absent
+/// component. `retained_count()` is exactly the plan's
+/// `retained_existing_parent_count`.
+pub(in crate::checked_artifact) struct ManagedPrefixObservationV1 {
+    depths: Vec<ManagedPrefixDepthV1>,
+}
+
+impl ManagedPrefixObservationV1 {
+    pub(in crate::checked_artifact) fn retained_count(&self) -> usize {
+        self.depths.len()
+    }
+
+    /// The facts of the directory reached by `depth` components. `depth` is the
+    /// plan's own 1-based count, so `at(retained_count())` is the deepest
+    /// retained parent and `at(0)` is deliberately `None` — the enclosing root
+    /// is never a managed parent.
+    pub(in crate::checked_artifact) fn at(&self, depth: usize) -> Option<&ManagedPrefixDepthV1> {
+        depth
+            .checked_sub(1)
+            .and_then(|index| self.depths.get(index))
+    }
+}
+
+/// R2-D Phase 3 Step 3.1 — the bounded, read-only managed-parent prefix
+/// observation `ManagedParentBootstrap::observe_preflight` and
+/// `revalidate_plan` are built from.
+///
+/// It is primitive family P3 + P4 only (identity and bounded enumeration): one
+/// no-follow hop per component from the permit-retained root, each hop's
+/// identity proved before the next, and no durable edge anywhere. The walk
+/// stops at the first absent component, which is what makes the plan a
+/// *missing-suffix* plan rather than a re-plan of live components
+/// (`GwzM5-8R4bR2ConsumerCheckpoint.md` §9; the Step-2.3 review's Phase-3
+/// caution on populated components).
+pub(in crate::checked_artifact::capability::pre_catalog) fn observe_managed_prefix(
+    root: &super::RetainedPlatformRoot,
+    components: &[AsciiComponent],
+) -> Result<ManagedPrefixObservationV1, CheckedFsError> {
+    require_bounded_prefix(components)?;
+    let mut current = clone_root(root)?;
+    let mut profile: Vec<CanonicalComponent> = Vec::new();
+    let mut depths = Vec::new();
+    depths
+        .try_reserve_exact(components.len())
+        .map_err(|_| prefix_allocation_failure())?;
+    for component in components {
+        let name = os_name(component);
+        match current.symlink_metadata(&name) {
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => break,
+            Err(source) => return Err(CheckedFsError::io("observe managed parent prefix", source)),
+            Ok(metadata) if !metadata.is_dir() || metadata.is_symlink() => {
+                return Err(managed_error(
+                    "managed parent prefix component is not a canonical directory",
+                ));
+            }
+            Ok(_) => {}
+        }
+        profile.push(bind_child_component(&current, component)?);
+        let child = current
+            .open_dir_nofollow(&name)
+            .map_err(|source| CheckedFsError::io("open managed parent prefix", source))?;
+        let fact = super::HostPlatform.dir_identity(&child)?;
+        depths.push(ManagedPrefixDepthV1 {
+            identity: fact.durable().clone(),
+            mode: super::HostPlatform.parent_mode(&child)?,
+            path: CanonicalPathIdentityV1::new(profile.clone())?,
+        });
+        current = child;
+    }
+    Ok(ManagedPrefixObservationV1 { depths })
+}
+
+/// R2-D Phase 3 Step 3.1 — the production route to a retained managed parent.
+///
+/// This is the *only* caller of [`retain_managed_parent`] that exists at all:
+/// the constructor takes an already-retained `&Dir`, and no `Dir` leaves this
+/// owner, so the enclosing directory can only be walked here. `depth` is the
+/// plan's own 1-based retained count, so the retained parent is
+/// `components[..depth]` and the enclosure is `components[..depth - 1]`.
+pub(in crate::checked_artifact::capability::pre_catalog) fn retain_managed_prefix(
+    root: &super::RetainedPlatformRoot,
+    components: &[AsciiComponent],
+    depth: usize,
+    reservation: RecordDigestV1,
+) -> Result<RetainedManagedParentV1, CheckedFsError> {
+    require_bounded_prefix(components)?;
+    if depth == 0 || depth > components.len() {
+        return Err(managed_error(
+            "managed parent depth is outside the declared path",
+        ));
+    }
+    let mut current = clone_root(root)?;
+    let mut profile: Vec<CanonicalComponent> = Vec::new();
+    for component in &components[..depth - 1] {
+        profile.push(bind_child_component(&current, component)?);
+        current = current
+            .open_dir_nofollow(os_name(component))
+            .map_err(|source| CheckedFsError::io("open managed parent enclosure", source))?;
+    }
+    retain_managed_child(&current, &profile, &components[depth - 1], reservation)
+}
+
+fn require_bounded_prefix(components: &[AsciiComponent]) -> Result<(), CheckedFsError> {
+    if components.is_empty()
+        || components.len() > crate::checked_artifact::protocol::MAX_MANAGED_PARENT_COMPONENTS
+    {
+        return Err(managed_error(
+            "managed parent path is outside the frozen component bound",
+        ));
+    }
+    Ok(())
+}
+
+fn clone_root(root: &super::RetainedPlatformRoot) -> Result<Dir, CheckedFsError> {
+    root.root()
+        .handle()
+        .try_clone()
+        .map_err(|source| CheckedFsError::io("retain managed parent root", source))
+}
+
+fn prefix_allocation_failure() -> CheckedFsError {
+    CheckedFsError::unsupported(
+        PlatformCapability::ManagedParentBootstrap,
+        "managed parent prefix allocation failed",
+    )
+}
+
+/// R2-D Phase 3 Step 3.1 — the managed-parent provider's instance binding.
+///
+/// `ManagedParentProviderBindingV1` must be nonzero and must identify *this*
+/// provider across the preflight, the admission bind, and the execute of one
+/// plan (`bootstrap/managed/owner.rs` `execute`). The retained root's own
+/// durable identity is the honest source: it is stable for the life of the
+/// retained target, differs between targets, and is already proved. It is
+/// hashed rather than exposed so the binding carries no identity bytes.
+pub(in crate::checked_artifact::capability::pre_catalog) fn managed_provider_instance(
+    root: &super::RetainedPlatformRoot,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(b"gwz-managed-parent-provider-instance-v1\0");
+    digest.update(root.root().identity().durable().encode_canonical());
+    digest.finalize().into()
+}
+
 /// The test-only enclosure door.
 ///
-/// Production reaches a managed parent through the retained enclosing directory
-/// plan §4 Step 3.1's `ManagedParentBootstrap::execute_bound` returns; that
-/// provider is Phase 3 and does not exist yet, exactly as Step 2.2 landed its
-/// backend before Step 3.3's consumer. This door lets Step 2.3's matrix drive
-/// the two real edges against real durable state in the meantime, and it is the
-/// only place in this owner that opens an ambient path.
+/// Production reaches a managed parent through [`retain_managed_prefix`], which
+/// walks from the permit-retained root that plan §4 Step 3.1's
+/// `ManagedParentBootstrap` provider drives. This door lets Step 2.3's matrix
+/// drive the two real edges against a managed parent placed beside the catalog,
+/// and it is the only place in this owner that opens an ambient path.
 #[cfg(test)]
 pub(in crate::checked_artifact) fn retain_managed_parent_at_for_test(
     enclosing: &std::path::Path,
@@ -213,6 +431,70 @@ impl RetainedManagedParentV1 {
     /// tell which half of the component sequence it already reached.
     pub(in crate::checked_artifact) fn row_is_resident(&self, leaf: &AsciiComponent) -> bool {
         self.handle.symlink_metadata(os_name(leaf)).is_ok()
+    }
+
+    /// R2-D Phase 3 Step 3.1 — the writer half of edge E15's source: the staged
+    /// component directory holding exactly its ownership marker.
+    ///
+    /// Primitive family P2 only (write-through plus flush); no namespace edge is
+    /// crossed here, which is why the publication inventory is unchanged. The
+    /// marker is written and flushed, then the staged directory and the managed
+    /// parent are flushed in that order.
+    ///
+    /// **Write-or-rewrite scratch, and why it must be.** The staging name is
+    /// this admitted action's own deterministic scratch row
+    /// (`managed_staging_name(action, ordinal)`), and the marker is derived
+    /// deterministically from this action's intent — so every window this writer
+    /// can leave behind (directory created, marker absent; marker created, bytes
+    /// short) is one *this* drive owns and must converge on, not one it may wedge
+    /// on. It therefore follows the catalog owner's own scratch doctrine
+    /// (`directory_mutation.rs` `prepare_or_rewrite_staging`): an exact interior
+    /// settles with no edge, a non-exact one has its marker written or
+    /// rewritten, and the interior is then re-proved. What is *not* adopted is a
+    /// staging row carrying anything else — an extra child survives the rewrite,
+    /// the re-proof fails, and the sequence is refused. That is the same content
+    /// this owner would refuse to publish (§4.4 Class 1), refused earlier.
+    ///
+    /// The five `managed_bootstrap.*` writer keys these boundaries would
+    /// announce (`staging_directory_create`, the three `ownership_marker_*`,
+    /// `staging_directory_flush`) stay reserved here and are activated with their
+    /// matrix rows by plan §4 Step 3.2, the step the plan assigns
+    /// `managed_bootstrap.*` activation to.
+    pub(in crate::checked_artifact) fn stage_component(
+        &self,
+        staging_leaf: &AsciiComponent,
+        marker: &OwnershipMarkerV1,
+    ) -> Result<(), CheckedFsError> {
+        let name = os_name(staging_leaf);
+        let created = match self.handle.symlink_metadata(&name) {
+            Ok(metadata) if !metadata.is_dir() || metadata.is_symlink() => {
+                return Err(managed_error(
+                    "resident managed staging row is not a canonical directory",
+                ));
+            }
+            Ok(_) => false,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                self.handle.create_dir(&name).map_err(|source| {
+                    CheckedFsError::io("create managed staging no-replace", source)
+                })?;
+                true
+            }
+            Err(source) => return Err(CheckedFsError::io("observe managed staging row", source)),
+        };
+        let staged = crate::checked_artifact::platform::open_dir_share_delete(&self.handle, &name)
+            .map_err(|source| CheckedFsError::io("open managed staging no-follow", source))?;
+        if !interior::observe_managed_component_interior(&staged, marker)?.is_exact() {
+            write_or_rewrite_marker(&staged, marker)?;
+            if !interior::observe_managed_component_interior(&staged, marker)?.is_exact() {
+                return Err(managed_error(
+                    "managed staging interior is not the exact ownership marker",
+                ));
+            }
+        }
+        if created {
+            sync_directory_edge(&self.handle, "flush managed staging creation")?;
+        }
+        Ok(())
     }
 
     /// Retains the staged component directory as an exact source: no-follow
@@ -579,6 +861,49 @@ fn require_absent_in(
             "managed destination row is already occupied",
         )),
     }
+}
+
+/// The staged component's ownership marker, written once or rewritten in place.
+///
+/// Rewriting is the *scratch* case only: the marker leaf lives inside this
+/// action's own deterministic staging row, which carries no authority until the
+/// sealed primitive publishes it, and the bytes are re-derived from the same
+/// intent every drive derives. The file is opened `create_new` when absent and
+/// existing-only when present, so this never creates a marker at an unexpected
+/// name and never adopts a symlink or a non-file in its place.
+fn write_or_rewrite_marker(staged: &Dir, marker: &OwnershipMarkerV1) -> Result<(), CheckedFsError> {
+    let name = os_name(&managed_marker_name());
+    let create_new = match staged.symlink_metadata(&name) {
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => true,
+        Err(source) => {
+            return Err(CheckedFsError::io(
+                "observe managed ownership marker",
+                source,
+            ));
+        }
+        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => false,
+        Ok(_) => {
+            return Err(managed_error(
+                "staged ownership marker is not a canonical regular file",
+            ));
+        }
+    };
+    let options = super::directory_mutation::durable_write_options(create_new);
+    let mut file = staged
+        .open_with(&name, &options)
+        .map_err(|source| CheckedFsError::io("open managed ownership marker", source))?;
+    if !create_new {
+        file.set_len(0)
+            .map_err(|source| CheckedFsError::io("truncate managed ownership marker", source))?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| CheckedFsError::io("rewind managed ownership marker", source))?;
+    }
+    file.write_all(&marker.encode_canonical())
+        .map_err(|source| CheckedFsError::io("write managed ownership marker", source))?;
+    file.sync_all()
+        .map_err(|source| CheckedFsError::io("flush managed ownership marker", source))?;
+    drop(file);
+    sync_directory_edge(staged, "flush managed staging interior")
 }
 
 fn observe_marker(

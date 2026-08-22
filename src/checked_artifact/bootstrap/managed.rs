@@ -2,6 +2,15 @@
 
 mod owner;
 mod plan;
+/// R2-D Phase 3 Step 3.1 — the production `ManagedParentBootstrap` provider.
+#[allow(
+    dead_code,
+    reason = "Step 3.1 lands the provider; plan §4 Step 3.3 wires its production consumer"
+)]
+mod provider;
+
+#[cfg(test)]
+mod tests_provider;
 
 #[allow(
     unused_imports,
@@ -9,6 +18,11 @@ mod plan;
 )]
 pub(in crate::checked_artifact) use owner::*;
 pub(in crate::checked_artifact) use plan::*;
+#[allow(
+    unused_imports,
+    reason = "Step 3.1 lands the provider; plan §4 Step 3.3 wires its production consumer"
+)]
+pub(in crate::checked_artifact) use provider::*;
 
 use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1,

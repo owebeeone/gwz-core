@@ -220,6 +220,14 @@ impl BoundManagedParentPlanV1 {
         &self.plan
     }
 
+    /// The admitted action this plan is bound to. R2-D Phase 3 Step 3.1's
+    /// provider needs it to retain the action namespace its managed edges run
+    /// through; it is owner-private to `bootstrap::managed`, so no consumer
+    /// gains a route to the admitted action through this type.
+    pub(super) const fn admitted_action(&self) -> &AdmittedActionV1 {
+        &self.admitted_action
+    }
+
     pub(in crate::checked_artifact) fn rows(&self) -> &[BoundManagedParentPlanRowV1] {
         &self.rows
     }
