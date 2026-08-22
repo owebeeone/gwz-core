@@ -105,7 +105,7 @@ pub(super) enum TargetVariantV1 {
 }
 
 impl TargetVariantV1 {
-    const fn label(self) -> &'static str {
+    pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
             Self::GitDirectory => "git-directory",
@@ -136,7 +136,10 @@ impl Fixture {
         Self { root }
     }
 
-    fn path(&self) -> &Path {
+    /// The fixture's own root. Widened from private for Step 2.3's managed
+    /// matrix, which places its managed parent beside the catalog rather than
+    /// inside it — where a real managed parent lives.
+    pub(super) fn path(&self) -> &Path {
         &self.root
     }
 

@@ -22,6 +22,10 @@ pub(super) mod test_support;
 mod tests_backend;
 #[cfg(test)]
 mod tests_fault_matrix;
+#[cfg(test)]
+mod tests_managed;
+#[cfg(test)]
+mod tests_managed_matrix;
 
 #[allow(
     unused_imports,

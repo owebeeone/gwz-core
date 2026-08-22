@@ -1,6 +1,15 @@
 //! Owner-private retained observation seam for checked authority records.
 
-mod provider_compile;
+mod host;
+
+#[allow(
+    unused_imports,
+    reason = "R2-D Step 2.4 installs the production seam; plan §4 Step 3.3 wires its consumer"
+)]
+pub(in crate::checked_artifact) use host::{
+    AuthorityFactsIssuerV1, RetainedAuthorityFactsV1, RetainedAuthorityRequestV1,
+    retained_authority_observation_owner,
+};
 
 use super::{CheckedAuthorityObservationV1, DurableLeafFingerprintV1};
 use crate::checked_artifact::capability::{CanonicalPathIdentityV1, DurableObjectIdentityV1};

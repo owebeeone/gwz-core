@@ -14,7 +14,7 @@ use crate::checked_artifact::capability::{
 use crate::checked_artifact::catalog::CatalogRecordFactV1;
 use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, CatalogBootstrapRecordV1, InfrastructureSlotV1,
-    MAX_ACTIVE_ACTION_DIRS, RootEntryNameV1,
+    MAX_ACTIVE_ACTION_DIRS, OwnershipMarkerV1, RootEntryNameV1,
 };
 use crate::model::ErrorCode;
 
@@ -47,16 +47,31 @@ pub(super) struct DirectoryInteriorRecheckV1<'a> {
 /// it as "a generalization of the `DirectoryInteriorRecheckV1` **struct**'s
 /// `expected` field").
 ///
-/// Both arms are lifetime-parameterized reference holders with no encode path:
+/// Every arm is a lifetime-parameterized reference holder with no encode path:
 /// they are built by the mutation owners, consumed read-only inside
 /// [`publish_verified_no_replace`], and dropped. Nothing is serialized and
 /// nothing is reachable from a durable-record root.
+#[allow(
+    clippy::enum_variant_names,
+    reason = "the shared `Staging` postfix is the invariant, not noise: each arm \
+              names the staged-directory layout of exactly one converting package, \
+              and the parallel names are what make the §4.4 Class 1 arm inventory \
+              readable against the freeze's own table"
+)]
 pub(super) enum DirectoryInteriorExpectationV1<'a> {
     /// R2-C2's arm: the interior is a completed catalog staging layout.
     CatalogStaging(&'a CatalogBootstrapRecordV1),
     /// R2-D Phase 1's arm (edge E3): the interior is a resident
     /// `ActionCapacityReservationV1`, not a `CatalogBootstrapRecordV1`.
     AdmissionStaging(&'a ActionCapacityReservationV1),
+    /// R2-D Step 2.3's arm (edge E15), the §4.4 Class 1 row "managed
+    /// source-interior": a staged managed component's interior "is neither
+    /// record type" — it is exactly the frozen ownership-marker leaf carrying
+    /// this exact `OwnershipMarkerV1`. Like both arms above it is a borrowed
+    /// protocol record with no encode path out of this owner; the marker is
+    /// encoded once, in memory, inside the acquisition window and compared
+    /// byte-exact.
+    ManagedStaging(&'a OwnershipMarkerV1),
 }
 
 /// Destination-interior expectation re-verified through the retained
@@ -187,6 +202,9 @@ pub(super) fn publish_verified_no_replace(
                 }
                 DirectoryInteriorExpectationV1::AdmissionStaging(expected) => {
                     interior::observe_action_interior(&directory, expected)?.is_exact(expected)
+                }
+                DirectoryInteriorExpectationV1::ManagedStaging(expected) => {
+                    interior::observe_managed_component_interior(&directory, expected)?.is_exact()
                 }
             };
             if !exact {

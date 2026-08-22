@@ -21,8 +21,8 @@ use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, ActionSlotV1, BaseActionSlotV1, CatalogBootstrapRecordV1,
     CatalogRootRowCensusV1, CatalogRootRowClassV1, InfrastructureRecordV1, InfrastructureSlotV1,
     MAX_ACTION_SLOTS, MAX_ACTIVE_ACTION_DIRS, MAX_INFRASTRUCTURE_ENTRIES, MAX_ROOT_ENTRIES,
-    ObservedActionDirectoryV1, ProtocolRecordKindV1, RecordObservationV1, ScratchBytesV1,
-    classify_expected_prefix, decode_catalog_bootstrap_record,
+    ObservedActionDirectoryV1, OwnershipMarkerV1, ProtocolRecordKindV1, RecordObservationV1,
+    ScratchBytesV1, classify_expected_prefix, decode_catalog_bootstrap_record, managed_marker_name,
 };
 
 const ROAMING_ANCHOR_BYTES: &[u8] = b"GWZ-ROAMING-ANCHOR-V1\n";
@@ -438,7 +438,7 @@ fn observe_slot(
     if metadata.is_dir() && !metadata.is_symlink() {
         // Share-delete open, not a plain no-follow one. This enumeration runs
         // inside the sealed publication's destination recheck, which holds the
-        // retained rename-source handle open across the whole edge -- and R2-D
+        // retained rename-source handle open across the whole edge — and R2-D
         // Phase 1's `PublishStagingAction` is the first publication whose
         // source is a *directory child of the very root being enumerated here*
         // (`ActionAdmissionStaging`). On Windows that handle carries DELETE
@@ -447,14 +447,14 @@ fn observe_slot(
         // cap-std's plain directory open omits `FILE_SHARE_DELETE`, so it is
         // exactly such an open. `platform::open_dir_share_delete` is the
         // established recipe for this collision (`platform.rs`, the
-        // `FILE_SHARE_DELETE` arm; freeze 4.1 P3 records it as "so the
+        // `FILE_SHARE_DELETE` arm; freeze §4.1 P3 records it as "so the
         // directory open does not collide with the retained rename-source
         // handle"). Dropping the source handle instead is not available: the
         // primitive renames that exact identity-checked handle, so its lifetime
         // is the seam's guarantee.
         //
-        // Non-Windows arm is byte-identical to the previous call -- the helper
-        // is `open_dir_nofollow` there -- so macOS and Linux behaviour is
+        // Non-Windows arm is byte-identical to the previous call — the helper
+        // is `open_dir_nofollow` there — so macOS and Linux behaviour is
         // unchanged. The sibling regular-file open below needs no counterpart:
         // it inherits std's default share mode, which already includes
         // `FILE_SHARE_DELETE`, which is why only the directory label appeared
@@ -586,6 +586,109 @@ pub(super) fn observe_action_interior(
     Ok(ActionInteriorObservationV1 {
         reservation,
         extra_children,
+    })
+}
+
+/// The scan bound for a staged or installed managed component interior.
+///
+/// A staged component holds exactly the ownership marker; an installed one
+/// holds the marker until it retires and nothing after. Two is therefore one
+/// row of headroom over every shape this owner accepts, and it is a *refusal
+/// threshold* for the bounded enumeration (§4.1 family P4), not durable
+/// vocabulary: no record, slot, purpose or phase is minted by it.
+const MAX_MANAGED_COMPONENT_ENTRIES: usize = 2;
+
+/// Bounded interior of an already-open staged managed component directory, so
+/// the sealed publication primitive can re-verify its retained source handle
+/// inside the acquisition window without reopening the name it is about to
+/// consume.
+///
+/// This is the verification half of `GwzM5-8R2DInterfaceFreeze.md` §4.4 Class 1's
+/// **managed source-interior** arm (edge E15) — the row whose definition is "a
+/// staged managed component's interior is neither record type". It lives here
+/// rather than in `publication.rs` for the reason §4.4 records: "`publication.rs`
+/// decides, `interior.rs` verifies".
+pub(super) struct ManagedComponentInteriorObservationV1 {
+    marker: RecordObservationV1<()>,
+    extra_children: usize,
+}
+
+impl ManagedComponentInteriorObservationV1 {
+    /// The exactness predicate: the deterministic resident ownership marker,
+    /// byte-exact against the marker the intent issued, and no extra children.
+    pub(super) const fn is_exact(&self) -> bool {
+        self.extra_children == 0 && matches!(self.marker, RecordObservationV1::Exact(()))
+    }
+}
+
+pub(super) fn observe_managed_component_interior(
+    directory: &cap_std::fs::Dir,
+    expected: &OwnershipMarkerV1,
+) -> Result<ManagedComponentInteriorObservationV1, CheckedFsError> {
+    let marker_name = managed_marker_name();
+    let marker_name = OsStr::new(
+        std::str::from_utf8(marker_name.as_bytes())
+            .expect("the frozen managed marker name is ASCII"),
+    );
+    let expected_bytes = expected.encode_canonical();
+    let mut budget = CatalogNameBudgetV1::new();
+    let mut marker = RecordObservationV1::Missing;
+    let mut extra_children = 0_usize;
+    let mut seen = 0_usize;
+    for entry in directory
+        .entries()
+        .map_err(|source| CheckedFsError::io("enumerate managed component", source))?
+    {
+        let entry = entry.map_err(|source| CheckedFsError::io("read managed component", source))?;
+        let child = entry.file_name();
+        budget.charge_os_str(&child)?;
+        seen += 1;
+        if seen > MAX_MANAGED_COMPONENT_ENTRIES {
+            return Err(CheckedFsError::unsupported(
+                PlatformCapability::PrivateNamespaceCollisionScan,
+                "managed component exceeds its frozen interior bound",
+            ));
+        }
+        if child == marker_name {
+            marker = observe_managed_marker(directory, &child, &expected_bytes)?;
+            continue;
+        }
+        extra_children += 1;
+    }
+    Ok(ManagedComponentInteriorObservationV1 {
+        marker,
+        extra_children,
+    })
+}
+
+/// The resident marker, read bounded against the frozen `Marker` record bound
+/// and compared byte-exact. The comparison is in-memory only: no handle, no row
+/// and no path leaves this owner.
+fn observe_managed_marker(
+    directory: &cap_std::fs::Dir,
+    name: &OsStr,
+    expected_bytes: &[u8],
+) -> Result<RecordObservationV1<()>, CheckedFsError> {
+    let metadata = directory
+        .symlink_metadata(name)
+        .map_err(|source| CheckedFsError::io("observe ownership marker", source))?;
+    if !metadata.is_file() || metadata.is_symlink() {
+        return Ok(RecordObservationV1::Other);
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let mut file = directory
+        .open_with(name, &options)
+        .map_err(|source| CheckedFsError::io("open ownership marker", source))?;
+    let RawCatalogBytesV1::Bounded(bytes) =
+        read_bounded_with(&mut file, ProtocolRecordKindV1::Marker.max_bytes())?
+    else {
+        return Ok(RecordObservationV1::Other);
+    };
+    Ok(match classify_expected_prefix(&bytes, expected_bytes) {
+        ScratchBytesV1::Exact => RecordObservationV1::Exact(()),
+        ScratchBytesV1::PartialExpectedPrefix => RecordObservationV1::PartialExpectedPrefix,
+        ScratchBytesV1::Missing | ScratchBytesV1::Other => RecordObservationV1::Other,
     })
 }
 

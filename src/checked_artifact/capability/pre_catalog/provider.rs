@@ -11,17 +11,27 @@ use crate::checked_artifact::catalog::{
 
 mod admission_mutation;
 mod aggregate;
+/// R2-D Phase 2 Step 2.4 — the authority parse / streamed proof split.
+#[allow(
+    dead_code,
+    reason = "Step 2.4 lands the binding; plan §4 Step 3.3 wires its production consumer"
+)]
+mod authority_record_binding;
 mod completed;
 mod digests;
 mod directory_mutation;
 mod filesystem;
 mod index;
 mod interior;
+/// R2-D Step 2.1. Its production caller is Step 2.4's
+/// `authority_record_binding`; the allow remains because that binding's own
+/// consumer is wired by plan §4 Step 3.3.
 #[allow(
     dead_code,
-    reason = "R2-D Step 2.1 lands the leaf observer before Step 2.4 converts its production caller"
+    reason = "Step 2.4 binds the observer; plan §4 Step 3.3 wires the binding's consumer"
 )]
 mod leaf_observation;
+mod managed_mutation;
 mod mutation;
 mod namespace;
 mod namespace_mutation;
@@ -52,6 +62,15 @@ pub(in crate::checked_artifact::capability::pre_catalog) use completed::{
 pub(in crate::checked_artifact::capability::pre_catalog) use digests::ReadyObservationDigestsV1;
 pub(in crate::checked_artifact::capability::pre_catalog) use directory_mutation::{
     prepare_or_rewrite_staging, publish_final_directory, retire_active_record,
+};
+#[cfg(test)]
+pub(in crate::checked_artifact) use managed_mutation::retain_managed_parent_at_for_test;
+/// R2-D Phase 2 Step 2.3 — the retained managed-parent capability and the
+/// durable facts its two edges observe. Same rule as the row above: what leaves
+/// this owner is a capability, never a path and never a raw mutation surface.
+pub(in crate::checked_artifact) use managed_mutation::{
+    ManagedInstalledFactsV1, ManagedRetiredFactsV1, ObservedManagedObjectV1,
+    RetainedManagedParentV1, retain_managed_parent,
 };
 pub(in crate::checked_artifact::capability::pre_catalog) use mutation::{
     create_git_private_parent, finish_ready_edge_root_barrier, publish_active_record,
@@ -221,6 +240,10 @@ mod mutation_tests;
 mod production_tests;
 #[cfg(test)]
 mod tests_admission_spike;
+#[cfg(test)]
+mod tests_authority_record;
+#[cfg(test)]
+mod tests_authority_record_matrix;
 #[cfg(test)]
 mod tests_leaf_fault_matrix;
 #[cfg(test)]

@@ -22,10 +22,25 @@ use crate::checked_artifact::protocol::{
 mod provider;
 
 pub(in crate::checked_artifact) use provider::HostPlatform;
+#[cfg(test)]
+pub(in crate::checked_artifact) use provider::retain_managed_parent_at_for_test;
 /// R2-D Phase 2 Step 2.2 — the retained action-namespace capability and the
 /// role-typed edge selector the `namespace` owner drives it with.
 pub(in crate::checked_artifact) use provider::{
     ActionNamespaceEdgeV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
+};
+/// R2-D Phase 2 Step 2.3 — the retained managed-parent capability the
+/// `namespace` owner drives edges E15 and E16 with. `retain_managed_parent` is
+/// the constructor plan §4 Step 3.1's `ManagedParentBootstrap::execute_bound`
+/// calls; Step 2.3 lands the capability, exactly as Step 2.2 landed its backend
+/// before Step 3.3's consumer.
+#[allow(
+    unused_imports,
+    reason = "Step 2.3 lands the managed capability; plan §4 Step 3.1 wires its production caller"
+)]
+pub(in crate::checked_artifact) use provider::{
+    ManagedInstalledFactsV1, ManagedRetiredFactsV1, ObservedManagedObjectV1,
+    RetainedManagedParentV1, retain_managed_parent,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

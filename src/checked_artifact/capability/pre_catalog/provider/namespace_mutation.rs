@@ -183,6 +183,17 @@ impl RetainedActionNamespaceV1 {
         self.reservation
     }
 
+    /// The retained action directory itself, for the one sibling owner that
+    /// needs it as a *destination*: R2-D Step 2.3's ownership-marker retirement
+    /// (edge E16) renames out of an installed managed component and into this
+    /// action directory's scheduled `RetiredBootstrapMarker` row. The handle
+    /// stays inside the sealed pre-catalog provider owner — `managed_mutation`
+    /// is a sibling module of this one, not a consumer — so the "the real `Dir`
+    /// never leaves the provider owner" rule is unweakened.
+    pub(super) const fn handle(&self) -> &Dir {
+        &self.handle
+    }
+
     /// Re-proves that the retained handle is still the named action directory
     /// of the same reservation, in the shape `completed.rs:171-184` uses for the
     /// retained catalog: the name is reopened no-follow and both the freshly

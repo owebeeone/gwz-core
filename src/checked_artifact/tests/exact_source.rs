@@ -35,9 +35,16 @@ fn same_byte_new_inode_after_final_proof_is_not_accepted_as_the_source() {
     let foreign_inode = Arc::new(Mutex::new(None));
     let recorded = Arc::clone(&foreign_inode);
     run_next_checked_artifact_at(CheckedArtifactFault::AfterFinalProof, move || {
-        fs::remove_file(&replacement).unwrap();
-        fs::write(&replacement, b"owned").unwrap();
-        *recorded.lock().unwrap() = Some(fs::metadata(&replacement).unwrap().ino());
+        // Stage the same-byte replacement while the original still exists so
+        // the two objects are provably distinct, then rename over the source.
+        // Remove-then-create lets ext4-class allocators recycle the freed
+        // inode number (observed on the Linux runners: old == new == 6029447),
+        // which falsifies the new-object precondition below without weakening
+        // the production guarantee under test.
+        let staged = replacement.with_file_name("value.staged");
+        fs::write(&staged, b"owned").unwrap();
+        *recorded.lock().unwrap() = Some(fs::metadata(&staged).unwrap().ino());
+        fs::rename(&staged, &replacement).unwrap();
     });
     let error = checked
         .remove_exact(&CheckedArtifactFact::Bytes(b"owned".to_vec()))

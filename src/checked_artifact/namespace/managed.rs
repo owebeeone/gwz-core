@@ -9,6 +9,7 @@ use crate::checked_artifact::capability::{
 use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, BootstrapComponentOrdinalV1, BootstrapOrdinalV1,
     ManagedBootstrapPhaseV1, ManagedParentBootstrapIntentV1, OwnershipMarkerV1, RecordDigestV1,
+    read_and_bind_ownership_marker,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +39,14 @@ pub(in crate::checked_artifact) struct ManagedMarkerRetirementRequestV1 {
     installed_parent_identity: DurableObjectIdentityV1,
     installed_parent_mode: PathComponentMode,
     installed_parent_path: DurablePathV1,
+    /// The intent this retirement is bound to, kept so the backend can turn the
+    /// *durable* marker bytes it observed into the `OwnershipMarkerV1` the
+    /// observation must carry. `read_and_bind_ownership_marker` is the only
+    /// construction path for that value and it validates against exactly this
+    /// intent and cursor, so the marker a retirement reports is always the one
+    /// the intent recorded — never one the backend chose.
+    intent: ManagedParentBootstrapIntentV1,
+    local_component: usize,
 }
 
 pub(in crate::checked_artifact) struct ManagedInstallObservationV1 {
@@ -82,6 +91,25 @@ impl ManagedInstallRequestV1 {
             binding,
             expected_marker,
         })
+    }
+
+    /// The marker the staged component must already carry, and the two frozen
+    /// managed names its edge moves between. The backend needs all three to run
+    /// edge E15 and its restart observation; none of them is caller-chosen.
+    pub(super) const fn expected_marker(&self) -> &OwnershipMarkerV1 {
+        &self.expected_marker
+    }
+
+    pub(super) fn staging_leaf(&self) -> &AsciiComponent {
+        &self.binding.staging_leaf
+    }
+
+    pub(super) fn final_leaf(&self) -> &AsciiComponent {
+        &self.binding.final_leaf
+    }
+
+    pub(super) const fn reservation(&self) -> RecordDigestV1 {
+        self.binding.reservation
     }
 
     #[allow(
@@ -166,7 +194,41 @@ impl ManagedMarkerRetirementRequestV1 {
                 .installed_path()
                 .ok_or_else(|| binding_error("managed installed path is missing"))?
                 .clone(),
+            intent: intent.clone(),
+            local_component: intent.cursor(),
         })
+    }
+
+    /// The frozen retirement destination row, and the installed component the
+    /// marker retires out of.
+    pub(super) fn marker_retirement_leaf(&self) -> &AsciiComponent {
+        &self.binding.marker_retirement_leaf
+    }
+
+    pub(super) fn final_leaf(&self) -> &AsciiComponent {
+        &self.binding.final_leaf
+    }
+
+    pub(super) const fn reservation(&self) -> RecordDigestV1 {
+        self.binding.reservation
+    }
+
+    /// Binds durable ownership-marker bytes back into this retirement's intent.
+    /// The bytes are the ones the provider read from the retired row; the
+    /// protocol re-derives the marker's own id from them and rejects any marker
+    /// that is not this intent's component, so a substituted or replayed marker
+    /// is a typed refusal rather than accepted evidence.
+    pub(super) fn bind_marker_bytes(
+        &self,
+        bytes: &[u8],
+    ) -> Result<OwnershipMarkerV1, CheckedFsError> {
+        read_and_bind_ownership_marker(
+            std::io::Cursor::new(bytes),
+            &self.intent,
+            self.local_component,
+        )
+        .map(|bound| bound.value().clone())
+        .map_err(|_| binding_error("retired ownership marker does not bind to the intent"))
     }
 
     #[allow(

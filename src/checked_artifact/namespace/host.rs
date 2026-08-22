@@ -43,11 +43,14 @@ use super::{
 };
 use crate::checked_artifact::capability::{
     ActionNamespaceEdgeV1, AsciiComponent, CanonicalPathIdentityV1, CheckedFsError,
-    DurableObjectIdentityV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
+    DurableObjectIdentityV1, ManagedInstalledFactsV1, ManagedRetiredFactsV1,
+    ObservedManagedObjectV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
+    RetainedManagedParentV1,
 };
 use crate::checked_artifact::catalog::OpaqueRetainedCatalogV1;
 use crate::checked_artifact::protocol::{
-    AdmittedActionV1, BarrierOrdinalV1, ProtocolRecordKindV1, RecordDigestV1,
+    AdmittedActionV1, BarrierOrdinalV1, OwnershipMarkerV1, ProtocolRecordKindV1, RecordDigestV1,
+    managed_marker_name,
 };
 
 /// Opaque proof token carried by every retained namespace capability this
@@ -64,12 +67,21 @@ struct RetainedSourceV1 {
     observed: ObservedNamespaceObjectV1,
 }
 
+/// The one managed component this backend currently holds retained: its parent
+/// capability, and the staged directory or ownership marker its next edge will
+/// consume.
+struct RetainedManagedV1 {
+    parent: RetainedManagedParentV1,
+    source: Option<ObservedManagedObjectV1>,
+}
+
 /// The production `RawNamespaceBackend` over one admitted action directory.
 pub(in crate::checked_artifact) struct HostActionNamespaceV1 {
     retained: RetainedActionNamespaceV1,
     provider: ProviderBinding,
     handle: ActionNamespaceHandleV1,
     source: Option<RetainedSourceV1>,
+    managed: Option<RetainedManagedV1>,
 }
 
 /// The only constructor: an opaque retained catalog plus the admitted action it
@@ -87,6 +99,7 @@ pub(in crate::checked_artifact) fn retain_action_namespace(
         provider: ProviderBinding::owner_new(admitted.reservation().record_digest().bytes()),
         handle: ActionNamespaceHandleV1(action),
         source: None,
+        managed: None,
     };
     Ok(ActionNamespace::from_admitted(backend, admitted))
 }
@@ -157,6 +170,146 @@ impl ActionNamespace<HostActionNamespaceV1> {
         );
         self.barrier_slots(scheduled, target)
             .map_err(|_| binding_error("barrier slots are not scheduled"))
+    }
+
+    /// Retains one managed parent as this backend's managed target and returns
+    /// the scheduled component slots over it.
+    ///
+    /// Both names in the returned slots are schedule- and intent-derived
+    /// (`managed_staging_name`, the component's own `final_name`, and
+    /// `ActionSlotV1::RetiredBootstrapMarker`); nothing is minted here. The
+    /// `RetainedManagedParentV1` is the provider owner's opaque capability, so a
+    /// consumer still never receives a path or an OS handle.
+    pub(in crate::checked_artifact) fn retain_managed_component_slots(
+        &mut self,
+        parent: RetainedManagedParentV1,
+        bootstrap_index: usize,
+        component_ordinal: usize,
+        final_leaf: AsciiComponent,
+    ) -> Result<
+        super::BootstrapComponentSlots<
+            ActionNamespaceHandleV1,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        CheckedFsError,
+    > {
+        let reservation = self.admitted_action().reservation();
+        if parent.reservation() != reservation.record_digest() {
+            return Err(binding_error(
+                "managed parent is not bound to the admitted reservation",
+            ));
+        }
+        let issuer = BackendIssuer::new(self.backend.provider);
+        let retained_parent = issuer.retained_directory(
+            self.backend.handle,
+            parent.identity().clone(),
+            parent.path_profile().clone(),
+        );
+        let target = issuer.bootstrap_target(
+            retained_parent,
+            reservation.action_digest(),
+            reservation.record_digest(),
+            component_ordinal,
+            final_leaf,
+        )?;
+        let slots = self
+            .bootstrap_slots(bootstrap_index)
+            .map_err(|_| binding_error("bootstrap row is not scheduled"))?
+            .component(component_ordinal, target)
+            .map_err(|_| binding_error("bootstrap component is not scheduled"))?;
+        self.backend.managed = Some(RetainedManagedV1 {
+            parent,
+            source: None,
+        });
+        Ok(slots)
+    }
+
+    /// Retains the staged component directory as this backend's managed source.
+    /// The §4.4 Class 1 interior expectation is proved once here, so a directory
+    /// this backend would refuse to publish cannot be retained in the first
+    /// place.
+    pub(in crate::checked_artifact) fn retain_managed_staging_source(
+        &mut self,
+        intent: &crate::checked_artifact::protocol::ManagedParentBootstrapIntentV1,
+        slots: &super::BootstrapComponentSlots<
+            ActionNamespaceHandleV1,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+    ) -> Result<
+        RetainedNamespaceObject<
+            ActionNamespaceHandleV1,
+            ActionNamespaceHandleV1,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        CheckedFsError,
+    > {
+        let marker = OwnershipMarkerV1::for_current_component(intent)
+            .map_err(|_| binding_error("managed install intent cannot issue its marker"))?;
+        let handle = self.backend.handle;
+        let issuer = BackendIssuer::new(self.backend.provider);
+        let Some(managed) = self.backend.managed.as_mut() else {
+            return Err(binding_error("no managed parent is retained"));
+        };
+        let observed = managed
+            .parent
+            .retain_staging_source(slots.staging_leaf(), &marker)?;
+        let parent = issuer.retained_directory(
+            handle,
+            managed.parent.identity().clone(),
+            managed.parent.path_profile().clone(),
+        );
+        let object = issuer.retained_object_from_parent(
+            parent,
+            slots.staging_leaf().clone(),
+            handle,
+            observed.identity().clone(),
+            NamespaceObjectKind::Directory,
+        );
+        managed.source = Some(observed);
+        Ok(object)
+    }
+
+    /// Retains the installed component's ownership marker as this backend's
+    /// managed source. Its parent is the *installed component*, not the managed
+    /// parent, which is exactly the role
+    /// `namespace/operations.rs:340-367` validates.
+    pub(in crate::checked_artifact) fn retain_managed_marker_source(
+        &mut self,
+        slots: &super::BootstrapComponentSlots<
+            ActionNamespaceHandleV1,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+    ) -> Result<
+        RetainedNamespaceObject<
+            ActionNamespaceHandleV1,
+            ActionNamespaceHandleV1,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        CheckedFsError,
+    > {
+        let handle = self.backend.handle;
+        let issuer = BackendIssuer::new(self.backend.provider);
+        let Some(managed) = self.backend.managed.as_mut() else {
+            return Err(binding_error("no managed parent is retained"));
+        };
+        let (installed_identity, installed_path) =
+            managed.parent.installed_facts(slots.final_leaf())?;
+        let observed = managed.parent.retain_marker_source(slots.final_leaf())?;
+        let parent = issuer.retained_directory(handle, installed_identity, installed_path);
+        let object = issuer.retained_object_from_parent(
+            parent,
+            managed_marker_name(),
+            handle,
+            observed.identity().clone(),
+            NamespaceObjectKind::RegularFile,
+        );
+        managed.source = Some(observed);
+        Ok(object)
     }
 }
 
@@ -259,11 +412,101 @@ impl HostActionNamespaceV1 {
         Ok(identity)
     }
 
-    fn managed_unavailable<T>(&self) -> Result<T, CheckedFsError> {
-        Err(CheckedFsError::ambiguous(
-            "managed namespace operation",
-            "managed component operations land in R2-D step 2.3",
-        ))
+    /// The retained managed parent, revalidated against the admitted
+    /// reservation before every managed operation — the managed analogue of
+    /// `validate_operation`'s action-directory revalidation, and the boundary
+    /// `managed_bootstrap.parent_revalidate` names.
+    fn managed(
+        &self,
+        expected_reservation: RecordDigestV1,
+    ) -> Result<&RetainedManagedParentV1, CheckedFsError> {
+        let Some(managed) = self.managed.as_ref() else {
+            return Err(binding_error(
+                "managed operation has no retained managed parent",
+            ));
+        };
+        if expected_reservation != self.retained.reservation() {
+            return Err(binding_error(
+                "managed request is not bound to the admitted reservation",
+            ));
+        }
+        managed.parent.revalidate(expected_reservation)?;
+        Ok(&managed.parent)
+    }
+
+    /// The managed twin of [`Self::execute`]'s source check: a managed edge
+    /// consumes the object this backend itself retained, under this backend's
+    /// own handle, beneath the managed parent it still holds. A capability that
+    /// names a different leaf, identity, parent or kind is refused before any
+    /// physical edge, and the retention is cleared by the edge that consumes it.
+    fn take_managed_source(
+        &mut self,
+        source: &RetainedNamespaceObject<
+            ActionNamespaceHandleV1,
+            ActionNamespaceHandleV1,
+            DurableObjectIdentityV1,
+            CanonicalPathIdentityV1,
+        >,
+        expected_leaf: &AsciiComponent,
+        expected_kind: NamespaceObjectKind,
+    ) -> Result<ObservedManagedObjectV1, CheckedFsError> {
+        let Some(managed) = self.managed.as_mut() else {
+            return Err(binding_error(
+                "managed operation has no retained managed parent",
+            ));
+        };
+        let Some(retained) = managed.source.take() else {
+            return Err(binding_error(
+                "managed edge has no retained source capability",
+            ));
+        };
+        if source.leaf() != expected_leaf
+            || source.identity() != retained.identity()
+            || source.handle() != &self.handle
+            || source.kind() != expected_kind
+        {
+            return Err(binding_error(
+                "managed source is not the capability this backend retained",
+            ));
+        }
+        Ok(retained)
+    }
+
+    /// The install observation. The marker is the one the request already bound
+    /// from the intent and the interior recheck proved byte-exact on disk; every
+    /// other field is a fact this backend independently reobserved.
+    fn installed(
+        &self,
+        request: &ManagedInstallRequestV1,
+        facts: ManagedInstalledFactsV1,
+    ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
+        request.complete(
+            self.provider,
+            request.expected_marker().clone(),
+            facts.marker_object_identity,
+            facts.installed_identity,
+            facts.installed_mode,
+            facts.installed_path,
+        )
+    }
+
+    /// The retirement observation. The marker is re-derived from the *durable*
+    /// bytes of the retired row and bound back into the intent, so a substituted
+    /// or replayed marker is a typed refusal rather than accepted evidence.
+    fn retired_marker(
+        &self,
+        request: &ManagedMarkerRetirementRequestV1,
+        facts: ManagedRetiredFactsV1,
+    ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
+        let marker = request.bind_marker_bytes(&facts.marker_bytes)?;
+        request.complete(
+            self.provider,
+            marker,
+            facts.retired_marker_identity,
+            facts.installed_parent_identity,
+            facts.installed_parent_mode,
+            facts.installed_parent_path,
+        )
     }
 }
 
@@ -316,46 +559,103 @@ impl RawNamespaceBackend for HostActionNamespaceV1 {
         Ok(self.issuer().retired(identity))
     }
 
+    /// Edge E15 (`GwzM5-8R2DInterfaceFreeze.md` §4.3), primitives P1+P2+P3, with
+    /// the §4.4 Class 1 managed source-interior arm. The observation returned is
+    /// the durable reobservation of the published component, not the request's
+    /// own expectation, so `ManagedInstallRequestV1::complete` compares two
+    /// independently established facts.
     fn install_managed_component(
         &mut self,
-        _source: &RetainedNamespaceObject<
+        source: &RetainedNamespaceObject<
             Self::DirectoryHandle,
             Self::ObjectHandle,
             Self::Identity,
             Self::PathProfile,
         >,
-        _destination: &ActionDestination,
-        _request: &ManagedInstallRequestV1,
+        destination: &ActionDestination,
+        request: &ManagedInstallRequestV1,
     ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
-        self.managed_unavailable()
+        if destination.leaf() != request.final_leaf() {
+            return Err(binding_error(
+                "managed install destination is not the component's final name",
+            ));
+        }
+        self.managed(destination.reservation())?;
+        let retained = self.take_managed_source(
+            source,
+            request.staging_leaf(),
+            NamespaceObjectKind::Directory,
+        )?;
+        let managed = self.managed(request.reservation())?;
+        let facts = managed.install_component(
+            request.staging_leaf(),
+            request.final_leaf(),
+            &retained,
+            request.expected_marker(),
+        )?;
+        self.installed(request, facts)
     }
 
+    /// The restart half of edge E15 (ConsumerCheckpoint §8 :228-231): no edge,
+    /// the same reobservation, and therefore the same evidence.
     fn observe_installed_managed_component(
         &mut self,
-        _request: &ManagedInstallRequestV1,
+        request: &ManagedInstallRequestV1,
     ) -> Result<ManagedInstallObservationV1, CheckedFsError> {
-        self.managed_unavailable()
+        let facts = self
+            .managed(request.reservation())?
+            .observe_installed_on_restart(request.final_leaf(), request.expected_marker())?;
+        self.installed(request, facts)
     }
 
+    /// Edge E16, primitive family P1. The marker is a regular file, so the
+    /// primitive verifies it by identity and bytes and neither §4.4 arm is
+    /// involved — §4.3's E16 annotation makes the destination arm conditional on
+    /// the marker retiring as a directory, and it does not.
     fn retire_managed_marker(
         &mut self,
-        _source: &RetainedNamespaceObject<
+        source: &RetainedNamespaceObject<
             Self::DirectoryHandle,
             Self::ObjectHandle,
             Self::Identity,
             Self::PathProfile,
         >,
-        _destination: &ActionDestination,
-        _request: &ManagedMarkerRetirementRequestV1,
+        destination: &ActionDestination,
+        request: &ManagedMarkerRetirementRequestV1,
     ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
-        self.managed_unavailable()
+        if destination.leaf() != request.marker_retirement_leaf() {
+            return Err(binding_error(
+                "managed marker destination is not the scheduled retirement row",
+            ));
+        }
+        self.managed(destination.reservation())?;
+        let retained = self.take_managed_source(
+            source,
+            &managed_marker_name(),
+            NamespaceObjectKind::RegularFile,
+        )?;
+        let facts = self.managed(request.reservation())?.retire_marker(
+            &self.retained,
+            request.final_leaf(),
+            destination.leaf(),
+            &retained,
+        )?;
+        self.retired_marker(request, facts)
     }
 
+    /// The restart half of edge E16 (ConsumerCheckpoint §8 :228-231).
     fn observe_retired_managed_marker(
         &mut self,
-        _request: &ManagedMarkerRetirementRequestV1,
+        request: &ManagedMarkerRetirementRequestV1,
     ) -> Result<ManagedMarkerRetirementObservationV1, CheckedFsError> {
-        self.managed_unavailable()
+        let facts = self
+            .managed(request.reservation())?
+            .observe_retired_marker(
+                &self.retained,
+                request.final_leaf(),
+                request.marker_retirement_leaf(),
+            )?;
+        self.retired_marker(request, facts)
     }
 
     /// Edge E14, primitive family P5. The ordinal is the schedule's proof that

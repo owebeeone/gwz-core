@@ -112,14 +112,31 @@ fn catalog_publication_uses_one_source_associated_seam() {
     // they add exactly one production site, in one added file, and they publish
     // through the same one primitive.
     let namespace = include_str!("../capability/pre_catalog/provider/namespace_mutation.rs");
+    // R2-D Phase 2 Step 2.3 extends the caller inventory deliberately, per
+    // `GwzM5-8R2D-Plan.md` §4 Step 2.3 and `GwzM5-8R2DInterfaceFreeze.md` §4.4
+    // Class 1: managed edges E15 (component install) and E16 (ownership-marker
+    // retirement) are two no-replace moves — one within the managed parent, one
+    // out of the installed component into the action directory's scheduled
+    // retirement row — so they add exactly two production sites, in one added
+    // file, and they publish through the same one primitive. E15 carries the
+    // managed source-interior arm; E16 carries no arm, because §4.3's E16
+    // annotation conditions a destination arm on the marker retiring as a
+    // directory and it retires as a regular file.
+    let managed = include_str!("../capability/pre_catalog/provider/managed_mutation.rs");
+    // R2-D Phase 2 Step 2.4 extends the caller inventory deliberately, per
+    // `GwzM5-8R2D-Plan.md` §4 Step 2.4 and `GwzM5-8R2DInterfaceFreeze.md` §4.4:
+    // the authority record's own durable lifecycle publishes it onto the active
+    // slot and retires it onto the scheduled retired alias — two protocol-record
+    // moves, in one added file, through the same one sealed primitive.
+    let record = include_str!("../capability/pre_catalog/provider/authority_record_binding.rs");
     let publication = include_str!("../capability/pre_catalog/provider/publication.rs");
-    let callers = format!("{mutation}\n{directory}\n{admission}\n{namespace}");
+    let callers = format!("{mutation}\n{directory}\n{admission}\n{namespace}\n{managed}\n{record}");
 
     assert!(publication.contains("fn publish_verified_no_replace("));
     assert!(publication.contains("open_rename_source("));
     assert!(publication.contains("rename_open_source("));
     assert!(publication.contains("expected_identity"));
-    assert_eq!(callers.matches("publish_verified_no_replace(").count(), 9);
+    assert_eq!(callers.matches("publish_verified_no_replace(").count(), 13);
     assert!(!callers.contains("platform::rename_relative"));
     assert!(!callers.contains("fn rename_no_replace("));
 }

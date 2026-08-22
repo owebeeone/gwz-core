@@ -187,8 +187,63 @@ const EXPECTED_KEY_COUNT: usize = 165;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FaultFamilyActivationV1 {
     Executed(&'static str),
+    /// A family whose owning package converts only *part* of its edge set,
+    /// because the family spans more than one package's edges.
+    ///
+    /// R2-D Step 2.3 is the first such case and the reason this variant exists.
+    /// `managed_bootstrap.*` remains Phase 3's family in the frozen map, whose
+    /// `managed_bootstrap.*` row now carries the dated Step-2.3 activation
+    /// annotation recording this exact 8-of-30 flip
+    /// (`GwzM5-8R2DInterfaceFreeze.md` §3.5). What moved is per *edge*: §4.3 rows
+    /// E15 and E16 are Step 2.3's, and RemPlan §10's duty — "that family must
+    /// gain injection sites and matrix rows in the same package that converts
+    /// its edges" — binds per edge, not per family. Before this variant existed
+    /// the fixture could only express all-or-nothing, so Step 2.3 would have had
+    /// to either declare twenty-two unconverted keys executed or leave its own
+    /// two edges unkeyed. Both are worse than naming the subset.
+    ///
+    /// The second field lists the activated keys by **stable-key suffix**. Every
+    /// other key in the family stays reserved and is still asserted to have no
+    /// injection site, so the guarantee the `Reserved` arm gives is preserved
+    /// key-by-key rather than weakened family-wide.
+    PartiallyExecuted(&'static str, &'static [&'static str]),
     Reserved(&'static str),
 }
+
+impl FaultFamilyActivationV1 {
+    /// The suffixes this row declares activated. `Executed` activates the whole
+    /// family, so it is never consulted per key.
+    const fn activated_suffixes(self) -> &'static [&'static str] {
+        match self {
+            Self::PartiallyExecuted(_, suffixes) => suffixes,
+            Self::Executed(_) | Self::Reserved(_) => &[],
+        }
+    }
+}
+
+/// The `managed_bootstrap.*` subset R2-D Step 2.3 converts.
+///
+/// These are exactly the boundaries the four managed backend operations cross —
+/// edge E15 (managed component install) and edge E16 (ownership-marker
+/// retirement) plus the two restart observations ConsumerCheckpoint §8
+/// (:228-231) requires of them. Everything else this family names belongs to the
+/// managed-parent *provider* and its intent lifecycle — preflight, the initial
+/// intent record, staged-directory and ownership-marker construction, the
+/// durable successor and prior-generation edges, the final intent retirement and
+/// plan completion — none of which Step 2.3 writes. Those twenty-two keys stay
+/// reserved for Phase 3, and the test below still proves they have no site.
+const MANAGED_BOOTSTRAP_STEP_2_3_KEYS: &[&str] = &[
+    // Edge E15 and its restart half.
+    "parent_revalidate",
+    "staging_directory_publish",
+    "final_directory_reopen",
+    "final_directory_reobserve",
+    "component_reobserve",
+    // Edge E16 and its restart half.
+    "marker_retire",
+    "marker_retired_reobserve",
+    "final_identity_reobserve",
+];
 
 const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
     (
@@ -236,14 +291,38 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
         FaultFamilyActivationV1::Executed("R2-D phase 2 step 2.2 (namespace backend)"),
         11,
     ),
+    // R2-D Phase 2 Step 2.4 converts every edge this family names, and the
+    // family's own shape is the split: all thirteen keys are boundaries of a
+    // *protocol record*, never of a payload. Four of them are the bounded parse
+    // stages and live with the R1 parse owner
+    // (`protocol/authority_record.rs`); eight are the record's durable install
+    // and retirement, and one — `terminal_relation_validate` — is the single
+    // join between the bounded record and the streamed source/goal proof; those
+    // nine live with the binding owner
+    // (`capability/pre_catalog/provider/authority_record_binding.rs`). The
+    // payload side of the split has no `record.*` key by construction: its
+    // boundaries are `durable_leaf.*`, executed by Step 2.1. Executed matrix
+    // rows for all thirteen, on both target variants, are in
+    // `capability/pre_catalog/provider/tests_authority_record_matrix.rs`.
     (
         "record",
-        FaultFamilyActivationV1::Reserved("R2-D step 2.4 (authority record split)"),
+        FaultFamilyActivationV1::Executed("R2-D phase 2 step 2.4 (authority record split)"),
         13,
     ),
+    // R2-D Phase 2 Step 2.3 converts two of this family's edges — §4.3 rows E15
+    // and E16 — and no others. The eight keys named by
+    // `MANAGED_BOOTSTRAP_STEP_2_3_KEYS` have injection sites in
+    // `capability/pre_catalog/provider/managed_mutation.rs` — all eight, the
+    // restart-entry boundary included — and executed
+    // interruption/restart/convergence rows on both target variants in
+    // `namespace/tests_managed_matrix.rs`. The remaining twenty-two are Phase
+    // 3's and are still proved siteless below.
     (
         "managed_bootstrap",
-        FaultFamilyActivationV1::Reserved("R2-D phase 3 (managed-parent provider)"),
+        FaultFamilyActivationV1::PartiallyExecuted(
+            "R2-D phase 3 (managed-parent provider); rows E15/E16 by phase 2 step 2.3",
+            MANAGED_BOOTSTRAP_STEP_2_3_KEYS,
+        ),
         30,
     ),
     (
@@ -269,7 +348,11 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
 /// converted by R2-D Phase 1 Step 1.3, and `namespace_mutation.rs` holding all
 /// eleven `namespace.*` sites converted by R2-D Phase 2 Step 2.2, and
 /// `leaf_observation.rs` holding all eleven `durable_leaf.*` sites converted by
-/// R2-D Phase 2 Step 2.1. `admission/driver.rs` deliberately holds
+/// R2-D Phase 2 Step 2.1, and the two sources holding the thirteen `record.*`
+/// sites converted by R2-D Phase 2 Step 2.4 — `protocol/authority_record.rs`
+/// for the four bounded-parse stages and
+/// `authority_record_binding.rs` for the nine install/retire/join boundaries.
+/// `admission/driver.rs` deliberately holds
 /// none: it decides and never mutates (`admission/driver.rs:8-9`), so every
 /// durable admission edge is announced from the owner-private mutation file.
 /// `runtime.*` edges are executed through the separate
@@ -314,6 +397,32 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
     (
         "capability/pre_catalog/provider/namespace_mutation.rs",
         include_str!("../capability/pre_catalog/provider/namespace_mutation.rs"),
+    ),
+    // R2-D Phase 2 Step 2.3: all eight activated `managed_bootstrap.*` sites.
+    // Same rule as the row above, and it holds for the restart boundary too:
+    // `component_reobserve` marks "a fresh process chose the restart path", so
+    // the provider exposes a distinct restart entry point rather than letting
+    // the `namespace` owner announce it. `namespace/host.rs` therefore still
+    // holds no injection site.
+    (
+        "capability/pre_catalog/provider/managed_mutation.rs",
+        include_str!("../capability/pre_catalog/provider/managed_mutation.rs"),
+    ),
+    // R2-D Phase 2 Step 2.4: the four `record.*` *parse* sites. They sit with
+    // the R1 bounded parse owner rather than with a mutation file because they
+    // are the stages of a read whose only budget is the frozen record bound —
+    // and keeping them here is what makes the parse/payload split visible in
+    // the injection inventory itself.
+    (
+        "protocol/authority_record.rs",
+        include_str!("../protocol/authority_record.rs"),
+    ),
+    // R2-D Phase 2 Step 2.4: the remaining nine `record.*` sites — the record's
+    // durable install and retirement, plus the single `terminal_relation_validate`
+    // join between the bounded record and the streamed source/goal proof.
+    (
+        "capability/pre_catalog/provider/authority_record_binding.rs",
+        include_str!("../capability/pre_catalog/provider/authority_record_binding.rs"),
     ),
 ];
 
@@ -377,15 +486,63 @@ fn every_fault_family_declares_its_owning_activation_package() {
     );
 }
 
+/// Whether `source` names exactly `variant` as a `CheckedArtifactFaultKeyV1`
+/// reference.
+///
+/// The trailing-character check matters: variant names nest
+/// (`ManagedBootstrapMarkerRetire` is a textual prefix of
+/// `ManagedBootstrapMarkerRetiredReobserve`), so a bare `contains` would report a
+/// reserved key as sited whenever an activated key extends its name. That would
+/// turn the per-key guarantee below into a silent false positive.
+fn names_variant(source: &str, variant: &str) -> bool {
+    let needle = format!("CheckedArtifactFaultKeyV1::{variant}");
+    source.match_indices(&needle).any(|(at, _)| {
+        source[at + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !next.is_ascii_alphanumeric() && next != '_')
+    })
+}
+
+fn sites_naming(variant: &str) -> Vec<&'static str> {
+    FAULT_INJECTION_SOURCES
+        .iter()
+        .filter(|(_, source)| names_variant(source, variant))
+        .map(|(relative, _)| *relative)
+        .collect()
+}
+
+/// Every declared source naming *any* key of `family`.
+///
+/// This goes through the same boundary-aware matcher as the per-key scan. A bare
+/// `contains` on the family prefix is safe only while no family's variant prefix
+/// is a prefix of another's — true of today's ten, but unstated and unenforced,
+/// so a future `record_wire` beside `record`, or `barrier_intent` beside
+/// `barrier`, would silently weaken the `Reserved` arm's guarantee. Matching the
+/// family's *keys* rather than its prefix removes the invariant instead of
+/// relying on it.
+fn family_sites(family: &str) -> Vec<&'static str> {
+    let qualified = variant_prefix(family);
+    let mut sites = EXPECTED_STABLE_KEYS
+        .iter()
+        .filter(|key| family_of(key) == family)
+        .flat_map(|key| {
+            let suffix = key
+                .split_once('.')
+                .expect("every stable fault key is family-qualified")
+                .1;
+            sites_naming(&format!("{qualified}{}", variant_prefix(suffix)))
+        })
+        .collect::<Vec<_>>();
+    sites.sort_unstable();
+    sites.dedup();
+    sites
+}
+
 #[test]
 fn reserved_fault_families_have_no_injection_sites_before_their_package() {
     for (family, activation, _) in FAULT_FAMILY_ACTIVATION {
-        let prefix = format!("CheckedArtifactFaultKeyV1::{}", variant_prefix(family));
-        let sites = FAULT_INJECTION_SOURCES
-            .iter()
-            .filter(|(_, source)| source.contains(&prefix))
-            .map(|(relative, _)| *relative)
-            .collect::<Vec<_>>();
+        let sites = family_sites(family);
         match activation {
             FaultFamilyActivationV1::Reserved(owner) => assert!(
                 sites.is_empty(),
@@ -399,6 +556,42 @@ fn reserved_fault_families_have_no_injection_sites_before_their_package() {
                         !sites.is_empty(),
                         "family {family} is declared executed by {owner} but has no injection \
                          sites in the declared production sources"
+                    );
+                }
+            }
+            // The partial arm gives the same guarantee, one key at a time: each
+            // activated key must have a site, and each key left reserved must
+            // have none. RemPlan §10's duty is thereby discharged per edge,
+            // which is the granularity at which the frozen map assigns edges.
+            FaultFamilyActivationV1::PartiallyExecuted(owner, activated) => {
+                let qualified = variant_prefix(family);
+                for suffix in *activated {
+                    let variant = format!("{qualified}{}", variant_prefix(suffix));
+                    assert!(
+                        !sites_naming(&variant).is_empty(),
+                        "family {family} declares {family}.{suffix} activated by {owner} but it \
+                         has no injection site in the declared production sources"
+                    );
+                }
+                for key in EXPECTED_STABLE_KEYS
+                    .iter()
+                    .filter(|key| family_of(key) == *family)
+                {
+                    let suffix = key
+                        .split_once('.')
+                        .expect("every stable fault key is family-qualified")
+                        .1;
+                    if activated.contains(&suffix) {
+                        continue;
+                    }
+                    let variant = format!("{qualified}{}", variant_prefix(suffix));
+                    let reserved_sites = sites_naming(&variant);
+                    assert!(
+                        reserved_sites.is_empty(),
+                        "{key} is still reserved for {owner} but gained injection sites in \
+                         {reserved_sites:?}; the converting package must add it to the \
+                         activated list and land its matrix row in the same package \
+                         (RemPlan §10)"
                     );
                 }
             }
@@ -487,8 +680,11 @@ fn the_declared_injection_sources_are_every_production_source_holding_sites() {
 /// and the executed matrix on both target variants
 /// (`admission/tests_fault_matrix.rs`). R2-D Phase 2 Step 2.2 added
 /// `namespace`, with its eleven injection sites and the executed matrix on both
-/// target variants (`namespace/tests_fault_matrix.rs`). Every remaining family
-/// stays reserved for the package the frozen map names
+/// target variants (`namespace/tests_fault_matrix.rs`). R2-D Phase 2 Step 2.4
+/// added `record`, with its thirteen injection sites split across the bounded
+/// parse owner and the binding owner, and the executed matrix on both target
+/// variants (`capability/pre_catalog/provider/tests_authority_record_matrix.rs`).
+/// Every remaining family stays reserved for the package the frozen map names
 /// (`GwzM5-8R2DInterfaceFreeze.md` §3.5).
 #[test]
 fn only_the_families_with_executed_matrices_are_executed_today() {
@@ -505,12 +701,32 @@ fn only_the_families_with_executed_matrices_are_executed_today() {
             "catalog_bootstrap",
             "durable_leaf",
             "namespace",
+            "record",
             "runtime"
         ]
         .into_iter()
         .collect(),
         "a fault family changed activation state; the converting package owns that edit \
          together with its executed matrix evidence"
+    );
+
+    // Partially executed families are held to the same two-place rule, and to
+    // their exact activated subset: R2-D Step 2.3 converts `managed_bootstrap`'s
+    // E15/E16 boundaries and nothing else, so widening that subset without
+    // landing the matching matrix rows fails here rather than silently.
+    let partial = FAULT_FAMILY_ACTIVATION
+        .iter()
+        .filter(|(_, activation, _)| {
+            matches!(activation, FaultFamilyActivationV1::PartiallyExecuted(..))
+        })
+        .map(|(family, activation, _)| (*family, activation.activated_suffixes()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        partial,
+        vec![("managed_bootstrap", MANAGED_BOOTSTRAP_STEP_2_3_KEYS)],
+        "a fault family changed partial activation state; the converting package owns that \
+         edit together with its executed matrix evidence"
     );
 }
 
