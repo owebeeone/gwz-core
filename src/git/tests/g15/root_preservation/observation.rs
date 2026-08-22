@@ -75,6 +75,28 @@ fn assert_prepare_rejects_unchanged(fixture: &RootFixture) {
     assert_eq!(exact_snapshot(fixture), before);
 }
 
+/// Regression pin for the runner-template class: every leaf the prepare gates
+/// observe must be non-executable however the host's git template tree was
+/// copied into the fixture (`write_pinned` in `support.rs`). The checked leaf
+/// observer classifies an executable file `Invalid` by design, so a 0755
+/// `.git/info/exclude` — what the GitHub runner images' template ships — makes
+/// `files::observe_boundary` false and every prepare below refuse.
+#[cfg(unix)]
+#[test]
+fn observed_handoff_leaves_are_never_executable_whatever_the_git_template_copied() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = fixture();
+    for path in [".git/info/exclude", MARKER, crate::artifact::LOCK_PATH] {
+        let mode = fs::metadata(fixture.root.join(path))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0, "{path} is executable (mode {mode:o})");
+    }
+    prepare(&fixture);
+}
+
 #[test]
 fn partial_or_stale_preimage_is_ambiguous() {
     let fixture = fixture();

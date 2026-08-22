@@ -26,6 +26,41 @@ use crate::workspace_ops::merge::{
 };
 use crate::workspace_ops::tests::TempDir;
 
+/// Pin a fixture root repository's local git boundary file
+/// (`.git/info/exclude`) to a non-executable mode, at creation time.
+///
+/// Precondition removed: repository creation copies the host's git template
+/// tree — the CLI's `git init` and libgit2 alike, since git2-rs enables
+/// `GIT_REPOSITORY_INIT_EXTERNAL_TEMPLATE` by default and libgit2's template
+/// copy maps an executable source file to `0777 & ~umask` — and the GitHub
+/// runner images ship `info/exclude` with mode 0755 (developer machines ship
+/// 0644, which is why this never reproduces locally). The checked-artifact
+/// leaf observer classifies every executable file `Invalid` BY DESIGN
+/// (`checked_artifact::observation`), so on those hosts the root-preservation
+/// boundary gate (`prepare_root_preservation_stash`) and the root
+/// publication's own executable-bit check (`preserve::artifacts`) both refuse,
+/// and the lifecycle diverts into recovery instead of completing. Pin at
+/// creation, mirroring the `pin_fixture_autocrlf` precedent; mode-preserving
+/// fixture writes (`fs::write`) then inherit the pinned mode, while
+/// production's atomic republish is free to install its own fresh file.
+#[cfg(unix)]
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn pin_fixture_boundary_mode(
+    repo_path: &std::path::Path,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let boundary = crate::workspace_ops::workspace_exclude_path(repo_path);
+    if boundary.exists() {
+        std::fs::set_permissions(&boundary, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+}
+
+#[cfg(not(unix))]
+pub(in crate::workspace_ops::merge::v1_lifecycle) fn pin_fixture_boundary_mode(
+    _repo_path: &std::path::Path,
+) {
+}
+
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn align_baseline_lock(
     record: &mut MergeOperationRecordV1,
 ) {

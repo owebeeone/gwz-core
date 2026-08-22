@@ -655,6 +655,12 @@ pub(super) fn fixture(
     let root = TempDir::new(name);
     let backend = Git2Backend::new();
     backend.create_repo(&root.path).unwrap();
+    // Pin the boundary mode at creation: the runner images' git template tree
+    // ships an executable `info/exclude` that repository creation copies, and
+    // every root gate reading it then refuses (see the helper's doctrine).
+    crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::pin_fixture_boundary_mode(
+        &root.path,
+    );
     fs::create_dir_all(root.path.join("gwz.conf")).unwrap();
     let mut model = test_record();
     let manifest = model.baseline.manifest_yaml.clone().unwrap();

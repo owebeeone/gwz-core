@@ -71,6 +71,12 @@ fn integrated_fixture(name: &str) -> PreservationFixture {
     // Pin conversion off at creation (safe: created empty, never cloned) —
     // these suites compare worktree bytes with blob bytes on Windows runners.
     crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
+    // Pin the boundary mode at creation: the runner images' git template tree
+    // ships an executable `info/exclude` that repository creation copies, and
+    // every root gate reading it then refuses (see the helper's doctrine).
+    crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::pin_fixture_boundary_mode(
+        &root.path,
+    );
     fs::create_dir_all(root.path.join(crate::stash::STASH_BUNDLE_DIR)).unwrap();
     let backend = Git2Backend::new();
     let member = root.path.join("members/a");

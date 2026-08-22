@@ -345,6 +345,12 @@ fn unborn_fixture(
     // Pin conversion off at creation (safe: created empty, never cloned) —
     // this suite compares worktree bytes with blob bytes on Windows runners.
     crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
+    // Pin the boundary mode at creation: the runner images' git template tree
+    // ships an executable `info/exclude` that repository creation copies, and
+    // every root gate reading it then refuses (see the helper's doctrine).
+    crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::pin_fixture_boundary_mode(
+        &root.path,
+    );
     // The unborn-root scenarios drive PRODUCTION first-commits, so the
     // identity commit_file would otherwise install must be pinned here.
     crate::workspace_ops::tests::pin_fixture_identity(&root.path);

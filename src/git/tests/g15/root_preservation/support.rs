@@ -99,20 +99,20 @@ pub(super) fn fixture_configured(
     }
     git(&root, &["config", "core.autocrlf", "false"]);
     fs::create_dir_all(root.join("gwz.conf")).unwrap();
-    fs::write(root.join(crate::artifact::LOCK_PATH), b"restore lock\n").unwrap();
+    write_pinned(&root.join(crate::artifact::LOCK_PATH), b"restore lock\n");
     write_marker(&root, restore_clean_marker);
     stage_managed(&root);
     commit(&root, "restore", "2000-01-01T00:00:00Z");
     let restore = git_output(&root, &["rev-parse", "HEAD"]);
-    fs::write(root.join(crate::artifact::LOCK_PATH), b"attached lock\n").unwrap();
+    write_pinned(&root.join(crate::artifact::LOCK_PATH), b"attached lock\n");
     write_marker(&root, attached_clean_marker);
     stage_managed(&root);
     commit(&root, "attached", "2000-01-02T00:00:00Z");
     let attached = git_output(&root, &["rev-parse", "HEAD"]);
     write_marker(&root, handoff_marker);
-    fs::write(root.join(crate::artifact::LOCK_PATH), b"handoff lock\n").unwrap();
+    write_pinned(&root.join(crate::artifact::LOCK_PATH), b"handoff lock\n");
     stage_managed(&root);
-    fs::write(root.join(".git/info/exclude"), BOUNDARY).unwrap();
+    write_pinned(&root.join(".git/info/exclude"), BOUNDARY);
 
     let attached_clean = form(&root, attached_clean_marker, b"attached lock\n");
     let restore_clean = form(&root, restore_clean_marker, b"restore lock\n");
@@ -135,11 +135,35 @@ pub(super) fn fixture_configured(
     }
 }
 
+/// Write a fixture leaf the root-preservation gates observe, pinning it to a
+/// non-executable mode at creation time.
+///
+/// Precondition removed: `git init` copies the host's git template tree, and
+/// the GitHub runner images ship `info/exclude` with mode 0755 (developer
+/// machines ship 0644, which is why this never reproduces locally). Plain
+/// `fs::write` truncates the bytes but PRESERVES that inherited mode, and the
+/// checked-artifact leaf observer classifies every executable file `Invalid`
+/// BY DESIGN (`checked_artifact::observation`) — so an inherited 0755 boundary
+/// makes `files::observe_boundary` false and `prepare()` refuses with "root
+/// preservation preparation requires the exact durable handoff". Pin the mode
+/// where the fixture creates the file, mirroring the `pin_fixture_autocrlf`
+/// precedent (pin at creation, precondition documented); later mode-preserving
+/// writes then inherit the pinned mode. Tests that deliberately install an
+/// executable leaf do so after the fixture is built and are unaffected.
+fn write_pinned(path: &Path, bytes: &[u8]) {
+    fs::write(path, bytes).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+}
+
 fn write_marker(root: &Path, bytes: Option<&[u8]>) {
     let path = root.join(MARKER);
     if let Some(bytes) = bytes {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, bytes).unwrap();
+        write_pinned(&path, bytes);
     } else {
         if path.exists() {
             fs::remove_file(&path).unwrap();
