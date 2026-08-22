@@ -13,6 +13,10 @@ mod provider;
 mod tests_intent_matrix;
 #[cfg(test)]
 mod tests_provider;
+#[cfg(test)]
+mod tests_purpose_policy;
+#[cfg(test)]
+mod tests_writer_matrix;
 
 #[allow(
     unused_imports,

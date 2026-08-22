@@ -555,9 +555,12 @@ enum IntentResumeV1 {
 /// nondeterminism the R2 stop clause forbids. Every input is already durable and
 /// already bound to this one admitted action.
 ///
-/// When the follow-up lands the intent record's durable lifecycle the token is
-/// read back from the resident record instead of re-derived; the derivation
-/// stays as the first-generation seed.
+/// This derivation is the **first-generation seed only**. Step 3.1b landed the
+/// intent record's durable lifecycle, so every later drive of a row takes the
+/// token from the resident record — `resume_intent` returns the chain and
+/// `try_initial` runs only when no generation is resident at all. The boundary
+/// the module header states applies to that read-back: it is self-consistency,
+/// not exclusion.
 fn ownership_token(plan: &BoundManagedParentPlanV1) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"gwz-managed-bootstrap-ownership-token-v1\0");

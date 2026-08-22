@@ -288,7 +288,12 @@ impl ActionNamespace<HostActionNamespaceV1> {
         edge: ManagedIntentEdgeV1,
     ) -> Result<(), CheckedFsError> {
         self.validate_generation_slots(slots)?;
-        write_managed_intent_scratch(&self.backend.retained, slots.scratch_leaf(), bytes, edge)
+        write_managed_intent_scratch(
+            &self.backend.retained,
+            BootstrapIntentRowV1::Scratch.leaf(slots),
+            bytes,
+            edge,
+        )
     }
 
     /// R2-D Phase 3 Step 3.1b — the post-edge proof of one scheduled intent row,

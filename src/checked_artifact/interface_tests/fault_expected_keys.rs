@@ -239,13 +239,20 @@ impl FaultFamilyActivationV1 {
 /// still holds no site. Matrix: `bootstrap/managed/tests_intent_matrix.rs`, on
 /// both target variants, with thirteen repeated-boundary rows.
 ///
-/// **Still reserved: seven.** The five staged-component *writer* keys
-/// (`staging_directory_create`, the three `ownership_marker_*`,
-/// `staging_directory_flush`), whose edges Step 3.1 converted and whose
-/// activation the plan assigns to Step 3.2; and `preflight` and `plan_complete`,
-/// which name plan-level states rather than durable edges and which no step has
-/// yet given a boundary. The test below still proves all seven siteless, key by
-/// key.
+/// **Step 3.2 — the staged-component writer** (freeze §3.5's deferral record and
+/// its Step-3.1b supersession clause). The five keys whose edges Step 3.1's
+/// `stage_component` and `write_or_rewrite_marker` converted without sites: the
+/// staging directory's creation, the ownership marker's create/write/flush, and
+/// the two directory flushes that make the staged row durable. Sites in the same
+/// provider file; matrix: `bootstrap/managed/tests_writer_matrix.rs`, on both
+/// target variants, with one repeated-boundary row and four named
+/// single-crossing exclusions.
+///
+/// **Still reserved: two.** `preflight` and `plan_complete`. Every edge-bearing
+/// key of the family is now executed; these two name plan-level states, no step
+/// has given them a boundary, and their disposition is a Phase 3 settle
+/// determination, not this fixture's (Step-3.1b review [P3-1]). The test below
+/// still proves both siteless, key by key.
 const MANAGED_BOOTSTRAP_EXECUTED_KEYS: &[&str] = &[
     // Step 2.3 — edge E15 and its restart half.
     "parent_revalidate",
@@ -276,6 +283,12 @@ const MANAGED_BOOTSTRAP_EXECUTED_KEYS: &[&str] = &[
     // Step 3.1b — the final retirement, which is the row's completion record.
     "final_intent_retire",
     "final_intent_retired_reobserve",
+    // Step 3.2 — the staged-component writer.
+    "staging_directory_create",
+    "ownership_marker_create",
+    "ownership_marker_write",
+    "ownership_marker_flush",
+    "staging_directory_flush",
 ];
 
 const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
@@ -342,21 +355,24 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
         FaultFamilyActivationV1::Executed("R2-D phase 2 step 2.4 (authority record split)"),
         13,
     ),
-    // R2-D Phase 2 Step 2.3 converted §4.3 rows E15 and E16; R2-D Phase 3 Step
-    // 3.1b converted row E17, the intent record's own durable lifecycle. All
-    // twenty-three keys named by `MANAGED_BOOTSTRAP_EXECUTED_KEYS` have injection
-    // sites in `capability/pre_catalog/provider/managed_mutation.rs` — the
-    // `namespace` owner still holds none, as with `namespace.*` — and executed
+    // R2-D Phase 2 Step 2.3 converted §4.3 rows E15 and E16; Phase 3 Step 3.1b
+    // converted row E17, the intent record's own durable lifecycle; Phase 3 Step
+    // 3.2 activated the staged-component writer keys whose edges Step 3.1 had
+    // converted on the record. All twenty-eight keys named by
+    // `MANAGED_BOOTSTRAP_EXECUTED_KEYS` have injection sites in
+    // `capability/pre_catalog/provider/managed_mutation.rs` — the `namespace`
+    // owner still holds none, as with `namespace.*` — and executed
     // interruption/restart/convergence rows on both target variants in
-    // `namespace/tests_managed_matrix.rs` (eight) and
-    // `bootstrap/managed/tests_intent_matrix.rs` (fifteen). The remaining seven
-    // are Step 3.2's five writer keys plus the two plan-level keys, and are still
-    // proved siteless below.
+    // `namespace/tests_managed_matrix.rs` (eight),
+    // `bootstrap/managed/tests_intent_matrix.rs` (fifteen) and
+    // `bootstrap/managed/tests_writer_matrix.rs` (five). The remaining two are
+    // `preflight` and `plan_complete`, whose disposition is a Phase 3 settle
+    // determination; they are still proved siteless below.
     (
         "managed_bootstrap",
         FaultFamilyActivationV1::PartiallyExecuted(
             "R2-D phase 3 (managed-parent provider); rows E15/E16 by phase 2 step 2.3, \
-             row E17 by phase 3 step 3.1b",
+             row E17 by phase 3 step 3.1b, the writer keys by phase 3 step 3.2",
             MANAGED_BOOTSTRAP_EXECUTED_KEYS,
         ),
         30,
@@ -434,8 +450,8 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
         "capability/pre_catalog/provider/namespace_mutation.rs",
         include_str!("../capability/pre_catalog/provider/namespace_mutation.rs"),
     ),
-    // R2-D Phase 2 Step 2.3 and Phase 3 Step 3.1b: all twenty-three activated
-    // `managed_bootstrap.*` sites. Same rule as the row above, and it holds for
+    // R2-D Phase 2 Step 2.3, Phase 3 Step 3.1b and Phase 3 Step 3.2: all
+    // twenty-eight activated `managed_bootstrap.*` sites. Same rule as the row above, and it holds for
     // the restart boundary too: `component_reobserve` marks "a fresh process
     // chose the restart path", so the provider exposes a distinct restart entry
     // point rather than letting the `namespace` owner announce it. It holds for
@@ -768,9 +784,10 @@ fn only_the_families_with_executed_matrices_are_executed_today() {
     );
     assert_eq!(
         MANAGED_BOOTSTRAP_EXECUTED_KEYS.len(),
-        23,
+        28,
         "the managed_bootstrap activated subset changed size; 8 are Step 2.3's E15/E16 \
-         boundaries and 15 are Step 3.1b's E17 intent-record lifecycle"
+         boundaries, 15 are Step 3.1b's E17 intent-record lifecycle, and 5 are Step 3.2's \
+         staged-component writer"
     );
 }
 

@@ -52,7 +52,7 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 /// The action every row of this suite bootstraps under. One action per fixture
 /// keeps the durable state minimal while still crossing both purposes.
 const ACTION: ActionDigestV1 = ActionDigestV1::new([0xB3; 32]);
-const OWNER: RequestOwnerBindingV1 = RequestOwnerBindingV1::new([0x71; 32]);
+pub(super) const OWNER: RequestOwnerBindingV1 = RequestOwnerBindingV1::new([0x71; 32]);
 
 /// The two frozen target variants (`GwzM5-8R2D-Plan.md` §4 Step 1.3).
 #[derive(Clone, Copy, Debug)]
@@ -122,22 +122,35 @@ impl Fixture {
     /// The variant axis being exercised is the *catalog target* — its lease, its
     /// catalog, its action directory, and therefore every intent record — not the
     /// managed parent's home.
-    pub(super) fn managed_root(&self, variant: TargetVariantV1) -> PathBuf {
+    pub(super) fn target_root(&self, variant: TargetVariantV1) -> PathBuf {
         match variant {
-            TargetVariantV1::Workspace => self.root.join(".gwz"),
+            TargetVariantV1::Workspace => self.root.clone(),
             TargetVariantV1::GitDirectory => git2::Repository::open(&self.root)
                 .unwrap()
                 .path()
-                .join(".gwz"),
+                .to_path_buf(),
+        }
+    }
+
+    /// The `.gwz` managed parent every merge-family purpose hangs off, resolved
+    /// against [`Self::target_root`].
+    pub(super) fn managed_root(&self, variant: TargetVariantV1) -> PathBuf {
+        self.target_root(variant).join(".gwz")
+    }
+
+    /// Creates one declared managed-path prefix component under the target root,
+    /// which is what a Git-directory arm needs and what
+    /// `RootPreservationMarkers` (`gwz.conf/markers`) needs on every target.
+    pub(super) fn prepare_prefix(&self, variant: TargetVariantV1, component: &str) {
+        let root = self.target_root(variant).join(component);
+        if !root.exists() {
+            fs::create_dir_all(&root).expect("the managed prefix is creatable");
         }
     }
 
     /// Creates the managed root a Git-directory arm needs; a no-op elsewhere.
     pub(super) fn prepare_managed_root(&self, variant: TargetVariantV1) {
-        let root = self.managed_root(variant);
-        if !root.exists() {
-            fs::create_dir_all(&root).expect("the managed root is creatable");
-        }
+        self.prepare_prefix(variant, ".gwz");
     }
 }
 
@@ -182,7 +195,7 @@ pub(super) fn with_catalog<T>(
 /// and `PreservationBundles` (`.gwz/stash/bundles`, two). One row of each depth
 /// is what makes the prefix-composed path profile load-bearing — a
 /// one-component profile would refuse the second component of the second row.
-fn merge_start() -> ManagedParentBootstrapRequest {
+pub(super) fn merge_start() -> ManagedParentBootstrapRequest {
     ManagedParentBootstrapRequest::for_merge_start()
 }
 
@@ -288,6 +301,350 @@ fn bootstrap(label: &str) -> Bootstrapped {
         plan,
         admitted,
         retained,
+    }
+}
+
+/// R2-D Phase 3 Step 3.2 — the shared boundary-matrix harness.
+///
+/// Both activated matrices in this owner — Step 3.1b's fifteen intent-lifecycle
+/// keys (`tests_intent_matrix.rs`) and Step 3.2's five staged-component writer
+/// keys (`tests_writer_matrix.rs`) — are crossed by *one* drive of one row, so
+/// the fixture, the census and the two runners live here once instead of twice.
+/// Each matrix file declares only its key set, its repeatable / single-crossing
+/// classification, and its four tests.
+pub(super) mod matrix {
+    use super::{
+        Fixture, TargetVariantV1, admit, children, execute, handoff, plan_for, reservation,
+    };
+    use crate::checked_artifact::bootstrap::{
+        ManagedParentBootstrapRequest, ManagedParentPlanV1, ManagedParentPurpose,
+    };
+    use crate::checked_artifact::capability::CheckedFsError;
+    use crate::checked_artifact::fault_v1::{
+        CheckedArtifactFaultKeyV1 as Fault, run_next_at, take_armed_fault,
+    };
+    use crate::checked_artifact::protocol::AdmittedActionV1;
+
+    /// Repeated crashes at one boundary, past the nominal capacity of the
+    /// sequence: the virgin drive settles in five generations and leaves two
+    /// managed rows and two retirement rows, so twelve crashes cross the nominal
+    /// capacity several times over without cardinality growth.
+    pub(in crate::checked_artifact::bootstrap::managed) const REPEATED_CRASH_ROUNDS: usize = 12;
+
+    /// The census of every directory one `PreservationBundles` row writes into:
+    /// the managed root (which holds the first component and the first staging
+    /// row), the first component (which holds the second), and the action
+    /// directory (which holds every intent generation and both marker-retirement
+    /// rows).
+    pub(in crate::checked_artifact::bootstrap::managed) type Census =
+        (Vec<String>, Vec<String>, Vec<String>);
+
+    /// Which declared purpose a matrix drives, and therefore how many components
+    /// its row has.
+    ///
+    /// **The choice is load-bearing for the single-crossing criterion, not
+    /// cosmetic.** Every boundary inside `stage_component` is crossed *once per
+    /// component*, so on a two-component row a crash at the first component's
+    /// crossing leaves the second component's crossing still ahead — the next
+    /// drive re-enters the boundary for a different component, and the boundary
+    /// is neither cleanly repeatable (it stops after the second) nor
+    /// single-crossing. The criterion is written for a boundary crossed once per
+    /// drive, so the writer matrix drives a one-component row and the intent
+    /// matrix, which must reach a *mid-retirement* interruption, drives a
+    /// two-component one.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(in crate::checked_artifact::bootstrap::managed) enum RowShapeV1 {
+        /// `.gwz/stash/bundles` — two missing components, five generations.
+        TwoComponent,
+        /// `gwz.conf/markers` — one missing component, three generations.
+        OneComponent,
+    }
+
+    impl RowShapeV1 {
+        const fn purpose(self) -> ManagedParentPurpose {
+            match self {
+                Self::TwoComponent => ManagedParentPurpose::PreservationBundles,
+                Self::OneComponent => ManagedParentPurpose::RootPreservationMarkers,
+            }
+        }
+
+        /// The declared prefix that must already exist, and the first component
+        /// the row installs beneath it — the two directories a census watches.
+        const fn prefix(self) -> (&'static str, &'static str) {
+            match self {
+                Self::TwoComponent => (".gwz", "stash"),
+                Self::OneComponent => ("gwz.conf", "markers"),
+            }
+        }
+    }
+
+    /// One planned, admitted row, ready to be driven repeatedly by fresh
+    /// sessions.
+    pub(in crate::checked_artifact::bootstrap::managed) struct RowFixture {
+        fixture: Fixture,
+        variant: TargetVariantV1,
+        shape: RowShapeV1,
+        plan: ManagedParentPlanV1,
+        admitted: AdmittedActionV1,
+    }
+
+    impl RowFixture {
+        pub(in crate::checked_artifact::bootstrap::managed) fn new(
+            variant: TargetVariantV1,
+            shape: RowShapeV1,
+            label: &str,
+        ) -> Self {
+            let fixture = Fixture::new(&format!("row-{label}"));
+            // The declared prefix must exist before the plan is made: the
+            // provider's preflight walks it, and on a Git-directory target
+            // nothing else creates it. `plan_for` recovers the catalog and runs
+            // that preflight, so this call comes first.
+            fixture.prepare_prefix(variant, shape.prefix().0);
+            let request = ManagedParentBootstrapRequest::try_for_durable_merge(&[shape.purpose()])
+                .expect("the durable-merge constructor admits this purpose");
+            let plan = plan_for(&fixture, variant, &request)
+                .expect("the managed prefix must be observable");
+            let expected = reservation(&plan);
+            let identity = admit(&fixture, variant, &expected);
+            let admitted = handoff(&expected, &identity);
+            Self {
+                fixture,
+                variant,
+                shape,
+                plan,
+                admitted,
+            }
+        }
+
+        fn drive(&self) -> Result<(), CheckedFsError> {
+            execute(&self.fixture, self.variant, &self.plan, &self.admitted).map(|_| ())
+        }
+
+        /// The census of every directory this row writes into: the declared
+        /// prefix (which holds the first component and its staging row), the
+        /// first component (which holds the second, where there is one), and the
+        /// action directory (which holds every intent generation and every
+        /// marker-retirement row).
+        pub(in crate::checked_artifact::bootstrap::managed) fn census(&self) -> Census {
+            let (prefix, component) = self.shape.prefix();
+            let root = self.fixture.target_root(self.variant).join(prefix);
+            (
+                children(&root),
+                children(&root.join(component)),
+                children(&self.fixture.action_directory(self.variant)),
+            )
+        }
+    }
+
+    fn settle(fixture: &RowFixture, context: &str) -> Census {
+        fixture
+            .drive()
+            .unwrap_or_else(|error| panic!("{context}: the restart must settle: {error:?}"));
+        fixture.census()
+    }
+
+    pub(in crate::checked_artifact::bootstrap::managed) const fn variant_label(
+        variant: TargetVariantV1,
+    ) -> &'static str {
+        match variant {
+            TargetVariantV1::Workspace => "workspace",
+            TargetVariantV1::GitDirectory => "git-directory",
+        }
+    }
+
+    fn suffix(stable_key: &str) -> &str {
+        stable_key
+            .split_once('.')
+            .expect("every stable fault key is family-qualified")
+            .1
+    }
+
+    /// The activated subset, as stable keys, so a key added to the fixture's
+    /// activated list without a matrix row fails here rather than silently
+    /// escaping.
+    pub(in crate::checked_artifact::bootstrap::managed) fn reconcile_executed_keys(
+        matrix: &[Fault],
+        expected: &[&str],
+    ) {
+        let mut actual = matrix.iter().map(Fault::stable_key).collect::<Vec<_>>();
+        let mut expected = expected
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    /// The two classes must partition the activated matrix exactly: no boundary
+    /// in both, none in neither.
+    pub(in crate::checked_artifact::bootstrap::managed) fn assert_boundary_partition(
+        matrix: &[Fault],
+        repeated: &[Fault],
+        single_crossing: &[Fault],
+    ) {
+        let mut union = repeated
+            .iter()
+            .chain(single_crossing.iter())
+            .map(Fault::stable_key)
+            .collect::<Vec<_>>();
+        let mut matrix = matrix.iter().map(Fault::stable_key).collect::<Vec<_>>();
+        union.sort_unstable();
+        matrix.sort_unstable();
+        let mut deduped = union.clone();
+        deduped.dedup();
+        assert_eq!(
+            union, deduped,
+            "a boundary is declared both repeatable and single-crossing"
+        );
+        assert_eq!(
+            union, matrix,
+            "the repeatable / single-crossing classes do not partition the activated matrix"
+        );
+    }
+
+    /// Interrupt at every activated boundary, restart, and converge — with the
+    /// per-key evidence line the L1-16/L2-14 form expects printed for the run
+    /// tail.
+    pub(in crate::checked_artifact::bootstrap::managed) fn run_boundary_matrix(
+        variant: TargetVariantV1,
+        shape: RowShapeV1,
+        matrix: &[Fault],
+    ) {
+        let settled = settle(
+            &RowFixture::new(variant, shape, "matrix-settled"),
+            "baseline",
+        );
+
+        for key in matrix {
+            let stable = key.stable_key();
+            let fixture = RowFixture::new(variant, shape, &format!("m-{}", suffix(&stable)));
+
+            run_next_at(*key, || panic!("simulated managed process stop"));
+            let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = fixture.drive();
+            }));
+            assert!(
+                interrupted.is_err(),
+                "fault point was not reached: {stable}"
+            );
+
+            let resumed = settle(&fixture, &stable);
+            assert_eq!(
+                resumed, settled,
+                "{stable}: the restart did not converge to the settled managed state"
+            );
+
+            // Convergence is settled, not merely reached: the next fresh process
+            // re-reads the same resident chain and mutates nothing.
+            let again = settle(&fixture, &stable);
+            assert_eq!(
+                again, settled,
+                "{stable}: the resume mutated the settled managed state"
+            );
+
+            println!(
+                "{stable} | {} | interrupted=yes | restart=settled | managed={} component={} action={} | resume=no-mutation",
+                variant_label(variant),
+                resumed.0.len(),
+                resumed.1.len(),
+                resumed.2.len()
+            );
+        }
+    }
+
+    /// R2-D Phase 3 Step 3.2 — the single-crossing claim, machine-checked.
+    ///
+    /// Both classes of the partition carry a prose reason, and the repeatable
+    /// class is proved by [`run_repeated_crashes`] driving it. Its complement was
+    /// asserted only in prose until here: this probe crashes the boundary once,
+    /// re-arms it, and requires the *next* drive to settle **without** firing it.
+    /// A boundary wrongly classed single-crossing fires and fails loudly, so the
+    /// partition is now sound in both directions rather than covered in one.
+    pub(in crate::checked_artifact::bootstrap::managed) fn run_single_crossing_probe(
+        variant: TargetVariantV1,
+        shape: RowShapeV1,
+        boundaries: &[Fault],
+    ) {
+        for key in boundaries {
+            let stable = key.stable_key();
+            let fixture = RowFixture::new(variant, shape, &format!("s-{}", suffix(&stable)));
+
+            run_next_at(*key, || panic!("simulated managed process stop"));
+            let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = fixture.drive();
+            }));
+            assert!(
+                interrupted.is_err(),
+                "fault point was not reached: {stable}"
+            );
+
+            run_next_at(*key, || {
+                panic!("a single-crossing boundary was re-crossed by the drive after its crash")
+            });
+            fixture
+                .drive()
+                .unwrap_or_else(|error| panic!("{stable}: the restart must settle: {error:?}"));
+            assert!(
+                take_armed_fault(),
+                "{stable}: the probe's arm vanished without firing"
+            );
+
+            println!(
+                "{stable} | {} | single-crossing=yes | restart=settled | re-crossed=no",
+                variant_label(variant)
+            );
+        }
+    }
+
+    /// ConsumerCheckpoint §12 and the RemPlan-4 R2 stop clause (:1089-1092):
+    /// crashing the same boundary far past nominal capacity must never allocate a
+    /// fresh retry name and must never grow the durable slot set.
+    pub(in crate::checked_artifact::bootstrap::managed) fn run_repeated_crashes(
+        variant: TargetVariantV1,
+        shape: RowShapeV1,
+        boundaries: &[Fault],
+    ) {
+        let settled = settle(
+            &RowFixture::new(variant, shape, "repeat-settled"),
+            "baseline",
+        );
+
+        for key in boundaries {
+            let stable = key.stable_key();
+            let fixture = RowFixture::new(variant, shape, &format!("r-{}", suffix(&stable)));
+            let mut census: Option<Census> = None;
+            for round in 0..REPEATED_CRASH_ROUNDS {
+                run_next_at(*key, || panic!("simulated managed process stop"));
+                let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = fixture.drive();
+                }));
+                assert!(
+                    interrupted.is_err(),
+                    "{stable}: round {round} never reached the boundary"
+                );
+
+                let observed = fixture.census();
+                match &census {
+                    None => census = Some(observed),
+                    Some(first) => assert_eq!(
+                        &observed, first,
+                        "{stable}: round {round} changed the durable slot set"
+                    ),
+                }
+            }
+
+            let converged = settle(&fixture, &stable);
+            assert_eq!(
+                converged, settled,
+                "{stable}: the managed state did not converge after {REPEATED_CRASH_ROUNDS} crashes"
+            );
+
+            println!(
+                "{stable} | {} | rounds={REPEATED_CRASH_ROUNDS} | slots-stable=yes | converged=yes",
+                variant_label(variant)
+            );
+        }
     }
 }
 

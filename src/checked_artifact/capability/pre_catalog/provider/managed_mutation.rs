@@ -465,11 +465,13 @@ impl RetainedManagedParentV1 {
     /// the re-proof fails, and the sequence is refused. That is the same content
     /// this owner would refuse to publish (§4.4 Class 1), refused earlier.
     ///
-    /// The five `managed_bootstrap.*` writer keys these boundaries would
-    /// announce (`staging_directory_create`, the three `ownership_marker_*`,
-    /// `staging_directory_flush`) stay reserved here and are activated with their
-    /// matrix rows by plan §4 Step 3.2, the step the plan assigns
-    /// `managed_bootstrap.*` activation to.
+    /// The five `managed_bootstrap.*` writer keys these boundaries announce —
+    /// `staging_directory_create`, the three `ownership_marker_*`, and
+    /// `staging_directory_flush` — were converted as *edges* by Step 3.1 and
+    /// activated with their matrix rows by Step 3.2, the step the plan assigns
+    /// `managed_bootstrap.*` activation to (freeze §3.5's deferral record and its
+    /// Step-3.2 annotation). Their rows are in
+    /// `bootstrap/managed/tests_writer_matrix.rs`.
     pub(in crate::checked_artifact) fn stage_component(
         &self,
         staging_leaf: &AsciiComponent,
@@ -487,6 +489,10 @@ impl RetainedManagedParentV1 {
                 self.handle.create_dir(&name).map_err(|source| {
                     CheckedFsError::io("create managed staging no-replace", source)
                 })?;
+                #[cfg(test)]
+                crate::checked_artifact::fault_v1::hit(
+                    CheckedArtifactFaultKeyV1::ManagedBootstrapStagingDirectoryCreate,
+                );
                 true
             }
             Err(source) => return Err(CheckedFsError::io("observe managed staging row", source)),
@@ -503,6 +509,16 @@ impl RetainedManagedParentV1 {
         }
         if created {
             sync_directory_edge(&self.handle, "flush managed staging creation")?;
+            // The second of this key's two boundaries. `staging_directory_flush`
+            // names the state "a staging directory flush is durable", and this
+            // writer performs two of them — the staged interior's, inside
+            // `write_or_rewrite_marker`, and the managed parent's here, which
+            // only a creating drive owes. Both are that state, so both announce
+            // it rather than minting a second key (§3.5, §6).
+            #[cfg(test)]
+            crate::checked_artifact::fault_v1::hit(
+                CheckedArtifactFaultKeyV1::ManagedBootstrapStagingDirectoryFlush,
+            );
         }
         Ok(())
     }
@@ -903,6 +919,10 @@ fn write_or_rewrite_marker(staged: &Dir, marker: &OwnershipMarkerV1) -> Result<(
     let mut file = staged
         .open_with(&name, &options)
         .map_err(|source| CheckedFsError::io("open managed ownership marker", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        CheckedArtifactFaultKeyV1::ManagedBootstrapOwnershipMarkerCreate,
+    );
     if !create_new {
         file.set_len(0)
             .map_err(|source| CheckedFsError::io("truncate managed ownership marker", source))?;
@@ -911,10 +931,26 @@ fn write_or_rewrite_marker(staged: &Dir, marker: &OwnershipMarkerV1) -> Result<(
     }
     file.write_all(&marker.encode_canonical())
         .map_err(|source| CheckedFsError::io("write managed ownership marker", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        CheckedArtifactFaultKeyV1::ManagedBootstrapOwnershipMarkerWrite,
+    );
     file.sync_all()
         .map_err(|source| CheckedFsError::io("flush managed ownership marker", source))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        CheckedArtifactFaultKeyV1::ManagedBootstrapOwnershipMarkerFlush,
+    );
     drop(file);
-    sync_directory_edge(staged, "flush managed staging interior")
+    sync_directory_edge(staged, "flush managed staging interior")?;
+    // The first of `staging_directory_flush`'s two boundaries; the second is the
+    // managed parent's flush in `stage_component`, which only a creating drive
+    // reaches. See the note there.
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        CheckedArtifactFaultKeyV1::ManagedBootstrapStagingDirectoryFlush,
+    );
+    Ok(())
 }
 
 /// Which generation edge of the managed intent record's durable lifecycle a call

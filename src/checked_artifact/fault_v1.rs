@@ -219,6 +219,18 @@ pub(super) fn run_next_at(key: CheckedArtifactFaultKeyV1, callback: impl FnOnce(
     });
 }
 
+/// Takes back an armed one-shot without firing it, reporting whether one was
+/// still installed.
+///
+/// R2-D Phase 3 Step 3.2's single-crossing probe needs it: there the property
+/// under test is that a boundary is *not* re-crossed after its own crash, so the
+/// arm survives the drive and has to be removed before the next one is installed
+/// (`run_next_at` refuses to replace a live arm).
+#[cfg(test)]
+pub(super) fn take_armed_fault() -> bool {
+    NEXT_FAULT.with(|slot| slot.take().is_some())
+}
+
 #[cfg(test)]
 pub(super) fn hit(key: CheckedArtifactFaultKeyV1) {
     NEXT_FAULT.with(|slot| {
