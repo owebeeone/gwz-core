@@ -216,8 +216,11 @@ fn managed_parent_bootstrap_provider_seam_is_frozen() {
 /// (amendment §8.13).
 #[test]
 fn the_track_p_publication_spike_is_test_only() {
-    let provider = include_str!("../capability/pre_catalog/provider.rs");
-    let spike = include_str!("../capability/pre_catalog/provider/tests_admission_spike.rs");
+    // Normalized so the pin holds on CRLF checkouts (Windows runners hand
+    // `include_str!` the working-tree bytes, not the index bytes).
+    let provider = include_str!("../capability/pre_catalog/provider.rs").replace("\r\n", "\n");
+    let spike = include_str!("../capability/pre_catalog/provider/tests_admission_spike.rs")
+        .replace("\r\n", "\n");
 
     assert!(
         provider.contains("#[cfg(test)]\nmod tests_admission_spike;"),
