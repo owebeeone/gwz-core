@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use super::super::fault_v1::CheckedArtifactFaultKeyV1;
 
@@ -242,9 +244,16 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
 ];
 
 /// The complete set of production sources that hold `CheckedArtifactFaultKeyV1`
-/// injection sites today. `runtime.*` edges are executed through the separate
+/// injection sites today — three files, all holding `catalog_bootstrap.*` sites.
+/// `runtime.*` edges are executed through the separate
 /// `bootstrap/runtime/fault.rs` mechanism, so they are executed without a key
 /// reference here (`GwzM5-8R2C2OwnerInterface-ReviewState-2.md:160-169`).
+///
+/// Completeness of this list is pinned, not asserted:
+/// `the_declared_injection_sources_are_every_production_source_holding_sites`
+/// rescans the production tree, so an injection site added in an unregistered
+/// file fails this fixture instead of silently escaping the reserved-family
+/// scan, which reads only the sources declared here.
 const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
     (
         "capability/pre_catalog/provider/mutation.rs",
@@ -253,6 +262,10 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
     (
         "capability/pre_catalog/provider/directory_mutation.rs",
         include_str!("../capability/pre_catalog/provider/directory_mutation.rs"),
+    ),
+    (
+        "capability/pre_catalog/provider/aggregate.rs",
+        include_str!("../capability/pre_catalog/provider/aggregate.rs"),
     ),
 ];
 
@@ -343,6 +356,79 @@ fn reserved_fault_families_have_no_injection_sites_before_their_package() {
             }
         }
     }
+}
+
+/// Mirrors `production_rust_files` in
+/// `scripts/checks/check_checked_artifact_boundaries.py:663-670`: a `.rs` file is
+/// production unless it sits under a `tests`/`interface_tests` directory or its
+/// file name starts with `tests`.
+fn production_sources_holding_injection_sites(root: &Path) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory).expect("the crate source tree is readable");
+        for entry in entries {
+            let path = entry.expect("a source tree entry is readable").path();
+            let name = path
+                .file_name()
+                .and_then(OsStr::to_str)
+                .expect("source tree names are UTF-8")
+                .to_owned();
+            if path.is_dir() {
+                if name != "tests" && name != "interface_tests" {
+                    pending.push(path);
+                }
+                continue;
+            }
+            if !name.ends_with(".rs") || name.starts_with("tests") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("a production source is readable");
+            if source.contains("CheckedArtifactFaultKeyV1::") {
+                found.insert(relative_slash_path(root, &path));
+            }
+        }
+    }
+    found
+}
+
+fn relative_slash_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .expect("a scanned source lies under the scan root")
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .expect("source tree names are UTF-8")
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Completeness anchor for `FAULT_INJECTION_SOURCES`. Without it the
+/// reserved-family scan is only as complete as the declared source list, so a
+/// reserved family could gain an injection site in an unregistered production
+/// file while its activation row still read `Reserved`.
+///
+/// `CheckedArtifactFaultKeyV1` is `pub(super)` on `checked_artifact::fault_v1`
+/// (`fault_v1.rs:10`, `checked_artifact/mod.rs:51`), so no injection site can
+/// exist outside `src/checked_artifact/` and scanning that subtree is exhaustive.
+#[test]
+fn the_declared_injection_sources_are_every_production_source_holding_sites() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/checked_artifact");
+    let scanned = production_sources_holding_injection_sites(&root);
+    let declared = FAULT_INJECTION_SOURCES
+        .iter()
+        .map(|(relative, _)| (*relative).to_owned())
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        scanned, declared,
+        "the production injection-site inventory drifted: every production source that names \
+         CheckedArtifactFaultKeyV1 must be declared in FAULT_INJECTION_SOURCES, or the \
+         reserved-family scan stops covering it"
+    );
 }
 
 #[test]

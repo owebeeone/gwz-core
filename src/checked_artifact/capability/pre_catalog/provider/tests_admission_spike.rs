@@ -81,7 +81,7 @@ fn admission_publish_and_retire_edges_use_the_sealed_publication_primitive() {
         Dir::open_ambient_dir(fixture.root.join("retired"), ambient_authority()).unwrap();
 
     // Deterministic indexed names; no nonce is allocated on any edge or retry
-    // (RemPlan-4 §4 R2 stop clause :1082-1085).
+    // (RemPlan-4 §4 R2 stop clause :1089-1092).
     let staging = OsStr::new("staging-0000");
     let published = OsStr::new("action-0000");
     let retired = OsStr::new("retired-action-0000");
