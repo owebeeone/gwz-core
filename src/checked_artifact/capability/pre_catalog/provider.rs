@@ -17,8 +17,14 @@ mod directory_mutation;
 mod filesystem;
 mod index;
 mod interior;
+#[allow(
+    dead_code,
+    reason = "R2-D Step 2.1 lands the leaf observer before Step 2.4 converts its production caller"
+)]
+mod leaf_observation;
 mod mutation;
 mod namespace;
+mod namespace_mutation;
 mod platform;
 mod publication;
 mod retained;
@@ -50,6 +56,12 @@ pub(in crate::checked_artifact::capability::pre_catalog) use directory_mutation:
 pub(in crate::checked_artifact::capability::pre_catalog) use mutation::{
     create_git_private_parent, finish_ready_edge_root_barrier, publish_active_record,
     write_or_rewrite_scratch,
+};
+/// R2-D Phase 2 Step 2.2. The retained action namespace is the only namespace
+/// capability that leaves this owner, and it carries no path and no raw
+/// mutation surface (amendment §7 :576-577).
+pub(in crate::checked_artifact) use namespace_mutation::{
+    ActionNamespaceEdgeV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
 };
 pub(in crate::checked_artifact) use platform::HostPlatform;
 pub(in crate::checked_artifact::capability::pre_catalog) use retained::RetainedPlatformRoot;
@@ -209,3 +221,7 @@ mod mutation_tests;
 mod production_tests;
 #[cfg(test)]
 mod tests_admission_spike;
+#[cfg(test)]
+mod tests_leaf_fault_matrix;
+#[cfg(test)]
+mod tests_leaf_observation;

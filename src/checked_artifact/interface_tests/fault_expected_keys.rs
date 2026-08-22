@@ -206,14 +206,34 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
         FaultFamilyActivationV1::Executed("R2-D phase 1 step 1.3 (R2-C3 admission)"),
         19,
     ),
+    // R2-D Phase 2 Step 2.1 converts every edge this family names: the bounded
+    // and same-handle durable leaf observations of
+    // `GwzM5-8R2DInterfaceFreeze.md` §4.3 rows E8-E11. All eleven keys have
+    // injection sites in `capability/pre_catalog/provider/leaf_observation.rs`
+    // and executed interruption/restart/convergence rows on both target
+    // variants in `capability/pre_catalog/provider/tests_leaf_fault_matrix.rs`,
+    // covering both sides of the two-sided proof — ten boundaries on the exact
+    // arm and `missing_revalidate` plus the three shared boundaries on the
+    // absence arm.
     (
         "durable_leaf",
-        FaultFamilyActivationV1::Reserved("R2-D step 2.1 (leaf observer)"),
+        FaultFamilyActivationV1::Executed("R2-D phase 2 step 2.1 (leaf observer)"),
         11,
     ),
+    // R2-D Phase 2 Step 2.2 converts every edge this family names. The eleven
+    // keys are the boundaries of the three backend edges the frozen map assigns
+    // it — E12 `publish_exact`, E13 `retire_exact` and E14 `barrier`
+    // (`GwzM5-8R2DInterfaceFreeze.md` §4.3) — and all eleven have injection
+    // sites in `capability/pre_catalog/provider/namespace_mutation.rs` plus
+    // executed matrix rows on both target variants in
+    // `namespace/tests_fault_matrix.rs`. Nothing is left reserved for Step 2.3:
+    // the four managed operations are the same two physical edges plus a
+    // managed observation, so they re-cross these same boundaries through the
+    // same shared edge helper, and the observation boundaries they add belong
+    // to `managed_bootstrap.*`.
     (
         "namespace",
-        FaultFamilyActivationV1::Reserved("R2-D steps 2.2/2.3 (namespace backend)"),
+        FaultFamilyActivationV1::Executed("R2-D phase 2 step 2.2 (namespace backend)"),
         11,
     ),
     (
@@ -244,9 +264,12 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
 ];
 
 /// The complete set of production sources that hold `CheckedArtifactFaultKeyV1`
-/// injection sites today — four files: three holding `catalog_bootstrap.*`
-/// sites, and `admission_mutation.rs` holding all nineteen `admission.*` sites
-/// converted by R2-D Phase 1 Step 1.3. `admission/driver.rs` deliberately holds
+/// injection sites today — three holding `catalog_bootstrap.*` sites,
+/// `admission_mutation.rs` holding all nineteen `admission.*` sites
+/// converted by R2-D Phase 1 Step 1.3, and `namespace_mutation.rs` holding all
+/// eleven `namespace.*` sites converted by R2-D Phase 2 Step 2.2, and
+/// `leaf_observation.rs` holding all eleven `durable_leaf.*` sites converted by
+/// R2-D Phase 2 Step 2.1. `admission/driver.rs` deliberately holds
 /// none: it decides and never mutates (`admission/driver.rs:8-9`), so every
 /// durable admission edge is announced from the owner-private mutation file.
 /// `runtime.*` edges are executed through the separate
@@ -274,6 +297,23 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
     (
         "capability/pre_catalog/provider/admission_mutation.rs",
         include_str!("../capability/pre_catalog/provider/admission_mutation.rs"),
+    ),
+    // R2-D Phase 2 Step 2.1: all eleven `durable_leaf.*` sites. A leaf
+    // observation is a read whose only durable edges are the leaf flush and the
+    // scheduled namespace barrier, so its boundaries are announced from the
+    // observer itself rather than from a mutation file.
+    (
+        "capability/pre_catalog/provider/leaf_observation.rs",
+        include_str!("../capability/pre_catalog/provider/leaf_observation.rs"),
+    ),
+    // R2-D Phase 2 Step 2.2: all eleven `namespace.*` sites. The `namespace`
+    // owner itself (`namespace/host.rs`) deliberately holds none — it validates
+    // capabilities and never mutates, so every durable namespace edge is
+    // announced from the owner-private provider mutation file, exactly as
+    // `admission/driver.rs` defers to `admission_mutation.rs`.
+    (
+        "capability/pre_catalog/provider/namespace_mutation.rs",
+        include_str!("../capability/pre_catalog/provider/namespace_mutation.rs"),
     ),
 ];
 
@@ -439,13 +479,19 @@ fn the_declared_injection_sources_are_every_production_source_holding_sites() {
     );
 }
 
-/// R2-D Phase 1 Step 1.3 added `admission` to this set, together with its
-/// nineteen injection sites and the executed matrix on both target variants
-/// (`admission/tests_fault_matrix.rs`). The remaining seven families stay
-/// reserved for the packages the frozen map names
+/// The executed set is an explicit literal, not a projection of the activation
+/// map, so flipping a family is a two-place deliberate edit made by the package
+/// that lands the matrix — never a side effect.
+///
+/// R2-D Phase 1 Step 1.3 added `admission`, with its nineteen injection sites
+/// and the executed matrix on both target variants
+/// (`admission/tests_fault_matrix.rs`). R2-D Phase 2 Step 2.2 added
+/// `namespace`, with its eleven injection sites and the executed matrix on both
+/// target variants (`namespace/tests_fault_matrix.rs`). Every remaining family
+/// stays reserved for the package the frozen map names
 /// (`GwzM5-8R2DInterfaceFreeze.md` §3.5).
 #[test]
-fn only_the_runtime_catalog_bootstrap_and_admission_families_are_executed_today() {
+fn only_the_families_with_executed_matrices_are_executed_today() {
     let executed = FAULT_FAMILY_ACTIVATION
         .iter()
         .filter(|(_, activation, _)| matches!(activation, FaultFamilyActivationV1::Executed(_)))
@@ -454,9 +500,15 @@ fn only_the_runtime_catalog_bootstrap_and_admission_families_are_executed_today(
 
     assert_eq!(
         executed,
-        ["admission", "catalog_bootstrap", "runtime"]
-            .into_iter()
-            .collect(),
+        [
+            "admission",
+            "catalog_bootstrap",
+            "durable_leaf",
+            "namespace",
+            "runtime"
+        ]
+        .into_iter()
+        .collect(),
         "a fault family changed activation state; the converting package owns that edit \
          together with its executed matrix evidence"
     );

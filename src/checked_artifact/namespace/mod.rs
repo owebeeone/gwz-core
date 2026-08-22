@@ -5,6 +5,12 @@
 
 mod backend;
 mod evidence;
+/// R2-D Phase 2 Step 2.2 — the retained-handle production backend.
+#[allow(
+    dead_code,
+    reason = "Step 2.2 lands the backend; plan §4 Step 3.3 wires its production consumer"
+)]
+mod host;
 mod managed;
 mod operations;
 mod provider_compile;
@@ -12,6 +18,16 @@ mod roles;
 
 #[cfg(test)]
 pub(super) mod test_support;
+#[cfg(test)]
+mod tests_backend;
+#[cfg(test)]
+mod tests_fault_matrix;
+
+#[allow(
+    unused_imports,
+    reason = "the sole production namespace backend; plan §4 Step 3.3 binds it to execution"
+)]
+pub(in crate::checked_artifact) use host::{HostActionNamespaceV1, retain_action_namespace};
 
 use super::capability::{
     AsciiComponent, CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1,

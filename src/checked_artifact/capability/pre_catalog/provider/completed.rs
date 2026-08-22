@@ -21,7 +21,7 @@ use crate::checked_artifact::catalog::{CatalogRecognizedNameV1, CatalogRecordFac
 use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
-    CatalogBootstrapRecordV1, InfrastructureSlotV1,
+    AdmittedActionV1, CatalogBootstrapRecordV1, InfrastructureSlotV1, RootEntryNameV1,
 };
 
 type IdentityV1 =
@@ -158,6 +158,25 @@ impl RetainedCompletedCatalogV1 {
             &self.expected_bootstrap,
             edge,
             expected,
+        )
+    }
+
+    /// R2-D Phase 2 Step 2.2. The one identity-proved no-follow hop from the
+    /// retained completed catalog to the admitted action's deterministic final
+    /// directory (`GwzM5-8R2C2PublicationAudit.md` :39-44). The caller receives
+    /// the retained namespace capability only — never the catalog handle and
+    /// never a path.
+    pub(in crate::checked_artifact::capability::pre_catalog) fn retain_action_namespace(
+        &self,
+        admitted: &AdmittedActionV1,
+    ) -> Result<super::RetainedActionNamespaceV1, CheckedFsError> {
+        let action_leaf =
+            RootEntryNameV1::ActiveAction(admitted.reservation().action_digest()).name();
+        super::namespace_mutation::retain_action_namespace(
+            &self.final_directory.handle,
+            &action_leaf,
+            admitted.directory_identity(),
+            admitted.reservation().record_digest(),
         )
     }
 

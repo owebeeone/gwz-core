@@ -2,12 +2,14 @@
 
 use crate::checked_artifact::bootstrap::{CatalogLeaseTargetWitnessV1, CatalogMutationLeaseV1};
 use crate::checked_artifact::capability::{
-    CatalogPreflightV1, CheckedFsError, CompletedCatalogPermitV1, preflight_catalog_target,
+    CatalogPreflightV1, CheckedFsError, CompletedCatalogPermitV1, RetainedActionNamespaceV1,
+    preflight_catalog_target,
 };
 use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 use crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
+    AdmittedActionV1,
 };
 
 /// The only physical first-catalog owner.
@@ -156,6 +158,17 @@ impl OpaqueRetainedCatalogV1<'_> {
         expected: &ActionCapacityReservationV1,
     ) -> Result<(), CheckedFsError> {
         self.permit.execute_admission_edge(edge, expected)
+    }
+
+    /// R2-D Phase 2 Step 2.2's namespace capability, forwarded through the same
+    /// permit. The catalog stays opaque: the namespace owner receives a
+    /// retained, reservation-bound action-directory capability and never the
+    /// permit, a root, or a handle (`GwzM5-8R2DInterfaceFreeze.md` §3.1).
+    pub(in crate::checked_artifact) fn retain_action_namespace(
+        &self,
+        admitted: &AdmittedActionV1,
+    ) -> Result<RetainedActionNamespaceV1, CheckedFsError> {
+        self.permit.retain_action_namespace(admitted)
     }
 }
 

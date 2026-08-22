@@ -105,14 +105,21 @@ fn catalog_publication_uses_one_source_associated_seam() {
     // Class 1: admission edges E3 and E4 are the two added production sites,
     // and they publish through the same one primitive.
     let admission = include_str!("../capability/pre_catalog/provider/admission_mutation.rs");
+    // R2-D Phase 2 Step 2.2 extends the caller inventory deliberately, per
+    // `GwzM5-8R2D-Plan.md` §4 Step 2.2 and `GwzM5-8R2DInterfaceFreeze.md` §4.4
+    // Class 1: backend edges E12 (`publish_exact`) and E13 (`retire_exact`) are
+    // physically one no-replace move between two deterministic action slots, so
+    // they add exactly one production site, in one added file, and they publish
+    // through the same one primitive.
+    let namespace = include_str!("../capability/pre_catalog/provider/namespace_mutation.rs");
     let publication = include_str!("../capability/pre_catalog/provider/publication.rs");
-    let callers = format!("{mutation}\n{directory}\n{admission}");
+    let callers = format!("{mutation}\n{directory}\n{admission}\n{namespace}");
 
     assert!(publication.contains("fn publish_verified_no_replace("));
     assert!(publication.contains("open_rename_source("));
     assert!(publication.contains("rename_open_source("));
     assert!(publication.contains("expected_identity"));
-    assert_eq!(callers.matches("publish_verified_no_replace(").count(), 8);
+    assert_eq!(callers.matches("publish_verified_no_replace(").count(), 9);
     assert!(!callers.contains("platform::rename_relative"));
     assert!(!callers.contains("fn rename_no_replace("));
 }

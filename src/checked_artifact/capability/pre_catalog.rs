@@ -16,12 +16,17 @@ use crate::checked_artifact::catalog::{
 use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
-    CatalogBootstrapRecordV1,
+    AdmittedActionV1, CatalogBootstrapRecordV1,
 };
 
 mod provider;
 
 pub(in crate::checked_artifact) use provider::HostPlatform;
+/// R2-D Phase 2 Step 2.2 — the retained action-namespace capability and the
+/// role-typed edge selector the `namespace` owner drives it with.
+pub(in crate::checked_artifact) use provider::{
+    ActionNamespaceEdgeV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::checked_artifact) enum PreCatalogRootKindV1 {
@@ -129,6 +134,18 @@ impl CompletedCatalogPermitV1<'_> {
     ) -> Result<(), CheckedFsError> {
         self.revalidate()?;
         self.completed.execute_admission_edge(edge, expected)
+    }
+
+    /// R2-D Phase 2 Step 2.2. Retains the admitted action's namespace under the
+    /// same `ready_edge_prologue` discipline the admission entry points use:
+    /// the lease/root binding and the exact retained catalog are re-proved
+    /// before the single no-follow hop that opens the action directory.
+    pub(in crate::checked_artifact) fn retain_action_namespace(
+        &self,
+        admitted: &AdmittedActionV1,
+    ) -> Result<provider::RetainedActionNamespaceV1, CheckedFsError> {
+        self.revalidate()?;
+        self.completed.retain_action_namespace(admitted)
     }
 }
 
