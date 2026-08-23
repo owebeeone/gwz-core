@@ -225,8 +225,13 @@ where
         "authority goal payload",
     )?;
     Ok(StreamedPayloadProofV1 {
-        // Provenance, taken from the capability these payloads were actually
-        // streamed through — not from a caller, and not re-supplied later.
+        // Provenance: artifact_root and retained_parent_identity are read off
+        // the capability these payloads were actually streamed through, never
+        // re-supplied later. `action` is the caller's argument — its
+        // trustworthiness rests on slot-name derivation (every slot name this
+        // stream read was built from it), which is the obligation stated on
+        // `AuthorityFactsIssuerV1::issue` and enforced by the seam gate and
+        // the join guard downstream (settled-dual Code review [P3-2]).
         action,
         artifact_root: parent.path_profile().clone(),
         retained_parent_identity: parent.identity().clone(),
