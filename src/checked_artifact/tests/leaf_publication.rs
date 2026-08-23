@@ -77,8 +77,22 @@ fn substitute_same_bytes(path: &Path) {
     fs::rename(&staged, path).unwrap();
 }
 
+/// The family's write-ahead staging names only.
+///
+/// Suffix-scoped rather than prefix-scoped: on Windows the same private area also
+/// holds the durability anchor (`.ca1-durability-anchor-<32hex>`), which
+/// `prepare_private` plants and `finish()` never removes, so a `.ca1-` prefix
+/// scan counts it too. The Windows probe caught exactly that.
 fn staging_entries(workspace: &Path) -> Vec<PathBuf> {
     entries_with_prefix(&private_root(workspace), ".ca1-")
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".scratch")
+        })
+        .collect()
 }
 
 /// R2-D Phase 4 Step 4.2, the Step-4.2 review's [P3-2]: the E20/E21 staging names
