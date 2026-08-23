@@ -391,7 +391,7 @@ impl CheckedArtifact {
             &identity.name_digest(),
         );
         fault(
-            CheckedArtifactFault::BeforeSealedLeafPublication,
+            CheckedArtifactFault::BeforeGoalPublication,
             self.code,
             &self.label,
         )?;
@@ -506,7 +506,7 @@ impl CheckedArtifact {
             .map_err(|cause| unsupported(&self.label, "authority record identity", cause))?;
         drop(file);
         fault(
-            CheckedArtifactFault::BeforeSealedLeafPublication,
+            CheckedArtifactFault::BeforeAuthorityPublication,
             self.code,
             &self.label,
         )?;

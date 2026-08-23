@@ -177,6 +177,15 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
 # four legacy leaf edges the previous comment described now route through that
 # one sealed composition, so no legacy leaf writer names a raw rename at all
 # and the whole raw-rename surface of the subsystem is the two files below.
+#
+# R2-D Phase 4 Step 4.2 (freeze §4.3 row E22) took the four remaining
+# `rename_relative` references with it. The legacy Windows durability anchor
+# held them — two in its create/return arms and two in the barrier round trip —
+# and its closed successor in `checked_artifact/platform/anchor.rs` publishes
+# every anchor edge through the same P1 composition instead, so that file needs
+# no entry here at all. `rename_relative` now has exactly ONE reference in the
+# whole subsystem: `rename_open_source`'s own non-Windows delegation.
+#
 # Any other reference anywhere in the subsystem violates the single-seam rule
 # (RemPlan publication-correction clause; amendment §8.13) and fails closed
 # here.
@@ -188,7 +197,7 @@ RAW_RENAME_CALL_ALLOWLIST = {
     "checked_artifact/platform.rs": {
         "open_rename_source": 6,
         "rename_open_source": 6,
-        "rename_relative": 5,
+        "rename_relative": 1,
     },
 }
 RAW_RENAME_TOKENS = ("open_rename_source", "rename_open_source", "rename_relative")

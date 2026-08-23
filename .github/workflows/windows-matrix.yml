@@ -32,9 +32,29 @@ jobs:
           # The suite step exits red while the burn-down tail exists; still
           # save the cache so later runs and probe branches start warm.
           cache-on-failure: true
-      - name: Run the complete test suite
+      # PROBE BRANCH ONLY (probe/anchor-retirement-win, R2-D Phase 4 Step 4.2).
+      # Trimmed to the suites that drive the retired durability anchor: the
+      # closed protocol itself, the seven legacy AnchoredPrivateArea call sites
+      # (cleanup.rs x3, residue.rs x3, transition.rs x1) exercised by the legacy
+      # checked-artifact suites, the seam pins, and the ExactInterior arm the
+      # E10/E14 annotation governs. Never merge this trim to main.
+      - name: Run the anchor-retirement probe slice
         shell: bash
-        run: cargo test --locked --no-fail-fast 2>&1 | tee windows-matrix.log || true
+        run: |
+          set -o pipefail
+          : > windows-matrix.log
+          status=0
+          for filter in \
+            checked_artifact::platform \
+            checked_artifact::tests \
+            checked_artifact::interface_tests::capability_permit \
+            checked_artifact::namespace::tests_fault_matrix \
+            checked_artifact::namespace::tests_managed_matrix \
+            checked_artifact::capability::pre_catalog::provider::tests_authority_record ; do
+            echo "== $filter ==" | tee -a windows-matrix.log
+            cargo test --locked --lib "$filter" -- --test-threads=1 2>&1 | tee -a windows-matrix.log || status=1
+          done
+          echo "probe slice status=$status"
       - name: Summarize failures
         shell: bash
         run: |

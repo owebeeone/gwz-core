@@ -80,7 +80,7 @@ fn substituted_authority_scratch_is_refused_before_the_sealed_authority_edge() {
 
     let workspace = root.0.clone();
     run_next_checked_artifact_at(
-        CheckedArtifactFault::BeforeSealedLeafPublication,
+        CheckedArtifactFault::BeforeAuthorityPublication,
         move || substitute_same_bytes(&scratch_entry(&workspace, "authority")),
     );
     let error = checked
@@ -123,10 +123,9 @@ fn substituted_goal_scratch_is_refused_before_the_sealed_goal_edge() {
     );
 
     let workspace = root.0.clone();
-    run_next_checked_artifact_at(
-        CheckedArtifactFault::BeforeSealedLeafPublication,
-        move || substitute_same_bytes(&scratch_entry(&workspace, "goal")),
-    );
+    run_next_checked_artifact_at(CheckedArtifactFault::BeforeGoalPublication, move || {
+        substitute_same_bytes(&scratch_entry(&workspace, "goal"))
+    });
     let error = artifact(&root.0, "a/value")
         .replace_exact(&CheckedArtifactFact::Missing, b"goal")
         .unwrap_err();
@@ -164,12 +163,9 @@ fn substituted_managed_source_is_refused_before_the_sealed_detach_edge() {
     );
 
     let substituted = managed.clone();
-    run_next_checked_artifact_at(
-        CheckedArtifactFault::BeforeSealedLeafPublication,
-        move || {
-            substitute_same_bytes(&substituted);
-        },
-    );
+    run_next_checked_artifact_at(CheckedArtifactFault::BeforeDetachPublication, move || {
+        substitute_same_bytes(&substituted);
+    });
     let error = artifact(&root.0, "a/value")
         .replace_exact(&expected, b"goal")
         .unwrap_err();
@@ -205,12 +201,9 @@ fn substituted_staged_goal_is_refused_before_the_sealed_managed_edge() {
     );
 
     let staged = family_entry(&root.0, &family, "goal");
-    run_next_checked_artifact_at(
-        CheckedArtifactFault::BeforeSealedLeafPublication,
-        move || {
-            substitute_same_bytes(&staged);
-        },
-    );
+    run_next_checked_artifact_at(CheckedArtifactFault::BeforeManagedPublication, move || {
+        substitute_same_bytes(&staged);
+    });
     let error = artifact(&root.0, "a/value")
         .replace_exact(&expected, b"goal")
         .unwrap_err();

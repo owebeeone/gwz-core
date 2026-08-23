@@ -195,6 +195,57 @@ fn the_legacy_leaf_edges_use_one_source_associated_publication_seam() {
     }
 }
 
+/// R2-D Phase 4 Step 4.2, freeze §4.3 row **E22**: the closed durability-anchor
+/// protocol publishes every one of its edges through the same P1 composition, so
+/// the anchor names no raw rename of its own and its file needs no entry in the
+/// checker's `RAW_RENAME_CALL_ALLOWLIST`.
+///
+/// The nonce assertion is the step's own acceptance criterion. The legacy create
+/// arm allocated `.ca1-anchor-scratch-<random>` per attempt — the R2 stop
+/// clause's forbidden retry name, and an orphan the legacy survey could not even
+/// see. One deterministic staging name replaces it, and `getrandom` must not
+/// return to this file. The removal likewise: the alias reconciliation is a
+/// durable retirement now, so `remove_file` must not return either.
+#[test]
+fn the_durability_anchor_protocol_is_closed_and_allocates_no_retry_name() {
+    let anchor = include_str!("../platform/anchor.rs");
+    let platform = include_str!("../platform.rs");
+
+    for token in [
+        "rename_relative",
+        "open_rename_source",
+        "rename_open_source",
+    ] {
+        assert!(
+            !anchor.contains(token),
+            "an anchor edge bypassed the sealed composition with a raw rename: {token}"
+        );
+    }
+    assert_eq!(
+        anchor.matches("publish_verified_leaf_no_replace(").count(),
+        1,
+        "every anchor edge publishes through one shared call site"
+    );
+    // Call forms, not bare words: the module's own prose names both of the
+    // things it retired.
+    for forbidden in ["getrandom::", ".remove_file("] {
+        assert!(
+            !anchor.contains(forbidden),
+            "the closed anchor protocol reintroduced {forbidden}"
+        );
+    }
+    assert!(anchor.contains(r#"const SCRATCH_NAME: &str = ".ca1-anchor-scratch-v1""#));
+    assert!(anchor.contains(r#"const RETIRED_NAME: &str = ".ca1-anchor-retired-v1""#));
+    assert!(
+        !platform.contains("ca1-anchor-scratch-"),
+        "the legacy random anchor scratch survived in platform.rs"
+    );
+    // The split itself: the anchor owns its module and `platform.rs` keeps only
+    // the P1 pair, the two sealed compositions and the P2/P5 arms.
+    assert!(platform.contains("mod anchor;"));
+    assert!(!platform.contains("enum AnchorState"));
+}
+
 #[test]
 fn catalog_owner_surface_is_sealed_and_lease_only() {
     let catalog = include_str!("../catalog.rs");
