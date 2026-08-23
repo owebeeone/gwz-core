@@ -390,12 +390,20 @@ impl CheckedArtifact {
             &authority.action_key,
             &identity.name_digest(),
         );
-        super::platform::rename_relative(
+        fault(
+            CheckedArtifactFault::BeforeSealedLeafPublication,
+            self.code,
+            &self.label,
+        )?;
+        super::platform::publish_verified_leaf_no_replace(
             &dir,
             OsStr::new(&scratch),
             &dir,
             OsStr::new(&name),
-            false,
+            &super::platform::LeafPublicationSourceV1 {
+                identity: &identity,
+                bytes: goal,
+            },
             self.code,
             &self.label,
         )?;
@@ -487,13 +495,30 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
+        // The scratch's durable identity is taken from the write handle, exactly
+        // as `ensure_goal` above takes the staged goal's, so the sealed
+        // publication below can re-verify the object it renames. It adds no
+        // platform requirement: every drive that reaches this point already
+        // fails without `identity::file_identity` — through `inspect_family`'s
+        // reobservation of the record it just published, or through the goal
+        // staging that follows it.
+        let identity = identity::file_identity(&file)
+            .map_err(|cause| unsupported(&self.label, "authority record identity", cause))?;
         drop(file);
-        super::platform::rename_relative(
+        fault(
+            CheckedArtifactFault::BeforeSealedLeafPublication,
+            self.code,
+            &self.label,
+        )?;
+        super::platform::publish_verified_leaf_no_replace(
             dir,
             OsStr::new(&scratch),
             dir,
             OsStr::new(name),
-            false,
+            &super::platform::LeafPublicationSourceV1 {
+                identity: &identity,
+                bytes,
+            },
             self.code,
             &self.label,
         )?;

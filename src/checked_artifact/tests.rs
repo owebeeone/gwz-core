@@ -8,6 +8,8 @@ use std::sync::atomic::Ordering;
 mod durability;
 #[path = "tests/exact_source.rs"]
 mod exact_source;
+#[path = "tests/leaf_publication.rs"]
+mod leaf_publication;
 #[path = "tests/recovery_protocol.rs"]
 mod recovery_protocol;
 #[path = "tests/removal_recovery.rs"]

@@ -156,6 +156,82 @@ pub(super) fn rename_open_source(
     Ok(())
 }
 
+/// The exact object a legacy leaf edge proved, restated for the sealed
+/// publication below so the primitive can re-verify it through the very handle
+/// it renames rather than trusting the caller's earlier open-by-name.
+pub(super) struct LeafPublicationSourceV1<'a> {
+    pub(super) identity: &'a super::identity::ObjectIdentity,
+    pub(super) bytes: &'a [u8],
+}
+
+/// Sealed source-associated publication for the legacy leaf family — the P1
+/// composition of `GwzM5-8R2DInterfaceFreeze.md` §4.1 ("`open_rename_source`
+/// … then `rename_open_source` — retains the identity-checked handle across a
+/// relative no-replace rename") applied to §4.3 rows E18-E21, which the frozen
+/// table assigns to P1 "(replaces `platform::rename_relative`)".
+///
+/// It is the legacy twin of
+/// `capability/pre_catalog/provider/publication.rs::publish_verified_no_replace`
+/// and not a call into it, for one binding reason: that function's identity
+/// compare is `HostPlatform`-bound, and `HostPlatform` admits only the closed
+/// support table (`require_ext4` on Linux, `ATTR_CMN_OBJPERMANENTID` on macOS,
+/// NTFS `FileId128` on Windows). The legacy leaf writer is live on every
+/// filesystem that carries a persistent file handle, so routing these four
+/// edges through that function would narrow production merge and stash flows to
+/// that table — the one thing plan §4 Step 4.1 forbids ("with identical
+/// external behavior"). This composition therefore takes P1's arms and the
+/// legacy family's own durable identity vocabulary (`super::identity`), which is
+/// the vocabulary the family's authority record already commits to.
+///
+/// The physical edge is unchanged. On Windows `rename_relative` already *is*
+/// `open_rename_source` + `rename_open_source`; off Windows `rename_open_source`
+/// delegates to the same `renameat_with(.., NOREPLACE)`. What the composition
+/// adds is the acquisition window: identity and bytes are read back through the
+/// retained handle, so a source substituted after the caller's proof is refused
+/// before any namespace mutation instead of being moved and then rejected.
+pub(super) fn publish_verified_leaf_no_replace(
+    source_dir: &Dir,
+    source: &OsStr,
+    destination_dir: &Dir,
+    destination: &OsStr,
+    expected: &LeafPublicationSourceV1<'_>,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
+    use std::io::Read;
+
+    let mut handle = open_rename_source(source_dir, source, code, label)?;
+    let observed = super::identity::file_identity(handle.file()).map_err(|cause| {
+        ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            format!("checked {label}: durable filesystem identity is unsupported: {cause}"),
+        )
+    })?;
+    if observed != *expected.identity {
+        return Err(error(code, label, "publication source identity changed"));
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(expected.bytes.len() + 1)
+        .map_err(|_| {
+            error(
+                code,
+                label,
+                "publication source verification allocation failed",
+            )
+        })?;
+    handle
+        .file_mut()
+        .by_ref()
+        .take(expected.bytes.len() as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|cause| io_error(code, label, cause))?;
+    if bytes != expected.bytes {
+        return Err(error(code, label, "publication source bytes changed"));
+    }
+    rename_open_source(&handle, destination_dir, destination, false, code, label)
+}
+
 #[cfg(not(windows))]
 pub(super) fn open_dir_share_delete(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
     use cap_fs_ext::DirExt;

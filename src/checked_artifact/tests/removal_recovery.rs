@@ -27,6 +27,9 @@ fn every_removal_fault_restarts_to_exact_absence() {
         CheckedArtifactFault::AfterAuthorityScratchCreate,
         CheckedArtifactFault::AfterAuthorityScratchWrite,
         CheckedArtifactFault::AfterAuthorityScratchFlush,
+        // R2-D Phase 4 Step 4.1: the sealed leaf publication's window, entered
+        // at the drive's first crossing (the authority record's publication).
+        CheckedArtifactFault::BeforeSealedLeafPublication,
         CheckedArtifactFault::AfterAuthorityPublication,
         CheckedArtifactFault::AfterAuthorityParentBarrier,
         CheckedArtifactFault::BeforeDestinationDurability,

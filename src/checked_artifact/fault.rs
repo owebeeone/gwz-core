@@ -38,6 +38,12 @@ pub(crate) enum CheckedArtifactFault {
     AfterAnchorReturnRename,
     #[cfg(windows)]
     AfterAnchorReobservation,
+    /// The window between a legacy leaf edge's exact proof and the sealed
+    /// source-associated publication that executes it (R2-D Phase 4 Step 4.1;
+    /// `GwzM5-8R2DInterfaceFreeze.md` §4.3 rows E18-E21). It is announced from
+    /// all four converted call sites, so an injection reaches whichever of them
+    /// the drive crosses first.
+    BeforeSealedLeafPublication,
     BeforeFinalCheck,
     AfterFinalProof,
     AfterDetach,

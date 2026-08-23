@@ -266,18 +266,36 @@ impl CheckedArtifact {
                 "source or retained parent changed before detach",
             ));
         }
-        let source_identity = leaf.identity.expect("exact existing source has identity");
+        let CheckedArtifactFact::Bytes(source_bytes) = &leaf.fact else {
+            return Err(error(
+                self.code,
+                &self.label,
+                "exact existing source has no bytes",
+            ));
+        };
+        let source_identity = leaf
+            .identity
+            .clone()
+            .expect("exact existing source has identity");
         let source_name = super::authority::source_name(
             &authority.family_key,
             &authority.action_key,
             &source_identity.name_digest(),
         );
-        super::platform::rename_relative(
+        fault(
+            CheckedArtifactFault::BeforeSealedLeafPublication,
+            self.code,
+            &self.label,
+        )?;
+        super::platform::publish_verified_leaf_no_replace(
             dir,
             &self.leaf,
             &private,
             source_name.as_ref(),
-            false,
+            &super::platform::LeafPublicationSourceV1 {
+                identity: &source_identity,
+                bytes: source_bytes.as_slice(),
+            },
             self.code,
             &self.label,
         )?;
@@ -365,12 +383,20 @@ impl CheckedArtifact {
                 "checked replacement lost its staged goal",
             )
         })?;
-        super::platform::rename_relative(
+        fault(
+            CheckedArtifactFault::BeforeSealedLeafPublication,
+            self.code,
+            &self.label,
+        )?;
+        super::platform::publish_verified_leaf_no_replace(
             &private,
             &staged.name,
             dir,
             &self.leaf,
-            false,
+            &super::platform::LeafPublicationSourceV1 {
+                identity: &staged.identity,
+                bytes: goal,
+            },
             self.code,
             &self.label,
         )?;

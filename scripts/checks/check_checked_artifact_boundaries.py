@@ -43,7 +43,9 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
     "checked_artifact/mod.rs": "85a7e2c485686118da2a52870e02ed35078f1f4ee1caa7c941839876a6c0ea3f",
-    "checked_artifact/platform.rs": "6da65329100923462b2bcd358d79c405acaec9d3eff9b8c117c2cb79141531fc",
+    "checked_artifact/platform.rs": "ceccf3d83bb6cb0ca0943212522011e81c0563a642587dbeb6893a1a04061a9e",
+    "checked_artifact/residue.rs": "07b90f925e7ea3f980b3fbefd655097309f1a2c44d36c37f328e52c34930b59d",
+    "checked_artifact/transition.rs": "a68289ac7cad2d87f432cf4eafd88f6b3d6d83fc0e0686fcddf7c24f000234d3",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
@@ -86,6 +88,9 @@ APPROVED_RUST_PATH_EDGES = {
     ("checked_artifact/mod.rs", "tests.rs"),
     ("checked_artifact/tests.rs", "tests/durability.rs"),
     ("checked_artifact/tests.rs", "tests/exact_source.rs"),
+    # R2-D Phase 4 Step 4.1: the four converted legacy leaf edges and the
+    # sealed leaf publication they route through.
+    ("checked_artifact/tests.rs", "tests/leaf_publication.rs"),
     ("checked_artifact/tests.rs", "tests/recovery_protocol.rs"),
     ("checked_artifact/tests.rs", "tests/removal_recovery.rs"),
     ("checked_artifact/tests.rs", "tests/staging_recovery.rs"),
@@ -163,23 +168,28 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
 # binding, and turbofish spellings fail closed: any rebinding must name the
 # item at least once (rounds Code-4/State-3 [P3-1]). publication.rs is the
 # sealed primitive's own platform pair; platform.rs is internal composition,
-# the legacy Windows durability anchor, and its in-file windows test module
-# (imports included); transition.rs and residue.rs are the four legacy leaf
-# edges, retired by R2-D. Any other reference anywhere in the subsystem
-# violates the single-seam rule (RemPlan publication-correction clause;
-# amendment §8.13) and fails closed here.
+# the legacy Windows durability anchor, its in-file windows test module
+# (imports included), and — added by R2-D Phase 4 Step 4.1 — the sealed
+# leaf publication `publish_verified_leaf_no_replace`, which composes the same
+# P1 pair for the legacy leaf family (freeze §4.1 row P1, §4.3 rows E18-E21).
+#
+# R2-D Phase 4 Step 4.1 RETIRED the transition.rs and residue.rs entries: the
+# four legacy leaf edges the previous comment described now route through that
+# one sealed composition, so no legacy leaf writer names a raw rename at all
+# and the whole raw-rename surface of the subsystem is the two files below.
+# Any other reference anywhere in the subsystem violates the single-seam rule
+# (RemPlan publication-correction clause; amendment §8.13) and fails closed
+# here.
 RAW_RENAME_CALL_ALLOWLIST = {
     "checked_artifact/capability/pre_catalog/provider/publication.rs": {
         "open_rename_source": 1,
         "rename_open_source": 1,
     },
     "checked_artifact/platform.rs": {
-        "open_rename_source": 5,
-        "rename_open_source": 5,
+        "open_rename_source": 6,
+        "rename_open_source": 6,
         "rename_relative": 5,
     },
-    "checked_artifact/residue.rs": {"rename_relative": 2},
-    "checked_artifact/transition.rs": {"rename_relative": 2},
 }
 RAW_RENAME_TOKENS = ("open_rename_source", "rename_open_source", "rename_relative")
 

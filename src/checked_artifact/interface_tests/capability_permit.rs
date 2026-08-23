@@ -141,6 +141,60 @@ fn catalog_publication_uses_one_source_associated_seam() {
     assert!(!callers.contains("fn rename_no_replace("));
 }
 
+/// R2-D Phase 4 Step 4.1: the four legacy leaf edges — `GwzM5-8R2DInterfaceFreeze.md`
+/// §4.3 rows E18-E21, which the frozen table assigns to **P1** "(replaces
+/// `platform::rename_relative`)" — publish through one sealed source-associated
+/// composition of P1's own arms (§4.1 row P1), and name no raw rename of their
+/// own. This is the legacy-side twin of the pin above; the checker's
+/// `RAW_RENAME_CALL_ALLOWLIST` lost its `transition.rs` and `residue.rs` entries
+/// in the same package.
+///
+/// The composition is a twin rather than a call into
+/// `publish_verified_no_replace`, and deliberately so: that primitive's identity
+/// compare is `HostPlatform`-bound, and `HostPlatform` admits only the closed
+/// support table, while the legacy leaf writer is live on every filesystem that
+/// carries a persistent file handle. Routing these edges through it would narrow
+/// production merge and stash flows to that table, which plan §4 Step 4.1
+/// forbids ("with identical external behavior"). The count assertion below is
+/// what keeps the two seams from multiplying into three.
+#[test]
+fn the_legacy_leaf_edges_use_one_source_associated_publication_seam() {
+    let platform = include_str!("../platform.rs");
+    let transition = include_str!("../transition.rs");
+    let residue = include_str!("../residue.rs");
+    let callers = format!("{transition}\n{residue}");
+
+    assert!(platform.contains("fn publish_verified_leaf_no_replace("));
+    assert_eq!(
+        platform
+            .matches("fn publish_verified_leaf_no_replace(")
+            .count(),
+        1,
+        "the legacy leaf publication is one sealed composition, not a family"
+    );
+    // Edges E18/E19 in transition.rs and E20/E21 in residue.rs.
+    assert_eq!(
+        transition
+            .matches("publish_verified_leaf_no_replace(")
+            .count(),
+        2
+    );
+    assert_eq!(
+        residue.matches("publish_verified_leaf_no_replace(").count(),
+        2
+    );
+    for token in [
+        "rename_relative",
+        "open_rename_source",
+        "rename_open_source",
+    ] {
+        assert!(
+            !callers.contains(token),
+            "a legacy leaf edge bypassed the sealed composition with a raw rename: {token}"
+        );
+    }
+}
+
 #[test]
 fn catalog_owner_surface_is_sealed_and_lease_only() {
     let catalog = include_str!("../catalog.rs");

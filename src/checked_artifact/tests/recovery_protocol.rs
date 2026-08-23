@@ -173,6 +173,10 @@ fn every_non_cleanup_fault_restarts_to_one_exact_goal() {
         CheckedArtifactFault::AfterAuthorityScratchCreate,
         CheckedArtifactFault::AfterAuthorityScratchWrite,
         CheckedArtifactFault::AfterAuthorityScratchFlush,
+        // R2-D Phase 4 Step 4.1: the window the sealed leaf publication opens
+        // and closes. `fail_next_checked_artifact_at` fires at the drive's
+        // first crossing, which is the authority record's publication.
+        CheckedArtifactFault::BeforeSealedLeafPublication,
         CheckedArtifactFault::AfterAuthorityPublication,
         CheckedArtifactFault::AfterAuthorityParentBarrier,
         CheckedArtifactFault::BeforeGoalScratchCreate,
