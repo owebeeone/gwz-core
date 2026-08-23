@@ -195,6 +195,91 @@ fn the_legacy_leaf_edges_use_one_source_associated_publication_seam() {
     }
 }
 
+/// R2-D Phase 4 Step 4.2, freeze §4.3 row **E22**: the closed durability-anchor
+/// protocol publishes every one of its edges through the same P1 composition, so
+/// the anchor names no raw rename of its own and its file needs no entry in the
+/// checker's `RAW_RENAME_CALL_ALLOWLIST`.
+///
+/// The nonce assertion is the step's own acceptance criterion. The legacy create
+/// arm allocated `.ca1-anchor-scratch-<random>` per attempt — the R2 stop
+/// clause's forbidden retry name, and an orphan the legacy survey could not even
+/// see. One deterministic staging name replaces it, and `getrandom` must not
+/// return to this file. The removal likewise: the alias reconciliation is a
+/// durable retirement now, so `remove_file` must not return either.
+#[test]
+fn the_durability_anchor_protocol_is_closed_and_allocates_no_retry_name() {
+    let anchor = include_str!("../platform/anchor.rs");
+    let platform = include_str!("../platform.rs");
+
+    for token in [
+        "rename_relative",
+        "open_rename_source",
+        "rename_open_source",
+    ] {
+        assert!(
+            !anchor.contains(token),
+            "an anchor edge bypassed the sealed composition with a raw rename: {token}"
+        );
+    }
+    assert_eq!(
+        anchor.matches("publish_verified_leaf_no_replace(").count(),
+        1,
+        "every anchor edge publishes through one shared call site"
+    );
+    // Call forms, not bare words: the module's own prose names both of the
+    // things it retired.
+    for forbidden in ["getrandom::", ".remove_file("] {
+        assert!(
+            !anchor.contains(forbidden),
+            "the closed anchor protocol reintroduced {forbidden}"
+        );
+    }
+    assert!(anchor.contains(r#"const SCRATCH_NAME: &str = ".ca1-anchor-scratch-v1""#));
+    // Ordinal-indexed, not singular: the Step-4.2 review's [P2-2] showed a single
+    // retirement destination wedges the whole private area on the second
+    // stranding, so the ordinal is read off the observed durable state.
+    assert!(anchor.contains(r#"const RETIRED_PREFIX: &str = ".ca1-anchor-retired-""#));
+    assert!(anchor.contains("fn smallest_free_ordinal("));
+    assert!(
+        !platform.contains("ca1-anchor-scratch-"),
+        "the legacy random anchor scratch survived in platform.rs"
+    );
+    // The split itself: the anchor owns its module and `platform.rs` keeps only
+    // the P1 pair, the two sealed compositions and the P2/P5 arms.
+    assert!(platform.contains("mod anchor;"));
+    assert!(!platform.contains("enum AnchorState"));
+}
+
+/// R2-D Phase 4 Step 4.2, the Step-4.2 review's [P3-2]: the same nonce harm the
+/// anchor's protocol removed survived one file away, on the E20/E21 edges Step
+/// 4.1 had just converted — plan §4 Step 4.2's own trigger, "a standing violation
+/// of the R2 stop clause **the moment it is on a successful converted path**".
+///
+/// The family's write-ahead staging name is now derived from the same observed
+/// durable state as the published names beside it, so no `getrandom` call may
+/// return to the private family's naming.
+#[test]
+fn the_family_staging_name_is_derived_and_allocates_no_retry_name() {
+    let authority = include_str!("../authority.rs");
+    let residue = include_str!("../residue.rs");
+
+    assert!(
+        !authority.contains("getrandom::"),
+        "the private family's naming reintroduced a nonce"
+    );
+    assert!(
+        authority.contains("fn scratch_name(family: &str, action: &str, kind: &str) -> String")
+    );
+    assert!(authority.contains(r#"format!(".ca1-{family}-{action}-{kind}.scratch")"#));
+    // Dotted, so it stays outside `inspect_family`'s `ca1-<family>-` grammar and
+    // no older gwz reading this private area classifies it as foreign.
+    assert!(residue.contains(r#"let prefix = family_prefix(&family);"#));
+    // Both converted edges take the shared resume-aware opener, so neither can
+    // drift back to an unconditional `create_new`.
+    assert_eq!(residue.matches("self.staging_options(").count(), 2);
+    assert_eq!(residue.matches("scratch_name(").count(), 2);
+}
+
 #[test]
 fn catalog_owner_surface_is_sealed_and_lease_only() {
     let catalog = include_str!("../catalog.rs");

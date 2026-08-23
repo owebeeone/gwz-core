@@ -283,7 +283,7 @@ impl CheckedArtifact {
             &source_identity.name_digest(),
         );
         fault(
-            CheckedArtifactFault::BeforeSealedLeafPublication,
+            CheckedArtifactFault::BeforeDetachPublication,
             self.code,
             &self.label,
         )?;
@@ -384,7 +384,7 @@ impl CheckedArtifact {
             )
         })?;
         fault(
-            CheckedArtifactFault::BeforeSealedLeafPublication,
+            CheckedArtifactFault::BeforeManagedPublication,
             self.code,
             &self.label,
         )?;

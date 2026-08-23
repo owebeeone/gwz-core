@@ -46,11 +46,20 @@ fn family_entry(workspace: &Path, family: &str, extension: &str) -> PathBuf {
     matched.pop().expect("one matching family entry")
 }
 
-/// Scratch names are `.ca1-scratch-<kind>-<hex>` (`authority::scratch_name`), so
-/// a fault hook can address one without knowing its random half.
+/// Staging names are `.ca1-<family>-<action>-<kind>.scratch`
+/// (`authority::scratch_name`) — deterministic since R2-D Phase 4 Step 4.2, so a
+/// fault hook addresses one by its kind rather than by hunting a random half.
 fn scratch_entry(workspace: &Path, kind: &str) -> PathBuf {
-    let mut matched =
-        entries_with_prefix(&private_root(workspace), &format!(".ca1-scratch-{kind}-"));
+    let suffix = format!("-{kind}.scratch");
+    let mut matched = entries_with_prefix(&private_root(workspace), ".ca1-")
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(&suffix)
+        })
+        .collect::<Vec<_>>();
     assert_eq!(matched.len(), 1, "exactly one live {kind} scratch");
     matched.pop().expect("one matching scratch")
 }
@@ -68,6 +77,130 @@ fn substitute_same_bytes(path: &Path) {
     fs::rename(&staged, path).unwrap();
 }
 
+/// The family's write-ahead staging names only.
+///
+/// Suffix-scoped rather than prefix-scoped: on Windows the same private area also
+/// holds the durability anchor (`.ca1-durability-anchor-<32hex>`), which
+/// `prepare_private` plants and `finish()` never removes, so a `.ca1-` prefix
+/// scan counts it too. The Windows probe caught exactly that.
+fn staging_entries(workspace: &Path) -> Vec<PathBuf> {
+    entries_with_prefix(&private_root(workspace), ".ca1-")
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".scratch")
+        })
+        .collect()
+}
+
+/// R2-D Phase 4 Step 4.2, the Step-4.2 review's [P3-2]: the E20/E21 staging names
+/// were `getrandom` nonces until this step, so every crash between the create and
+/// the publication left an orphan `inspect_family` could not even see — one per
+/// crash, for ever. Twelve rounds at the flush boundary must leave exactly one
+/// name, the same one each time, and the drive that follows must converge onto it
+/// rather than beside it.
+#[test]
+fn repeated_crashes_reuse_one_deterministic_authority_staging_name() {
+    let root = TempRoot::new("authority-staging-reuse");
+    fs::create_dir_all(root.0.join("a")).unwrap();
+    let mut first = None;
+    for round in 0..12 {
+        fail_next_checked_artifact_at(CheckedArtifactFault::AfterAuthorityScratchFlush);
+        assert!(
+            artifact(&root.0, "a/value")
+                .replace_exact(&CheckedArtifactFact::Missing, b"goal")
+                .is_err(),
+            "round {round}"
+        );
+        let staged = staging_entries(&root.0);
+        assert_eq!(
+            staged.len(),
+            1,
+            "round {round}: one staging name, not {round}"
+        );
+        let name = staged[0].file_name().unwrap().to_owned();
+        assert!(name.to_string_lossy().ends_with("-authority.scratch"));
+        match &first {
+            None => first = Some(name),
+            Some(expected) => assert_eq!(&name, expected, "round {round}: the name is derived"),
+        }
+    }
+
+    artifact(&root.0, "a/value")
+        .replace_exact(&CheckedArtifactFact::Missing, b"goal")
+        .unwrap();
+    assert_eq!(fs::read(root.0.join("a/value")).unwrap(), b"goal");
+    assert!(
+        staging_entries(&root.0).is_empty(),
+        "the resumed staging name is consumed by its publication"
+    );
+}
+
+#[test]
+fn repeated_crashes_reuse_one_deterministic_goal_staging_name() {
+    let root = TempRoot::new("goal-staging-reuse");
+    fs::create_dir_all(root.0.join("a")).unwrap();
+    // Publish the authority first, so the resumed drives reach goal staging.
+    fail_next_checked_artifact_at(CheckedArtifactFault::AfterAuthorityParentBarrier);
+    assert!(
+        artifact(&root.0, "a/value")
+            .replace_exact(&CheckedArtifactFact::Missing, b"goal")
+            .is_err()
+    );
+
+    let mut first = None;
+    for round in 0..12 {
+        fail_next_checked_artifact_at(CheckedArtifactFault::AfterGoalScratchFlush);
+        assert!(
+            artifact(&root.0, "a/value")
+                .replace_exact(&CheckedArtifactFact::Missing, b"goal")
+                .is_err(),
+            "round {round}"
+        );
+        let staged = staging_entries(&root.0);
+        assert_eq!(staged.len(), 1, "round {round}: one staging name");
+        let name = staged[0].file_name().unwrap().to_owned();
+        assert!(name.to_string_lossy().ends_with("-goal.scratch"));
+        match &first {
+            None => first = Some(name),
+            Some(expected) => assert_eq!(&name, expected, "round {round}: the name is derived"),
+        }
+    }
+
+    artifact(&root.0, "a/value")
+        .replace_exact(&CheckedArtifactFact::Missing, b"goal")
+        .unwrap();
+    assert_eq!(fs::read(root.0.join("a/value")).unwrap(), b"goal");
+    assert!(staging_entries(&root.0).is_empty());
+}
+
+/// A crash between the create and the write leaves a short staging file. It is
+/// write-ahead staging that never committed, so the resume rewrites it in place —
+/// the same disposition the anchor's own resume takes.
+#[test]
+fn a_short_staging_file_from_a_crashed_write_is_rewritten_in_place() {
+    let root = TempRoot::new("short-staging");
+    fs::create_dir_all(root.0.join("a")).unwrap();
+    fail_next_checked_artifact_at(CheckedArtifactFault::AfterAuthorityScratchCreate);
+    assert!(
+        artifact(&root.0, "a/value")
+            .replace_exact(&CheckedArtifactFact::Missing, b"goal")
+            .is_err()
+    );
+    let staged = staging_entries(&root.0);
+    assert_eq!(staged.len(), 1);
+    fs::write(&staged[0], b"").unwrap();
+
+    artifact(&root.0, "a/value")
+        .replace_exact(&CheckedArtifactFact::Missing, b"goal")
+        .unwrap();
+
+    assert_eq!(fs::read(root.0.join("a/value")).unwrap(), b"goal");
+    assert!(staging_entries(&root.0).is_empty());
+}
+
 /// Edge E21 (`residue::publish_scratch`). The authority record's publication is
 /// the first sealed leaf edge of any drive, so a fresh replacement reaches it
 /// directly.
@@ -80,7 +213,7 @@ fn substituted_authority_scratch_is_refused_before_the_sealed_authority_edge() {
 
     let workspace = root.0.clone();
     run_next_checked_artifact_at(
-        CheckedArtifactFault::BeforeSealedLeafPublication,
+        CheckedArtifactFault::BeforeAuthorityPublication,
         move || substitute_same_bytes(&scratch_entry(&workspace, "authority")),
     );
     let error = checked
@@ -123,10 +256,9 @@ fn substituted_goal_scratch_is_refused_before_the_sealed_goal_edge() {
     );
 
     let workspace = root.0.clone();
-    run_next_checked_artifact_at(
-        CheckedArtifactFault::BeforeSealedLeafPublication,
-        move || substitute_same_bytes(&scratch_entry(&workspace, "goal")),
-    );
+    run_next_checked_artifact_at(CheckedArtifactFault::BeforeGoalPublication, move || {
+        substitute_same_bytes(&scratch_entry(&workspace, "goal"))
+    });
     let error = artifact(&root.0, "a/value")
         .replace_exact(&CheckedArtifactFact::Missing, b"goal")
         .unwrap_err();
@@ -164,12 +296,9 @@ fn substituted_managed_source_is_refused_before_the_sealed_detach_edge() {
     );
 
     let substituted = managed.clone();
-    run_next_checked_artifact_at(
-        CheckedArtifactFault::BeforeSealedLeafPublication,
-        move || {
-            substitute_same_bytes(&substituted);
-        },
-    );
+    run_next_checked_artifact_at(CheckedArtifactFault::BeforeDetachPublication, move || {
+        substitute_same_bytes(&substituted);
+    });
     let error = artifact(&root.0, "a/value")
         .replace_exact(&expected, b"goal")
         .unwrap_err();
@@ -205,12 +334,9 @@ fn substituted_staged_goal_is_refused_before_the_sealed_managed_edge() {
     );
 
     let staged = family_entry(&root.0, &family, "goal");
-    run_next_checked_artifact_at(
-        CheckedArtifactFault::BeforeSealedLeafPublication,
-        move || {
-            substitute_same_bytes(&staged);
-        },
-    );
+    run_next_checked_artifact_at(CheckedArtifactFault::BeforeManagedPublication, move || {
+        substitute_same_bytes(&staged);
+    });
     let error = artifact(&root.0, "a/value")
         .replace_exact(&expected, b"goal")
         .unwrap_err();

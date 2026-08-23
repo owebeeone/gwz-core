@@ -27,9 +27,12 @@ fn every_missing_source_fault_restarts_to_one_exact_goal() {
         CheckedArtifactFault::AfterAuthorityScratchCreate,
         CheckedArtifactFault::AfterAuthorityScratchWrite,
         CheckedArtifactFault::AfterAuthorityScratchFlush,
-        // R2-D Phase 4 Step 4.1: the sealed leaf publication's window, entered
-        // at the drive's first crossing (the authority record's publication).
-        CheckedArtifactFault::BeforeSealedLeafPublication,
+        // R2-D Phase 4 Step 4.1, split per edge at Step 4.2 ([P3-4]). A
+        // missing-source replacement has no source to detach, so it crosses
+        // exactly these three of the four sealed leaf edges.
+        CheckedArtifactFault::BeforeAuthorityPublication,
+        CheckedArtifactFault::BeforeGoalPublication,
+        CheckedArtifactFault::BeforeManagedPublication,
         CheckedArtifactFault::AfterAuthorityPublication,
         CheckedArtifactFault::AfterAuthorityParentBarrier,
         CheckedArtifactFault::BeforeGoalScratchCreate,

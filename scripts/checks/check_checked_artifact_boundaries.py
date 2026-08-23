@@ -42,10 +42,10 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/mod.rs": "1bddf4b40e4bd6454300e7b08b54119875ec19daacb819a14dbd0c483784230d",
     "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
+    "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
     "checked_artifact/mod.rs": "85a7e2c485686118da2a52870e02ed35078f1f4ee1caa7c941839876a6c0ea3f",
-    "checked_artifact/platform.rs": "ceccf3d83bb6cb0ca0943212522011e81c0563a642587dbeb6893a1a04061a9e",
-    "checked_artifact/residue.rs": "07b90f925e7ea3f980b3fbefd655097309f1a2c44d36c37f328e52c34930b59d",
-    "checked_artifact/transition.rs": "a68289ac7cad2d87f432cf4eafd88f6b3d6d83fc0e0686fcddf7c24f000234d3",
+    "checked_artifact/residue.rs": "717c2417cd3707a72c5d1c4aee4845bdab525a566c5ea9d99b74ea6850480150",
+    "checked_artifact/transition.rs": "13b483bc0dc3099082727a5d499b97f627ba7d41a65b929ec557416ac59b37ca",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
@@ -158,6 +158,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
     "checked_artifact/capability/pre_catalog.rs": "ef0bb7e928953033ce0af475912197ff666cd540ed86c3b9dd69f0ca2670ef57",
     "checked_artifact/catalog.rs": "9efa557b5f74329af2bea5569d0e6fc137fe221a8f9b45847fa58b36549c0f94",
+    "checked_artifact/platform.rs": "e46a69cecce9b0500a88a9421af185cc811393fea0192c993773395f7036c0cd",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "f0f097012f20bad8c06a6ebc13c93c1b98a302b7d811d23b13ba4a4f6bfcca68",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "0719565eccdcfa56e440e31bf8d165130ec095d40b275942e5b41c456daa9f8f",
 }
@@ -177,6 +178,15 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
 # four legacy leaf edges the previous comment described now route through that
 # one sealed composition, so no legacy leaf writer names a raw rename at all
 # and the whole raw-rename surface of the subsystem is the two files below.
+#
+# R2-D Phase 4 Step 4.2 (freeze §4.3 row E22) took the four remaining
+# `rename_relative` references with it. The legacy Windows durability anchor
+# held them — two in its create/return arms and two in the barrier round trip —
+# and its closed successor in `checked_artifact/platform/anchor.rs` publishes
+# every anchor edge through the same P1 composition instead, so that file needs
+# no entry here at all. `rename_relative` now has exactly ONE reference in the
+# whole subsystem: `rename_open_source`'s own non-Windows delegation.
+#
 # Any other reference anywhere in the subsystem violates the single-seam rule
 # (RemPlan publication-correction clause; amendment §8.13) and fails closed
 # here.
@@ -188,7 +198,7 @@ RAW_RENAME_CALL_ALLOWLIST = {
     "checked_artifact/platform.rs": {
         "open_rename_source": 6,
         "rename_open_source": 6,
-        "rename_relative": 5,
+        "rename_relative": 1,
     },
 }
 RAW_RENAME_TOKENS = ("open_rename_source", "rename_open_source", "rename_relative")

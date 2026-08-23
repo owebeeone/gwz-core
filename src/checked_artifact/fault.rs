@@ -30,20 +30,48 @@ pub(crate) enum CheckedArtifactFault {
     AfterAuthorityCleanup,
     #[cfg(windows)]
     AfterDestinationPathDerivation,
-    #[cfg(windows)]
+    // The ten boundaries of the closed durability-anchor protocol (R2-D Phase 4
+    // Step 4.2; `GwzM5-8R2DInterfaceFreeze.md` §4.3 row E22). The four that
+    // pre-date this step were `cfg(windows)` because the anchor was. The
+    // protocol is now portable code with a Windows-only production caller, so
+    // the cfg states exactly that: the boundaries exist wherever the protocol
+    // is reachable — in production on Windows, and under test everywhere, which
+    // is what lets every platform execute their interruption/restart rows.
+    #[cfg(any(windows, test))]
+    BeforeAnchorScratchCreate,
+    #[cfg(any(windows, test))]
+    AfterAnchorScratchWrite,
+    #[cfg(any(windows, test))]
+    AfterAnchorScratchFlush,
+    #[cfg(any(windows, test))]
+    AfterAnchorPublication,
+    #[cfg(any(windows, test))]
+    BeforeAnchorAliasRetirement,
+    #[cfg(any(windows, test))]
+    AfterAnchorAliasRetirement,
+    #[cfg(any(windows, test))]
     BeforeAnchorRoundTrip,
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     AfterAnchorOutboundRename,
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     AfterAnchorReturnRename,
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     AfterAnchorReobservation,
-    /// The window between a legacy leaf edge's exact proof and the sealed
-    /// source-associated publication that executes it (R2-D Phase 4 Step 4.1;
-    /// `GwzM5-8R2DInterfaceFreeze.md` §4.3 rows E18-E21). It is announced from
-    /// all four converted call sites, so an injection reaches whichever of them
-    /// the drive crosses first.
-    BeforeSealedLeafPublication,
+    // The window between a legacy leaf edge's exact proof and the sealed
+    // source-associated publication that executes it (R2-D Phase 4 Step 4.1;
+    // `GwzM5-8R2DInterfaceFreeze.md` §4.3 rows E18-E21), one variant per edge.
+    // Step 4.1 announced all four sites from a single variant, which
+    // `fail_next_checked_artifact_at` could only ever address at a drive's first
+    // crossing; the Step-4.1 review's [P3-4] asked for the split here, and it is
+    // free — this enum is census-free, unlike `CheckedArtifactFaultKeyV1`.
+    /// Edge E21, `residue::publish_scratch`: the authority record's publication.
+    BeforeAuthorityPublication,
+    /// Edge E20, `residue::ensure_goal`: the staged goal's publication.
+    BeforeGoalPublication,
+    /// Edge E18, `transition::detach_existing`: the managed source's detachment.
+    BeforeDetachPublication,
+    /// Edge E19, `transition::publish_goal`: the goal's managed publication.
+    BeforeManagedPublication,
     BeforeFinalCheck,
     AfterFinalProof,
     AfterDetach,
