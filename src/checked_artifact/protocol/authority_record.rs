@@ -392,6 +392,7 @@ pub(in crate::checked_artifact) fn read_and_bind_authority_record(
 #[cfg(test)]
 pub(in crate::checked_artifact) fn synthetic_authority_observation(
     reservation: &ActionCapacityReservationV1,
+    action_digest: ActionDigestV1,
     artifact_root: CanonicalPathIdentityV1,
     retained_parent_identity: DurableObjectIdentityV1,
     source: DurableLeafFingerprintV1,
@@ -399,6 +400,7 @@ pub(in crate::checked_artifact) fn synthetic_authority_observation(
     goal_sha256: [u8; 32],
 ) -> Result<CheckedAuthorityObservationV1, ProtocolCodecErrorV1> {
     synthetic_authority_observation_owner(
+        action_digest,
         reservation.request_owner_binding(),
         artifact_root,
         retained_parent_identity,

@@ -43,7 +43,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
-    "checked_artifact/mod.rs": "85a7e2c485686118da2a52870e02ed35078f1f4ee1caa7c941839876a6c0ea3f",
+    "checked_artifact/mod.rs": "48d9261bd994dcf81ca77d3b3195b2e2e1ac6f2231f8c506580ab79571057e7c",
     "checked_artifact/residue.rs": "717c2417cd3707a72c5d1c4aee4845bdab525a566c5ea9d99b74ea6850480150",
     "checked_artifact/transition.rs": "13b483bc0dc3099082727a5d499b97f627ba7d41a65b929ec557416ac59b37ca",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
@@ -156,9 +156,9 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "ef0bb7e928953033ce0af475912197ff666cd540ed86c3b9dd69f0ca2670ef57",
-    "checked_artifact/catalog.rs": "9efa557b5f74329af2bea5569d0e6fc137fe221a8f9b45847fa58b36549c0f94",
-    "checked_artifact/platform.rs": "e46a69cecce9b0500a88a9421af185cc811393fea0192c993773395f7036c0cd",
+    "checked_artifact/capability/pre_catalog.rs": "9b5d0f5e6d971dbb338e8e41140c23cc9ab07a0319d682cbae4637864ec9c88a",
+    "checked_artifact/catalog.rs": "d02ee18a46b6c83d72279bdd0120f637b6e582eaeef59a4000e1017009ba4efa",
+    "checked_artifact/platform.rs": "febdc28b2f420dae51b7d23479c8de5d20ff86c626c1b2fcb5024f4a30645ab1",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "f0f097012f20bad8c06a6ebc13c93c1b98a302b7d811d23b13ba4a4f6bfcca68",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "0719565eccdcfa56e440e31bf8d165130ec095d40b275942e5b41c456daa9f8f",
 }

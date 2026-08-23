@@ -8,10 +8,11 @@ use super::super::capability::{
 use super::super::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionScheduleV1,
     CatalogBootstrapOwnershipTokenV1, CatalogBootstrapRecordV1, CheckedAuthorityRecordV1,
-    CleanupAliasSetV1, DurableLeafFingerprintV1, ManagedBootstrapInputV1, ProtocolRecordKindV1,
-    RequestOwnerBindingV1, read_and_bind_authority_record, read_and_match_catalog_bootstrap_record,
-    read_and_match_infrastructure_record, read_bounded_record, synthetic_authority_observation,
-    synthetic_authority_observation_owner, synthetic_infrastructure_from_catalog_bootstrap,
+    CleanupAliasSetV1, DurableLeafFingerprintV1, ManagedBootstrapInputV1, ProtocolCodecErrorV1,
+    ProtocolRecordKindV1, RequestOwnerBindingV1, read_and_bind_authority_record,
+    read_and_match_catalog_bootstrap_record, read_and_match_infrastructure_record,
+    read_bounded_record, synthetic_authority_observation, synthetic_authority_observation_owner,
+    synthetic_infrastructure_from_catalog_bootstrap,
 };
 
 fn identity(byte: u8) -> DurableObjectIdentityV1 {
@@ -57,7 +58,16 @@ fn authority_observation(
     expected: [u8; 32],
     goal: [u8; 32],
 ) -> super::super::protocol::CheckedAuthorityObservationV1 {
-    synthetic_authority_observation(reservation, root, parent, source, expected, goal).unwrap()
+    synthetic_authority_observation(
+        reservation,
+        reservation.action_digest(),
+        root,
+        parent,
+        source,
+        expected,
+        goal,
+    )
+    .unwrap()
 }
 
 fn catalog_with_token(
@@ -203,6 +213,73 @@ fn authority_id_binds_reservation_path_identity_payload_and_goal() {
     }
 }
 
+/// **Phase 3 settle item 8.** A transaction that streamed action B's payload
+/// slots, issued against action A's reservation, is refused **at the seam** —
+/// before any observation exists, and therefore without help from the Step-3.3
+/// consumer gate that used to be the only thing standing between this shape and
+/// a granted write.
+///
+/// The pairing this closes is not caught by the two checks beside it: both
+/// reservations here share one `request_owner_binding` (one merge owner running
+/// two actions, which is what makes the case realizable), and `owner_issue`
+/// *copies* the action digest out of the reservation argument, so the record it
+/// mints agrees with itself no matter which action was actually read. Only a
+/// digest carried up from the transaction's own reads can disagree — which is
+/// what `AuthorityFactsIssuerV1::issue`'s obligation requires it to be.
+#[test]
+fn an_observation_carrying_another_actions_digest_is_refused_at_the_seam() {
+    let target = reservation();
+    let other = ActionCapacityReservationV1::new(
+        ActionDigestV1::new([73; 32]),
+        target.request_owner_binding(),
+        target.schedule().clone(),
+    );
+    assert_ne!(target.action_digest(), other.action_digest());
+    assert_eq!(
+        target.request_owner_binding(),
+        other.request_owner_binding(),
+        "one owner, two actions: the binding check cannot separate them"
+    );
+
+    // Streamed under `other`; every other fact is the honest one for `target`.
+    let smuggled = synthetic_authority_observation_owner(
+        other.action_digest(),
+        target.request_owner_binding(),
+        path(b'a'),
+        identity(1),
+        DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]),
+        [5; 32],
+        [6; 32],
+    );
+
+    let refusal = smuggled
+        .observe(&target)
+        .expect_err("a mis-paired action digest must not mint an observation");
+    assert!(
+        matches!(
+            &refusal,
+            ProtocolCodecErrorV1::Invalid(
+                "authority observation action digest does not match resident reservation"
+            )
+        ),
+        "the seam's own digest gate must be the gate that fires: {refusal:?}"
+    );
+
+    // The same owner is honest about its own action, so the gate is a pairing
+    // check rather than a blanket refusal.
+    synthetic_authority_observation_owner(
+        target.action_digest(),
+        target.request_owner_binding(),
+        path(b'a'),
+        identity(1),
+        DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]),
+        [5; 32],
+        [6; 32],
+    )
+    .observe(&target)
+    .expect("the honest pairing still issues");
+}
+
 #[test]
 fn authority_owner_rejects_two_request_substitution_in_both_directions() {
     let first = reservation();
@@ -222,6 +299,7 @@ fn authority_owner_rejects_two_request_substitution_in_both_directions() {
     let source = DurableLeafFingerprintV1::new(identity(2), 3, [4; 32]);
 
     let first_owner = synthetic_authority_observation_owner(
+        first.action_digest(),
         first.request_owner_binding(),
         retained_root.clone(),
         retained_parent.clone(),
@@ -233,6 +311,7 @@ fn authority_owner_rejects_two_request_substitution_in_both_directions() {
     assert!(first_owner.observe(&second).is_err());
 
     let second_owner = synthetic_authority_observation_owner(
+        second.action_digest(),
         second.request_owner_binding(),
         retained_root,
         retained_parent,
@@ -316,6 +395,7 @@ fn durable_record_roles_cannot_mix_filesystem_profiles() {
     assert!(
         synthetic_authority_observation(
             &reservation,
+            reservation.action_digest(),
             path(b'a'),
             identity(1),
             DurableLeafFingerprintV1::new(mac_identity(2), 3, [4; 32]),

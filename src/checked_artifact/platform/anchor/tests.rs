@@ -405,6 +405,49 @@ fn a_recurring_stranding_retires_onto_the_next_free_ordinal_and_converges() {
     );
 }
 
+/// [P3-6]: the racing-drive window, executed rather than argued. A second drive
+/// takes the ordinal this one computed, between the survey and the edge. The
+/// no-replace publication refuses, and the drive that follows re-surveys and
+/// takes the next free ordinal — there is no fixed point to wedge on.
+#[test]
+fn a_racing_drive_that_takes_the_ordinal_first_loses_and_the_next_drive_converges() {
+    let root = TempRoot::new("retire-race");
+    let Some((anchor, _)) = strand_alias(&root.0) else {
+        assert!(
+            !hard_links_share_durable_identity(),
+            "the state is producible here and the race must be driven"
+        );
+        return;
+    };
+    let raced = root.0.join(retired_name(0));
+    run_next_checked_artifact_at(
+        CheckedArtifactFault::BeforeAnchorAliasRetirement,
+        move || {
+            // The racing drive's own retirement lands on ordinal 0 after this
+            // drive's survey computed it and before its edge reaches it.
+            std::fs::write(&raced, ANCHOR_BYTES).unwrap();
+        },
+    );
+
+    let error = prepare(&root.dir(), true, CODE, LABEL).unwrap_err();
+    assert_eq!(error.code, CODE);
+    assert_eq!(
+        retired_ordinals(&root.0),
+        BTreeSet::from([0]),
+        "the loser publishes nothing"
+    );
+    assert_closed_grammar(&root.0);
+
+    prepare(&root.dir(), true, CODE, LABEL).unwrap();
+    round_trip(&root.dir(), CODE, LABEL).unwrap();
+    assert_eq!(
+        retired_ordinals(&root.0),
+        BTreeSet::from([0, 1]),
+        "the re-survey takes the next free ordinal"
+    );
+    assert_eq!(std::fs::read(root.0.join(&anchor)).unwrap(), ANCHOR_BYTES);
+}
+
 /// Smallest-free rather than count or max+1: with a gap in the resident set the
 /// retirement fills the gap, and neither of the alternatives could — "count"
 /// recomputes an occupied name for ever against a no-replace publication.

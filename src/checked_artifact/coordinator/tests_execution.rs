@@ -50,7 +50,6 @@ fn component(bytes: &[u8]) -> AsciiComponent {
     AsciiComponent::parse(bytes).expect("a fixed test component is ASCII")
 }
 
-/// A leaf request of the given operation, over a fixed workspace-relative path.
 /// The expected and goal digests [`leaf_request`] uses for each operation, so an
 /// authority observation built for that request binds the same leaf facts the
 /// action digest was derived over.
@@ -148,12 +147,22 @@ fn admit(fixture: &Fixture, scheduled: &ScheduledCheckedActionV1) -> AdmittedChe
 /// admitted action's directory identity therefore reproduces exactly the
 /// production shape "streamed under B, issued against A" — the Step-3.3 review's
 /// [P1-1] — rather than the weaker "issued against a different reservation".
+///
+/// The **action digest stays the target's** deliberately. Phase 3 settle item 8
+/// added a seam-level digest check to
+/// `CheckedAuthorityObservationOwnerV1::observe`, so a mis-paired digest is now
+/// refused before an observation exists at all — that is the 2.4 suite's row
+/// (`durable_records::an_observation_carrying_another_actions_digest_is_refused_at_the_seam`).
+/// What this fixture isolates is the *other* half of the same smuggle: a digest
+/// the seam accepts over provenance the seam does not inspect, which only the
+/// consumer gate below can refuse.
 fn authority_observation_streamed_under(
     fixture: &Fixture,
     reservation: &ActionCapacityReservationV1,
     streamed_under: &AdmittedCheckedActionV1,
     operation: CheckedActionOperationV1,
 ) -> CheckedAuthorityObservationV1 {
+    let action_digest = reservation.action_digest();
     let provenance = streamed_under.admitted().directory_identity().clone();
     let (expected_sha256, goal_sha256) = leaf_digests(operation);
     with_catalog(fixture, TargetVariantV1::Workspace, |catalog| {
@@ -163,6 +172,7 @@ fn authority_observation_streamed_under(
             .expect("the private root is a retained ancestor");
         synthetic_authority_observation(
             reservation,
+            action_digest,
             facts.path().clone(),
             provenance.clone(),
             DurableLeafFingerprintV1::new(provenance.clone(), 5, [3; 32]),
@@ -391,10 +401,22 @@ fn an_observation_streamed_under_another_action_must_not_authorize() {
         CheckedActionOperationV1::Replace,
     );
 
+    // Step-3.3 review round-2 [P3]: the row exists to prove *which* gate fires,
+    // so it pins the gate's own detail rather than mere failure. Without this,
+    // any earlier refusal — a coherence error, the reservation pairing, or Phase
+    // 3 settle item 8's new seam digest check — would satisfy `is_err()` and the
+    // provenance gate could rot untested.
+    let refusal = target
+        .authorize_write(&smuggled)
+        .expect_err("an observation streamed under another action must not authorize");
     assert!(
-        target.authorize_write(&smuggled).is_err(),
-        "an observation streamed under another action's retained directory must not \
-         authorize a write on this one"
+        matches!(
+            &refusal,
+            CheckedFsError::Ambiguous { detail, .. }
+                if detail == "the authority observation was streamed under \
+                              another action's retained directory"
+        ),
+        "the provenance gate must be the gate that fires: {refusal:?}"
     );
 }
 

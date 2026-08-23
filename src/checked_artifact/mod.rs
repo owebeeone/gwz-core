@@ -5,59 +5,50 @@ use cap_std::fs::Dir;
 
 use crate::model::{ErrorCode, ModelError};
 
-#[allow(
-    dead_code,
-    reason = "R2-D Step 0.1 freezes the admission owner seam before phase 1 implements its driver"
-)]
 mod admission;
 mod authority;
 #[allow(
     dead_code,
-    reason = "R1 freezes interfaces before R2 consumer conversion"
+    reason = "frozen interface awaiting R2-E consumer conversion (plan §5 item 1); narrowed \
+              at Phase 4 Step 4.3 to the subtrees that still carry one"
 )]
 mod bootstrap;
 #[allow(
     dead_code,
-    reason = "R1 freezes interfaces before R2 consumer conversion"
+    reason = "frozen interface awaiting R2-E consumer conversion (plan §5 item 1); narrowed \
+              at Phase 4 Step 4.3 to the subtrees that still carry one"
 )]
 mod capability;
-#[allow(
-    dead_code,
-    reason = "R2-C1 freezes the pure catalog grammar before C2 enables its owner"
-)]
 mod catalog;
-#[allow(
-    dead_code,
-    reason = "R1 freezes the catalog grammar before R2 consumers are converted"
-)]
 mod catalog_names;
 mod classification;
 mod cleanup;
-#[allow(
-    dead_code,
-    reason = "R2 freezes coordinator identity and schedule contracts before consumer conversion"
-)]
 mod coordinator;
 #[allow(
     dead_code,
-    reason = "R2 inventories checked entry points before production consumer activation"
+    reason = "the checked entry-point inventory is consumed by the legacy leaf writers that are \
+              converted, and by R2-E for the rest; production activation of the remainder is \
+              R2-E's (plan §5 item 1)"
 )]
 pub(crate) mod entry;
 mod fault;
 #[allow(
     dead_code,
-    reason = "R1 freezes interfaces before R2 consumer conversion"
+    reason = "frozen interface awaiting R2-E consumer conversion (plan §5 item 1); narrowed \
+              at Phase 4 Step 4.3 to the subtrees that still carry one"
 )]
 mod fault_v1;
 mod identity;
 #[allow(
     dead_code,
-    reason = "R1 freezes interfaces before R2 consumer conversion"
+    reason = "frozen interface awaiting R2-E consumer conversion (plan §5 item 1); narrowed \
+              at Phase 4 Step 4.3 to the subtrees that still carry one"
 )]
 mod leaf;
 #[allow(
     dead_code,
-    reason = "R1 freezes interfaces before R2 consumer conversion"
+    reason = "frozen interface awaiting R2-E consumer conversion (plan §5 item 1); narrowed \
+              at Phase 4 Step 4.3 to the subtrees that still carry one"
 )]
 mod namespace;
 mod observation;
@@ -65,7 +56,8 @@ mod platform;
 mod policy;
 #[allow(
     dead_code,
-    reason = "R1 freezes interfaces before R2 consumer conversion"
+    reason = "frozen interface awaiting R2-E consumer conversion (plan §5 item 1); narrowed \
+              at Phase 4 Step 4.3 to the subtrees that still carry one"
 )]
 mod protocol;
 mod residue;

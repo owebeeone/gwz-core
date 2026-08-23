@@ -381,6 +381,11 @@ impl RetainedAuthorityRequestV1 for AuthorityTransactionV1 {
         issue: &AuthorityFactsIssuerV1,
     ) -> Result<RetainedAuthorityFactsV1, ProtocolCodecErrorV1> {
         Ok(issue.issue(
+            // The proof's own action: `observe_streamed_payloads` derived every
+            // slot name it read from this digest, so it names the rows these
+            // digests came out of rather than the reservation the caller means
+            // to spend them on (Phase 3 settle item 8).
+            self.proof.action(),
             self.request_owner_binding,
             self.proof.artifact_root.clone(),
             self.proof.retained_parent_identity.clone(),

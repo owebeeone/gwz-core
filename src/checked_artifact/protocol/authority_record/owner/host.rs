@@ -28,7 +28,7 @@ use super::{
 };
 use crate::checked_artifact::capability::{CanonicalPathIdentityV1, DurableObjectIdentityV1};
 use crate::checked_artifact::protocol::{
-    DurableLeafFingerprintV1, ProtocolCodecErrorV1, RequestOwnerBindingV1,
+    ActionDigestV1, DurableLeafFingerprintV1, ProtocolCodecErrorV1, RequestOwnerBindingV1,
 };
 
 /// The complete facts of one retained authority transaction, sealed so that
@@ -49,8 +49,31 @@ impl AuthorityFactsIssuerV1 {
     /// caller observed inside this single transaction; `expected_sha256` and
     /// `goal_sha256` are digests of *streamed* payloads and `source` is a
     /// fingerprint, so no payload byte reaches this record.
+    ///
+    /// # The `action_digest` consumer obligation (Phase 3 settle item 8)
+    ///
+    /// `action_digest` must be **the digest whose slot names this transaction
+    /// actually read through** — nothing else. Unlike the identities beside it
+    /// there is no durable field inside a payload that says "I belong to action
+    /// X"; the digest's provenance *rests on slot-name derivation*
+    /// (`observe_streamed_payloads` builds every slot name it streams from the
+    /// digest it was given, so the bytes a proof carries are physically the
+    /// bytes of that digest's rows). A transaction that passes a digest it did
+    /// not derive its reads from re-states a caller's claim instead of
+    /// reporting an observation, and defeats the seam check in
+    /// `CheckedAuthorityObservationOwnerV1::observe` that this argument exists
+    /// to feed. Stated here rather than only in a review record because this
+    /// signature is the only place a future transaction author will look.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the issuer takes each independently observed fact of one transaction as \
+                  its own argument, matching `BarrierIntentV1::issue`'s form; the seam's \
+                  protection is the provenance obligation documented above, not the argument \
+                  shape (Step-4.3 review [P3-6])"
+    )]
     pub(in crate::checked_artifact) fn issue(
         &self,
+        action_digest: ActionDigestV1,
         request_owner_binding: RequestOwnerBindingV1,
         artifact_root: CanonicalPathIdentityV1,
         retained_parent_identity: DurableObjectIdentityV1,
@@ -59,6 +82,7 @@ impl AuthorityFactsIssuerV1 {
         goal_sha256: [u8; 32],
     ) -> RetainedAuthorityFactsV1 {
         RetainedAuthorityFactsV1(AuthorityObservationFactsV1::new(
+            action_digest,
             request_owner_binding,
             artifact_root,
             retained_parent_identity,

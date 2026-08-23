@@ -12,6 +12,16 @@
     reason = "Step 3.3 wires the machinery; consumer conversion is R2-E (plan §4 Step 3.3, §5 item 1)"
 )]
 mod execution;
+/// R2-D Phase 4 Step 4.3 (settle item 7): the subtree-wide allow that used to
+/// cover this module moved here, because `identity` is the whole of the
+/// coordinator's remaining frozen surface — `execution` carries its own above
+/// and `schedule` needs none.
+#[allow(
+    dead_code,
+    reason = "the merge-owned identity derivations are consumed by `execution` and by the \
+              interface-test contract pins; R2-E converts the merge consumer that reads the \
+              rest (plan §5 item 1)"
+)]
 mod identity;
 mod schedule;
 
