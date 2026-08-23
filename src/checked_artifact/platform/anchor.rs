@@ -81,8 +81,23 @@ const ROUNDTRIP_SUFFIX: &str = ".roundtrip";
 /// allocating beside it.
 const SCRATCH_NAME: &str = ".ca1-anchor-scratch-v1";
 
-/// The retirement destination that replaces the legacy `remove_file`.
-const RETIRED_NAME: &str = ".ca1-anchor-retired-v1";
+/// The retirement destination family that replaces the legacy `remove_file`.
+///
+/// Ordinal-indexed rather than singular, because the state it reconciles
+/// **recurs**: a foreign hard link can strand an alias again after an earlier
+/// retirement already landed. A single destination would refuse the second one
+/// for ever and brick P5 for all seven `AnchoredPrivateArea` callers, which is
+/// the wedge the Step-4.2 review's [P2-2] rejected.
+///
+/// The ordinal is read off the durable state, never allocated: [`survey`]
+/// collects the retired ordinals actually resident and the retirement takes the
+/// **smallest free** one. Smallest-free rather than count or max+1 because both
+/// of those wedge on a gap — with `{0, 2}` resident, "count" recomputes 2 for
+/// ever against a no-replace publication that can never succeed. Smallest-free
+/// has no such fixed point: it is by construction not a resident name, and if a
+/// racing drive takes it first the no-replace publication refuses and the next
+/// survey observes the new state and picks again.
+const RETIRED_PREFIX: &str = ".ca1-anchor-retired-";
 
 #[derive(Debug)]
 enum AnchorState {
@@ -97,7 +112,8 @@ enum AnchorState {
     NeedsRetireAlias {
         alias: OsString,
         final_name: OsString,
-        retirement_occupied: bool,
+        /// The smallest retirement ordinal not resident in the observed state.
+        retirement_ordinal: u32,
     },
     Missing {
         family_state: bool,
@@ -124,39 +140,23 @@ pub(super) fn prepare(dir: &Dir, create: bool, code: ErrorCode, label: &str) -> 
         AnchorState::NeedsRetireAlias {
             alias,
             final_name,
-            retirement_occupied,
+            retirement_ordinal,
         } => {
             verify(dir, &final_name, code, label)?;
-            if retirement_occupied {
-                // Closed rather than accommodating: a second outstanding
-                // retirement would need a second destination name, and minting
-                // one is the nonce this step exists to remove.
-                return Err(error(
-                    code,
-                    label,
-                    "durability anchor retirement slot is already occupied",
-                ));
-            }
             let identity = verify(dir, &alias, code, label)?;
+            let retired = OsString::from(retired_name(retirement_ordinal));
             fault(
                 CheckedArtifactFault::BeforeAnchorAliasRetirement,
                 code,
                 label,
             )?;
-            publish(
-                dir,
-                &alias,
-                OsStr::new(RETIRED_NAME),
-                &identity,
-                code,
-                label,
-            )?;
+            publish(dir, &alias, &retired, &identity, code, label)?;
             fault(
                 CheckedArtifactFault::AfterAnchorAliasRetirement,
                 code,
                 label,
             )?;
-            verify(dir, OsStr::new(RETIRED_NAME), code, label)?;
+            verify(dir, &retired, code, label)?;
             round_trip(dir, code, label)
         }
         AnchorState::Missing {
@@ -285,7 +285,7 @@ fn survey(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorState> {
     let mut anchors = Vec::new();
     let mut family_state = false;
     let mut scratch_present = false;
-    let mut retirement_occupied = false;
+    let mut retired = Vec::new();
     for entry in dir
         .entries()
         .map_err(|cause| io_error(code, label, cause))?
@@ -297,12 +297,18 @@ fn survey(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorState> {
             anchors.push(name);
         } else if text == SCRATCH_NAME {
             scratch_present = true;
-        } else if text == RETIRED_NAME {
-            retirement_occupied = true;
+        } else if let Some(ordinal) = text.strip_prefix(RETIRED_PREFIX) {
+            // A retired name whose ordinal does not parse is foreign, not ours:
+            // every name this protocol writes is `retired_name`'s own rendering.
+            let Ok(ordinal) = ordinal.parse::<u32>() else {
+                return Ok(AnchorState::Invalid);
+            };
+            retired.push(ordinal);
         } else if text.starts_with("ca1-") {
             family_state = true;
         }
     }
+    let retirement_ordinal = smallest_free_ordinal(&mut retired);
     if anchors.is_empty() {
         return Ok(AnchorState::Missing {
             family_state,
@@ -347,11 +353,36 @@ fn survey(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorState> {
             Ok(AnchorState::NeedsRetireAlias {
                 alias,
                 final_name,
-                retirement_occupied,
+                retirement_ordinal,
             })
         }
         _ => Ok(AnchorState::Invalid),
     }
+}
+
+/// The smallest ordinal not present in `observed`.
+///
+/// Bounded by the pigeonhole principle: with `n` observed ordinals the answer is
+/// at most `n`, so the scan is linear in what the directory already holds and
+/// needs no cap of its own. A cap would reintroduce the very wedge this design
+/// removes — at the cap there would again be no exit — and each retired object
+/// costs one *foreign* stranding event interrupted by a crash, so the count is
+/// bounded by real occurrences rather than by anything the protocol can inflate.
+fn smallest_free_ordinal(observed: &mut Vec<u32>) -> u32 {
+    observed.sort_unstable();
+    observed.dedup();
+    let mut free = 0;
+    for ordinal in observed.iter() {
+        if *ordinal != free {
+            break;
+        }
+        free += 1;
+    }
+    free
+}
+
+fn retired_name(ordinal: u32) -> String {
+    format!("{RETIRED_PREFIX}{ordinal}")
 }
 
 fn roundtrip_name(final_name: &OsStr) -> OsString {

@@ -239,11 +239,37 @@ pub(super) fn source_name(family: &str, action: &str, identity: &[u8; 16]) -> St
     format!("ca1-{family}-{action}-{}.source", hex(identity))
 }
 
-pub(super) fn scratch_name(kind: &str) -> std::io::Result<String> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random)
-        .map_err(|cause| std::io::Error::other(format!("random scratch name failed: {cause}")))?;
-    Ok(format!(".ca1-scratch-{kind}-{}", hex(&random)))
+/// The write-ahead staging name for one kind of family record, in one action.
+///
+/// **Deterministic, and derived only from observed durable state** — the family
+/// key (this workspace's root identity and the artifact's canonical path
+/// identity) and the action key (the expected fact and goal digests). R2-D Phase
+/// 4 Step 4.2 replaced the `getrandom` nonce this used to mint per attempt: plan
+/// §4 Step 4.2 calls a random retry name "a standing violation of the R2 stop
+/// clause **the moment it is on a successful converted path**", and Step 4.1 put
+/// these two edges (E20 `ensure_goal`, E21 `publish_scratch`) on exactly such a
+/// path. The stop clause's own wording is "retry reuses names/capacity, never a
+/// nonce" (plan §4 Step 1.1).
+///
+/// The harm the nonce did was not abstract. The name is dotted, so
+/// `inspect_family`'s `ca1-{family}-` filter skips it: a crash between the create
+/// and the publication left an orphan that nothing could see, name, or reclaim —
+/// one per crash, for ever. A resume now derives the *same* name from the same
+/// durable state and reuses it.
+///
+/// **Action-scoped, not global.** Two drives collide only when they share a
+/// family *and* an action, i.e. the same artifact with the same expected fact and
+/// the same goal; different artifacts and different actions get different names
+/// by construction. That is what makes the determinism safe without leaning on
+/// the workspace mutator lock — though that lock does serialize gwz mutators in
+/// separate processes (`operation/workspace_mutator_lock.rs`), and a same-action
+/// collision already ended in a typed refusal before this change, because two
+/// published goal aliases make `inspect_family` return `foreign`.
+///
+/// Dotted deliberately: staying outside the `ca1-{family}-` grammar means no
+/// older gwz reading this private area sees a name it would classify as foreign.
+pub(super) fn scratch_name(family: &str, action: &str, kind: &str) -> String {
+    format!(".ca1-{family}-{action}-{kind}.scratch")
 }
 
 fn canonical_key(key: &str) -> bool {

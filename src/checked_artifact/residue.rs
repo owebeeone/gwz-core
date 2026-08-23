@@ -311,7 +311,8 @@ impl CheckedArtifact {
             .encode()
             .ok_or_else(|| error(self.code, &self.label, "authority record exceeds bounds"))?;
         let name = authority_name(&authority.family_key, &authority.action_key);
-        self.publish_scratch(&dir, "authority", &name, &bytes)?;
+        let scratch = scratch_name(&authority.family_key, &authority.action_key, "authority");
+        self.publish_scratch(&dir, &scratch, &name, &bytes)?;
         self.rebarrier_exact(&dir, OsStr::new(&name))?;
         let after = self.inspect_family(expected, goal)?;
         if after.foreign || after.authority.as_ref() != Some(&authority) {
@@ -343,16 +344,9 @@ impl CheckedArtifact {
             self.rebarrier_exact(&dir, &goal.name)?;
             return Ok(goal);
         }
-        let scratch = scratch_name("goal").map_err(|cause| {
-            io_op_error(self.code, &self.label, "derive goal scratch name", cause)
-        })?;
-        let mut options = OpenOptions::new();
-        options
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No);
-        #[cfg(unix)]
-        cap_std::fs::OpenOptionsExt::mode(&mut options, 0o644);
+        let scratch = scratch_name(&authority.family_key, &authority.action_key, "goal");
+        let mut options = self.staging_options(&dir, OsStr::new(&scratch), 0o644)?;
+        options.follow(FollowSymlinks::No);
         fault(
             CheckedArtifactFault::BeforeGoalScratchCreate,
             self.code,
@@ -440,28 +434,21 @@ impl CheckedArtifact {
         })
     }
 
-    fn publish_scratch(&self, dir: &Dir, kind: &str, name: &str, bytes: &[u8]) -> ModelResult<()> {
-        let scratch = scratch_name(kind).map_err(|cause| {
-            io_op_error(
-                self.code,
-                &self.label,
-                "derive authority scratch name",
-                cause,
-            )
-        })?;
-        let mut options = OpenOptions::new();
-        options
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No);
-        #[cfg(unix)]
-        cap_std::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    fn publish_scratch(
+        &self,
+        dir: &Dir,
+        scratch: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> ModelResult<()> {
+        let mut options = self.staging_options(dir, OsStr::new(scratch), 0o600)?;
+        options.follow(FollowSymlinks::No);
         fault(
             CheckedArtifactFault::BeforeAuthorityScratchCreate,
             self.code,
             &self.label,
         )?;
-        let mut file = dir.open_with(&scratch, &options).map_err(|cause| {
+        let mut file = dir.open_with(scratch, &options).map_err(|cause| {
             io_op_error(
                 self.code,
                 &self.label,
@@ -538,6 +525,46 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )
+    }
+
+    /// Open the deterministic staging name for writing, fresh or on resume.
+    ///
+    /// A fresh drive opens `create_new`, so a racing creator fails the open
+    /// closed exactly as it did under the random name. A resume — now possible,
+    /// because the name is derivable rather than lost with the crashed process —
+    /// truncates the *same* name instead of allocating beside it. Both are
+    /// write-ahead staging with no committed meaning: nothing durable moves until
+    /// the sealed publication re-verifies identity and bytes through the handle
+    /// it renames, so a truncate that meets a foreign object at the now-derivable
+    /// name still cannot publish that object's content.
+    fn staging_options(
+        &self,
+        dir: &Dir,
+        scratch: &OsStr,
+        #[cfg_attr(not(unix), allow(unused_variables))] mode: u32,
+    ) -> ModelResult<OpenOptions> {
+        let resident = match dir.symlink_metadata(scratch) {
+            Ok(_) => true,
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => false,
+            Err(cause) => {
+                return Err(io_op_error(
+                    self.code,
+                    &self.label,
+                    "read staging scratch metadata",
+                    cause,
+                ));
+            }
+        };
+        let mut options = OpenOptions::new();
+        options.write(true);
+        if resident {
+            options.truncate(true);
+        } else {
+            options.create_new(true);
+        }
+        #[cfg(unix)]
+        cap_std::fs::OpenOptionsExt::mode(&mut options, mode);
+        Ok(options)
     }
 
     pub(super) fn rebarrier_exact(&self, dir: &Dir, name: &OsStr) -> ModelResult<()> {

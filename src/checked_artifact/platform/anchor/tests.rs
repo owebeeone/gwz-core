@@ -18,8 +18,8 @@ use super::super::super::fault::{
     CheckedArtifactFault, fail_next_checked_artifact_at, run_next_checked_artifact_at,
 };
 use super::{
-    ANCHOR_BYTES, ANCHOR_PREFIX, RETIRED_NAME, SCRATCH_NAME, anchor_name, prepare, round_trip,
-    roundtrip_name,
+    ANCHOR_BYTES, ANCHOR_PREFIX, RETIRED_PREFIX, SCRATCH_NAME, anchor_name, prepare, retired_name,
+    round_trip, roundtrip_name,
 };
 use crate::model::ErrorCode;
 
@@ -27,7 +27,9 @@ const CODE: ErrorCode = ErrorCode::MergeRecoveryRequired;
 const LABEL: &str = "anchor protocol test";
 
 /// Every boundary the closed protocol announces, in protocol order. The four
-/// that pre-date Step 4.2 were `cfg(windows)`; all ten are portable now.
+/// that pre-date Step 4.2 were `cfg(windows)`; all ten are portable now, and all
+/// ten are driven by the matrix below — the Step-4.2 review's [P2-1] was that the
+/// last two were announced, injected, and driven by nothing.
 const BOUNDARIES: &[CheckedArtifactFault] = &[
     CheckedArtifactFault::BeforeAnchorScratchCreate,
     CheckedArtifactFault::AfterAnchorScratchWrite,
@@ -37,6 +39,15 @@ const BOUNDARIES: &[CheckedArtifactFault] = &[
     CheckedArtifactFault::AfterAnchorOutboundRename,
     CheckedArtifactFault::AfterAnchorReturnRename,
     CheckedArtifactFault::AfterAnchorReobservation,
+    CheckedArtifactFault::BeforeAnchorAliasRetirement,
+    CheckedArtifactFault::AfterAnchorAliasRetirement,
+];
+
+/// The two the retirement arm crosses. They are only reachable from the
+/// stranded-alias state, so the matrix builds that state before driving them.
+const RETIREMENT_BOUNDARIES: &[CheckedArtifactFault] = &[
+    CheckedArtifactFault::BeforeAnchorAliasRetirement,
+    CheckedArtifactFault::AfterAnchorAliasRetirement,
 ];
 
 struct TempRoot(PathBuf);
@@ -83,12 +94,30 @@ fn resident_anchor(root: &Path) -> Option<String> {
     matched.pop()
 }
 
-/// The closed grammar: every name the protocol can leave behind, at any window.
-/// Anything outside this set is an orphan the legacy nonce would have produced.
+fn retired_ordinals(root: &Path) -> BTreeSet<u32> {
+    names(root)
+        .into_iter()
+        .filter_map(|name| name.strip_prefix(RETIRED_PREFIX).map(str::to_owned))
+        .map(|ordinal| ordinal.parse::<u32>().expect("retired ordinal parses"))
+        .collect()
+}
+
+/// The closed grammar, on a tree this protocol created. Anything outside this
+/// set is an orphan the legacy nonce would have produced.
+///
+/// **[P3-1], stated where it bites:** the grammar is closed *forward*, not
+/// retroactively. A `.ca1-anchor-scratch-<32hex>` left by a pre-4.2 Windows crash
+/// matches none of these and is tolerated for ever — `survey` ignores it, so it
+/// refuses nothing and blocks nothing, but no drive reclaims it either. This
+/// assertion therefore describes a fresh tree, and
+/// `legacy_nonce_orphans_are_tolerated_and_block_nothing` is the row that pins
+/// the upgraded one.
 fn assert_closed_grammar(root: &Path) {
     for name in names(root) {
         let closed = name == SCRATCH_NAME
-            || name == RETIRED_NAME
+            || name
+                .strip_prefix(RETIRED_PREFIX)
+                .is_some_and(|ordinal| ordinal.parse::<u32>().is_ok())
             || (name.starts_with(ANCHOR_PREFIX)
                 && (name.len() == ANCHOR_PREFIX.len() + 32 || name.ends_with(".roundtrip")));
         assert!(closed, "name outside the closed anchor grammar: {name}");
@@ -122,6 +151,17 @@ fn a_reader_never_plants_an_anchor_in_an_empty_private_area() {
 fn every_anchor_boundary_restarts_to_one_resident_anchor() {
     for boundary in BOUNDARIES {
         let root = TempRoot::new(&format!("restart-{boundary:?}"));
+        if RETIREMENT_BOUNDARIES.contains(boundary) {
+            // The retirement arm runs only from the stranded-alias state, which
+            // needs one object under two names with one durable identity.
+            if strand_alias(&root.0).is_none() {
+                assert!(
+                    !hard_links_share_durable_identity(),
+                    "{boundary:?}: the state is producible here and must be driven"
+                );
+                continue;
+            }
+        }
         fail_next_checked_artifact_at(*boundary);
         // The first four boundaries are crossed while establishing; the last
         // four only once an anchor is resident, so the drive that reaches them
@@ -300,11 +340,11 @@ fn a_stranded_alias_is_retired_durably_and_never_removed() {
 
     assert_eq!(
         names(&root.0),
-        BTreeSet::from([anchor.clone(), RETIRED_NAME.to_owned()]),
-        "the alias is retired onto its deterministic name, not deleted"
+        BTreeSet::from([anchor.clone(), retired_name(0)]),
+        "the alias is retired onto its next free ordinal, not deleted"
     );
     assert_eq!(
-        std::fs::read(root.0.join(RETIRED_NAME)).unwrap(),
+        std::fs::read(root.0.join(retired_name(0))).unwrap(),
         ANCHOR_BYTES,
         "the retired object survives as evidence"
     );
@@ -312,37 +352,115 @@ fn a_stranded_alias_is_retired_durably_and_never_removed() {
     assert_closed_grammar(&root.0);
 }
 
+/// [P2-2]: the state **recurs**, so the retirement must too. Round 1 refused a
+/// second stranding for ever and bricked P5 for all seven `AnchoredPrivateArea`
+/// callers; this row drives the recurrence across a crash at each retirement
+/// boundary and requires convergence every time.
 #[test]
-fn a_second_outstanding_retirement_refuses_rather_than_allocating() {
-    let root = TempRoot::new("retire-twice");
-    let Some((anchor, _)) = strand_alias(&root.0) else {
+fn a_recurring_stranding_retires_onto_the_next_free_ordinal_and_converges() {
+    let root = TempRoot::new("retire-recurrence");
+    let Some((anchor, alias)) = strand_alias(&root.0) else {
         assert!(
             !hard_links_share_durable_identity(),
-            "the state is producible here and the fixture must produce it"
+            "the state is producible here and the recurrence must be driven"
         );
         return;
     };
+
+    // First stranding: retires onto ordinal 0 and the barrier works.
     prepare(&root.dir(), true, CODE, LABEL).unwrap();
-    // A second stranded alias with the first retirement still resident. The
-    // resident anchor is already the linked object, so linking it again
-    // reproduces the state without re-homing anything.
-    let alias = format!("{anchor}.roundtrip");
+    round_trip(&root.dir(), CODE, LABEL).unwrap();
+    assert_eq!(retired_ordinals(&root.0), BTreeSet::from([0]));
+
+    // Second stranding, interrupted *before* the retirement edge: nothing moved,
+    // and the drive that follows must still converge.
     std::fs::hard_link(root.0.join(&anchor), root.0.join(&alias)).unwrap();
+    fail_next_checked_artifact_at(CheckedArtifactFault::BeforeAnchorAliasRetirement);
+    assert!(prepare(&root.dir(), true, CODE, LABEL).is_err());
+    assert_eq!(retired_ordinals(&root.0), BTreeSet::from([0]));
+    assert_closed_grammar(&root.0);
+
+    prepare(&root.dir(), true, CODE, LABEL).unwrap();
+    round_trip(&root.dir(), CODE, LABEL).unwrap();
+    assert_eq!(
+        retired_ordinals(&root.0),
+        BTreeSet::from([0, 1]),
+        "the recurrence takes the next free ordinal instead of wedging"
+    );
+
+    // Third stranding, interrupted *after* the retirement edge: the retirement is
+    // durable, the drive still reports the interruption, and the next one settles.
+    std::fs::hard_link(root.0.join(&anchor), root.0.join(&alias)).unwrap();
+    fail_next_checked_artifact_at(CheckedArtifactFault::AfterAnchorAliasRetirement);
+    assert!(prepare(&root.dir(), true, CODE, LABEL).is_err());
+    assert_eq!(retired_ordinals(&root.0), BTreeSet::from([0, 1, 2]));
+    assert_closed_grammar(&root.0);
+
+    prepare(&root.dir(), true, CODE, LABEL).unwrap();
+    round_trip(&root.dir(), CODE, LABEL).unwrap();
+    assert_eq!(
+        names(&root.0),
+        BTreeSet::from([anchor, retired_name(0), retired_name(1), retired_name(2)]),
+        "every retired object is bounded evidence of one real stranding"
+    );
+}
+
+/// Smallest-free rather than count or max+1: with a gap in the resident set the
+/// retirement fills the gap, and neither of the alternatives could — "count"
+/// recomputes an occupied name for ever against a no-replace publication.
+#[test]
+fn the_retirement_ordinal_is_the_smallest_free_one_observed() {
+    let root = TempRoot::new("retire-gap");
+    let Some((anchor, _)) = strand_alias(&root.0) else {
+        assert!(!hard_links_share_durable_identity());
+        return;
+    };
+    std::fs::write(root.0.join(retired_name(0)), ANCHOR_BYTES).unwrap();
+    std::fs::write(root.0.join(retired_name(2)), ANCHOR_BYTES).unwrap();
+
+    prepare(&root.dir(), true, CODE, LABEL).unwrap();
+
+    assert_eq!(retired_ordinals(&root.0), BTreeSet::from([0, 1, 2]));
+    assert_eq!(
+        std::fs::read(root.0.join(retired_name(1))).unwrap(),
+        ANCHOR_BYTES
+    );
+    assert_eq!(std::fs::read(root.0.join(&anchor)).unwrap(), ANCHOR_BYTES);
+}
+
+/// A retired name whose ordinal does not parse was written by something other
+/// than this protocol, and the survey must refuse rather than adopt it.
+#[test]
+fn a_malformed_retired_name_is_refused_not_adopted() {
+    let root = TempRoot::new("retire-malformed");
+    prepare(&root.dir(), true, CODE, LABEL).unwrap();
+    std::fs::write(root.0.join(format!("{RETIRED_PREFIX}v1")), ANCHOR_BYTES).unwrap();
 
     let error = prepare(&root.dir(), true, CODE, LABEL).unwrap_err();
 
     assert_eq!(error.code, CODE);
-    assert!(
-        error
-            .message
-            .contains("retirement slot is already occupied"),
-        "{error:?}"
-    );
+    assert!(error.message.contains("missing or ambiguous"), "{error:?}");
+}
+
+/// [P3-1]: a pre-4.2 nonce orphan is tolerated, never reclaimed. It must block
+/// nothing — the closed grammar is forward-looking, and an upgraded tree keeps
+/// working with its old litter in place.
+#[test]
+fn legacy_nonce_orphans_are_tolerated_and_block_nothing() {
+    let root = TempRoot::new("legacy-orphan");
+    let orphan = format!(".ca1-anchor-scratch-{}", "ab".repeat(16));
+    std::fs::write(root.0.join(&orphan), ANCHOR_BYTES).unwrap();
+
+    prepare(&root.dir(), true, CODE, LABEL).unwrap();
+    round_trip(&root.dir(), CODE, LABEL).unwrap();
+
+    let anchor = resident_anchor(&root.0).expect("an anchor is resident");
     assert_eq!(
         names(&root.0),
-        BTreeSet::from([anchor, alias, RETIRED_NAME.to_owned()]),
-        "the refusal allocates no second retirement name"
+        BTreeSet::from([anchor, orphan.clone()]),
+        "the orphan neither blocks the protocol nor is reclaimed by it"
     );
+    assert_eq!(std::fs::read(root.0.join(&orphan)).unwrap(), ANCHOR_BYTES);
 }
 
 /// A foreign hard link onto a *settled* anchor is not the state above: on macOS
@@ -372,10 +490,7 @@ fn a_foreign_link_that_re_homes_the_anchor_is_refused_without_mutation() {
         // Identity-neutral linking: the state is the retirement arm's, and it
         // converges onto the same closed grammar as `strand_alias` produces.
         outcome.unwrap();
-        assert_eq!(
-            names(&root.0),
-            BTreeSet::from([anchor, RETIRED_NAME.to_owned()])
-        );
+        assert_eq!(names(&root.0), BTreeSet::from([anchor, retired_name(0)]));
     }
 }
 

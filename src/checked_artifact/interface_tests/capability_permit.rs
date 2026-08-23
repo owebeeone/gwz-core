@@ -235,7 +235,11 @@ fn the_durability_anchor_protocol_is_closed_and_allocates_no_retry_name() {
         );
     }
     assert!(anchor.contains(r#"const SCRATCH_NAME: &str = ".ca1-anchor-scratch-v1""#));
-    assert!(anchor.contains(r#"const RETIRED_NAME: &str = ".ca1-anchor-retired-v1""#));
+    // Ordinal-indexed, not singular: the Step-4.2 review's [P2-2] showed a single
+    // retirement destination wedges the whole private area on the second
+    // stranding, so the ordinal is read off the observed durable state.
+    assert!(anchor.contains(r#"const RETIRED_PREFIX: &str = ".ca1-anchor-retired-""#));
+    assert!(anchor.contains("fn smallest_free_ordinal("));
     assert!(
         !platform.contains("ca1-anchor-scratch-"),
         "the legacy random anchor scratch survived in platform.rs"
@@ -244,6 +248,36 @@ fn the_durability_anchor_protocol_is_closed_and_allocates_no_retry_name() {
     // the P1 pair, the two sealed compositions and the P2/P5 arms.
     assert!(platform.contains("mod anchor;"));
     assert!(!platform.contains("enum AnchorState"));
+}
+
+/// R2-D Phase 4 Step 4.2, the Step-4.2 review's [P3-2]: the same nonce harm the
+/// anchor's protocol removed survived one file away, on the E20/E21 edges Step
+/// 4.1 had just converted — plan §4 Step 4.2's own trigger, "a standing violation
+/// of the R2 stop clause **the moment it is on a successful converted path**".
+///
+/// The family's write-ahead staging name is now derived from the same observed
+/// durable state as the published names beside it, so no `getrandom` call may
+/// return to the private family's naming.
+#[test]
+fn the_family_staging_name_is_derived_and_allocates_no_retry_name() {
+    let authority = include_str!("../authority.rs");
+    let residue = include_str!("../residue.rs");
+
+    assert!(
+        !authority.contains("getrandom::"),
+        "the private family's naming reintroduced a nonce"
+    );
+    assert!(
+        authority.contains("fn scratch_name(family: &str, action: &str, kind: &str) -> String")
+    );
+    assert!(authority.contains(r#"format!(".ca1-{family}-{action}-{kind}.scratch")"#));
+    // Dotted, so it stays outside `inspect_family`'s `ca1-<family>-` grammar and
+    // no older gwz reading this private area classifies it as foreign.
+    assert!(residue.contains(r#"let prefix = family_prefix(&family);"#));
+    // Both converted edges take the shared resume-aware opener, so neither can
+    // drift back to an unconditional `create_new`.
+    assert_eq!(residue.matches("self.staging_options(").count(), 2);
+    assert_eq!(residue.matches("scratch_name(").count(), 2);
 }
 
 #[test]
