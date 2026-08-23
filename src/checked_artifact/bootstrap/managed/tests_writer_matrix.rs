@@ -165,3 +165,39 @@ fn repeated_same_writer_boundary_crashes_keep_stable_slots_on_a_workspace_target
 fn repeated_same_writer_boundary_crashes_keep_stable_slots_on_a_git_directory_target() {
     run_repeated_writer_crashes(TargetVariantV1::GitDirectory);
 }
+
+/// **Phase 3 settle disposition (5), discharged at Step 5.1.** The coverage the
+/// one-component shape above deliberately deferred: the same five writer
+/// boundaries interrupted on a **two-component** row, where a crash at the first
+/// component's crossing leaves the *second* component's crossing still ahead.
+///
+/// That state is unreachable from `SHAPE`, and it is the interesting one — the
+/// resume must finish a half-staged row rather than a not-yet-staged one, and it
+/// must do so without the first component's completed work being redone or the
+/// second's being skipped. Convergence is asserted the same way it is above:
+/// against the census a virgin drive settles to, twice, so "converged" means
+/// *settled* rather than merely reached.
+///
+/// **What these rows deliberately do NOT assert, and why.** No partition, and no
+/// single-crossing probe. Both are claims about a boundary being crossed once per
+/// drive, and on this shape every boundary inside `stage_component` is crossed
+/// once per *component* — which is the precise finding that made Step 3.2 pick
+/// the one-component row after the probe caught the misclassification loudly
+/// (`RowShapeV1`'s own doc, and the `SHAPE` comment above). Re-asserting the
+/// partition here would re-introduce the false claim the probe exists to catch.
+/// The keys' classification therefore stays the one-component matrix's; what
+/// these rows add is convergence coverage, not a second classification.
+fn run_multi_component_writer_matrix(variant: TargetVariantV1) {
+    reconcile_executed_keys(&MANAGED_WRITER_MATRIX, &EXPECTED_KEYS);
+    run_boundary_matrix(variant, RowShapeV1::TwoComponent, &MANAGED_WRITER_MATRIX);
+}
+
+#[test]
+fn managed_writer_multi_component_interruption_restart_convergence_on_a_workspace_target() {
+    run_multi_component_writer_matrix(TargetVariantV1::Workspace);
+}
+
+#[test]
+fn managed_writer_multi_component_interruption_restart_convergence_on_a_git_directory_target() {
+    run_multi_component_writer_matrix(TargetVariantV1::GitDirectory);
+}

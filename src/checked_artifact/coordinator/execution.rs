@@ -24,12 +24,18 @@
 //! remains forbidden outright for the whole of R2-D (plan §5 item 2). So the
 //! gate stays shut, deliberately, and R2-E's conversion is what opens it.
 //!
-//! A note for whoever audits those allows: the `#[allow(dead_code)]` attributes
-//! on `mod provider`, `mod host` and this module are **inert**. `mod bootstrap`,
-//! `mod capability`, `mod namespace` and `mod coordinator` each carry a blanket
-//! `#[allow(dead_code)]` at `checked_artifact/mod.rs`, so the inner attributes
-//! document intent rather than suppress a live lint, and removing one proves
-//! nothing about reachability either way.
+//! A note for whoever audits those allows, **corrected at Phase 4 Step 5.1**
+//! because Step 4.3's narrowing falsified the previous version of it. The
+//! subtrees still carrying a blanket `#[allow(dead_code)]` at
+//! `checked_artifact/mod.rs` are `bootstrap`, `capability`, `entry`, `fault_v1`,
+//! `leaf`, `namespace` and `protocol` — **`coordinator` is not among them any
+//! more**: Step 4.3 (settle item 7) deleted its subtree blanket and moved the
+//! cover inward onto `mod identity`, which is where the family's remaining
+//! frozen surface actually lives. So the `#[allow(dead_code)]` on `mod provider`
+//! and `mod host` is inert only where an *enclosing* blanket still covers it,
+//! while the one on **this** module is live and load-bearing: with the
+//! coordinator blanket gone, it is the only thing suppressing the lint over
+//! `execution`. Do not read it as decoration and delete it.
 //!
 //! Three properties are structural rather than advisory.
 //!

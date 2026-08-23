@@ -230,7 +230,18 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         )
         result = run(source)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("protected source allowlist changed", result.stderr)
+        # `checked_artifact/platform.rs` is pinned as a TREE, not a flat file:
+        # R2-D Step 4.2 split the Windows durability anchor into
+        # `platform/anchor.rs`, and its landing converted the pin so the new
+        # child could not sit outside any manifest. This assertion named the
+        # flat-pin message until R2-D Step 5.1's gate train ran the suite for
+        # the first time since that conversion and caught it. Naming the pin as
+        # well as the class is deliberate: the generic prefix would have passed
+        # on any protected-source finding, which is what let the drift hide.
+        self.assertIn(
+            "protected source tree changed: checked_artifact/platform.rs",
+            result.stderr,
+        )
 
     def test_catalog_lease_tree_rejects_an_unreviewed_target_helper(self) -> None:
         temporary, source = self.copied_source()
