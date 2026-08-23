@@ -250,9 +250,8 @@ fn strand_alias(root: &Path) -> Option<(String, String)> {
 /// the retirement where the state is producible and the refusal where it is not;
 /// the Windows probe is what executes the retirement on the platform the anchor
 /// actually serves.
-fn hard_links_share_durable_identity(root: &Path) -> bool {
+fn hard_links_share_durable_identity() -> bool {
     let probe = TempRoot::new("link-identity-probe");
-    let _ = root;
     let a = probe.0.join("a");
     let b = probe.0.join("b");
     std::fs::write(&a, ANCHOR_BYTES).unwrap();
@@ -262,6 +261,28 @@ fn hard_links_share_durable_identity(root: &Path) -> bool {
         == super::verify(&dir, OsStr::new("b"), CODE, LABEL).unwrap()
 }
 
+/// Pins the platform fact the two retirement rows branch on, so a green run is
+/// evidence of *which* branch they took: on Windows — the platform the anchor
+/// actually serves, and the one the probe covers — they execute the retirement,
+/// and only on macOS do they fall to the refusal.
+#[test]
+fn hard_link_identity_sharing_is_what_the_retirement_rows_assume() {
+    let shared = hard_links_share_durable_identity();
+    if cfg!(target_os = "macos") {
+        assert!(
+            !shared,
+            "macOS allocates ATTR_CMN_OBJPERMANENTID per hard link; if that \
+             changed, the retirement rows must stop skipping here"
+        );
+    } else {
+        assert!(
+            shared,
+            "this target must share durable identity across hard links, or the \
+             retirement rows below silently stop covering the retirement"
+        );
+    }
+}
+
 /// The retirement this step exists to install: the legacy arm called
 /// `remove_file` on this alias.
 #[test]
@@ -269,7 +290,7 @@ fn a_stranded_alias_is_retired_durably_and_never_removed() {
     let root = TempRoot::new("retire-alias");
     let Some((anchor, _)) = strand_alias(&root.0) else {
         assert!(
-            !hard_links_share_durable_identity(&root.0),
+            !hard_links_share_durable_identity(),
             "the state is producible here and the fixture must produce it"
         );
         return;
@@ -296,7 +317,7 @@ fn a_second_outstanding_retirement_refuses_rather_than_allocating() {
     let root = TempRoot::new("retire-twice");
     let Some((anchor, _)) = strand_alias(&root.0) else {
         assert!(
-            !hard_links_share_durable_identity(&root.0),
+            !hard_links_share_durable_identity(),
             "the state is producible here and the fixture must produce it"
         );
         return;
