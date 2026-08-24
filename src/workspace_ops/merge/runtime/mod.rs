@@ -5,6 +5,7 @@ mod open_gate;
 mod tests;
 
 pub(crate) use dispatch::MergeDependencies;
+pub(in crate::workspace_ops::merge) use dispatch::V1Router;
 #[cfg(test)]
 pub(crate) use dispatch::handle_merge_with_dependencies;
 pub use dispatch::{handle_merge, handle_merge_with_events};

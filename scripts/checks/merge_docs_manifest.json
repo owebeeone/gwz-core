@@ -389,14 +389,13 @@
         {
           "id": "generated_cli_custom_message",
           "value": "--message <message> Use a custom merge commit-message body"
+        },
+        {
+          "id": "generated_cli_no_ff",
+          "value": "--no-ff Always create a merge commit, even when a fast-forward is possible"
         }
       ],
-      "forbidden": [
-        {
-          "id": "generated_cli_no_ff_must_remain_hidden",
-          "value": "--no-ff"
-        }
-      ]
+      "forbidden": []
     }
   ]
 }

@@ -113,6 +113,10 @@ impl BoundExactObservation {
     }
 
     #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+    )]
     pub(in crate::workspace_ops::merge::v1_lifecycle) fn for_test_after_action(
         current: &StoredV1Record,
         request: &BoundObservationRequest,

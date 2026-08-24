@@ -480,7 +480,6 @@ pub(super) fn unreadable(plan: &PreservationPlan, message: impl Into<String>) ->
         .with_member(&plan.target_id, &plan.relative_path)
 }
 
-#[cfg(test)]
 #[forbid(clippy::disallowed_methods)]
 pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<
     B: crate::git::MergeAuthorityBackend,
@@ -585,7 +584,6 @@ pub(in crate::workspace_ops::merge) fn v1_root_preservation_spec<
     Ok(Some(spec))
 }
 
-#[cfg(test)]
 #[forbid(clippy::disallowed_methods)]
 fn clean_form<B: crate::git::MergeAuthorityBackend>(
     backend: &B,
@@ -619,7 +617,6 @@ fn clean_form<B: crate::git::MergeAuthorityBackend>(
     })
 }
 
-#[cfg(test)]
 #[forbid(clippy::disallowed_methods)]
 fn managed_fact(
     commit: &str,
@@ -643,7 +640,6 @@ fn managed_fact(
     })
 }
 
-#[cfg(test)]
 #[forbid(clippy::disallowed_methods)]
 fn blob_oid(commit: &str, bytes: &[u8]) -> ModelResult<String> {
     use sha1::Sha1;
@@ -670,13 +666,11 @@ fn blob_oid(commit: &str, bytes: &[u8]) -> ModelResult<String> {
 // drives its whole operation on one thread — a process-global counter would be
 // raced by concurrent suites. Test-only: the function it guards is itself
 // `#[cfg(test)]`.
-#[cfg(test)]
 thread_local! {
     pub(in crate::workspace_ops::merge) static V1_PRESERVATION_IMAGE_CAPTURES:
         std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(test)]
 #[forbid(clippy::disallowed_methods)]
 pub(in crate::workspace_ops::merge) fn v1_preservation_image<
     B: crate::git::MergeAuthorityBackend,
@@ -698,7 +692,6 @@ pub(in crate::workspace_ops::merge) fn v1_preservation_image<
     }
 }
 
-#[cfg(test)]
 #[forbid(clippy::disallowed_methods)]
 pub(super) fn attach_v1(
     mut error: ModelError,
@@ -711,7 +704,6 @@ pub(super) fn attach_v1(
     error
 }
 
-#[cfg(test)]
 #[forbid(clippy::disallowed_methods)]
 pub(super) fn v1_error(
     plan: &super::plan::V1PreservationOwnerPlan,

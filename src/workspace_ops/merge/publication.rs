@@ -111,7 +111,6 @@ pub(in crate::workspace_ops::merge) fn observe_root_evidence_view<B: GitBackend>
     Ok(result.ok().map(RootEvidenceObservation::Composition))
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum I2RootObservationFailure {
     AcceptanceInputDrift,
@@ -121,7 +120,6 @@ pub(crate) enum I2RootObservationFailure {
     PublicationPrefixMismatch,
 }
 
-#[cfg(test)]
 pub(crate) fn normalized_i2_root_observation<B: GitBackend>(
     backend: &B,
     root: &Path,

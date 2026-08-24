@@ -2,7 +2,7 @@ use super::*;
 
 macro_rules! decode {
     ($record:expr) => {
-        crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        crate::workspace_ops::merge::decode_production_v0(
             serde_yaml::to_string($record).unwrap().as_bytes(),
         )
         .unwrap()
@@ -23,13 +23,8 @@ pub(super) fn assert_legacy_v0_compatibility_edges<B: GitBackend>(
     let manifest_path = root.join(crate::workspace::WORKSPACE_MANIFEST);
     fs::write(&manifest_path, "unavailable baseline\n").unwrap();
     assert_eq!(
-        crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-            backend,
-            root,
-            &decoded,
-            "r3-test-writer",
-        )
-        .unwrap(),
+        crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer",)
+            .unwrap(),
         crate::workspace_ops::merge::OpenV0Adaptation::ValidUnlisted
     );
     fs::write(&manifest_path, expected_manifest).unwrap();
@@ -55,13 +50,8 @@ pub(super) fn assert_legacy_v0_compatibility_edges<B: GitBackend>(
     });
     let decoded = decode!(&legacy_pending);
     assert_eq!(
-        crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-            backend,
-            root,
-            &decoded,
-            "r3-test-writer",
-        )
-        .unwrap(),
+        crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer",)
+            .unwrap(),
         crate::workspace_ops::merge::OpenV0Adaptation::ValidUnlisted
     );
     legacy_pending.mode = crate::workspace_ops::merge::MergeExecutionMode::NoFf;
@@ -117,7 +107,7 @@ fn assert_finalizing_non_domain_rows_stay_v0<B: GitBackend>(
 
 fn assert_valid_unlisted<B: GitBackend>(backend: &B, root: &Path, record: &MergeOperationRecord) {
     assert_eq!(
-        crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+        crate::workspace_ops::merge::adapt_open_v0(
             backend,
             root,
             &decode!(record),
@@ -144,7 +134,7 @@ pub(super) fn assert_exact_baseline_recovery<B: GitBackend>(
     missing.baseline.manifest_yaml = None;
     let crate::workspace_ops::merge::OpenV0Adaptation::Eligible {
         record: adapted, ..
-    } = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+    } = crate::workspace_ops::merge::adapt_open_v0(
         backend,
         root,
         &decode!(&missing),
@@ -167,7 +157,7 @@ fn assert_unsupported_no_ff<B: GitBackend>(
     record: &MergeOperationRecord,
 ) {
     assert_eq!(
-        crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+        crate::workspace_ops::merge::adapt_open_v0(
             backend,
             root,
             &decode!(record),

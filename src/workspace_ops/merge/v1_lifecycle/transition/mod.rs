@@ -3,10 +3,14 @@ mod footprint;
 mod reduce;
 mod reverse_entry;
 
-pub(super) use effect::{EFFECT_VARIANT_COUNT, EffectKind, RetiredContainer, TransitionEffect};
+#[cfg(test)]
+pub(super) use effect::EFFECT_VARIANT_COUNT;
+pub(super) use effect::{EffectKind, RetiredContainer, TransitionEffect};
+#[cfg(test)]
+pub(super) use reverse_entry::reverse_entry_kind;
 pub(super) use reverse_entry::{
     PreparedReverseEntryView, ReverseEntryKind, ReverseEntryPredecessor, preview_reverse_entry,
-    reverse_entry_kind, visit_reverse_entry,
+    visit_reverse_entry,
 };
 
 #[cfg(test)]
@@ -86,6 +90,10 @@ fn transition_error(detail: impl Into<String>) -> ModelError {
     )
 }
 
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 pub(super) enum V1Transition {
     Operation(Box<OperationTransition>),
     Participant(Box<ParticipantTransition>),
@@ -309,6 +317,10 @@ impl RollbackTransition {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 pub(super) enum DriftTransition {
     RecordParticipant(Box<BoundParticipantDrift>),
     ClearParticipant(Box<VerifiedParticipantDriftClear>),

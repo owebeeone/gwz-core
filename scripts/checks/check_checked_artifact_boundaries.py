@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROTECTED_COMPILER_ROOT_DIGESTS = {
     "src/lib.rs": "e035f8a53ddb589362972c85593cc0dff4b590129de38fe0fdb72ca1880f544e",
     "src/workspace_ops/mod.rs": "663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124",
-    "src/workspace_ops/merge/mod.rs": "d7b2662b8c18fa7d5b83e951a65be73498edcdc29565ca65e3f6d5cd069c1356",
+    "src/workspace_ops/merge/mod.rs": "76e4830e6ca1784f3dba5326768c173bfc434f49fe56196c1f565aca8adb8200",
 }
 
 PROTECTED_COMPILER_MODULES = {
@@ -50,9 +50,9 @@ PROTECTED_SOURCE_DIGESTS = {
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "b1f193279069fd84492c423ccead5ac051415550c0024b01d4c75f4e51c93981",
-    "workspace_ops/merge/preserve/artifacts.rs": "e9a30d32d02f1daab60a22aa45b14c437cc92f94977e76eee3cf9d75c0f22e2a",
+    "workspace_ops/merge/preserve/artifacts.rs": "a4e9f7055c3d8aeacd494c08629223dbb15fea0a2e271303b0c27f11833be696",
     "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
-    "workspace_ops/merge/preserve/plan.rs": "880d4905eeab96ff52a746a360043628cd4c11e5324b5f92b5889419ade53c7a",
+    "workspace_ops/merge/preserve/plan.rs": "3730179e156151c4a853752ec769712d3ae81bd21e7729b892ab4cb14474ff89",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
     "operation/workspace_mutator_lock.rs": "0d9b034edab7e66a5e83b4bc86b7325afa001666220a07e428d4fa73f9384e28",
 }
@@ -159,8 +159,8 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/capability/pre_catalog.rs": "4e06f84d1b53f35120c222fdf0ac52e60ecedbe1ca6d1785ebb96805b24fb06b",
     "checked_artifact/catalog.rs": "d02ee18a46b6c83d72279bdd0120f637b6e582eaeef59a4000e1017009ba4efa",
     "checked_artifact/platform.rs": "febdc28b2f420dae51b7d23479c8de5d20ff86c626c1b2fcb5024f4a30645ab1",
-    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "f0f097012f20bad8c06a6ebc13c93c1b98a302b7d811d23b13ba4a4f6bfcca68",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "0719565eccdcfa56e440e31bf8d165130ec095d40b275942e5b41c456daa9f8f",
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "74a416a623ad421b1646e8692d6b449d76cc754045ff43348c5e897c39eae96c",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,

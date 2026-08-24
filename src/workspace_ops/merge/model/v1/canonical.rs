@@ -10,7 +10,9 @@ use super::{
     PreservationPublicationHandoffV1, RecoveryContextV1,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The closed core record-version enum of compatibility contract §2. Ordered
+/// so the writer floor's `max(floor, requested)` is the enum's own ordering.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum RecordVersion {
     V0,
     V1,
@@ -59,11 +61,19 @@ pub(crate) struct CanonicalV1State {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 pub(crate) enum CanonicalInstalledKind {
     V0,
     V1,
 }
 
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 impl CanonicalMergeRecord {
     pub(crate) fn source_version(&self) -> RecordVersion {
         self.source_version
@@ -88,6 +98,10 @@ impl CanonicalMergeRecord {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 impl CanonicalMergeCommon {
     pub(crate) fn merge_id(&self) -> &str {
         &self.merge_id
@@ -98,6 +112,10 @@ impl CanonicalMergeCommon {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 impl CanonicalV1State {
     pub(crate) fn is_empty(&self) -> bool {
         self.accepted_workspace.is_none()

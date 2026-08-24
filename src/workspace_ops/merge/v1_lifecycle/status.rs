@@ -83,9 +83,7 @@ fn acquire_open_status_v1(
     let _archived = locations
         .archived()
         .exact()
-        .map(|(_, bytes, _)| {
-            super::super::record_wire::decode_archived_for_r3_tests(bytes.as_slice(), merge_id)
-        })
+        .map(|(_, bytes, _)| super::super::record_wire::decode_archived(bytes.as_slice(), merge_id))
         .transpose()?;
     match super::super::status::select_canonical_status_source(
         &locations,

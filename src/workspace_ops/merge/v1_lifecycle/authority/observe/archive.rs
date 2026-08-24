@@ -84,7 +84,7 @@ impl CheckedArchiveObservation {
                     path.as_path(),
                     &destination_path,
                 )?;
-                crate::workspace_ops::merge::record_wire::decode_archived_for_r3_tests(
+                crate::workspace_ops::merge::record_wire::decode_archived(
                     bytes.as_slice(),
                     &record.merge_id,
                 )?;

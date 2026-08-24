@@ -20,9 +20,11 @@ mod runtime;
 mod start;
 mod status;
 mod store;
-#[cfg(test)]
 mod v1_lifecycle;
-#[cfg(test)]
+// The boundary checker's positive-compile witness for the v1 compiler root
+// (`test_v1_compiler_root_has_a_positive_sentinel`). A1's G1 dropped this
+// const's `cfg(test)`, not the const: an anonymous production reference costs
+// nothing and keeps the witness that the v1 tree is compiler-reachable.
 const _: &str = v1_lifecycle::COMPILER_ROOT_SENTINEL;
 mod validate;
 
@@ -39,17 +41,20 @@ pub(crate) use abort::{EvidenceRollbackMutation, fail_next_evidence_rollback_aft
 pub(crate) use acceptance::{finalization_next_action_for_i2, finalization_next_action_for_v1};
 #[cfg(test)]
 pub(crate) use finalize::{CandidatePublicationMutation, fail_next_candidate_publication_after};
-#[cfg(test)]
 use preserve::classify_index_aligned_root_publication_for_i2;
+// A1 activation: the R3 migration seam became a production entry point. The
+// `_for_r3_tests` names were the compile-gate era's doors; the production
+// package below replaces them (Safety review §2.1 G6). The migration seam's
+// own types are named by the adaptation preflight's owner
+// (`record_wire::open_v0`, `store::atomic_upgrade`) and by the g23 residue
+// suites; the preflight itself reaches them through `upgrade_open_v0`.
 #[cfg(test)]
 pub(crate) use record_wire::{
-    OpenV0Adaptation, PreparedOpenV0Upgrade, VerifiedV0Descriptor, adapt_open_v0_for_r3_tests,
-    decode_v0_for_r3_tests, decode_v1_for_r3_tests, prepare_upgrade, verified_v0_descriptor,
+    OpenV0Adaptation, PreparedOpenV0Upgrade, VerifiedV0Descriptor, adapt_open_v0,
+    decode_production_v0, decode_production_v1, prepare_upgrade, verified_v0_descriptor,
 };
-#[cfg(test)]
-pub(crate) use store::{AtomicUpgradeFault, AtomicUpgradeOutcome, upgrade_open_v0_for_r3_tests};
+pub(crate) use store::{AtomicUpgradeFault, AtomicUpgradeOutcome, upgrade_open_v0};
 
-#[cfg(test)]
 pub(crate) use model::v1::RecordVersion;
 #[cfg(test)]
 pub(crate) use model::v1::test_record as test_v1_record;
@@ -79,10 +84,11 @@ pub use runtime::{
     handle_merge, handle_merge_with_events,
 };
 pub(crate) use store::{
-    FileMergeStore, MergeStore, archive_merge_record, enter_finalizing, persist_merge_record,
-    persist_operation_transition,
+    AdaptationPrecheck, FileMergeStore, MergeStore, OpenRecordEnvelope, archive_merge_record,
+    classify_open_record, discover_open_envelope_before_manifest, enter_finalizing,
+    persist_merge_record, persist_operation_transition,
 };
-pub(crate) use validate::validate_merge_request;
+pub(crate) use validate::{validate_merge_request, validate_open_merge_id};
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
 

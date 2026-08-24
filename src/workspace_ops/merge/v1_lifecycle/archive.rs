@@ -105,6 +105,10 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
 
 /// Collect only merge-owned backup refs from an immutable archive worklist,
 /// then delete that unchanged archive. Stashes and bundles are never inputs.
+#[allow(
+    dead_code,
+    reason = "A1 activation: landed v1 surface the activation's dispatch does not route yet. A1's enumerated package (Safety review §2) routes start/status/resume/abort into the v1 service and reaches the archive PROJECTION through `record_wire::decode_archived`; v1 archive GC keeps its typed open-record refusal, so this family has no production caller until that route lands."
+)]
 pub(super) fn gc_archived<B: MergeAuthorityBackend>(
     backend: &B,
     root: &Path,

@@ -123,9 +123,7 @@ fn acquire_status_v0(root: &Path, merge_id: &str) -> ModelResult<CanonicalStatus
     let archived = locations
         .archived()
         .exact()
-        .map(|(_, bytes, _)| {
-            super::super::record_wire::decode_archived_v0(bytes.as_slice(), merge_id)
-        })
+        .map(|(_, bytes, _)| super::super::record_wire::decode_archived(bytes.as_slice(), merge_id))
         .transpose()?;
     let source = select_canonical_status_source(
         &locations,

@@ -49,6 +49,8 @@ pub(super) fn handle_start_durable<B, S, C, I>(
     request: &crate::MergeRequest,
     context: &OperationContext,
     emitter: &EventEmitter<'_>,
+    v1: &dyn super::runtime::V1Router,
+    start_guard: Option<super::WorkspaceMutationGuard>,
 ) -> ModelResult<crate::MergeResponse>
 where
     B: GitBackend,
@@ -67,6 +69,12 @@ where
         return handle_dry_run(backend, root, request, context);
     }
 
+    // A1: the open-merge guard is version-agnostic. `discover_open` reads
+    // through the v0 store, whose decoder installs v0 only, so an open v1
+    // record must be seen by its envelope or a second start would clobber it.
+    if let Some(open) = super::classify_open_record(root)? {
+        return Err(open_operation_error(&open.merge_id));
+    }
     if let Some(open) = store.discover_open(root)? {
         return Err(open_operation_error(&open.merge_id));
     }
@@ -80,6 +88,25 @@ where
         context,
     )?;
     let mut record = create_record(root, &plan, &merge_id, clock, context)?;
+    // A1 (Safety review §2.2 R4 / §2.4): the contract-§2 writer floor chose
+    // this record's version at creation, and the record goes to that
+    // version's owner. A v1 record is created and driven by the v1 lifecycle;
+    // it never enters the v0 persistence seam.
+    if super::select_record_version(super::RequestedSemantics::from_mode(plan.mode))?
+        == super::RecordVersion::V1
+    {
+        // The v1 lifecycle owns the workspace mutator lock for its whole
+        // operation — `service::run` takes its own `V1MutationLease`, and that
+        // lock is a workspace-wide OS advisory exclusive lock, not a
+        // re-entrant one. Release the start gate's guard here, after it has
+        // already enforced the open-merge policy, exactly as the v0 recovery
+        // commands run: they take no start guard and let their own handler
+        // hold the lock. `create_open` re-checks that no record exists, so the
+        // handoff cannot publish a second record.
+        drop(start_guard);
+        return v1.start(root, record, context, emitter);
+    }
+    let _start_guard = start_guard;
     super::persist_merge_record(store, root, &record, emitter)?;
     emitter.operation_state_changed(record.state.into());
     execute_durable(

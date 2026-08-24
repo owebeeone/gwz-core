@@ -77,7 +77,7 @@ fn classify_open_v0(record: &MergeOperationRecord) -> OpenV0Eligibility {
     OpenV0Eligibility::Candidate
 }
 
-pub(crate) fn adapt_open_v0_for_r3_tests<B: GitBackend>(
+pub(crate) fn adapt_open_v0<B: GitBackend>(
     backend: &B,
     root: &Path,
     decoded: &DecodedV0Record,

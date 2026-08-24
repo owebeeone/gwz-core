@@ -5,8 +5,7 @@ use serde_yaml::Value;
 
 use crate::artifact::ArtifactSourceKind;
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct AcceptedWorkspaceV1 {
     pub(crate) operation_baseline_lock_sha256: String,
     pub(crate) metadata_base: AcceptedMetadataBaseV1,
@@ -15,8 +14,7 @@ pub(crate) struct AcceptedWorkspaceV1 {
     pub(crate) root: RootPublicationInputV1,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct AcceptedMetadataBaseV1 {
     pub(crate) source: AcceptedMetadataSourceV1,
     pub(crate) manifest_exact_yaml: String,
@@ -25,23 +23,20 @@ pub(crate) struct AcceptedMetadataBaseV1 {
     pub(crate) lock_sha256: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum AcceptedMetadataSourceV1 {
     OperationBaseline,
     SelectedRootResult { commit: String },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct AcceptedLockV1 {
     pub(crate) exact_yaml: String,
     pub(crate) sha256: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum MemberAcceptanceV1 {
     Selected {
@@ -55,23 +50,20 @@ pub(crate) enum MemberAcceptanceV1 {
     Absent,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct AcceptedIntegrationRefV1 {
     pub(crate) branch: String,
     pub(crate) before_commit: String,
     pub(crate) resulting_commit: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct AcceptedAttachedCheckoutV1 {
     pub(crate) branch: String,
     pub(crate) commit: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct AcceptedLockMemberV1 {
     pub(crate) path: String,
     pub(crate) source_id: String,
@@ -86,16 +78,14 @@ pub(crate) struct AcceptedLockMemberV1 {
     pub(crate) extensions: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct RootPublicationInputV1 {
     pub(crate) base: AcceptedRootBaseV1,
     pub(crate) publication_branch: Option<String>,
     pub(crate) baseline_artifact_hashes: RootArtifactHashesV1,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum AcceptedRootBaseV1 {
     BornAttached {
@@ -110,8 +100,7 @@ pub(crate) enum AcceptedRootBaseV1 {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct RootArtifactHashesV1 {
     pub(crate) lock_worktree_sha256: String,
     pub(crate) manifest_worktree_sha256: String,

@@ -9,13 +9,10 @@ use super::{
     reconciliation::pending_reconciliation,
 };
 use crate::artifact;
-#[cfg(test)]
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
-#[cfg(test)]
 use crate::workspace_ops::merge::ParticipantState;
-#[cfg(test)]
 use crate::workspace_ops::merge::model::v1::{MergeOperationRecordV1, ParticipantRollbackKindV1};
 use sha2::{Digest, Sha256};
 use std::{
@@ -24,10 +21,8 @@ use std::{
     path::Path,
 };
 
-#[cfg(test)]
 use super::super::root::artifact_facts;
 
-#[cfg(test)]
 mod v1_rollback {
     use super::*;
 
@@ -276,7 +271,6 @@ mod v1_rollback {
     }
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use v1_rollback::preflight_v1_rollback;
 
 #[derive(Default)]

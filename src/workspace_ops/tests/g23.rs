@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+mod a1_activation;
 mod abort_recovery;
 mod atomic_upgrade_v0;
 mod characterization_archive_v0;

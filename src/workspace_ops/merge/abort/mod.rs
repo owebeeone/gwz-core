@@ -9,18 +9,15 @@ mod tests;
 #[cfg(test)]
 pub(crate) use evidence::{EvidenceRollbackMutation, fail_next_evidence_rollback_after};
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use evidence::{
     V1EvidenceRollbackObservation, execute_v1_evidence_rollback, observe_v1_evidence_rollback,
     preflight_v1_evidence, v1_evidence_residue_after_selected_root_is_exact,
 };
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use participants::{
     V1ParticipantRollbackObservation, execute_v1_participant_rollback,
     observe_v1_participant_rollback, terminal_v1_participant_is_exact,
     verify_v1_no_mutation_participant,
 };
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use preflight::preflight_v1_rollback;
 
 use self::{

@@ -298,6 +298,10 @@ enum Target {
 }
 
 impl Target {
+    #[allow(
+        dead_code,
+        reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+    )]
     fn from_action(action: &PhysicalActionKind) -> Option<Self> {
         match action {
             PhysicalActionKind::Preservation(PendingPreservationActionV1::BackupRef { .. }) => {

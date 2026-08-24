@@ -126,24 +126,20 @@ pub(super) fn i2_rejection_reason(code: &str) -> String {
 fn assert_adapter_guards<B: GitBackend>(backend: &B, root: &Path, record: &MergeOperationRecord) {
     super::atomic_upgrade_v0::assert_rejection_guards(backend, root, record);
     let raw = serde_yaml::to_value(record).unwrap();
-    let baseline_decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+    let baseline_decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(record).unwrap().as_bytes(),
     )
     .unwrap();
 
     let mut no_ff = record.clone();
     no_ff.mode = MergeExecutionMode::NoFf;
-    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+    let decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(&no_ff).unwrap().as_bytes(),
     )
     .unwrap();
-    let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-        backend,
-        root,
-        &decoded,
-        "r3-test-writer",
-    )
-    .unwrap_err();
+    let error =
+        crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+            .unwrap_err();
     assert_eq!(error.code, ErrorCode::UnsupportedLegacyMode);
 
     super::compatibility_v0_edges::assert_legacy_v0_compatibility_edges(backend, root, record);
@@ -152,7 +148,7 @@ fn assert_adapter_guards<B: GitBackend>(backend: &B, root: &Path, record: &Merge
         .join(&record.participants[&record.selected_targets[0]].path)
         .join("i2-untracked-drift.txt");
     fs::write(&member_drift, "drift\n").unwrap();
-    let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
+    let error = crate::workspace_ops::merge::adapt_open_v0(
         backend,
         root,
         &baseline_decoded,
@@ -173,17 +169,13 @@ fn assert_adapter_guards<B: GitBackend>(backend: &B, root: &Path, record: &Merge
             Value::String(field_name.to_owned()),
             Value::String("future-v0-value".to_owned()),
         );
-        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        let decoded = crate::workspace_ops::merge::decode_production_v0(
             serde_yaml::to_string(&colliding).unwrap().as_bytes(),
         )
         .unwrap();
-        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-            backend,
-            root,
-            &decoded,
-            "r3-test-writer",
-        )
-        .unwrap_err();
+        let error =
+            crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+                .unwrap_err();
         assert_eq!(error.code, ErrorCode::MergeRecordUnreadable, "{field_name}");
         assert!(error.message.contains("collides"), "{field_name}");
     }
@@ -205,17 +197,12 @@ fn assert_adapter_guards<B: GitBackend>(backend: &B, root: &Path, record: &Merge
             Value::String("future_participant".to_owned()),
             Value::Number(7.into()),
         );
-    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+    let decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(&future).unwrap().as_bytes(),
     )
     .unwrap();
-    match crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-        backend,
-        root,
-        &decoded,
-        "r3-test-writer",
-    )
-    .unwrap()
+    match crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+        .unwrap()
     {
         crate::workspace_ops::merge::OpenV0Adaptation::Eligible {
             record,
@@ -245,17 +232,13 @@ fn assert_root_drift_taxonomy<B: GitBackend>(
     let manifest_path = root.join(crate::workspace::WORKSPACE_MANIFEST);
     let original = fs::read(&manifest_path).unwrap();
     fs::write(&manifest_path, b"root drift\n").unwrap();
-    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+    let decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(record).unwrap().as_bytes(),
     )
     .unwrap();
-    let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-        backend,
-        root,
-        &decoded,
-        "r3-test-writer",
-    )
-    .unwrap_err();
+    let error =
+        crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+            .unwrap_err();
     assert_eq!(error.code, ErrorCode::AcceptanceInputDrift, "{rule_id}");
     fs::write(manifest_path, original).unwrap();
 
@@ -268,17 +251,13 @@ fn assert_root_drift_taxonomy<B: GitBackend>(
         let lock_path = root.join(crate::artifact::LOCK_PATH);
         let original = fs::read(&lock_path).unwrap();
         fs::write(&lock_path, "illegal publication prefix\n").unwrap();
-        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        let decoded = crate::workspace_ops::merge::decode_production_v0(
             serde_yaml::to_string(record).unwrap().as_bytes(),
         )
         .unwrap();
-        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-            backend,
-            root,
-            &decoded,
-            "r3-test-writer",
-        )
-        .unwrap_err();
+        let error =
+            crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+                .unwrap_err();
         assert_eq!(
             error.code,
             ErrorCode::PublicationPrefixMismatch,
@@ -295,17 +274,13 @@ fn assert_root_drift_taxonomy<B: GitBackend>(
     {
         let mut mismatched = record.clone();
         mismatched.publication.as_mut().unwrap().composition_commit = Some("f".repeat(40));
-        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        let decoded = crate::workspace_ops::merge::decode_production_v0(
             serde_yaml::to_string(&mismatched).unwrap().as_bytes(),
         )
         .unwrap();
-        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-            backend,
-            root,
-            &decoded,
-            "r3-test-writer",
-        )
-        .unwrap_err();
+        let error =
+            crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+                .unwrap_err();
         assert_eq!(error.code, ErrorCode::RecordedEvidenceDrift, "{rule_id}");
     } else if record
         .publication
@@ -315,17 +290,13 @@ fn assert_root_drift_taxonomy<B: GitBackend>(
     {
         let original_branch = backend.head(root).unwrap().branch.unwrap();
         super::compatibility_v0_edges::set_symbolic_head(root, "i2-ambiguous-root");
-        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        let decoded = crate::workspace_ops::merge::decode_production_v0(
             serde_yaml::to_string(record).unwrap().as_bytes(),
         )
         .unwrap();
-        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-            backend,
-            root,
-            &decoded,
-            "r3-test-writer",
-        )
-        .unwrap_err();
+        let error =
+            crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+                .unwrap_err();
         assert_eq!(error.code, ErrorCode::AmbiguousEvidenceCommit, "{rule_id}");
         super::compatibility_v0_edges::set_symbolic_head(root, &original_branch);
     }
@@ -341,17 +312,13 @@ fn assert_root_drift_taxonomy<B: GitBackend>(
             .unwrap()
             .lock_yaml
             .push_str("# corrupt\n");
-        let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+        let decoded = crate::workspace_ops::merge::decode_production_v0(
             serde_yaml::to_string(&corrupt).unwrap().as_bytes(),
         )
         .unwrap();
-        let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-            backend,
-            root,
-            &decoded,
-            "r3-test-writer",
-        )
-        .unwrap_err();
+        let error =
+            crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+                .unwrap_err();
         assert_eq!(error.code, ErrorCode::CandidateIntegrityMismatch);
     }
 }
@@ -456,17 +423,12 @@ pub(super) fn assert_i2_compatibility_fixture<B: GitBackend>(
     );
     super::compatibility_v0_edges::assert_exact_baseline_recovery(backend, root, record);
     assert_root_drift_taxonomy(backend, root, record, rule_id);
-    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+    let decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(record).unwrap().as_bytes(),
     )
     .unwrap();
-    match crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-        backend,
-        root,
-        &decoded,
-        "r3-test-writer",
-    )
-    .unwrap()
+    match crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+        .unwrap()
     {
         crate::workspace_ops::merge::OpenV0Adaptation::Eligible {
             rule_id: adapted_rule,
@@ -539,18 +501,13 @@ pub(super) fn assert_i2_valid_unlisted_fixture<B: GitBackend>(
             && text_field(field(field(rule, "descriptor"), "operation"), "state") == "finalizing"
     }));
     assert_ne!(record.state, OperationState::Finalizing);
-    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+    let decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(record).unwrap().as_bytes(),
     )
     .unwrap();
     assert_eq!(
-        crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-            backend,
-            root,
-            &decoded,
-            "r3-test-writer",
-        )
-        .unwrap(),
+        crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer",)
+            .unwrap(),
         crate::workspace_ops::merge::OpenV0Adaptation::ValidUnlisted,
         "{case_id}"
     );
@@ -560,17 +517,13 @@ pub(super) fn assert_i2_valid_unlisted_fixture<B: GitBackend>(
     malformed
         .participants
         .remove(&malformed.selected_targets[0]);
-    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+    let decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(&malformed).unwrap().as_bytes(),
     )
     .unwrap();
-    let error = crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-        backend,
-        root,
-        &decoded,
-        "r3-test-writer",
-    )
-    .unwrap_err();
+    let error =
+        crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
+            .unwrap_err();
     assert_eq!(error.code, ErrorCode::MergeRecordUnreadable, "{case_id}");
 }
 

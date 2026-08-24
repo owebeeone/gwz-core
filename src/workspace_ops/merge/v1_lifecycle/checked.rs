@@ -54,6 +54,7 @@ impl StoredV1Record {
         &self.location
     }
 
+    #[cfg(test)]
     pub(super) fn raw(&self) -> &Value {
         &self.raw
     }
@@ -70,7 +71,7 @@ impl StoredV1Record {
                 "v1 record is not at its canonical open location",
             ));
         }
-        let decoded = super::super::record_wire::decode_v1_for_r3_tests(bytes)
+        let decoded = super::super::record_wire::decode_production_v1(bytes)
             .map_err(|error| unreadable(format!("v1 decode failed: {error:?}")))?;
         let expected_id = path.file_stem().and_then(|value| value.to_str());
         if expected_id != Some(decoded.record.merge_id.as_str()) {

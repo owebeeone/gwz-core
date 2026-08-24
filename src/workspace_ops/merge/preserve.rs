@@ -14,7 +14,6 @@ use super::{
 };
 
 mod artifacts;
-#[cfg(test)]
 mod checked_bundle;
 mod plan;
 
@@ -22,19 +21,17 @@ use artifacts::*;
 use plan::*;
 
 #[cfg(test)]
+pub(in crate::workspace_ops::merge) use artifacts::V1_PRESERVATION_IMAGE_CAPTURES;
 pub(in crate::workspace_ops::merge) use artifacts::{
-    V1_PRESERVATION_IMAGE_CAPTURES, v1_preservation_image, v1_root_preservation_spec,
+    v1_preservation_image, v1_root_preservation_spec,
 };
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use checked_bundle::{
     V1BundleObservation, v1_bundle_cursor_is_exact, v1_bundle_observation, v1_write_bundle_checked,
 };
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use plan::{
     V1PreservationOwnerPlan, v1_owner_evidence, v1_preservation_owners,
 };
 
-#[cfg(test)]
 pub(super) fn classify_index_aligned_root_publication_for_i2<B: GitBackend>(
     backend: &B,
     root: &Path,

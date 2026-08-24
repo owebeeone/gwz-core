@@ -20,6 +20,75 @@ pub(super) fn load_open(root: &Path, merge_id: &str) -> ModelResult<StoredV1Reco
     StoredV1Record::from_open_bytes(&root, &path, &bytes)
 }
 
+/// Create the durable open record for one accepted start, at the version the
+/// contract-§2 writer floor selected.
+///
+/// A1's writer floor needs a creation owner: `commit` rewrites a record that
+/// already exists (it requires a lease-covered base digest), and before the
+/// activation nothing in this tree could bring a v1 record into being. This
+/// is that owner, in `commit`'s own staged/fsync/rename/verify shape, so a
+/// crash leaves either no record or one complete valid v1 record.
+///
+/// `create_new` on the staged file plus the pre-flight existence check keeps
+/// the store's single-open-record invariant: a second concurrent start under
+/// the same workspace mutation lease cannot publish a second record.
+pub(super) fn create_open(
+    lease: &V1MutationLease,
+    root: &Path,
+    record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+) -> ModelResult<StoredV1Record> {
+    validate_merge_id(&record.merge_id)?;
+    let root = root.canonicalize().map_err(io_error)?;
+    let directory = root.join(".gwz/merge");
+    let path = directory.join(format!("{}.yaml", record.merge_id));
+    if path_exists(&path)? {
+        return Err(recovery(format!(
+            "merge record '{}' already exists",
+            record.merge_id
+        )));
+    }
+
+    let raw = serde_yaml::to_value(record).map_err(encode_error)?;
+    let encoded = serde_yaml::to_string(&raw)
+        .map(String::into_bytes)
+        .map_err(encode_error)?;
+    let (temporary, mut file) = create_temporary(&path)?;
+    let staged_write = file.write_all(&encoded).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = staged_write {
+        let _ = fs::remove_file(&temporary);
+        return Err(io_error(error));
+    }
+    if let Err(error) = read_regular(&temporary).and_then(|bytes| {
+        if bytes == encoded {
+            Ok(())
+        } else {
+            Err(recovery(
+                "checked v1 temporary bytes changed after serialization",
+            ))
+        }
+    }) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = rename_durable(&temporary, &path, false) {
+        let _ = fs::remove_file(&temporary);
+        return Err(io_error(error));
+    }
+    sync_dir(&directory).map_err(io_error)?;
+
+    let published = StoredV1Record::from_open_bytes(&root, &path, &read_regular(&path)?)?;
+    if published.record() != record {
+        return Err(recovery(
+            "checked v1 published record differs from the created record",
+        ));
+    }
+    if !lease.covers(published.location()) {
+        return Err(recovery("checked v1 creation is outside its lease"));
+    }
+    Ok(published)
+}
+
 pub(super) fn commit(
     lease: &V1MutationLease,
     current: &StoredV1Record,

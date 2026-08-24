@@ -35,6 +35,7 @@ macro_rules! token {
         pub(super) struct $name(BoundValue<$value>);
 
         impl $name {
+            #[allow(dead_code, reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item.")]
             fn issue(
                 issuer: &AuthorityIssuer<'_>,
                 owner: &str,
@@ -66,6 +67,7 @@ macro_rules! token {
                 )
             }
 
+            #[allow(dead_code, reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item.")]
             pub(super) fn value(&self) -> &$value {
                 &self.0.value
             }
@@ -721,10 +723,15 @@ pub(super) use observe::{
     RecordEvidenceOr, SealedReverseEntryVisitor, no_mutation_abort, observe_archive,
     observe_finalization, observe_forward, observe_preservation,
     observe_reverse_publication_handoff, observe_rollback, prepare_direct_rollback_entry,
-    prepare_exhausted_rollback_entry, prepare_preservation_entry, preservation_durability_fact,
+    prepare_exhausted_rollback_entry, prepare_preservation_entry,
     preservation_execution_prefix_is_exact, preservation_reset_step, preservation_stash_guard,
-    preservation_stash_step, preserving_verify_recovery_origin, require_rollback_aggregate,
-    rolling_back_verify_recovery_origin, verify_finalization_action, verify_participant_action,
+    preservation_stash_step, require_rollback_aggregate, verify_finalization_action,
+    verify_participant_action,
+};
+#[cfg(test)]
+pub(super) use observe::{
+    preservation_durability_fact, preserving_verify_recovery_origin,
+    rolling_back_verify_recovery_origin,
 };
 
 #[cfg(test)]

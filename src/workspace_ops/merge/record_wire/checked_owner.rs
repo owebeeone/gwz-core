@@ -11,7 +11,6 @@ pub(crate) const MAX_CHECKED_OWNER_RECORD_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CheckedOwnerRecordVersion {
     V0,
-    #[cfg(test)]
     V1,
 }
 
@@ -133,7 +132,7 @@ fn observe_checked_archive_source_v0_leaves<'a>(
     if state.is_open() {
         return Err(CheckedOwnerObservationError::NotTerminal);
     }
-    super::archive::decode_archived_v0(bytes.as_slice(), owner.merge_id())
+    super::archive::decode_archived(bytes.as_slice(), owner.merge_id())
         .map_err(|_| CheckedOwnerObservationError::InvalidTerminal)?;
     if path.as_path().file_stem().and_then(|value| value.to_str()) != Some(owner.merge_id()) {
         return Err(CheckedOwnerObservationError::Identity);
@@ -149,7 +148,6 @@ pub(crate) fn observe_checked_archive_source_v0_leaves_for_test<'a>(
     observe_checked_archive_source_v0_leaves(open, archived)
 }
 
-#[cfg(test)]
 pub(crate) fn observe_checked_archive_source_v1(
     locations: &CanonicalMergeLocations,
 ) -> Result<CheckedArchiveSourceObservation<'_>, CheckedOwnerObservationError> {
@@ -163,12 +161,12 @@ pub(crate) fn observe_checked_archive_source_v1(
         return Err(CheckedOwnerObservationError::Identity);
     }
     require_bounded(bytes.as_slice())?;
-    let decoded = super::decode_v1_for_r3_tests(bytes.as_slice())
+    let decoded = super::decode_production_v1(bytes.as_slice())
         .map_err(CheckedOwnerObservationError::Decode)?;
     if decoded.record.state.is_open() {
         return Err(CheckedOwnerObservationError::NotTerminal);
     }
-    super::archive::decode_archived_for_r3_tests(bytes.as_slice(), &decoded.record.merge_id)
+    super::archive::decode_archived(bytes.as_slice(), &decoded.record.merge_id)
         .map_err(|_| CheckedOwnerObservationError::InvalidTerminal)?;
     let owner = CheckedOwnerRecordObservation {
         version: CheckedOwnerRecordVersion::V1,
@@ -183,20 +181,18 @@ pub(crate) fn observe_checked_archive_source_v1(
     Ok(CheckedArchiveSourceObservation { owner })
 }
 
-#[cfg(test)]
 pub(crate) fn observe_checked_owner_v0(
     exact_bytes: &[u8],
 ) -> Result<CheckedOwnerRecordObservation<'_>, CheckedOwnerObservationError> {
     observe_checked_owner_v0_bytes(exact_bytes)
 }
 
-#[cfg(test)]
 pub(crate) fn observe_checked_owner_v1(
     exact_bytes: &[u8],
 ) -> Result<CheckedOwnerRecordObservation<'_>, CheckedOwnerObservationError> {
     require_bounded(exact_bytes)?;
     let decoded =
-        super::decode_v1_for_r3_tests(exact_bytes).map_err(CheckedOwnerObservationError::Decode)?;
+        super::decode_production_v1(exact_bytes).map_err(CheckedOwnerObservationError::Decode)?;
     Ok(CheckedOwnerRecordObservation {
         version: CheckedOwnerRecordVersion::V1,
         exact_bytes,
@@ -206,7 +202,6 @@ pub(crate) fn observe_checked_owner_v1(
     })
 }
 
-#[cfg(test)]
 pub(crate) fn observe_checked_owner_v1_from_canonical(
     leaf: &CanonicalRecordLeaf,
 ) -> Result<CheckedOwnerRecordObservation<'_>, CheckedOwnerObservationError> {

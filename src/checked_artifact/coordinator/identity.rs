@@ -88,7 +88,6 @@ impl CheckedActionOwnerV1 {
     ) -> Result<Self, CheckedFsError> {
         let variant = match observation.version() {
             CheckedOwnerRecordVersion::V0 => OwnerVariantV1::MergeRecordV0,
-            #[cfg(test)]
             CheckedOwnerRecordVersion::V1 => OwnerVariantV1::MergeRecordV1,
         };
         Self::for_merge_record(

@@ -8,13 +8,13 @@ use crate::artifact::{
 use crate::git::GitCandidateFile;
 use crate::git::GitHeadState;
 use crate::model::{ErrorCode, ModelError, ModelResult};
+#[cfg(test)]
+use crate::workspace_ops::merge::PublicationProgress;
 use crate::workspace_ops::merge::marker::{
     marker_merge_from_v1_acceptance, selected_v1_result_changed,
 };
 use crate::workspace_ops::merge::model::v1::{AcceptedRootBaseV1, MergeOperationRecordV1};
-use crate::workspace_ops::merge::{
-    OperationState, PublicationCandidate, PublicationProgress, PublicationStep,
-};
+use crate::workspace_ops::merge::{OperationState, PublicationCandidate, PublicationStep};
 
 pub(in crate::workspace_ops::merge) struct V1CandidateBuildInput<'a> {
     pub(in crate::workspace_ops::merge) marker_id: &'a str,

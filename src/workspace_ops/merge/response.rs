@@ -179,7 +179,6 @@ impl_record_response!(
     project_open_v0,
     from_state
 );
-#[cfg(test)]
 impl_record_response!(
     super::model::v1::MergeOperationRecordV1,
     to_v1_response,

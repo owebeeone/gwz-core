@@ -269,11 +269,11 @@ fn executing_recovery_reports_pending_participant_reconciliation_first() {
 fn open_and_archived_v1_share_one_lossless_acceptance_projection() {
     use crate::workspace_ops::merge::model::v1::RecordVersion;
     use crate::workspace_ops::merge::record_wire::{
-        archived_fixture_for_test, decode_archived_for_r3_tests, decode_v1_for_r3_tests,
+        archived_fixture_for_test, decode_archived, decode_production_v1,
     };
     let (bytes, merge_id) = archived_fixture_for_test(RecordVersion::V1);
-    let open = decode_v1_for_r3_tests(&bytes).unwrap();
-    let archived = decode_archived_for_r3_tests(&bytes, merge_id).unwrap();
+    let open = decode_production_v1(&bytes).unwrap();
+    let archived = decode_archived(&bytes, merge_id).unwrap();
 
     let open_projection = crate::workspace_ops::merge::model::project_open_v1(&open.record);
     let archived_projection =
@@ -291,12 +291,10 @@ fn open_and_archived_v1_share_one_lossless_acceptance_projection() {
 #[test]
 fn archived_response_exposes_terminal_record_without_fabricating_live_state() {
     use crate::workspace_ops::merge::model::v1::RecordVersion;
-    use crate::workspace_ops::merge::record_wire::{
-        archived_fixture_for_test, decode_archived_for_r3_tests,
-    };
+    use crate::workspace_ops::merge::record_wire::{archived_fixture_for_test, decode_archived};
 
     let (bytes, merge_id) = archived_fixture_for_test(RecordVersion::V1);
-    let archived = decode_archived_for_r3_tests(&bytes, merge_id).unwrap();
+    let archived = decode_archived(&bytes, merge_id).unwrap();
     let response = crate::workspace_ops::merge::response::archived_status_response(
         merge_id,
         archived.projection(),
@@ -329,12 +327,10 @@ fn archived_response_exposes_terminal_record_without_fabricating_live_state() {
 #[test]
 fn archived_projection_overlay_preserves_gc_summary_and_rejects_mismatches() {
     use crate::workspace_ops::merge::model::v1::RecordVersion;
-    use crate::workspace_ops::merge::record_wire::{
-        archived_fixture_for_test, decode_archived_for_r3_tests,
-    };
+    use crate::workspace_ops::merge::record_wire::{archived_fixture_for_test, decode_archived};
 
     let (bytes, merge_id) = archived_fixture_for_test(RecordVersion::V1);
-    let archived = decode_archived_for_r3_tests(&bytes, merge_id).unwrap();
+    let archived = decode_archived(&bytes, merge_id).unwrap();
     let mut summary = crate::workspace_ops::merge::response::archived_status_response(
         merge_id,
         archived.projection(),

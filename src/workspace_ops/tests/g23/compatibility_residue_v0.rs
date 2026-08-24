@@ -122,16 +122,11 @@ fn adapt<B: GitBackend>(
     root: &Path,
     record: &MergeOperationRecord,
 ) -> ModelResult<crate::workspace_ops::merge::OpenV0Adaptation> {
-    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(
+    let decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(record).unwrap().as_bytes(),
     )
     .unwrap();
-    crate::workspace_ops::merge::adapt_open_v0_for_r3_tests(
-        backend,
-        root,
-        &decoded,
-        "r3-test-writer",
-    )
+    crate::workspace_ops::merge::adapt_open_v0(backend, root, &decoded, "r3-test-writer")
 }
 
 /// `(rule_id, next_action)` when the adapter accepts the row, `None` when it

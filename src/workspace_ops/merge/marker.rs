@@ -5,7 +5,6 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::{MergeOperationRecord, MergeTargetKind, OperationState};
 
-#[cfg(test)]
 use super::model::v1::{
     AcceptedMetadataSourceV1, AcceptedRootBaseV1, MemberAcceptanceV1, MergeOperationRecordV1,
 };
@@ -176,7 +175,6 @@ fn marker_merge_from_view(
     Ok(artifact)
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn marker_merge_from_v1_acceptance(
     record: &MergeOperationRecordV1,
 ) -> ModelResult<MarkerMergeArtifact> {
@@ -266,7 +264,6 @@ pub(in crate::workspace_ops::merge) fn marker_merge_from_v1_acceptance(
     )
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn selected_v1_result_changed(
     record: &MergeOperationRecordV1,
     target_id: &str,

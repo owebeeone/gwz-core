@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::super::super::super::model::archive_projection::*;
-use super::super::{decode_archived_for_r3_tests, v0};
+use super::super::{decode_archived, v0};
 use super::fixtures::{
     MERGE_ID, Shape, add_unselected_member, bytes, digest, oid, rewrite_candidate_lock, v0_record,
 };
@@ -10,7 +10,7 @@ use crate::workspace_ops::merge::{MergeExecutionMode, OperationState, Publicatio
 
 fn project(shape: Shape) -> ArchivedMergeProjection {
     let record = v0_record(shape);
-    decode_archived_for_r3_tests(&bytes(&record), MERGE_ID)
+    decode_archived(&bytes(&record), MERGE_ID)
         .unwrap()
         .projection
 }
@@ -115,7 +115,7 @@ fn missing_evidence_is_a_gap_but_present_wrong_evidence_is_unreadable() {
 
     let mut contradictory = v0_record(Shape::CompletedNoPublication);
     contradictory.baseline.lock_yaml = Some("wrong: bytes\n".to_owned());
-    let error = decode_archived_for_r3_tests(&bytes(&contradictory), MERGE_ID).unwrap_err();
+    let error = decode_archived(&bytes(&contradictory), MERGE_ID).unwrap_err();
     assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
 
     let mut missing_manifest_but_wrong_lock = v0_record(Shape::CompletedCandidate);
@@ -363,6 +363,6 @@ fn unknown_fields_survive_because_projection_never_rewrites_archive_bytes() {
         serde_yaml::Value::String("retained".to_owned());
     let bytes = serde_yaml::to_string(&raw).unwrap().into_bytes();
     let before = bytes.clone();
-    decode_archived_for_r3_tests(&bytes, MERGE_ID).unwrap();
+    decode_archived(&bytes, MERGE_ID).unwrap();
     assert_eq!(bytes, before);
 }

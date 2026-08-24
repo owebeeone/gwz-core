@@ -1,4 +1,4 @@
-use super::super::decode_archived_for_r3_tests;
+use super::super::decode_archived;
 use super::fixtures::{MERGE_ID, Shape, bytes, oid, v0_record};
 use crate::model::ErrorCode;
 use crate::workspace_ops::merge::PreservationEvidence;
@@ -14,7 +14,7 @@ fn cleanup_worklist_is_archive_derived_sorted_and_non_authorizing() {
         noop_commit: None,
         reset_commit: None,
     }];
-    let decoded = decode_archived_for_r3_tests(&bytes(&record), MERGE_ID).unwrap();
+    let decoded = decode_archived(&bytes(&record), MERGE_ID).unwrap();
     assert_eq!(decoded.cleanup.backup_refs.len(), 1);
     assert_eq!(decoded.cleanup.backup_refs[0].target_id, "mem_a");
     assert_eq!(decoded.cleanup.backup_refs[0].path, "members/a");
@@ -32,7 +32,7 @@ fn cleanup_rejects_noncanonical_incomplete_and_duplicate_owners() {
         noop_commit: None,
         reset_commit: None,
     }];
-    let error = decode_archived_for_r3_tests(&bytes(&wrong), MERGE_ID).unwrap_err();
+    let error = decode_archived(&bytes(&wrong), MERGE_ID).unwrap_err();
     assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
     assert!(
         error
@@ -53,7 +53,7 @@ fn cleanup_rejects_noncanonical_incomplete_and_duplicate_owners() {
         noop_commit: None,
         reset_commit: None,
     }];
-    assert!(decode_archived_for_r3_tests(&bytes(&incomplete), MERGE_ID).is_err());
+    assert!(decode_archived(&bytes(&incomplete), MERGE_ID).is_err());
 
     let mut duplicate = v0_record(Shape::CompletedCandidate);
     let row = PreservationEvidence {
@@ -69,7 +69,7 @@ fn cleanup_rejects_noncanonical_incomplete_and_duplicate_owners() {
         .get_mut("mem_a")
         .unwrap()
         .preservation = vec![row.clone(), row];
-    let error = decode_archived_for_r3_tests(&bytes(&duplicate), MERGE_ID).unwrap_err();
+    let error = decode_archived(&bytes(&duplicate), MERGE_ID).unwrap_err();
     assert!(
         error
             .message
@@ -123,7 +123,7 @@ fn cleanup_rejects_empty_or_noncanonical_stash_evidence() {
     ] {
         let mut record = v0_record(Shape::CompletedCandidate);
         record.participants.get_mut("mem_a").unwrap().preservation = vec![evidence];
-        let error = decode_archived_for_r3_tests(&bytes(&record), MERGE_ID).unwrap_err();
+        let error = decode_archived(&bytes(&record), MERGE_ID).unwrap_err();
         assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
         assert!(
             error

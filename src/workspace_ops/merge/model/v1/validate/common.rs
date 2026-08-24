@@ -13,7 +13,6 @@ pub(crate) fn validate_common_v1_record(record: &MergeOperationRecordV1) -> Mode
     validate_common_record(record, true)
 }
 
-#[cfg(test)]
 pub(crate) fn validate_common_v0_view(record: &MergeOperationRecordV1) -> ModelResult<()> {
     validate_common_record(record, false)
 }

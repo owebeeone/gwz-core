@@ -1099,6 +1099,10 @@ pub(super) fn head_commit(fixture: &Fixture) -> Option<String> {
 }
 
 /// Every commit-object input design §4.1 enumerates, read back from Git.
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 pub(super) struct CommitFacts {
     pub(super) parents: Vec<String>,
     pub(super) tree: String,

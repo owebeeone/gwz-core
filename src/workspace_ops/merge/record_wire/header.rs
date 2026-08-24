@@ -22,13 +22,20 @@ pub(crate) struct InstalledMergeRecordVersions {
 }
 
 impl InstalledMergeRecordVersions {
-    pub(crate) const PRODUCTION_R3: Self = Self {
+    /// The A1 installed set (compatibility contract §1). Pre-A1 this was
+    /// `{ v0: true, v1: false }` and every `gwz.merge-operation/v1` envelope
+    /// classified `UnsupportedRecordVersion` with `required_wave: A1` — the
+    /// T-2 tripwire. A1 installs v1; v2-v4 stay allocated-but-uninstalled and
+    /// keep their frozen typed projection.
+    pub(crate) const PRODUCTION: Self = Self { v0: true, v1: true };
+
+    /// The v0-only set. The v0 record store still owns only v0 bodies, so its
+    /// decoder classifies a v1 envelope as `UnsupportedRecordVersion` and the
+    /// dispatch routes that record to the v1 lifecycle instead.
+    pub(crate) const V0_ONLY: Self = Self {
         v0: true,
         v1: false,
     };
-
-    #[cfg(test)]
-    pub(crate) const V0_AND_V1_FOR_R3_TESTS: Self = Self { v0: true, v1: true };
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

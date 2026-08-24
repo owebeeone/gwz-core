@@ -37,3 +37,23 @@ jobs:
         # M5b State [P2-1] / Code P3: the T-3/T-4 source-surface scans must
         # execute in the push lane, not only under full cargo-test runs.
         run: cargo test --lib workspace_ops::merge::v1_lifecycle::tests::no_ff_wire
+      - name: Run the gates A1 made load-bearing
+        # A1 Safety [P2-2] / §6.2. Before A1 these three R4b-G tools were
+        # bookkeeping and ran nowhere; the activation turned them into standing
+        # guards. The M4 scenario map is the machine record the C-1 closure
+        # rests on, and the privacy probe plus the call-graph gate are the
+        # "standing guard" the J-1 acceptance leaned on — a guard that runs
+        # nowhere stands only on prose. Driven through the aggregate runner so
+        # each battery's expected count is pinned, not just its exit code.
+        run: |
+          python scripts/checks/check_m4_scenario_map.py
+          python scripts/checks/run_r4bg_aggregate_gates.py privacy call-graph
+      # L2-05 (`check_merge_docs.py` / `test_check_merge_docs.py`) is NOT wired
+      # here, deliberately. Its manifest asserts against `gwz-cli/docs/*` and
+      # `dev-docs/*` resolved from the development workspace root
+      # (`scripts/checks/check_merge_docs.py` DEFAULT_WORKSPACE_ROOT =
+      # parents[3]), and this job checks out gwz-core alone — the sibling
+      # gwz-cli tree the manifest names does not exist on the runner, so the
+      # checker cannot resolve a single document path. Wiring it needs the
+      # multi-repo checkout described by the R2-D settled tuple §11.3 item 7;
+      # until then it stays a local/release-lane gate. A1 Safety [P2-2].

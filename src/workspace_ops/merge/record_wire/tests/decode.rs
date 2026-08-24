@@ -1,5 +1,5 @@
-use super::super::decode::{RecordDecodeError, decode_production_v0, decode_v1_for_r3_tests};
-use super::super::decode_archived_for_r3_tests;
+use super::super::decode::{RecordDecodeError, decode_production_v0, decode_production_v1};
+use super::super::decode_archived;
 use super::super::header::HeaderClassificationError;
 use super::super::raw_yaml::StrictYamlErrorKind;
 use sha2::{Digest, Sha256};
@@ -78,7 +78,7 @@ fn exact_v0_header_precedes_typed_body_failure() {
 
 #[test]
 fn test_only_v1_decoder_uses_the_same_strict_tree_for_the_complete_body() {
-    let decoded = decode_v1_for_r3_tests(
+    let decoded = decode_production_v1(
         record("schema: gwz.merge-operation/v1\nrecord_schema_version: 1").as_bytes(),
     )
     .unwrap();
@@ -112,7 +112,7 @@ fn test_only_v1_decoder_rejects_duplicates_inside_new_v1_containers() {
         "{}accepted_workspace:\n  operation_baseline_lock_sha256: first\n  operation_baseline_lock_sha256: second\n",
         record("schema: gwz.merge-operation/v1\nrecord_schema_version: 1")
     );
-    let error = decode_v1_for_r3_tests(input.as_bytes()).unwrap_err();
+    let error = decode_production_v1(input.as_bytes()).unwrap_err();
     assert!(matches!(
         error,
         RecordDecodeError::Raw(error) if error.kind == StrictYamlErrorKind::DuplicateKey
@@ -126,7 +126,7 @@ fn test_only_v1_decoder_preserves_typed_post_body_validation_errors() {
         record("schema: gwz.merge-operation/v1\nrecord_schema_version: 1"),
         "a".repeat(40)
     );
-    let error = decode_v1_for_r3_tests(input.as_bytes()).unwrap_err();
+    let error = decode_production_v1(input.as_bytes()).unwrap_err();
     assert!(matches!(
         error,
         RecordDecodeError::Validation { header, error }
@@ -137,7 +137,7 @@ fn test_only_v1_decoder_preserves_typed_post_body_validation_errors() {
 
 #[test]
 fn test_only_archive_decoder_rejects_allocated_future_before_body_decode() {
-    let error = decode_archived_for_r3_tests(
+    let error = decode_archived(
         b"schema: gwz.merge-operation/v2\nrecord_schema_version: 2\nbody: invalid\n",
         "merge_future",
     )

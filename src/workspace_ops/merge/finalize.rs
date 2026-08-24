@@ -356,7 +356,6 @@ pub(super) fn validate_candidate(record: &MergeOperationRecord) -> ModelResult<(
     Ok(())
 }
 
-#[cfg(test)]
 pub(crate) fn validate_candidate_for_i2_fixture(record: &MergeOperationRecord) -> ModelResult<()> {
     validate_candidate(record)
 }

@@ -36,6 +36,10 @@ pub(in crate::workspace_ops::merge) struct BuiltV1Acceptance {
 }
 
 impl BuiltV1Acceptance {
+    #[allow(
+        dead_code,
+        reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+    )]
     pub(in crate::workspace_ops::merge) fn accepted_workspace(&self) -> &AcceptedWorkspaceV1 {
         &self.accepted_workspace
     }

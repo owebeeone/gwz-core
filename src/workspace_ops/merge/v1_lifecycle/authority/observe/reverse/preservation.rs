@@ -14,8 +14,10 @@ use crate::workspace_ops::merge::preserve::V1PreservationOwnerPlan;
 pub(in crate::workspace_ops::merge::v1_lifecycle) use cursor::{
     execution_prefix_is_exact, pending_recovery_is_exact,
 };
+#[cfg(test)]
+pub(in crate::workspace_ops::merge::v1_lifecycle) use phase::durability_fact;
 pub(in crate::workspace_ops::merge::v1_lifecycle) use phase::{
-    durability_fact, reset_step, stash_guard, stash_step,
+    reset_step, stash_guard, stash_step,
 };
 
 pub(in crate::workspace_ops::merge::v1_lifecycle::authority) fn observe<

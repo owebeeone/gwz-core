@@ -1,5 +1,4 @@
 mod abort;
-#[cfg(test)]
 pub(super) mod artifact_facts;
 mod finalization;
 mod planning;
@@ -12,7 +11,6 @@ use crate::model::ModelResult;
 
 use super::MergeOperationRecord;
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use abort::{
     V1RootRollbackObservation, execute_v1_root_metadata_rollback,
     observe_v1_root_metadata_rollback, observe_v1_selected_root_baseline,

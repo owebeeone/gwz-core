@@ -33,14 +33,12 @@ pub(super) fn decode_error(
             format!("invalid record: {detail}"),
         )
         .with_record_context(record_context(merge_id, &header, None)),
-        #[cfg(test)]
         RecordDecodeError::Validation { header, error } => match location {
             RecordLocation::Open => {
                 error.with_record_context(record_context(merge_id, &header, None))
             }
             RecordLocation::Archived => archived_contradiction(merge_id, &header),
         },
-        #[cfg(test)]
         RecordDecodeError::UnknownFields { header, error } => match location {
             RecordLocation::Open => location_unreadable(
                 path,

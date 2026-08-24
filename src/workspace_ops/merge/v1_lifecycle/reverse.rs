@@ -14,6 +14,7 @@ mod execute;
 mod preservation;
 mod rollback;
 
+#[cfg(test)]
 pub(in crate::workspace_ops::merge::v1_lifecycle) use execute::preservation::durability_diagnostic as preservation_durability_diagnostic;
 
 pub(super) struct ReverseRuntime<'a, B> {

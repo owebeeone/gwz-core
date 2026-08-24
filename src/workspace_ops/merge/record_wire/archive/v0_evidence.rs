@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 use super::super::super::model::archive_projection::*;
-#[cfg(test)]
 use super::super::super::model::v1::MergeOperationRecordV1;
 use super::super::super::{
     MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord, MergeTargetKind,
@@ -244,7 +243,6 @@ pub(super) fn validate_marker_merge(
     validate_marker_merge_view(marker_view_v0(record), publication, marker, candidate_lock)
 }
 
-#[cfg(test)]
 pub(super) fn validate_marker_merge_v1(
     record: &MergeOperationRecordV1,
     publication: &PublicationProgress,
@@ -276,7 +274,6 @@ fn marker_view_v0(record: &MergeOperationRecord) -> MarkerMergeView<'_> {
     }
 }
 
-#[cfg(test)]
 fn marker_view_v1(record: &MergeOperationRecordV1) -> MarkerMergeView<'_> {
     MarkerMergeView {
         created_at: &record.created_at,

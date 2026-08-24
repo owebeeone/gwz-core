@@ -187,10 +187,28 @@ fn resumed_finalization_persists_each_phase_before_a_nested_mutation_fault() {
         PublicationStep::CommittingEvidence
     );
 
+    // MOVED BY A1 (Safety review §2.4 — the adaptation preflight).
+    //
+    // Pre-A1 this resume re-entered the v0 finalizer, so the v0
+    // candidate-publication fault injector bit and the resume failed at
+    // `PublishingCandidate`; a second resume then completed it. The row is
+    // `CommittingEvidence` — "evidence created but unrecorded", one of the
+    // frozen seven migration-whitelist shapes — so post-activation the
+    // mutating command's preflight migrates it and the v1 lifecycle completes
+    // it. `fail_next_candidate_publication_after` is a v0-finalizer injector
+    // and the v1 finalization path does not consult it, so the resume now
+    // succeeds in one step.
+    //
+    // The phase-persistence property this test is named for is unaffected:
+    // its first three windows above still run through the injected v0 store
+    // (`invoke_with_store`), which the preflight deliberately never migrates.
+    // What the assertion pins now is the migration itself — a regression in
+    // whitelist eligibility would return this row to the v0 path and trip the
+    // `source_version` check.
     crate::workspace_ops::merge::fail_next_candidate_publication_after(
         crate::workspace_ops::merge::CandidatePublicationMutation::Marker,
     );
-    handle_merge(
+    let publication_completed = handle_merge(
         &backend,
         publication_temp.path(),
         recovery_request(
@@ -199,28 +217,24 @@ fn resumed_finalization_persists_each_phase_before_a_nested_mutation_fault() {
         ),
         "op_resumed_publication_fault",
     )
-    .unwrap_err();
-    let publication_record = FileMergeStore
-        .discover_open(publication_temp.path())
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        publication_record.publication.as_ref().unwrap().step,
-        PublicationStep::PublishingCandidate
-    );
-    let publication_completed = handle_merge(
-        &backend,
-        publication_temp.path(),
-        recovery_request(
-            crate::MergeOp::Resume,
-            Some(publication_record.merge_id.clone()),
-        ),
-        "op_resumed_publication_complete",
-    )
     .unwrap();
     assert_eq!(
         publication_completed.state,
         crate::MergeOperationState::Completed
+    );
+    assert_eq!(
+        publication_completed
+            .record
+            .as_ref()
+            .map(|record| record.source_version),
+        Some(crate::MergeRecordVersion::V1),
+        "the whitelisted CommittingEvidence row migrated before continuation"
+    );
+    assert!(
+        FileMergeStore
+            .discover_open(publication_temp.path())
+            .unwrap()
+            .is_none()
     );
 }
 

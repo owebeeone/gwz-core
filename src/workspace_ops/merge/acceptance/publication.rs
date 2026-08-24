@@ -1,10 +1,7 @@
-#[cfg(test)]
 use crate::artifact::{LockArtifact, MARKER_DIR, MarkerArtifact, MarkerMergeTargetKind};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-#[cfg(test)]
 use sha2::{Digest, Sha256};
 
-#[cfg(test)]
 use super::super::model::v1::{
     AcceptedMetadataSourceV1, AcceptedRootBaseV1, MemberAcceptanceV1, MergeOperationRecordV1,
 };
@@ -71,7 +68,6 @@ pub(in crate::workspace_ops::merge) fn classify_candidate_publication_view(
     ))
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn classify_candidate_publication_for_v1(
     record: &MergeOperationRecordV1,
     observation: &CandidatePublicationObservation,
@@ -158,7 +154,6 @@ pub(in crate::workspace_ops::merge) fn publication_prefix_allowed_view(
     })
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn publication_required_for_v1(
     record: &MergeOperationRecordV1,
 ) -> bool {
@@ -170,7 +165,6 @@ pub(in crate::workspace_ops::merge) fn publication_required_for_v1(
     })
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn validate_candidate_semantics_for_v1(
     record: &MergeOperationRecordV1,
 ) -> ModelResult<()> {
@@ -262,7 +256,6 @@ pub(in crate::workspace_ops::merge) fn validate_candidate_semantics_for_v1(
     Ok(())
 }
 
-#[cfg(test)]
 fn accepted_result<'a>(record: &'a MergeOperationRecordV1, target: &str) -> ModelResult<&'a str> {
     let accepted = record
         .accepted_workspace
@@ -283,7 +276,6 @@ fn accepted_result<'a>(record: &'a MergeOperationRecordV1, target: &str) -> Mode
     Ok(&integration.resulting_commit)
 }
 
-#[cfg(test)]
 fn marker_merge_is_exact(record: &MergeOperationRecordV1, marker: &MarkerArtifact) -> bool {
     let Some(merge) = marker.merge.as_ref() else {
         return false;
@@ -325,12 +317,10 @@ fn marker_merge_is_exact(record: &MergeOperationRecordV1, marker: &MarkerArtifac
     merge.root_merge_commit.as_deref() == root_result
 }
 
-#[cfg(test)]
 fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
-#[cfg(test)]
 fn candidate_error(record: &MergeOperationRecordV1) -> ModelError {
     ModelError::new(
         ErrorCode::CandidateIntegrityMismatch,
@@ -398,7 +388,6 @@ fn finalization_next_action_from_parts(
     })
 }
 
-#[cfg(test)]
 pub(crate) fn finalization_next_action_for_v1(
     record: &super::super::model::v1::MergeOperationRecordV1,
 ) -> ModelResult<&'static str> {
@@ -417,14 +406,12 @@ pub(crate) fn finalization_next_action_for_v1(
     )?))
 }
 
-#[cfg(test)]
 pub(crate) fn finalization_next_action_for_i2(
     record: &MergeOperationRecord,
 ) -> ModelResult<&'static str> {
     Ok(action_name(finalization_next_action(record)?))
 }
 
-#[cfg(test)]
 fn action_name(action: FinalizationNextAction) -> &'static str {
     match action {
         FinalizationNextAction::ValidateResults => "validate_results",

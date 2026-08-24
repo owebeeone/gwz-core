@@ -49,6 +49,20 @@ def run_compiler_probe(mutator) -> subprocess.CompletedProcess[str]:
                 "--",
                 "-D",
                 "warnings",
+                # A1 cure class (a). Every probe below injects an item that
+                # nothing calls -- that is the point: the mutated copy must
+                # COMPILE so the CHECKER, not rustc, is the rejector. Before
+                # A1 the v1 tree's blanket `dead_code` allowance covered the
+                # injected items; G1 expired it, so the probe compile started
+                # failing on dead-code and 11 of these tests went red for a
+                # reason unrelated to the property under test. Allowing the
+                # one lint on the throwaway copy is equivalent to emitting
+                # `#[allow(dead_code)]` beside each injected probe item, and
+                # it does NOT weaken F-3: every other lint stays `-D`, the
+                # checker's textual seam scan ignores attributes entirely,
+                # and probes whose injected item IS used are unaffected.
+                "-A",
+                "dead_code",
             ],
             check=False,
             capture_output=True,
@@ -816,9 +830,17 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         else:
             self.fail(f"unsupported source-loading form: {form}")
         text = path.read_text(encoding="utf-8") + edge
+        # A1 cure class (d), cfg agreement. Every `edge` above is `cfg(test)`,
+        # and before A1 so was this call site: `v1_preservation_image` sat
+        # behind the v1 compile gate. G1 made it production, so an un-gated
+        # call to a `cfg(test)` module stopped compiling (E0433) and five
+        # probes went red for a reason unrelated to the property. Gating the
+        # injected statement restores the pre-A1 agreement; the checker scans
+        # source text and is indifferent to cfg, so each probe still proves
+        # that a hidden source-loading edge is caught.
         text = text.replace(
             "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
-            f"    let _ = {call}\n"
+            f"    #[cfg(test)]\n    let _ = {call}\n"
             "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
             1,
         )
@@ -844,6 +866,10 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         path.write_text(
             path.read_text(encoding="utf-8").replace(
                 "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
+                # A1 cure class (d): `protocol_corpus` is a `cfg(test)`
+                # module (lib.rs:41-44) and this call site became production
+                # at G1, so the injected call must carry the same cfg.
+                "    #[cfg(test)]\n"
                 "    let _ = crate::protocol_corpus::observe_after_write(&plan.path)?;\n"
                 "    match v1_root_preservation_spec(backend, record, plan, attached_commit)? {",
                 1,
@@ -1180,10 +1206,21 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         path = source / "workspace_ops/merge/mod.rs"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
+                # A1 cure class (d). The activation reshaped this block
+                # (`AdaptationPrecheck`, `OpenRecordEnvelope`,
+                # `classify_open_record`,
+                # `discover_open_envelope_before_manifest` joined it), so the
+                # pre-A1 literal no longer matched and the "mutation" was a
+                # silent no-op -- the test failed because the underivable
+                # message never fired, not because derivation broke. Restated
+                # against the reshaped block so the surgery is a real
+                # mutation again.
                 "pub(crate) use store::{\n"
-                "    FileMergeStore, MergeStore, archive_merge_record, enter_finalizing, "
-                "persist_merge_record,\n"
-                "    persist_operation_transition,\n"
+                "    AdaptationPrecheck, FileMergeStore, MergeStore, OpenRecordEnvelope, "
+                "archive_merge_record,\n"
+                "    classify_open_record, discover_open_envelope_before_manifest, "
+                "enter_finalizing,\n"
+                "    persist_merge_record, persist_operation_transition,\n"
                 "};\n",
                 "",
                 1,

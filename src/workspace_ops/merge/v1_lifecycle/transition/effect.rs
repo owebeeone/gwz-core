@@ -1,6 +1,8 @@
 use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::workspace_ops::merge::OperationDriftKind;
+#[cfg(test)]
+use crate::workspace_ops::merge::ParticipantDriftKind;
 use crate::workspace_ops::merge::model::v1::{MergeOperationRecordV1, PreservationOwnerV1};
-use crate::workspace_ops::merge::{OperationDriftKind, ParticipantDriftKind};
 
 use super::super::authority::ParticipantDriftIdentity;
 use super::footprint;

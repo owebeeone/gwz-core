@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 
-#[cfg(test)]
 use super::super::super::model::v1::MergeOperationRecordV1;
 use super::super::super::{MergeOperationRecord, PreservationEvidence};
 
@@ -126,7 +125,6 @@ pub(super) fn from_v0(
     })
 }
 
-#[cfg(test)]
 pub(super) fn from_v1(
     record: &MergeOperationRecordV1,
 ) -> Result<ArchivedCleanupWorklist, CleanupError> {

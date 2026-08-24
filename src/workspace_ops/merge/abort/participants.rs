@@ -66,21 +66,16 @@ pub(super) fn rollback_participants<A: AbortRuntime, S: MergeStore>(
     Ok(())
 }
 
-#[cfg(test)]
 use crate::git::{GitBackend, GitRepositoryState};
-#[cfg(test)]
 use crate::workspace_ops::merge::model::v1::ParticipantRollbackKindV1;
-#[cfg(test)]
 use crate::workspace_ops::merge::{MergeParticipantRecord, ParticipantState};
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use v1_rollback::{
     V1ParticipantRollbackObservation, execute_v1_participant_rollback,
     observe_v1_participant_rollback, terminal_v1_participant_is_exact,
     verify_v1_no_mutation_participant,
 };
 
-#[cfg(test)]
 mod v1_rollback {
     use super::*;
     use crate::workspace_ops::merge::model::v1::MergeOperationRecordV1;

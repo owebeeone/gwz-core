@@ -57,6 +57,10 @@ pub(super) struct V1ServiceResponse {
 }
 
 impl V1ServiceResponse {
+    #[allow(
+        dead_code,
+        reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+    )]
     pub(super) fn current(&self) -> &StoredV1Record {
         &self.current
     }

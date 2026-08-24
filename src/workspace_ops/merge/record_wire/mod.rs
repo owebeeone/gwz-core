@@ -10,30 +10,23 @@ mod scalar;
 
 mod archive;
 mod location;
-#[cfg(test)]
 mod open_v0;
-#[cfg(test)]
 mod unknown_fields;
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use unknown_fields::{
     ContainerSegment, IdentityValue, SemanticIdentity, UnknownFieldLocator, UnknownFieldManifest,
 };
 
 #[cfg(test)]
 pub(crate) use open_v0::{
-    OpenV0Adaptation, PreparedOpenV0Upgrade, PreparedV1Upgrade, VerifiedV0Descriptor,
-    adapt_open_v0_for_r3_tests, prepare_upgrade, verified_v0_descriptor,
+    OpenV0Adaptation, VerifiedV0Descriptor, adapt_open_v0, verified_v0_descriptor,
 };
+pub(crate) use open_v0::{PreparedOpenV0Upgrade, PreparedV1Upgrade, prepare_upgrade};
 
+pub(crate) use archive::{ArchivedCleanupWorklist, ValidatedArchivedRecord, decode_archived};
 #[allow(
     unused_imports,
-    reason = "P4 consumes cleanup only through the test-gated archive/GC lifecycle"
-)]
-pub(crate) use archive::{ArchivedCleanupWorklist, ValidatedArchivedRecord, decode_archived_v0};
-#[allow(
-    unused_imports,
-    reason = "opaque physical types are named by test-gated v1 authority consumers"
+    reason = "opaque physical types are named by the v1 authority's checked consumers"
 )]
 pub(crate) use location::{
     CanonicalMergeLocations, CanonicalRecordKind, CanonicalRecordLeaf, CanonicalRecordPath,
@@ -41,10 +34,7 @@ pub(crate) use location::{
 };
 
 #[cfg(test)]
-pub(crate) use archive::decode_archived_for_r3_tests as decode_archived;
-#[cfg(test)]
-pub(crate) use archive::{archived_fixture_for_test, decode_archived_for_r3_tests};
-#[cfg(test)]
+pub(crate) use archive::archived_fixture_for_test;
 pub(in crate::workspace_ops::merge) use location::{
     FileIdentity, identity_at_named_path, identity_from_file, open_named_path,
 };
@@ -54,31 +44,29 @@ pub(crate) use location::{
     replace_open_before_final_check_for_test, replace_parent_before_final_check_for_test,
 };
 
-#[cfg(test)]
-pub(crate) fn decode_v0_for_r3_tests(
-    bytes: &[u8],
-) -> Result<decode::DecodedV0Record, decode::RecordDecodeError> {
-    decode::decode_production_v0(bytes)
-}
+pub(crate) use decode::{
+    DecodedRecord, decode_production, decode_production_v0, decode_production_v1,
+};
 
 #[cfg(test)]
-pub(crate) use decode::decode_v1_for_r3_tests;
-
+pub(crate) use checked_owner::observe_checked_archive_source_v0_leaves_for_test;
 #[allow(unused_imports)]
 pub(crate) use checked_owner::{
     CheckedArchiveSourceObservation, CheckedOwnerObservationError, CheckedOwnerRecordObservation,
     CheckedOwnerRecordVersion, observe_checked_archive_source_v0,
     observe_checked_owner_v0_from_canonical,
 };
-#[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use checked_owner::{
-    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_archive_source_v0_leaves_for_test,
-    observe_checked_archive_source_v1, observe_checked_owner_v0, observe_checked_owner_v1,
-    observe_checked_owner_v1_from_canonical,
+    MAX_CHECKED_OWNER_RECORD_BYTES, observe_checked_archive_source_v1, observe_checked_owner_v0,
+    observe_checked_owner_v1, observe_checked_owner_v1_from_canonical,
 };
-pub(super) use decode::{RecordDecodeError, decode_production_v0};
-pub(super) use header::{HeaderClassificationError, HeaderMalformedReason, MergeRecordHeader};
+pub(super) use decode::RecordDecodeError;
+pub(crate) use header::InstalledMergeRecordVersions;
+pub(super) use header::{
+    HeaderClassificationError, HeaderMalformedReason, MergeRecordDispatch, MergeRecordHeader,
+    classify_merge_record_header,
+};
 pub(super) use raw_yaml::StrictYamlError;
 
 #[cfg(test)]

@@ -2,8 +2,8 @@
 use super::super::PendingCommitSpec;
 use super::super::integration::{IntegrationIntent, PreparedIntegration};
 use super::super::{
-    MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord, MergeParticipantPlan,
-    MergeParticipantRecord, MergeRecordError, OperationState, ParticipantState,
+    MergeOperationRecord, MergeParticipantPlan, MergeParticipantRecord, MergeRecordError,
+    OperationState, ParticipantState, RequestedSemantics, creation_envelope, select_record_version,
 };
 use super::prepared::{PreparedAction, Row};
 use crate::MergeParticipantState as PState;
@@ -35,6 +35,16 @@ pub(super) fn freeze_merge_messages(
     Ok(())
 }
 
+/// Create the durable record for one accepted start, at the version the
+/// contract-§2 writer floor selects.
+///
+/// A1 (Safety review §2.2 R4): this site used to hard-code the v0 envelope
+/// (`schema: MERGE_RECORD_SCHEMA, record_schema_version:
+/// MERGE_RECORD_SCHEMA_VERSION`). The version is now chosen by
+/// `select_record_version` — `max(active_writer_floor, highest requested
+/// semantic version)` — and unsupported requested semantics reject here,
+/// before any record exists. The chosen version is frozen before the first
+/// mutation.
 pub(super) fn create_record<C: Clock>(
     root: &Path,
     plan: &super::super::MergePlan,
@@ -42,6 +52,9 @@ pub(super) fn create_record<C: Clock>(
     clock: &C,
     context: &OperationContext,
 ) -> ModelResult<MergeOperationRecord> {
+    let (schema, record_schema_version) = creation_envelope(select_record_version(
+        RequestedSemantics::from_mode(plan.mode),
+    )?);
     let manifest = artifact::read_manifest(root)?;
     let participants = plan
         .participants
@@ -71,8 +84,8 @@ pub(super) fn create_record<C: Clock>(
         })
         .collect();
     Ok(MergeOperationRecord {
-        schema: MERGE_RECORD_SCHEMA.to_owned(),
-        record_schema_version: MERGE_RECORD_SCHEMA_VERSION,
+        schema: schema.to_owned(),
+        record_schema_version,
         writer_version: crate::VERSION.to_owned(),
         workspace_id: manifest.workspace.id,
         merge_id: merge_id.to_owned(),

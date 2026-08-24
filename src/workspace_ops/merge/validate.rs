@@ -9,9 +9,20 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
             require_source(request.source_ref.as_deref())?;
             reject_present("merge_id", request.merge_id.is_some())?;
             reject_present("preserve", request.preserve.is_some())?;
-            if request.mode == Some(crate::MergeMode::NoFf) {
-                return phase("no_ff requires the v1 record lifecycle and is not yet activated");
-            }
+            // T-1, inverted at A1. `MergeMode::NoFf` used to return the typed
+            // refusal "no_ff requires the v1 record lifecycle and is not yet
+            // activated" here; the activation routes it to the v1 lifecycle
+            // instead.
+            //
+            // COUPLED with `runtime/dispatch.rs`'s message-validation
+            // exclusion (Safety review §2.2 R2). While NoFf refused here, the
+            // dispatch skipped `validate_custom_commit_message` for NoFf
+            // starts because they could never reach record creation. Landing
+            // this refusal's fall WITHOUT that exclusion's fall would let a
+            // NoFf start carry an unvalidated custom message into record
+            // creation — the v1 forward path consumes `row.commit_message`
+            // from the record and performs no request-message validation of
+            // its own. The two are one gate and move together.
             if let Some(message) = request.message.as_deref() {
                 super::integration::validate_custom_commit_message(message)?;
             }
@@ -112,10 +123,6 @@ fn invalid<T>(message: impl Into<String>) -> ModelResult<T> {
     Err(ModelError::new(ErrorCode::MergeValidationFailed, message))
 }
 
-fn phase<T>(message: impl Into<String>) -> ModelResult<T> {
-    Err(ModelError::new(ErrorCode::MergePhaseUnsupported, message))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,8 +204,15 @@ mod tests {
         }
     }
 
+    /// T-1, inverted at A1. This is M5b's designed inversion marker: while
+    /// the v1 record lifecycle was a compile boundary, `MergeMode::NoFf`
+    /// returned `MergePhaseUnsupported` with "no_ff requires the v1 record
+    /// lifecycle and is not yet activated", and a NoFf start's custom message
+    /// went unvalidated because the start could never reach record creation.
+    /// The activation landed both halves of that gate together, so no-ff now
+    /// validates exactly as every other start does.
     #[test]
-    fn custom_messages_validate_while_no_ff_remains_reserved() {
+    fn custom_messages_and_no_ff_both_validate_after_activation() {
         let mut message = request(crate::MergeOp::Start);
         message.message = Some("custom".to_owned());
         assert!(validate_merge_request(&message).is_ok());
@@ -215,14 +229,18 @@ mod tests {
         ff_only.mode = Some(crate::MergeMode::FfOnly);
         assert!(validate_merge_request(&ff_only).is_ok());
 
-        let mut mode = request(crate::MergeOp::Start);
-        mode.mode = Some(crate::MergeMode::NoFf);
-        let error = validate_merge_request(&mode).unwrap_err();
-        assert_eq!(error.code, ErrorCode::MergePhaseUnsupported);
-        assert_eq!(
-            error.message,
-            "no_ff requires the v1 record lifecycle and is not yet activated"
-        );
+        let mut no_ff = request(crate::MergeOp::Start);
+        no_ff.mode = Some(crate::MergeMode::NoFf);
+        assert!(validate_merge_request(&no_ff).is_ok());
+        for body in ["", " \t\n", "\u{2003}\r\n", "subject\0body"] {
+            no_ff.message = Some(body.to_owned());
+            assert_eq!(
+                validate_merge_request(&no_ff).unwrap_err().code,
+                ErrorCode::MergeValidationFailed,
+                "the coupled pair validates no-ff custom messages too"
+            );
+        }
+        no_ff.message = None;
 
         let mut archived_status = request(crate::MergeOp::Status);
         archived_status.merge_id = Some("merge_1".to_owned());

@@ -1,7 +1,6 @@
 use serde_yaml::Value;
 
 use super::super::model::MergeOperationRecord;
-#[cfg(test)]
 use super::super::model::v1::{MergeOperationRecordV1, validate_v1_record};
 use super::header::{
     HeaderClassificationError, HeaderMalformedReason, InstalledMergeRecordVersions,
@@ -15,7 +14,6 @@ mod cleanup;
 mod v0;
 mod v0_audit;
 mod v0_evidence;
-#[cfg(test)]
 mod v1;
 
 pub(crate) use cleanup::ArchivedCleanupWorklist;
@@ -42,7 +40,13 @@ impl ValidatedArchivedRecord {
     }
 }
 
-pub(crate) fn decode_archived_v0(
+/// Archive projection's envelope entry.
+///
+/// T-2 inverted at A1: the `required_wave: A1` refusal this decoder used to
+/// return for `gwz.merge-operation/v1` became acceptance, because A1 installs
+/// the v1 archive projection (compatibility contract §1/§6/§7). V2-v4 keep
+/// their frozen typed `UnsupportedRecordVersion` projection.
+pub(crate) fn decode_archived(
     bytes: &[u8],
     expected_merge_id: &str,
 ) -> ModelResult<ValidatedArchivedRecord> {
@@ -52,36 +56,8 @@ pub(crate) fn decode_archived_v0(
         let context = mismatch_header(&reason);
         archived_unreadable(expected_merge_id, context.as_ref())
     })?;
-    let dispatch =
-        classify_merge_record_header(&header, InstalledMergeRecordVersions::PRODUCTION_R3)
-            .map_err(|error| classify_error(expected_merge_id, error))?;
-    let raw = document.into_root();
-    match dispatch {
-        MergeRecordDispatch::V0 => decode_v0(raw, expected_merge_id, &header),
-        MergeRecordDispatch::V1 => Err(unsupported(
-            expected_merge_id,
-            &header,
-            Some(MergeRecordRequiredWave::A1),
-        )),
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn decode_archived_for_r3_tests(
-    bytes: &[u8],
-    expected_merge_id: &str,
-) -> ModelResult<ValidatedArchivedRecord> {
-    let document =
-        parse_strict_yaml(bytes).map_err(|_| archived_unreadable(expected_merge_id, None))?;
-    let header = read_merge_record_header(&document).map_err(|reason| {
-        let context = mismatch_header(&reason);
-        archived_unreadable(expected_merge_id, context.as_ref())
-    })?;
-    let dispatch = classify_merge_record_header(
-        &header,
-        InstalledMergeRecordVersions::V0_AND_V1_FOR_R3_TESTS,
-    )
-    .map_err(|error| classify_error(expected_merge_id, error))?;
+    let dispatch = classify_merge_record_header(&header, InstalledMergeRecordVersions::PRODUCTION)
+        .map_err(|error| classify_error(expected_merge_id, error))?;
     let raw = document.into_root();
     match dispatch {
         MergeRecordDispatch::V0 => decode_v0(raw, expected_merge_id, &header),
@@ -107,7 +83,6 @@ fn decode_v0(
     })
 }
 
-#[cfg(test)]
 fn decode_v1(
     raw: Value,
     expected_merge_id: &str,

@@ -31,6 +31,17 @@ impl CheckedV1Store {
         rewrite::load_open(root, merge_id)
     }
 
+    /// A1's creation owner for the contract-§2 writer floor. See
+    /// `rewrite::create_open`.
+    pub(super) fn create_open(
+        &self,
+        lease: &V1MutationLease,
+        root: &Path,
+        record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+    ) -> ModelResult<StoredV1Record> {
+        rewrite::create_open(lease, root, record)
+    }
+
     pub(super) fn reload_unchanged(&self, current: &StoredV1Record) -> ModelResult<StoredV1Record> {
         let reopened = self.load_open(current.location().root(), &current.record().merge_id)?;
         if !current.same_source_as(&reopened) {

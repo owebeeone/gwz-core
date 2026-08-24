@@ -2,14 +2,12 @@ use serde::Deserialize;
 
 use super::super::ParticipantState;
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct RecoveryContextV1 {
     pub(crate) origin_state: RecoveryOriginStateV1,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RecoveryOriginStateV1 {
     Executing,
@@ -20,8 +18,7 @@ pub(crate) enum RecoveryOriginStateV1 {
     RollingBack,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum PendingRollbackActionV1 {
     Participant {
@@ -37,16 +34,14 @@ pub(crate) enum PendingRollbackActionV1 {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ParticipantRollbackKindV1 {
     AbortConflict,
     ResetIntegrated,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EvidenceRollbackStepV1 {
     EvidenceCommit,
@@ -57,8 +52,7 @@ pub(crate) enum EvidenceRollbackStepV1 {
     Complete,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RootMetadataRollbackStepV1 {
     Manifest,
@@ -66,8 +60,7 @@ pub(crate) enum RootMetadataRollbackStepV1 {
     Complete,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum PendingPreservationActionV1 {
     BackupRef {
@@ -95,16 +88,14 @@ pub(crate) enum PendingPreservationActionV1 {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum PreservationOwnerV1 {
     Participant { member_id: String },
     PublicationRoot,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PreservationStashPhaseV1 {
     NormalizeParent,
@@ -120,8 +111,7 @@ pub(crate) enum PreservationStashPhaseV1 {
     Complete,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PreservationRefResetPhaseV1 {
     PrepareParent,
@@ -136,23 +126,20 @@ pub(crate) enum PreservationRefResetPhaseV1 {
     Complete,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct GitObjectIdV1 {
     pub(crate) algorithm: GitObjectAlgorithmV1,
     pub(crate) digest_hex: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GitObjectAlgorithmV1 {
     Sha1,
     Sha256,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PublicationPrefixV1 {
     Baseline,
@@ -161,23 +148,20 @@ pub(crate) enum PublicationPrefixV1 {
     Boundary,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PublicationIndexFormV1 {
     Pre,
     Staged,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct PreservationPublicationCandidateV1 {
     pub(crate) prefix: PublicationPrefixV1,
     pub(crate) index: PublicationIndexFormV1,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum PreservationPublicationHandoffV1 {
     NoCandidate,

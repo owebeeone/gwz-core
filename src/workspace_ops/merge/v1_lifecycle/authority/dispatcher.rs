@@ -140,6 +140,10 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) struct BoundExecutionAttempt(
 );
 
 impl BoundPhysicalAction {
+    #[allow(
+        dead_code,
+        reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+    )]
     pub(in crate::workspace_ops::merge::v1_lifecycle) fn kind(&self) -> &PhysicalActionKind {
         &self.0.value.action
     }

@@ -2,9 +2,11 @@ use std::path::Path;
 
 use serde_yaml::Value;
 
-use super::super::decode::{DecodedV0Record, decode_v1_for_r3_tests};
+use super::super::decode::{DecodedV0Record, decode_production_v1};
 use super::super::unknown_fields::UnknownFieldManifest;
-use super::{OpenV0Adaptation, adapt_open_v0_for_r3_tests};
+use super::{
+    OpenV0AdaptationInternal as OpenV0Adaptation, adapt_open_v0_internal as adapt_open_v0,
+};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::merge::model::v1::CanonicalMergeRecord;
@@ -30,7 +32,7 @@ impl PreparedV1Upgrade {
     }
 
     pub(crate) fn verify_bytes(&self, bytes: &[u8]) -> ModelResult<()> {
-        let decoded = decode_v1_for_r3_tests(bytes)
+        let decoded = decode_production_v1(bytes)
             .map_err(|error| verification_error(format!("v1 decode failed: {error:?}")))?;
         if decoded.canonical != self.canonical || decoded.unknown_fields != self.unknown_fields {
             return Err(verification_error(
@@ -56,7 +58,7 @@ pub(crate) fn prepare_upgrade<B: GitBackend>(
     decoded: &DecodedV0Record,
     writer_version: &str,
 ) -> ModelResult<PreparedOpenV0Upgrade> {
-    let adaptation = adapt_open_v0_for_r3_tests(backend, root, decoded, writer_version)?;
+    let adaptation = adapt_open_v0(backend, root, decoded, writer_version)?;
     let OpenV0Adaptation::Eligible {
         rule_id,
         next_action,

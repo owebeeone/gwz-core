@@ -10,21 +10,17 @@ use super::{
 };
 use crate::artifact;
 use crate::git::GitCandidateFile;
-#[cfg(test)]
 use crate::git::{GitBackend, GitRepositoryState};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::EventEmitter;
 use std::{fs, path::Path};
 
-#[cfg(test)]
 use crate::workspace_ops::merge::model::v1::{
     AcceptedRootBaseV1, EvidenceRollbackStepV1, MergeOperationRecordV1,
 };
 
-#[cfg(test)]
 use super::super::root::artifact_facts;
 
-#[cfg(test)]
 mod v1_rollback {
     use super::*;
 
@@ -525,7 +521,6 @@ mod v1_rollback {
     }
 }
 
-#[cfg(test)]
 fn semantic_mismatch(error: &ModelError) -> bool {
     matches!(
         error.code,
@@ -537,10 +532,10 @@ fn semantic_mismatch(error: &ModelError) -> bool {
 }
 
 #[cfg(test)]
+pub(in crate::workspace_ops::merge) use v1_rollback::classify_v1_evidence_shape_for_test;
 pub(in crate::workspace_ops::merge) use v1_rollback::{
-    V1EvidenceRollbackObservation, classify_v1_evidence_shape_for_test,
-    execute_v1_evidence_rollback, observe_v1_evidence_rollback, preflight_v1_evidence,
-    v1_evidence_residue_after_selected_root_is_exact,
+    V1EvidenceRollbackObservation, execute_v1_evidence_rollback, observe_v1_evidence_rollback,
+    preflight_v1_evidence, v1_evidence_residue_after_selected_root_is_exact,
 };
 
 pub(super) struct EvidenceRollback {

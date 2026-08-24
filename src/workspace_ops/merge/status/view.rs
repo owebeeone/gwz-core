@@ -44,7 +44,6 @@ impl<'a> MergeStatusRecordView<'a> {
         }
     }
 
-    #[cfg(test)]
     pub(in crate::workspace_ops::merge) fn from_v1(
         record: &'a super::super::model::v1::MergeOperationRecordV1,
     ) -> Self {

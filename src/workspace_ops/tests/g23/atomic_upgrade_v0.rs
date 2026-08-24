@@ -303,7 +303,7 @@ fn assert_unknown_fields_and_verifier<B: GitBackend>(
     let extended = serde_yaml::to_string(&raw).unwrap().into_bytes();
     fs::write(&path, &extended).unwrap();
 
-    let decoded = crate::workspace_ops::merge::decode_v0_for_r3_tests(&extended).unwrap();
+    let decoded = crate::workspace_ops::merge::decode_production_v0(&extended).unwrap();
     let PreparedOpenV0Upgrade::Eligible(prepared) =
         crate::workspace_ops::merge::prepare_upgrade(backend, root, &decoded, "r3-test-writer")
             .unwrap()
@@ -357,7 +357,7 @@ fn assert_unknown_fields_and_verifier<B: GitBackend>(
 }
 
 fn assert_v1_restart(bytes: &[u8], merge_id: &str, expected_next_action: &str) {
-    let decoded = crate::workspace_ops::merge::decode_v1_for_r3_tests(bytes).unwrap();
+    let decoded = crate::workspace_ops::merge::decode_production_v1(bytes).unwrap();
     assert_eq!(decoded.record.merge_id, merge_id);
     assert_eq!(
         crate::workspace_ops::merge::finalization_next_action_for_v1(&decoded.record).unwrap(),
@@ -391,13 +391,7 @@ fn upgrade<B: GitBackend>(
     merge_id: &str,
     fault: AtomicUpgradeFault,
 ) -> crate::model::ModelResult<AtomicUpgradeOutcome> {
-    crate::workspace_ops::merge::upgrade_open_v0_for_r3_tests(
-        backend,
-        root,
-        merge_id,
-        "r3-test-writer",
-        fault,
-    )
+    crate::workspace_ops::merge::upgrade_open_v0(backend, root, merge_id, "r3-test-writer", fault)
 }
 
 fn open_path(root: &Path, merge_id: &str) -> PathBuf {

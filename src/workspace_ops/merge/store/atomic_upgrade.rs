@@ -35,7 +35,7 @@ pub(crate) enum AtomicUpgradeOutcome {
     },
 }
 
-pub(crate) fn upgrade_open_v0_for_r3_tests<B: GitBackend>(
+pub(crate) fn upgrade_open_v0<B: GitBackend>(
     backend: &B,
     root: &Path,
     merge_id: &str,

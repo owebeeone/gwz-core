@@ -10,7 +10,6 @@ pub(crate) fn project_open_v0(_record: &MergeOperationRecord) -> crate::MergeRec
     }
 }
 
-#[cfg(test)]
 pub(crate) fn project_open_v1(
     record: &super::v1::MergeOperationRecordV1,
 ) -> crate::MergeRecordProjection {
@@ -171,7 +170,6 @@ fn project_legacy_evidence(
     }
 }
 
-#[cfg(test)]
 fn project_accepted_v1(
     value: &super::v1::AcceptedWorkspaceV1,
 ) -> crate::MergeAcceptedWorkspaceV1Projection {
@@ -243,7 +241,6 @@ fn project_accepted_v1(
     }
 }
 
-#[cfg(test)]
 fn project_recovery(
     record: &super::v1::MergeOperationRecordV1,
     origin: super::v1::RecoveryOriginStateV1,
@@ -282,7 +279,6 @@ fn project_recovery(
     }
 }
 
-#[cfg(test)]
 fn compatibility_base_phase(
     record: &super::v1::MergeOperationRecordV1,
 ) -> crate::MergeCompatibilityBasePhase {
@@ -318,7 +314,6 @@ fn compatibility_base_phase(
     }
 }
 
-#[cfg(test)]
 fn finalization_resume(
     record: &super::v1::MergeOperationRecordV1,
 ) -> crate::MergeCompatibilityNextAction {
@@ -427,7 +422,6 @@ fn project_lock_member(
     }
 }
 
-#[cfg(test)]
 fn project_v1_lock_member(
     value: &super::v1::AcceptedLockMemberV1,
 ) -> crate::MergeAcceptedLockMemberProjection {
@@ -469,7 +463,6 @@ fn project_root(
     }
 }
 
-#[cfg(test)]
 fn project_v1_root(
     value: &super::v1::RootPublicationInputV1,
 ) -> crate::MergeAcceptedRootProjection {

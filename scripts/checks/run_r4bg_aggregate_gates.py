@@ -65,14 +65,14 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "fault": ("aggregate fault/restart matrices (TransitionDesign:1469-1475)", [
         ("v1 lifecycle fault and restart matrices",
          lib("workspace_ops::merge::v1_lifecycle::", "--", "--skip", "root_fault_matrix"),
-         "254 passed"),
+         "256 passed"),
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         ("checked-artifact fault census (165 keys)",
          lib("checked_artifact::"), "400 passed"),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
-             "--skip", "workspace_ops::merge::v1_lifecycle::"), "917 passed"),
+             "--skip", "workspace_ops::merge::v1_lifecycle::"), "926 passed"),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         ("frozen predicate registry",
@@ -88,7 +88,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
          "M4 scenario map: ok (39 scenario rows, 41 named tests, "
          "13 registry rows all claimed)"),
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "114 passed"),
+         lib("workspace_ops::tests::g23::"), "119 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),

@@ -15,8 +15,7 @@ use super::{
 pub(crate) const MERGE_RECORD_SCHEMA_V1: &str = "gwz.merge-operation/v1";
 pub(crate) const MERGE_RECORD_SCHEMA_VERSION_V1: u32 = 1;
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
 pub(crate) struct MergeOperationRecordV1 {
     pub(crate) schema: String,
     pub(crate) record_schema_version: u32,

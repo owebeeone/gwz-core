@@ -376,7 +376,6 @@ pub(super) fn preflight_artifacts<B: GitBackend>(
     Ok(())
 }
 
-#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(in crate::workspace_ops::merge) struct V1PreservationOwnerPlan {
     pub(in crate::workspace_ops::merge) owner:
@@ -393,7 +392,6 @@ pub(in crate::workspace_ops::merge) struct V1PreservationOwnerPlan {
         Option<crate::workspace_ops::merge::model::v1::PreservationPublicationCandidateV1>,
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn v1_preservation_owners<
     B: crate::git::MergeAuthorityBackend,
 >(
@@ -571,7 +569,6 @@ pub(in crate::workspace_ops::merge) fn v1_preservation_owners<
     Ok(owners)
 }
 
-#[cfg(test)]
 fn v1_stash_matches_action(
     actual: &crate::git::GitPreservationStashEvidence,
     action: &crate::workspace_ops::merge::model::v1::PendingPreservationActionV1,
@@ -594,7 +591,6 @@ fn v1_stash_matches_action(
         && actual.image.preimage_sha256 == *preimage_sha256
 }
 
-#[cfg(test)]
 fn v1_owner_plan<B: crate::git::MergeAuthorityBackend>(
     backend: &B,
     root: &Path,
@@ -710,7 +706,6 @@ fn v1_owner_plan<B: crate::git::MergeAuthorityBackend>(
     })
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn v1_owner_evidence<'a>(
     record: &'a crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
     owner: &crate::workspace_ops::merge::model::v1::PreservationOwnerV1,
@@ -745,7 +740,6 @@ pub(in crate::workspace_ops::merge) fn v1_owner_evidence<'a>(
     }
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) fn v1_owner_id(
     owner: &crate::workspace_ops::merge::model::v1::PreservationOwnerV1,
 ) -> &str {
@@ -757,12 +751,10 @@ pub(in crate::workspace_ops::merge) fn v1_owner_id(
     }
 }
 
-#[cfg(test)]
 fn attach_v1(error: ModelError, plan: &V1PreservationOwnerPlan) -> ModelError {
     attach_v1_parts(error, &plan.target_id, &plan.relative_path)
 }
 
-#[cfg(test)]
 fn attach_v1_parts(mut error: ModelError, target_id: &str, relative_path: &str) -> ModelError {
     if error.member_id.is_none() {
         error.member_id = Some(target_id.to_owned());
@@ -771,7 +763,6 @@ fn attach_v1_parts(mut error: ModelError, target_id: &str, relative_path: &str) 
     error
 }
 
-#[cfg(test)]
 fn owner_error(
     owner: &crate::workspace_ops::merge::model::v1::PreservationOwnerV1,
     relative_path: &str,

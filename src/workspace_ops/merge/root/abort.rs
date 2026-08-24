@@ -11,16 +11,11 @@ use crate::git::{GitBackend, GitRepositoryState};
 use crate::model::ModelResult;
 use std::path::Path;
 
-#[cfg(test)]
 use crate::artifact::LOCK_PATH;
-#[cfg(test)]
 use crate::model::{ErrorCode, ModelError};
-#[cfg(test)]
 use crate::workspace::WORKSPACE_MANIFEST;
-#[cfg(test)]
 use crate::workspace_ops::merge::model::v1::{MergeOperationRecordV1, RootMetadataRollbackStepV1};
 
-#[cfg(test)]
 use super::artifact_facts;
 
 pub(in crate::workspace_ops::merge) fn interrupted_evidence_rollback_is_exact<B: GitBackend>(
@@ -89,14 +84,12 @@ pub(in crate::workspace_ops::merge) fn normalize_evidence_observation(
     participant_semantics::status::apply_interrupted_root_rollback_override(snapshot)
 }
 
-#[cfg(test)]
 pub(in crate::workspace_ops::merge) use v1_rollback::{
     V1RootRollbackObservation, execute_v1_root_metadata_rollback,
     observe_v1_root_metadata_rollback, observe_v1_selected_root_baseline,
     selected_root_result_artifacts,
 };
 
-#[cfg(test)]
 mod v1_rollback {
     use super::*;
     use crate::workspace_ops::merge::record_wire::{

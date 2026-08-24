@@ -1,10 +1,18 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 pub(in crate::workspace_ops::merge::v1_lifecycle) enum TransitionClass {
     Physical,
     CausalParent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 pub(in crate::workspace_ops::merge::v1_lifecycle) enum AttemptClass {
     None,
     MatchingSuccess,
@@ -14,6 +22,10 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum AttemptClass {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 pub(in crate::workspace_ops::merge::v1_lifecycle) enum FreshFactClass {
     Before,
     After,
@@ -23,6 +35,10 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum FreshFactClass {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
+)]
 pub(in crate::workspace_ops::merge::v1_lifecycle) enum ReconciliationDecision {
     ExecuteOnceThenReobserve,
     Advance,

@@ -10,9 +10,10 @@ use std::path::Path;
 
 use super::super::authority::V1LifecycleRequest;
 use super::super::forward::ForwardRuntime;
+use super::super::reverse::ReverseRuntime;
 use super::forward::{
-    self, commit_facts, execute_then_crash, frozen_no_ff, inject_unknown_field, record_text,
-    stored_action,
+    self, Fixture, Kind, commit_facts, execute_then_crash, freeze_without_mutation, frozen_no_ff,
+    inject_unknown_field, record_text, seed_open, stored_action,
 };
 use crate::model::ErrorCode;
 use crate::workspace_ops::merge::status::{PendingActionReconciliation, reconcile_pending_action};
@@ -175,12 +176,16 @@ fn no_writer_output_or_positive_fixture_serializes_the_no_ff_wire_row() {
 /// above cannot trip on a writer that serializes the no-ff mode variant
 /// programmatically, so the variant token's whole source surface is pinned
 /// here — any new file mentioning it, constructor or pattern alike, joins
-/// this list only through deliberate review. Semantic drift inside an
-/// already-listed production file is closed by subsumption pre-A1: the v1
-/// writer is `cfg(test)` (no production path writes any v1 row), and durable
-/// no-ff rows arriving from outside are refused by the F-1 resume gate
-/// (`continue_op/execution.rs`) and the validators. The variant is spelled
-/// at runtime so this suite is not its own hit.
+/// this list only through deliberate review. The variant is spelled at
+/// runtime so this suite is not its own hit.
+///
+/// RE-PINNED BY A1 ([P3-1]). The pre-A1 annotation closed semantic drift
+/// inside an already-listed production file by subsumption: "the v1 writer is
+/// `cfg(test)` (no production path writes any v1 row)". That reasoning
+/// expired with the activation — the contract-§2 writer floor now writes v1
+/// rows for `--no-ff`, and the mode reaches the v1 lifecycle instead of a
+/// typed refusal. What the scan still buys is unchanged: no file names this
+/// variant without review. Four files joined, each named below.
 #[test]
 fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
     let variant = format!("{}Ff", "No");
@@ -189,26 +194,36 @@ fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
         [
             // Protocol enum declaration (accepted wire vocabulary).
             "protocol/generated.rs",
-            // Production refusals: the F-1 v0 resume gate.
+            // Production refusals: the F-1 v0 resume gate (survives A1; T-6).
             "workspace_ops/merge/continue_op/execution.rs",
             // Model enum declaration.
             "workspace_ops/merge/model/lifecycle.rs",
-            // Validator arms refusing durable no-ff rows pre-A1.
+            // Validator arms refusing durable no-ff rows on the v0 view.
             "workspace_ops/merge/model/v1/validate/action.rs",
             "workspace_ops/merge/model/v1/validate/action_tests.rs",
+            // JOINED AT A1: the contract-§2 writer floor's requested-semantic
+            // that selects v1 for `--no-ff`.
+            "workspace_ops/merge/model/version.rs",
             // v0 archive corpus fixtures.
             "workspace_ops/merge/record_wire/archive/tests/v0.rs",
-            // v0 readers recognizing-and-classifying the foreign row.
+            // v0 readers recognizing-and-classifying the foreign row; the
+            // adapter's UnsupportedLegacyMode refusal survives A1.
             "workspace_ops/merge/record_wire/open_v0/adapter.rs",
             "workspace_ops/merge/record_wire/open_v0/structural.rs",
-            // Dispatch arm (refusal routing).
+            // Dispatch: pre-A1 the refusal routing, post-A1 the coupled
+            // pair's comment naming the exclusion that fell with it.
             "workspace_ops/merge/runtime/dispatch.rs",
-            // The only construction site: the cfg(test) v1 lifecycle.
+            // The v1 lifecycle's construction site — production-reachable at
+            // A1, and still the only one (T-4 pins the forced-commit half).
             "workspace_ops/merge/v1_lifecycle/authority/observe/forward.rs",
+            // JOINED AT A1: the v1 lifecycle's production start owner.
+            "workspace_ops/merge/v1_lifecycle/start.rs",
             // This package's own suites (cfg(test)).
             "workspace_ops/merge/v1_lifecycle/tests/forward.rs",
-            // Production refusal: validate surface.
+            // Production validation: no-ff now validates like every start.
             "workspace_ops/merge/validate.rs",
+            // JOINED AT A1: the activation's own suite.
+            "workspace_ops/tests/g23/a1_activation.rs",
             // The gate package's v0 suites (T-6) and compatibility corpora.
             "workspace_ops/tests/g23/atomic_upgrade_v0.rs",
             "workspace_ops/tests/g23/compatibility_v0.rs",
@@ -283,4 +298,97 @@ fn files_containing(needle: &str) -> Vec<String> {
     }
     hits.sort();
     hits
+}
+
+/// L5 / M5b-IMPL [P3-3] — the abandonment witness, committed.
+///
+/// M5b's claim that service-level abandonment is mode-blind rested on an
+/// un-committed experiment ("Normal-mode control probe fails identically").
+/// That review corroborated it structurally only — `abandon()`
+/// (`transition/reduce/participant.rs:220-241`) and the NotStarted proof
+/// (`:105-118`) read neither mode nor action kind — and handed A1 the duty of
+/// an executable witness. This is it.
+///
+/// The probe freezes a durable participant action WITHOUT executing it (the
+/// `VerifiedParticipantNotStarted` shape), then drives the production
+/// `service::run` seam with `Abort` once under `Normal` and once under
+/// no-ff, and requires the two service-level outcomes to be the same shape.
+/// It asserts EQUALITY, not a particular verdict: if the modes ever diverge
+/// here the witness fails and says so, whichever way abandonment resolves.
+#[test]
+fn service_level_abandonment_of_a_not_started_action_is_mode_blind() {
+    // Both arms are built by helpers that own the mode, so this file still
+    // never spells the mode variant and stays out of its own T-3 corpus.
+    let normal = abandonment_outcome(&frozen_normal("merge-v1-abandon-normal"));
+    let no_ff = abandonment_outcome(&frozen_no_ff("merge-v1-abandon-no-ff").0);
+    assert_eq!(
+        normal, no_ff,
+        "service-level abandonment of a NotStarted action must not read the mode"
+    );
+
+    // Pin the shape too, so the equality above cannot pass vacuously (two
+    // identical `Applied` outcomes would also compare equal). What both modes
+    // produce today is M5b's "service-level abandonment unreachability",
+    // executable for the first time here: the reverse entry cannot bind an
+    // abandonment transition against a NotStarted action, so the service
+    // refuses before any mutation rather than retiring the action.
+    assert_eq!(
+        normal,
+        AbandonmentOutcome::Refused {
+            code: ErrorCode::MergeRecoveryRequired,
+            message: "v1 transition predecessor or authority mismatch".to_owned(),
+        }
+    );
+}
+
+/// The mode-independent shape of one service-level abandonment outcome.
+///
+/// Fixture-specific data (temporary paths, fixture names, commit ids) is
+/// deliberately excluded: only what the abandonment decision itself produces
+/// is compared.
+#[derive(Debug, Eq, PartialEq)]
+enum AbandonmentOutcome {
+    Refused {
+        code: ErrorCode,
+        message: String,
+    },
+    Applied {
+        operation_state: OperationState,
+        participant_state: ParticipantState,
+        pending_action_retired: bool,
+    },
+}
+
+/// The ordinary-mode twin of `frozen_no_ff`: a fast-forwardable fixture whose
+/// action is frozen and durable, with the member repository untouched. The
+/// fixture model's default mode is the ordinary one, so nothing is assigned.
+fn frozen_normal(name: &str) -> Fixture {
+    let fixture = forward::fixture(name, Kind::FastForward);
+    seed_open(&fixture);
+    freeze_without_mutation(&fixture);
+    fixture
+}
+
+fn abandonment_outcome(fixture: &Fixture) -> AbandonmentOutcome {
+    assert!(
+        stored_action(fixture).is_some(),
+        "the NotStarted precondition requires a durable pending action"
+    );
+
+    let context = forward::context();
+    let mut runtime = ReverseRuntime::new(&fixture.backend, &context);
+    match forward::run_production(fixture, &mut runtime, V1LifecycleRequest::Abort) {
+        Err(error) => AbandonmentOutcome::Refused {
+            code: error.code,
+            message: error.message,
+        },
+        Ok(response) => {
+            let record = response.current().record();
+            AbandonmentOutcome::Applied {
+                operation_state: record.state,
+                participant_state: record.participants["mem_a"].state,
+                pending_action_retired: record.participants["mem_a"].pending_action.is_none(),
+            }
+        }
+    }
 }

@@ -15,12 +15,10 @@ struct BackupArtifact {
     commit: String,
 }
 
-#[cfg(test)]
 pub(super) struct PreparedArchivedCleanup {
     artifacts: Vec<ArchivedBackupArtifact>,
 }
 
-#[cfg(test)]
 struct ArchivedBackupArtifact {
     target_id: String,
     relative_path: String,
@@ -30,7 +28,10 @@ struct ArchivedBackupArtifact {
     delete: bool,
 }
 
-#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "A1 activation: landed v1 surface the activation's dispatch does not route yet. A1's enumerated package (Safety review §2) routes start/status/resume/abort into the v1 service and reaches the archive PROJECTION through `record_wire::decode_archived`; v1 archive GC keeps its typed open-record refusal, so this family has no production caller until that route lands."
+)]
 pub(super) fn preflight_archived_cleanup<B: GitBackend>(
     backend: &B,
     root: &Path,
@@ -110,7 +111,6 @@ pub(super) fn preflight_archived_cleanup<B: GitBackend>(
     Ok(PreparedArchivedCleanup { artifacts })
 }
 
-#[cfg(test)]
 pub(super) fn delete_preflighted_backup_refs<B: GitBackend>(
     backend: &B,
     prepared: &PreparedArchivedCleanup,
@@ -123,7 +123,6 @@ pub(super) fn delete_preflighted_backup_refs<B: GitBackend>(
     Ok(())
 }
 
-#[cfg(test)]
 pub(super) fn require_backup_refs_absent<B: GitBackend>(
     backend: &B,
     prepared: &PreparedArchivedCleanup,
@@ -149,7 +148,6 @@ pub(super) fn require_backup_refs_absent<B: GitBackend>(
     Ok(())
 }
 
-#[cfg(test)]
 fn cleanup_error(
     target_id: &str,
     path: &str,
@@ -191,7 +189,7 @@ pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
         .map_err(|_| archived_record_unreadable(merge_id))?
         .into_production_parts();
     let artifacts = preflight_backup_artifacts(backend, root, &record)?;
-    let archived = super::record_wire::decode_archived_v0(bytes.as_slice(), merge_id)?;
+    let archived = super::record_wire::decode_archived(bytes.as_slice(), merge_id)?;
     let response = super::response::attach_archived_record_projection(
         post_gc_record(record).to_response(context)?,
         merge_id,
