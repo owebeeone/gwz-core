@@ -19,7 +19,7 @@ Usage: no arguments runs all seven; `--list` names them; positional selectors
 take `battery` or `battery:index` (`fault:2` = that battery's 2nd command).
 
 The `fault` battery carries all four of the disjoint, exhaustive lib partitions
-evidence row 2.1 rests on -- 254 + 1 + 400 + 914 of the 1570 listed tests, the
+evidence row 2.1 rests on -- 254 + 1 + 400 + 917 of the 1573 listed tests, the
 split `GwzM5-8R4bG-Evidence.md` §3.1 records -- not just the two v1_lifecycle
 commands. It ran only those two until the R4b-G correctness/evidence duals
 (findings C-5 and P3-5) measured the gap: the battery is named for the
@@ -72,7 +72,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
          lib("checked_artifact::"), "400 passed"),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
-             "--skip", "workspace_ops::merge::v1_lifecycle::"), "914 passed"),
+             "--skip", "workspace_ops::merge::v1_lifecycle::"), "917 passed"),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         ("frozen predicate registry",
@@ -85,10 +85,10 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "byte-equivalence": ("byte-equivalence gate, both halves of O8 (rows 2.3a/2.3b, §12)", [
         ("M4 scenario map",
          check("check_m4_scenario_map.py"),
-         "M4 scenario map: ok (39 scenario rows, 38 named tests, "
+         "M4 scenario map: ok (39 scenario rows, 41 named tests, "
          "13 registry rows all claimed)"),
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "111 passed"),
+         lib("workspace_ops::tests::g23::"), "114 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),

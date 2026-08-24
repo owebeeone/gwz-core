@@ -83,6 +83,46 @@ fn canonical_json(value: &Value, output: &mut String) {
     }
 }
 
+/// The frozen whitelist rule `rule_id`, whole, for tests that must compare a
+/// live descriptor against the registry rather than against a hand-copy of it.
+pub(super) fn i2_whitelist_rule(rule_id: &str) -> Value {
+    let registry: Value = serde_yaml::from_str(REGISTRY).unwrap();
+    field(&registry, "migration_whitelist")
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|rule| text_field(rule, "id") == rule_id)
+        .unwrap_or_else(|| panic!("migration whitelist is missing {rule_id:?}"))
+        .clone()
+}
+
+/// Every whitelist rule whose descriptor equals `descriptor` byte-for-byte.
+/// Empty is the registry's own `no_match` disposition ("Zero matches means
+/// valid-unlisted v0, not a compatibility error").
+pub(super) fn i2_whitelist_matches(descriptor: &Value) -> Vec<String> {
+    let registry: Value = serde_yaml::from_str(REGISTRY).unwrap();
+    field(&registry, "migration_whitelist")
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .filter(|rule| field(rule, "descriptor") == descriptor)
+        .map(|rule| text_field(rule, "id").to_owned())
+        .collect()
+}
+
+/// The registry's frozen first `rejection_reasons` sentence for `code`, so a
+/// typed refusal is pinned to the contract's own words and not to a message
+/// this test invented.
+pub(super) fn i2_rejection_reason(code: &str) -> String {
+    let registry: Value = serde_yaml::from_str(REGISTRY).unwrap();
+    field(field(&registry, "rejection_reasons"), code)
+        .as_sequence()
+        .unwrap()[0]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 fn assert_adapter_guards<B: GitBackend>(backend: &B, root: &Path, record: &MergeOperationRecord) {
     super::atomic_upgrade_v0::assert_rejection_guards(backend, root, record);
     let raw = serde_yaml::to_value(record).unwrap();

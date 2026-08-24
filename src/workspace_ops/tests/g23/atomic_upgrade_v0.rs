@@ -71,6 +71,24 @@ pub(super) fn assert_valid_unlisted<B: GitBackend>(
     assert!(temporary_files(&path).is_empty());
 }
 
+/// A v0 row the adapter refuses with a typed code: nothing is staged, the open
+/// record stays byte-exact, and the caller gets the message back so it can pin
+/// the refusal against the registry's own `rejection_reasons` text.
+pub(super) fn assert_typed_refusal<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    record: &MergeOperationRecord,
+    expected: ErrorCode,
+) -> String {
+    let path = open_path(root, &record.merge_id);
+    let source = fs::read(&path).unwrap();
+    let error = upgrade(backend, root, &record.merge_id, AtomicUpgradeFault::None).unwrap_err();
+    assert_eq!(error.code, expected);
+    assert_eq!(fs::read(&path).unwrap(), source);
+    assert!(temporary_files(&path).is_empty());
+    error.message
+}
+
 pub(super) fn assert_rejection_guards<B: GitBackend>(
     backend: &B,
     root: &Path,
