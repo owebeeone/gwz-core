@@ -38,16 +38,23 @@ jobs:
         # execute in the push lane, not only under full cargo-test runs.
         run: cargo test --lib workspace_ops::merge::v1_lifecycle::tests::no_ff_wire
       - name: Run the gates A1 made load-bearing
-        # A1 Safety [P2-2] / §6.2. Before A1 these three R4b-G tools were
+        # A1 Safety [P2-2] / §6.2. Before A1 these R4b-G tools were
         # bookkeeping and ran nowhere; the activation turned them into standing
-        # guards. The M4 scenario map is the machine record the C-1 closure
-        # rests on, and the privacy probe plus the call-graph gate are the
+        # guards. The privacy probe plus the call-graph gate are the
         # "standing guard" the J-1 acceptance leaned on — a guard that runs
         # nowhere stands only on prose. Driven through the aggregate runner so
         # each battery's expected count is pinned, not just its exit code.
         run: |
-          python scripts/checks/check_m4_scenario_map.py
           python scripts/checks/run_r4bg_aggregate_gates.py privacy call-graph
+      # check_m4_scenario_map.py is NOT wired here — corrective un-wiring
+      # 2026-08-25 after the landing-commit run (32749441874) failed on it:
+      # its MAP_DOC resolves `dev-docs/GwzM5-8R4bG-Evidence.md` ONE LEVEL
+      # ABOVE this checkout by design (check_m4_scenario_map.py:59 —
+      # ROOT.parent), i.e. the development workspace root, which does not
+      # exist on a single-repo runner. Same blocker class as L2-05 below,
+      # same cure (the multi-repo checkout of the R2-D settled tuple §11.3
+      # item 7, R2-F CI work); until then it stays a local/release-lane
+      # gate, executed in every landing gate set. Activation record §17.
       # L2-05 (`check_merge_docs.py` / `test_check_merge_docs.py`) is NOT wired
       # here, deliberately. Its manifest asserts against `gwz-cli/docs/*` and
       # `dev-docs/*` resolved from the development workspace root
