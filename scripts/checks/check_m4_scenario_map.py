@@ -11,10 +11,23 @@ this script is the machine half of it, and answers three questions the prose
 cannot answer about itself:
 
   1. does every test the map names still exist?
-  2. is every registry row claimed by exactly one scenario, so a bound case
-     cannot silently drop out of the map?
+  2. is every registry row claimed by the map, so a bound case cannot silently
+     drop out of it? (Set semantics, deliberately: `terminal/completed` is
+     claimed by two R0 rows describing one durable object.)
   3. does every registry case id the map cites actually exist in the frozen
      predicate registry?
+  4. is every path-shaped token actually well formed, so a mangled row cannot
+     drop out of questions 1 and 3 by ceasing to look like a path?
+
+Question 4 exists because 1-3 are asked only of tokens that already parse
+(R4b-G correctness review finding C-4: a mapped test renamed to a form the
+`TEST_PATH` regex rejects was dropped from checking entirely and the run still
+exited 0). A token carrying `::` must be a test path and a token carrying `/`
+must be a case id -- the map's other backticked vocabulary (R0 shape ids, fault
+variants, window names, fixture ids) carries neither separator, so the rule is
+narrow enough to leave it alone and sharp enough to catch a mangled row. The
+counts on the ok line are the second half of that closure: the driver pins them,
+so a corruption that stays well formed still cannot pass silently.
 
 It deliberately does NOT re-run the tests -- `check_merge_compatibility_
 predicates.py` and the g23 suite do that. This closes the gap between them:
@@ -106,6 +119,17 @@ def main() -> int:
             continue
         rows.append(line)
     tokens = [token for row in rows for token in TICKED.findall(row)]
+
+    unparsed = {
+        token
+        for token in tokens
+        if not TEST_PATH.match(token) and not CASE_ID.match(token)
+    }
+    for token in sorted(unparsed):
+        if "::" in token:
+            findings.append(f"map token is a malformed test path: {token}")
+        elif "/" in token:
+            findings.append(f"map token is a malformed registry case id: {token}")
 
     tests = {
         token if token.startswith("workspace_ops::") else IMPLICIT_PREFIX + token

@@ -33,6 +33,19 @@ Three seals, not one perimeter:
   * the raw writer `store::rewrite::commit` -- `pub(super)` in the private
     `rewrite` module, sealed against the REST OF THE LIFECYCLE too, which the
     fourth negative probe states.
+
+Two paths per seal, not one (R4b-G correctness review finding C-3). Each
+canonical path above is sealed by the PRIVACY OF ITS MODULE, so a two-edit
+widening -- item to `pub(crate)` PLUS a re-export at the `v1_lifecycle` root --
+leaves every canonical probe green (`transition`/`authority`/`store` stay
+private, so the canonical path still E0603s) while an outside consumer names
+the root binding and compiles. The review demonstrated exactly that. The three
+`ROOT_BINDING` probes therefore state the second half of each seal: the name is
+not bound at the `v1_lifecycle` module root either, so the re-export channel is
+closed for all three. Residual, stated rather than hidden: name resolution is
+by name, so a re-export renamed with `as` binds a name no probe can predict --
+that channel is held by `PROTECTED_SOURCE_TREE_DIGESTS`, which pins
+`v1_lifecycle/mod.rs` where any such re-export must be written.
 """
 
 from __future__ import annotations
@@ -58,18 +71,30 @@ SEALED = {
     "raw_writer": "store::rewrite::commit",
 }
 
+# The same three seals named at the `v1_lifecycle` module root -- the one place
+# a `use` re-export that widens them can be written. Nothing binds these names
+# there today: `v1_lifecycle/mod.rs` declares modules and one sentinel const and
+# carries no `use` at all, so each probe below is an E0432 on the real tree.
+ROOT_BINDING = {
+    "prepared_rewrite": "PreparedV1Rewrite",
+    "proof_token": "VerifiedParticipants",
+    "raw_writer": "commit",
+}
 
-def probe_text(label: str) -> str:
+
+def probe_text(label: str, path: str) -> str:
     """The byte-identical probe body used inside and outside the seal."""
     return (
         f"\n#[cfg(test)]\nmod r4bg_privacy_probe_{label} {{\n"
         "    #[allow(unused_imports)]\n"
         "    use crate::workspace_ops::merge::v1_lifecycle::"
-        f"{SEALED[label]};\n}}\n"
+        f"{path};\n}}\n"
     )
 
 
-def compile_with_probe(relative: str, label: str) -> subprocess.CompletedProcess[str]:
+def compile_with_probe(
+    relative: str, label: str, path: str
+) -> subprocess.CompletedProcess[str]:
     temporary = tempfile.TemporaryDirectory()
     target = Path(temporary.name) / "gwz-core"
     # Same copy set as `run_compiler_probe`: the tree carries `include_str!`
@@ -79,8 +104,10 @@ def compile_with_probe(relative: str, label: str) -> subprocess.CompletedProcess
         shutil.copytree(ROOT / name, target / name)
     for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
         shutil.copy2(ROOT / name, target / name)
-    path = target / relative
-    path.write_text(path.read_text(encoding="utf-8") + probe_text(label), "utf-8")
+    probed = target / relative
+    probed.write_text(
+        probed.read_text(encoding="utf-8") + probe_text(label, path), "utf-8"
+    )
     env = os.environ.copy()
     env.setdefault(
         "CARGO_TARGET_DIR", str(ROOT.parent / "target" / "v1-privacy-probe")
@@ -106,10 +133,24 @@ def compile_with_probe(relative: str, label: str) -> subprocess.CompletedProcess
 
 class V1LifecyclePrivacyProbeTest(unittest.TestCase):
     def assert_sealed(self, relative: str, label: str, private_module: str) -> None:
-        result = compile_with_probe(relative, label)
+        result = compile_with_probe(relative, label, SEALED[label])
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("E0603", result.stderr)
         self.assertIn(f"module `{private_module}` is private", result.stderr)
+
+    def assert_unbound_at_the_root(self, relative: str, label: str) -> None:
+        """The seal's second half: no re-export binds the name at the root.
+
+        A rejection is asserted by error code AND by the rejected path, so a
+        build that fails for an unrelated reason cannot green this probe.
+        """
+        name = ROOT_BINDING[label]
+        result = compile_with_probe(relative, f"{label}_at_root", name)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertTrue(
+            "E0432" in result.stderr or "E0603" in result.stderr, result.stderr
+        )
+        self.assertIn(f"v1_lifecycle::{name}", result.stderr)
 
     def test_sealed_names_exist_and_compile_inside_the_perimeter(self) -> None:
         for label, relative in (
@@ -118,7 +159,7 @@ class V1LifecyclePrivacyProbeTest(unittest.TestCase):
             ("raw_writer", INSIDE_STORE),
         ):
             with self.subTest(label=label):
-                result = compile_with_probe(relative, label)
+                result = compile_with_probe(relative, label, SEALED[label])
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_prepared_v1_rewrite_is_unnameable_outside_the_perimeter(self) -> None:
@@ -132,6 +173,18 @@ class V1LifecyclePrivacyProbeTest(unittest.TestCase):
 
     def test_raw_v1_writer_is_unnameable_from_the_rest_of_the_lifecycle(self) -> None:
         self.assert_sealed(INSIDE_LIFECYCLE, "raw_writer", "rewrite")
+
+    def test_prepared_v1_rewrite_is_unbound_at_the_lifecycle_root(self) -> None:
+        self.assert_unbound_at_the_root(OUTSIDE, "prepared_rewrite")
+
+    def test_proof_tokens_are_unbound_at_the_lifecycle_root(self) -> None:
+        self.assert_unbound_at_the_root(OUTSIDE, "proof_token")
+
+    def test_raw_v1_writer_is_unbound_at_the_lifecycle_root(self) -> None:
+        # Probed from INSIDE the lifecycle, mirroring the seal one line above:
+        # the writer is sealed against the rest of the lifecycle too, and a
+        # root `use` -- even a private one -- is nameable by every descendant.
+        self.assert_unbound_at_the_root(INSIDE_LIFECYCLE, "raw_writer")
 
 
 if __name__ == "__main__":
