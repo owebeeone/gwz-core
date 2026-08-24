@@ -203,6 +203,49 @@ RAW_RENAME_CALL_ALLOWLIST = {
 }
 RAW_RENAME_TOKENS = ("open_rename_source", "rename_open_source", "rename_relative")
 
+# --- R4b-G F-3 / inventory W2 / evidence row 2.6b -------------------------
+#
+# The other half of the call-graph gate: `v1_lifecycle/` must contain no call
+# into the v0 merge persistence seam. The property holds today at 0 hits
+# INCLUDING test code, so this pins a true statement rather than repairing a
+# violation -- but nothing failed closed if it changed.
+#
+# LOAD-BEARING FOR JUDGMENT CALL J-1. The frozen M5b dependency statement
+# (`GwzM5-8M5bNoFfDesign.md:976-989`, reason (c)) makes M5b's own
+# unreachability argument lean on "R4b-G's call-graph gate". M5b-IMPL is
+# already merged ahead of R4b-G, so that argument was leaning on an absent
+# gate; this scan is the gate it names. Removing or weakening it re-opens
+# J-1 and must not be done without the R4b-G lane owner's ruling.
+#
+# The seam is DERIVED from `workspace_ops/merge/mod.rs`'s own `use store::{..}`
+# re-exports rather than hardcoded, so a newly exported v0 persistence item is
+# covered the day it is added; `V0_PERSISTENCE_SEAM_FLOOR` fails the derivation
+# closed if that re-export shape is restructured away.
+#
+# This is NOT subsumed by the `PROTECTED_SOURCE_TREE_DIGESTS` pin on
+# `v1_lifecycle/mod.rs`. That digest says only "this tree changed, go look",
+# and the lane refreshes it every time the tree legitimately moves; it states
+# no property, so a refresh can carry a new v0 persistence call through
+# unremarked. This scan states the property, and survives every refresh.
+#
+# Bare-identifier counting on MASKED source is what makes this exact: ten
+# `"enter_finalizing"` occurrences inside `v1_lifecycle/` are action-name
+# string literals, which `mask_non_code` blanks, so a naive grep's ten false
+# positives become the true zero. Definitions (`fn <name>`) are excluded the
+# same way the raw-rename scan excludes them.
+V1_LIFECYCLE_TREE = "workspace_ops/merge/v1_lifecycle"
+V0_STORE_REEXPORT = re.compile(r"\buse\s+store::\{([^}]*)\}\s*;")
+V0_PERSISTENCE_SEAM_FLOOR = frozenset(
+    {
+        "FileMergeStore",
+        "MergeStore",
+        "archive_merge_record",
+        "enter_finalizing",
+        "persist_merge_record",
+        "persist_operation_transition",
+    }
+)
+
 ENTRY_REFERENCES = {
     "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
     "MergeArtifactTransition": {
@@ -820,6 +863,20 @@ def imports(text: str) -> set[str]:
     return {re.sub(r"\s+", " ", value).strip() for value in USE.findall(text)}
 
 
+def v0_persistence_seam(source: Path) -> set[str]:
+    """Names `workspace_ops::merge` re-exports out of the v0 record store."""
+    text = mask_non_code(
+        (source / "workspace_ops/merge/mod.rs").read_text(encoding="utf-8")
+    )
+    names: set[str] = set()
+    for match in V0_STORE_REEXPORT.finditer(text):
+        for item in match.group(1).split(","):
+            name = item.strip().split()[0].strip() if item.strip() else ""
+            if name:
+                names.add(name)
+    return names
+
+
 def check(source: Path) -> list[str]:
     findings: list[str] = []
     crate_root = source.parent.resolve()
@@ -913,6 +970,25 @@ def check(source: Path) -> list[str]:
             if actual != expected_counts.get(token, 0):
                 findings.append(
                     "raw rename caller outside the sealed publication seam: "
+                    f"{relative} ({token})"
+                )
+    seam = v0_persistence_seam(source)
+    missing_seam = V0_PERSISTENCE_SEAM_FLOOR - seam
+    if missing_seam:
+        findings.append(
+            "v0 persistence seam inventory is underivable: "
+            f"workspace_ops/merge/mod.rs no longer re-exports {sorted(missing_seam)}"
+        )
+    for path in sorted((source / V1_LIFECYCLE_TREE).rglob("*.rs")):
+        relative = path.relative_to(source).as_posix()
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        for token in sorted(seam | V0_PERSISTENCE_SEAM_FLOOR):
+            if any(
+                text[max(0, match.start() - 3) : match.start()] != "fn "
+                for match in re.finditer(r"\b" + re.escape(token) + r"\b", text)
+            ):
+                findings.append(
+                    "v1 lifecycle names the v0 persistence seam: "
                     f"{relative} ({token})"
                 )
     for relative in sorted(PROTECTED_COMPILER_MODULES):

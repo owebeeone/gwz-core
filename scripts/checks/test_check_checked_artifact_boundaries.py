@@ -1131,6 +1131,80 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("V1Runtime", result.stderr)
 
+    # --- R4b-G F-3 / inventory W2 / evidence row 2.6b ---------------------
+    # The v1->v0 persistence guard, proven fail-closed. The compiler does NOT
+    # stop these mutations -- `MergeStore`/`FileMergeStore` are `pub(crate)`
+    # and reachable from `v1_lifecycle/` -- so the first probe compiles the
+    # violation before asserting the checker rejects it, exactly as
+    # `test_approved_outside_source_target_cannot_hide_an_observer_caller`
+    # does for the observer boundary.
+    def v0_persistence_call(self, root: Path) -> None:
+        path = root / "src/workspace_ops/merge/v1_lifecycle/service.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\npub(super) fn probe_v0_persistence(\n"
+            + "    root: &std::path::Path,\n"
+            + ") -> crate::model::ModelResult<()> {\n"
+            + "    use crate::workspace_ops::merge::MergeStore;\n"
+            + "    let _ = crate::workspace_ops::merge::FileMergeStore\n"
+            + "        .discover_open(root)?;\n"
+            + "    Ok(())\n}\n",
+            encoding="utf-8",
+        )
+
+    def test_v1_lifecycle_v0_persistence_call_compiles_and_is_rejected(self) -> None:
+        compiler = run_compiler_probe(self.v0_persistence_call)
+        self.assertEqual(compiler.returncode, 0, compiler.stderr)
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        self.v0_persistence_call(source.parent)
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("v1 lifecycle names the v0 persistence seam", result.stderr)
+        self.assertIn("MergeStore", result.stderr)
+
+    def test_v1_lifecycle_v0_persistence_call_in_test_code_is_rejected(self) -> None:
+        result = self.append(
+            "workspace_ops/merge/v1_lifecycle/tests/fixtures.rs",
+            "\nfn probe_archive(root: &std::path::Path, id: &str) {\n"
+            "    let _ = crate::workspace_ops::merge::archive_merge_record(root, id);\n"
+            "}\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("v1 lifecycle names the v0 persistence seam", result.stderr)
+        self.assertIn("archive_merge_record", result.stderr)
+
+    def test_v0_persistence_seam_inventory_must_stay_derivable(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "workspace_ops/merge/mod.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "pub(crate) use store::{\n"
+                "    FileMergeStore, MergeStore, archive_merge_record, enter_finalizing, "
+                "persist_merge_record,\n"
+                "    persist_operation_transition,\n"
+                "};\n",
+                "",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("v0 persistence seam inventory is underivable", result.stderr)
+
+    def test_v1_lifecycle_action_name_literals_are_not_persistence_calls(self) -> None:
+        result = self.append(
+            "workspace_ops/merge/v1_lifecycle/tests/fixtures.rs",
+            "\n// crate::workspace_ops::merge::FileMergeStore.write_open(root, r)\n"
+            "const V0_ACTION: &str = \"enter_finalizing\";\n"
+            "const V0_SEAM: &str = \"MergeStore::persist_merge_record\";\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("v0 persistence seam", result.stderr)
+        self.assertIn("protected source tree changed", result.stderr)
+
     def test_comments_and_strings_do_not_create_false_references(self) -> None:
         result = self.append(
             "workspace_ops/handle_stash/shared.rs",
