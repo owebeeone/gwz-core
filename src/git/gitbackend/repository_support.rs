@@ -11,7 +11,9 @@ pub(crate) fn branch_ref_name(branch: &str) -> String {
 /// Creation-time filter neutralization (M5-8 A1 Decision Packet, Decision 1
 /// Option B): pin `core.autocrlf=false` + `core.eol=lf` in the repo-local
 /// config of a repository gwz just created, before any content has been
-/// materialized. Repo-local config outranks every ambient level, so all
+/// materialized. `repo.config()` writes into the highest-priority present
+/// level, which on a fresh repository is `LOCAL(5)` — above every AMBIENT
+/// level (`PROGRAMDATA(1) < SYSTEM(2) < XDG(3) < GLOBAL(4)`). So all
 /// subsequent forward checkouts in a gwz-born repo are blob-exact regardless
 /// of host filter config, and libgit2 `stash_save`'s internal filtered reset
 /// becomes a filter no-op — closing both tripwired real-Windows exposures
@@ -19,6 +21,12 @@ pub(crate) fn branch_ref_name(branch: &str) -> String {
 /// tripwire). Attribute-driven smudge (`eol=crlf`, `ident`, foreign
 /// `filter=`) is deliberately untouched: it stays the frozen fail-closed
 /// residual on every OS.
+///
+/// Precision, not "outranks everything": `WORKTREE(6)` and `APP(7)` DO outrank
+/// `LOCAL`, so a repository that later enables `extensions.worktreeConfig`
+/// could override this pin. That direction is fail-closed — re-smudging costs
+/// availability (`Ambiguous`), never evidence correctness — and requires
+/// deliberate user action after birth.
 ///
 /// CREATION-TIME ONLY. The windows-matrix run-9 regression proved these keys
 /// are safe to pin only at repo creation, before any filtered

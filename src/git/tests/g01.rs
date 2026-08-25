@@ -46,9 +46,20 @@ pub(crate) fn created_repo_forward_materialization_is_blob_exact_under_ambient_a
     // host shape) proves the smudge machinery is live in this environment: a
     // default filtered re-materialization writes CRLF. SUBJECT: the identical
     // re-materialization in a gwz-created repo stays blob-exact because the
-    // repo-local pins neutralize the filter (local config outranks every
-    // ambient level, so the control's smudge source cannot reach a gwz-born
-    // worktree).
+    // repo-local pins neutralize the filter.
+    //
+    // SCOPE, precisely ([P3-8] — the name says "under ambient autocrlf" and
+    // overstates on a developer host): this test sets NO ambient config. The
+    // hostile value is repo-local to the CONTROL, a DIFFERENT repository from
+    // the pinned SUBJECT, so what is proven here is that a gwz-born repo is
+    // blob-exact while a live smudge source demonstrably exists in the same
+    // environment — not that a pin beats a hostile ambient level. The
+    // pin-vs-ambient precedence property is exercised only where the RUNNER
+    // itself is hostile: the `crlf-sentinel` lane's `git config --global`
+    // step, and the windows-2022 image's system-level `core.autocrlf=true`.
+    // (Note a `GIT_CONFIG_GLOBAL` fixture could not supply it either —
+    // libgit2 reads that variable only under `GIT_REPOSITORY_OPEN_FROM_ENV`,
+    // which gwz's plain `Repository::open` does not set.)
     let temp = TempDir::new("create-filter-forward");
 
     let control = temp.path().join("control");
@@ -89,6 +100,287 @@ pub(crate) fn rematerialize_through_filters(repo_path: &Path, relative: &str) {
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout.force();
     repository.checkout_head(Some(&mut checkout)).unwrap();
+}
+
+/// Initialize an ADOPTED-style repository: a raw `git2` init carrying
+/// `core.autocrlf=true` in its REPO-LOCAL config, set before any content
+/// exists — the ordinary shape of a porcelain clone taken on a Windows
+/// autocrlf host.
+///
+/// Repo-local is git's HIGHEST-precedence config level. Using it as the
+/// hostile filter host is therefore strictly stronger than an ambient one
+/// (`GIT_CONFIG_GLOBAL`, `--global`, system): a birth pin that beats a
+/// repo-local `autocrlf=true` beats every ambient level by construction,
+/// because the birth pin is itself repo-local and written at creation. It is
+/// also hermetic and thread-safe — no process-global environment mutation
+/// (edition 2024 makes `set_var` unsafe, and the suite runs tests in
+/// parallel), and the real host config is never touched.
+pub(crate) fn init_adopted_autocrlf_repo(path: &Path) {
+    let mut opts = git2::RepositoryInitOptions::new();
+    opts.bare(false).no_reinit(true).initial_head("main");
+    let repository = git2::Repository::init_opts(path, &opts).unwrap();
+    repository
+        .config()
+        .unwrap()
+        .set_bool("core.autocrlf", true)
+        .unwrap();
+}
+
+/// Crate-relative paths (forward-slashed) of every `.rs` file under `src/`
+/// whose text contains `needle`.
+fn source_files_containing(needle: &str) -> Vec<String> {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut hits = Vec::new();
+    let mut stack = vec![source.clone()];
+    while let Some(directory) = stack.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+                continue;
+            }
+            if fs::read_to_string(&path).unwrap().contains(needle) {
+                hits.push(
+                    path.strip_prefix(&source)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    hits.sort();
+    hits
+}
+
+/// True when `relative` is test-only source: a `tests` / `interface_tests`
+/// path component, or a `tests*.rs` / `*_tests.rs` file name.
+///
+/// [P3-1]: a third clause once treated ANY file containing `#[cfg(test)]` as
+/// test-only. The review measured that as 147 of 681 `src/**.rs` files —
+/// production modules that would have escaped the writer assertion below had
+/// one of them ever pinned a filter key. It was not load-bearing (every
+/// current fixture writer is already test-by-path or test-by-name), so it is
+/// deleted rather than narrowed.
+fn is_test_source(relative: &str) -> bool {
+    let path = Path::new(relative);
+    if path.components().any(|component| {
+        component.as_os_str() == "tests" || component.as_os_str() == "interface_tests"
+    }) {
+        return true;
+    }
+    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap();
+    stem.starts_with("tests") || stem.ends_with("_tests")
+}
+
+/// Slice of `source` running from the first occurrence of `start` to that
+/// item's closing brace at column 0 — i.e. one whole free-function body.
+///
+/// [P2-1] — callers MUST pass LF-normalized text, and this enforces it.
+/// `include_str!` hands back WORKING-TREE bytes, which are CRLF on a Windows
+/// checkout of this repo (`src/**` carries no `.gitattributes` pin and the
+/// windows-2022 image resolves `core.autocrlf=true` at system level; the
+/// ledger's run-14 entry records this class biting once already). The earlier
+/// version terminated on a literal `"\n}\n"` and, when that needle was absent,
+/// fell back to "the rest of the file" — so on CRLF every slice silently
+/// widened to the whole file and a genuinely relocated pin PASSED the ordering
+/// checks. The guard degraded precisely on the platform it exists to protect.
+///
+/// Both failure modes are now loud: unnormalized input trips the assertion
+/// below, and a missing terminator panics instead of falling back. Normalize
+/// at the call site with `.replace("\r\n", "\n")` — the in-tree precedent is
+/// `r2d_seam_freeze.rs:219-223`.
+fn function_slice<'a>(source: &'a str, start: &str) -> &'a str {
+    assert!(
+        !source.contains('\r'),
+        "creation-time-only guard: `function_slice` requires LF-normalized \
+         source; normalize `include_str!` bytes with `.replace(\"\\r\\n\", \"\\n\")`"
+    );
+    let begin = source
+        .find(start)
+        .unwrap_or_else(|| panic!("creation-time-only guard: function `{start}` not found"));
+    let tail = &source[begin + start.len()..];
+    let end = tail
+        .match_indices("\n}\n")
+        .next()
+        .map(|(offset, _)| offset + 3)
+        .unwrap_or_else(|| {
+            panic!(
+                "creation-time-only guard: no column-0 closing brace after `{start}`; \
+                 refusing to fall back to the whole file"
+            )
+        });
+    &tail[..end]
+}
+
+/// CREATION-TIME ONLY, as an executable structural guard rather than prose.
+///
+/// The windows-matrix **run 9** regression is the lesson this pins: flipping
+/// `core.autocrlf`/`core.eol` on a repository that has ALREADY materialized
+/// content through filters turns every smudged worktree file into permanent
+/// manufactured dirt against its blob ("the pin is safe only at repo
+/// creation, before any filtered materialization",
+/// `GwzWindowsMatrix-Classification.md` run-9 entry). Decision 1 Option B is
+/// therefore sound only while the pin is unreachable from any mid-life path.
+///
+/// Prose in the helper's doc comment cannot enforce that; this test can. It
+/// fails the moment a third call site appears, the moment either existing
+/// call stops being adjacent to its creation primitive, the moment the
+/// helper's `pub(super)` containment inside `gitbackend` is widened, or the
+/// moment a second production file starts writing `core.autocrlf` on its own.
+/// Any of those is a deliberate decision that must re-open Decision 1.
+#[test]
+fn filter_neutralization_pin_is_reachable_only_from_the_two_creation_time_sites() {
+    let helper = "pin_creation_time_filter_neutralization";
+
+    // 1. The complete reference set. `git/tests/g01.rs` is in it because THIS
+    //    test names the helper; every other entry is a real call or the
+    //    definition. A new entry means a new (possibly mid-life) call site.
+    assert_eq!(
+        source_files_containing(helper),
+        vec![
+            "git/gitbackend/repository.rs".to_owned(),
+            "git/gitbackend/repository_support.rs".to_owned(),
+            "git/gitbackend/transport.rs".to_owned(),
+            "git/tests/g01.rs".to_owned(),
+        ],
+        "creation-time-only guard: the filter-neutralization pin gained or \
+         lost a reference. A new call site must be proven to run at repository \
+         CREATION, before any filtered materialization (run-9 lesson), or \
+         Decision 1 Option B is re-opened."
+    );
+
+    // 2. Containment: `pub(super)` keeps the helper inside `git::gitbackend`,
+    //    so no module outside the backend can reach it at all.
+    //    [P2-1]: every `include_str!` below is LF-normalized before use —
+    //    it receives working-tree bytes, which are CRLF on a Windows checkout
+    //    (precedent: `r2d_seam_freeze.rs:219-223`).
+    let support = include_str!("../gitbackend/repository_support.rs").replace("\r\n", "\n");
+    assert!(
+        support.contains(&format!("pub(super) fn {helper}(")),
+        "creation-time-only guard: the pin helper must stay `pub(super)` \
+         (contained inside git::gitbackend)"
+    );
+
+    // 3. Call site A is `create_repo`, AFTER the init primitive and inside
+    //    that function — i.e. on a repository that cannot yet hold content.
+    let repository = include_str!("../gitbackend/repository.rs").replace("\r\n", "\n");
+    assert_eq!(
+        repository.matches(&format!("{helper}(")).count(),
+        1,
+        "creation-time-only guard: repository.rs must pin exactly once"
+    );
+    let create_repo = function_slice(&repository, "fn create_repo(");
+    let init = create_repo
+        .find("Repository::init_opts(")
+        .expect("creation-time-only guard: create_repo must init the repository");
+    let pin = create_repo
+        .find(&format!("{helper}("))
+        .expect("creation-time-only guard: create_repo must pin at creation");
+    assert!(
+        init < pin,
+        "creation-time-only guard: the pin must follow `Repository::init_opts` \
+         inside `create_repo`"
+    );
+
+    // 4. Call site B is the clone funnel, AFTER the clone that performs the
+    //    initial materialization — which itself runs filters-off.
+    let transport = include_str!("../gitbackend/transport.rs").replace("\r\n", "\n");
+    assert_eq!(
+        transport.matches(&format!("{helper}(")).count(),
+        1,
+        "creation-time-only guard: transport.rs must pin exactly once"
+    );
+    let funnel = function_slice(&transport, "fn clone_repo_with_progress(");
+    assert!(
+        funnel.contains("disable_filters(true)"),
+        "creation-time-only guard: the clone funnel's initial materialization \
+         must run with filters disabled"
+    );
+    let cloned = funnel
+        .find("builder.clone(")
+        .expect("creation-time-only guard: the funnel must perform the clone");
+    let pin = funnel
+        .find(&format!("{helper}("))
+        .expect("creation-time-only guard: the funnel must pin after cloning");
+    assert!(
+        cloned < pin,
+        "creation-time-only guard: the pin must follow `builder.clone` inside \
+         the clone funnel"
+    );
+
+    // 5. No second production writer, for EITHER pinned key. Fixtures pin them
+    //    freely (that is test hermeticity); production code writing either one
+    //    anywhere but the creation-time helper would be a mid-life pin by
+    //    another name. [P3-2]: `core.eol` is checked alongside
+    //    `core.autocrlf` — the pin is a PAIR, and a mid-life writer that
+    //    flipped only `core.eol` was previously invisible here.
+    for key in ["\"core.autocrlf\"", "\"core.eol\""] {
+        let production_writers = source_files_containing(key)
+            .into_iter()
+            .filter(|relative| !is_test_source(relative))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            production_writers,
+            vec!["git/gitbackend/repository_support.rs".to_owned()],
+            "creation-time-only guard: exactly one production source may write \
+             {key}, and only at creation time"
+        );
+    }
+}
+
+/// CRLF class sentinel — the executable answer to the ledger's F6-class
+/// "no failing sentinel anywhere" complaint.
+///
+/// Every other CRLF assertion in this suite is conditional on the smudge
+/// machinery actually being live in the environment that runs it. The run-7
+/// fixture pins are precisely what made CI structurally blind to the class:
+/// with `core.autocrlf=false` everywhere, an assertion that a worktree is
+/// blob-exact passes for the wrong reason and nothing ever pages.
+///
+/// The body asserts the DELIBERATELY FALSE claim that an un-pinned,
+/// adopted-style worktree materializes blob-exact, so the assertion fires
+/// while the class is real. `#[should_panic]` turns that firing into the
+/// GREEN result:
+///
+/// * **class live (today, every OS)** → assert fires → expected panic → PASS.
+/// * **class gone** → assert holds → no panic → libtest fails the test with
+///   "did not panic as expected". That is the page: this environment lost its
+///   smudge source and every CRLF assertion in the suite has become vacuous,
+///   or the raw-byte doctrine changed and the frozen texts must move with it
+///   (Decision 1 B; the amendment's Clause A scope limits; the tripwire
+///   ledger).
+///
+/// **Why `should_panic` and not `#[ignore]` + an inverted exit code**
+/// (review item 7 / [P2-2]): an ignored test can only be reached by bespoke
+/// CI machinery, which is what confined the sentinel to a
+/// `workflow_dispatch`-only lane. As a plain `should_panic` test it rides
+/// EVERY existing `cargo test` surface — the per-commit lane, `windows-matrix`,
+/// `platform-matrix` and `release.yml`'s tagged both-OS run — with no exit
+/// inversion, and it cannot be confused with a build failure. The fixture
+/// carries its own hostile config repo-locally, so the smudge source is live
+/// off Windows too and the test is green everywhere today.
+#[test]
+#[should_panic(expected = "CRLF-CLASS-SENTINEL: smudge source is LIVE")]
+fn crlf_sentinel_unpinned_worktree_materializes_blob_exact() {
+    let temp = TempDir::new("crlf-sentinel-unpinned");
+    let repo = temp.path().join("adopted");
+    init_adopted_autocrlf_repo(&repo);
+    commit_file(&repo, "file.txt", "line1\nline2\n", "seed", &[]).unwrap();
+    rematerialize_through_filters(&repo, "file.txt");
+    assert_eq!(
+        fs::read(repo.join("file.txt")).unwrap(),
+        b"line1\nline2\n",
+        "CRLF-CLASS-SENTINEL: smudge source is LIVE — an un-pinned worktree \
+         materialized CRLF, which is the expected state while the class is \
+         open. This panic is what makes the test pass. If this test ever fails \
+         with 'did not panic as expected', the class is gone: reconcile \
+         Decision 1 B, the amendment's Clause A scope limits, and the tripwire \
+         ledger before silencing it."
+    );
 }
 
 #[test]

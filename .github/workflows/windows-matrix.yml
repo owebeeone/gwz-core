@@ -43,3 +43,123 @@ jobs:
           echo '== results =='
           grep -E '^test result' windows-matrix.log
           if grep -qE '^test result: FAILED' windows-matrix.log; then exit 1; fi
+
+  # ---------------------------------------------------------------------------
+  # CRLF class sentinel (M5-8 A1 Decision Packet, Decision 1 Option B; release
+  # gate G2). The ledger's F6-class complaint is that the run-7 fixture
+  # `core.autocrlf=false` pins left the real-Windows CRLF exposures with "no
+  # failing sentinel anywhere" — CI could not tell a class that was CLOSED from
+  # a class it was merely BLIND to. This lane keeps those two states apart.
+  #
+  # SHAPE CHANGE, R2.3 review item 7 / [P2-2]. The sentinel was an `#[ignore]`d
+  # expected-fail test whose failure this job asserted by inverting an exit
+  # code. It is now `#[should_panic]`, so it is GREEN while the smudge class is
+  # live and goes RED the day someone closes the residual. Two consequences:
+  #   1. It rides EVERY existing `cargo test` surface — the per-commit lane,
+  #      platform-matrix, and release.yml's tagged both-OS run — instead of
+  #      only this dispatch-only workflow. That is the substance of the item-7
+  #      ruling ("the class must also ride release.yml"); the remaining R3 half
+  #      is release.yml's own count pin, which folds in separately there.
+  #   2. BOTH halves below are now green-when-correct, so the lane's
+  #      anti-vacuity no longer rests on the halves DIFFERING. It rests on two
+  #      exact-count assertions: (a) the pinned half must run exactly 6 named
+  #      tests, and (b) the sentinel half must run exactly 1 — because libtest
+  #      exits 0 when a filter matches NOTHING, so a rename or deletion would
+  #      otherwise pass silently. Do not relax either count.
+  #
+  # Topology audit (activation record §17, the run `32749441874` lesson —
+  # a checker green locally proves nothing about a single-repo runner):
+  # every command below resolves paths INSIDE the checkout only.
+  #   * `rustup`                    — no workspace path resolution.
+  #   * `git config --global`       — writes $HOME/.gitconfig on the ephemeral
+  #                                   runner; reads nothing from the workspace.
+  #   * `cargo test`                — CWD is the checkout root; `Cargo.toml`,
+  #                                   `Cargo.lock`, `include_str!` targets and
+  #                                   `env!("CARGO_MANIFEST_DIR")` are all
+  #                                   in-repo.
+  # No `scripts/checks/*` driver is invoked and nothing reads `ROOT.parent`, so
+  # this lane carries none of the workspace-root-reading blocker class that
+  # un-wired `check_m4_scenario_map.py` (L2-05's owner and cure: the R2-F
+  # multi-repo checkout, tuple §11.3 item 7).
+  crlf-sentinel:
+    name: CRLF class sentinel (un-pinned host)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: crlf-sentinel
+          cache-on-failure: true
+      - name: Un-pin the host filter config
+        shell: bash
+        # windows-2022 images already resolve `core.autocrlf=true` at SYSTEM
+        # level; declaring it at global level makes this lane's hostility
+        # explicit and image-independent instead of inherited by luck.
+        run: |
+          git config --global core.autocrlf true
+          echo "host core.autocrlf = $(git config --get core.autocrlf)"
+      - name: Pinned lane — gwz-born materialization is blob-exact (must be GREEN)
+        shell: bash
+        # Named exactly, so a rename forces whoever renames to look at this
+        # lane. The count assertion below is load-bearing: libtest exits 0 when
+        # a filter matches NOTHING, so without it a typo'd name would pass
+        # silently — the same vacuity the fixture pins caused.
+        run: |
+          set +e
+          cargo test --locked --lib -- --exact \
+            git::tests::g01::create_repo_pins_repo_local_filter_neutralization_at_creation \
+            git::tests::g01::created_repo_forward_materialization_is_blob_exact_under_ambient_autocrlf \
+            git::tests::g01::clone_funnel_materializes_blob_exact_and_pins_filter_neutralization \
+            git::tests::g01::filter_neutralization_pin_is_reachable_only_from_the_two_creation_time_sites \
+            git::tests::g11::stash_round_trip_on_a_born_repo_is_a_filter_no_op \
+            git::tests::g12::doctrine_sentinel_adopted_crlf_worktree_classifies_ambiguous_in_the_reverse_observer \
+            2>&1 | tee crlf-pinned.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -E '^test result' crlf-pinned.log || true
+          if [ "$status" -ne 0 ] \
+             || ! grep -qE '^test result: ok\. 6 passed; 0 failed' crlf-pinned.log; then
+            echo "::error::CRLF pinned lane did not run exactly 6 green tests — a"
+            echo "::error::sentinel test was renamed, removed, or regressed. libtest"
+            echo "::error::exits 0 on a filter that matches nothing, so the count is"
+            echo "::error::the assertion; do not relax it."
+            exit 1
+          fi
+      - name: Un-pinned sentinel — the class must stay VISIBLE (must be GREEN)
+        shell: bash
+        # The other half, now a PLAIN run — no exit inversion. The sentinel is
+        # `#[should_panic]`: it asserts the deliberately false claim that an
+        # un-pinned adopted worktree materializes blob-exact, the assert fires
+        # while the class is live, and the expected panic is the pass. A
+        # non-zero exit here therefore means the sentinel did NOT panic, i.e.
+        # the class is gone. Unlike the old inverted form, that is now
+        # distinguishable from a build failure ([P3-5]): the count assertion
+        # below only holds when the test actually executed.
+        run: |
+          set +e
+          cargo test --locked --lib -- --exact \
+            git::tests::g01::crlf_sentinel_unpinned_worktree_materializes_blob_exact \
+            2>&1 | tee crlf-sentinel.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -E '^test result' crlf-sentinel.log || true
+          if [ "$status" -ne 0 ] \
+             || ! grep -qE '^test result: ok\. 1 passed; 0 failed' crlf-sentinel.log; then
+            echo "::error::The CRLF sentinel did not pass. If it reports 'did not panic"
+            echo "::error::as expected', it has stopped being a sentinel: this runner"
+            echo "::error::materialized an UN-PINNED worktree blob-exact, so either the"
+            echo "::error::smudge source is gone (every CRLF assertion in the suite is"
+            echo "::error::now vacuous) or the raw-byte doctrine changed. Do not silence"
+            echo "::error::this — reconcile the frozen texts (Decision 1 B, amendment"
+            echo "::error::Clause A scope limits, the tripwire ledger). If instead the"
+            echo "::error::count is 0, the test was renamed or deleted."
+            exit 1
+          fi
+          echo "sentinel green — the CRLF class is live and visible in this lane"

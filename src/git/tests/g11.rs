@@ -28,6 +28,95 @@ fn stash_push_tracked_only_changes_and_leaves_worktree_clean() {
     assert_eq!(backend.status(&repo).unwrap(), GitStatus::clean());
 }
 
+/// The SECOND tripwired exposure, closed for gwz-born repositories.
+///
+/// libgit2's `git_stash_save` resets the swept tracked files through its own
+/// internal checkout **with filters active**, and exposes no checkout options
+/// to turn them off (`GwzM5-8ExactEvidencePlatformAmendment.md`, native-stash
+/// residual; `GwzWindowsMatrix-Classification.md` standing residual tripwire
+/// exposure (1)). On a filter-active worktree that reset re-materializes CRLF,
+/// so every preservation-side raw-byte preimage equality afterwards is
+/// unsatisfiable — the class run 8 measured in the un-pinned member fixtures.
+///
+/// Decision 1 Option B closes it without touching the stash code at all: the
+/// birth-time pins leave `stash_save`'s internal reset with no filter to run,
+/// so the sweep is a byte no-op. This test proves that, and proves it
+/// non-vacuously — the CONTROL arm is an adopted-style repo where the same
+/// sweep DOES smudge, so the subject assertion cannot pass merely because the
+/// environment has no live smudge source.
+#[test]
+fn stash_round_trip_on_a_born_repo_is_a_filter_no_op() {
+    let temp = TempDir::new("stash-filter-no-op");
+    let backend = Git2Backend::new();
+    let blob = b"line1\nline2\n";
+    let dirty = "line1\nline2\nline3\n";
+
+    // CONTROL: adopted-style repo (repo-local `core.autocrlf=true`). The
+    // stash sweep resets `swept.txt` to HEAD through the active smudge
+    // filter, so it lands CRLF — the exposure, live.
+    let control = temp.path().join("control");
+    init_adopted_autocrlf_repo(&control);
+    commit_file(&control, "swept.txt", "line1\nline2\n", "seed", &[]).unwrap();
+    fs::write(control.join("swept.txt"), dirty).unwrap();
+    backend
+        .stash_push(
+            &control,
+            "gwz:stash_crlf: control",
+            GitStashPushOptions::tracked_only(),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(control.join("swept.txt")).unwrap(),
+        b"line1\r\nline2\r\n",
+        "control: libgit2 stash_save's internal reset must re-materialize the \
+         swept file through the smudge filter — without this the subject \
+         assertion below is vacuous"
+    );
+
+    // SUBJECT: a gwz-born repository. Same sweep, same hostile filter intent,
+    // but the birth pins make the internal reset a filter no-op.
+    let subject = temp.path().join("subject");
+    backend.create_repo(&subject).unwrap();
+    commit_file(&subject, "swept.txt", "line1\nline2\n", "seed", &[]).unwrap();
+    fs::write(subject.join("swept.txt"), dirty).unwrap();
+    let pushed = backend
+        .stash_push(
+            &subject,
+            "gwz:stash_crlf: subject",
+            GitStashPushOptions::tracked_only(),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(subject.join("swept.txt")).unwrap(),
+        blob,
+        "gwz-born: the stash sweep's internal reset must be a filter no-op — \
+         the swept file stays blob-exact, so preservation-side raw-byte \
+         preimage equalities remain satisfiable"
+    );
+
+    // ...and the return leg too: popping restores the stashed bytes verbatim,
+    // so the whole round trip is byte-identity, not just the sweep.
+    backend
+        .stash_pop(
+            &subject,
+            &GitStashTarget::object_id(pushed.object_id.clone()),
+            GitStashRestoreOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(subject.join("swept.txt")).unwrap(),
+        dirty.as_bytes(),
+        "gwz-born: the stash pop must restore the stashed worktree bytes verbatim"
+    );
+    assert!(
+        !backend
+            .stash_list(&subject)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.object_id == pushed.object_id)
+    );
+}
+
 #[test]
 fn stash_push_include_untracked_and_include_ignored() {
     let temp = TempDir::new("stash-untracked-ignored");
