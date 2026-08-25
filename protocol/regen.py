@@ -33,7 +33,7 @@ Usage:
     python protocol/regen.py                 # provision venv if needed, regenerate + write
     python protocol/regen.py --check         # verify only: no writes; nonzero exit on drift (CI-style gate)
     python protocol/regen.py --recreate      # rebuild the uv venv from scratch
-    python protocol/regen.py --taut-version 0.8.1   # explicit interface-checkpoint override
+    python protocol/regen.py --taut-version 0.9.1   # explicit interface-checkpoint override
     python protocol/regen.py --venv PATH     # override the venv location
 """
 
@@ -65,7 +65,7 @@ CHECKED_ARTIFACT_GEN_COPY = (
     "src/checked_artifact/protocol/generated.rs",
 )
 DEFAULT_VENV = GWZ_CORE / "protocol" / ".regen-venv"
-TAUT_GENERATOR_VERSION = "0.8.1"
+TAUT_GENERATOR_VERSION = "0.9.1"
 
 
 def fail(msg: str):
