@@ -79,7 +79,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
          check("check_merge_compatibility_predicates.py", REGISTRY, "--core", "."),
          "validated 7 migration rules and 7 runtime bindings"),
         ("registry checker suite", suite("test_merge_compatibility_predicates.py"), "OK"),
-        ("merge-doc assertions", check("check_merge_docs.py"), "ok (11 sources, 147 assertions)"),
+        ("merge-doc assertions", check("check_merge_docs.py"), "ok (12 sources, 155 assertions)"),
         ("merge-doc checker suite", suite("test_check_merge_docs.py"), "OK"),
     ]),
     "byte-equivalence": ("byte-equivalence gate, both halves of O8 (rows 2.3a/2.3b, §12)", [

@@ -1190,9 +1190,11 @@ fn checked_native_abort_refuses_configured_foreign_filter_before_any_mutation() 
 /// in-gwz verification CANNOT see the divergence — the assertion below that
 /// `status` stays clean is that fact, pinned. The hazard is therefore
 /// real-`git`-visible divergence on covered paths after a raw-byte rewrite,
-/// an availability/UX class whose remedy is a porcelain re-checkout of those
-/// paths — not the retry-proof in-gwz wedge the predicate's own doc comment
-/// describes. Owner of the eventual hardening: the §R6
+/// an availability/UX class whose remedy is to force re-materialization of
+/// those paths: delete them, then `git checkout -- <paths>` (a bare checkout
+/// is silently skipped as up-to-date — the index carries the raw file's
+/// stat; R4 review [P0-1], executed evidence) — not the retry-proof in-gwz
+/// wedge the predicate's own doc comment describes. Owner of the eventual hardening: the §R6
 /// `gwz repair --renormalize` package, which already shares this predicate.
 ///
 /// Reachability needs a narrow conjunction, and the common direction is safe:

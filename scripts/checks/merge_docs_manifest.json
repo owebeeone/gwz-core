@@ -398,6 +398,17 @@
         }
       ],
       "forbidden": []
+    },
+    {
+      "id": "merge_recovery_guide",
+      "path": "gwz-cli/docs/MergeRecovery.md",
+      "required": [
+        {
+          "id": "merge_recovery_guide_no_ff_recovery_path_bound",
+          "value": "**This is the `--no-ff` recovery path.** `--no-ff` starts always use it; an ordinary start can also reach it once its record is migrated during abort. Match on the message, not on how you started the merge."
+        }
+      ],
+      "forbidden": []
     }
   ]
 }
