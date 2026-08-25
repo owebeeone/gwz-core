@@ -84,8 +84,20 @@ class ManifestTests(unittest.TestCase):
         harness.validate_manifest(manifest)
 
         generations = {item["id"] for item in manifest["decode_generations"]}
+        # Three of these register decode behaviour with no retained-reader
+        # artifacts: the two strict-envelope entries (v0.10.4/v0.10.5, whose
+        # typed unsupported-record-version outcome is NOT the v0.10.2
+        # generation's) and the A1 entry (v0.11.0, unpublished). None of them
+        # adds a reader row, so the tuple count asserted below is deliberately
+        # unmoved by all three.
         self.assertEqual(
-            {"pre-v0-record-reader", "v0-mode-known-recovery-dormant"},
+            {
+                "pre-v0-record-reader",
+                "v0-mode-known-recovery-dormant",
+                "v0-strict-envelope-typed-unsupported",
+                "v0-strict-envelope-typed-unsupported-narrow",
+                "v0-v1-dual-decode-v0-writer-floor",
+            },
             generations,
         )
 

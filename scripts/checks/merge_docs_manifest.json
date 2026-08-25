@@ -300,23 +300,25 @@
       "path": "gwz-cli/docs/commands/merge.md",
       "required": [
         {
-          "id": "merge_command_ff_only_and_message_current",
-          "value": "gwz merge <source> [--dry-run] [--ff-only] [-m <message>]"
+          "id": "merge_command_synopsis_lists_no_ff",
+          "value": "gwz merge <source> [--dry-run] [--ff-only] [--no-ff] [-m <message>]"
         },
         {
-          "id": "merge_command_deferred_heading",
-          "value": "## Features not yet available"
+          "id": "merge_command_no_ff_creates_a_merge_commit",
+          "value": "`--no-ff` always creates a merge commit, even where a fast-forward is possible. It is the counterpart to `--ff-only`; supplying both together is rejected."
         },
         {
-          "id": "merge_command_no_ff_deferred",
-          "value": "`--no-ff` is not yet available."
-        },
-        {
-          "id": "merge_command_no_ff_unsupported_is_typed",
-          "value": "It remains hidden and returns a typed unsupported error if submitted directly."
+          "id": "merge_command_no_ff_writes_v1_while_ordinary_stays_v0",
+          "value": "A `--no-ff` start writes a v1 coordinated merge record and publishes a two-parent integration commit. Ordinary and custom-message starts continue to write v0 records."
         }
       ],
-      "forbidden": []
+      "forbidden": [
+        {
+          "id": "merge_command_no_ff_must_not_be_deferred_again",
+          "match": "regex",
+          "value": "(?i)(?:`?--no-ff`?|no-ff)\\s+(?:is|remains)\\s+(?:not\\s+yet\\s+(?:available|supported|implemented|released)|hidden)"
+        }
+      ]
     },
     {
       "id": "releases",

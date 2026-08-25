@@ -35,7 +35,7 @@
   ],
   "inputs": {
     "cases_sha256": "facb07f0692ddeec25f889079155e7b41fdefe7fbb781f6ba628b9334fd67f6d",
-    "manifest_sha256": "9b1af0e3e85e006baced4a32d523c55a3df16c0f5205eae7f28bd3c3feb2dac2"
+    "manifest_sha256": "b35699c414dc3cc6091fe017534835db0e0432ec215f226cde754d8670104af4"
   },
   "platform": "macos-aarch64",
   "provenance": {

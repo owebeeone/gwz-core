@@ -11,6 +11,21 @@
       "id": "v0-mode-known-recovery-dormant",
       "release": "v0.10.2",
       "description": "The reader decodes the v0 NoFf variant, but recovery can re-derive normal fast-forward behavior."
+    },
+    {
+      "id": "v0-strict-envelope-typed-unsupported",
+      "release": "v0.10.4",
+      "description": "The reader installs strict merge-record envelope decoding, v0 only (PRODUCTION_R3 = v0 true, v1 false): a v0 record decodes, and a v1 or later envelope is refused as a TYPED unsupported-record-version carrying its required semantic wave. That is materially different from — and better than — the v0.10.2 generation, which ships no envelope dispatcher at all; v0.10.2 and v0.10.3 carry no record_wire module. Registered for decode truth; no retained-reader artifacts are pinned for this release."
+    },
+    {
+      "id": "v0-strict-envelope-typed-unsupported-narrow",
+      "release": "v0.10.5",
+      "description": "The narrow v0.10.5 release line carries the same strict envelope decoding as v0.10.4 (PRODUCTION_R3 = v0 true, v1 false; a v1 or later envelope is refused as a typed unsupported-record-version with its required semantic wave). Registered as its own entry because a decode generation is keyed to exactly one release. No retained-reader artifacts are pinned for this release."
+    },
+    {
+      "id": "v0-v1-dual-decode-v0-writer-floor",
+      "release": "v0.11.0",
+      "description": "The A1 generation, described as shipped: the reader decodes both v0 and v1 merge records, and --no-ff starts create v1 records, but ordinary and custom-message starts still create v0 because the active writer floor ships at ACTIVE_WRITER_FLOOR = V0 — the named residual owned by milestone M5c, which raises the floor with the production v1 ordinary-start owner as one reviewed change. Creation is not the only way a v1 record appears: an ordinary v0 record left in the Finalizing/Normal shape is whitelist-eligible and MIGRATES to v1 on post-activation resume or abort, so a workspace in which --no-ff was never used can still hold a v1 record that older readers refuse. Registered ahead of its retained-reader artifacts, which do not exist until this release is published."
     }
   ],
   "platforms": [

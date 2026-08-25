@@ -524,10 +524,11 @@ def main():
                 copy_lock_from_cargo_root(cargo_root)
             run(["cargo", "test", "--locked"], cwd=cargo_root, env=cargo_env())
             git(["add", "Cargo.toml", "Cargo.lock"])
-            message = (
-                f"chore(release): gwz-core {version}\n\n"
-                "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-            )
+            # No AI co-author trailer. The operator's attribution rule is
+            # absolute and applies to every commit in every repo, including
+            # commits authored by tooling — and the settings-level enforcement
+            # that covers agent-authored commits does not reach this script.
+            message = f"chore(release): gwz-core {version}"
             git(["commit", "-m", message])
             head = git(["rev-parse", "HEAD"], capture=True).stdout.strip()
             log(f"release commit -> {head[:10]}  (gwz-core {version})")
