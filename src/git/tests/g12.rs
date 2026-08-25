@@ -959,6 +959,165 @@ fn checked_rollback_proceeds_over_lfs_and_unconfigured_filter_attributes() {
 }
 
 #[test]
+fn checked_rollback_proceeds_when_the_configured_filter_is_outside_the_rewrite_set() {
+    // Decision 2 (A′) SCOPING — the third refinement, and the one that
+    // separates A′ from A strict as much as the config probe does: the
+    // predicate is bound to the paths the recovery-grade checkout would
+    // REWRITE (here diff(current → target); `ensure_clean_recovery_state` has
+    // already pinned the worktree to `current`), not to the whole tree. A
+    // configured foreign driver covering a path the rollback never writes can
+    // not wedge it — no raw blob bytes are ever laid down under that driver —
+    // so refusing there would be pure availability loss on a repo that was
+    // never at risk. Sibling coverage: the SAME driver on a rewritten path
+    // refuses (`checked_rollback_refuses_configured_foreign_filter_...`), so
+    // a regression that widened the scope to the whole tree would flip this
+    // test alone.
+    let temp = TempDir::new("rollback-filter-outside-rewrite-set");
+    let repo = temp.path().join("repo");
+    let backend = Git2Backend::new();
+    backend.create_repo(&repo).unwrap();
+    pin_hermetic_lfs_passthrough(&repo);
+    // `quiet.txt` is covered by the driver and never moves again; the merge
+    // delta the rollback must actually rewrite rides UNATTRIBUTED `loud.txt`.
+    let base = commit_file(&repo, "quiet.txt", "quiet\n", "base", &[]).unwrap();
+    let base_oid = git2::Oid::from_str(&base).unwrap();
+    let seeded = commit_file(&repo, "loud.txt", "plain-v1\n", "seed", &[base_oid]).unwrap();
+    let seeded_oid = git2::Oid::from_str(&seeded).unwrap();
+    let attrs = commit_file(
+        &repo,
+        ".gitattributes",
+        "quiet.txt filter=crypt\n",
+        "attrs",
+        &[seeded_oid],
+    )
+    .unwrap();
+    let attrs_oid = git2::Oid::from_str(&attrs).unwrap();
+    run_git(&repo, &["branch", "feature"]);
+    run_git(&repo, &["checkout", "feature"]);
+    let source = commit_file(&repo, "loud.txt", "plain-v2\n", "feature", &[attrs_oid]).unwrap();
+    run_git(&repo, &["checkout", "main"]);
+    let before = commit_file(&repo, "main.txt", "target\n", "target", &[attrs_oid]).unwrap();
+    let merged = backend
+        .merge_upstream_checked(&repo, "main", &before, &source, "merge", None)
+        .unwrap()
+        .commit
+        .unwrap();
+    configure_filter_driver(&repo, "filter.crypt.clean", "crypt-clean %f");
+
+    // Preconditions that keep the test honest: the path really is covered by
+    // the configured foreign driver, and it really is outside the rewrite set.
+    {
+        let repository = git2::Repository::open(&repo).unwrap();
+        assert_eq!(
+            repository
+                .get_attr(
+                    Path::new("quiet.txt"),
+                    "filter",
+                    git2::AttrCheckFlags::default(),
+                )
+                .unwrap(),
+            Some("crypt"),
+            "precondition: the covered path carries the configured foreign driver"
+        );
+    }
+    assert_eq!(
+        rev_parse(&repo, &format!("{merged}:quiet.txt")),
+        rev_parse(&repo, &format!("{before}:quiet.txt")),
+        "precondition: the covered path is identical in both candidate trees"
+    );
+
+    let result = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap();
+    assert!(result.updated);
+    assert_eq!(rev_parse(&repo, "refs/heads/main"), before);
+    assert_eq!(fs::read(repo.join("loud.txt")).unwrap(), b"plain-v1\n");
+    assert_eq!(fs::read(repo.join("quiet.txt")).unwrap(), b"quiet\n");
+}
+
+#[test]
+fn checked_rollback_proceeds_when_the_configured_filter_covers_only_a_deleted_path() {
+    // Decision 2 (A′), the deletion-skip clause (`recovery_support.rs`:57-59:
+    // `if delta.status() == git2::Delta::Deleted { continue; }`). Removing a
+    // path writes no bytes through any filter, so a covered path that the
+    // recovery checkout only DELETES cannot break clean-idempotence and must
+    // not cost rollback availability. R1 review F-5: this clause was sound
+    // but entirely untested — the reviewer's mutation M2 (deleting the skip)
+    // flipped nothing across the whole `g12` module. This test is its
+    // detector; under M2 the rollback below refuses instead of proceeding.
+    //
+    // Shape: coverage lives on BOTH sides (`.gitattributes` is committed at
+    // the base and never moves), so this isolates the deletion clause alone —
+    // no target-side-asymmetry confound with the residual sentinel below.
+    let temp = TempDir::new("rollback-filter-deleted-path");
+    let repo = temp.path().join("repo");
+    let backend = Git2Backend::new();
+    backend.create_repo(&repo).unwrap();
+    pin_hermetic_lfs_passthrough(&repo);
+    let base = commit_file(&repo, "seed.txt", "seed\n", "base", &[]).unwrap();
+    let base_oid = git2::Oid::from_str(&base).unwrap();
+    let attrs = commit_file(
+        &repo,
+        ".gitattributes",
+        "secret.txt filter=crypt\n",
+        "attrs",
+        &[base_oid],
+    )
+    .unwrap();
+    let attrs_oid = git2::Oid::from_str(&attrs).unwrap();
+    // The covered path is ADDED on the feature side only, so rolling `main`
+    // back off the merge DELETES it — `Delta::Deleted` in diff(current →
+    // target), and the only delta in the rewrite set.
+    run_git(&repo, &["branch", "feature"]);
+    run_git(&repo, &["checkout", "feature"]);
+    let source = commit_file(&repo, "secret.txt", "plain-v2\n", "feature", &[attrs_oid]).unwrap();
+    run_git(&repo, &["checkout", "main"]);
+    let before = commit_file(&repo, "main.txt", "target\n", "target", &[attrs_oid]).unwrap();
+    let merged = backend
+        .merge_upstream_checked(&repo, "main", &before, &source, "merge", None)
+        .unwrap()
+        .commit
+        .unwrap();
+    configure_filter_driver(&repo, "filter.crypt.clean", "crypt-clean %f");
+
+    // Preconditions: the path is covered by the configured driver, present in
+    // the current tree, and absent from the target tree — i.e. a deletion.
+    {
+        let repository = git2::Repository::open(&repo).unwrap();
+        assert_eq!(
+            repository
+                .get_attr(
+                    Path::new("secret.txt"),
+                    "filter",
+                    git2::AttrCheckFlags::default(),
+                )
+                .unwrap(),
+            Some("crypt"),
+            "precondition: the deleted path carries the configured foreign driver"
+        );
+    }
+    assert!(
+        run_git_ok(&repo, &["cat-file", "-e", &format!("{merged}:secret.txt")]),
+        "precondition: the covered path exists in the current tree"
+    );
+    assert!(
+        !run_git_ok(&repo, &["cat-file", "-e", &format!("{before}:secret.txt")]),
+        "precondition: the covered path is absent from the target tree"
+    );
+
+    let result = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap();
+    assert!(result.updated);
+    assert_eq!(rev_parse(&repo, "refs/heads/main"), before);
+    // Non-degeneracy: the rewrite set was real and the deletion was executed.
+    assert!(
+        !repo.join("secret.txt").exists(),
+        "the rollback must actually have removed the covered path"
+    );
+}
+
+#[test]
 fn checked_native_abort_refuses_configured_foreign_filter_before_any_mutation() {
     // Decision 2 (A′), second recovery-grade site: the checked native-merge
     // abort restore. A conflict ON the filter-covered path puts it in the
@@ -1001,6 +1160,146 @@ fn checked_native_abort_refuses_configured_foreign_filter_before_any_mutation() 
     assert!(backend.merge_state(&repo).unwrap().is_some());
     assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
     assert_eq!(fs::read(repo.join("secret.txt")).unwrap(), conflicted_bytes);
+}
+
+/// DOCTRINE SENTINEL — A′ target-side attribute coverage escapes the gate.
+///
+/// The Decision 2 A′ foreign-filter refusal (`refuse_foreign_filtered_rewrites`,
+/// `gitbackend/recovery_support.rs`:46-95) reads the PRE-CHECKOUT attribute
+/// stack: `git2::AttrCheckFlags::default()` is `FILE_THEN_INDEX`. When
+/// `.gitattributes` is itself inside the rewrite set and the foreign `filter`
+/// coverage exists ONLY on the target side — the recovery checkout restores
+/// the coverage together with the bytes — the gate sees nothing. The
+/// recovery-grade rollback PROCEEDS, the ref moves, and the covered path is
+/// left holding raw blob bytes under a now-active configured clean driver:
+/// the exact precondition A′ exists to refuse, established after the mutation
+/// rather than before it.
+///
+/// This test PINS that as today's accepted behaviour. It is a named residual,
+/// not a bug in waiting: first recorded as State F1 [P3] at landing
+/// (`9939b02`), re-confirmed empirically and re-accepted at R1
+/// (`GwzM5-8A1ReleaseR1-ReviewState.md` §3(a), conditions C2+C3). It is NOT
+/// closable at the current dependency pin — reading attributes from an
+/// arbitrary tree needs `git_attr_get_ext` / `git_attr_options.attr_commit_id`,
+/// which `libgit2-sys 0.18.7+1.9.6` does not bind and git2 0.21's
+/// `AttrCheckFlags` does not expose.
+///
+/// Realized harm, per R1 F-3 and the landing review's F6
+/// (`GwzM5-8ExactEvidencePlatformAmendment.md`:167-172): gwz's own status is
+/// libgit2-based and libgit2 runs no config-command filter drivers, so
+/// in-gwz verification CANNOT see the divergence — the assertion below that
+/// `status` stays clean is that fact, pinned. The hazard is therefore
+/// real-`git`-visible divergence on covered paths after a raw-byte rewrite,
+/// an availability/UX class whose remedy is a porcelain re-checkout of those
+/// paths — not the retry-proof in-gwz wedge the predicate's own doc comment
+/// describes. Owner of the eventual hardening: the §R6
+/// `gwz repair --renormalize` package, which already shares this predicate.
+///
+/// Reachability needs a narrow conjunction, and the common direction is safe:
+/// rolling back a change that ADDED coverage over-refuses (the gate reads the
+/// current side, which has it). Only the inverse — rolling back ACROSS a
+/// merge that DELETED the covering `.gitattributes`, which this fixture
+/// constructs explicitly — slips through.
+///
+/// If this test ever FAILS — the rollback starts refusing this shape —
+/// someone CLOSED the residual, and the frozen texts must move with it in the
+/// same change: the C2 residual entry in `CurrentProgramCheckpoint.md`'s
+/// residual register, `GwzM5-8ExactEvidencePlatformAmendment.md`:117-121 (whose
+/// "~15-LOC hardening" candidate line is itself corrected by R1 F-2), and the
+/// v0.11.0 release notes. Do not simply update the assertions.
+#[test]
+fn doctrine_sentinel_target_side_attribute_coverage_escapes_the_foreign_filter_gate() {
+    let temp = TempDir::new("aprime-target-side-attrs-sentinel");
+    let repo = temp.path().join("repo");
+    let backend = Git2Backend::new();
+    backend.create_repo(&repo).unwrap();
+    pin_hermetic_lfs_passthrough(&repo);
+    let base = commit_file(&repo, "secret.txt", "plain-v1\n", "base", &[]).unwrap();
+    let base_oid = git2::Oid::from_str(&base).unwrap();
+    let attrs = commit_file(
+        &repo,
+        ".gitattributes",
+        "secret.txt filter=crypt\n",
+        "attrs",
+        &[base_oid],
+    )
+    .unwrap();
+    let attrs_oid = git2::Oid::from_str(&attrs).unwrap();
+    // The feature side DELETES the covering `.gitattributes` and moves the
+    // covered path, so the merge result carries no coverage and the rollback
+    // target restores it — coverage arrives WITH the checkout.
+    run_git(&repo, &["branch", "feature"]);
+    run_git(&repo, &["checkout", "feature"]);
+    fs::remove_file(repo.join(".gitattributes")).unwrap();
+    run_git(&repo, &["rm", "--cached", ".gitattributes"]);
+    let source = commit_file(&repo, "secret.txt", "plain-v2\n", "feature", &[attrs_oid]).unwrap();
+    run_git(&repo, &["checkout", "main"]);
+    let before = commit_file(&repo, "main.txt", "target\n", "target", &[attrs_oid]).unwrap();
+    let merged = backend
+        .merge_upstream_checked(&repo, "main", &before, &source, "merge", None)
+        .unwrap()
+        .commit
+        .unwrap();
+    configure_filter_driver(&repo, "filter.crypt.clean", "crypt-clean %f");
+
+    // Preconditions: coverage on the TARGET side only, and invisible to the
+    // pre-checkout stack the gate actually reads.
+    assert!(
+        !run_git_ok(
+            &repo,
+            &["cat-file", "-e", &format!("{merged}:.gitattributes")]
+        ),
+        "precondition: the current tree carries no coverage"
+    );
+    assert!(
+        run_git_ok(
+            &repo,
+            &["cat-file", "-e", &format!("{before}:.gitattributes")]
+        ),
+        "precondition: the target tree restores the coverage"
+    );
+    assert!(
+        !repo.join(".gitattributes").exists(),
+        "precondition: FILE_THEN_INDEX sees no attributes file pre-checkout"
+    );
+
+    // TODAY'S DOCTRINE: the gate does not fire and the rollback proceeds.
+    let result = backend
+        .set_branch_target_checked(&repo, "main", &merged, &before)
+        .unwrap();
+    assert!(result.updated);
+    assert_eq!(rev_parse(&repo, "refs/heads/main"), before);
+    // Post-state: coverage now live and configured, over raw blob bytes that
+    // were written with filters disabled.
+    assert!(repo.join(".gitattributes").exists());
+    assert_eq!(fs::read(repo.join("secret.txt")).unwrap(), b"plain-v1\n");
+    {
+        let repository = git2::Repository::open(&repo).unwrap();
+        assert_eq!(
+            repository
+                .get_attr(
+                    Path::new("secret.txt"),
+                    "filter",
+                    git2::AttrCheckFlags::default(),
+                )
+                .unwrap(),
+            Some("crypt"),
+            "post-state: the restored coverage is live on the rewritten path"
+        );
+        assert!(
+            repository
+                .config()
+                .unwrap()
+                .get_entry("filter.crypt.clean")
+                .is_ok(),
+            "post-state: the driver is configured, so the coverage is non-passthrough"
+        );
+    }
+    // R1 F-3 / landing F6, pinned: gwz's libgit2-based status runs no
+    // config-command drivers, so in-gwz verification cannot see the
+    // divergence. This is WHY `set_branch_target_checked` returned Ok above
+    // rather than failing its post-`commit()` verification.
+    assert!(!backend.status(&repo).unwrap().is_dirty);
 }
 
 /// DOCTRINE SENTINEL — real-Windows CRLF fail-closed classification.
