@@ -4,7 +4,7 @@ const CHECKED_ARTIFACT_WORKFLOW: &str =
 
 #[test]
 fn release_workflow_tests_linux_and_windows() {
-    assert!(RELEASE_WORKFLOW.contains("ubuntu-22.04"));
+    assert!(RELEASE_WORKFLOW.contains("ubuntu-24.04"));
     assert!(RELEASE_WORKFLOW.contains("windows-2022"));
 }
 
