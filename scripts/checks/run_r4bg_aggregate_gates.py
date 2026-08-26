@@ -61,6 +61,33 @@ def lib(*args: str) -> list[str]:
     return ["cargo", "test", "--lib", "-p", "gwz-core", *args]
 
 
+def _fault_count(darwin: str, linux: str) -> str:
+    """Per-OS expected counts for the two cfg-divergent fault partitions.
+
+    checked_artifact:: and the lib remainder carry OS-gated tests
+    (#[cfg(all(test, target_os = "linux"))] and #[cfg(unix)]/darwin-only
+    fns), so the partition totals are host-specific. Both values are
+    EXECUTED, never derived from intent: darwin = the release script's
+    green `cargo test --locked` at tag v0.11.0 (lib 1589 passed + 1
+    ignored; remainder = 1589 - (256+1+400) = 932 -- the pre-R1/R2 926
+    was stale, R1/R2 added remainder-partition tests); linux = release
+    verify run 32954473899 at the same tag (410 measured; 933 = its lib
+    total 1600 minus 256+1+410). Both remainder values are marked
+    FIRST-DISPATCH-EXPECTED until their next battery execution confirms
+    them. Any other host fails loudly here rather than inheriting a count
+    measured elsewhere -- the release-train lesson (activation record
+    S17; the Windows count-pin derivation) applied to this driver.
+    """
+    if sys.platform == "darwin":
+        return darwin
+    if sys.platform.startswith("linux"):
+        return linux
+    raise SystemExit(
+        f"run_r4bg_aggregate_gates: no measured fault-battery count pin for host {sys.platform!r}; "
+        "measure on this host and add it explicitly"
+    )
+
+
 BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "fault": ("aggregate fault/restart matrices (TransitionDesign:1469-1475)", [
         ("v1 lifecycle fault and restart matrices",
@@ -69,10 +96,11 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), "400 passed"),
+         lib("checked_artifact::"), _fault_count("400 passed", "410 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
-             "--skip", "workspace_ops::merge::v1_lifecycle::"), "926 passed"),
+             "--skip", "workspace_ops::merge::v1_lifecycle::"),
+         _fault_count("932 passed", "933 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         ("frozen predicate registry",
