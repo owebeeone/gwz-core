@@ -213,8 +213,22 @@ jobs:
             echo "this tag predates the R4b-G aggregate gate driver; skipping the release-lane batteries."
             exit 0
           fi
-          python scripts/checks/run_r4bg_aggregate_gates.py \
-            fault byte-equivalence:2 unknown-field privacy
+          # The checkout is the TAG's tree, so the driver and its count pins
+          # are frozen with the release. Tags cut before per-OS fault pins
+          # (gwz-core 1bcb925: _fault_count, darwin 400/932 vs linux 410/933)
+          # carry Darwin-only counts that can never match a Linux runner —
+          # v0.11.0's verify-3 (run 32960235595) measured exactly that. Same
+          # skip-loudly convention as the presence guard above: the fault
+          # battery is withheld for such tags with the reason stated; the
+          # remaining selection still runs and counts.
+          SELECTION="fault byte-equivalence:2 unknown-field privacy"
+          if ! grep -q "_fault_count" scripts/checks/run_r4bg_aggregate_gates.py; then
+            echo "this tag's driver predates per-OS fault-battery count pins (no _fault_count);"
+            echo "its Darwin-measured counts cannot match a Linux runner. Skipping the fault"
+            echo "battery for this tag; the Test step above already ran the full suite green."
+            SELECTION="byte-equivalence:2 unknown-field privacy"
+          fi
+          python scripts/checks/run_r4bg_aggregate_gates.py $SELECTION
       # NOT WIRED HERE, deliberately — the two workspace-root-reading checkers,
       # same blocker and same cure as recorded in checked-artifact-boundary.yml:
       #   * check_m4_scenario_map.py — `MAP_DOC = ROOT.parent / "dev-docs" /
