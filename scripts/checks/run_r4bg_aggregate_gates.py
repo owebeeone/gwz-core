@@ -24,8 +24,11 @@ split `GwzM5-8R4bG-Evidence.md` §3.1 records -- not just the two v1_lifecycle
 commands. It ran only those two until the R4b-G correctness/evidence duals
 (findings C-5 and P3-5) measured the gap: the battery is named for the
 aggregate fault gate, and the `checked_artifact::` 165-key fault census row 2.1
-counts toward that gate is 400 of those tests. Each partition stays inside the
-600 s per-command budget that forced §3.1's split in the first place.
+counts toward that gate was 400 of those tests at the split §3.1 records. The
+four numbers above are that recorded split and are not re-derived here; the live
+per-OS counts each command must print are the ones `_fault_count` pins. Each
+partition stays inside the 600 s per-command budget that forced §3.1's split in
+the first place.
 
 A full pass is ~27 min, dominated by the call-graph compiler probes and the
 release-profile root fault matrix; `battery:index` exists so a host with a
@@ -77,6 +80,24 @@ def _fault_count(darwin: str, linux: str) -> str:
     them. Any other host fails loudly here rather than inheriting a count
     measured elsewhere -- the release-train lesson (activation record
     S17; the Windows count-pin derivation) applied to this driver.
+
+    R2-E Phase E1 Step E1.2 moves the checked_artifact:: partition by the
+    eight tests of `namespace/tests_cleanup_matrix.rs` (the cleanup fault
+    matrix, both target variants, plus the repeated-boundary,
+    single-crossing and one-alias convergence rows). The tests are
+    unconditional -- no cfg gate -- so the move is +8 on every host.
+
+      * darwin 400 -> 408: EXECUTED on this step's host
+        (`cargo test --lib -p gwz-core checked_artifact::` = "408 passed"),
+        together with the remainder measured unchanged at "932 passed",
+        which also re-confirms that pin's FIRST-DISPATCH-EXPECTED value.
+      * linux 410 -> 418: FIRST-DISPATCH-EXPECTED, derived from the +8 and
+        NOT measured by this step. It is the lane owner's to execute at the
+        landing; if the Linux battery reports another number, that measured
+        number wins over this derivation.
+
+    The remainder pins do not move: all eight new tests are inside the
+    checked_artifact:: partition.
     """
     if sys.platform == "darwin":
         return darwin
@@ -96,7 +117,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("400 passed", "410 passed")),
+         lib("checked_artifact::"), _fault_count("408 passed", "418 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),

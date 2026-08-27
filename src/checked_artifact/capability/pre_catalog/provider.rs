@@ -98,8 +98,16 @@ pub(in crate::checked_artifact::capability::pre_catalog) use mutation::{
 /// R2-D Phase 2 Step 2.2. The retained action namespace is the only namespace
 /// capability that leaves this owner, and it carries no path and no raw
 /// mutation surface (amendment §7 :576-577).
+///
+/// R2-E Phase E1 Step E1.1 adds the cleanup worklist's owner-private lifecycle
+/// surface, driven by the `namespace` owner exactly as the E12/E13 edges are
+/// (DECISION C-2). Same rule as the rows above: what leaves this owner is a
+/// capability plus already-frozen protocol values, never a path and never a raw
+/// mutation surface.
 pub(in crate::checked_artifact) use namespace_mutation::{
     ActionNamespaceEdgeV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
+    observe_cleanup_completion, observe_cleanup_retirement, observe_cleanup_row_facts,
+    observe_cleanup_worklist_row, write_cleanup_worklist_scratch,
 };
 pub(in crate::checked_artifact) use platform::HostPlatform;
 pub(in crate::checked_artifact::capability::pre_catalog) use retained::RetainedPlatformRoot;

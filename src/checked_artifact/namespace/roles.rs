@@ -7,7 +7,7 @@ use super::{ActionBinding, action_destination};
 use crate::checked_artifact::capability::AsciiComponent;
 use crate::checked_artifact::protocol::{
     ActionSlotV1, BarrierOrdinalV1, BaseActionSlotV1, BootstrapOrdinalV1, CleanupAliasV1,
-    RecordDigestV1, ScheduleErrorV1,
+    ProtocolRecordKindV1, RecordDigestV1, ScheduleErrorV1,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,12 +57,51 @@ impl PublishDestination {
 pub(in crate::checked_artifact) struct CleanupRetirementDestination {
     pub(super) binding: ActionBinding,
     pub(super) alias: CleanupAliasV1,
+    pub(super) source: ActionDestination,
     pub(super) destination: ActionDestination,
 }
 
 impl CleanupRetirementDestination {
     pub(in crate::checked_artifact) const fn alias(&self) -> CleanupAliasV1 {
         self.alias
+    }
+
+    /// The scheduled row this alias retires **out of**.
+    ///
+    /// R2-E Phase E1 Step E1.1. The three aliases are the three rows the
+    /// coordinator's own schedule facade reserves them for — `Source` for the
+    /// request's expected leaf, `Goal` for its goal leaf, `Authority` for the
+    /// action's authority record (`coordinator/schedule.rs:39-49`, the masks
+    /// `0b111` / `0b110` / `0b101`) — so the source name is derived from the
+    /// same frozen `BaseActionSlotV1` vocabulary as the destination and nothing
+    /// is minted (`namespace/mod.rs`, `cleanup_retirement`).
+    pub(in crate::checked_artifact) fn source_leaf(&self) -> &AsciiComponent {
+        self.source.leaf()
+    }
+
+    /// The scheduled `Retired*Alias` row this alias retires **into**.
+    pub(in crate::checked_artifact) fn leaf(&self) -> &AsciiComponent {
+        self.destination.leaf()
+    }
+
+    /// The frozen record bound the retirement's source read is capped by.
+    ///
+    /// **R2-E E1.1 STATES this; the amendment pair does not.** DECISION C-1
+    /// routes every alias retirement through the Step-2.2 backend, whose
+    /// `execute_edge` reads its source bounded by a *record* bound and never by
+    /// the object's own length (`namespace_mutation.rs`, ConsumerCheckpoint §8
+    /// :236-237). The `Authority` alias retires a protocol record and could take
+    /// that record's kind, but `Source` and `Goal` retire the request's own
+    /// leaves, for which the frozen vocabulary carries no record kind at all
+    /// (`leaf_observation.rs:12-14`: "This file names no protocol record kind, so
+    /// a payload bound can never be a record bound"). One bound is therefore
+    /// stated for all three, and it is the only bound this family owns: its own
+    /// `CleanupWorklist` record bound, 16 KiB (`protocol/codec.rs:62`). The
+    /// consequence is explicit — an alias row above that bound is a typed
+    /// refusal rather than a retirement — and it is an input to the E4 consumer
+    /// conversion, which is what will first place real payloads in these rows.
+    pub(in crate::checked_artifact) const fn source_bound(&self) -> ProtocolRecordKindV1 {
+        ProtocolRecordKindV1::CleanupWorklist
     }
 }
 

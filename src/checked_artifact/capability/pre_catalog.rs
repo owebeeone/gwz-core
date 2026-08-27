@@ -27,8 +27,15 @@ pub(in crate::checked_artifact) use provider::HostPlatform;
 pub(in crate::checked_artifact) use provider::retain_managed_parent_at_for_test;
 /// R2-D Phase 2 Step 2.2 — the retained action-namespace capability and the
 /// role-typed edge selector the `namespace` owner drives it with.
+///
+/// R2-E Phase E1 Step E1.1 adds the cleanup worklist's lifecycle surface over
+/// that same capability (DECISION C-2, amendment §2.2): the worklist's scratch
+/// write, the published row's proof, each alias row's physical fact pair, each
+/// retirement's post-edge proof, and the whole-worklist completion proof.
 pub(in crate::checked_artifact) use provider::{
     ActionNamespaceEdgeV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
+    observe_cleanup_completion, observe_cleanup_retirement, observe_cleanup_row_facts,
+    observe_cleanup_worklist_row, write_cleanup_worklist_scratch,
 };
 /// R2-D Phase 2 Step 2.3 — the retained managed-parent capability the
 /// `namespace` owner drives edges E15 and E16 with, plus R2-D Phase 3 Step

@@ -156,7 +156,11 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "4e06f84d1b53f35120c222fdf0ac52e60ecedbe1ca6d1785ebb96805b24fb06b",
+    # R2-E Phase E1 Step E1.2 re-pins this tree: Step E1.1 added the eleven
+    # `cleanup.*` injection sites to `provider/namespace_mutation.rs` and the
+    # two re-export hops that carry their entry points out of the owner
+    # (`provider.rs`, `pre_catalog.rs`). No new source file, no new module edge.
+    "checked_artifact/capability/pre_catalog.rs": "bfab7b54b2b08822c9c8de14910f2fb9722d52a35b46e398162162c648eb9b96",
     "checked_artifact/catalog.rs": "d02ee18a46b6c83d72279bdd0120f637b6e582eaeef59a4000e1017009ba4efa",
     "checked_artifact/platform.rs": "febdc28b2f420dae51b7d23479c8de5d20ff86c626c1b2fcb5024f4a30645ab1",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",

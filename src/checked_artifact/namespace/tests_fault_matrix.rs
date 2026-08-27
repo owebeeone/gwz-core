@@ -168,7 +168,13 @@ impl Fixture {
             .join(RootEntryNameV1::ActiveAction(action).name())
     }
 
-    fn action_children(&self, variant: TargetVariantV1, action: ActionDigestV1) -> Vec<String> {
+    /// The action directory's sorted child names. Widened from private for R2-E
+    /// Step E1.2's cleanup matrix, which censuses the same directory.
+    pub(super) fn action_children(
+        &self,
+        variant: TargetVariantV1,
+        action: ActionDigestV1,
+    ) -> Vec<String> {
         let mut names = fs::read_dir(self.action_directory(variant, action))
             .expect("the admitted action directory must exist")
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())

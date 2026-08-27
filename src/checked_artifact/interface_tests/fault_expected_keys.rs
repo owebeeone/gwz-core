@@ -377,9 +377,23 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
         ),
         30,
     ),
+    // R2-E Phase E1 converts every edge this family names. Step 4.1 converted no
+    // `cleanup.*` edge and re-reserved all eleven keys for R2-E
+    // (`GwzM5-8R2DInterfaceFreeze.md` §3.5, the dated non-activation record and
+    // the 2026-08-27 activation record annotating it). The eleven are the
+    // boundaries of the cleanup worklist's own record lifecycle and of the three
+    // `CleanupAliasV1` retirements, and all eleven have injection sites in
+    // `capability/pre_catalog/provider/namespace_mutation.rs` — DECISION C-2:
+    // every cleanup edge is inside the one retained action directory that file
+    // already owns — plus executed interruption/restart/convergence rows on both
+    // target variants in `namespace/tests_cleanup_matrix.rs`. The two renames
+    // themselves stay Step 2.2's `namespace.publish_no_replace` /
+    // `namespace.retire_exact` boundaries (DECISION C-1), so `worklist_publish`
+    // and `alias_retire` name the post-edge states, exactly as
+    // `managed_bootstrap.prior_generation_retire` does.
     (
         "cleanup",
-        FaultFamilyActivationV1::Reserved("R2-D phase 4 (legacy leaf edge conversion)"),
+        FaultFamilyActivationV1::Executed("R2-E phase E1 (cleanup worklist lifecycle)"),
         11,
     ),
     (
@@ -398,7 +412,8 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
 /// injection sites today — three holding `catalog_bootstrap.*` sites,
 /// `admission_mutation.rs` holding all nineteen `admission.*` sites
 /// converted by R2-D Phase 1 Step 1.3, and `namespace_mutation.rs` holding all
-/// eleven `namespace.*` sites converted by R2-D Phase 2 Step 2.2, and
+/// eleven `namespace.*` sites converted by R2-D Phase 2 Step 2.2 **and all
+/// eleven `cleanup.*` sites converted by R2-E Phase E1 Step E1.1**, and
 /// `leaf_observation.rs` holding all eleven `durable_leaf.*` sites converted by
 /// R2-D Phase 2 Step 2.1, and the two sources holding the thirteen `record.*`
 /// sites converted by R2-D Phase 2 Step 2.4 — `protocol/authority_record.rs`
@@ -410,6 +425,13 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
 /// `runtime.*` edges are executed through the separate
 /// `bootstrap/runtime/fault.rs` mechanism, so they are executed without a key
 /// reference here (`GwzM5-8R2C2OwnerInterface-ReviewState-2.md:160-169`).
+///
+/// **The declared file count does not move at R2-E Step E1.2.** DECISION C-2
+/// places every `cleanup.*` site in `namespace_mutation.rs`, which is already a
+/// declared entry below, so this list stays at the nine files freeze `:528`
+/// records. The R2-E lane's single declared-source move is E2's, with
+/// `barrier_mutation.rs` (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §6.1:
+/// nine → nine → ten → ten across E1-E3).
 ///
 /// Completeness of this list is pinned, not asserted:
 /// `the_declared_injection_sources_are_every_production_source_holding_sites`
@@ -446,6 +468,15 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
     // capabilities and never mutates, so every durable namespace edge is
     // announced from the owner-private provider mutation file, exactly as
     // `admission/driver.rs` defers to `admission_mutation.rs`.
+    //
+    // R2-E Phase E1 Step E1.1: all eleven `cleanup.*` sites too. Same rule, same
+    // file, and no new declared source — DECISION C-2 (`GwzM5-8R2E-Semantics\
+    // Amendment-DRAFT.md` §2.2): every cleanup edge is inside the one retained
+    // action directory this file's `RetainedActionNamespaceV1` already owns, so
+    // the family needs no second retained capability and mints no second owner
+    // file. The cleanup entry points `namespace/host.rs` gained for the worklist
+    // lifecycle announce nothing themselves, exactly as its Step-3.1b intent
+    // entry points defer to `managed_mutation.rs`.
     (
         "capability/pre_catalog/provider/namespace_mutation.rs",
         include_str!("../capability/pre_catalog/provider/namespace_mutation.rs"),
@@ -738,6 +769,9 @@ fn the_declared_injection_sources_are_every_production_source_holding_sites() {
 /// added `record`, with its thirteen injection sites split across the bounded
 /// parse owner and the binding owner, and the executed matrix on both target
 /// variants (`capability/pre_catalog/provider/tests_authority_record_matrix.rs`).
+/// R2-E Phase E1 added `cleanup`, with its eleven injection sites in the same
+/// action-directory owner Step 2.2 uses and the executed matrix on both target
+/// variants (`namespace/tests_cleanup_matrix.rs`).
 /// Every remaining family stays reserved for the package the frozen map names
 /// (`GwzM5-8R2DInterfaceFreeze.md` §3.5).
 #[test]
@@ -753,6 +787,7 @@ fn only_the_families_with_executed_matrices_are_executed_today() {
         [
             "admission",
             "catalog_bootstrap",
+            "cleanup",
             "durable_leaf",
             "namespace",
             "record",

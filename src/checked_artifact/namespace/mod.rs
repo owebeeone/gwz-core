@@ -20,6 +20,9 @@ mod roles;
 pub(super) mod test_support;
 #[cfg(test)]
 mod tests_backend;
+/// R2-E Phase E1 Step E1.2 — the executed `cleanup.*` matrix.
+#[cfg(test)]
+mod tests_cleanup_matrix;
 #[cfg(test)]
 mod tests_fault_matrix;
 #[cfg(test)]
@@ -139,10 +142,22 @@ impl<Implementation: RawNamespaceBackend> ActionNamespace<Implementation> {
             CleanupAliasV1::Goal => BaseActionSlotV1::RetiredGoalAlias,
             CleanupAliasV1::Authority => BaseActionSlotV1::RetiredAuthorityAlias,
         };
+        // R2-E Phase E1 Step E1.1 — the row this alias retires *out of*. The
+        // pairing is the coordinator's own: `derive_new_reservation` reserves
+        // `Source` for the request's expected leaf, `Goal` for its goal leaf and
+        // `Authority` for the action's authority record
+        // (`coordinator/schedule.rs:39-49`). Both names come from the same frozen
+        // `BaseActionSlotV1` vocabulary, so this mints nothing.
+        let source_slot = match alias {
+            CleanupAliasV1::Source => BaseActionSlotV1::SourcePayload,
+            CleanupAliasV1::Goal => BaseActionSlotV1::GoalPayload,
+            CleanupAliasV1::Authority => BaseActionSlotV1::Authority,
+        };
         let binding = self.binding();
         Ok(CleanupRetirementDestination {
             binding,
             alias,
+            source: action_destination(binding, ActionSlotV1::Base(source_slot)),
             destination: action_destination(binding, ActionSlotV1::Base(slot)),
         })
     }

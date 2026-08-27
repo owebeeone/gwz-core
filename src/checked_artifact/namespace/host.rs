@@ -45,13 +45,15 @@ use crate::checked_artifact::capability::{
     ActionNamespaceEdgeV1, AsciiComponent, CanonicalPathIdentityV1, CheckedFsError,
     DurableObjectIdentityV1, ManagedInstalledFactsV1, ManagedIntentEdgeV1, ManagedRetiredFactsV1,
     ObservedManagedObjectV1, ObservedNamespaceObjectV1, RetainedActionNamespaceV1,
-    RetainedManagedParentV1, observe_managed_intent_row, read_managed_intent_row,
-    write_managed_intent_scratch,
+    RetainedManagedParentV1, observe_cleanup_completion, observe_cleanup_retirement,
+    observe_cleanup_row_facts, observe_cleanup_worklist_row, observe_managed_intent_row,
+    read_managed_intent_row, write_cleanup_worklist_scratch, write_managed_intent_scratch,
 };
 use crate::checked_artifact::catalog::OpaqueRetainedCatalogV1;
 use crate::checked_artifact::protocol::{
-    AdmittedActionV1, BarrierOrdinalV1, OwnershipMarkerV1, ProtocolRecordKindV1, RecordDigestV1,
-    managed_marker_name,
+    AdmittedActionV1, BarrierOrdinalV1, BoundCleanupWorklistV1, CleanupAliasV1,
+    CleanupPhysicalFactV1, DurableLeafFingerprintV1, OwnershipMarkerV1, ProtocolRecordKindV1,
+    RecordDigestV1, managed_marker_name,
 };
 
 /// Opaque proof token carried by every retained namespace capability this
@@ -341,6 +343,102 @@ impl ActionNamespace<HostActionNamespaceV1> {
         if slots.binding != self.binding() {
             return Err(binding_error(
                 "bootstrap generation slots do not belong to the admitted action",
+            ));
+        }
+        Ok(())
+    }
+
+    /// R2-E Phase E1 Step E1.1 — the cleanup worklist's scheduled scratch row,
+    /// written through the provider owner.
+    ///
+    /// The leaf is `BaseActionSlotV1::RecordScratch`, taken from this action's
+    /// own publish role rather than from the caller (DECISION C-3 as simplified
+    /// at E0.2b §4), so a consumer cannot name a row the schedule did not
+    /// reserve. **This owner still holds no injection site:** the three scratch
+    /// boundaries are announced from `namespace_mutation.rs`, exactly as the
+    /// E12/E13 and E15/E16 ones are.
+    pub(in crate::checked_artifact) fn write_cleanup_worklist_scratch(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), CheckedFsError> {
+        let scratch = self.publish_destination(super::PublishRoleV1::RecordScratch);
+        write_cleanup_worklist_scratch(&self.backend.retained, scratch.leaf(), bytes)
+    }
+
+    /// R2-E E1.1 — the published worklist row, bound to this action's resident
+    /// reservation, and the two boundaries around it.
+    pub(in crate::checked_artifact) fn observe_cleanup_worklist_row(
+        &self,
+    ) -> Result<BoundCleanupWorklistV1, CheckedFsError> {
+        let worklist = self.publish_destination(super::PublishRoleV1::CleanupWorklist);
+        observe_cleanup_worklist_row(
+            &self.backend.retained,
+            worklist.leaf(),
+            self.admitted_action().reservation(),
+        )
+    }
+
+    /// R2-E E1.1 — one worklist row's `(source, destination)` physical fact
+    /// pair, over the two schedule-derived leaves the alias resolves between.
+    pub(in crate::checked_artifact) fn observe_cleanup_row_facts(
+        &self,
+        retirement: &super::CleanupRetirementDestination,
+    ) -> Result<(CleanupPhysicalFactV1, CleanupPhysicalFactV1), CheckedFsError> {
+        self.validate_cleanup_retirement(retirement)?;
+        observe_cleanup_row_facts(
+            &self.backend.retained,
+            retirement.source_leaf(),
+            retirement.leaf(),
+        )
+    }
+
+    /// R2-E E1.1 — the post-edge proof of one alias retirement, and the three
+    /// boundaries around it.
+    pub(in crate::checked_artifact) fn observe_cleanup_retirement(
+        &self,
+        retirement: &super::CleanupRetirementDestination,
+        expected: &DurableLeafFingerprintV1,
+    ) -> Result<(), CheckedFsError> {
+        self.validate_cleanup_retirement(retirement)?;
+        observe_cleanup_retirement(&self.backend.retained, retirement.leaf(), expected)
+    }
+
+    /// R2-E E1.1 — the whole-worklist completion proof.
+    ///
+    /// The reserved alias set comes from this action's own schedule, so an alias
+    /// the schedule did not reserve is skipped rather than fabricated
+    /// (`namespace/mod.rs`, `cleanup_retirement` refuses it).
+    pub(in crate::checked_artifact) fn observe_cleanup_completion(
+        &self,
+    ) -> Result<(), CheckedFsError> {
+        let worklist = self.publish_destination(super::PublishRoleV1::CleanupWorklist);
+        let mut rows = Vec::new();
+        for alias in CleanupAliasV1::ALL {
+            if let Ok(retirement) = self.cleanup_retirement(alias) {
+                rows.push((
+                    alias,
+                    retirement.source_leaf().clone(),
+                    retirement.leaf().clone(),
+                ));
+            }
+        }
+        observe_cleanup_completion(
+            &self.backend.retained,
+            worklist.leaf(),
+            self.admitted_action().reservation(),
+            &rows,
+        )
+    }
+
+    /// A cleanup destination must belong to this admitted action, for the same
+    /// reason every other scheduled entry point re-proves its binding.
+    fn validate_cleanup_retirement(
+        &self,
+        retirement: &super::CleanupRetirementDestination,
+    ) -> Result<(), CheckedFsError> {
+        if retirement.binding != self.binding() {
+            return Err(binding_error(
+                "cleanup retirement does not belong to the admitted action",
             ));
         }
         Ok(())
