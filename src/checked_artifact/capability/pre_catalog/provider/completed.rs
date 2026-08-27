@@ -302,12 +302,26 @@ fn retain_file(
     Ok(RetainedCatalogFileV1 { handle, identity })
 }
 
+/// T1 widening gate 2 of 3 (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md`
+/// §2.2). This matched `EmptyDirectory` alone, so it refused a
+/// retired-root-populated catalog independently of `completed_record` and a
+/// `completed_record`-only widening would have left it standing.
+///
+/// The identity retained is the same one in both arms — the retired root's own
+/// — so what the retention proves is unchanged; only the reading of the root
+/// widens. The count and infrastructure-row checks stay with
+/// `interior::retired_root_identity`, which the predicate this retention runs
+/// behind has already applied (`retain_completed_catalog` refuses before it
+/// reaches here).
 fn retain_directory(
     directory: &cap_std::fs::Dir,
     interior: &super::RawCatalogInteriorObservationV1,
     slot: InfrastructureSlotV1,
 ) -> Result<RetainedCatalogDirectoryV1, CheckedFsError> {
-    let Some(RawCatalogInteriorFactV1::EmptyDirectory { identity, .. }) = row(interior, slot)
+    let Some(
+        RawCatalogInteriorFactV1::EmptyDirectory { identity, .. }
+        | RawCatalogInteriorFactV1::RetiredActionRoot { identity, .. },
+    ) = row(interior, slot)
     else {
         return Err(CheckedFsError::ambiguous(
             "completed catalog",
@@ -375,12 +389,25 @@ fn require_named_file_identity(
     Ok(())
 }
 
+/// T1 widening gate 3 of 3 (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md`
+/// §2.2). This runs on **every** `revalidate`, so before the widening the first
+/// terminal retirement broke revalidation even for a caller that never
+/// consulted `completed_record` — the third independent `EmptyDirectory`
+/// requirement the E0.2 draft's single-gate package would have missed.
+///
+/// What it proves is unchanged: the freshly observed named slot object is still
+/// the retained one, compared by identity. `revalidate`'s own handle loops
+/// (`:204-225`) `fstat` the retained handles and are unaffected by a child
+/// addition, so they were never gates.
 fn require_named_directory_identity(
     interior: &super::RawCatalogInteriorObservationV1,
     slot: InfrastructureSlotV1,
     retained: &IdentityV1,
 ) -> Result<(), CheckedFsError> {
-    let Some(RawCatalogInteriorFactV1::EmptyDirectory { identity, .. }) = row(interior, slot)
+    let Some(
+        RawCatalogInteriorFactV1::EmptyDirectory { identity, .. }
+        | RawCatalogInteriorFactV1::RetiredActionRoot { identity, .. },
+    ) = row(interior, slot)
     else {
         return Err(CheckedFsError::ambiguous(
             "completed catalog",

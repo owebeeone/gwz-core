@@ -20,9 +20,10 @@ use crate::checked_artifact::catalog_names::CatalogPrivateNameV1;
 use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, ActionSlotV1, BaseActionSlotV1, CatalogBootstrapRecordV1,
     CatalogRootRowCensusV1, CatalogRootRowClassV1, InfrastructureRecordV1, InfrastructureSlotV1,
-    MAX_ACTION_SLOTS, MAX_ACTIVE_ACTION_DIRS, MAX_INFRASTRUCTURE_ENTRIES, MAX_ROOT_ENTRIES,
-    ObservedActionDirectoryV1, OwnershipMarkerV1, ProtocolRecordKindV1, RecordObservationV1,
-    ScratchBytesV1, classify_expected_prefix, decode_catalog_bootstrap_record, managed_marker_name,
+    MAX_ACTION_SLOTS, MAX_ACTIVE_ACTION_DIRS, MAX_INFRASTRUCTURE_ENTRIES, MAX_RETIRED_ACTION_DIRS,
+    MAX_ROOT_ENTRIES, ObservedActionDirectoryV1, OwnershipMarkerV1, ProtocolRecordKindV1,
+    RecordObservationV1, ScratchBytesV1, classify_expected_prefix, decode_catalog_bootstrap_record,
+    managed_marker_name,
 };
 
 const ROAMING_ANCHOR_BYTES: &[u8] = b"GWZ-ROAMING-ANCHOR-V1\n";
@@ -233,6 +234,19 @@ pub(super) fn staging_plan(
         Some(RawCatalogInteriorFactV1::EmptyDirectory {
             durable_identity, ..
         }) => durable_identity,
+        // T1's widening is deliberately **not** applied here, and the arm is
+        // preserved by name rather than left to the catch-all below
+        // (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §2.2, "A fourth
+        // surface E3.1 must preserve deliberately, not widen"). A catalog
+        // being *built* must not find action rows already retired into it: the
+        // three widened gates all read a catalog that is already complete,
+        // whereas this plan decides whether an incomplete staging interior may
+        // be adopted, and adopting one carrying retired action rows would
+        // publish a live catalog with an unexplained retirement history. Same
+        // posture as the `ActionAdmission*` triad's refusal above.
+        Some(RawCatalogInteriorFactV1::RetiredActionRoot { .. }) => {
+            return StagingPlanV1::Other;
+        }
         _ => return StagingPlanV1::Other,
     };
     let roaming = match file_prefix(interior, Slot::RoamingAnchorHome, ROAMING_ANCHOR_BYTES) {
@@ -346,7 +360,17 @@ pub(super) fn completed_record(
     if any_present(interior, &[Slot::CatalogAnchorB]) {
         return None;
     }
-    let retired = empty_directory_identity(interior, Slot::RetiredActions)?;
+    // T1 widening gate 1 of 3 (E0.2b §2.2). This was
+    // `empty_directory_identity(interior, Slot::RetiredActions)?`, which
+    // returned `Some` only for an *empty* retired root — so the catalog became
+    // unobservable, and therefore unrecoverable, at its own first terminal
+    // retirement. `retired_root_identity` accepts the same empty root plus a
+    // populated one whose every child is a `RootEntryNameV1::ActiveAction` row
+    // and whose count is within `MAX_RETIRED_ACTION_DIRS`. The identity it
+    // returns is the retired root's own durable identity in both arms, which a
+    // child addition does not change, so `RetiredActionsDescriptor` and
+    // `CatalogFormat` stay byte-identical across the widening.
+    let retired = retired_root_identity(interior)?;
     let roaming = exact_file_identity(interior, Slot::RoamingAnchorHome, ROAMING_ANCHOR_BYTES)?;
     let anchor = exact_file_identity(interior, Slot::CatalogAnchorA, CATALOG_ANCHOR_BYTES)?;
     let infrastructure = InfrastructureRecordV1::owner_issue_for_catalog(
@@ -463,15 +487,32 @@ fn observe_slot(
             .map_err(|source| CheckedFsError::io("open catalog interior directory", source))?;
         let identity = platform.dir_identity(&child)?;
         if probe_empty_directory {
-            let mut entries = child
-                .entries()
-                .map_err(|source| CheckedFsError::io("enumerate retired-action root", source))?;
-            if entries.next().is_none() {
+            let empty = {
+                let mut entries = child.entries().map_err(|source| {
+                    CheckedFsError::io("enumerate retired-action root", source)
+                })?;
+                entries.next().is_none()
+            };
+            if empty {
                 return Ok(RawCatalogInteriorFactV1::EmptyDirectory {
                     identity: encode_identity(&identity),
                     durable_identity: identity.durable().clone(),
                 });
             }
+            // T1 widening (E0.2b §2, AUTHORIZED; the freeze's own Class 2
+            // shape, `:1443-1450` — "what Phase 1 must extend is the
+            // *provider's reading* of that vocabulary, not the vocabulary").
+            // A populated retired root is read bounded through this same
+            // classifier, so its children are classified rather than merely
+            // counted: `exact_row` returns `ActiveAction` for an
+            // `action-<hex>-v1` row and refuses every other child outright.
+            let inner = observe(&child, platform)?;
+            return Ok(RawCatalogInteriorFactV1::RetiredActionRoot {
+                identity: encode_identity(&identity),
+                durable_identity: identity.durable().clone(),
+                infrastructure_rows: inner.rows.len(),
+                retired_action_dirs: inner.action_rows.len(),
+            });
         }
     } else if metadata.is_file() && !metadata.is_symlink() {
         let mut options = OpenOptions::new();
@@ -805,14 +846,57 @@ fn exact_file_identity(
     }
 }
 
-fn empty_directory_identity(
+/// The `RetiredActions` root's own durable identity, under T1's widened
+/// reading (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §2, both axes
+/// concurring; the freeze's Class 2 sanction `:1443-1450`).
+///
+/// Two arms, and only two: the empty root every catalog is created with
+/// (`directory_mutation.rs`'s single `CreateRetiredActions` arm), and a
+/// populated one whose children are **exclusively**
+/// `RootEntryNameV1::ActiveAction` rows.
+///
+/// **This bound is checked explicitly and is not inherited.** The reused
+/// reader's own caps are `MAX_INTERIOR_ENTRIES` (= `MAX_ROOT_ENTRIES` = 74)
+/// and `MAX_ACTIVE_ACTION_DIRS` (= 64) — neither of them
+/// `MAX_RETIRED_ACTION_DIRS`. They are numerically safe today only because
+/// `bounds.rs:1` and `:2` are both 64, which silently couples the retired-root
+/// bound to the active one; the explicit comparison below is what makes a
+/// future edit to either constant fail closed here instead of decoupling them
+/// unnoticed (E0.2b §3.2 ground 3, Code round-2 [P3-R1]).
+fn retired_root_identity(
     interior: &RawCatalogInteriorObservationV1,
-    slot: InfrastructureSlotV1,
 ) -> Option<crate::checked_artifact::capability::DurableObjectIdentityV1> {
-    match row(interior, slot)? {
+    match row(interior, InfrastructureSlotV1::RetiredActions)? {
         RawCatalogInteriorFactV1::EmptyDirectory {
             durable_identity, ..
         } => Some(durable_identity.clone()),
+        RawCatalogInteriorFactV1::RetiredActionRoot {
+            durable_identity,
+            infrastructure_rows,
+            retired_action_dirs,
+            ..
+        } if *infrastructure_rows == 0 && *retired_action_dirs <= MAX_RETIRED_ACTION_DIRS => {
+            Some(durable_identity.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The bounded count of retired action directories resident under the catalog's
+/// `RetiredActions` root, for the callers that charge the frozen retirement
+/// credit against it (`protocol/bounds.rs` `CatalogOccupancyV1`). `None` means
+/// the retired root is not readable as a retired root at all, which is the same
+/// fact [`completed_record`] refuses on.
+pub(super) fn retired_action_dirs(interior: &RawCatalogInteriorObservationV1) -> Option<usize> {
+    match row(interior, InfrastructureSlotV1::RetiredActions)? {
+        RawCatalogInteriorFactV1::EmptyDirectory { .. } => Some(0),
+        RawCatalogInteriorFactV1::RetiredActionRoot {
+            infrastructure_rows,
+            retired_action_dirs,
+            ..
+        } if *infrastructure_rows == 0 && *retired_action_dirs <= MAX_RETIRED_ACTION_DIRS => {
+            Some(*retired_action_dirs)
+        }
         _ => None,
     }
 }

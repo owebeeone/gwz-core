@@ -160,7 +160,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     # `cleanup.*` injection sites to `provider/namespace_mutation.rs` and the
     # two re-export hops that carry their entry points out of the owner
     # (`provider.rs`, `pre_catalog.rs`). No new source file, no new module edge.
-    "checked_artifact/capability/pre_catalog.rs": "bfab7b54b2b08822c9c8de14910f2fb9722d52a35b46e398162162c648eb9b96",
+    "checked_artifact/capability/pre_catalog.rs": "e2bdfb72e10e24af874b021423d5ac9a0ccb6b9011e8d79cfee00a221d6d5271",
     "checked_artifact/catalog.rs": "d02ee18a46b6c83d72279bdd0120f637b6e582eaeef59a4000e1017009ba4efa",
     "checked_artifact/platform.rs": "febdc28b2f420dae51b7d23479c8de5d20ff86c626c1b2fcb5024f4a30645ab1",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",

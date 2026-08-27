@@ -219,6 +219,30 @@ pub(super) enum RawCatalogInteriorFactV1 {
         identity: Vec<u8>,
         durable_identity: DurableObjectIdentityV1,
     },
+    /// The T1 widening's fact (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md`
+    /// §2, both axes concurring): a **populated** `RetiredActions` root, read
+    /// bounded through the same classifier the catalog root uses.
+    ///
+    /// It exists because the emptiness probe returns
+    /// [`RawCatalogInteriorFactV1::Other`] for a populated directory, and
+    /// `Other` carries no durable identity — so the completion predicate could
+    /// not have been widened onto it. Minting a *fact* mints no durable
+    /// vocabulary: no record, no slot, no name, no fault key, and the retired
+    /// root's own durable identity is unchanged by a child addition, so
+    /// `RetiredActionsDescriptor` and `CatalogFormat` stay byte-identical
+    /// (E0.2b §2, "T1 is an observer-reading defect").
+    ///
+    /// `infrastructure_rows` is the count of children that classified onto the
+    /// slot-bearing arm. The widened predicate accepts the root **only** when
+    /// it is zero, which is how an infrastructure-slot name planted in the
+    /// retired root refuses rather than being classified into `rows`
+    /// (E0.2b §2.4 item 2).
+    RetiredActionRoot {
+        identity: Vec<u8>,
+        durable_identity: DurableObjectIdentityV1,
+        infrastructure_rows: usize,
+        retired_action_dirs: usize,
+    },
     RegularFile {
         identity: Vec<u8>,
         durable_identity: DurableObjectIdentityV1,
@@ -275,3 +299,6 @@ mod tests_authority_record_matrix;
 mod tests_leaf_fault_matrix;
 #[cfg(test)]
 mod tests_leaf_observation;
+/// R2-E E3.1 precondition — the T1 widening's own rows (E0.2b §2.4 item 4).
+#[cfg(test)]
+mod tests_retired_root;

@@ -19,8 +19,8 @@ use crate::checked_artifact::catalog::OpaqueRetainedCatalogV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
     ActionDirectoryAdmissionV1, AdmissionHandoffDecisionV1, AdmittedActionV1,
-    CatalogAdmissionOwnerV1, MAX_ACTIVE_ACTION_DIRS, ObservedActionDirectoryV1,
-    RecordObservationV1,
+    CatalogAdmissionOccupancyV1, CatalogAdmissionOwnerV1, CatalogOccupancyV1,
+    ObservedActionDirectoryV1, RecordObservationV1,
 };
 
 const ADMISSION_FACT: &str = "action admission";
@@ -101,14 +101,34 @@ pub(super) fn resume_or_admit(
                 // (`provider/publication.rs`), which re-proves the same bound
                 // inside the acquisition window.
                 //
-                // Owed to Phase 4: `CatalogOccupancyV1::can_admit_new`
-                // (`protocol/bounds.rs`) additionally charges the
-                // retirement-credit inequality against the retired root, whose
-                // bounded count this observation does not carry. Wiring it
-                // belongs to the phase that lands retirement; unlike the active
-                // bound, exhausting retirement credit cannot make the catalog
-                // unobservable.
-                if observed.census.active_actions >= MAX_ACTIVE_ACTION_DIRS {
+                // The Phase-4 debt this comment used to record is **paid here**,
+                // by R2-E E3.1 — the phase that lands retirement, exactly as it
+                // said. `CatalogOccupancyV1::can_admit_new` charges the frozen
+                // retirement-credit inequality against the retired root, and
+                // the observation now carries that root's bounded count because
+                // E3.1's T1 widening is what made it readable at all.
+                //
+                // The note's closing clause — "unlike the active bound,
+                // exhausting retirement credit cannot make the catalog
+                // unobservable" — is **refuted on this tree and withdrawn**
+                // (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §2.3): before
+                // the widening a *single* retired child made the catalog
+                // unobservable, and therefore unrecoverable. That is why the
+                // widening is the precondition of this gate rather than a
+                // convenience beside it.
+                //
+                // This is the frozen occupancy type's first production caller.
+                // It is a strict strengthening of the bare active-row stop it
+                // replaces: the same 65th-active-row refusal, plus
+                // `RetiredLimitExceeded` and the credit rule that reserves one
+                // retired slot for every action still outstanding.
+                let occupancy = CatalogOccupancyV1::new(
+                    observed.census.active_actions,
+                    observed.retired_action_dirs,
+                    CatalogAdmissionOccupancyV1::Idle,
+                )
+                .map_err(|_| stop("the catalog root is outside its frozen occupancy bounds"))?;
+                if !occupancy.can_admit_new() {
                     return Err(stop(
                         "the catalog root already holds the frozen active-action budget",
                     ));

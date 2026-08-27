@@ -471,4 +471,16 @@ pub(in crate::checked_artifact) struct ActionAdmissionObservationV1 {
     pub(in crate::checked_artifact) staging: ObservedActionDirectoryV1,
     pub(in crate::checked_artifact) final_directory: ObservedActionDirectoryV1,
     pub(in crate::checked_artifact) census: CatalogRootRowCensusV1,
+    /// The bounded count of retired action directories resident under the
+    /// catalog's `RetiredActions` root.
+    ///
+    /// Added by R2-E E3.1's T1 widening precondition, which is what makes the
+    /// count observable at all: before it, a populated retired root was an
+    /// unidentifiable `Other` fact. It carries the one term
+    /// `CatalogOccupancyV1::can_admit_new` needs and the census cannot supply —
+    /// `CatalogRootRowCensusV1::retired` counts the **catalog root's** two
+    /// `Retired(slot)` rows, a constant 2 in a complete catalog, never the
+    /// retired root's own children (E0.2b §2.3, which strikes the E0.2 draft's
+    /// contrary claim).
+    pub(in crate::checked_artifact) retired_action_dirs: usize,
 }

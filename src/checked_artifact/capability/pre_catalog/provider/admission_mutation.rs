@@ -64,6 +64,17 @@ pub(super) fn observe(
         expected,
         &super::HostPlatform,
     )?;
+    // T1 widening: the retired root's bounded count is now readable, so the
+    // observation carries the one term the frozen retirement credit needs. A
+    // retired root that does not read as a retired root at all is exactly the
+    // fact `completed_record` refuses on, so it is a typed refusal here rather
+    // than a silently defaulted zero.
+    let retired_action_dirs = interior::retired_action_dirs(&fresh).ok_or_else(|| {
+        CheckedFsError::ambiguous(
+            "action admission",
+            "the catalog's retired-action root is not a bounded retired root",
+        )
+    })?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionCapacityCheck);
     Ok(ActionAdmissionObservationV1 {
@@ -72,6 +83,7 @@ pub(super) fn observe(
         staging,
         final_directory: published,
         census: fresh.census,
+        retired_action_dirs,
     })
 }
 

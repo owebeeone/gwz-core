@@ -211,6 +211,23 @@ fn frame_catalog_interior(digest: &mut Sha256, interior: &RawCatalogInteriorObse
                 frame(digest, &[1]);
                 frame(digest, identity);
             }
+            // T1 widening: a populated retired root frames under its own tag
+            // and carries its bounded counts, so the fresh-observation digest
+            // moves when a terminal retirement lands and moves again when the
+            // retired root's shape changes. An empty retired root still frames
+            // as tag 1 with its identity alone, so no already-recorded digest
+            // is disturbed by the widening.
+            RawCatalogInteriorFactV1::RetiredActionRoot {
+                identity,
+                infrastructure_rows,
+                retired_action_dirs,
+                ..
+            } => {
+                frame(digest, &[4]);
+                frame(digest, identity);
+                frame(digest, &(*infrastructure_rows as u64).to_be_bytes());
+                frame(digest, &(*retired_action_dirs as u64).to_be_bytes());
+            }
             RawCatalogInteriorFactV1::RegularFile {
                 identity, bytes, ..
             } => {
