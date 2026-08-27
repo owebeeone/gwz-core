@@ -246,6 +246,24 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
     }
 )
 
+# O13 raw-writer pin (2026-08-27, R2-E E0 landing; `GwzM5-8R2E-Plan.md` §1.1
+# O13, addendum §7.6.1). ConsumerCheckpoint §10 row `:280` forbids a legacy
+# raw writer on the v1 checked store/root/bundle paths, and its "test-gated
+# until A1" gate expired when A1 shipped (2026-08-25). The conversion that
+# discharges the clause is R2-E E4.2/E4.3's; until it lands, the files below
+# are the ACCEPTED RESIDUAL — the complete non-test `durable_fs` surface of
+# `v1_lifecycle/` at the pin date. The set may only SHRINK: a new file naming
+# `durable_fs` under `v1_lifecycle/` fails closed here, and E4.2/E4.3 retire
+# entries to empty deliberately, in their own commits, each retirement taking
+# a dated comment in this pin's established form.
+V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = frozenset(
+    {
+        "workspace_ops/merge/v1_lifecycle/archive.rs",
+        "workspace_ops/merge/v1_lifecycle/store/archive.rs",
+        "workspace_ops/merge/v1_lifecycle/store/rewrite.rs",
+    }
+)
+
 ENTRY_REFERENCES = {
     "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
     "MergeArtifactTransition": {
@@ -991,6 +1009,22 @@ def check(source: Path) -> list[str]:
                     "v1 lifecycle names the v0 persistence seam: "
                     f"{relative} ({token})"
                 )
+    raw_writer_files = set()
+    for path in production_rust_files(source / V1_LIFECYCLE_TREE):
+        relative = path.relative_to(source).as_posix()
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        if re.search(r"\bdurable_fs\b", text):
+            raw_writer_files.add(relative)
+    for relative in sorted(raw_writer_files - V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES):
+        findings.append(
+            "v1 lifecycle gained a raw durable_fs writer outside the O13 "
+            f"accepted residual: {relative}"
+        )
+    for relative in sorted(V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES - raw_writer_files):
+        findings.append(
+            "O13 accepted-residual entry no longer names durable_fs and must "
+            f"be retired from the pin deliberately: {relative}"
+        )
     for relative in sorted(PROTECTED_COMPILER_MODULES):
         raw = (source / relative).read_bytes()
         if forbid not in mask_non_code(raw.decode("utf-8")):
