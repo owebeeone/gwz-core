@@ -426,9 +426,11 @@ pub(super) fn observed_admission_occupancy(
 /// the acquisition window.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the terminal retirement binds two retained parents, two identities, the frozen \
-              bootstrap record, the reservation, and both observed occupancy terms; collapsing \
-              them into a struct would hide which of the two roots each fact belongs to"
+    reason = "the terminal retirement binds two retained parents (catalog root, retired \
+              root), the catalog's durable identity, the frozen bootstrap record, the \
+              reservation, both observed occupancy counts, and the observed admission \
+              occupancy; collapsing them into a struct would hide which of the two roots \
+              each fact belongs to"
 )]
 pub(super) fn retire_action_directory(
     final_directory: &Dir,

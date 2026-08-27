@@ -156,7 +156,7 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "588b105fe39238125c2edefcc8a32ab7b62f1bb9f9471abfe65ba2df14351a49",
+    "checked_artifact/capability/pre_catalog.rs": "4e942331b7461a589bbd8b616afe4f9398e8caa0e5840ce278f6a9b273b3def7",
     # R2-E Step E3 re-pins this tree as well as `pre_catalog.rs`'s: the
     # terminal retirement is forwarded through the opaque retained catalog
     # (`catalog/bootstrap.rs`), which lives under this root. The E0.2b

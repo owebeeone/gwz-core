@@ -55,8 +55,7 @@ use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionSlotV1, BaseActionSlotV1,
     BoundCleanupWorklistV1, CleanupAliasV1, CleanupPhysicalFactV1, CleanupResolutionV1,
     DurableLeafFingerprintV1, ProtocolRecordKindV1, RecordDigestV1,
-    decode_action_capacity_reservation,
-    read_and_bind_cleanup_worklist,
+    decode_action_capacity_reservation, read_and_bind_cleanup_worklist,
 };
 use crate::model::ErrorCode;
 

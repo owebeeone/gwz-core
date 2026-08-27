@@ -91,6 +91,13 @@ def _fault_count(darwin: str, linux: str) -> str:
     Linux leg at landing, exactly as 1bcb925 did for the values above.
     The remainder partition does not move -- every added test is under
     checked_artifact::.
+    E3 LANDING RECONCILE (2026-08-27, lane owner): E1 (+8) and E3 (+17,
+    including the three remediation rows) are landed together on this
+    tree, so the partition pin is their sum over the recorded base.
+    darwin 425 is EXECUTED on the landing host at the reconciled tree
+    ("425 passed"); linux 435 is DERIVED (+25 over the 410 base,
+    cfg-independent) and FIRST-DISPATCH-EXPECTED -- the Platform matrix
+    dispatch at this landing measures it, and a measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -110,7 +117,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("417 passed", "427 passed")),
+         lib("checked_artifact::"), _fault_count("425 passed", "435 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
