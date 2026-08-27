@@ -88,8 +88,20 @@ pub(super) enum DirectoryInteriorExpectationV1<'a> {
     /// table does not assign. E3.1 supplies it and flags the omission rather
     /// than inventing a fourth publication route.
     ///
-    /// It is the narrowest arm that can exist here, and strictly weaker than
-    /// [`Self::AdmissionStaging`] only in the clause that is false by
+    /// **The E3 interior review ruled the arm forced and its shape acceptable,
+    /// and ruled that freeze §4.4's arm table is owed a row for it** — *terminal
+    /// source-interior (the retiring action directory's interior is a lived-in
+    /// action directory, not a staged one) | E7's Phase-4 half | R2-E E3.1* —
+    /// installed by the same dated-annotation mechanism the 2026-08-27 E0
+    /// annotations already use, at the E3 landing. The cross-reference is
+    /// therefore two-way: the table will name this arm, and this arm names the
+    /// table.
+    ///
+    /// It is the narrowest arm that reuses the admission arm's own reader — not
+    /// the narrowest that could exist, since a narrower one could additionally
+    /// require the extra children to be exactly the completed row set, which is
+    /// the shape key #3 computes a few frames earlier. It is strictly weaker
+    /// than [`Self::AdmissionStaging`] only in the clause that is false by
     /// construction: it drives the *same* bounded
     /// `interior::observe_action_interior` over the same frozen
     /// `ActionSlotV1` grammar and requires the same `Exact` resident

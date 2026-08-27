@@ -184,12 +184,20 @@ impl RetainedCompletedCatalogV1 {
     /// (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §8): the retired-action
     /// root, handed to the sibling module that owns the catalog root's edges.
     ///
-    /// It is the same shape [`Self::retain_action_namespace`] already uses and
-    /// carries the same contract — the caller receives a typed capability or a
-    /// sibling-owner handle, **never a path**, and nothing here leaves the
-    /// sealed pre-catalog provider owner: `admission_mutation` is a sibling
-    /// module of this one, not a consumer, exactly as `managed_mutation` is a
-    /// sibling of `namespace_mutation` for `RetainedActionNamespaceV1::handle`.
+    /// **Where each half of the contract comes from.** The *shape* — a `&Dir`
+    /// handed between siblings of `provider/` — is
+    /// `RetainedActionNamespaceV1::handle`'s
+    /// (`namespace_mutation.rs`, `pub(super)`, consumed by `managed_mutation`);
+    /// this accessor is tighter than that precedent, carrying no visibility
+    /// modifier at all, so it is private to this file and the handle reaches
+    /// `admission_mutation` only as a call argument. The *never a path* half is
+    /// [`Self::retain_action_namespace`]'s contract, whose sentence reads: "The
+    /// caller receives the retained namespace capability only — never the
+    /// catalog handle and never a path." That sentence is about a typed
+    /// capability return and does not itself sanction a sibling `&Dir`; the
+    /// `handle` precedent does, and E0.2b §8 names "the retired-root **handle**"
+    /// in terms. Nothing leaves the sealed pre-catalog provider owner:
+    /// `admission_mutation` is a sibling module of this one, not a consumer.
     /// E3.1 mints exactly one forward, and this is it; the family's other five
     /// keys need no forward at all because they read the action directory
     /// through the capability that already owns it.
@@ -217,6 +225,25 @@ impl RetainedCompletedCatalogV1 {
         let retired_resident = self.retired_root().symlink_metadata(name).is_ok();
         let active_resident = self.final_directory.handle.symlink_metadata(name).is_ok();
         if retired_resident {
+            // The corpus's standing convergence idiom: a resumed drive that
+            // finds the row already at its destination returns without
+            // re-crossing the edge's post-boundaries — here key #8's retired-root
+            // flush and key #9's catalog-root barrier. The same shape is
+            // `bootstrap/managed/provider.rs`'s `installed_resident` skip, and
+            // `namespace/tests_fault_matrix.rs`'s
+            // `scheduled_row_is_resident(&retired)` early return. Recorded
+            // because the terminal family is the first to make that window span
+            // a *cross-parent* rename: a process converging on another
+            // process's post-rename, pre-flush state reports the retirement
+            // complete on the strength of a rename nobody has flushed. On the
+            // closed support table a cross-parent rename is a single metadata
+            // transaction, replayed or discarded whole (the E16 cross-parent
+            // record, freeze §4.3), so the reachable states are "rename
+            // discarded" — this branch is not taken and the drive re-enters the
+            // edge — or "rename durable with either or both parents unflushed",
+            // which is what this branch converges on. E3 interior review F7
+            // names it; it is inherited from the corpus, not introduced here.
+            //
             // The rename is atomic and no edge of this family ever restores an
             // active row, so both parents holding the name is not a state this
             // sequence can leave; it is a substituted namespace, refused rather
@@ -254,6 +281,7 @@ impl RetainedCompletedCatalogV1 {
             expected,
             observed.action_rows.len(),
             retired_action_dirs,
+            super::admission_mutation::observed_admission_occupancy(&observed),
         )?;
         super::admission_mutation::barrier_catalog_root(
             &self.final_directory.handle,

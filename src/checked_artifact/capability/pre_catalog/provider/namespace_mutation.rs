@@ -60,6 +60,11 @@ use crate::checked_artifact::protocol::{
 };
 use crate::model::ErrorCode;
 
+/// Chunk size for the cleanup alias digest stream. A refusal threshold's
+/// working buffer, not durable vocabulary: it fixes the memory the digest
+/// costs, never what the digest is taken over.
+const CLEANUP_ALIAS_STREAM_CHUNK: usize = 8192;
+
 /// Which side of the action namespace an edge is crossing.
 ///
 /// The two edges are physically one move — a source-associated, no-replace
@@ -367,10 +372,27 @@ impl RetainedActionNamespaceV1 {
         );
 
         // `terminal.payload_reobserve` — the source and goal payload rows, each
-        // in exactly one of its two scheduled homes. No bound is applied and
-        // none may be: a payload's length is never a protocol-record bound
-        // (ConsumerCheckpoint §8 :236-237), so what this boundary names is the
-        // rows' residency and canonical shape, never a read of their content.
+        // in exactly one of its two scheduled homes, each a canonical regular
+        // file. **No read of their content, and no digest relation.**
+        //
+        // DETERMINATION (2026-08-27, R2-E E3 remediation round; raised by the
+        // E3 interior review as F3, ruled by the lane owner). E0.2 §4.3 row #2
+        // announced "have been re-read and are the ones the action digest was
+        // derived over". This boundary does not and must not bind that: a
+        // payload's length is never a protocol-record bound
+        // (`GwzM5-8R4bR2ConsumerCheckpoint.md` §8 :236-237), so there is no
+        // budget in the frozen record vocabulary under which this owner could
+        // read a payload leaf, and the digest relation the row names is the
+        // *authority record's* — proved by `record.binding_validate` and by
+        // `require_leaf_digest` (`coordinator/execution.rs`), both of which
+        // need a `CheckedAuthorityObservationV1` that no terminal retirement
+        // holds. **The row's semantic is amended to exactly what is bound
+        // here: the source and goal payload rows are resident in exactly one
+        // of their two scheduled homes, each a canonical regular file, read
+        // not at all.** Flagged for the lane owner to carry into the freeze
+        // §3.5 activation record in place of row #2's drafted text; the
+        // announced semantic and the code now match, which is what the
+        // disclosure-integrity ruling requires.
         for (live, retired) in [
             (
                 BaseActionSlotV1::SourcePayload,
@@ -394,10 +416,12 @@ impl RetainedActionNamespaceV1 {
 
         // `terminal.cleanup_reobserve` — the join to `cleanup.*` key #11. The
         // worklist is read bounded and bound to the resident reservation, and
-        // every scheduled row must classify complete in the action directory's
-        // own terms: the live row gone and the retired alias resident. That is
-        // the durable state `cleanup.completion_reobserve` leaves, restated as
-        // the terminal retirement's precondition rather than assumed from it.
+        // every row is then put through the **frozen classifier itself**:
+        // `BoundCleanupWorklistV1::classify` must return
+        // `CleanupResolutionV1::Complete` for every scheduled row. Nothing is
+        // restated in this owner's own words — the rule is
+        // `protocol/cleanup.rs`'s, so the announced semantic and the code are
+        // the same sentence.
         self.require_completed_cleanup_worklist(expected)?;
         #[cfg(test)]
         crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::TerminalCleanupReobserve);
@@ -487,7 +511,14 @@ impl RetainedActionNamespaceV1 {
     }
 
     /// The bounded cleanup worklist, bound to the resident reservation, with
-    /// every scheduled row complete.
+    /// **every row classified `Complete` by the frozen classifier**.
+    ///
+    /// The classification is `protocol/cleanup.rs`'s own — this owner supplies
+    /// the two physical facts per row and `BoundCleanupWorklistV1::classify`
+    /// supplies the rule, so the boundary binds the sentence §4.3 announces
+    /// rather than a residency restatement of it. The E3 interior review (F3)
+    /// found the first shape proving residency only while announcing the
+    /// classifier; that gap is closed here rather than papered over.
     fn require_completed_cleanup_worklist(
         &self,
         expected: &ActionCapacityReservationV1,
@@ -524,16 +555,84 @@ impl RetainedActionNamespaceV1 {
                     BaseActionSlotV1::RetiredAuthorityAlias,
                 ),
             };
-            if self.row_is_resident(&slot_leaf(action, live)?)
-                || !self.row_is_resident(&slot_leaf(action, retired)?)
+            let source = self.cleanup_physical_fact(&slot_leaf(action, live)?, row.expected())?;
+            let destination =
+                self.cleanup_physical_fact(&slot_leaf(action, retired)?, row.expected())?;
+            if worklist.classify(index, &source, &destination)
+                != Some(CleanupResolutionV1::Complete)
             {
                 return Err(CheckedFsError::ambiguous(
                     "terminal cleanup worklist",
-                    "a scheduled cleanup row has not reached its retired alias",
+                    "a scheduled cleanup row does not classify complete",
                 ));
             }
         }
         Ok(())
+    }
+
+    /// One cleanup alias's physical fact, in the frozen
+    /// [`CleanupPhysicalFactV1`] vocabulary.
+    ///
+    /// **The read is bounded by the worklist row's own recorded length, never
+    /// by the object's.** `expected.length()` is a field of a bounded protocol
+    /// record this owner has already read and bound to the resident
+    /// reservation, so budgeting the stream by it keeps the
+    /// "payload size is not confused with protocol-record size" rule
+    /// (`GwzM5-8R4bR2ConsumerCheckpoint.md` §8 :236-237) intact: nothing here
+    /// trusts a length the object itself supplies. The digest is streamed in
+    /// fixed-size chunks, so a payload of any size costs constant memory, and
+    /// a leaf that runs past the recorded length is `Other` — refused — rather
+    /// than read further.
+    fn cleanup_physical_fact(
+        &self,
+        leaf: &AsciiComponent,
+        expected: &DurableLeafFingerprintV1,
+    ) -> Result<CleanupPhysicalFactV1, CheckedFsError> {
+        let name = os_name(leaf);
+        let metadata = match self.handle.symlink_metadata(&name) {
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                return Ok(CleanupPhysicalFactV1::Missing);
+            }
+            Err(source) => return Err(CheckedFsError::io("observe cleanup alias", source)),
+            Ok(value) => value,
+        };
+        if !metadata.is_file() || metadata.is_symlink() {
+            return Ok(CleanupPhysicalFactV1::Other);
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        let mut file = self
+            .handle
+            .open_with(&name, &options)
+            .map_err(|source| CheckedFsError::io("open cleanup alias no-follow", source))?;
+        let fact = super::HostPlatform.file_identity(&file)?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| CheckedFsError::io("rewind cleanup alias", source))?;
+        let limit = expected.length();
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; CLEANUP_ALIAS_STREAM_CHUNK];
+        let mut length = 0_u64;
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|source| CheckedFsError::io("read cleanup alias", source))?;
+            if read == 0 {
+                break;
+            }
+            length = length.saturating_add(read as u64);
+            if length > limit {
+                return Ok(CleanupPhysicalFactV1::Other);
+            }
+            hasher.update(&buffer[..read]);
+        }
+        if length != limit {
+            return Ok(CleanupPhysicalFactV1::Other);
+        }
+        Ok(CleanupPhysicalFactV1::Exact(DurableLeafFingerprintV1::new(
+            fact.durable().clone(),
+            length,
+            hasher.finalize().into(),
+        )))
     }
 
     /// Edge E14 — the admitted dirent-barrier family (§4.1 row P5) over the

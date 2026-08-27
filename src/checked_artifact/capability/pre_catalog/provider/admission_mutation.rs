@@ -345,6 +345,7 @@ fn reserve_retired_slot(
     destination: &OsStr,
     active_action_dirs: usize,
     retired_action_dirs: usize,
+    admission: CatalogAdmissionOccupancyV1,
 ) -> Result<(), CheckedFsError> {
     match retired_root.symlink_metadata(destination) {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
@@ -360,10 +361,21 @@ fn reserve_retired_slot(
     // the occupancy it must satisfy is the post-edge one. `validate` refuses
     // `RetiredLimitExceeded` and the retirement-credit inequality that reserves
     // one retired slot for every action still outstanding.
+    //
+    // `admission` is OBSERVED, never assumed. The first shape of this edge
+    // hardcoded `CatalogAdmissionOccupancyV1::Idle`, which the E3 interior
+    // review caught (F5): `validate` computes
+    // `outstanding = active_action_dirs + (admission == PreparingWithoutFinal)`
+    // (`protocol/bounds.rs`), so asserting `Idle` dropped one from `outstanding`
+    // whenever a durable `Preparing` admission was resident — a state that
+    // survives a crash and is therefore reachable — and at full occupancy the
+    // retirement could consume the credit slot the frozen rule reserves for
+    // that pending admission. It is derived by `observed_admission_occupancy`
+    // from the catalog root's own `ActionAdmissionActive` row.
     CatalogOccupancyV1::new(
         active_action_dirs.saturating_sub(1),
         retired_action_dirs + 1,
-        CatalogAdmissionOccupancyV1::Idle,
+        admission,
     )
     .map_err(|_| {
         CheckedFsError::ambiguous(
@@ -374,6 +386,30 @@ fn reserve_retired_slot(
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::TerminalRetiredSlotReserve);
     Ok(())
+}
+
+/// The catalog root's admission occupancy, read off its own
+/// `ActionAdmissionActive` row.
+///
+/// Two arms, and the second is deliberately the conservative one: a resident
+/// record that is not the frozen `idle()` — including one that does not decode
+/// — is charged as `PreparingWithoutFinal`, which *adds* one to the frozen
+/// credit rule's `outstanding` term. `PreparingWithFinal` would charge one
+/// less and additionally carries `validate`'s `PreparingFinalMissing` rule, so
+/// choosing it would need a second observation (whether that pending action's
+/// own final directory is resident) to be sound. Charging the stricter term is
+/// sound without it, and the failure direction is a refused retirement rather
+/// than a consumed credit.
+pub(super) fn observed_admission_occupancy(
+    observed: &RawCatalogInteriorObservationV1,
+) -> CatalogAdmissionOccupancyV1 {
+    match admission_record_row(observed, InfrastructureSlotV1::ActionAdmissionActive) {
+        Ok(RecordObservationV1::Missing) => CatalogAdmissionOccupancyV1::Idle,
+        Ok(RecordObservationV1::Exact(record)) if record == ActionDirectoryAdmissionV1::idle() => {
+            CatalogAdmissionOccupancyV1::Idle
+        }
+        _ => CatalogAdmissionOccupancyV1::PreparingWithoutFinal,
+    }
 }
 
 /// R2-E E3.1 — `terminal.*` keys #6, #7 and #8: the whole admitted action
@@ -402,12 +438,19 @@ pub(super) fn retire_action_directory(
     expected: &ActionCapacityReservationV1,
     active_action_dirs: usize,
     retired_action_dirs: usize,
+    admission: CatalogAdmissionOccupancyV1,
 ) -> Result<(), CheckedFsError> {
     let child = RootEntryNameV1::ActiveAction(expected.action_digest());
     let name = child.name();
     let name = OsStr::new(name.as_str());
 
-    reserve_retired_slot(retired_root, name, active_action_dirs, retired_action_dirs)?;
+    reserve_retired_slot(
+        retired_root,
+        name,
+        active_action_dirs,
+        retired_action_dirs,
+        admission,
+    )?;
 
     let action = final_directory
         .open_dir_nofollow(name)
