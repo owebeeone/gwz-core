@@ -17,6 +17,16 @@ mod aggregate;
     reason = "Step 2.4 lands the binding; its consumer is the replacement path R2-E converts, not Step 3.3"
 )]
 mod authority_record_binding;
+/// R2-E Phase E2 — the scheduled barrier family's owner-private mutation file
+/// (DECISION B-1). Its consumer is the E4 conversion that gives the roaming
+/// anchor its first admitted action; E2 lands the edges and their executed
+/// matrix, exactly as Step 2.2 landed `namespace_mutation.rs` ahead of its
+/// production entry point.
+#[allow(
+    dead_code,
+    reason = "E2 lands the barrier edges and their matrix; the production consumer is R2-E Phase E4"
+)]
+mod barrier_mutation;
 mod completed;
 mod digests;
 mod directory_mutation;
@@ -58,6 +68,18 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_bound_obs
         .revalidate_bound_target(&bound.target, &bound.observation)
 }
 pub(in crate::checked_artifact::capability::pre_catalog) use aggregate::outer_aggregate_facts;
+/// R2-E Phase E2. The scheduled barrier family's owner-private surface, driven
+/// by the `namespace` owner exactly as the managed intent lifecycle is: what
+/// leaves this owner is a role selector and a typed observation, never a path
+/// and never a raw mutation surface. O6's `RoamingAnchorHomeWitnessV1` travels
+/// with them — the type leaves this owner, its constructor does not, so a caller
+/// can read the three facts and can never assert them.
+pub(in crate::checked_artifact) use barrier_mutation::{
+    AliasRetirementEntryV1, BarrierIntentRowV1, RoamingAnchorHomeWitnessV1,
+    TargetAnchorAliasStateV1, barrier_target_parent, converge_target_anchor_alias,
+    create_target_anchor_alias, observe_barrier_completion, observe_barrier_intent_row,
+    retire_target_anchor_alias, write_barrier_intent_scratch,
+};
 pub(in crate::checked_artifact::capability::pre_catalog) use completed::{
     RetainedCompletedCatalogV1, retain_completed_catalog,
 };

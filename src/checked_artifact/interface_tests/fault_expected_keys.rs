@@ -207,6 +207,19 @@ enum FaultFamilyActivationV1 {
     /// injection site, so the guarantee the `Reserved` arm gives is preserved
     /// key-by-key rather than weakened family-wide.
     PartiallyExecuted(&'static str, &'static [&'static str]),
+    /// No family constructs this arm as of the R2-E E1/E2/E3 landings
+    /// (2026-08-27): cleanup and barrier are `Executed`, terminal is
+    /// `PartiallyExecuted`, and every earlier family was activated by its
+    /// own package. The arm stays in the vocabulary because the frozen
+    /// map's carried clause re-reserves through it — "any key whose edge
+    /// genuinely converts later is explicitly re-reserved for R2-E/R2-F
+    /// in the same update" (`GwzM5-8R2DInterfaceFreeze.md` §3.5) — and
+    /// the match arms that enforce a reserved family's zero-site claim
+    /// consume it by pattern.
+    #[allow(
+        dead_code,
+        reason = "the frozen activation vocabulary's reserved arm; unconstructed since the R2-E E1-E3 landings, retained for the map's carried re-reservation clause"
+    )]
     Reserved(&'static str),
 }
 
@@ -396,9 +409,24 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
         FaultFamilyActivationV1::Executed("R2-E phase E1 (cleanup worklist lifecycle)"),
         11,
     ),
+    // R2-E Phase E2 converts every edge this family names. All sixteen keys have
+    // injection sites in `capability/pre_catalog/provider/barrier_mutation.rs`
+    // (DECISION B-1 — the family composes the completed catalog's roaming-anchor
+    // home with a barrier target parent, which is a distinct capability
+    // composition and the ground on which `managed_mutation.rs` is its own
+    // file), and executed interruption/restart/convergence rows on both target
+    // variants in `namespace/tests_barrier_matrix.rs`. The `namespace` owner
+    // holds none, as with `namespace.*` and `managed_bootstrap.*`.
+    //
+    // Nothing is left reserved. Three of the sixteen — `anchor_outbound`,
+    // `target_barrier` and `anchor_return` — were ACTIVATE-CONDITIONAL-ON-OPEN-B1
+    // in the E0.2 draft; OPEN-B1 closed at E0.2b with DECISION B-5 (the
+    // target-parent alias is a fresh, independent copy of `ROAMING_ANCHOR_BYTES`,
+    // not a move and not a hard link of the catalog's own home row), so all
+    // sixteen activate together and no catalog completion predicate moved.
     (
         "barrier",
-        FaultFamilyActivationV1::Reserved("R2-D phase 4 (Windows retirement closure)"),
+        FaultFamilyActivationV1::Executed("R2-E phase E2 (roaming anchor barrier)"),
         16,
     ),
     // R2-E Phase E3 converts freeze §4.3 row E7's Phase-4 half — the admitted
@@ -471,7 +499,9 @@ const TERMINAL_EXECUTED_KEYS: &[&str] = &[
 /// R2-D Phase 2 Step 2.1, and the two sources holding the thirteen `record.*`
 /// sites converted by R2-D Phase 2 Step 2.4 — `protocol/authority_record.rs`
 /// for the four bounded-parse stages and
-/// `authority_record_binding.rs` for the nine install/retire/join boundaries.
+/// `authority_record_binding.rs` for the nine install/retire/join boundaries,
+/// and `barrier_mutation.rs` holding all sixteen `barrier.*` sites converted by
+/// R2-E Phase E2.
 /// `admission/driver.rs` deliberately holds
 /// none: it decides and never mutates (`admission/driver.rs:8-9`), so every
 /// durable admission edge is announced from the owner-private mutation file.
@@ -571,6 +601,24 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
     (
         "capability/pre_catalog/provider/authority_record_binding.rs",
         include_str!("../capability/pre_catalog/provider/authority_record_binding.rs"),
+    ),
+    // R2-E Phase E2: all sixteen `barrier.*` sites, and the **one** file this
+    // declared list gains across E1-E3 — the count moves nine → ten exactly
+    // once, here (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §6.1). E1's
+    // cleanup sites and E3's terminal sites land in files this list already
+    // declares (`namespace_mutation.rs`, `admission_mutation.rs`) and move no
+    // count.
+    //
+    // Same owner rule as the two rows above: the `namespace` owner
+    // (`namespace/host.rs`) holds none of these sites. It binds the schedule's
+    // barrier slots, re-proves them against the admitted action, and forwards —
+    // every durable barrier edge is announced from this owner-private mutation
+    // file, exactly as `admission/driver.rs` defers to `admission_mutation.rs`.
+    // The file exists as its own rather than joining `namespace_mutation.rs`
+    // because the family composes two retained parents (DECISION B-1).
+    (
+        "capability/pre_catalog/provider/barrier_mutation.rs",
+        include_str!("../capability/pre_catalog/provider/barrier_mutation.rs"),
     ),
 ];
 
@@ -818,6 +866,17 @@ fn the_declared_injection_sources_are_every_production_source_holding_sites() {
          CheckedArtifactFaultKeyV1 must be declared in FAULT_INJECTION_SOURCES, or the \
          reserved-family scan stops covering it"
     );
+    // The count itself is a two-place deliberate edit, not a projection: the
+    // freeze's §3.5 inventory addendum records this list's size, so a step that
+    // adds a source must move both. It stood at nine through R2-D and moves to
+    // ten exactly once across R2-E's E1-E3, at E2, with `barrier_mutation.rs`
+    // (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §6.1).
+    assert_eq!(
+        declared.len(),
+        10,
+        "the declared-and-anchored production source list changed size; the step that adds or \
+         removes a source owns that edit together with the freeze's §3.5 inventory addendum"
+    );
 }
 
 /// The executed set is an explicit literal, not a projection of the activation
@@ -835,6 +894,9 @@ fn the_declared_injection_sources_are_every_production_source_holding_sites() {
 /// R2-E Phase E1 added `cleanup`, with its eleven injection sites in the same
 /// action-directory owner Step 2.2 uses and the executed matrix on both target
 /// variants (`namespace/tests_cleanup_matrix.rs`).
+/// R2-E Phase E2 added `barrier`, with its sixteen injection sites in the new
+/// `capability/pre_catalog/provider/barrier_mutation.rs` and the executed matrix
+/// on both target variants (`namespace/tests_barrier_matrix.rs`).
 /// Every remaining family stays reserved for the package the frozen map names
 /// (`GwzM5-8R2DInterfaceFreeze.md` §3.5).
 #[test]
@@ -849,6 +911,7 @@ fn only_the_families_with_executed_matrices_are_executed_today() {
         executed,
         [
             "admission",
+            "barrier",
             "catalog_bootstrap",
             "cleanup",
             "durable_leaf",

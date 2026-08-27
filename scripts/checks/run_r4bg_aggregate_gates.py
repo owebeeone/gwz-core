@@ -81,23 +81,42 @@ def _fault_count(darwin: str, linux: str) -> str:
     measured elsewhere -- the release-train lesson (activation record
     S17; the Windows count-pin derivation) applied to this driver.
 
-    R2-E Step E3 moves the checked_artifact:: partition by +17: nine rows
-    for the T1 widening precondition (tests_retired_root.rs) and eight
-    for the terminal.* matrix (tests_terminal_fault_matrix.rs) -- both
-    cfg-independent, so the delta is the same on every host. darwin
-    400 -> 417 is EXECUTED on this lane's macOS host at the E3
-    remediation tree. linux 410 -> 427 is DERIVED from that same delta
-    and is FIRST-DISPATCH-EXPECTED: the lane owner re-measures it on the
-    Linux leg at landing, exactly as 1bcb925 did for the values above.
-    The remainder partition does not move -- every added test is under
-    checked_artifact::.
-    E3 LANDING RECONCILE (2026-08-27, lane owner): E1 (+8) and E3 (+17,
-    including the three remediation rows) are landed together on this
-    tree, so the partition pin is their sum over the recorded base.
-    darwin 425 is EXECUTED on the landing host at the reconciled tree
-    ("425 passed"); linux 435 is DERIVED (+25 over the 410 base,
-    cfg-independent) and FIRST-DISPATCH-EXPECTED -- the Platform matrix
-    dispatch at this landing measures it, and a measured number wins.
+    R2-E Phase E2 moves the checked_artifact:: partition and only it: the
+    step adds thirteen lib tests, all under that partition -- eight
+    `namespace::tests_barrier_matrix` rows (the sixteen-key
+    interruption/restart/convergence matrix, the single-crossing probe, the
+    twelve-round repeated-boundary rows and the settled census, each on both
+    target variants) and five `platform::anchor::tests` rows for the third
+    `DirentBarrierClass`'s roaming arm. The remainder partition is untouched
+    and keeps its existing values.
+
+      darwin 400 -> 421: MEASURED on this step's own tree
+        (`cargo test --lib -p gwz-core checked_artifact::`, 421 passed,
+        2026-08-27), with the remainder re-measured unchanged at 932 in the
+        same run. The E2 review's remediation added eight more rows on top of
+        the step's first thirteen: four in `namespace::tests_barrier_matrix`
+        driving the mid-round-trip residue and the legacy both-names tree on
+        both target variants, and four in `interface_tests::schedule_records`
+        splitting O6's three read-side refusals into named rows beside a
+        positive control.
+      linux  410 -> 431: DERIVED (410 + 21), *not* measured, and therefore
+        OWED at the lane owner's three-platform landing dispatch. Marked
+        LINUX-COUNT-OWED below for exactly that reason: every other value in
+        this function was executed before it was written, and this one was
+        not.
+
+    Both values are against THIS branch's base (`94da3e5`). E1 has since
+    landed on main and E3 is landing; both add lib tests under
+    checked_artifact::, so both numbers move again at the rebase and must be
+    re-measured there rather than added up on paper.
+
+    E2 LANDING RECONCILE (2026-08-27, lane owner, the squashed final
+    R2-E family landing): that re-measurement. E1 (+8), E3 (+17) and E2
+    (+21, remediation included) are all on this tree. darwin 446 is
+    EXECUTED on the landing host at the squashed tree ("446 passed");
+    linux 456 is DERIVED (+46 over the 410 base, cfg-independent) and
+    FIRST-DISPATCH-EXPECTED -- the Platform matrix dispatch at this
+    landing measures it, and a measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -116,8 +135,23 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
          "256 passed"),
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
+        # LINUX-COUNT-OWED (R2-E E2): the darwin value is measured on this
+        # step's tree; the linux one is derived and must be re-measured at the
+        # landing dispatch before it is trusted.
+        #
+        # WINDOWS-ARM-OWED (R2-E E2): this partition also carries the §3.6
+        # obligation that `barrier.target_barrier`'s Windows arm executes
+        # NATIVELY rather than skipping. It is discharged by construction --
+        # `DirentBarrierClass::RoamingAnchoredTarget`'s Windows arm is
+        # `anchor::round_trip_supplied`, reached through `private_barrier` with
+        # no skip branch, and the five `platform::anchor::tests` roaming rows
+        # ask the platform rather than reading a `cfg` -- but on darwin
+        # `private_barrier` never reaches that arm, so nothing here proves it.
+        # The Windows leg of the landing dispatch is the proof, and it is the
+        # first Windows compile of that code. Marked here beside the linux
+        # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("425 passed", "435 passed")),
+         lib("checked_artifact::"), _fault_count("446 passed", "456 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),

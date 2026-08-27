@@ -26,7 +26,11 @@ use crate::checked_artifact::protocol::{
     managed_marker_name,
 };
 
-const ROAMING_ANCHOR_BYTES: &[u8] = b"GWZ-ROAMING-ANCHOR-V1\n";
+/// R2-E Phase E2 shares this frozen constant with `barrier_mutation.rs`, whose
+/// roaming-anchor alias is a fresh, independent copy of exactly these bytes
+/// (DECISION B-5). Only the visibility moved: the predicate that consumes it
+/// below is unchanged.
+pub(super) const ROAMING_ANCHOR_BYTES: &[u8] = b"GWZ-ROAMING-ANCHOR-V1\n";
 const CATALOG_ANCHOR_BYTES: &[u8] = b"GWZ-CATALOG-ANCHOR-V1\n";
 /// The catalog root's bound, widened from the ten infrastructure slots to the
 /// already-frozen `MAX_ROOT_ENTRIES` (= 74 = 10 infrastructure + 64 active

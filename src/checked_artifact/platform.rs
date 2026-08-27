@@ -355,13 +355,13 @@ pub(super) fn prepare_private(
 /// (`GwzM5-8R2DInterfaceFreeze.md` §4.1 row P5, §4.3 rows E10/E14 and the E9
 /// activation annotation).
 ///
-/// The distinction exists on Windows alone — on every other platform both
-/// classes are the same directory `fsync` — and it is a *caller* fact rather
+/// The distinction exists on Windows alone — on every other platform every
+/// class is the same directory `fsync` — and it is a *caller* fact rather
 /// than one the directory's own contents may be trusted to reveal: only the
 /// checked-artifact private area is allowed to retain the durability anchor the
 /// Windows round-trip barrier renames, so only its callers may demand one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum DirentBarrierClass {
+pub(super) enum DirentBarrierClass<'alias> {
     /// The checked-artifact private area, which deliberately retains a
     /// permanent `.ca1-durability-anchor-<32hex>` file as product
     /// infrastructure (`finish()` never removes it), and whose barrier is
@@ -371,12 +371,190 @@ pub(super) enum DirentBarrierClass {
     /// directory, a catalog interior — and which may therefore retain no
     /// anchor of its own. Its Windows arm is documented at the barrier.
     ExactInterior,
+    /// R2-E Phase E2, DECISION B-3
+    /// (`GwzM5-8R2E-SemanticsAmendment-DRAFT.md` §3.3): a barrier target parent
+    /// that may retain no permanent anchor of its own and is instead **lent**
+    /// one for the duration of a single scheduled barrier.
+    ///
+    /// Neither existing variant states that. `AnchoredPrivateArea` would
+    /// *survey* for a resident anchor and, finding none, establish a permanent
+    /// one here — the exact-evidence contamination class already diagnosed and
+    /// fixed; `ExactInterior` documents the round trip as unavailable, which is
+    /// exactly the property the roaming anchor exists to restore. So the
+    /// Windows arm of this variant round-trips the **supplied** alias by the
+    /// leaf the schedule reserved for it, and surveys for nothing.
+    ///
+    /// Minting a class variant moves no census — it is not a fault key — and
+    /// the §4.3 E10/E14 activation annotation is unaffected: that annotation's
+    /// claim is about which arm a *caller* takes, and the tree's **one**
+    /// `ExactInterior` construction site (`namespace_mutation.rs`'s `barrier`)
+    /// is untouched by this family, whose call site is a distinct one in a
+    /// distinct file. *(E2 review [P3-2]: this doc said "both call sites" and
+    /// named a second in `namespace/host.rs`. There is no second — `host.rs`'s
+    /// `barrier` is an identity pin that delegates and names no class. The
+    /// miscount was inherited from E0.2 §3.3 rather than opened and read; the
+    /// substance is unchanged and independently verified.)*
+    RoamingAnchoredTarget {
+        /// The reserved leaf under which the target parent currently holds the
+        /// alias. Supplied by the caller from the schedule-derived name the
+        /// intent record bound — never surveyed for.
+        alias: &'alias OsStr,
+        /// The alias's frozen content, re-verified through the very handle each
+        /// round-trip rename consumes.
+        bytes: &'alias [u8],
+    },
+}
+
+/// The one outbound-name suffix P5's two round trips share. Owned here rather
+/// than by `anchor`, because the roaming arm's residue has to be classifiable on
+/// every platform and `mod anchor` is `cfg(any(windows, test))`.
+pub(super) const ROUNDTRIP_SUFFIX: &str = ".roundtrip";
+
+pub(super) fn roundtrip_name(resident_name: &OsStr) -> OsString {
+    let mut roundtrip = resident_name.to_os_string();
+    roundtrip.push(ROUNDTRIP_SUFFIX);
+    roundtrip
+}
+
+/// What a barrier target parent holds under the two names the roaming arm can
+/// produce, after [`prepare_roaming_target`] has converged whatever window a
+/// previous drive left.
+///
+/// Two states, not four: the caller's only decision is create-or-resume, and
+/// every window the arm can leave collapses into one of them. Whether a
+/// tolerated legacy object was left under the outbound name is deliberately
+/// *not* reported — nothing acts on it, and the matrix proves the toleration
+/// behaviourally against the settled census rather than against a flag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RoamingTargetStateV1 {
+    /// Neither name is resident: the caller creates the alias.
+    Absent,
+    /// An alias is resident at its reserved leaf.
+    Resident,
+}
+
+/// R2-E Phase E2 — P5's `RoamingAnchoredTarget` recovery entry, the roaming twin
+/// of [`prepare_private`].
+///
+/// `prepare_private`'s job for the resident class is "establish the anchor, or
+/// converge whatever window a previous drive left". This is the same job for the
+/// lent class, minus the establish half — the caller owns creation, because only
+/// the caller knows the schedule-derived leaf. **Its whole reason to exist is
+/// that a drive branching on the reserved leaf alone cannot see the outbound
+/// name**, whose derivation is this module's, so without this entry a
+/// mid-round-trip crash would leave a name no later drive returns.
+///
+/// The state machine is total over the two names, and every arm is stated
+/// because three of the four are crash windows:
+///
+/// | reserved leaf | outbound | action | result |
+/// | --- | --- | --- | --- |
+/// | absent | absent | none | `Absent` — the caller creates |
+/// | resident | absent | none | `Resident` — the settled between-barriers state |
+/// | absent | resident | **return it** | `Resident` — a crash between the round trip's two renames, converged |
+/// | resident | resident | none | `Resident` — the outbound object is tolerated |
+///
+/// The third row is the one this entry exists for: the object is returned to its
+/// reserved leaf through the sealed P1 publication — a rename, never a removal,
+/// which is the discipline Step 4.2 installed — so nothing persists and the
+/// caller resumes on the ordinary resident state.
+///
+/// The fourth row is **not** refused, and that is deliberate. Two objects under
+/// the two names is unreachable on this tree: this entry runs before the caller
+/// creates anything, so a drive can never create a second object over a resident
+/// outbound name. It *is* reachable on a tree a pre-remediation binary wrote,
+/// where the drive branched on the reserved leaf alone and created that second
+/// object. Refusing there would be a permanent typed refusal on a reachable
+/// state with no in-code exit — the wedge class E16's standard forbids — and the
+/// only convergence that could clear it is a removal, which Step 4.2
+/// deliberately replaced with durable retirement, and there is exactly one
+/// retirement slot per ordinal. So the outbound object is left as a tolerated
+/// legacy orphan, recorded rather than hidden: bounded by past crashes on
+/// pre-remediation Windows trees, unable to grow because nothing here produces
+/// it, and blocking nothing.
+///
+/// **One state is refused, and it is not a row of the table: foreign bytes.**
+/// The third row re-proves the outbound object against the frozen bytes before
+/// it returns it, so an object under this protocol's own outbound name that
+/// carries something else is refused rather than adopted — and that refusal
+/// does block the ordinal until it is cleared. That is the house rule for a
+/// name in this family's grammar holding foreign content, pinned for the
+/// resident protocol by `foreign_bytes_under_the_anchor_prefix_are_refused_not_adopted`
+/// and for the reserved leaf by
+/// `foreign_bytes_under_the_reserved_leaf_are_refused_before_the_edge`. Only
+/// this protocol writes these two names, so the state means a foreign writer,
+/// not a crash.
+///
+/// Portable, and deliberately not `cfg`-split. Off Windows nothing renames the
+/// alias, so the survey is two `symlink_metadata` calls that always answer the
+/// first two rows — but keeping it portable is what lets every platform execute
+/// the restart rows for a window only Windows can open, exactly as
+/// `platform/anchor.rs`'s header argues for the protocol it serves.
+pub(super) fn prepare_roaming_target(
+    dir: &Dir,
+    alias: &OsStr,
+    bytes: &[u8],
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<RoamingTargetStateV1> {
+    let outbound = roundtrip_name(alias);
+    let alias_resident = leaf_is_resident(dir, alias, code, label)?;
+    let outbound_resident = leaf_is_resident(dir, &outbound, code, label)?;
+    match (alias_resident, outbound_resident) {
+        (false, false) => Ok(RoamingTargetStateV1::Absent),
+        (true, _) => Ok(RoamingTargetStateV1::Resident),
+        (false, true) => {
+            let identity = verify_leaf_bytes(dir, &outbound, bytes, code, label)?;
+            publish_verified_leaf_no_replace(
+                dir,
+                &outbound,
+                dir,
+                alias,
+                &LeafPublicationSourceV1 {
+                    identity: &identity,
+                    bytes,
+                },
+                code,
+                label,
+            )?;
+            verify_leaf_bytes(dir, alias, bytes, code, label)?;
+            Ok(RoamingTargetStateV1::Resident)
+        }
+    }
+}
+
+/// Whether a leaf is resident at all. `observe_leaf_exact` reports a missing
+/// leaf as `Missing` rather than as an error, so this needs no error-kind
+/// inspection of its own.
+fn leaf_is_resident(dir: &Dir, name: &OsStr, code: ErrorCode, label: &str) -> ModelResult<bool> {
+    Ok(
+        super::observation::observe_leaf_exact(dir, name, code, label)?.fact
+            != super::CheckedArtifactFact::Missing,
+    )
+}
+
+/// One lent object re-proved by its frozen bytes, returning the durable identity
+/// the sealed publication re-verifies through the handle it renames.
+fn verify_leaf_bytes(
+    dir: &Dir,
+    name: &OsStr,
+    bytes: &[u8],
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<super::identity::ObjectIdentity> {
+    let observed = super::observation::observe_leaf_exact(dir, name, code, label)?;
+    if observed.fact != super::CheckedArtifactFact::Bytes(bytes.to_vec()) {
+        return Err(error(code, label, "roaming anchor alias bytes are invalid"));
+    }
+    observed
+        .identity
+        .ok_or_else(|| error(code, label, "roaming anchor alias lacks identity"))
 }
 
 #[cfg(not(windows))]
 pub(super) fn private_barrier(
     dir: &Dir,
-    _class: DirentBarrierClass,
+    _class: DirentBarrierClass<'_>,
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
@@ -519,10 +697,19 @@ pub(super) fn prepare_private(
 #[cfg(windows)]
 pub(super) fn private_barrier(
     dir: &Dir,
-    class: DirentBarrierClass,
+    class: DirentBarrierClass<'_>,
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
+    if let DirentBarrierClass::RoamingAnchoredTarget { alias, bytes } = class {
+        // R2-E Phase E2, DECISION B-3. The roaming arm: this directory may
+        // retain no permanent anchor, so it is lent one for the duration of one
+        // scheduled barrier and the metadata transaction that orders its
+        // dirents is that *supplied* object's round trip. Nothing is surveyed
+        // for and nothing permanent is established here, which is the whole
+        // difference from `AnchoredPrivateArea`.
+        return anchor::round_trip_supplied(dir, alias, bytes, code, label);
+    }
     if matches!(class, DirentBarrierClass::ExactInterior) {
         // The writer-class-conditional Windows arm of P5 — the twin of E9's
         // `flush_observed_leaf` no-op, and recorded in the same form

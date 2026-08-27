@@ -161,6 +161,28 @@ impl RetainedCompletedCatalogV1 {
         )
     }
 
+    /// R2-E Phase E2 (O6). The barrier family's roaming-anchor-home
+    /// observation, minted inside this owner from the retained `catalog_anchor`
+    /// and `final_directory` capabilities it already holds and revalidates.
+    ///
+    /// Same rule as `observe_admission` above and `retain_action_namespace`
+    /// below: the caller receives the typed observation only — never a handle —
+    /// so the three identity facts `BarrierIntentV1` binds have exactly one
+    /// source and no caller-supplied route. The refusal arm is the caller's
+    /// prologue: `CompletedCatalogPermitV1::observe_roaming_anchor_home`
+    /// revalidates first, so a changed catalog-anchor identity, a final
+    /// directory that is no longer the named catalog, or a catalog whose
+    /// completion predicate no longer holds mints nothing
+    /// (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §5.4).
+    pub(in crate::checked_artifact::capability::pre_catalog) fn observe_roaming_anchor_home(
+        &self,
+    ) -> super::RoamingAnchorHomeWitnessV1 {
+        super::RoamingAnchorHomeWitnessV1::owner_mint(
+            self.catalog_anchor.identity.durable().clone(),
+            self.final_directory.identity.durable().clone(),
+        )
+    }
+
     /// R2-D Phase 2 Step 2.2. The one identity-proved no-follow hop from the
     /// retained completed catalog to the admitted action's deterministic final
     /// directory (`GwzM5-8R2C2PublicationAudit.md` :39-44). The caller receives

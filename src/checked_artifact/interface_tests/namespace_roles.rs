@@ -1,6 +1,6 @@
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1,
-    PathComponentMode,
+    PathComponentMode, RoamingAnchorHomeWitnessV1,
 };
 use super::super::namespace::test_support::{
     RecordingNamespaceEvent, backend_events, barrier_target, bootstrap_target, recording_backend,
@@ -139,9 +139,11 @@ fn only_role_typed_scheduled_slots_are_issued() {
         namespace
             .barrier_intent(
                 &barrier,
-                identity(20),
-                identity(21),
-                AsciiComponent::parse(b"anchor-home").unwrap(),
+                &RoamingAnchorHomeWitnessV1::test_only(
+                    identity(20),
+                    identity(21),
+                    AsciiComponent::parse(b"anchor-home").unwrap(),
+                ),
             )
             .is_ok()
     );

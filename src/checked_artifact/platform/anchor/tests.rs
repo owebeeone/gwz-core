@@ -17,9 +17,10 @@ use cap_std::fs::Dir;
 use super::super::super::fault::{
     CheckedArtifactFault, fail_next_checked_artifact_at, run_next_checked_artifact_at,
 };
+use super::super::roundtrip_name;
 use super::{
     ANCHOR_BYTES, ANCHOR_PREFIX, RETIRED_PREFIX, SCRATCH_NAME, anchor_name, prepare, retired_name,
-    round_trip, roundtrip_name,
+    round_trip, round_trip_supplied,
 };
 use crate::model::ErrorCode;
 
@@ -588,4 +589,190 @@ fn the_outbound_alias_name_is_derived_natively() {
         roundtrip_name(OsStr::new(".ca1-durability-anchor-0123")),
         OsString::from(".ca1-durability-anchor-0123.roundtrip")
     );
+}
+
+/// R2-E Phase E2, DECISION B-3 — the `RoamingAnchoredTarget` arm's own rows.
+///
+/// The supplied alias carries the catalog's roaming-anchor bytes, not this
+/// module's `ANCHOR_BYTES`: the roaming arm takes its content from the caller
+/// that owns the constant, so nothing is duplicated here either.
+const ROAMING_BYTES: &[u8] = b"GWZ-ROAMING-ANCHOR-V1\n";
+
+/// The reserved leaf a real barrier would use is a schedule-derived action-slot
+/// name (OPEN-B3). Its exact spelling is irrelevant to the platform arm; what
+/// matters is that it is a caller-supplied name this protocol never surveys for.
+const RESERVED_LEAF: &str = "action-00-roaming-alias-v1";
+
+fn place_alias(root: &Path, leaf: &str) {
+    std::fs::write(root.join(leaf), ROAMING_BYTES).unwrap();
+}
+
+/// **OPEN-B7's probe, in the `hard_link_identity_sharing_is_what_the_retirement_rows_assume`
+/// shape: it measures the platform rather than reading a `cfg`.**
+///
+/// The open question is whether the P5 round trip behaves the same when it
+/// renames a *freshly created* alias as when it renames a long-resident anchor.
+/// This asks the platform directly, on two shapes, and asserts they agree: the
+/// object survives its round trip under its own name, with its own bytes and
+/// its own durable identity.
+///
+/// **What the second shape actually is** (E2 review [P3-4], which found the old
+/// `"long-resident"` label overstated): one directory mutation — a sibling
+/// written and unlinked — before the same freshly created alias is round-tripped.
+/// It is a proxy for residency across other dirent activity, not a long-lived
+/// object, and it is labelled `"aged-directory"` for exactly that reason. A true
+/// long-residency shape is not constructible in a unit test.
+///
+/// What it does not prove, stated so a green run is not over-read: the *dirent
+/// ordering* the Windows round trip exists to deliver is not observable from
+/// inside the process. This row proves the mechanism is available and
+/// identity-preserving on both shapes; the native Windows leg runs at the
+/// three-platform dispatch.
+#[test]
+fn the_supplied_roaming_round_trip_is_measured_on_both_alias_shapes() {
+    for (label, age_the_directory) in [("fresh", false), ("aged-directory", true)] {
+        let root = TempRoot::new(&format!("roaming-{label}"));
+        place_alias(&root.0, RESERVED_LEAF);
+        if age_the_directory {
+            let noise = root.0.join("noise");
+            std::fs::write(&noise, b"noise\n").unwrap();
+            std::fs::remove_file(&noise).unwrap();
+        }
+        let dir = root.dir();
+        let before = super::super::verify_leaf_bytes(
+            &dir,
+            OsStr::new(RESERVED_LEAF),
+            ROAMING_BYTES,
+            CODE,
+            LABEL,
+        )
+        .unwrap();
+
+        round_trip_supplied(&dir, OsStr::new(RESERVED_LEAF), ROAMING_BYTES, CODE, LABEL).unwrap();
+
+        let after = super::super::verify_leaf_bytes(
+            &dir,
+            OsStr::new(RESERVED_LEAF),
+            ROAMING_BYTES,
+            CODE,
+            LABEL,
+        )
+        .unwrap();
+        assert_eq!(
+            before, after,
+            "{label}: the supplied alias must survive its round trip as the same object"
+        );
+        assert_eq!(
+            names(&root.0),
+            BTreeSet::from([RESERVED_LEAF.to_owned()]),
+            "{label}: the round trip must leave only the reserved leaf"
+        );
+    }
+}
+
+/// The roaming arm surveys for nothing and establishes nothing: an empty target
+/// parent is a typed refusal, never a directory that quietly gains a permanent
+/// `.ca1-durability-anchor-*`. That is the whole reason DECISION B-3 needed a
+/// third class instead of passing `AnchoredPrivateArea`.
+#[test]
+fn the_roaming_arm_never_establishes_an_anchor_of_its_own() {
+    let root = TempRoot::new("roaming-empty");
+    let error = round_trip_supplied(
+        &root.dir(),
+        OsStr::new(RESERVED_LEAF),
+        ROAMING_BYTES,
+        CODE,
+        LABEL,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CODE);
+    assert!(error.message.contains("not exactly resident"), "{error:?}");
+    assert!(
+        names(&root.0).is_empty(),
+        "the refused barrier planted something in the target parent"
+    );
+}
+
+/// The crash window inside the round trip converges rather than stranding, for a
+/// caller that enters this arm **directly**: `round_trip_supplied` opens with
+/// `prepare_roaming_target`, which returns the object from its outbound name
+/// before the trip begins.
+///
+/// The drive does not reach the arm in this state — its own entry decision
+/// converges first, which is the E2 review's [P2-1] cure and is driven at
+/// `a_mid_round_trip_roaming_residue_converges_*`. This row keeps the arm safe
+/// for a caller that did not prepare.
+#[test]
+fn an_outbound_roaming_alias_is_returned_when_the_arm_is_entered_directly() {
+    let root = TempRoot::new("roaming-outbound");
+    let outbound = roundtrip_name(OsStr::new(RESERVED_LEAF));
+    place_alias(&root.0, outbound.to_str().unwrap());
+
+    round_trip_supplied(
+        &root.dir(),
+        OsStr::new(RESERVED_LEAF),
+        ROAMING_BYTES,
+        CODE,
+        LABEL,
+    )
+    .unwrap();
+
+    assert_eq!(names(&root.0), BTreeSet::from([RESERVED_LEAF.to_owned()]));
+    assert_eq!(
+        std::fs::read(root.0.join(RESERVED_LEAF)).unwrap(),
+        ROAMING_BYTES
+    );
+}
+
+/// A both-names state reached *inside* this arm is refused rather than guessed
+/// at, exactly as the resident protocol's `survey` refuses its own ambiguous
+/// shapes.
+///
+/// **The justification is not "unproducible", and the first landing of this test
+/// said it was** (E2 review [P2-1]): the drive's own leaf-only entry decision
+/// produced it, by creating a second object over an empty reserved leaf while
+/// the outbound name was resident. That entry decision is now
+/// `super::super::prepare_roaming_target`'s, which converges the outbound name
+/// before anything is created — so the state is unreachable *from the drive*,
+/// and this refusal now covers the case it is actually for: a foreign object
+/// appearing after that decision. It mutates nothing, and the next drive's entry
+/// decision resolves it (`a_legacy_both_names_tree_settles_with_a_tolerated_orphan_*`
+/// in `namespace/tests_barrier_matrix.rs`).
+#[test]
+fn a_roaming_alias_resident_under_both_names_is_refused_inside_the_arm() {
+    let root = TempRoot::new("roaming-ambiguous");
+    place_alias(&root.0, RESERVED_LEAF);
+    place_alias(
+        &root.0,
+        roundtrip_name(OsStr::new(RESERVED_LEAF)).to_str().unwrap(),
+    );
+
+    let error = round_trip_supplied(
+        &root.dir(),
+        OsStr::new(RESERVED_LEAF),
+        ROAMING_BYTES,
+        CODE,
+        LABEL,
+    )
+    .unwrap_err();
+    assert!(error.message.contains("not exactly resident"), "{error:?}");
+    assert_eq!(names(&root.0).len(), 2, "a refused barrier mutates nothing");
+}
+
+/// Foreign bytes under the reserved leaf are refused before any rename, so the
+/// roaming arm cannot lend a barrier to an object it did not recognise.
+#[test]
+fn foreign_bytes_under_the_reserved_leaf_are_refused_before_the_edge() {
+    let root = TempRoot::new("roaming-foreign");
+    std::fs::write(root.0.join(RESERVED_LEAF), b"foreign\n").unwrap();
+    let error = round_trip_supplied(
+        &root.dir(),
+        OsStr::new(RESERVED_LEAF),
+        ROAMING_BYTES,
+        CODE,
+        LABEL,
+    )
+    .unwrap_err();
+    assert!(error.message.contains("bytes are invalid"), "{error:?}");
+    assert_eq!(names(&root.0), BTreeSet::from([RESERVED_LEAF.to_owned()]));
 }

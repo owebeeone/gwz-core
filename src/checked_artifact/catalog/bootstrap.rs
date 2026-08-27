@@ -4,7 +4,7 @@ use crate::checked_artifact::bootstrap::{CatalogLeaseTargetWitnessV1, CatalogMut
 use crate::checked_artifact::capability::{
     AsciiComponent, CatalogPreflightV1, CheckedFsError, CompletedCatalogPermitV1,
     ManagedPrefixObservationV1, RetainedActionNamespaceV1, RetainedManagedParentV1,
-    preflight_catalog_target,
+    RoamingAnchorHomeWitnessV1, preflight_catalog_target,
 };
 use crate::checked_artifact::protocol::CatalogBootstrapOwnershipTokenV1;
 use crate::checked_artifact::protocol::CatalogBootstrapRecoveryDecisionV1;
@@ -180,6 +180,16 @@ impl OpaqueRetainedCatalogV1<'_> {
         admitted: &AdmittedActionV1,
     ) -> Result<(), CheckedFsError> {
         self.permit.retire_admitted_action(admitted)
+    }
+
+    /// R2-E Phase E2's roaming-anchor-home observation (O6), forwarded through
+    /// the same permit under the same rule. The catalog stays opaque: the
+    /// barrier owner receives a typed witness it cannot construct and never the
+    /// permit, a root, or a handle (`GwzM5-8R2DInterfaceFreeze.md` §3.1).
+    pub(in crate::checked_artifact) fn observe_roaming_anchor_home(
+        &self,
+    ) -> Result<RoamingAnchorHomeWitnessV1, CheckedFsError> {
+        self.permit.observe_roaming_anchor_home()
     }
 
     /// R2-D Phase 3 Step 3.1's managed-parent prefix observation, forwarded

@@ -6,9 +6,20 @@
 mod backend;
 mod evidence;
 /// R2-D Phase 2 Step 2.2 — the retained-handle production backend.
+///
+/// **The allow's expiry, re-anchored at R2-E Phase E2** (E2 review [P3-5]). Its
+/// reason has said "entry-point reachability is R2-E" since Step 2.2. Two things
+/// have moved under it since: E2 adds six barrier role methods with no
+/// production caller (only `tests_barrier_matrix` reaches them), and Phase E4 —
+/// the step that was to supply every entry point — was re-scheduled behind
+/// R2-F's quarantine/relocation package at the E0 close, under the operator's
+/// 2026-08-27 ruling (a). So the allow's expiry is **E4's landing, wherever
+/// R2-F puts it**, not "R2-E" generically; if E4 has not landed by the R2-E
+/// settle, E7 owes this allow a dated re-owning rather than letting it become
+/// permanent by silence.
 #[allow(
     dead_code,
-    reason = "the managed-parent provider has driven this backend since Step 3.1; entry-point reachability is R2-E"
+    reason = "the managed-parent provider has driven this backend since Step 3.1; entry-point reachability is Phase E4, itself sequenced behind R2-F's relocation"
 )]
 mod host;
 mod managed;
@@ -20,6 +31,9 @@ mod roles;
 pub(super) mod test_support;
 #[cfg(test)]
 mod tests_backend;
+/// R2-E Phase E2.3 — the `barrier.*` family's executed matrix, all sixteen keys.
+#[cfg(test)]
+mod tests_barrier_matrix;
 /// R2-E Phase E1 Step E1.2 — the executed `cleanup.*` matrix.
 #[cfg(test)]
 mod tests_cleanup_matrix;
@@ -38,6 +52,7 @@ pub(in crate::checked_artifact) use host::{HostActionNamespaceV1, retain_action_
 
 use super::capability::{
     AsciiComponent, CanonicalPathIdentityV1, CheckedFsError, DurableObjectIdentityV1,
+    RoamingAnchorHomeWitnessV1,
 };
 use super::protocol::{
     ActionDigestV1, ActionSlotV1, AdmittedActionV1, BarrierIntentV1, BarrierOrdinalV1,
@@ -213,16 +228,18 @@ impl<Implementation: RawNamespaceBackend> ActionNamespace<Implementation> {
         })
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the barrier record binds each independent retained namespace fact"
-    )]
+    /// R2-E Phase E2 (O6). The three roaming-anchor-home facts are no longer
+    /// forwarded from this owner's caller: they arrive as the pre-catalog
+    /// provider owner's own [`RoamingAnchorHomeWitnessV1`], which the caller
+    /// receives from `OpaqueRetainedCatalogV1::observe_roaming_anchor_home` and
+    /// cannot construct. The target parent's identity and path profile were
+    /// already provider-observed (`BackendIssuer::barrier_target` mints them
+    /// from `retained_parent()`), so after this change no field of
+    /// `BarrierIntentV1` is a caller restatement.
     pub(super) fn barrier_intent<DirectoryHandle>(
         &self,
         slots: &BarrierSlots<DirectoryHandle, DurableObjectIdentityV1, CanonicalPathIdentityV1>,
-        catalog_anchor_identity: DurableObjectIdentityV1,
-        private_home_parent_identity: DurableObjectIdentityV1,
-        private_home_name: AsciiComponent,
+        home: &RoamingAnchorHomeWitnessV1,
     ) -> Result<BarrierIntentV1, ProtocolCodecErrorV1> {
         if slots.binding != self.binding() {
             return Err(ProtocolCodecErrorV1::Invalid(
@@ -233,9 +250,7 @@ impl<Implementation: RawNamespaceBackend> ActionNamespace<Implementation> {
             &NamespaceBarrierAuthority::owner(),
             self.admitted_action.reservation(),
             slots.ordinal,
-            catalog_anchor_identity,
-            private_home_parent_identity,
-            private_home_name,
+            home,
             slots.target.parent.identity().clone(),
             slots.target.parent.path_profile().clone(),
             slots.target.leaf.clone(),

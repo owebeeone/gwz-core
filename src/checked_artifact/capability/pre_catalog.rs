@@ -37,6 +37,17 @@ pub(in crate::checked_artifact) use provider::{
     observe_cleanup_completion, observe_cleanup_retirement, observe_cleanup_row_facts,
     observe_cleanup_worklist_row, write_cleanup_worklist_scratch,
 };
+/// R2-E Phase E2 — the scheduled barrier family's owner-private lifecycle
+/// surface, plus O6's owner-minted roaming-anchor-home observation. The witness
+/// type is nameable by the protocol record that consumes it and by the
+/// `namespace` owner that forwards it; its constructor stays inside this owner,
+/// so no caller can assert the facts it carries.
+pub(in crate::checked_artifact) use provider::{
+    AliasRetirementEntryV1, BarrierIntentRowV1, RoamingAnchorHomeWitnessV1,
+    TargetAnchorAliasStateV1, barrier_target_parent, converge_target_anchor_alias,
+    create_target_anchor_alias, observe_barrier_completion, observe_barrier_intent_row,
+    retire_target_anchor_alias, write_barrier_intent_scratch,
+};
 /// R2-D Phase 2 Step 2.3 — the retained managed-parent capability the
 /// `namespace` owner drives edges E15 and E16 with, plus R2-D Phase 3 Step
 /// 3.1's managed-prefix observation.
@@ -188,6 +199,20 @@ impl CompletedCatalogPermitV1<'_> {
         self.revalidate()?;
         self.completed
             .retire_admitted_action(&self.retained_root, admitted)
+    }
+
+    /// R2-E Phase E2 (O6) — the roaming anchor's home, observed inside the
+    /// completed-catalog owner. Revalidating first is the same
+    /// `ready_edge_prologue` discipline the admission and namespace entry
+    /// points use, and here it *is* the refusal arm: the witness is mintable
+    /// only from a retained catalog that still revalidates, so the seam refuses
+    /// typed and mints nothing where it does not
+    /// (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §5.4).
+    pub(in crate::checked_artifact) fn observe_roaming_anchor_home(
+        &self,
+    ) -> Result<provider::RoamingAnchorHomeWitnessV1, CheckedFsError> {
+        self.revalidate()?;
+        Ok(self.completed.observe_roaming_anchor_home())
     }
 
     /// R2-D Phase 3 Step 3.1 — the bounded, read-only managed-parent prefix

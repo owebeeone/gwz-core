@@ -50,6 +50,69 @@
 //! | `.ca1-durability-anchor-<32hex>.roundtrip` | the barrier's outbound alias |
 //! | `.ca1-anchor-retired-v1` | the retirement destination that replaces the removal |
 //!
+//! # The roaming arm's two names (R2-E Phase E2, DECISION B-3)
+//!
+//! [`round_trip_supplied`] serves a directory that may retain no permanent
+//! anchor. It mints **no vocabulary of its own**: the base name is the caller's
+//! schedule-derived reserved leaf, and the outbound name is that leaf under the
+//! same `ROUNDTRIP_SUFFIX` the table above already froze — both derivations now
+//! live in `platform.rs`, because the residue has to be classifiable on every
+//! platform and this module is `cfg(any(windows, test))`.
+//!
+//! ## What a crash inside the round trip leaves, and who returns it
+//!
+//! *Corrected at the E2 review's [P2-1]; the first landing of this paragraph
+//! claimed a recovery its callers could not reach, and the claim had a
+//! behavioural tail.* A crash between the two renames leaves the alias under
+//! `<reserved leaf>.roundtrip` with the reserved leaf empty. That window is
+//! **converged, and nothing persists** — but the converging caller is
+//! [`super::prepare_roaming_target`], **not** this function.
+//!
+//! The distinction is the whole finding. A drive branching on the reserved leaf
+//! alone cannot see the outbound name, so it answered "absent", created a second
+//! object over the empty leaf, and only then called the barrier — which found
+//! both names resident and refused. One attempt was lost, and the outbound name
+//! was then left **permanently**, because the following attempt settled the
+//! ordinal and a settled ordinal is never barriered again. The cure is that the
+//! entry decision is now `prepare_roaming_target`'s: it owns both names, returns
+//! the outbound object before it answers, and hands its caller the ordinary
+//! resident state. `round_trip_supplied` calls it too, so a direct caller that
+//! did not prepare is equally safe.
+//!
+//! Stated as states, since three of the four are crash windows — the full table
+//! is at [`super::prepare_roaming_target`]:
+//!
+//! * **reserved leaf resident, outbound absent** — the settled between-barriers
+//!   state. Nothing to do.
+//! * **reserved leaf absent, outbound resident** — the mid-round-trip crash.
+//!   **Converges**: the object is returned to its reserved leaf by a rename,
+//!   never a removal, and nothing is left behind. Driven on both target variants
+//!   by `a_mid_round_trip_roaming_residue_converges_*`, which builds the state on
+//!   disk because no fault key exists inside the round trip.
+//! * **both names resident** — unreachable on this tree, because the entry
+//!   decision runs before anything is created. Reachable on a tree a
+//!   pre-remediation binary wrote. **Not refused**: the ordinal settles through
+//!   the stranded entry and the outbound object is left as a tolerated orphan,
+//!   because refusing would be a permanent typed refusal on a reachable state
+//!   whose only convergence is a removal — the wedge class E16's standard
+//!   forbids. Driven by `a_legacy_both_names_tree_settles_with_a_tolerated_orphan_*`.
+//! * **neither resident** — the caller creates the alias.
+//!
+//! So exactly one thing persists, and only from the past: a `<reserved
+//! leaf>.roundtrip` written by a **pre-remediation** binary on Windows, on an
+//! ordinal that has since settled. That is the legacy-orphan disposition this
+//! module already carries for the legacy nonce: bounded by past crashes, unable
+//! to grow because nothing on this tree produces it, refusing nothing and
+//! blocking nothing — it parses as no scheduled action slot, and every predicate
+//! that reads an action directory either ignores it or counts it as one more
+//! child of an already-non-exact directory.
+//!
+//! Within this arm itself, `round_trip_supplied` still refuses a both-names
+//! state, and that refusal is correct rather than vestigial: reaching it means a
+//! foreign object appeared *after* the entry decision converged, which is an
+//! ambiguity this arm must not guess at. It mutates nothing, and the next
+//! drive's entry decision resolves it to the tolerated-residue shape above.
+//!
 //! # Portability
 //!
 //! The protocol is portable code with a Windows-only production caller: off
@@ -68,13 +131,19 @@ use super::super::CheckedArtifactFact;
 use super::super::fault::{CheckedArtifactFault, fault};
 use super::super::identity::{self, ObjectIdentity};
 use super::super::observation::observe_leaf_exact;
-use super::{LeafPublicationSourceV1, error, io_error, publish_verified_leaf_no_replace};
+use super::{
+    LeafPublicationSourceV1, error, io_error, leaf_is_resident, prepare_roaming_target,
+    publish_verified_leaf_no_replace, roundtrip_name, verify_leaf_bytes,
+};
 use crate::model::{ErrorCode, ModelResult};
 
 pub(super) const ANCHOR_BYTES: &[u8] = b"GWZ-CHECKED-ARTIFACT-DURABILITY-ANCHOR-V1\n";
 
 const ANCHOR_PREFIX: &str = ".ca1-durability-anchor-";
-const ROUNDTRIP_SUFFIX: &str = ".roundtrip";
+// `ROUNDTRIP_SUFFIX` and `roundtrip_name` moved to `platform.rs` at R2-E Phase
+// E2's remediation: the roaming arm's residue has to be classifiable on every
+// platform, and this module is `cfg(any(windows, test))`. One suffix, one
+// derivation, now shared by both round trips.
 
 /// The one staging name. Deterministic by contract: this constant is what
 /// retires the legacy nonce, so a resume finds its own predecessor instead of
@@ -250,6 +319,65 @@ fn establish(dir: &Dir, scratch_present: bool, code: ErrorCode, label: &str) -> 
     verify(dir, &final_name, code, label).map(|_| ())
 }
 
+/// R2-E Phase E2, DECISION B-3 — P5's `RoamingAnchoredTarget` arm.
+///
+/// The directory this serves may retain no permanent anchor of its own, so it
+/// is **lent** one: the caller has already created a fresh object carrying
+/// `bytes` under the schedule-reserved `alias`, and this rounds that supplied
+/// object out of the directory and back, so the metadata transaction orders
+/// everything before it exactly as `round_trip` does for a resident anchor.
+/// Nothing is surveyed for and nothing permanent is established, which is the
+/// whole difference from the `AnchoredPrivateArea` arm.
+///
+/// **The window a crash can leave is converged, not refused.** A drive that
+/// stops between the two renames leaves the alias out under its outbound name;
+/// the next barrier returns it before taking its own trip. That is the same
+/// `AnchorState::NeedsReturn` discipline the resident protocol uses, reduced to
+/// two names because this arm surveys nothing: the alias belongs at its
+/// reserved leaf between barriers, so an outbound name resident here is this
+/// protocol's own residue.
+///
+/// Portable code with a Windows-only production caller, for the reason stated
+/// in the module header: it is what lets every platform execute this arm's
+/// interruption/restart rows rather than leaving them to a `cfg(windows)` arm
+/// no local gate can drive.
+pub(super) fn round_trip_supplied(
+    dir: &Dir,
+    alias: &OsStr,
+    bytes: &[u8],
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
+    let roundtrip = roundtrip_name(alias);
+    // The caller reached here through `prepare_roaming_target`, which already
+    // returned any outbound residue, so this converge step is the direct
+    // caller's guarantee rather than the drive's: it keeps the arm safe for a
+    // caller that did not prepare, which is how `round_trip` itself opens.
+    prepare_roaming_target(dir, alias, bytes, code, label)?;
+    if !leaf_is_resident(dir, alias, code, label)?
+        || leaf_is_resident(dir, &roundtrip, code, label)?
+    {
+        return Err(error(
+            code,
+            label,
+            "supplied roaming anchor alias is not exactly resident at its reserved leaf",
+        ));
+    }
+    let identity = verify_leaf_bytes(dir, alias, bytes, code, label)?;
+    publish_bytes(dir, alias, &roundtrip, &identity, bytes, code, label)?;
+    let moved = verify_leaf_bytes(dir, &roundtrip, bytes, code, label)?;
+    publish_bytes(dir, &roundtrip, alias, &moved, bytes, code, label)?;
+    let returned = verify_leaf_bytes(dir, alias, bytes, code, label)?;
+    if moved != returned || identity != returned {
+        return Err(error(
+            code,
+            label,
+            "supplied roaming anchor identity changed across its round trip",
+        ));
+    }
+    Ok(())
+}
+
 /// Every anchor edge is one P1 publication: the object is re-verified — identity
 /// and the frozen anchor bytes — through the handle that is then renamed, so a
 /// foreign substitution inside the window is refused before the namespace edge
@@ -263,15 +391,36 @@ fn publish(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
+    publish_bytes(
+        dir,
+        source,
+        destination,
+        identity,
+        ANCHOR_BYTES,
+        code,
+        label,
+    )
+}
+
+/// The same publication over an explicitly named content, for the roaming arm,
+/// whose lent object carries the catalog's `ROAMING_ANCHOR_BYTES` rather than
+/// this module's own `ANCHOR_BYTES`. The constant is not duplicated here: it is
+/// supplied by the caller that owns it.
+fn publish_bytes(
+    dir: &Dir,
+    source: &OsStr,
+    destination: &OsStr,
+    identity: &ObjectIdentity,
+    bytes: &[u8],
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
     publish_verified_leaf_no_replace(
         dir,
         source,
         dir,
         destination,
-        &LeafPublicationSourceV1 {
-            identity,
-            bytes: ANCHOR_BYTES,
-        },
+        &LeafPublicationSourceV1 { identity, bytes },
         code,
         label,
     )
@@ -383,12 +532,6 @@ fn smallest_free_ordinal(observed: &mut Vec<u32>) -> u32 {
 
 fn retired_name(ordinal: u32) -> String {
     format!("{RETIRED_PREFIX}{ordinal}")
-}
-
-fn roundtrip_name(final_name: &OsStr) -> OsString {
-    let mut roundtrip = final_name.to_os_string();
-    roundtrip.push(ROUNDTRIP_SUFFIX);
-    roundtrip
 }
 
 fn verify(dir: &Dir, name: &OsStr, code: ErrorCode, label: &str) -> ModelResult<ObjectIdentity> {

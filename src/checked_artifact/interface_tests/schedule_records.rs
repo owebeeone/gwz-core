@@ -1,5 +1,6 @@
 use super::super::capability::{
     AsciiComponent, CanonicalComponent, DurableObjectIdentityV1, PathComponentMode,
+    RoamingAnchorHomeWitnessV1,
 };
 use super::super::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionDirectoryAdmissionV1,
@@ -13,6 +14,102 @@ use super::super::protocol::{
 
 fn linux_identity(byte: u8) -> DurableObjectIdentityV1 {
     DurableObjectIdentityV1::linux_ext4([byte; 16], 1, vec![byte; 24]).unwrap()
+}
+
+/// R2-E Phase E2 (O6). The three roaming-anchor-home facts now reach the intent
+/// only through the owner-minted witness, so the protocol-private semantic test
+/// binds them through the `cfg(test)` door — the
+/// `NamespaceBarrierAuthority::test_only` shape — and still varies each one
+/// independently.
+fn home_witness(catalog: u8, home: u8, home_name: u8) -> RoamingAnchorHomeWitnessV1 {
+    RoamingAnchorHomeWitnessV1::test_only(
+        linux_identity(catalog),
+        linux_identity(home),
+        AsciiComponent::parse(&[home_name]).unwrap(),
+    )
+}
+
+/// One barrier intent, encoded, for the O6 read-side rows below. Its three
+/// identity facts are `home_witness(1, 2, b'h')`.
+fn encoded_barrier_intent() -> Vec<u8> {
+    BarrierIntentV1::test_issue(
+        &ActionCapacityReservationV1::new(
+            ActionDigestV1::new([8; 32]),
+            RequestOwnerBindingV1::new([9; 32]),
+            schedule(&[1], 2),
+        ),
+        BarrierOrdinalV1::new(0).unwrap(),
+        &home_witness(1, 2, b'h'),
+        linux_identity(3),
+        CanonicalPathIdentityV1::new(vec![CanonicalComponent::new(
+            AsciiComponent::parse(b"p").unwrap(),
+            PathComponentMode::Sensitive,
+        )])
+        .unwrap(),
+        AsciiComponent::parse(b"t").unwrap(),
+    )
+    .unwrap()
+    .encode_canonical()
+    .unwrap()
+}
+
+fn barrier_reservation() -> ActionCapacityReservationV1 {
+    ActionCapacityReservationV1::new(
+        ActionDigestV1::new([8; 32]),
+        RequestOwnerBindingV1::new([9; 32]),
+        schedule(&[1], 2),
+    )
+}
+
+/// R2-E Phase E2 (O6, read side). The restatement class survived restart until
+/// this refusal existed: `decode_canonical` rebuilds through `from_bound_fields`
+/// and bypasses `issue`, so a resume read the resident record's caller-asserted
+/// identities and acted on them however tight `issue` became.
+///
+/// Each of the three facts gets its **own** row (E2 review [P3-7]) rather than a
+/// shared loop, so a regression in one cannot be masked by an earlier failure in
+/// another, and so the failing test's name says which fact stopped being checked.
+fn refuses_disagreeing_witness(disagreeing: RoamingAnchorHomeWitnessV1) {
+    assert!(
+        read_and_bind_barrier_intent(
+            Cursor::new(encoded_barrier_intent()),
+            &barrier_reservation(),
+            BarrierOrdinalV1::new(0).unwrap(),
+            &disagreeing,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_resident_barrier_intent_is_refused_when_the_catalog_anchor_identity_disagrees() {
+    refuses_disagreeing_witness(home_witness(4, 2, b'h'));
+}
+
+#[test]
+fn a_resident_barrier_intent_is_refused_when_the_home_parent_identity_disagrees() {
+    refuses_disagreeing_witness(home_witness(1, 4, b'h'));
+}
+
+#[test]
+fn a_resident_barrier_intent_is_refused_when_the_home_name_disagrees() {
+    refuses_disagreeing_witness(home_witness(1, 2, b'i'));
+}
+
+/// The same read binds when the owner's re-minted witness agrees, so the three
+/// refusals above are proved to be about the *disagreement* and not about the
+/// witness being required at all.
+#[test]
+fn a_resident_barrier_intent_binds_against_the_witness_the_owner_re_minted() {
+    assert!(
+        read_and_bind_barrier_intent(
+            Cursor::new(encoded_barrier_intent()),
+            &barrier_reservation(),
+            BarrierOrdinalV1::new(0).unwrap(),
+            &home_witness(1, 2, b'h'),
+        )
+        .is_ok()
+    );
 }
 
 fn schedule(plan_sizes: &[u8], barriers: usize) -> ActionScheduleV1 {
@@ -282,9 +379,7 @@ fn barrier_intent_id_binds_every_persisted_field() {
         BarrierIntentV1::test_issue(
             &reservation,
             BarrierOrdinalV1::new(ordinal).unwrap(),
-            linux_identity(catalog),
-            linux_identity(home),
-            AsciiComponent::parse(&[home_name]).unwrap(),
+            &home_witness(catalog, home, home_name),
             linux_identity(target),
             CanonicalPathIdentityV1::new(vec![
                 CanonicalComponent::new(
@@ -317,6 +412,13 @@ fn barrier_intent_id_binds_every_persisted_field() {
         assert_ne!(first.intent_id(), changed.intent_id());
     }
     let bytes = first.encode_canonical().unwrap();
+    let bound_reservation = || {
+        ActionCapacityReservationV1::new(
+            ActionDigestV1::new([8; 32]),
+            RequestOwnerBindingV1::new([9; 32]),
+            schedule(&[1], 2),
+        )
+    };
     assert_eq!(
         read_bounded_record::<BarrierIntentV1>(Cursor::new(bytes.clone())).unwrap(),
         first
@@ -324,12 +426,9 @@ fn barrier_intent_id_binds_every_persisted_field() {
     assert_eq!(
         read_and_bind_barrier_intent(
             Cursor::new(bytes.clone()),
-            &ActionCapacityReservationV1::new(
-                ActionDigestV1::new([8; 32]),
-                RequestOwnerBindingV1::new([9; 32]),
-                schedule(&[1], 2),
-            ),
+            &bound_reservation(),
             BarrierOrdinalV1::new(0).unwrap(),
+            &home_witness(1, 2, b'h'),
         )
         .unwrap()
         .value(),
@@ -344,18 +443,16 @@ fn barrier_intent_id_binds_every_persisted_field() {
                 schedule(&[1], 2),
             ),
             BarrierOrdinalV1::new(0).unwrap(),
+            &home_witness(1, 2, b'h'),
         )
         .is_err()
     );
     assert!(
         read_and_bind_barrier_intent(
-            Cursor::new(bytes),
-            &ActionCapacityReservationV1::new(
-                ActionDigestV1::new([8; 32]),
-                RequestOwnerBindingV1::new([9; 32]),
-                schedule(&[1], 2),
-            ),
+            Cursor::new(bytes.clone()),
+            &bound_reservation(),
             BarrierOrdinalV1::new(1).unwrap(),
+            &home_witness(1, 2, b'h'),
         )
         .is_err()
     );
@@ -369,9 +466,7 @@ fn barrier_intent_id_binds_every_persisted_field() {
         BarrierIntentV1::test_issue(
             &too_short,
             BarrierOrdinalV1::new(1).unwrap(),
-            linux_identity(1),
-            linux_identity(2),
-            AsciiComponent::parse(b"h").unwrap(),
+            &home_witness(1, 2, b'h'),
             linux_identity(3),
             CanonicalPathIdentityV1::new(vec![CanonicalComponent::new(
                 AsciiComponent::parse(b"p").unwrap(),

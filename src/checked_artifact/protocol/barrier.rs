@@ -13,6 +13,7 @@ use super::schedule::{
 use super::schedule::{checked_array, checked_usize};
 use crate::checked_artifact::capability::{
     AsciiComponent, CanonicalPathIdentityV1, DurableObjectIdentityV1, DurablePathV1,
+    RoamingAnchorHomeWitnessV1,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +33,32 @@ pub(in crate::checked_artifact) struct BarrierIntentV1 {
 }
 
 impl BarrierIntentV1 {
+    /// Issues one barrier intent from facts nobody restated.
+    ///
+    /// **Pass the witness the capability owner minted; there is no route from a
+    /// caller-supplied identity.** `home` is a [`RoamingAnchorHomeWitnessV1`],
+    /// constructible only inside the pre-catalog provider owner from
+    /// `RetainedCompletedCatalogV1`'s own retained `catalog_anchor` and
+    /// `final_directory` handles — so the catalog anchor's identity and the
+    /// roaming anchor's home parent identity are *observed* by the owner that
+    /// holds those capabilities, and the home's name is not observed at all: it
+    /// is the frozen `InfrastructureSlotV1::RoamingAnchorHome.name()` the
+    /// witness derives, which is why it is no longer a parameter.
+    ///
+    /// This is the O6 obligation of `GwzM5-8R2DSettledTuple.md` §11.1
+    /// (`:653-658`) discharged in the Step-4.3 shape
+    /// (`GwzM5-8R2DPhase4Closure.md` §4): the owner observes, the owner refuses
+    /// on disagreement, and the derivation obligation is written here, on the
+    /// issuer's own signature, because this is the only place a future
+    /// transaction author will look. The refusal has two arms — the mint's, at
+    /// `CompletedCatalogPermitV1::observe_roaming_anchor_home`, which
+    /// revalidates the retained catalog before it mints anything; and the
+    /// read's, at [`read_and_bind_barrier_intent`], which requires the same
+    /// witness and refuses a resident record whose three identity facts
+    /// disagree with it. The second exists because `decode_canonical` rebuilds
+    /// through `from_bound_fields` and bypasses this constructor entirely, so
+    /// without it the restatement class would survive a restart
+    /// (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §5).
     #[allow(
         clippy::too_many_arguments,
         reason = "the intent deliberately binds each independent retained namespace fact"
@@ -40,9 +67,7 @@ impl BarrierIntentV1 {
         _authority: &crate::checked_artifact::namespace::NamespaceBarrierAuthority,
         reservation: &super::ActionCapacityReservationV1,
         ordinal: BarrierOrdinalV1,
-        catalog_anchor_identity: DurableObjectIdentityV1,
-        private_home_parent_identity: DurableObjectIdentityV1,
-        private_home_name: AsciiComponent,
+        home: &RoamingAnchorHomeWitnessV1,
         target_parent_identity: DurableObjectIdentityV1,
         target_path_profile: CanonicalPathIdentityV1,
         reserved_target_leaf: AsciiComponent,
@@ -58,9 +83,9 @@ impl BarrierIntentV1 {
             reservation.record_digest(),
             reservation.schedule().digest(),
             ordinal,
-            catalog_anchor_identity,
-            private_home_parent_identity,
-            private_home_name,
+            home.catalog_anchor_identity().clone(),
+            home.private_home_parent_identity().clone(),
+            home.private_home_name().clone(),
             target_parent_identity,
             DurablePathV1::from_live(&target_path_profile).map_err(|_| {
                 ProtocolCodecErrorV1::Invalid("barrier target has invalid durable path")
@@ -109,6 +134,24 @@ impl BarrierIntentV1 {
 
     pub(in crate::checked_artifact) const fn reservation_digest(&self) -> RecordDigestV1 {
         self.reservation_digest
+    }
+
+    /// The target parent this barrier bound at issue. R2-E Phase E2's
+    /// `barrier.target_reobserve` re-proves the live target against it, and
+    /// this one *is* a real identity check because the field exists
+    /// (E0.2b §1.5 row #9).
+    pub(in crate::checked_artifact) const fn target_parent_identity(
+        &self,
+    ) -> &DurableObjectIdentityV1 {
+        &self.target_parent_identity
+    }
+
+    /// The leaf the schedule reserved for the roaming anchor's alias inside the
+    /// target parent. A restart learns it from this durable record rather than
+    /// from its caller, which is why the alias lifecycle needs no alias-name
+    /// argument on the resume path.
+    pub(in crate::checked_artifact) const fn reserved_target_leaf(&self) -> &AsciiComponent {
+        &self.reserved_target_leaf
     }
 
     pub(in crate::checked_artifact) fn encode_canonical(
@@ -193,9 +236,7 @@ impl BarrierIntentV1 {
     pub(in crate::checked_artifact) fn test_issue(
         reservation: &super::ActionCapacityReservationV1,
         ordinal: BarrierOrdinalV1,
-        catalog_anchor_identity: DurableObjectIdentityV1,
-        private_home_parent_identity: DurableObjectIdentityV1,
-        private_home_name: AsciiComponent,
+        home: &RoamingAnchorHomeWitnessV1,
         target_parent_identity: DurableObjectIdentityV1,
         target_path_profile: CanonicalPathIdentityV1,
         reserved_target_leaf: AsciiComponent,
@@ -205,9 +246,7 @@ impl BarrierIntentV1 {
             &authority,
             reservation,
             ordinal,
-            catalog_anchor_identity,
-            private_home_parent_identity,
-            private_home_name,
+            home,
             target_parent_identity,
             target_path_profile,
             reserved_target_leaf,
@@ -235,10 +274,27 @@ impl BoundBarrierIntentV1 {
     }
 }
 
+/// Reads one resident barrier intent bounded and binds it to the resident
+/// reservation, ordinal **and roaming-anchor home**.
+///
+/// The five reservation/ordinal checks are R2-D's. The three identity checks
+/// beside them are R2-E Phase E2's completion of O6
+/// (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §5.2): the barrier owner
+/// re-mints the witness from its own retained capabilities on **every** resume
+/// and this seam refuses typed when the resident record's
+/// `catalog_anchor_identity`, `private_home_parent_identity` or
+/// `private_home_name` disagrees with it.
+///
+/// The comparison lives here, beside the other five, and **not** inside
+/// `BarrierIntentV1::decode_canonical`, which has no capability and must stay a
+/// pure codec. Requiring the witness rather than comparing an optional one is
+/// what closes the class: there is no route to bind a resident intent without
+/// the owner's own observation of the home it names.
 pub(in crate::checked_artifact) fn read_and_bind_barrier_intent(
     reader: impl Read,
     reservation: &super::ActionCapacityReservationV1,
     expected_ordinal: BarrierOrdinalV1,
+    home: &RoamingAnchorHomeWitnessV1,
 ) -> Result<BoundBarrierIntentV1, ProtocolCodecErrorV1> {
     let value = read_bounded_record_inner::<BarrierIntentV1>(reader)?;
     if value.action_digest != reservation.action_digest()
@@ -250,6 +306,14 @@ pub(in crate::checked_artifact) fn read_and_bind_barrier_intent(
     {
         return Err(ProtocolCodecErrorV1::Invalid(
             "barrier intent does not match resident reservation and ordinal",
+        ));
+    }
+    if &value.catalog_anchor_identity != home.catalog_anchor_identity()
+        || &value.private_home_parent_identity != home.private_home_parent_identity()
+        || &value.private_home_name != home.private_home_name()
+    {
+        return Err(ProtocolCodecErrorV1::Invalid(
+            "barrier intent does not match the observed roaming anchor home",
         ));
     }
     Ok(BoundBarrierIntentV1(value))

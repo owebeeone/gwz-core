@@ -168,8 +168,9 @@ impl Fixture {
             .join(RootEntryNameV1::ActiveAction(action).name())
     }
 
-    /// The action directory's sorted child names. Widened from private for R2-E
-    /// Step E1.2's cleanup matrix, which censuses the same directory.
+    /// The action directory's sorted child names. Widened from private for
+    /// R2-E: E1.2's cleanup matrix and E2.3's barrier matrix census the same
+    /// directory.
     pub(super) fn action_children(
         &self,
         variant: TargetVariantV1,

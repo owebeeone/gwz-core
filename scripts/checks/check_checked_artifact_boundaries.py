@@ -153,18 +153,22 @@ APPROVED_RUST_PATH_EDGES = {
 # Module-tree roots are protected as one path-and-byte manifest. This includes
 # the root module, every current descendant, and the descendant file set, so a
 # nested helper, a new source file, or a changed module edge fails closed.
+#
+# R2-E Phase E2 re-pins deliberately (GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT
+# §6.2(b), §6.3's amended §3.6 duty list). Two of the three moves were
+# forecast there: `.../pre_catalog.rs`, whose descendant root gains the new
+# `provider/barrier_mutation.rs` (DECISION B-1), and `.../platform.rs`, which
+# gains the third `DirentBarrierClass` variant (DECISION B-3). The third,
+# `checked_artifact/catalog.rs`, was NOT in that inventory and is recorded here
+# rather than absorbed: O6's witness reaches the barrier owner through
+# `OpaqueRetainedCatalogV1`, whose forwarder lives in `catalog/bootstrap.rs`
+# under this tree.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "4e942331b7461a589bbd8b616afe4f9398e8caa0e5840ce278f6a9b273b3def7",
-    # R2-E Step E3 re-pins this tree as well as `pre_catalog.rs`'s: the
-    # terminal retirement is forwarded through the opaque retained catalog
-    # (`catalog/bootstrap.rs`), which lives under this root. The E0.2b
-    # addendum's §6.2(b) inventory named only `pre_catalog.rs` and
-    # `platform.rs`; this is the third tree R2-E disturbs, recorded here so the
-    # remaining phases expect it.
-    "checked_artifact/catalog.rs": "5f10b93790e4c51b391175ba183fc97309ba7bf869ea19d17fb164f521c53f3a",
-    "checked_artifact/platform.rs": "febdc28b2f420dae51b7d23479c8de5d20ff86c626c1b2fcb5024f4a30645ab1",
+    "checked_artifact/capability/pre_catalog.rs": "5c65d5a248ec5b03812db5cfe2874943a4d6b4f0df5f0ad01bfd26f4f38e2b24",
+    "checked_artifact/catalog.rs": "cc845e20eae62f601e6c730799e77b69ba184324e7dfd58b4791dd139f133708",
+    "checked_artifact/platform.rs": "2f938dd93af7f3f065ab1ce3e5105df1d0045d9ca3ea05067f993cfa7ae5ecaa",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "74a416a623ad421b1646e8692d6b449d76cc754045ff43348c5e897c39eae96c",
 }
@@ -783,6 +787,23 @@ CATALOG_PUBLICATION_CALL_COUNTS = {
     # sealed no-replace primitive. Both are protocol-record moves; the streamed
     # source/goal payloads cross no namespace edge at all.
     "checked_artifact/capability/pre_catalog/provider/authority_record_binding.rs": 2,
+    # R2-E Phase E2 does NOT extend this inventory, and banks the negative here
+    # because the set-equality check below would otherwise be the first thing to
+    # say so (GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT §6.2(a), §6.3's amended
+    # §3.6 duty list). DECISION B-1 mints a new file under `provider/` —
+    # `barrier_mutation.rs` — so a reader expects a new row. There is none: the
+    # roaming anchor's alias is created through the P2 family (write-through
+    # plus flush), and both its retirements route through
+    # `RetainedActionNamespaceV1::execute_edge`, a same-directory rename that
+    # passes `&self.handle` for both source and destination and is already
+    # counted once against `namespace_mutation.rs`. `barrier_mutation.rs` opens
+    # no sealed primitive of its own.
+    #
+    # This holds only while OPEN-B2's answer holds. E2.1 answered it "the target
+    # parent stays action-directory-pinned"; if a later step widens the target
+    # to a retained managed parent, those retirements become cross-parent
+    # renames, `execute_edge` no longer serves them, and this dict moves with a
+    # new `barrier_mutation.rs` row.
 }
 
 
