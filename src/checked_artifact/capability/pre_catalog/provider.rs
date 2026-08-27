@@ -232,15 +232,22 @@ pub(super) enum RawCatalogInteriorFactV1 {
     /// `RetiredActionsDescriptor` and `CatalogFormat` stay byte-identical
     /// (E0.2b §2, "T1 is an observer-reading defect").
     ///
-    /// `infrastructure_rows` is the count of children that classified onto the
-    /// slot-bearing arm. The widened predicate accepts the root **only** when
-    /// it is zero, which is how an infrastructure-slot name planted in the
-    /// retired root refuses rather than being classified into `rows`
+    /// Both counts come from `interior::read_retired_root`, a dedicated
+    /// **single-level, non-recursive** reader: the retired root's children are
+    /// classified one level deep and never re-observed as interiors of their
+    /// own, so a nested `retired-actions-v1` chain of any depth is one
+    /// directory read and a typed refusal.
+    ///
+    /// `unaccepted_rows` is the count of children that are **not**
+    /// `RootEntryNameV1::ActiveAction` rows — infrastructure-slot names
+    /// included. The widened predicate accepts the root **only** when it is
+    /// zero, which is how an infrastructure-slot name planted in the retired
+    /// root refuses rather than being accepted as a resident row
     /// (E0.2b §2.4 item 2).
     RetiredActionRoot {
         identity: Vec<u8>,
         durable_identity: DurableObjectIdentityV1,
-        infrastructure_rows: usize,
+        unaccepted_rows: usize,
         retired_action_dirs: usize,
     },
     RegularFile {

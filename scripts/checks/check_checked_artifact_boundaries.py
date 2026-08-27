@@ -156,11 +156,7 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    # R2-E Phase E1 Step E1.2 re-pins this tree: Step E1.1 added the eleven
-    # `cleanup.*` injection sites to `provider/namespace_mutation.rs` and the
-    # two re-export hops that carry their entry points out of the owner
-    # (`provider.rs`, `pre_catalog.rs`). No new source file, no new module edge.
-    "checked_artifact/capability/pre_catalog.rs": "3d0445b40fdaf36282d52385bb0aafa4dbbf851756b2a8edec66bde131f80f5b",
+    "checked_artifact/capability/pre_catalog.rs": "fefa7e3e80b1e7ffc7710fb70552b74a927023c1719f45d3ad9d7b830eab0bf2",
     # R2-E Step E3 re-pins this tree as well as `pre_catalog.rs`'s: the
     # terminal retirement is forwarded through the opaque retained catalog
     # (`catalog/bootstrap.rs`), which lives under this root. The E0.2b

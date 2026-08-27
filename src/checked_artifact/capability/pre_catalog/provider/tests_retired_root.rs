@@ -18,24 +18,59 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use cap_fs_ext::ambient_authority;
+
 use crate::checked_artifact::admission::ActionAdmissionOwnerV1;
-use crate::checked_artifact::bootstrap::try_acquire_workspace_runtime;
+use crate::checked_artifact::bootstrap::{
+    CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
+    try_acquire_workspace_runtime,
+};
 use crate::checked_artifact::capability::CheckedFsError;
 use crate::checked_artifact::catalog::{OpaqueRetainedCatalogV1, recover_or_create};
 use crate::checked_artifact::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
 use crate::checked_artifact::protocol::{
     ActionCapacityReservationV1, ActionDigestV1, ActionScheduleV1, CleanupAliasSetV1,
-    InfrastructureSlotV1, ManagedBootstrapInputV1, RequestOwnerBindingV1, RootEntryNameV1,
+    InfrastructureSlotV1, MAX_RETIRED_ACTION_DIRS, ManagedBootstrapInputV1, RequestOwnerBindingV1,
+    RootEntryNameV1,
 };
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+/// The two frozen target variants. Added at the E3 remediation so the nested
+/// retired-root chain's refusal is proved on both, per the F1 ruling.
+#[derive(Clone, Copy, Debug)]
+enum TargetVariantV1 {
+    Workspace,
+    GitDirectory,
+}
+
+impl TargetVariantV1 {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::GitDirectory => "git-directory",
+        }
+    }
+
+    const fn private_root(self) -> CatalogPrivateRootV1 {
+        match self {
+            Self::Workspace => CatalogPrivateRootV1::Workspace,
+            Self::GitDirectory => CatalogPrivateRootV1::GitDirectory,
+        }
+    }
+}
+
 struct Fixture {
     root: PathBuf,
+    variant: TargetVariantV1,
 }
 
 impl Fixture {
     fn new(label: &str) -> Self {
+        Self::on(TargetVariantV1::Workspace, label)
+    }
+
+    fn on(variant: TargetVariantV1, label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "gwz-r2e-retired-root-{label}-{}-{}",
             std::process::id(),
@@ -43,12 +78,18 @@ impl Fixture {
         ));
         fs::create_dir(&root).unwrap();
         git2::Repository::init(&root).unwrap();
-        Self { root }
+        Self { root, variant }
     }
 
     fn catalog_root(&self) -> PathBuf {
-        self.root
-            .join(CatalogPrivateNameV1::Final.relative_path(CatalogPrivateRootV1::Workspace))
+        let base = match self.variant {
+            TargetVariantV1::Workspace => self.root.clone(),
+            TargetVariantV1::GitDirectory => git2::Repository::open(&self.root)
+                .unwrap()
+                .commondir()
+                .to_path_buf(),
+        };
+        base.join(CatalogPrivateNameV1::Final.relative_path(self.variant.private_root()))
     }
 
     fn retired_root(&self) -> PathBuf {
@@ -63,17 +104,33 @@ impl Drop for Fixture {
     }
 }
 
-/// One fresh-process catalog session: acquire the workspace lease, recover
-/// through the sole sealed catalog owner, run the body, release.
+/// One fresh-process catalog session on the fixture's target: acquire that
+/// target's lease, recover through the sole sealed catalog owner, run the body,
+/// release. Both arms mirror `namespace/tests_fault_matrix.rs`.
 fn with_catalog<T>(
     fixture: &Fixture,
     body: impl FnOnce(OpaqueRetainedCatalogV1<'_>) -> Result<T, CheckedFsError>,
 ) -> Result<T, CheckedFsError> {
-    let runtime = try_acquire_workspace_runtime(&fixture.root)
-        .unwrap()
-        .expect("workspace runtime lease");
-    let catalog = recover_or_create(runtime.catalog_mutation_lease())?;
-    body(catalog)
+    match fixture.variant {
+        TargetVariantV1::Workspace => {
+            let runtime = try_acquire_workspace_runtime(&fixture.root)
+                .unwrap()
+                .expect("workspace runtime lease");
+            let catalog = recover_or_create(runtime.catalog_mutation_lease())?;
+            body(catalog)
+        }
+        TargetVariantV1::GitDirectory => {
+            let request =
+                CatalogLeaseTargetRequestV1::repository_common_git_directory(&fixture.root);
+            let batch = CatalogLeaseTargetBatchV1::try_new([request]).unwrap();
+            let leases = CatalogLeaseSetV1::try_acquire(batch)
+                .unwrap()
+                .expect("Git catalog lease");
+            let lease = leases.leases().next().expect("one Git catalog lease");
+            let catalog = recover_or_create(lease)?;
+            body(catalog)
+        }
+    }
 }
 
 /// Reaching this at all is the proof: `recover_or_create` runs
@@ -218,6 +275,128 @@ fn a_retired_root_holding_a_malformed_action_name_still_refuses() {
     assert!(
         refusal.is_err(),
         "a retired root holding a malformed action name must refuse"
+    );
+}
+
+/// Deep enough that the first shape of this widening aborted the process here.
+///
+/// The E3 interior review's F1 probe measured the transition: a nested chain of
+/// depth 200 returned a typed refusal, and depth 700, 2000 and 8000 all ended
+/// `fatal runtime error: stack overflow, aborting … (signal: 6, SIGABRT)` —
+/// a threshold that was a property of the host's thread stack, not of any check
+/// in the code. 1024 is comfortably past it while staying cheap to plant and to
+/// tear down.
+const NESTED_CHAIN_DEPTH: usize = 1024;
+
+/// Plants a chain of nested `retired-actions-v1` directories inside `start`.
+///
+/// One handle at a time, each level opened relative to the last, so the walk
+/// needs neither a process-global `chdir` nor a path that would blow past
+/// `PATH_MAX` at this depth.
+fn plant_nested_retired_chain(start: &Path, depth: usize) {
+    let name = InfrastructureSlotV1::RetiredActions.name();
+    let mut directory = cap_std::fs::Dir::open_ambient_dir(start, ambient_authority())
+        .expect("the retired root is openable");
+    for _ in 0..depth {
+        directory.create_dir(name).expect("the chain is writable");
+        directory = directory
+            .open_dir(name)
+            .expect("the chain level is openable");
+    }
+}
+
+/// Removes the chain, iteratively, before the fixture's `Drop` can reach it.
+///
+/// `std::fs::remove_dir_all` recurses one stack frame per level, so at this
+/// depth the teardown would abort the process exactly as the defect under test
+/// did — which would say nothing about the fix.
+///
+/// The walk is O(depth) with two handles and no descent: each turn lifts the
+/// head's sub-chain up beside it, removes the now-empty head, and puts the
+/// sub-chain back under the head's name, shortening the chain by one. A
+/// bottom-up descent would instead be O(depth²) unless it held one descriptor
+/// per level, which at these depths exhausts the descriptor table.
+fn remove_nested_retired_chain(start: &Path) {
+    const SCRATCH: &str = "gwz-chain-teardown";
+    let name = InfrastructureSlotV1::RetiredActions.name();
+    let Ok(root) = cap_std::fs::Dir::open_ambient_dir(start, ambient_authority()) else {
+        return;
+    };
+    while let Ok(head) = root.open_dir(name) {
+        if head.open_dir(name).is_err() {
+            drop(head);
+            let _ = root.remove_dir(name);
+            return;
+        }
+        if head.rename(name, &root, SCRATCH).is_err() {
+            return;
+        }
+        drop(head);
+        if root.remove_dir(name).is_err() || root.rename(SCRATCH, &root, name).is_err() {
+            return;
+        }
+    }
+}
+
+/// **The F1 cure, driven.** `observe_slot`'s first shape re-entered
+/// `interior::observe` on a populated retired root; `exact_row` is
+/// parent-independent, so a `retired-actions-v1` child of the retired root
+/// classified as a perfectly good infrastructure row and the pair became
+/// mutually recursive with no depth counter. Every budget in the loop was
+/// allocated per level, so nothing caught it — the process aborted instead of
+/// refusing, on the path of *every* catalog consumer, since `completed_record`
+/// runs in every recovery and every publication acquisition window.
+///
+/// `read_retired_root` closes it structurally rather than by a counter: it is a
+/// single directory read that classifies each child one level deep and calls
+/// neither `observe` nor `observe_slot`, so there is no self-call to exceed. A
+/// nested chain of any depth is now one read and a typed refusal — the chain's
+/// first level classifies `Infrastructure`, which is not an `ActiveAction` row,
+/// so `unaccepted_rows` is nonzero and the widened predicate refuses.
+fn a_nested_retired_root_chain_is_a_typed_refusal(variant: TargetVariantV1) {
+    let fixture = Fixture::on(variant, &format!("nested-{}", variant.label()));
+    with_catalog(&fixture, |_| Ok(())).expect("the sealed catalog owner creates a catalog");
+    plant_nested_retired_chain(&fixture.retired_root(), NESTED_CHAIN_DEPTH);
+
+    let refusal = with_catalog(&fixture, |catalog| recovered(&catalog));
+    remove_nested_retired_chain(&fixture.retired_root());
+    assert!(
+        refusal.is_err(),
+        "a nested retired-root chain must be a typed refusal, never a process abort"
+    );
+    println!(
+        "nested-retired-chain | {} | depth={NESTED_CHAIN_DEPTH} | refused=typed | aborted=no",
+        variant.label()
+    );
+}
+
+#[test]
+fn a_nested_retired_root_chain_is_a_typed_refusal_on_a_workspace_target() {
+    a_nested_retired_root_chain_is_a_typed_refusal(TargetVariantV1::Workspace);
+}
+
+#[test]
+fn a_nested_retired_root_chain_is_a_typed_refusal_on_a_git_directory_target() {
+    a_nested_retired_root_chain_is_a_typed_refusal(TargetVariantV1::GitDirectory);
+}
+
+/// The retired root's own entry bound is `MAX_RETIRED_ACTION_DIRS`, checked
+/// explicitly inside the dedicated reader and **not** inherited from
+/// `interior::observe`'s caps. Sixty-five well-formed action rows is one past
+/// it, and is refused before any of them is classified into a fact.
+#[test]
+fn a_retired_root_past_the_frozen_retired_bound_refuses() {
+    let fixture = Fixture::new("over-bound");
+    with_catalog(&fixture, |_| Ok(())).expect("the sealed catalog owner creates a catalog");
+    for index in 0..=u8::try_from(MAX_RETIRED_ACTION_DIRS).expect("the frozen bound is small") {
+        let name = RootEntryNameV1::ActiveAction(ActionDigestV1::new([index; 32])).name();
+        fs::create_dir(fixture.retired_root().join(name)).expect("the retired root is writable");
+    }
+
+    let refusal = with_catalog(&fixture, |catalog| recovered(&catalog));
+    assert!(
+        refusal.is_err(),
+        "a retired root past MAX_RETIRED_ACTION_DIRS must refuse"
     );
 }
 

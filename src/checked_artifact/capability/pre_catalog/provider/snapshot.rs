@@ -219,13 +219,13 @@ fn frame_catalog_interior(digest: &mut Sha256, interior: &RawCatalogInteriorObse
             // is disturbed by the widening.
             RawCatalogInteriorFactV1::RetiredActionRoot {
                 identity,
-                infrastructure_rows,
+                unaccepted_rows,
                 retired_action_dirs,
                 ..
             } => {
                 frame(digest, &[4]);
                 frame(digest, identity);
-                frame(digest, &(*infrastructure_rows as u64).to_be_bytes());
+                frame(digest, &(*unaccepted_rows as u64).to_be_bytes());
                 frame(digest, &(*retired_action_dirs as u64).to_be_bytes());
             }
             RawCatalogInteriorFactV1::RegularFile {

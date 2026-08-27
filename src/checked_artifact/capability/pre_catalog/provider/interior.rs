@@ -487,31 +487,23 @@ fn observe_slot(
             .map_err(|source| CheckedFsError::io("open catalog interior directory", source))?;
         let identity = platform.dir_identity(&child)?;
         if probe_empty_directory {
-            let empty = {
-                let mut entries = child.entries().map_err(|source| {
-                    CheckedFsError::io("enumerate retired-action root", source)
-                })?;
-                entries.next().is_none()
-            };
-            if empty {
+            // T1 widening (E0.2b §2, AUTHORIZED; the freeze's own Class 2
+            // shape, `:1443-1450` — "what Phase 1 must extend is the
+            // *provider's reading* of that vocabulary, not the vocabulary").
+            // The retired root is read by its own dedicated single-level
+            // reader, which is where the empty case is decided too.
+            let retired = read_retired_root(&child)?;
+            if retired.is_empty() {
                 return Ok(RawCatalogInteriorFactV1::EmptyDirectory {
                     identity: encode_identity(&identity),
                     durable_identity: identity.durable().clone(),
                 });
             }
-            // T1 widening (E0.2b §2, AUTHORIZED; the freeze's own Class 2
-            // shape, `:1443-1450` — "what Phase 1 must extend is the
-            // *provider's reading* of that vocabulary, not the vocabulary").
-            // A populated retired root is read bounded through this same
-            // classifier, so its children are classified rather than merely
-            // counted: `exact_row` returns `ActiveAction` for an
-            // `action-<hex>-v1` row and refuses every other child outright.
-            let inner = observe(&child, platform)?;
             return Ok(RawCatalogInteriorFactV1::RetiredActionRoot {
                 identity: encode_identity(&identity),
                 durable_identity: identity.durable().clone(),
-                infrastructure_rows: inner.rows.len(),
-                retired_action_dirs: inner.action_rows.len(),
+                unaccepted_rows: retired.unaccepted_rows,
+                retired_action_dirs: retired.retired_action_dirs,
             });
         }
     } else if metadata.is_file() && !metadata.is_symlink() {
@@ -532,6 +524,91 @@ fn observe_slot(
     value.extend_from_slice(&metadata.dev().to_be_bytes());
     value.extend_from_slice(&metadata.ino().to_be_bytes());
     Ok(RawCatalogInteriorFactV1::Other(value))
+}
+
+/// The T1 widening's bounded reading of the `RetiredActions` root, one level
+/// deep.
+struct RetiredRootReadingV1 {
+    /// Children that classify `RootEntryNameV1::ActiveAction`.
+    retired_action_dirs: usize,
+    /// Children that do **not**. Infrastructure-slot names, scheduled-scratch
+    /// and retired names, malformed-recognized names, non-ASCII names and
+    /// foreign names all land here: the reading accepts *only* action rows, so
+    /// one counter of everything else is all the predicate needs, and it is
+    /// what makes an infrastructure-slot name planted in the retired root a
+    /// refusal rather than a classified row.
+    unaccepted_rows: usize,
+}
+
+impl RetiredRootReadingV1 {
+    const fn is_empty(&self) -> bool {
+        self.retired_action_dirs == 0 && self.unaccepted_rows == 0
+    }
+}
+
+/// Reads the `RetiredActions` root's own children **exactly once, exactly one
+/// level deep**, and classifies each name through the frozen
+/// [`RootEntryNameV1`] grammar.
+///
+/// **It deliberately calls neither [`observe`] nor [`observe_slot`], and that
+/// is a structural property, not a check.** The first shape of this widening
+/// re-entered `observe` on the retired root; `exact_row` is parent-independent,
+/// so a `retired-actions-v1` child of the retired root classified as a
+/// perfectly good infrastructure row and the pair became mutually recursive
+/// with no depth counter. A nested chain then aborted the process on a stack
+/// overflow — `SIGABRT`, reproduced at depth 700 — instead of returning the
+/// typed refusal this owner's whole discipline promises, and it did so on the
+/// path of *every* catalog consumer, since `completed_record` runs in every
+/// recovery and every publication acquisition window. There is no self-call
+/// here to exceed, so a nested chain of **any** depth is one directory read and
+/// a refusal.
+///
+/// **The bound is checked explicitly and is not inherited.** The entry cap
+/// below is `MAX_RETIRED_ACTION_DIRS` itself (`protocol/bounds.rs:2`), not
+/// `interior::observe`'s own effective caps — `MAX_INTERIOR_ENTRIES`
+/// (= `MAX_ROOT_ENTRIES` = 74) and `MAX_ACTIVE_ACTION_DIRS` (= 64) — and not
+/// the name budget's `MAX_CATALOG_PARENT_ENTRIES_V1`. The reused reader was
+/// numerically safe only because `bounds.rs:1` and `:2` are both 64, which
+/// silently coupled the retired-root bound to the active one; naming the
+/// retired constant here is what makes a future edit to either fail closed
+/// (E0.2b §3.2 ground 3, Code round-2 [P3-R1]).
+fn read_retired_root(directory: &cap_std::fs::Dir) -> Result<RetiredRootReadingV1, CheckedFsError> {
+    let mut budget = CatalogNameBudgetV1::new();
+    let mut actions: Vec<crate::checked_artifact::protocol::ActionDigestV1> = Vec::new();
+    let mut unaccepted_rows = 0_usize;
+    for entry in directory
+        .entries()
+        .map_err(|source| CheckedFsError::io("enumerate retired-action root", source))?
+    {
+        let entry =
+            entry.map_err(|source| CheckedFsError::io("read retired-action root", source))?;
+        let name = entry.file_name();
+        budget.charge_os_str(&name)?;
+        if budget.entry_count() > MAX_RETIRED_ACTION_DIRS {
+            return Err(CheckedFsError::unsupported(
+                PlatformCapability::PrivateNamespaceCollisionScan,
+                "retired-action root exceeds the frozen retired-action bound",
+            ));
+        }
+        match CatalogRootRowClassV1::classify(native_ascii_bytes(&name).unwrap_or(&[])) {
+            CatalogRootRowClassV1::ActiveAction(action) => {
+                reserve_one(&mut actions)?;
+                actions.push(action);
+            }
+            _ => unaccepted_rows += 1,
+        }
+    }
+    actions.sort_unstable_by_key(|action| action.bytes());
+    if actions.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(CheckedFsError::ambiguous(
+            "retired-action root",
+            "multiple native entries resolve to one retired action row",
+        ));
+    }
+    Ok(RetiredRootReadingV1 {
+        retired_action_dirs: actions.len(),
+        unaccepted_rows,
+    })
 }
 
 /// Bounded observation of one action directory through the frozen
@@ -886,10 +963,10 @@ fn retired_root_identity(
         } => Some(durable_identity.clone()),
         RawCatalogInteriorFactV1::RetiredActionRoot {
             durable_identity,
-            infrastructure_rows,
+            unaccepted_rows,
             retired_action_dirs,
             ..
-        } if *infrastructure_rows == 0 && *retired_action_dirs <= MAX_RETIRED_ACTION_DIRS => {
+        } if *unaccepted_rows == 0 && *retired_action_dirs <= MAX_RETIRED_ACTION_DIRS => {
             Some(durable_identity.clone())
         }
         _ => None,
@@ -905,10 +982,10 @@ pub(super) fn retired_action_dirs(interior: &RawCatalogInteriorObservationV1) ->
     match row(interior, InfrastructureSlotV1::RetiredActions)? {
         RawCatalogInteriorFactV1::EmptyDirectory { .. } => Some(0),
         RawCatalogInteriorFactV1::RetiredActionRoot {
-            infrastructure_rows,
+            unaccepted_rows,
             retired_action_dirs,
             ..
-        } if *infrastructure_rows == 0 && *retired_action_dirs <= MAX_RETIRED_ACTION_DIRS => {
+        } if *unaccepted_rows == 0 && *retired_action_dirs <= MAX_RETIRED_ACTION_DIRS => {
             Some(*retired_action_dirs)
         }
         _ => None,

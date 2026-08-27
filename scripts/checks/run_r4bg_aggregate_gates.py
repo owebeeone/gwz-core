@@ -81,33 +81,15 @@ def _fault_count(darwin: str, linux: str) -> str:
     measured elsewhere -- the release-train lesson (activation record
     S17; the Windows count-pin derivation) applied to this driver.
 
-    R2-E Phase E1 Step E1.2 moves the checked_artifact:: partition by the
-    eight tests of `namespace/tests_cleanup_matrix.rs` (the cleanup fault
-    matrix, both target variants, plus the repeated-boundary,
-    single-crossing and one-alias convergence rows). The tests are
-    unconditional -- no cfg gate -- so the move is +8 on every host.
-
-      * darwin 400 -> 408: EXECUTED on this step's host
-        (`cargo test --lib -p gwz-core checked_artifact::` = "408 passed"),
-        together with the remainder measured unchanged at "932 passed",
-        which also re-confirms that pin's FIRST-DISPATCH-EXPECTED value.
-      * linux 410 -> 418: FIRST-DISPATCH-EXPECTED, derived from the +8 and
-        NOT measured by this step. It is the lane owner's to execute at the
-        landing; if the Linux battery reports another number, that measured
-        number wins over this derivation.
-
-    The remainder pins do not move: all eight new tests are inside the
-    checked_artifact:: partition.
-
-    R2-E Step E3 moves the checked_artifact:: partition by +14: six rows
+    R2-E Step E3 moves the checked_artifact:: partition by +17: nine rows
     for the T1 widening precondition (tests_retired_root.rs) and eight
     for the terminal.* matrix (tests_terminal_fault_matrix.rs) -- both
     cfg-independent, so the delta is the same on every host. darwin
-    400 -> 414 is EXECUTED on this lane's macOS host at the E3.2 tree.
-    linux 410 -> 424 is DERIVED from that same delta and is
-    FIRST-DISPATCH-EXPECTED: the lane owner re-measures it on the Linux
-    leg at landing, exactly as 1bcb925 did for the values above. The
-    remainder partition does not move -- every added test is under
+    400 -> 417 is EXECUTED on this lane's macOS host at the E3
+    remediation tree. linux 410 -> 427 is DERIVED from that same delta
+    and is FIRST-DISPATCH-EXPECTED: the lane owner re-measures it on the
+    Linux leg at landing, exactly as 1bcb925 did for the values above.
+    The remainder partition does not move -- every added test is under
     checked_artifact::.
     """
     if sys.platform == "darwin":
@@ -128,7 +110,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("414 passed", "424 passed")),
+         lib("checked_artifact::"), _fault_count("417 passed", "427 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
