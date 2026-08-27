@@ -180,6 +180,89 @@ impl RetainedCompletedCatalogV1 {
         )
     }
 
+    /// R2-E E3.1 — the **one** new owner-private forward DECISION T-C′ mints
+    /// (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §8): the retired-action
+    /// root, handed to the sibling module that owns the catalog root's edges.
+    ///
+    /// It is the same shape [`Self::retain_action_namespace`] already uses and
+    /// carries the same contract — the caller receives a typed capability or a
+    /// sibling-owner handle, **never a path**, and nothing here leaves the
+    /// sealed pre-catalog provider owner: `admission_mutation` is a sibling
+    /// module of this one, not a consumer, exactly as `managed_mutation` is a
+    /// sibling of `namespace_mutation` for `RetainedActionNamespaceV1::handle`.
+    /// E3.1 mints exactly one forward, and this is it; the family's other five
+    /// keys need no forward at all because they read the action directory
+    /// through the capability that already owns it.
+    const fn retired_root(&self) -> &cap_std::fs::Dir {
+        &self.retired_actions.handle
+    }
+
+    /// R2-E E3.1 — the admitted action directory's terminal retirement into the
+    /// catalog's retired root: freeze §4.3 row E7's Phase-4 half, and the one
+    /// composite the whole `terminal.*` family names.
+    ///
+    /// Ten boundaries in one durable sequence, split by capability per DECISION
+    /// T-C′: keys #1-#5 in the action-directory owner, keys #6-#10 here in the
+    /// catalog-root owner. The rename inside key #7 is the commit point, so a
+    /// restart that finds the row already retired converges by observation
+    /// alone.
+    pub(in crate::checked_artifact::capability::pre_catalog) fn retire_admitted_action(
+        &self,
+        retained: &RetainedPlatformRoot,
+        admitted: &AdmittedActionV1,
+    ) -> Result<(), CheckedFsError> {
+        let expected = admitted.reservation();
+        let name = RootEntryNameV1::ActiveAction(expected.action_digest()).name();
+        let name = OsStr::new(name.as_str());
+        let retired_resident = self.retired_root().symlink_metadata(name).is_ok();
+        let active_resident = self.final_directory.handle.symlink_metadata(name).is_ok();
+        if retired_resident {
+            // The rename is atomic and no edge of this family ever restores an
+            // active row, so both parents holding the name is not a state this
+            // sequence can leave; it is a substituted namespace, refused rather
+            // than converged over.
+            if active_resident {
+                return Err(CheckedFsError::ambiguous(
+                    "terminal retirement",
+                    "the action row is resident under both the catalog root and the retired root",
+                ));
+            }
+            return Ok(());
+        }
+
+        let namespace = self.retain_action_namespace(admitted)?;
+        namespace.observe_terminal_preconditions(expected)?;
+        namespace.flush_terminal_action_directory()?;
+        // Release the action-directory capability before the rename edge, for
+        // the reason `admission_mutation::publish_staging_action` states: on
+        // Windows a directory rename fails with a sharing violation while any
+        // handle into the source tree survives.
+        drop(namespace);
+
+        let observed = interior::observe(&self.final_directory.handle, &super::HostPlatform)?;
+        let retired_action_dirs = interior::retired_action_dirs(&observed).ok_or_else(|| {
+            CheckedFsError::ambiguous(
+                "terminal retirement",
+                "the catalog's retired-action root is not a bounded retired root",
+            )
+        })?;
+        super::admission_mutation::retire_action_directory(
+            &self.final_directory.handle,
+            self.final_directory.identity.durable(),
+            self.retired_root(),
+            &self.expected_bootstrap,
+            expected,
+            observed.action_rows.len(),
+            retired_action_dirs,
+        )?;
+        super::admission_mutation::barrier_catalog_root(
+            &self.final_directory.handle,
+            self.final_directory.identity.durable(),
+            &self.expected_bootstrap,
+            || self.revalidate(retained),
+        )
+    }
+
     pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate(
         &self,
         retained: &RetainedPlatformRoot,

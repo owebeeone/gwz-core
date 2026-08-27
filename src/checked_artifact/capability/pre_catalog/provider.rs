@@ -302,3 +302,6 @@ mod tests_leaf_observation;
 /// R2-E E3.1 precondition — the T1 widening's own rows (E0.2b §2.4 item 4).
 #[cfg(test)]
 mod tests_retired_root;
+/// R2-E Step E3.2 — the executed `terminal.*` matrix, ten of eleven keys.
+#[cfg(test)]
+mod tests_terminal_fault_matrix;

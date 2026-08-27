@@ -177,6 +177,19 @@ impl CompletedCatalogPermitV1<'_> {
         self.completed.retain_action_namespace(admitted)
     }
 
+    /// R2-E E3.1 — the admitted action directory's terminal retirement, under
+    /// the same `ready_edge_prologue` discipline every other admission entry
+    /// point uses: the lease/root binding and the exact retained catalog are
+    /// re-proved before anything is observed or moved.
+    pub(in crate::checked_artifact) fn retire_admitted_action(
+        &self,
+        admitted: &AdmittedActionV1,
+    ) -> Result<(), CheckedFsError> {
+        self.revalidate()?;
+        self.completed
+            .retire_admitted_action(&self.retained_root, admitted)
+    }
+
     /// R2-D Phase 3 Step 3.1 — the bounded, read-only managed-parent prefix
     /// observation, under the same `ready_edge_prologue` discipline: the
     /// lease/root binding and the exact retained catalog are re-proved before

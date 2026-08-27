@@ -129,6 +129,25 @@ fn catalog_publication_uses_one_source_associated_seam() {
     // slot and retires it onto the scheduled retired alias — two protocol-record
     // moves, in one added file, through the same one sealed primitive.
     let record = include_str!("../capability/pre_catalog/provider/authority_record_binding.rs");
+    // R2-E Step E3 extends the caller inventory deliberately, per
+    // `GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §6.2(a) and
+    // `GwzM5-8R2DInterfaceFreeze.md` §4.4 Class 1: freeze §4.3 row E7's Phase-4
+    // half retires the whole admitted action directory out of the catalog root
+    // and into the catalog's own retired root. That is cross-parent, and the
+    // namespace backend's shared `execute_edge` site is same-directory only, so
+    // the retirement adds exactly one production site — in
+    // `admission_mutation.rs`, already an inventoried file, taking it 2 -> 3.
+    // It carries DECISION T-B′'s `TerminalRetiredRoot` destination arm and the
+    // terminal source-interior arm E7's directory source structurally requires.
+    //
+    // FIFTH dated extension of this pin; FOURTEENTH production call site. The
+    // Python twin of this number lives in
+    // `scripts/checks/check_checked_artifact_boundaries.py`'s
+    // `CATALOG_PUBLICATION_CALL_COUNTS`, which additionally pins the count
+    // per file and asserts set equality against the production tree; both move
+    // in this commit, and the addendum's §6.2 inventory named only the Python
+    // one — this Rust twin is recorded here so the next converting phase finds
+    // both.
     let publication = include_str!("../capability/pre_catalog/provider/publication.rs");
     let callers = format!("{mutation}\n{directory}\n{admission}\n{namespace}\n{managed}\n{record}");
 
@@ -136,7 +155,7 @@ fn catalog_publication_uses_one_source_associated_seam() {
     assert!(publication.contains("open_rename_source("));
     assert!(publication.contains("rename_open_source("));
     assert!(publication.contains("expected_identity"));
-    assert_eq!(callers.matches("publish_verified_no_replace(").count(), 13);
+    assert_eq!(callers.matches("publish_verified_no_replace(").count(), 14);
     assert!(!callers.contains("platform::rename_relative"));
     assert!(!callers.contains("fn rename_no_replace("));
 }

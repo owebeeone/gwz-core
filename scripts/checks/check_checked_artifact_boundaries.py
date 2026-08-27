@@ -160,8 +160,14 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     # `cleanup.*` injection sites to `provider/namespace_mutation.rs` and the
     # two re-export hops that carry their entry points out of the owner
     # (`provider.rs`, `pre_catalog.rs`). No new source file, no new module edge.
-    "checked_artifact/capability/pre_catalog.rs": "e2bdfb72e10e24af874b021423d5ac9a0ccb6b9011e8d79cfee00a221d6d5271",
-    "checked_artifact/catalog.rs": "d02ee18a46b6c83d72279bdd0120f637b6e582eaeef59a4000e1017009ba4efa",
+    "checked_artifact/capability/pre_catalog.rs": "3d0445b40fdaf36282d52385bb0aafa4dbbf851756b2a8edec66bde131f80f5b",
+    # R2-E Step E3 re-pins this tree as well as `pre_catalog.rs`'s: the
+    # terminal retirement is forwarded through the opaque retained catalog
+    # (`catalog/bootstrap.rs`), which lives under this root. The E0.2b
+    # addendum's §6.2(b) inventory named only `pre_catalog.rs` and
+    # `platform.rs`; this is the third tree R2-E disturbs, recorded here so the
+    # remaining phases expect it.
+    "checked_artifact/catalog.rs": "5f10b93790e4c51b391175ba183fc97309ba7bf869ea19d17fb164f521c53f3a",
     "checked_artifact/platform.rs": "febdc28b2f420dae51b7d23479c8de5d20ff86c626c1b2fcb5024f4a30645ab1",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "74a416a623ad421b1646e8692d6b449d76cc754045ff43348c5e897c39eae96c",
@@ -748,7 +754,23 @@ FORBIDDEN_PROVISIONAL_CATALOG_INTERFACES = {
 CATALOG_PUBLICATION_CALL_COUNTS = {
     "checked_artifact/capability/pre_catalog/provider/mutation.rs": 1,
     "checked_artifact/capability/pre_catalog/provider/directory_mutation.rs": 5,
-    "checked_artifact/capability/pre_catalog/provider/admission_mutation.rs": 2,
+    # R2-E Step E3.2 extends this inventory deliberately (freeze §4.4 Class 1;
+    # GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md §6.2(a)): the terminal
+    # retirement of edge E7's Phase-4 half renames the admitted action
+    # directory out of the catalog root and into the catalog's own retired
+    # root. That is cross-parent, and the namespace backend's shared
+    # `execute_edge` call site is same-directory only, so the retirement needs
+    # its own `publish_verified_no_replace` call here: 2 -> 3.
+    #
+    # This is the FIFTH dated extension of this dict and the FOURTEENTH
+    # production call site, checkable rather than inherited: the freeze's base
+    # is six sites (mutation.rs 1 + directory_mutation.rs 5); the four dated
+    # extensions above added seven more, for thirteen; this adds the
+    # fourteenth. The freeze's rule — "The caller count stays at six
+    # production sites until a phase deliberately extends it" — is honoured by
+    # recording the extension here, with its edge, rather than by bumping a
+    # number.
+    "checked_artifact/capability/pre_catalog/provider/admission_mutation.rs": 3,
     # R2-D Step 2.2 extends this inventory deliberately (freeze §4.4 rules;
     # Step-2.2 review [P2-1] discharge): the namespace backend's E12/E13
     # edges publish and retire through one shared sealed-primitive call site.

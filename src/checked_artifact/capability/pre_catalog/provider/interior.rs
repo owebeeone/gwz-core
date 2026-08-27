@@ -585,6 +585,20 @@ impl ActionInteriorObservationV1 {
         self.extra_children == 0
             && matches!(&self.reservation, RecordObservationV1::Exact(value) if value == expected)
     }
+
+    /// R2-E E3.1's terminal source-interior predicate: the resident reservation
+    /// is still this exact one.
+    ///
+    /// It is [`Self::is_exact`] without the `extra_children == 0` clause,
+    /// which holds of a freshly staged action directory and never of one that
+    /// has run an action — the directory a terminal retirement moves carries
+    /// its authority, payload, worklist and retired-alias rows by construction.
+    /// The bounded enumeration and the frozen `MAX_ACTION_SLOTS` refusal are
+    /// the same for both; only this clause differs. "`publication.rs` decides,
+    /// `interior.rs` verifies" (freeze §4.4 Class 1).
+    pub(super) fn is_reservation_exact(&self, expected: &ActionCapacityReservationV1) -> bool {
+        matches!(&self.reservation, RecordObservationV1::Exact(value) if value == expected)
+    }
 }
 
 pub(super) fn observe_action_interior(

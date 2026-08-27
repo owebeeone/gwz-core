@@ -33,9 +33,9 @@ use crate::checked_artifact::capability::{
 use crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1;
 use crate::checked_artifact::protocol::{
     ActionAdmissionEdgeV1, ActionAdmissionObservationV1, ActionCapacityReservationV1,
-    ActionDirectoryAdmissionV1, ActionSlotV1, BaseActionSlotV1, CatalogBootstrapRecordV1,
-    InfrastructureSlotV1, ProtocolRecordKindV1, RecordObservationV1, RootEntryNameV1,
-    decode_action_directory_admission,
+    ActionDirectoryAdmissionV1, ActionSlotV1, BaseActionSlotV1, CatalogAdmissionOccupancyV1,
+    CatalogBootstrapRecordV1, CatalogOccupancyV1, InfrastructureSlotV1, ProtocolRecordKindV1,
+    RecordObservationV1, RootEntryNameV1, decode_action_directory_admission,
 };
 
 /// One complete read-only observation of the admission state resident in the
@@ -322,6 +322,184 @@ fn publish_staging_action(
 
 fn final_action_name(expected: &ActionCapacityReservationV1) -> String {
     RootEntryNameV1::ActiveAction(expected.action_digest()).name()
+}
+
+/// R2-E E3.1 — `terminal.*` key #6: the retirement destination row is proved
+/// free and the frozen occupancy credit is proved available.
+///
+/// **DECISION T-C′** (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §8): keys
+/// #6-#10 are edges of the **catalog root** and its retired root, which is the
+/// capability this file owns. The retired root arrives through the one new
+/// owner-private forward E3.1 mints — `RetainedCompletedCatalogV1::retired_root`
+/// — and it is a handle *inside* the sealed provider owner, never a capability
+/// a consumer receives.
+///
+/// **DECISION T-A**: the destination name is the already-derived
+/// `RootEntryNameV1::ActiveAction(digest).name()` under a different parent.
+/// `RootEntryNameV1::name` is parent-independent, and
+/// `MAX_RETIRED_ACTION_DIRS == MAX_ACTIVE_ACTION_DIRS == 64` — the frozen
+/// bounds already model a one-for-one retired twin of each active row, which
+/// only a same-name-different-parent scheme gives. Nothing is minted.
+fn reserve_retired_slot(
+    retired_root: &Dir,
+    destination: &OsStr,
+    active_action_dirs: usize,
+    retired_action_dirs: usize,
+) -> Result<(), CheckedFsError> {
+    match retired_root.symlink_metadata(destination) {
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => return Err(CheckedFsError::io("observe retirement destination", source)),
+        Ok(_) => {
+            return Err(CheckedFsError::ambiguous(
+                "terminal retirement",
+                "the derived retirement destination row is already occupied",
+            ));
+        }
+    }
+    // The retirement is about to move one active row into the retired root, so
+    // the occupancy it must satisfy is the post-edge one. `validate` refuses
+    // `RetiredLimitExceeded` and the retirement-credit inequality that reserves
+    // one retired slot for every action still outstanding.
+    CatalogOccupancyV1::new(
+        active_action_dirs.saturating_sub(1),
+        retired_action_dirs + 1,
+        CatalogAdmissionOccupancyV1::Idle,
+    )
+    .map_err(|_| {
+        CheckedFsError::ambiguous(
+            "terminal retirement",
+            "the retirement would leave the catalog outside its frozen occupancy bounds",
+        )
+    })?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::TerminalRetiredSlotReserve);
+    Ok(())
+}
+
+/// R2-E E3.1 — `terminal.*` keys #6, #7 and #8: the whole admitted action
+/// directory retires into the catalog's retired root.
+///
+/// Freeze §4.3 row E7, "P1 with destination recheck". The rename is the commit
+/// point; the flush that follows orders the *observation*, not the atomicity —
+/// the E16 cross-parent record (freeze §4.3) applies unchanged, this being the
+/// second cross-directory durable edge in the provider's namespace family.
+///
+/// The source recheck is the `TerminalActionDirectory` arm and the destination
+/// recheck is DECISION T-B′'s `TerminalRetiredRoot`, whose two observation
+/// inputs — the retired root and the catalog root — are both re-proved inside
+/// the acquisition window.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the terminal retirement binds two retained parents, two identities, the frozen \
+              bootstrap record, the reservation, and both observed occupancy terms; collapsing \
+              them into a struct would hide which of the two roots each fact belongs to"
+)]
+pub(super) fn retire_action_directory(
+    final_directory: &Dir,
+    final_identity: &DurableObjectIdentityV1,
+    retired_root: &Dir,
+    bootstrap: &CatalogBootstrapRecordV1,
+    expected: &ActionCapacityReservationV1,
+    active_action_dirs: usize,
+    retired_action_dirs: usize,
+) -> Result<(), CheckedFsError> {
+    let child = RootEntryNameV1::ActiveAction(expected.action_digest());
+    let name = child.name();
+    let name = OsStr::new(name.as_str());
+
+    reserve_retired_slot(retired_root, name, active_action_dirs, retired_action_dirs)?;
+
+    let action = final_directory
+        .open_dir_nofollow(name)
+        .map_err(|source| CheckedFsError::io("open retiring action directory", source))?;
+    let fact = super::HostPlatform.dir_identity(&action)?;
+    let identity = encode_identity(&fact);
+    let durable_identity = fact.durable().clone();
+    // Release this owner's own handle into the source tree before the rename
+    // edge, for the reason `publish_staging_action` states: on Windows a
+    // directory rename fails with a sharing violation while any handle into the
+    // source tree survives, and the sealed primitive re-establishes source
+    // identity and interior through its own capabilities.
+    drop(action);
+    publish_verified_no_replace(
+        final_directory,
+        name,
+        retired_root,
+        name,
+        PublicationSourceV1::directory(
+            &identity,
+            DirectoryInteriorRecheckV1 {
+                durable_identity: &durable_identity,
+                expected: DirectoryInteriorExpectationV1::TerminalActionDirectory(expected),
+            },
+        ),
+        DestinationRecheckV1::TerminalRetiredRoot {
+            catalog_root: final_directory,
+            catalog_identity: final_identity,
+            expected: bootstrap,
+            absent_child: child,
+        },
+        "retire action directory",
+    )?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        CheckedArtifactFaultKeyV1::TerminalActionDirectoryRetire,
+    );
+
+    let retired = retired_root
+        .open_dir_nofollow(name)
+        .map_err(|source| CheckedFsError::io("reopen retired action directory", source))?;
+    if encode_identity(&super::HostPlatform.dir_identity(&retired)?) != identity {
+        return Err(CheckedFsError::ambiguous(
+            "retired action directory",
+            "opened directory identity does not match the retired action object",
+        ));
+    }
+    sync_directory_edge(retired_root, "flush terminal action retirement")?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(
+        CheckedArtifactFaultKeyV1::TerminalRetiredDirectoryReobserve,
+    );
+    Ok(())
+}
+
+/// R2-E E3.1 — `terminal.*` keys #9 and #10: the catalog root's dirent barrier,
+/// and the completed-catalog predicate re-proved **after** the retirement.
+///
+/// Key #9 is the `ExactInterior` class of the admitted dirent-barrier family
+/// (freeze §4.1 row P5): the catalog root is the retirement's *source* parent,
+/// so its barrier is what orders the namespace transition. Key #10 is this
+/// function's tail, per E0.2 §4.3: `interior::completed_record` is `Some` under
+/// T1's widened reading, **and** the retained-catalog revalidation passes —
+/// which is the boundary that could not exist before the widening, since it is
+/// by construction the one a populated retired root made unpassable.
+pub(super) fn barrier_catalog_root(
+    final_directory: &Dir,
+    final_identity: &DurableObjectIdentityV1,
+    bootstrap: &CatalogBootstrapRecordV1,
+    revalidate_retained: impl FnOnce() -> Result<(), CheckedFsError>,
+) -> Result<(), CheckedFsError> {
+    crate::checked_artifact::platform::private_barrier(
+        final_directory,
+        crate::checked_artifact::platform::DirentBarrierClass::ExactInterior,
+        crate::model::ErrorCode::IoError,
+        "terminal catalog barrier",
+    )
+    .map_err(|source| CheckedFsError::ambiguous("terminal catalog barrier", source.message))?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::TerminalCatalogBarrier);
+
+    let fresh = interior::observe(final_directory, &super::HostPlatform)?;
+    if interior::completed_record(final_identity, &fresh, bootstrap).is_none() {
+        return Err(CheckedFsError::ambiguous(
+            "terminal catalog revalidation",
+            "the catalog is not exactly complete after the terminal retirement",
+        ));
+    }
+    revalidate_retained()?;
+    #[cfg(test)]
+    crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::TerminalTerminalRevalidate);
+    Ok(())
 }
 
 /// Which durable admission row a shared edge is crossing.

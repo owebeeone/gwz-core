@@ -401,11 +401,64 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
         FaultFamilyActivationV1::Reserved("R2-D phase 4 (Windows retirement closure)"),
         16,
     ),
+    // R2-E Phase E3 converts freeze §4.3 row E7's Phase-4 half — the admitted
+    // action directory's terminal retirement into the catalog's retired root —
+    // which is the one composite every key of this family names. Ten of the
+    // eleven keys have injection sites, split by *capability* per DECISION T-C′
+    // (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §8): keys #1-#5 are reads
+    // and a flush of the action directory and are announced from
+    // `namespace_mutation.rs`, which owns it; keys #6-#10 are edges of the
+    // catalog root and its retired root and are announced from
+    // `admission_mutation.rs`, which owns them. Executed
+    // interruption/restart/convergence rows for all ten, on both target
+    // variants, plus twelve-round repeated-boundary rows and a machine-checked
+    // single-crossing probe, are in
+    // `capability/pre_catalog/provider/tests_terminal_fault_matrix.rs`.
+    //
+    // The eleventh, `terminal.authority_release`, is a determination rather
+    // than a debt: `RetainedWriteAuthorityV1` is deliberately neither `Copy`
+    // nor `Clone` (`coordinator/execution.rs`), so release is a move-out — an
+    // in-process event no restart can observe, which is exactly the Phase-3
+    // settle's own ground for a key that never gains a boundary. It is still
+    // proved siteless below, key by key.
     (
         "terminal",
-        FaultFamilyActivationV1::Reserved("R2-D phase 4 (terminal retirement edges)"),
+        FaultFamilyActivationV1::PartiallyExecuted(
+            "R2-E phase E3 (terminal retirement edges); the eleventh key is DECISION T-D's \
+             determination, not an unconverted edge",
+            TERMINAL_EXECUTED_KEYS,
+        ),
         11,
     ),
+];
+
+/// The `terminal.*` subset executed by R2-E Step E3.2, in the order one virgin
+/// terminal retirement crosses them.
+///
+/// **Ten, not eleven.** `terminal.authority_release` is absent by
+/// determination — DECISION T-D, re-grounded at E0.2b §8 on reading (a) alone.
+/// Its two possible readings are an in-process move-out (not a durable edge at
+/// all) and the admission record's return to `Idle`, which *is* durable but is
+/// the **catalog's re-admission capacity**, not the action directory's
+/// retirement, and is therefore outside this family's frozen scope by the
+/// freeze's own words (`GwzM5-8R2DInterfaceFreeze.md` :795-797). That edge is
+/// `admission.*`'s and is fully executed at five keys, named at
+/// `admission_mutation.rs`'s `write_faults` idle arm and `install_faults`'s
+/// idle arm; `terminal.authority_release` does not name it. Census stays
+/// 165/11, no key retired.
+const TERMINAL_EXECUTED_KEYS: &[&str] = &[
+    // Keys #1-#5 — the action-directory half, in `namespace_mutation.rs`.
+    "authority_reobserve",
+    "payload_reobserve",
+    "cleanup_reobserve",
+    "reservation_reobserve",
+    "directory_flush",
+    // Keys #6-#10 — the catalog-root half, in `admission_mutation.rs`.
+    "retired_slot_reserve",
+    "action_directory_retire",
+    "retired_directory_reobserve",
+    "catalog_barrier",
+    "terminal_revalidate",
 ];
 
 /// The complete set of production sources that hold `CheckedArtifactFaultKeyV1`
@@ -422,6 +475,16 @@ const FAULT_FAMILY_ACTIVATION: &[(&str, FaultFamilyActivationV1, usize)] = &[
 /// `admission/driver.rs` deliberately holds
 /// none: it decides and never mutates (`admission/driver.rs:8-9`), so every
 /// durable admission edge is announced from the owner-private mutation file.
+///
+/// **R2-E Phase E3 adds no file to this list, and moves no count.** The
+/// `terminal.*` family's ten sites land in `admission_mutation.rs` and
+/// `namespace_mutation.rs`, both already declared here, because DECISION T-C′
+/// (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §8) splits them by
+/// *capability* rather than by family: the five action-directory reads and the
+/// action-directory flush go with the capability that owns that directory, and
+/// the five catalog-root and retired-root edges go with the capability that
+/// owns the catalog root. The declared-source count moves once across E1-E3,
+/// at E2, with `barrier_mutation.rs` — not here (§6.1).
 /// `runtime.*` edges are executed through the separate
 /// `bootstrap/runtime/fault.rs` mechanism, so they are executed without a key
 /// reference here (`GwzM5-8R2C2OwnerInterface-ReviewState-2.md:160-169`).
@@ -813,7 +876,10 @@ fn only_the_families_with_executed_matrices_are_executed_today() {
 
     assert_eq!(
         partial,
-        vec![("managed_bootstrap", MANAGED_BOOTSTRAP_EXECUTED_KEYS)],
+        vec![
+            ("managed_bootstrap", MANAGED_BOOTSTRAP_EXECUTED_KEYS),
+            ("terminal", TERMINAL_EXECUTED_KEYS),
+        ],
         "a fault family changed partial activation state; the converting package owns that \
          edit together with its executed matrix evidence"
     );
@@ -823,6 +889,13 @@ fn only_the_families_with_executed_matrices_are_executed_today() {
         "the managed_bootstrap activated subset changed size; 8 are Step 2.3's E15/E16 \
          boundaries, 15 are Step 3.1b's E17 intent-record lifecycle, and 5 are Step 3.2's \
          staged-component writer"
+    );
+    assert_eq!(
+        TERMINAL_EXECUTED_KEYS.len(),
+        10,
+        "the terminal activated subset changed size; ten are R2-E Step E3.2's boundaries of \
+         freeze §4.3 row E7's Phase-4 half, and the eleventh — terminal.authority_release — is \
+         DECISION T-D's determination that it never gains a boundary, not an unconverted edge"
     );
 }
 

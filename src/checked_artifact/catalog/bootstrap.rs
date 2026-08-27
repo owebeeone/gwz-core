@@ -172,6 +172,16 @@ impl OpaqueRetainedCatalogV1<'_> {
         self.permit.retain_action_namespace(admitted)
     }
 
+    /// R2-E E3.1's terminal retirement, forwarded through the same permit under
+    /// the same rule: the terminal owner receives a typed result and never the
+    /// permit, a root, or a handle (`GwzM5-8R2DInterfaceFreeze.md` §3.1).
+    pub(in crate::checked_artifact) fn retire_admitted_action(
+        &self,
+        admitted: &AdmittedActionV1,
+    ) -> Result<(), CheckedFsError> {
+        self.permit.retire_admitted_action(admitted)
+    }
+
     /// R2-D Phase 3 Step 3.1's managed-parent prefix observation, forwarded
     /// through the same permit. The catalog stays opaque: the managed-parent
     /// provider receives typed durable facts and never the permit, a root, or a

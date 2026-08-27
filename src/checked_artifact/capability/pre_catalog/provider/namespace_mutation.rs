@@ -52,8 +52,10 @@ use crate::checked_artifact::capability::{
 #[cfg(test)]
 use crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1;
 use crate::checked_artifact::protocol::{
-    ActionCapacityReservationV1, BoundCleanupWorklistV1, CleanupAliasV1, CleanupPhysicalFactV1,
-    CleanupResolutionV1, DurableLeafFingerprintV1, ProtocolRecordKindV1, RecordDigestV1,
+    ActionCapacityReservationV1, ActionDigestV1, ActionSlotV1, BaseActionSlotV1,
+    BoundCleanupWorklistV1, CleanupAliasV1, CleanupPhysicalFactV1, CleanupResolutionV1,
+    DurableLeafFingerprintV1, ProtocolRecordKindV1, RecordDigestV1,
+    decode_action_capacity_reservation,
     read_and_bind_cleanup_worklist,
 };
 use crate::model::ErrorCode;
@@ -326,6 +328,214 @@ impl RetainedActionNamespaceV1 {
         self.handle.symlink_metadata(os_name(leaf)).is_ok()
     }
 
+    /// R2-E E3.1 — `terminal.*` keys #1-#4: the four durable rows the terminal
+    /// retirement is entitled to retire, re-read through the retained action
+    /// directory before anything moves.
+    ///
+    /// **DECISION T-C′** (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §8,
+    /// replacing DECISION T-C): the family's sites split by *capability*, not
+    /// by family. These four are reads of the **action directory**, which is
+    /// the capability this file owns — `admission_mutation::execute` takes only
+    /// the catalog root and holds no action-directory handle at all — so
+    /// putting them there would have needed a second capability forward for no
+    /// gain. No new forward is minted by this half.
+    ///
+    /// All four are read-only, which is exactly why all four are repeatable
+    /// boundaries: a crash at any of them leaves no durable delta.
+    pub(in crate::checked_artifact) fn observe_terminal_preconditions(
+        &self,
+        expected: &ActionCapacityReservationV1,
+    ) -> Result<(), CheckedFsError> {
+        let action = expected.action_digest();
+
+        // `terminal.authority_reobserve` — the authority row is resident in
+        // exactly one of its two scheduled homes and reads inside the frozen
+        // `Authority` record bound. Exactly one: a retirement is entitled to
+        // retire one authority record, and both homes occupied is the
+        // half-retired state a cleanup restart must resolve first, not a state
+        // a terminal retirement may move over.
+        self.require_single_scheduled_home(
+            action,
+            BaseActionSlotV1::Authority,
+            BaseActionSlotV1::RetiredAuthorityAlias,
+            Some(ProtocolRecordKindV1::Authority),
+            "terminal authority row",
+        )?;
+        #[cfg(test)]
+        crate::checked_artifact::fault_v1::hit(
+            CheckedArtifactFaultKeyV1::TerminalAuthorityReobserve,
+        );
+
+        // `terminal.payload_reobserve` — the source and goal payload rows, each
+        // in exactly one of its two scheduled homes. No bound is applied and
+        // none may be: a payload's length is never a protocol-record bound
+        // (ConsumerCheckpoint §8 :236-237), so what this boundary names is the
+        // rows' residency and canonical shape, never a read of their content.
+        for (live, retired) in [
+            (
+                BaseActionSlotV1::SourcePayload,
+                BaseActionSlotV1::RetiredSourceAlias,
+            ),
+            (
+                BaseActionSlotV1::GoalPayload,
+                BaseActionSlotV1::RetiredGoalAlias,
+            ),
+        ] {
+            self.require_single_scheduled_home(
+                action,
+                live,
+                retired,
+                None,
+                "terminal payload row",
+            )?;
+        }
+        #[cfg(test)]
+        crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::TerminalPayloadReobserve);
+
+        // `terminal.cleanup_reobserve` — the join to `cleanup.*` key #11. The
+        // worklist is read bounded and bound to the resident reservation, and
+        // every scheduled row must classify complete in the action directory's
+        // own terms: the live row gone and the retired alias resident. That is
+        // the durable state `cleanup.completion_reobserve` leaves, restated as
+        // the terminal retirement's precondition rather than assumed from it.
+        self.require_completed_cleanup_worklist(expected)?;
+        #[cfg(test)]
+        crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::TerminalCleanupReobserve);
+
+        // `terminal.reservation_reobserve` — the resident reservation still
+        // decodes to this exact reservation, and its record digest is still the
+        // one this capability was retained against.
+        let resident = self.observe_regular_file(
+            &slot_leaf(action, BaseActionSlotV1::Reservation)?,
+            ProtocolRecordKindV1::Capacity,
+            "terminal resident reservation",
+        )?;
+        let decoded = decode_action_capacity_reservation(std::io::Cursor::new(&resident.bytes))
+            .map_err(|_| {
+                CheckedFsError::ambiguous(
+                    "terminal resident reservation",
+                    "the resident reservation is not a canonical capacity record",
+                )
+            })?;
+        if &decoded != expected || decoded.record_digest() != self.reservation {
+            return Err(CheckedFsError::ambiguous(
+                "terminal resident reservation",
+                "the resident reservation is not the admitted action's reservation",
+            ));
+        }
+        #[cfg(test)]
+        crate::checked_artifact::fault_v1::hit(
+            CheckedArtifactFaultKeyV1::TerminalReservationReobserve,
+        );
+        Ok(())
+    }
+
+    /// R2-E E3.1 — `terminal.*` key #5: the action directory's own flush, so
+    /// every row the four observations above proved is durable before the
+    /// directory moves. Primitive family P2's parent flush (freeze §4.1 P2),
+    /// over the capability that owns this directory (DECISION T-C′).
+    pub(in crate::checked_artifact) fn flush_terminal_action_directory(
+        &self,
+    ) -> Result<(), CheckedFsError> {
+        sync_directory_edge(&self.handle, "flush terminal action directory")?;
+        #[cfg(test)]
+        crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::TerminalDirectoryFlush);
+        Ok(())
+    }
+
+    /// One scheduled row of the retiring action, resident in exactly one of its
+    /// two scheduled homes — live, or retired onto its cleanup alias.
+    ///
+    /// `bound`, when given, is the row's frozen record kind: the read is
+    /// budgeted by the record kind and never by the object's own length.
+    fn require_single_scheduled_home(
+        &self,
+        action: crate::checked_artifact::protocol::ActionDigestV1,
+        live: BaseActionSlotV1,
+        retired: BaseActionSlotV1,
+        bound: Option<ProtocolRecordKindV1>,
+        label: &'static str,
+    ) -> Result<(), CheckedFsError> {
+        let live = slot_leaf(action, live)?;
+        let retired = slot_leaf(action, retired)?;
+        let resident = match (self.row_is_resident(&live), self.row_is_resident(&retired)) {
+            (true, false) => live,
+            (false, true) => retired,
+            _ => {
+                return Err(CheckedFsError::ambiguous(
+                    label,
+                    "the scheduled row is not resident in exactly one of its two homes",
+                ));
+            }
+        };
+        match bound {
+            Some(kind) => self.observe_regular_file(&resident, kind, label).map(drop),
+            None => {
+                let metadata = self
+                    .handle
+                    .symlink_metadata(os_name(&resident))
+                    .map_err(|source| CheckedFsError::io("observe terminal row", source))?;
+                if !metadata.is_file() || metadata.is_symlink() {
+                    return Err(CheckedFsError::ambiguous(
+                        label,
+                        "the scheduled row is not a canonical regular file",
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The bounded cleanup worklist, bound to the resident reservation, with
+    /// every scheduled row complete.
+    fn require_completed_cleanup_worklist(
+        &self,
+        expected: &ActionCapacityReservationV1,
+    ) -> Result<(), CheckedFsError> {
+        let action = expected.action_digest();
+        let observed = self.observe_regular_file(
+            &slot_leaf(action, BaseActionSlotV1::CleanupWorklist)?,
+            ProtocolRecordKindV1::CleanupWorklist,
+            "terminal cleanup worklist",
+        )?;
+        let worklist =
+            read_and_bind_cleanup_worklist(std::io::Cursor::new(&observed.bytes), expected)
+                .map_err(|_| {
+                    CheckedFsError::ambiguous(
+                        "terminal cleanup worklist",
+                        "the resident cleanup worklist does not bind to this reservation",
+                    )
+                })?;
+        for index in 0..worklist.len() {
+            let row = worklist
+                .row(index)
+                .expect("a bounded worklist yields every row below its own length");
+            let (live, retired) = match row.alias() {
+                CleanupAliasV1::Source => (
+                    BaseActionSlotV1::SourcePayload,
+                    BaseActionSlotV1::RetiredSourceAlias,
+                ),
+                CleanupAliasV1::Goal => (
+                    BaseActionSlotV1::GoalPayload,
+                    BaseActionSlotV1::RetiredGoalAlias,
+                ),
+                CleanupAliasV1::Authority => (
+                    BaseActionSlotV1::Authority,
+                    BaseActionSlotV1::RetiredAuthorityAlias,
+                ),
+            };
+            if self.row_is_resident(&slot_leaf(action, live)?)
+                || !self.row_is_resident(&slot_leaf(action, retired)?)
+            {
+                return Err(CheckedFsError::ambiguous(
+                    "terminal cleanup worklist",
+                    "a scheduled cleanup row has not reached its retired alias",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Edge E14 — the admitted dirent-barrier family (§4.1 row P5) over the
     /// retained action directory itself.
     ///
@@ -418,6 +628,18 @@ impl RetainedActionNamespaceV1 {
             bytes,
         })
     }
+}
+
+/// One scheduled base slot of an admitted action, as this owner's leaf type.
+///
+/// Every name is derived from the admitted action's own digest through the
+/// frozen `ActionSlotV1` grammar; this file mints no name, exactly as its
+/// header says.
+fn slot_leaf(
+    action: ActionDigestV1,
+    slot: BaseActionSlotV1,
+) -> Result<AsciiComponent, CheckedFsError> {
+    AsciiComponent::parse(ActionSlotV1::Base(slot).name(action).as_bytes())
 }
 
 /// Action slot names are frozen ASCII, so this conversion is total and needs no
