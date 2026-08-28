@@ -184,6 +184,24 @@ def _fault_count(darwin: str, linux: str) -> str:
         the fault it installs needs a 236-byte path component, which Windows
         MAX_PATH refuses, so both tests are compiled out there and a Windows
         pin -- when this driver grows one -- moves by zero, not by two.
+
+    R2-E Phase E6.2b (2026-08-28) moves the checked_artifact:: partition and
+    only it, by one: `platform::anchor::tests::
+    a_non_canonical_retired_ordinal_is_refused_not_adopted`, the executed
+    anchor nit -- `survey` now admits a retired ordinal only if `retired_name`
+    would have produced that exact name. The lib remainder is untouched and
+    keeps E6.1's 937/938; `v1_lifecycle::` keeps 256.
+
+      darwin 446 -> 447: MEASURED on this step's own tree (447 passed,
+        2026-08-28), with the remainder re-measured unchanged at 937 + 1
+        ignored and `workspace_ops::merge::v1_lifecycle::` at 256 in the same
+        run.
+      linux  456 -> 457: DERIVED (+1, cfg-independent -- the test carries no
+        `cfg` gate and the protocol it drives is portable code under test on
+        every platform), *not* measured, and therefore
+        FIRST-DISPATCH-EXPECTED at the lane owner's three-platform landing
+        dispatch, in the same form as the E2 and E5 counts above. A measured
+        number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -218,7 +236,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # first Windows compile of that code. Marked here beside the linux
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("446 passed", "456 passed")),
+         lib("checked_artifact::"), _fault_count("447 passed", "457 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),

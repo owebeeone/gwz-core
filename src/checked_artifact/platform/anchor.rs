@@ -446,12 +446,25 @@ fn survey(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorState> {
             anchors.push(name);
         } else if text == SCRATCH_NAME {
             scratch_present = true;
-        } else if let Some(ordinal) = text.strip_prefix(RETIRED_PREFIX) {
-            // A retired name whose ordinal does not parse is foreign, not ours:
-            // every name this protocol writes is `retired_name`'s own rendering.
-            let Ok(ordinal) = ordinal.parse::<u32>() else {
+        } else if let Some(rendering) = text.strip_prefix(RETIRED_PREFIX) {
+            // A retired name whose ordinal is not `retired_name`'s own
+            // rendering is foreign, not ours. Parsing alone did not say that:
+            // `u32::from_str` also accepts renderings this protocol never
+            // writes — zero-padded (`retired-007`) and sign-prefixed
+            // (`retired-+7`) — and each was adopted as the ordinal it parsed
+            // to, so a foreign name could hold a residency slot the protocol
+            // had never retired onto and push the next retirement past it.
+            // Re-rendering closes that: an ordinal is ours only if
+            // `retired_name` would have produced this exact name. Convergence
+            // is untouched either way, because `smallest_free_ordinal` reads
+            // residency and not text (`GwzM5-8R2DSettledTuple.md:659-662`,
+            // executed at R2-E E6.2).
+            let Ok(ordinal) = rendering.parse::<u32>() else {
                 return Ok(AnchorState::Invalid);
             };
+            if retired_name(ordinal) != *text {
+                return Ok(AnchorState::Invalid);
+            }
             retired.push(ordinal);
         } else if text.starts_with("ca1-") {
             family_state = true;

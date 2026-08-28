@@ -116,9 +116,12 @@ fn retired_ordinals(root: &Path) -> BTreeSet<u32> {
 fn assert_closed_grammar(root: &Path) {
     for name in names(root) {
         let closed = name == SCRATCH_NAME
+            // Not "parses as a u32" but "is `retired_name`'s own rendering",
+            // which is the predicate `survey` enforces from R2-E E6.2 on.
             || name
                 .strip_prefix(RETIRED_PREFIX)
-                .is_some_and(|ordinal| ordinal.parse::<u32>().is_ok())
+                .and_then(|ordinal| ordinal.parse::<u32>().ok())
+                .is_some_and(|ordinal| retired_name(ordinal) == name)
             || (name.starts_with(ANCHOR_PREFIX)
                 && (name.len() == ANCHOR_PREFIX.len() + 32 || name.ends_with(".roundtrip")));
         assert!(closed, "name outside the closed anchor grammar: {name}");
@@ -484,6 +487,73 @@ fn a_malformed_retired_name_is_refused_not_adopted() {
 
     assert_eq!(error.code, CODE);
     assert!(error.message.contains("missing or ambiguous"), "{error:?}");
+}
+
+/// The renderings `retired_name` never writes are foreign in exactly the same
+/// way — and until R2-E E6.2 the survey adopted them. `u32::from_str` accepts
+/// zero-padded and sign-prefixed forms, so `retired-007` and `retired-+7` each
+/// parsed to an ordinal and joined the residency set, letting a name this
+/// protocol did not write hold a slot it had never retired onto. The survey now
+/// admits an ordinal only if `retired_name` would have produced that exact name.
+///
+/// The deferral terms (`GwzM5-8R2DSettledTuple.md:659-662`) called the cure "a
+/// canonical two-digit parse". `retired_name` renders the ordinal *unpadded*,
+/// so a fixed width would have rejected every name the protocol actually
+/// writes; the executed cure re-renders through `retired_name` itself. The
+/// first loop below is why that distinction is not a matter of opinion.
+#[test]
+fn a_non_canonical_retired_ordinal_is_refused_not_adopted() {
+    // Every rendering the protocol can write round-trips through the check the
+    // survey now applies — including the widths a two-digit rule would have
+    // refused.
+    for ordinal in [0, 1, 7, 9, 10, 99, 100, 1_000, u32::MAX] {
+        let name = retired_name(ordinal);
+        let rendering = name
+            .strip_prefix(RETIRED_PREFIX)
+            .expect("carries the prefix");
+        assert_eq!(rendering.parse::<u32>(), Ok(ordinal));
+        assert_eq!(retired_name(ordinal), name, "{ordinal}");
+    }
+
+    // Each of these parses, and none is a name `retired_name` emits.
+    for rendering in ["007", "+7", "00", "0000000010"] {
+        let ordinal = rendering.parse::<u32>().expect("the old guard admitted it");
+        assert_ne!(
+            retired_name(ordinal),
+            format!("{RETIRED_PREFIX}{rendering}"),
+            "{rendering} must not be a rendering this protocol writes"
+        );
+
+        let root = TempRoot::new("retire-non-canonical");
+        prepare(&root.dir(), true, CODE, LABEL).unwrap();
+        let foreign = format!("{RETIRED_PREFIX}{rendering}");
+        std::fs::write(root.0.join(&foreign), ANCHOR_BYTES).unwrap();
+
+        let error = prepare(&root.dir(), true, CODE, LABEL).unwrap_err();
+
+        assert_eq!(error.code, CODE, "{rendering}");
+        assert!(
+            error.message.contains("missing or ambiguous"),
+            "{rendering}: {error:?}"
+        );
+        assert!(
+            root.0.join(&foreign).is_file(),
+            "{rendering}: a refusal mutates nothing"
+        );
+    }
+
+    // The positive control the guard must not over-refuse: canonical retired
+    // names on the same tree are read, not refused.
+    let root = TempRoot::new("retire-canonical");
+    prepare(&root.dir(), true, CODE, LABEL).unwrap();
+    for ordinal in [0, 1, 10] {
+        std::fs::write(root.0.join(retired_name(ordinal)), ANCHOR_BYTES).unwrap();
+    }
+
+    prepare(&root.dir(), true, CODE, LABEL).unwrap();
+
+    assert_eq!(retired_ordinals(&root.0), BTreeSet::from([0, 1, 10]));
+    assert_closed_grammar(&root.0);
 }
 
 /// [P3-1]: a pre-4.2 nonce orphan is tolerated, never reclaimed. It must block
