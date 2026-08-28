@@ -301,3 +301,255 @@ fn the_adaptation_precheck_admits_only_finalizing_normal_mode_v0_rows() {
         "the one admitted class is Finalizing + normal mode"
     );
 }
+
+/// The merge-record id the O9 arms below are started under.
+///
+/// Both record stagers build their temporary beside the record with
+/// `Path::with_extension`, off the same process-global sequence
+/// (`store/mod.rs`'s `TEMP_SEQUENCE`), and their names differ by exactly the
+/// eight bytes `.upgrade`:
+///
+/// - store    `{id}.yaml.{pid}.{seq}.tmp`          — `id + pid + seq + 11`
+/// - upgrade  `{id}.yaml.{pid}.{seq}.upgrade.tmp`  — `id + pid + seq + 19`
+///
+/// At `id = 236 - pid` the upgrade's name is `255 + seq_digits` bytes — past a
+/// 255-byte component limit for every sequence value that exists — while the
+/// store's is `247 + seq_digits`, inside it for any sequence below 100 000 000.
+/// The record itself is `241 - pid` bytes and is written normally.
+///
+/// The id is supplied to the *start*, not patched in afterwards: the v1
+/// validator requires each participant commit message to end in the
+/// `GWZ-Merge-ID:` trailer (`model/v1/validate/common.rs`), so a record whose
+/// id was rewritten under it would be refused by the adapter's own validator
+/// and the filesystem would never be reached.
+#[cfg(unix)]
+fn upgrade_only_overlong_merge_id() -> String {
+    let length = 236 - std::process::id().to_string().len();
+    let id = format!("merge_{}", "e".repeat(length - "merge_".len()));
+    assert_eq!(id.len(), length);
+    id
+}
+
+/// Starts one merge under an exact merge-record id, otherwise
+/// [`invoke_with_store`].
+#[cfg(unix)]
+fn invoke_with_store_and_merge_id(
+    backend: &crate::git::Git2Backend,
+    store: &FaultingMergeStore,
+    root: &Path,
+    merge_id: &str,
+    operation_id: &str,
+) -> ModelResult<crate::MergeResponse> {
+    struct FixedMergeId {
+        merge_id: String,
+        next: u64,
+    }
+
+    impl crate::runtime::ids::IdProvider for FixedMergeId {
+        fn next_id(&mut self, prefix: &str) -> crate::runtime::ids::GeneratedId {
+            self.next += 1;
+            if prefix == "merge" {
+                return crate::runtime::ids::GeneratedId::new(self.merge_id.clone());
+            }
+            crate::runtime::ids::GeneratedId::new(format!("{prefix}_{:04}", self.next))
+        }
+    }
+
+    let clock = FixedClock::new(TimestampMs(1_700_000_000_000));
+    let mut ids = FixedMergeId {
+        merge_id: merge_id.to_owned(),
+        next: 0,
+    };
+    handle_merge_with_dependencies(
+        MergeDependencies {
+            backend,
+            store,
+            clock: &clock,
+            ids: &mut ids,
+            events: &crate::operation::NullSink,
+        },
+        root,
+        request(false),
+        operation_id,
+    )
+}
+
+/// **O9 / Safety [P3-R2-2], executed — the eligible-row upgrade-failure
+/// fallback, and with it the restoration L14 records as owed.**
+///
+/// `adapt_before_mutating` maps every non-`Upgraded` answer, `Err(_)`
+/// included, to `Ok(false)` and leaves the v0 lifecycle in command
+/// (`runtime/dispatch.rs`). [P1-1]'s rows exercise that mapping only through
+/// the adapter's *typed refusals*; no test drove it on a row the whitelist
+/// actually admits, whose atomic upgrade then fails. That is the arm the
+/// activation record's §14 names as owed once the phase-persistence pin moved
+/// to `source_version == V1`
+/// (`finalization::resumed_finalization_persists_each_phase_before_a_nested_mutation_fault`).
+///
+/// The production caller hardcodes `AtomicUpgradeFault::None` and must keep
+/// doing so, so the failure has to come from the filesystem. Why it comes from
+/// the *name* and not from a permission is worth recording, because a cleared
+/// write bit is the obvious first try and cannot work: the upgrade's only own
+/// filesystem step is staging its temporary into `.gwz/merge`, and the v0
+/// lifecycle's first act on this row is staging its own temporary into the same
+/// directory through the same primitive, so any directory-level fault — mode
+/// bits, ACL, immutable flag — fails both legs. Nor can such a fault be lifted
+/// in between: the composed entry crosses no checked-artifact fault boundary on
+/// this path, and `EventSink` delivers `OperationStarted` before the preflight
+/// and nothing again until `OperationFinished`.
+///
+/// The eight bytes `.upgrade` in the staging name do separate them
+/// ([`upgrade_only_overlong_merge_id`]). A record id sized into that window
+/// makes the upgrade's own `open(2)` refuse the name while every other name in
+/// the operation stays legal — a real filesystem refusal, no production seam,
+/// `AtomicUpgradeFault::None` untouched. If the window were ever missed the row
+/// would migrate and the `V0` assertion below would trip.
+///
+/// The control arm is the same durable shape under an ordinary id, and it
+/// migrates. The two together say the row was genuinely eligible and that the
+/// filesystem refusal — not ineligibility — is what returned it to v0.
+#[cfg(unix)]
+#[test]
+fn an_eligible_row_completes_under_v0_when_its_atomic_upgrade_fails() {
+    /// Every filesystem this suite runs on caps one path component here.
+    const NAME_MAX: usize = 255;
+
+    let overlong = upgrade_only_overlong_merge_id();
+    let pid = std::process::id().to_string().len();
+    // The window, machine-held rather than described: the upgrade's shortest
+    // possible staging name is already over the cap and the store's longest
+    // reachable one is still under it.
+    assert!(overlong.len() + pid + 1 + 19 > NAME_MAX);
+    assert!(overlong.len() + pid + 8 + 11 <= NAME_MAX);
+    assert!(overlong.len() + ".yaml".len() <= NAME_MAX);
+
+    for (arm, merge_id) in [
+        ("upgrade-refused", overlong),
+        ("control", "merge_o9_control".to_owned()),
+    ] {
+        let temp = TempDir::new(&format!("a1-o9-{arm}"));
+        let backend = crate::git::Git2Backend::new();
+        let _fixture = init_one_member_workspace(temp.path(), &backend, &format!("a1-o9-{arm}"));
+        feature_commit(
+            &backend,
+            &temp.path().join("remote"),
+            "README.md",
+            "source\n",
+        );
+
+        // The `finalizing-before-publication-record` durable shape, from the
+        // same injected-store window `characterization_v0` registers it under.
+        let store = FaultingMergeStore::new(FinalizationFault::AfterEnteringFinalizing);
+        let error =
+            invoke_with_store_and_merge_id(&backend, &store, temp.path(), &merge_id, "op_a1_o9")
+                .unwrap_err();
+        assert_eq!(error.code, ErrorCode::MergeRecoveryRequired, "{arm}");
+
+        let record = FileMergeStore.discover_open(temp.path()).unwrap().unwrap();
+        assert_eq!(record.merge_id, merge_id, "{arm}");
+        assert_eq!(record.state, OperationState::Finalizing, "{arm}");
+        assert!(record.publication.is_none(), "{arm}");
+
+        // The row really is one the whitelist admits, under this id: the
+        // merge id is not part of the normalized descriptor, so the two arms
+        // match the same rule.
+        let descriptor =
+            crate::workspace_ops::merge::verified_v0_descriptor(&backend, temp.path(), &record)
+                .unwrap();
+        assert_eq!(
+            super::compatibility_v0::i2_whitelist_matches(descriptor.value()),
+            vec!["finalizing-before-publication-record".to_owned()],
+            "{arm}"
+        );
+        let open = classify_open_record(temp.path()).unwrap().unwrap();
+        assert_eq!(open.version, RecordVersion::V0, "{arm}");
+        assert_eq!(open.adaptation, AdaptationPrecheck::MayAdapt, "{arm}");
+
+        let completed = handle_merge(
+            &backend,
+            temp.path(),
+            recovery_request(crate::MergeOp::Resume, Some(merge_id.clone())),
+            format!("op_a1_o9_{arm}"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            completed.state,
+            crate::MergeOperationState::Completed,
+            "{arm}"
+        );
+        assert!(!completed.open, "{arm}");
+        assert!(
+            FileMergeStore.discover_open(temp.path()).unwrap().is_none(),
+            "{arm}"
+        );
+        assert_eq!(
+            completed
+                .record
+                .as_ref()
+                .map(|record| record.source_version),
+            Some(if arm == "control" {
+                crate::MergeRecordVersion::V1
+            } else {
+                // The composed fallback: the atomic upgrade was refused by the
+                // filesystem, `Ok(false)` kept the v0 lifecycle in command, and
+                // that lifecycle finished the operation itself.
+                crate::MergeRecordVersion::V0
+            }),
+            "{arm}"
+        );
+        // The durable outcome, not just the projection: the refused arm's
+        // archived body is still the v0 envelope the migration would have
+        // replaced.
+        assert_eq!(
+            envelope_on_disk(temp.path(), &merge_id),
+            if arm == "control" {
+                ("gwz.merge-operation/v1".to_owned(), 1)
+            } else {
+                ("gwz.merge-operation/v0".to_owned(), 0)
+            },
+            "{arm}"
+        );
+    }
+}
+
+/// **O9's fault, isolated.** The composed test reads the fallback off the
+/// operation's outcome, where an upgrade that failed *earlier* — a typed
+/// compatibility refusal instead of the filesystem one — would keep every
+/// assertion green while covering something else. This reads the refusal off
+/// the upgrade itself: the row is prepared, and the filesystem is what stops
+/// it.
+#[cfg(unix)]
+#[test]
+fn the_overlong_staging_name_refuses_the_atomic_upgrade_at_the_filesystem() {
+    let merge_id = upgrade_only_overlong_merge_id();
+    let temp = TempDir::new("a1-o9-isolated");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "a1-o9-isolated");
+    feature_commit(
+        &backend,
+        &temp.path().join("remote"),
+        "README.md",
+        "source\n",
+    );
+    let store = FaultingMergeStore::new(FinalizationFault::AfterEnteringFinalizing);
+    invoke_with_store_and_merge_id(&backend, &store, temp.path(), &merge_id, "op_a1_o9_iso")
+        .unwrap_err();
+
+    let path = temp.path().join(format!(".gwz/merge/{merge_id}.yaml"));
+    let source = fs::read(&path).unwrap();
+    let error = crate::workspace_ops::merge::upgrade_open_v0(
+        &backend,
+        temp.path(),
+        &merge_id,
+        crate::VERSION,
+        crate::workspace_ops::merge::AtomicUpgradeFault::None,
+    )
+    .unwrap_err();
+
+    // An I/O refusal, not a compatibility verdict: the row passed structural
+    // validation and matched its rule, and the staged bytes were prepared,
+    // before the filesystem refused the staging name.
+    assert_eq!(error.code, ErrorCode::IoError);
+    assert_eq!(fs::read(&path).unwrap(), source, "nothing was published");
+}

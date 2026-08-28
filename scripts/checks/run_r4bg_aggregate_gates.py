@@ -69,8 +69,14 @@ def _fault_count(darwin: str, linux: str) -> str:
 
     checked_artifact:: and the lib remainder carry OS-gated tests
     (#[cfg(all(test, target_os = "linux"))] and #[cfg(unix)]/darwin-only
-    fns), so the partition totals are host-specific. Both values are
-    EXECUTED, never derived from intent: darwin = the release script's
+    fns), so the partition totals are host-specific. Both values in THIS
+    paragraph -- the v0.11.0 baseline the R2-E blocks below move from -- are
+    EXECUTED, never derived from intent; that claim is this paragraph's own
+    and does not extend past it, because each dated block states the
+    provenance of every value it moves and several of them carry a DERIVED
+    linux count marked FIRST-DISPATCH-EXPECTED (E1 review F3 [P3], executed
+    2026-08-28: the unqualified sentence that stood here read as if it
+    governed the whole function). The baseline: darwin = the release script's
     green `cargo test --locked` at tag v0.11.0 (lib 1589 passed + 1
     ignored; remainder = 1589 - (256+1+400) = 932 -- the pre-R1/R2 926
     was stale, R1/R2 added remainder-partition tests); linux = release
@@ -154,6 +160,30 @@ def _fault_count(darwin: str, linux: str) -> str:
         E5 pair.
       linux  934 -> 936: DERIVED (+2, cfg-independent for the same reason),
         FIRST-DISPATCH-EXPECTED at the landing dispatch.
+
+    R2-E Phase E6.1 (2026-08-28) moves the SAME partition and only it, by two:
+    O9's composed-path upgrade-failure fallback
+    (`a1_activation::an_eligible_row_completes_under_v0_when_its_atomic_upgrade_fails`)
+    and the guard that pins that test's fault to the filesystem rather than to
+    a compatibility refusal
+    (`a1_activation::the_overlong_staging_name_refuses_the_atomic_upgrade_at_the_filesystem`).
+    Neither is under `checked_artifact::` or
+    `workspace_ops::merge::v1_lifecycle::`, so those two stay at the E2
+    landing's 446/456 and at 256.
+
+      darwin 935 -> 937: MEASURED on this step's own tree (937 passed + 1
+        ignored, 2026-08-28), with `checked_artifact::` re-measured unchanged
+        at 446 and `workspace_ops::merge::v1_lifecycle::` at 256 in the same
+        run.
+      linux  936 -> 938: DERIVED (+2), *not* measured, and therefore
+        FIRST-DISPATCH-EXPECTED at the lane owner's three-platform landing
+        dispatch, in the same form as the E2 and E5 counts above. A measured
+        number wins. The delta is the same on both because both tests are
+        `cfg(unix)`-gated and linux satisfies that gate exactly as darwin
+        does. This is the first R2-E step whose delta is NOT cfg-independent:
+        the fault it installs needs a 236-byte path component, which Windows
+        MAX_PATH refuses, so both tests are compiled out there and a Windows
+        pin -- when this driver grows one -- moves by zero, not by two.
     """
     if sys.platform == "darwin":
         return darwin
@@ -192,7 +222,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("935 passed", "936 passed")),
+         _fault_count("937 passed", "938 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
@@ -231,10 +261,15 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
          "22 registry rows all claimed)"),
         # R2-E Phase E5.1 (2026-08-28): 119 -> 120, the one parametric
         # `adapt_open` refusal test. E5.2: 120 -> 122, the archive-equivalence
-        # tier-1 battery and its denominators test. Both MEASURED on their own
-        # trees.
+        # tier-1 battery and its denominators test. E6.1: 122 -> 124, O9's
+        # composed-path upgrade-failure fallback and its filesystem-fault
+        # guard. All MEASURED on their own trees. Unlike the three before it
+        # the E6.1 pair is `cfg(unix)`-gated, so this marker -- which carries
+        # no per-OS split -- is a darwin/linux number and would read 122 on a
+        # Windows host; the `fault` battery's `_fault_count` refuses such a
+        # host first, which is why no split is added here.
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "122 passed"),
+         lib("workspace_ops::tests::g23::"), "124 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),
