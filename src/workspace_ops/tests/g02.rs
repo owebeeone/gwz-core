@@ -1097,6 +1097,79 @@ pub(crate) fn a_dry_run_repo_command_refuses_a_hand_edit_without_touching_the_tr
 }
 
 #[test]
+pub(crate) fn branch_and_stash_dry_runs_refuse_a_hand_edit_too() {
+    // Verification NF-1: these two handlers wrapped the gate in
+    // `if _guard.is_some()`, and a mutate dry run holds no guard — so
+    // `branch --create --dry-run` and `stash push --dry-run` returned Ok
+    // over a real hand edit while their real runs refused. The gate now
+    // conditions on the op (List stays ungated so a damaged workspace
+    // remains inspectable); a dry run refuses and touches nothing.
+    let temp = TempDir::new("conf-defence-nf1");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    commit_workspace(temp.path());
+    let manifest_path = temp.path().join(crate::workspace::WORKSPACE_MANIFEST);
+    fs::write(
+        &manifest_path,
+        fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("ws_ops", "ws_typed"),
+    )
+    .unwrap();
+    let before = conf_porcelain(&backend, temp.path());
+    let dry_meta = crate::RequestMeta {
+        dry_run: Some(true),
+        ..request_meta_with_workspace()
+    };
+
+    let branch_error = handle_branch(
+        &backend,
+        temp.path(),
+        crate::BranchRequest {
+            meta: dry_meta.clone(),
+            op: crate::BranchOp::Create,
+            name: Some("feature/nf1".into()),
+            ..Default::default()
+        },
+        "op_branch_dry",
+    )
+    .unwrap_err();
+    let stash_error = handle_stash(
+        &backend,
+        temp.path(),
+        crate::StashRequest {
+            meta: dry_meta,
+            op: crate::StashOp::Push,
+            ..Default::default()
+        },
+        "op_stash_dry",
+    )
+    .unwrap_err();
+
+    assert_eq!(branch_error.code, ErrorCode::PermissionDenied);
+    assert_eq!(stash_error.code, ErrorCode::PermissionDenied);
+    assert_eq!(conf_porcelain(&backend, temp.path()), before);
+
+    // List stays ungated on the same damaged workspace, by design: it gets
+    // PAST the conf gate (no PermissionDenied) and fails only on the
+    // workspace-id validation this fixture's hand edit happens to break —
+    // the inspection path itself was not refused.
+    let list_error = handle_branch(
+        &backend,
+        temp.path(),
+        crate::BranchRequest {
+            meta: request_meta_with_workspace(),
+            op: crate::BranchOp::List,
+            ..Default::default()
+        },
+        "op_branch_list",
+    )
+    .unwrap_err();
+    assert_eq!(list_error.code, ErrorCode::WorkspaceNotFound);
+    assert_ne!(list_error.code, ErrorCode::PermissionDenied);
+}
+
+#[test]
 pub(crate) fn a_dry_run_over_a_git_side_rewrite_reconciles_nothing() {
     // [P1-1] The reviewer's probe: a stale-but-clean marker used to be rewritten by a dry
     // run, leaving `M gwz.conf/markers/conf-integrity.yml` behind.

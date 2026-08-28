@@ -179,10 +179,13 @@ fn merge_deny_rules(text: &str) -> Result<Option<String>, String> {
     // Verify the transform instead of trusting it. `push_json` re-renders a document that
     // arrived through a YAML parser, and that path is lossy in ways JSON cares about: a
     // number too large for `u64` re-emits as digits the reader then refuses, a float can
-    // narrow to an integer, an unresolvable exponent arrives as a string. Re-reading what
-    // we are about to write and demanding it equal the value we intended turns every one
-    // of those into a `Skipped` — file untouched, warning raised — rather than a rewrite
-    // that quietly changes meaning or, worse, one gwz can never read again.
+    // narrow to an integer. Re-reading what we are about to write and demanding it equal
+    // the value we intended turns those into a `Skipped` — file untouched, warning
+    // raised — rather than a rewrite that quietly changes meaning or, worse, one gwz can
+    // never read again. One residual this check cannot see (verification NF-2): an
+    // unresolvable exponent past f64 range (`1e400`) is already a STRING by the time the
+    // parser hands it to us, so the round trip compares equal and the retyped scalar is
+    // written; the lossy-shapes test pins that retype so it cannot drift unnoticed.
     let verified: Value =
         serde_yaml::from_str(&out).map_err(|err| format!("emitted JSON did not re-read: {err}"))?;
     if verified != root {
@@ -448,6 +451,17 @@ mod tests {
                             .any(|entry| entry.as_str() == Some(CONF_DENY_RULES[0])),
                         "{name}: rule missing"
                     );
+                    // The pinned NF-2 residual: the parser resolved the overflowing
+                    // literal to a string before the round-trip check could see a
+                    // number, so the retype is written. Pin it so it cannot drift
+                    // unnoticed — and so this test claims no more than it proves.
+                    if name.starts_with("1e400") {
+                        assert_eq!(
+                            reparsed.get("n"),
+                            Some(&Value::String("1e400".into())),
+                            "{name}: the pinned retype moved"
+                        );
+                    }
                     // And a second pass must be a clean no-op, never an endless rewrite.
                     assert_eq!(
                         ensure_claude_settings(temp.path(), false).unwrap(),

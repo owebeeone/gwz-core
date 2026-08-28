@@ -205,6 +205,24 @@ def _fault_count(darwin: str, linux: str) -> str:
         FIRST-DISPATCH-EXPECTED at the lane owner's three-platform landing
         dispatch, in the same form as the E2 and E5 counts above. A measured
         number wins.
+
+    The conf-integrity landing (2026-08-29) moves the lib remainder and only
+    it, by forty-two: the standalone conf-integrity lane (reviewed at
+    GwzConfIntegrity-Review.md / -Review-2.md, squashed onto the R2-E E6 tip
+    per ritual 7 citing shas b23a68e/3aa48ab/0523f0e/cf4f308/2508343) adds 41
+    tests across `artifact::conf_integrity`, `workspace_bootstrap::
+    {conf_gate,claude_settings}` and `tests::g02`, plus the landing
+    reconcile's NF-1 regression (`g02::
+    branch_and_stash_dry_runs_refuse_a_hand_edit_too`).
+
+      darwin 937 -> 979: MEASURED on the landing tree (979 passed + 1
+        ignored, 2026-08-29), with `checked_artifact::` re-measured unchanged
+        at 447 and `workspace_ops::merge::v1_lifecycle::` at 256 in the same
+        run.
+      linux  938 -> 980: DERIVED (+42, cfg-independent -- none of the lane's
+        tests carries a `cfg` gate), *not* measured, and therefore
+        FIRST-DISPATCH-EXPECTED at the landing dispatch. A measured number
+        wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -243,7 +261,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("937 passed", "938 passed")),
+         _fault_count("979 passed", "980 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

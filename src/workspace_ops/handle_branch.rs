@@ -37,7 +37,11 @@ where
             request.meta.dry_run.unwrap_or(false),
         )?
     };
-    if _guard.is_some() {
+    // Gate on the op, not the guard: a mutate dry run holds no guard but
+    // must still refuse a hand edit (it just never reconciles); only List
+    // stays ungated so a damaged workspace remains inspectable
+    // (verification NF-1, cured at the landing).
+    if request.op != crate::BranchOp::List {
         assert_conf_unmodified_for(
             backend,
             &root,
