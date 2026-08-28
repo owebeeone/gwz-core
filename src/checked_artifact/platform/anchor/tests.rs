@@ -528,6 +528,10 @@ fn a_non_canonical_retired_ordinal_is_refused_not_adopted() {
         prepare(&root.dir(), true, CODE, LABEL).unwrap();
         let foreign = format!("{RETIRED_PREFIX}{rendering}");
         std::fs::write(root.0.join(&foreign), ANCHOR_BYTES).unwrap();
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(&root.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
 
         let error = prepare(&root.dir(), true, CODE, LABEL).unwrap_err();
 
@@ -539,6 +543,15 @@ fn a_non_canonical_retired_ordinal_is_refused_not_adopted() {
         assert!(
             root.0.join(&foreign).is_file(),
             "{rendering}: a refusal mutates nothing"
+        );
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(&root.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            before, after,
+            "{rendering}: a refusal mutates nothing -- not the foreign \
+             object, not the resident anchor, not the scratch or retired set"
         );
     }
 

@@ -171,12 +171,23 @@ APPROVED_RUST_PATH_EDGES = {
 # exact name, and `platform/anchor/tests.rs` gains the row that drives it. The
 # other six digests were recomputed in the same pass and are unchanged, which
 # is the evidence that the edit stayed inside the anchor protocol.
+#
+# The R2-E E6 landing reconcile re-pins the SAME entry once more, for the
+# review's three fold-in cures (GwzM5-8R2E-E6-Review.md F-1/F-2/F-3,
+# authorized by the lane owner 2026-08-28): the module doc's closed-grammar
+# table row corrected to `.ca1-anchor-retired-<ordinal>` (F-1, the name the
+# survey actually adopts), the refusal test strengthened to assert the whole
+# directory listing unchanged across the refusal (F-2), and the survey
+# comment gaining the F-3 trade sentence (slot-wastage exchanged for a
+# recoverable fail-closed refusal on the foreign shape). Comments and one
+# test assertion only -- no production semantics move; the other six digests
+# were recomputed in the same pass and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
     "checked_artifact/capability/pre_catalog.rs": "5c65d5a248ec5b03812db5cfe2874943a4d6b4f0df5f0ad01bfd26f4f38e2b24",
     "checked_artifact/catalog.rs": "cc845e20eae62f601e6c730799e77b69ba184324e7dfd58b4791dd139f133708",
-    "checked_artifact/platform.rs": "7a73eeedc40c2f028fd78b1cf5ad73f632ee2059c655c56e95d0695c4c035616",
+    "checked_artifact/platform.rs": "5405b6921185253905f97b85865d39e9025d05c333888892be44b769efbab366",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "74a416a623ad421b1646e8692d6b449d76cc754045ff43348c5e897c39eae96c",
 }

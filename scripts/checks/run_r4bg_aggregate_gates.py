@@ -69,9 +69,12 @@ def _fault_count(darwin: str, linux: str) -> str:
 
     checked_artifact:: and the lib remainder carry OS-gated tests
     (#[cfg(all(test, target_os = "linux"))] and #[cfg(unix)]/darwin-only
-    fns), so the partition totals are host-specific. Both values in THIS
+    fns), so the partition totals are host-specific. Both lib totals in THIS
     paragraph -- the v0.11.0 baseline the R2-E blocks below move from -- are
-    EXECUTED, never derived from intent; that claim is this paragraph's own
+    EXECUTED, never derived from intent, and the two remainder values are
+    those same executed runs' totals less the other partitions (arithmetic
+    over measured numbers, marked FIRST-DISPATCH-EXPECTED below -- E6 review
+    F-4, 2026-08-28); that claim is this paragraph's own
     and does not extend past it, because each dated block states the
     provenance of every value it moves and several of them carry a DERIVED
     linux count marked FIRST-DISPATCH-EXPECTED (E1 review F3 [P3], executed

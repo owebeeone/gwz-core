@@ -48,7 +48,7 @@
 //! | `.ca1-anchor-scratch-v1` | the one staging name, resumed onto rather than reallocated |
 //! | `.ca1-durability-anchor-<32hex>` | the resident anchor, addressed by its own durable identity |
 //! | `.ca1-durability-anchor-<32hex>.roundtrip` | the barrier's outbound alias |
-//! | `.ca1-anchor-retired-v1` | the retirement destination that replaces the removal |
+//! | `.ca1-anchor-retired-<ordinal>` | the retirement destination that replaces the removal |
 //!
 //! # The roaming arm's two names (R2-E Phase E2, DECISION B-3)
 //!
@@ -455,7 +455,12 @@ fn survey(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorState> {
             // to, so a foreign name could hold a residency slot the protocol
             // had never retired onto and push the next retirement past it.
             // Re-rendering closes that: an ordinal is ours only if
-            // `retired_name` would have produced this exact name. Convergence
+            // `retired_name` would have produced this exact name. The trade
+            // is deliberate: a foreign rendering used to waste a residency
+            // slot silently, and now refuses the family fail-closed until it
+            // is removed -- the same recoverable refusal an unparseable
+            // retired name already produced, a widened subset of an existing
+            // class rather than a new one (E6 review F-3). Convergence
             // is untouched either way, because `smallest_free_ordinal` reads
             // residency and not text (`GwzM5-8R2DSettledTuple.md:659-662`,
             // executed at R2-E E6.2).
