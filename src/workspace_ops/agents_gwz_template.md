@@ -5,6 +5,12 @@ This repository is managed by GWZ, a multi-repository workspace tool.
 For workspace-wide status, staging, and commits, use `gwz status`, `gwz add`,
 and `gwz commit`. Do not substitute per-repository Git loops.
 
+## Workspace Integrity
+- **Never manually edit `gwz.conf/gwz.yml` or `gwz.lock.yml`.**
+- These files represent the authoritative, system-managed state of the workspace.
+- To add, remove, or modify member repositories, use the appropriate `gwz` commands (e.g., `gwz repo attach`, `gwz repo clone`, `gwz repo detach`).
+- **Never manually edit this file.** It is system-managed. Change agent instructions via the `gwz` template and `gwz init --update`.
+
 Install `gwz` from the latest release:
 
 ```sh
