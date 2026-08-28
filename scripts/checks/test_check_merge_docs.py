@@ -22,7 +22,12 @@ class MergeDocumentConsistencyTests(unittest.TestCase):
         result = check_manifest(manifest, WORKSPACE_ROOT)
 
         self.assertEqual((), result.findings)
-        self.assertEqual(11, result.source_count)
+        # 11 -> 12 (2026-08-28, R2-E E5 landing window): a6ce8a8 added the
+        # recovery guide as the manifest's twelfth source and moved the
+        # aggregate driver's marker, but missed this pin. Latent until now
+        # because this suite runs only from the real workspace (the J-7
+        # blind spot) -- the first real-workspace battery run since exposed it.
+        self.assertEqual(12, result.source_count)
         self.assertGreaterEqual(result.assertion_count, 30)
 
     def test_deliberate_v0_no_ff_claim_fails_the_real_gate(self) -> None:
