@@ -21,6 +21,15 @@ TOP_KEYS = {
     "migration_whitelist",
     "fixture_corpus",
     "valid_unlisted_corpus",
+    # R2-E Phase E5.2, 2026-08-28. The standalone archive corpus of the O8
+    # archive-equivalence mechanism decision. It is deliberately NOT a third
+    # corpus of the migration registry: `GwzM5-8R4bG-Evidence.md` §12.7 records
+    # that "there is no registry vocabulary in which an archive shape could be
+    # bound", and §12.9(c) that widening `valid_unlisted_corpus` "would weaken
+    # the registry, not extend it". Archive rows are therefore cited by clause,
+    # in the shape §12.9's disposition table uses, and validated here so the
+    # per-scenario record exists where this checker looks.
+    "archive_corpus",
     "rejection_reasons",
 }
 NORMALIZATION_KEYS = {"identity", "definitions", "enums"}
@@ -170,6 +179,39 @@ EXPECTED_POLICY = {
     "terminal": "Completed and aborted v0 records remain v0 and use the existing byte-preserving archive path.",
     "no_match": "Zero matches means valid-unlisted v0, not a compatibility error. Multiple matches is a registry defect and fails the build/checker.",
 }
+# --- the standalone archive corpus (R2-E Phase E5.2, 2026-08-28) ----------
+#
+# The two-tier mechanism of the O8 archive-equivalence decision. Tier 1 is
+# byte-preservation by digest for v0-origin archives -- "precisely what
+# 'byte-preserving archival' asserts". Tier 2 is projection equivalence by
+# canonical-JSON digest for archives an operation finished under v1, where
+# byte equality is unavailable by construction. Both statuses are per row and
+# per tier, so a row can never report the O8 archive clause met on a tier it
+# has not executed.
+ARCHIVE_KEYS = {"shape", "fixture", "disposition", "clause", "tier1", "tier2"}
+TIER_KEYS = {"status", "test", "subcase", "carrier"}
+ARCHIVE_DISPOSITIONS = {"byte-preserved-v0-origin", "pending-fixture"}
+TIER_STATUSES = {"executed", "owed", "pending-fixture"}
+# `GwzM5-8R4bG-Evidence.md` §12.4 "Table B -- the 10 archive shapes", in its
+# own order. Closed: a shape the table does not name cannot be filed here, and
+# a shape it names cannot be dropped.
+ARCHIVE_SHAPES = [
+    "AC-CANDIDATE",
+    "AC-NOPUB-BORN",
+    "AC-NOPUB-UNBORN",
+    "AA-PREACCEPTANCE",
+    "AA-CANDIDATE-COMPLETE",
+    "AA-CANDIDATE-PARTIAL",
+    "AP-PRESERVED",
+    "AL-OPTIONAL-MISSING",
+    "AL-UNKNOWN",
+    "AR-C",
+]
+# The E0 §6.4 disposition, named: these two and only these two are
+# DISPOSITIONED-PROJECTION-ONLY, UNFIXTURED, carried to R2-F. They are also
+# two of C-2's four unfixtured scenarios; the other two (`B-NOT-STARTED`,
+# `B-PREPARING-EMPTY`) are progress shapes and are not R2-E's at all.
+ARCHIVE_PENDING_FIXTURE_SHAPES = {"AC-NOPUB-UNBORN", "AP-PRESERVED"}
 EXPECTED_REASONS = {
     "UnexpectedAcceptanceEvidence": ["accepted workspace is present before complete participant validation", "publication evidence exists without accepted workspace"],
     "AcceptanceInputDrift": ["a selected participant result no longer matches its durable result", "the accepted metadata base cannot be verified from its recorded source", "the live root no longer matches the accepted pre-evidence checkout"],
@@ -363,6 +405,82 @@ def validate_descriptor(
     return row
 
 
+def validate_archive_tier(
+    core: Path, tier: Any, path: str, *, expected_status: str | None = None
+) -> str:
+    row = exact_keys(tier, TIER_KEYS, path)
+    status = text(row["status"], f"{path}.status")
+    require(status in TIER_STATUSES, f"{path}.status is not a registered tier status")
+    require(
+        expected_status is None or status == expected_status,
+        f"{path}.status must be {expected_status!r} for this row's disposition",
+    )
+    if status == "executed":
+        # An executed tier names its live Rust binding and carries no carrier:
+        # nothing is owed elsewhere.
+        require(row["carrier"] is None, f"{path}.carrier must be absent on an executed tier")
+        validate_fixture(core, row, path)
+        return status
+    # An unexecuted tier names its carrier and names no test, so a row can
+    # never look bound by a binding that does not exist.
+    require(row["test"] is None, f"{path}.test must be absent on an unexecuted tier")
+    require(row["subcase"] is None, f"{path}.subcase must be absent on an unexecuted tier")
+    text(row["carrier"], f"{path}.carrier")
+    return status
+
+
+def validate_archive_corpus(corpus: Any, core: Path) -> None:
+    require(isinstance(corpus, list), "archive_corpus must be an array")
+    shapes = [
+        text(exact_keys(row, ARCHIVE_KEYS, f"archive_corpus[{index}]")["shape"], "shape")
+        for index, row in enumerate(corpus)
+    ]
+    require(
+        shapes == ARCHIVE_SHAPES,
+        "archive_corpus must be exactly the ten Table B archive shapes, in table order",
+    )
+    executed_tier1 = 0
+    pending: set[str] = set()
+    for index, raw in enumerate(corpus):
+        path = f"archive_corpus[{index}]"
+        row = exact_keys(raw, ARCHIVE_KEYS, path)
+        shape = row["shape"]
+        text(row["fixture"], f"{path}.fixture")
+        # The clause is the whole point of an archive row: it is recorded by
+        # clause, not by registry membership. Content-anchored per the R2-E
+        # citing rule, so a bare line number cannot stand alone.
+        clause = text(row["clause"], f"{path}.clause")
+        require(
+            "GwzM5-8I2CompatibilityContract.md" in clause and "§" in clause and '"' in clause,
+            f"{path}.clause must cite the frozen contract content-anchored: § plus a quoted anchor",
+        )
+        disposition = text(row["disposition"], f"{path}.disposition")
+        require(
+            disposition in ARCHIVE_DISPOSITIONS,
+            f"{path}.disposition is not a registered archive disposition",
+        )
+        if disposition == "pending-fixture":
+            pending.add(shape)
+            require(row["fixture"] == "none", f"{path}.fixture must be 'none' when unfixtured")
+            validate_archive_tier(core, row["tier1"], f"{path}.tier1", expected_status="pending-fixture")
+            validate_archive_tier(core, row["tier2"], f"{path}.tier2", expected_status="pending-fixture")
+            continue
+        # A fixtured v0-origin row owes its tier-1 byte-digest proof now.
+        validate_archive_tier(core, row["tier1"], f"{path}.tier1", expected_status="executed")
+        executed_tier1 += 1
+        validate_archive_tier(core, row["tier2"], f"{path}.tier2")
+    # The E0.2b §8 [P2-2] denominators, machine-enforced: 8 archive-corpus rows
+    # plus 2 PENDING-FIXTURE, and the pending pair is exactly the §6.4 pair.
+    require(
+        executed_tier1 == 8,
+        f"archive_corpus must carry exactly 8 tier-1-executed rows, found {executed_tier1}",
+    )
+    require(
+        pending == ARCHIVE_PENDING_FIXTURE_SHAPES,
+        f"archive_corpus PENDING-FIXTURE rows must be exactly {sorted(ARCHIVE_PENDING_FIXTURE_SHAPES)}",
+    )
+
+
 def validate(document: Any, core: Path) -> None:
     root = exact_keys(document, TOP_KEYS, "registry")
     require(root["schema"] == SCHEMA, f"registry schema must be {SCHEMA!r}")
@@ -460,6 +578,8 @@ def validate(document: Any, core: Path) -> None:
         )
         text(row["reason"], f"{path}.reason")
 
+    validate_archive_corpus(root["archive_corpus"], core)
+
     reasons = root["rejection_reasons"]
     require(isinstance(reasons, dict) and reasons, "rejection_reasons must be nonempty")
     for code, values in reasons.items():
@@ -476,8 +596,9 @@ def main() -> int:
     document = load_json_exact(args.registry.read_text(encoding="utf-8"))
     validate(document, args.core.resolve())
     print(
-        f"validated {len(document['migration_whitelist'])} migration rules and "
-        f"{len(document['fixture_corpus'])} runtime bindings"
+        f"validated {len(document['migration_whitelist'])} migration rules, "
+        f"{len(document['fixture_corpus'])} runtime bindings, and "
+        f"{len(document['archive_corpus'])} archive shapes"
     )
     return 0
 

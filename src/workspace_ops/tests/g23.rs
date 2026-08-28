@@ -19,6 +19,7 @@ use super::*;
 
 mod a1_activation;
 mod abort_recovery;
+mod archive_equivalence_v0;
 mod atomic_upgrade_v0;
 mod characterization_archive_v0;
 mod characterization_preservation_v0;

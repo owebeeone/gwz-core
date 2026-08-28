@@ -139,6 +139,21 @@ def _fault_count(darwin: str, linux: str) -> str:
         and therefore FIRST-DISPATCH-EXPECTED at the lane owner's
         three-platform landing dispatch, in the same form as the E2 counts
         above. A measured number wins.
+
+    R2-E Phase E5.2 (2026-08-28) moves the SAME partition and only it, by two
+    more: `archive_equivalence_v0::
+    archived_v0_shapes_are_byte_preserved_from_their_open_records` (tier 1 of
+    the O8 archive-equivalence mechanism, the eight fixtured Table B shapes)
+    and `archive_equivalence_v0::
+    archive_corpus_denominators_match_the_o8_archive_dispositions` (the 8 + 2
+    denominators asserted from the runtime side).
+
+      darwin 933 -> 935: MEASURED on this step's own tree (935 passed + 1
+        ignored, 2026-08-28), with `checked_artifact::` re-measured unchanged
+        at 446 and `workspace_ops::merge::v1_lifecycle::` at 256 across the
+        E5 pair.
+      linux  934 -> 936: DERIVED (+2, cfg-independent for the same reason),
+        FIRST-DISPATCH-EXPECTED at the landing dispatch.
     """
     if sys.platform == "darwin":
         return darwin
@@ -177,12 +192,18 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("933 passed", "934 passed")),
+         _fault_count("935 passed", "936 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
+        # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
+        # archive corpus, so the O8 archive-equivalence mechanism's ten rows
+        # are counted by the gate rather than merely present in the file. The
+        # rule and binding counts are unchanged -- the archive corpus is not
+        # part of the migration registry, by §12.7's own finding that no
+        # registry vocabulary can hold an archive shape.
         ("frozen predicate registry",
          check("check_merge_compatibility_predicates.py", REGISTRY, "--core", "."),
-         "validated 7 migration rules and 7 runtime bindings"),
+         "validated 7 migration rules, 7 runtime bindings, and 10 archive shapes"),
         ("registry checker suite", suite("test_merge_compatibility_predicates.py"), "OK"),
         ("merge-doc assertions", check("check_merge_docs.py"), "ok (12 sources, 155 assertions)"),
         ("merge-doc checker suite", suite("test_check_merge_docs.py"), "OK"),
@@ -209,9 +230,11 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
          "M4 scenario map: ok (39 scenario rows, 42 named tests, "
          "22 registry rows all claimed)"),
         # R2-E Phase E5.1 (2026-08-28): 119 -> 120, the one parametric
-        # `adapt_open` refusal test. MEASURED on this step's tree.
+        # `adapt_open` refusal test. E5.2: 120 -> 122, the archive-equivalence
+        # tier-1 battery and its denominators test. Both MEASURED on their own
+        # trees.
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "120 passed"),
+         lib("workspace_ops::tests::g23::"), "122 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),
