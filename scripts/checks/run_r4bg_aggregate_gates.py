@@ -209,25 +209,25 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("merge-doc checker suite", suite("test_check_merge_docs.py"), "OK"),
     ]),
     "byte-equivalence": ("byte-equivalence gate, both halves of O8 (rows 2.3a/2.3b, §12)", [
-        # DOC-PENDING (R2-E Phase E5.1, 2026-08-28). This marker is the value
-        # the map prints once the lane owner lands E5.1's companion edit to
-        # `dev-docs/GwzM5-8R4bG-Evidence.md` §12.3 Table A -- the ten unbound
-        # progress rows gaining their nine new registry case ids plus
-        # `G-VERIFYING`'s DISPOSITIONED-UNLISTED, and each citing the new
-        # parametric test. The step's own worktree cannot make that edit (the
-        # map lives in the gwz-dev workspace's dev-docs, outside this
-        # checkout, exactly as this script's own J-7 scope disclosure
-        # records), so the marker is stated forward rather than left stale:
-        # 39 scenario rows are unchanged, named tests go 41 -> 42 (the one new
-        # test), registry rows go 13 -> 22 (the nine new
-        # `valid_unlisted_corpus` rows). VERIFIED by running the checker
-        # against a patched copy of the map on 2026-08-28; until the real
-        # edit lands this battery command is RED and E5.1's per-commit
-        # greenness rests on the compatibility and call-graph batteries, which
-        # are green.
+        # R2-E E5 LANDED (2026-08-28). The two dev-docs companion edits to
+        # `dev-docs/GwzM5-8R4bG-Evidence.md` each add one named test to the
+        # m4-map region: E5.1's §12.3 Table A edit (the ten unbound progress
+        # rows -- nine new registry case ids plus `G-VERIFYING`'s
+        # DISPOSITIONED-UNLISTED, each citing the parametric test) and
+        # E5.2's §12.4 Table B edit (the eight tier-1 rows citing the
+        # archival byte-preservation test). Named tests go 41 -> 43 (+1 per
+        # companion; the E5 review's [P1-1] measured the forward-stated 42
+        # as short by exactly E5.2's +1) and registry rows go 13 -> 22 (the
+        # nine new `valid_unlisted_corpus` rows). MEASURED against the real
+        # map with both companion edits in place at the E5 landing,
+        # 2026-08-28. The step's own worktree could not make those edits
+        # (the map lives in the gwz-dev workspace's dev-docs, outside this
+        # checkout, per this script's own J-7 scope disclosure), which is
+        # why the marker was forward-stated between the E5.1 commit and
+        # this landing.
         ("M4 scenario map",
          check("check_m4_scenario_map.py"),
-         "M4 scenario map: ok (39 scenario rows, 42 named tests, "
+         "M4 scenario map: ok (39 scenario rows, 43 named tests, "
          "22 registry rows all claimed)"),
         # R2-E Phase E5.1 (2026-08-28): 119 -> 120, the one parametric
         # `adapt_open` refusal test. E5.2: 120 -> 122, the archive-equivalence

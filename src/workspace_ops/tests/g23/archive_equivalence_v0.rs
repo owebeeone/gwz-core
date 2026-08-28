@@ -41,7 +41,7 @@
 //! carrier, and nothing here reports the O8 archive clause met on them. The
 //! `GwzM5-8R4bG-Evidence.md` §12.8 PARTIAL statement survives unchanged.
 //!
-//! **Eight rows, six distinct durable bases — stated so the count is not
+//! **Eight rows, five distinct durable bases — stated so the count is not
 //! over-read.** Byte-preservation is a property of the archival act, not of
 //! what a fixture does to the archive afterwards, so the three rows whose
 //! Table B fixtures are post-archive overlays share a base with the row they
@@ -49,7 +49,9 @@
 //! and `AR-C` with `AC-NOPUB-BORN`. Each still gets its own workspace, its own
 //! digest pair and its own corpus row — a regression in any one of them fails
 //! here on its own name — but a reader counting distinct durable archive
-//! fixtures should count six, not eight. The overlays those three rows are
+//! fixtures should count five, not eight (E5 review [P2-2], 2026-08-28:
+//! `CompletedCandidate` ×2, `CompletedNoPublication` ×3, and three distinct
+//! aborted-fault bases; the first landing of this doc said six). The overlays those three rows are
 //! named for are byte-pinned separately and already:
 //! `characterization_archive_v0::archived_v0_optional_evidence_gaps_remain_readable_and_untouched`,
 //! `::archived_v0_unknown_fields_and_raw_bytes_survive_status_and_retention`,

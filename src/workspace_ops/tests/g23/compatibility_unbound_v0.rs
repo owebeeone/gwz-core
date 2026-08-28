@@ -43,7 +43,10 @@
 //! `GwzM5-8R4bG-Evidence.md` §12.9(c)'s own ground: it is a `Finalizing` shape,
 //! and the `valid_unlisted_corpus` "cannot express a `Finalizing` shape …
 //! widening it to admit these rows would weaken the registry, not extend it".
-//! §12.9's table names four `Finalizing` residue rows and misses this fifth;
+//! §12.9's own Finalizing ground reaches three of its four rows (`F-BASELINE`,
+//! `F-MARKER`, `F-LOCK`); `G-VERIFYING` is a fourth `Finalizing` row it never
+//! considered (E5 review [P2-4], 2026-08-28 — the first landing of this doc
+//! miscounted it as a fifth);
 //! see the disposition recorded at `g_verifying_is_dispositioned_by_clause`
 //! below. Its record is therefore made here, by clause, with an executed test —
 //! which is §12.7's own second branch, "an O8 acceptance note citing the clause
@@ -55,7 +58,10 @@
 //! all four are open, publication-free, reverse-owner states. They are
 //! separated here by the evidence each carries — the row-A shapes are asserted
 //! to carry *no* preservation evidence and *no* reversed participant, which is
-//! precisely what rows H and I retain. R0 §4 row I's own gap sentence ("named
+//! precisely what `preserving/stash` and `rollback/participant` retain; the
+//! new `I-EVIDENCE-ROLLBACK` arm is separated by its composition commit,
+//! asserted present — not by a reversed participant, which its construction
+//! does not create (E5 review [P3-5], 2026-08-28). R0 §4 row I's own gap sentence ("named
 //! record shapes for every reverse prefix are missing") is why the separation
 //! is this thin; recording it is E5.1's job, closing it is not.
 
@@ -522,7 +528,9 @@ fn v0_unbound_progress_shapes_are_refused_by_adapt_open() {
 /// `GwzM5-8R4bG-Evidence.md` §12.9(c) is the reason there is no registry row:
 /// the `valid_unlisted_corpus` "cannot express a `Finalizing` shape … widening
 /// it to admit these rows would weaken the registry, not extend it". §12.9's
-/// own table names four such rows and misses this fifth.
+/// own Finalizing ground reaches three of its four rows; this is the fourth
+/// `Finalizing` row, one §12.9 never considered (E5 review [P2-4],
+/// 2026-08-28 — the first landing of this doc miscounted it as a fifth).
 fn g_verifying_is_dispositioned_by_clause(durable: &Durable) {
     let descriptor = crate::workspace_ops::merge::verified_v0_descriptor(
         &durable.backend,
