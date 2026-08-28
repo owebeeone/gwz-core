@@ -213,10 +213,17 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> TempDir {
+        // Nanos, not `{:?}`: SystemTime's Debug rendering carries braces,
+        // spaces, and a colon, and a colon is not a legal Windows filename
+        // character -- every test in this module failed its fixture with
+        // os error 267 on the first Windows dispatch (2026-08-29).
         let path = std::env::temp_dir().join(format!(
-            "gwz-core-conf-gate-{name}-{}-{:?}",
+            "gwz-core-conf-gate-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
