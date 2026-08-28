@@ -531,6 +531,10 @@ fn v0_unbound_progress_shapes_are_refused_by_adapt_open() {
 /// own Finalizing ground reaches three of its four rows; this is the fourth
 /// `Finalizing` row, one §12.9 never considered (E5 review [P2-4],
 /// 2026-08-28 — the first landing of this doc miscounted it as a fifth).
+///
+/// E5 review [P3-2], executed 2026-08-28: the "zero rules can equal it" half
+/// was prose beside a test that only measured *this* descriptor's zero
+/// matches. It is now read off the registry — see the second block below.
 fn g_verifying_is_dispositioned_by_clause(durable: &Durable) {
     let descriptor = crate::workspace_ops::merge::verified_v0_descriptor(
         &durable.backend,
@@ -546,6 +550,25 @@ fn g_verifying_is_dispositioned_by_clause(durable: &Durable) {
         super::compatibility_v0::i2_whitelist_matches(descriptor.value()),
         Vec::<String>::new()
     );
+
+    // The structural claim, executed. The zero above is this one descriptor's;
+    // the disposition rests on a stronger zero — that no rule *can* equal any
+    // `verifying_publication` descriptor. Two registry facts give it: the
+    // closed `publication_step` enum does not carry the token, and every rule's
+    // descriptor draws its step from that enum. A rule minted with the token
+    // would fail the first; a rule minted outside the enum would fail the
+    // second, and the checker would reject the registry either way.
+    let steps = super::compatibility_v0::i2_normalization_enum("publication_step");
+    assert!(
+        !steps.iter().any(|step| step == "verifying_publication"),
+        "the closed publication_step enum must not carry verifying_publication: {steps:?}"
+    );
+    for (rule_id, step) in super::compatibility_v0::i2_whitelist_publication_steps() {
+        assert!(
+            steps.contains(&step),
+            "{rule_id} carries a publication step outside the closed enum: {step}"
+        );
+    }
 
     let decoded = crate::workspace_ops::merge::decode_production_v0(
         serde_yaml::to_string(&durable.record).unwrap().as_bytes(),

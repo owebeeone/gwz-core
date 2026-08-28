@@ -110,6 +110,39 @@ pub(super) fn i2_whitelist_matches(descriptor: &Value) -> Vec<String> {
         .collect()
 }
 
+/// One closed `normalization.enums` set, whole. The registry, not a hand-copy,
+/// is what says which tokens a descriptor field may carry.
+pub(super) fn i2_normalization_enum(name: &str) -> Vec<String> {
+    let registry: Value = serde_yaml::from_str(REGISTRY).unwrap();
+    field(field(&registry, "normalization"), "enums")
+        .as_mapping()
+        .unwrap()
+        .get(Value::String(name.to_owned()))
+        .unwrap_or_else(|| panic!("normalization.enums is missing {name:?}"))
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Every whitelist rule's id paired with the `publication.step` token its
+/// descriptor carries.
+pub(super) fn i2_whitelist_publication_steps() -> Vec<(String, String)> {
+    let registry: Value = serde_yaml::from_str(REGISTRY).unwrap();
+    field(&registry, "migration_whitelist")
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|rule| {
+            (
+                text_field(rule, "id").to_owned(),
+                text_field(field(field(rule, "descriptor"), "publication"), "step").to_owned(),
+            )
+        })
+        .collect()
+}
+
 /// The registry's frozen first `rejection_reasons` sentence for `code`, so a
 /// typed refusal is pinned to the contract's own words and not to a message
 /// this test invented.

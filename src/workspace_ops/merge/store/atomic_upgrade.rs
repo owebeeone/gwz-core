@@ -17,12 +17,31 @@ use crate::workspace_ops::merge::record_wire::{
     PreparedOpenV0Upgrade, PreparedV1Upgrade, decode_production_v0, prepare_upgrade,
 };
 
+/// The publication window's crash boundaries, as the upgrade's own vocabulary.
+///
+/// **O10 / Safety [P3-R2-1], executed at R2-E E6.2.** The four injected
+/// variants are `#[cfg(test)]`, so a production build compiles no constructor
+/// for them at all. That is deliberately stronger than sealing a constructor,
+/// which would leave the variants in the binary and `None` at the single
+/// production call site (`runtime/dispatch.rs`) a convention someone could
+/// later edit; here `None` is the only value that exists to pass, and the
+/// non-test lib build -- which `cargo check --all-targets` performs -- is the
+/// machine check that nothing outside the test cfg names the others.
+///
+/// The signature keeps the parameter rather than splitting on cfg: the split
+/// would have to be carried through `upgrade_open_v0` into `dispatch.rs`'s
+/// call, which is exactly the site whose hardcoded `None` the review's finding
+/// is about and which the O9 fallback test reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AtomicUpgradeFault {
     None,
+    #[cfg(test)]
     BeforeStageWrite,
+    #[cfg(test)]
     AfterStageFsync,
+    #[cfg(test)]
     BeforeAtomicRename,
+    #[cfg(test)]
     AfterRenameBeforeVerification,
 }
 
@@ -85,6 +104,13 @@ fn publish_prepared(
     prepared: &PreparedV1Upgrade,
     fault: AtomicUpgradeFault,
 ) -> ModelResult<()> {
+    // Production compiles no injected variant, so nothing below can read the
+    // parameter there; it stays in the signature so this window remains one
+    // function rather than two divergent ones.
+    #[cfg(not(test))]
+    let _ = fault;
+
+    #[cfg(test)]
     if fault == AtomicUpgradeFault::BeforeStageWrite {
         return Err(injected_fault(fault));
     }
@@ -101,6 +127,7 @@ fn publish_prepared(
         let _ = fs::remove_file(&temporary);
         return Err(io_error(error));
     }
+    #[cfg(test)]
     if fault == AtomicUpgradeFault::AfterStageFsync {
         return Err(injected_fault(fault));
     }
@@ -120,6 +147,7 @@ fn publish_prepared(
             target.display()
         )));
     }
+    #[cfg(test)]
     if fault == AtomicUpgradeFault::BeforeAtomicRename {
         return Err(injected_fault(fault));
     }
@@ -129,6 +157,7 @@ fn publish_prepared(
         return Err(io_error(error));
     }
     sync_dir(parent).map_err(io_error)?;
+    #[cfg(test)]
     if fault == AtomicUpgradeFault::AfterRenameBeforeVerification {
         return Err(injected_fault(fault));
     }
@@ -180,6 +209,7 @@ fn digest(bytes: &[u8]) -> Vec<u8> {
     Sha256::digest(bytes).to_vec()
 }
 
+#[cfg(test)]
 fn injected_fault(fault: AtomicUpgradeFault) -> ModelError {
     recovery_error(format!(
         "injected atomic merge-record upgrade fault at {fault:?}"

@@ -724,8 +724,33 @@ fn dirty_and_native_merge_state_are_precise_rejection_signals() {
     assert_eq!(error.code, ErrorCode::GitCommandFailed);
 }
 
+/// The dirt half of this test is also **Decision 2 A′'s abort-site rewrite-set
+/// bound**, and O12's fourth rider (R1.2 (b) / F-6 [P3], executed at R2-E E6.2)
+/// is that the guard say so and read its bound from its source.
+///
+/// A′ refuses a recovery-grade checkout whose rewrite set crosses a configured
+/// foreign clean filter, and the bound on that set is
+/// `diff(merge_head → before)` — sound only because
+/// `validate_abort_index_and_worktree` (`recovery_support.rs`) has already
+/// pinned worktree changes to the conflict set, which is the step
+/// `merge_recovery.rs`'s "Rewrite-set bound:" comment names. That step is gwz
+/// code and can regress; steps 3-4 of the argument are properties of git's
+/// merge and cannot. So this is the executed guard for it — and its name says
+/// nothing of the kind, which is what F-6 objected to, next to the precedent
+/// for exactly the wrong edit: `ensure_clean_recovery_state` was relaxed with a
+/// carve-out for checked-artifact private residue
+/// (`recovery_support.rs`'s `status_dirty_outside_checked_artifact_private`).
+/// An analogous carve-out on the abort validator would narrow A′'s bound
+/// silently.
+///
+/// The tie below is structural, not a comment: the dirtied path is required to
+/// lie outside the conflict set the live merge state reports, so a fixture
+/// whose conflict set grew to cover it would fail here rather than quietly stop
+/// testing the bound.
 #[test]
 fn checked_native_abort_rejects_drift_and_dirt_then_is_idempotent() {
+    const DIRTIED: &str = "stable.txt";
+
     let temp = TempDir::new("merge-checked-abort");
     let repo = temp.path().join("repo");
     let (before, source) = seed_conflict(&repo);
@@ -733,11 +758,17 @@ fn checked_native_abort_rejects_drift_and_dirt_then_is_idempotent() {
     backend.merge_upstream(&repo, "main", "feature").unwrap();
     let error = backend.abort_merge(&repo, &before, &before).unwrap_err();
     assert_eq!(error.code, ErrorCode::MergeDrift);
-    assert!(backend.merge_state(&repo).unwrap().is_some());
-    fs::write(repo.join("stable.txt"), "post-merge work\n").unwrap();
+    let state = backend.merge_state(&repo).unwrap().unwrap();
+    assert!(
+        !state.conflict_paths.iter().any(|path| path == DIRTIED),
+        "the dirt must lie OUTSIDE the live conflict set {:?} or this guard \
+         stops holding A′'s abort-site rewrite-set bound",
+        state.conflict_paths
+    );
+    fs::write(repo.join(DIRTIED), "post-merge work\n").unwrap();
     let error = backend.abort_merge(&repo, &before, &source).unwrap_err();
     assert_eq!(error.code, ErrorCode::DirtyMember);
-    run_git(&repo, &["checkout", "--", "stable.txt"]);
+    run_git(&repo, &["checkout", "--", DIRTIED]);
     backend.abort_merge(&repo, &before, &source).unwrap();
     assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
     assert!(backend.merge_state(&repo).unwrap().is_none());

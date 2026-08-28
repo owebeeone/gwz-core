@@ -225,6 +225,50 @@ class CompatibilityPredicateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "content-anchored"):
             self.validate()
 
+    # --- the closed sets the E5 corpora rest on (E5 review [P3-3]) --------
+    #
+    # `VALID_UNLISTED_STATES` gained three tokens at E5.1 and carried no test
+    # of its own -- a pre-existing gap that E5.1 made load-bearing -- and the
+    # two archive sets E5.2 added carried none either. Same
+    # weaken-and-expect-a-raise form as the rest of this suite.
+
+    def test_valid_unlisted_corpus_cannot_declare_finalizing(self) -> None:
+        # The load-bearing exclusion, and the one the checker's own comment
+        # calls deliberate: `finalizing` is the single open state the
+        # whitelist adapts, so a corpus row declaring it would claim
+        # valid-unlisted for a shape a rule can match. This is what makes
+        # §12.9(c)'s ruling -- that widening the corpus to admit `finalizing`
+        # "would weaken the registry, not extend it" -- machine-held rather
+        # than a convention of the rows that happen to be filed.
+        self.document["valid_unlisted_corpus"][0]["operation_state"] = "finalizing"
+        with self.assertRaisesRegex(ValueError, "exact valid-unlisted state"):
+            self.validate()
+
+    def test_valid_unlisted_state_registry_is_closed(self) -> None:
+        self.document["valid_unlisted_corpus"][0]["operation_state"] = "invented"
+        with self.assertRaisesRegex(ValueError, "exact valid-unlisted state"):
+            self.validate()
+
+    def test_archive_disposition_registry_is_closed(self) -> None:
+        row = next(
+            row
+            for row in self.document["archive_corpus"]
+            if row["disposition"] == "byte-preserved-v0-origin"
+        )
+        row["disposition"] = "byte-preserved-v1-origin"
+        with self.assertRaisesRegex(ValueError, "registered archive disposition"):
+            self.validate()
+
+    def test_tier_status_registry_is_closed(self) -> None:
+        row = next(
+            row
+            for row in self.document["archive_corpus"]
+            if row["tier2"]["status"] == "owed"
+        )
+        row["tier2"]["status"] = "waived"
+        with self.assertRaisesRegex(ValueError, "registered tier status"):
+            self.validate()
+
     def test_nested_duplicate_json_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
             self.checker.load_json_exact('{"outer":{"same":1,"same":2}}')
