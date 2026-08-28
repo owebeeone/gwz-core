@@ -48,6 +48,12 @@ where
         OpenMergeCommand::Pull,
         dry_run,
     )?;
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::Pull,
+        reconcile_authority(_guard.as_ref(), dry_run),
+    )?;
     let manifest_for_selection = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest_for_selection, request.meta.workspace.as_ref())?;
     let lock_for_selection = artifact::read_lock(&root)?;
@@ -441,7 +447,13 @@ where
         members,
     };
     artifact::write_lock(root, &lock)?;
-    backend.stage_paths_allowing_other_conflicts(root, &[artifact::LOCK_PATH])?;
+    // `write_lock` re-records the conf-integrity marker, so the marker moves with the lock
+    // here too. This conflicted-pull path stages explicitly instead of going through
+    // `sync_workspace_boundary`, so it has to name the marker itself or leave it behind.
+    backend.stage_paths_allowing_other_conflicts(
+        root,
+        &[artifact::LOCK_PATH, artifact::CONF_INTEGRITY_MARKER_PATH],
+    )?;
     Ok(lock)
 }
 

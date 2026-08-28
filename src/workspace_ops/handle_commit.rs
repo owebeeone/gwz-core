@@ -34,6 +34,12 @@ where
         OpenMergeCommand::Commit,
     )?;
     let root = _guard.root().to_path_buf();
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::Commit,
+        reconcile_authority(Some(&_guard), request.meta.dry_run.unwrap_or(false)),
+    )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;

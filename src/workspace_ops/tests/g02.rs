@@ -772,6 +772,428 @@ pub(crate) fn clone_workspace_rejects_url_that_is_not_a_workspace() {
     assert_eq!(err.code, ErrorCode::WorkspaceNotFound);
 }
 
+const CLAUDE_SETTINGS: &str = ".claude/settings.json";
+
+#[test]
+pub(crate) fn create_workspace_writes_the_banner_marker_and_claude_deny_rule() {
+    // The four layers as a workspace actually receives them.
+    let temp = TempDir::new("conf-defence-create");
+    let backend = Git2Backend::new();
+
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+
+    // Layer 1: the manifest carries the banner and still parses. The lock deliberately
+    // does not — the merge v1 lane re-renders it through a comment-stripping value round
+    // trip and then demands byte equality with the baseline it read off disk.
+    let manifest_text =
+        fs::read_to_string(temp.path().join(crate::workspace::WORKSPACE_MANIFEST)).unwrap();
+    assert!(
+        manifest_text.starts_with(crate::artifact::CONF_BANNER),
+        "gwz.yml lost its banner: {manifest_text}"
+    );
+    assert!(manifest_text.contains("gwz repo <add|clone|create|detach|attach|sync>"));
+    assert!(
+        !fs::read_to_string(temp.path().join(crate::artifact::LOCK_PATH))
+            .unwrap()
+            .starts_with('#')
+    );
+    read_manifest(temp.path()).unwrap();
+    read_lock(temp.path()).unwrap();
+
+    // Layer 2: the workspace is enrolled and verifies.
+    assert_eq!(
+        crate::artifact::inspect_conf_integrity(temp.path()),
+        crate::artifact::ConfIntegrityVerdict::Verified
+    );
+
+    // Layer 3: the deny rule is emitted.
+    assert_eq!(
+        fs::read_to_string(temp.path().join(CLAUDE_SETTINGS)).unwrap(),
+        "{\n  \"permissions\": {\n    \"deny\": [\n      \"Edit(/gwz.conf/**)\"\n    ]\n  }\n}\n"
+    );
+
+    // Layer 4: the emitted agent brief carries the merged Workspace Integrity section.
+    let brief = fs::read_to_string(temp.path().join(AGENTS_GWZ_PATH)).unwrap();
+    assert!(brief.contains("Direct text-based edits to `gwz.conf/` are strictly forbidden"));
+    assert!(brief.contains("refuses any structural command"));
+    assert!(brief.contains("There is no rename or move verb."));
+    assert!(!brief.contains("gwz repo rename"));
+    assert!(!brief.contains("gwz repo move"));
+
+    // Both the marker and the settings file are staged, so git moves them with the conf
+    // files they vouch for — that is what makes pull/checkout/branch-switch pass.
+    let staged = backend.status(temp.path()).unwrap();
+    for relative in [crate::artifact::CONF_INTEGRITY_MARKER_PATH, CLAUDE_SETTINGS] {
+        assert!(
+            staged
+                .files
+                .iter()
+                .any(|file| file.path == relative && file.index_status == "A"),
+            "{relative} was not staged: {:?}",
+            staged.files
+        );
+    }
+}
+
+#[test]
+pub(crate) fn hand_editing_the_manifest_refuses_commands_until_force_accepts_it() {
+    let temp = TempDir::new("conf-defence-refuse");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    handle_create_repo(
+        &backend,
+        temp.path(),
+        create_repo_request("repos/app", None, None),
+        "op_repo",
+    )
+    .unwrap();
+
+    // An agent "renames" a member by editing the manifest — the incident this defends.
+    let manifest_path = temp.path().join(crate::workspace::WORKSPACE_MANIFEST);
+    fs::write(
+        &manifest_path,
+        fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("repos/app", "repos/renamed"),
+    )
+    .unwrap();
+
+    let error = handle_create_repo(
+        &backend,
+        temp.path(),
+        create_repo_request("repos/other", None, None),
+        "op_repo_blocked",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert!(error.message.contains(crate::workspace::WORKSPACE_MANIFEST));
+    assert!(error.message.contains("gwz init --update --force"));
+    assert!(!temp.path().join("repos/other").exists());
+
+    // The one sanctioned acceptance path re-blesses what is on disk.
+    let accepted = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_force(),
+        "op_accept",
+    )
+    .unwrap();
+    assert!(
+        accepted
+            .meta
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("accepted the current on-disk gwz.conf state")
+    );
+
+    // ... and commands work again.
+    handle_create_repo(
+        &backend,
+        temp.path(),
+        create_repo_request("repos/other", None, None),
+        "op_repo_ok",
+    )
+    .unwrap();
+    assert_eq!(
+        read_manifest(temp.path()).unwrap().members[0].path,
+        "repos/renamed"
+    );
+}
+
+#[test]
+pub(crate) fn a_pre_upgrade_workspace_is_adopted_by_bootstrap_update_not_refused() {
+    // Grandfathering: strip the marker to model every workspace that predates it, then
+    // hand-edit the conf. Nothing may refuse, and `gwz init --update` enrols it.
+    let temp = TempDir::new("conf-defence-grandfather");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    fs::remove_file(
+        temp.path()
+            .join(crate::artifact::CONF_INTEGRITY_MARKER_PATH),
+    )
+    .unwrap();
+    let manifest_path = temp.path().join(crate::workspace::WORKSPACE_MANIFEST);
+    fs::write(
+        &manifest_path,
+        fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("ws_ops", "ws_ops2"),
+    )
+    .unwrap();
+
+    // No marker, no refusal — a pre-upgrade workspace keeps working untouched.
+    read_manifest(temp.path()).unwrap();
+
+    let response = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        crate::RequestMeta {
+            workspace: None,
+            ..request_meta()
+        },
+        "op_adopt",
+    )
+    .unwrap();
+
+    assert!(
+        response
+            .meta
+            .message
+            .as_deref()
+            .unwrap()
+            .starts_with("workspace agent bootstrap files")
+    );
+    assert_eq!(
+        crate::artifact::inspect_conf_integrity(temp.path()),
+        crate::artifact::ConfIntegrityVerdict::Verified
+    );
+    assert!(
+        backend
+            .status(temp.path())
+            .unwrap()
+            .files
+            .iter()
+            .any(|file| file.path == crate::artifact::CONF_INTEGRITY_MARKER_PATH)
+    );
+}
+
+#[test]
+pub(crate) fn bootstrap_update_merges_into_an_existing_claude_settings_file() {
+    let temp = TempDir::new("conf-defence-settings-merge");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    fs::write(
+        temp.path().join(CLAUDE_SETTINGS),
+        "{\"permissions\": {\"deny\": [\"Read(./.env)\"]}}",
+    )
+    .unwrap();
+
+    handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_workspace(),
+        "op_settings",
+    )
+    .unwrap();
+
+    let merged = fs::read_to_string(temp.path().join(CLAUDE_SETTINGS)).unwrap();
+    assert!(merged.contains("\"Read(./.env)\""), "{merged}");
+    assert!(merged.contains("\"Edit(/gwz.conf/**)\""), "{merged}");
+}
+
+#[test]
+pub(crate) fn an_unparseable_claude_settings_file_warns_and_is_left_alone() {
+    let temp = TempDir::new("conf-defence-settings-broken");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let broken = "{\"permissions\": {\"deny\": [\n";
+    fs::write(temp.path().join(CLAUDE_SETTINGS), broken).unwrap();
+
+    let response = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_workspace(),
+        "op_settings_broken",
+    )
+    .unwrap();
+
+    assert!(
+        response
+            .meta
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("left .claude/settings.json untouched"),
+        "{:?}",
+        response.meta.message
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join(CLAUDE_SETTINGS)).unwrap(),
+        broken
+    );
+}
+
+/// `git status --porcelain`-shaped view of the workspace root.
+fn conf_porcelain(backend: &Git2Backend, root: &Path) -> Vec<String> {
+    let mut lines: Vec<String> = backend
+        .status(root)
+        .unwrap()
+        .files
+        .iter()
+        .map(|file| {
+            format!(
+                "{}{} {}",
+                file.index_status, file.worktree_status, file.path
+            )
+        })
+        .collect();
+    lines.sort();
+    lines
+}
+
+/// Commit everything in the root repo, the way a real workspace carries gwz.conf.
+fn commit_workspace(root: &Path) {
+    let repo = git2::Repository::open(root).unwrap();
+    let mut index = repo.index().unwrap();
+    index
+        .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+        .unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let signature = git2::Signature::now("GWZ Test", "gwz@example.invalid").unwrap();
+    let parents: Vec<_> = repo
+        .head()
+        .ok()
+        .and_then(|head| head.target())
+        .into_iter()
+        .map(|id| repo.find_commit(id).unwrap())
+        .collect();
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "workspace",
+        &tree,
+        &parents.iter().collect::<Vec<_>>(),
+    )
+    .unwrap();
+}
+
+#[test]
+pub(crate) fn a_dry_run_repo_command_refuses_a_hand_edit_without_touching_the_tree() {
+    // [P1-1] Dry-run purity through the real handler: a dry run must report the refusal
+    // the real run would raise, and leave the worktree byte-identical while doing it.
+    let temp = TempDir::new("conf-defence-dry-run");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    commit_workspace(temp.path());
+    let manifest_path = temp.path().join(crate::workspace::WORKSPACE_MANIFEST);
+    fs::write(
+        &manifest_path,
+        fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("ws_ops", "ws_typed"),
+    )
+    .unwrap();
+    let before = conf_porcelain(&backend, temp.path());
+
+    let error = handle_create_repo(
+        &backend,
+        temp.path(),
+        crate::CreateRepoRequest {
+            meta: crate::RequestMeta {
+                dry_run: Some(true),
+                ..request_meta_with_workspace()
+            },
+            ..create_repo_request("repos/app", None, None)
+        },
+        "op_repo_dry",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(conf_porcelain(&backend, temp.path()), before);
+}
+
+#[test]
+pub(crate) fn a_dry_run_over_a_git_side_rewrite_reconciles_nothing() {
+    // [P1-1] The reviewer's probe: a stale-but-clean marker used to be rewritten by a dry
+    // run, leaving `M gwz.conf/markers/conf-integrity.yml` behind.
+    let temp = TempDir::new("conf-defence-dry-run-clean");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    // A byte change git could plausibly have produced, committed, and left the marker
+    // behind on. The workspace id is untouched so nothing else can refuse.
+    let manifest_path = temp.path().join(crate::workspace::WORKSPACE_MANIFEST);
+    let rewritten = format!(
+        "{}# rewritten by git\n",
+        fs::read_to_string(&manifest_path).unwrap()
+    );
+    fs::write(&manifest_path, rewritten).unwrap();
+    commit_workspace(temp.path());
+    assert!(crate::artifact::inspect_conf_integrity(temp.path()).refuses());
+    let before = conf_porcelain(&backend, temp.path());
+    let marker_before = fs::read(
+        temp.path()
+            .join(crate::artifact::CONF_INTEGRITY_MARKER_PATH),
+    )
+    .unwrap();
+
+    handle_create_repo(
+        &backend,
+        temp.path(),
+        crate::CreateRepoRequest {
+            meta: crate::RequestMeta {
+                dry_run: Some(true),
+                ..request_meta_with_workspace()
+            },
+            ..create_repo_request("repos/app", None, None)
+        },
+        "op_repo_dry_clean",
+    )
+    .unwrap();
+
+    assert_eq!(conf_porcelain(&backend, temp.path()), before);
+    assert_eq!(
+        fs::read(
+            temp.path()
+                .join(crate::artifact::CONF_INTEGRITY_MARKER_PATH)
+        )
+        .unwrap(),
+        marker_before
+    );
+}
+
+#[test]
+pub(crate) fn a_parse_breaking_hand_edit_gets_the_teaching_refusal_not_a_yaml_error() {
+    // [P2-5] The likeliest agent breakage is an edit that also breaks the YAML. Gating
+    // before the read means it still gets the teaching refusal.
+    let temp = TempDir::new("conf-defence-broken-yaml");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    commit_workspace(temp.path());
+    fs::write(
+        temp.path().join(crate::workspace::WORKSPACE_MANIFEST),
+        "<<<<<<< HEAD\nschema: gwz.workspace/v0\n=======\n",
+    )
+    .unwrap();
+
+    let error = handle_create_repo(
+        &backend,
+        temp.path(),
+        create_repo_request("repos/app", None, None),
+        "op_repo_broken",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert!(error.message.contains("gwz init --update --force"));
+}
+
+#[test]
+pub(crate) fn force_refuses_to_bless_an_unparseable_lock() {
+    // [P1-2] `--force` must validate BOTH documents before it blesses them, or it leaves
+    // the workspace "Verified" with a lock every later command dies on.
+    let temp = TempDir::new("conf-defence-force-lock");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    fs::write(temp.path().join(crate::artifact::LOCK_PATH), "not: [a lock").unwrap();
+    assert!(crate::artifact::inspect_conf_integrity(temp.path()).refuses());
+
+    let error = handle_update_workspace_bootstrap(
+        &backend,
+        temp.path(),
+        request_meta_with_force(),
+        "op_force_bad_lock",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::ManifestInvalid);
+    // The marker was NOT re-blessed, so the workspace still reports the drift.
+    assert!(crate::artifact::inspect_conf_integrity(temp.path()).refuses());
+}
+
 pub(crate) fn create_workspace_request(root: &Path) -> crate::CreateWorkspaceRequest {
     crate::CreateWorkspaceRequest {
         meta: request_meta(),

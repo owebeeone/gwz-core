@@ -201,12 +201,15 @@ where
     }
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
     sync_workspace_boundary(backend, &root, &manifest, &lock)?;
-    ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;
+    let bootstrap = ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;
     emitter.operation_finished();
 
-    Ok(crate::InitFromSourcesResponse {
-        response: response_envelope(context, crate::AggregateStatus::Ok, members),
-    })
+    let mut response = response_envelope(context, crate::AggregateStatus::Ok, members);
+    // Carry a declined `.claude/settings.json` merge out through the normal channel.
+    if !bootstrap.notes.is_empty() {
+        response.meta.message = Some(bootstrap.notes.join("; "));
+    }
+    Ok(crate::InitFromSourcesResponse { response })
 }
 
 pub(crate) fn desired_from_head(head: &GitHeadState) -> DesiredRefArtifact {

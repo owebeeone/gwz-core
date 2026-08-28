@@ -47,6 +47,14 @@ where
             request.op == crate::StashOp::Push && request.meta.dry_run.unwrap_or(false),
         )?
     };
+    if _guard.is_some() {
+        assert_conf_unmodified_for(
+            backend,
+            &root,
+            OpenMergeCommand::StashMutate,
+            reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
+        )?;
+    }
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;

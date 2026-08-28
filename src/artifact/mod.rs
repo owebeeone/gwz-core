@@ -10,8 +10,15 @@ use crate::durable_fs::{rename_durable, sync_dir};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 
+mod conf_integrity;
 mod merge_marker;
 
+pub(crate) use conf_integrity::sha256_hex;
+pub use conf_integrity::{
+    CONF_BANNER, CONF_INTEGRITY_MARKER_PATH, CONF_INTEGRITY_SCHEMA, ConfIntegrityVerdict,
+    GUARDED_CONF_PATHS, conf_hand_edit_error, inspect_conf_integrity,
+    refresh_conf_integrity_marker,
+};
 pub use merge_marker::{
     MarkerMergeArtifact, MarkerMergeParticipantArtifact, MarkerMergeTargetKind,
 };
@@ -38,9 +45,12 @@ impl ManifestArtifact {
         Ok(artifact)
     }
 
+    /// Serialize with the machine-managed banner. The banner is a YAML comment, so
+    /// `from_yaml` is unaffected, and it rides on every write path because every write
+    /// path goes through here.
     pub fn to_yaml(&self) -> ModelResult<String> {
         self.validate()?;
-        emit_yaml(self)
+        Ok(format!("{CONF_BANNER}{}", emit_yaml(self)?))
     }
 
     pub fn validate(&self) -> ModelResult<()> {
@@ -160,6 +170,11 @@ impl LockArtifact {
         Ok(artifact)
     }
 
+    /// Serialized WITHOUT the machine-managed banner that [`ManifestArtifact::to_yaml`]
+    /// carries. The merge lane re-renders an accepted lock through a YAML value round trip
+    /// that drops comments, and then requires the result to be byte-identical to the
+    /// baseline it read off disk; a banner here would break that invariant for every
+    /// no-op root merge. See `conf_integrity::CONF_BANNER`.
     pub fn to_yaml(&self) -> ModelResult<String> {
         self.validate()?;
         emit_yaml(self)
@@ -347,12 +362,19 @@ pub enum ArtifactSourceKind {
     Generated,
 }
 
+/// Load the workspace manifest.
+///
+/// This deliberately does NOT gate on conf integrity: the merge lane reads the manifest
+/// through here while git is mid-rewrite of the conf files, and a refusal at this seam
+/// displaces the merge lane's own errors. The gate lives at the command sites instead --
+/// see [`assert_conf_unmodified_for`].
 pub fn read_manifest(root: &Path) -> ModelResult<ManifestArtifact> {
     ManifestArtifact::from_yaml(&read_to_string(root.join(WORKSPACE_MANIFEST))?)
 }
 
 pub fn write_manifest(root: &Path, artifact: &ManifestArtifact) -> ModelResult<()> {
-    write_atomic(&root.join(WORKSPACE_MANIFEST), artifact.to_yaml()?)
+    write_atomic(&root.join(WORKSPACE_MANIFEST), artifact.to_yaml()?)?;
+    conf_integrity::refresh_conf_integrity_marker(root)
 }
 
 pub fn read_lock(root: &Path) -> ModelResult<LockArtifact> {
@@ -360,7 +382,8 @@ pub fn read_lock(root: &Path) -> ModelResult<LockArtifact> {
 }
 
 pub fn write_lock(root: &Path, artifact: &LockArtifact) -> ModelResult<()> {
-    write_atomic(&root.join(LOCK_PATH), artifact.to_yaml()?)
+    write_atomic(&root.join(LOCK_PATH), artifact.to_yaml()?)?;
+    conf_integrity::refresh_conf_integrity_marker(root)
 }
 
 pub fn read_snapshot(root: &Path, snapshot_id: &str) -> ModelResult<SnapshotArtifact> {
@@ -415,6 +438,11 @@ fn list_artifacts<T>(dir: PathBuf, parse: impl Fn(&str) -> ModelResult<T>) -> Mo
         .collect()
 }
 
+/// The raw atomic writer deliberately does NOT touch the conf-integrity marker. The merge
+/// lane publishes the lock and restores the manifest through this seam, and writing the
+/// marker there dirties the root worktree at the exact moments that lane requires it
+/// clean. The typed conf writers below re-record it; anything git rewrites behind gwz's
+/// back is reconciled at the gate instead.
 pub fn write_atomic(path: &Path, contents: impl AsRef<str>) -> ModelResult<()> {
     let staged = stage_durably(path, contents.as_ref())?;
     publish_staged(&staged, path)
@@ -436,7 +464,8 @@ pub fn write_manifest_and_lock(
     let lock_staged = stage_durably(&lock_path, &lock.to_yaml()?)?;
     publish_staged(&manifest_staged, &manifest_path)?;
     publish_staged(&lock_staged, &lock_path)?;
-    Ok(())
+    // One refresh after both are published: the marker never records a half-written pair.
+    conf_integrity::refresh_conf_integrity_marker(root)
 }
 
 /// Write `contents` to a unique temp beside `path` and fsync it, returning the staged temp
@@ -681,7 +710,7 @@ fn io_error(err: io::Error) -> ModelError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -690,7 +719,9 @@ mod tests {
 
     use super::*;
 
-    const MANIFEST_GOLDEN: &str = "schema: gwz.workspace/v0\nworkspace:\n  id: ws_01\nmembers:\n- id: mem_01\n  path: repos/example\n  type: git\n  source_id: src_01\n  active: true\n  desired:\n    branch: main\n  remotes:\n  - name: origin\n    url: git@example.invalid:example.git\n    fetch: true\n    push: true\n";
+    /// The banner is part of the golden bytes: it must survive every regeneration, so a
+    /// change that drops it fails the round-trip pins below.
+    const MANIFEST_GOLDEN: &str = "# Machine-managed by gwz. Hand edits to gwz.conf/ are detected and refused.\n# Structural changes: `gwz repo <add|clone|create|detach|attach|sync>`.\n# Already edited? Revert it, or `gwz init --update --force` to accept this state.\nschema: gwz.workspace/v0\nworkspace:\n  id: ws_01\nmembers:\n- id: mem_01\n  path: repos/example\n  type: git\n  source_id: src_01\n  active: true\n  desired:\n    branch: main\n  remotes:\n  - name: origin\n    url: git@example.invalid:example.git\n    fetch: true\n    push: true\n";
 
     const LOCK_GOLDEN: &str = "schema: gwz.lock/v0\nworkspace_id: ws_01\nmanifest_schema: gwz.workspace/v0\nmembers:\n  mem_01:\n    path: repos/example\n    source_id: src_01\n    source_kind: git\n    commit: abc123\n    branch: main\n    detached: false\n    upstream: origin/main\n    dirty: false\n    materialized: true\n";
 
@@ -926,7 +957,7 @@ mod tests {
         assert!(!temp.path().join("nested/file.txt.tmp").exists());
     }
 
-    fn sample_manifest() -> ManifestArtifact {
+    pub(crate) fn sample_manifest() -> ManifestArtifact {
         ManifestArtifact {
             schema: WORKSPACE_SCHEMA.to_owned(),
             workspace: WorkspaceHeader {
@@ -952,7 +983,7 @@ mod tests {
         }
     }
 
-    fn sample_lock() -> LockArtifact {
+    pub(crate) fn sample_lock() -> LockArtifact {
         LockArtifact {
             schema: LOCK_SCHEMA.to_owned(),
             workspace_id: "ws_01".to_owned(),
@@ -1068,12 +1099,12 @@ mod tests {
         );
     }
 
-    struct TempDir {
+    pub(crate) struct TempDir {
         path: PathBuf,
     }
 
     impl TempDir {
-        fn new(name: &str) -> Self {
+        pub(crate) fn new(name: &str) -> Self {
             let unique = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1084,7 +1115,7 @@ mod tests {
             Self { path }
         }
 
-        fn path(&self) -> &Path {
+        pub(crate) fn path(&self) -> &Path {
             &self.path
         }
     }

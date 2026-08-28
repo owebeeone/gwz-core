@@ -52,6 +52,12 @@ where
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::RepoMutate,
+        reconcile_authority(_guard.as_ref(), dry_run),
+    )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let plan = single_source_plan(&manifest, &request)?;
@@ -189,6 +195,12 @@ where
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::RepoMutate,
+        reconcile_authority(_guard.as_ref(), dry_run),
+    )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let index = resolve_detach_member_index(&manifest, &selector)?;
@@ -258,6 +270,12 @@ where
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
         dry_run,
+    )?;
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::RepoMutate,
+        reconcile_authority(_guard.as_ref(), dry_run),
     )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;

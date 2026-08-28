@@ -49,16 +49,20 @@ pub fn handle_create_workspace(
     };
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
     sync_workspace_boundary(&backend, &root, &manifest, &lock)?;
-    ensure_workspace_bootstrap_files(
+    let bootstrap = ensure_workspace_bootstrap_files(
         &backend,
         &root,
         false,
         force_bootstrap_overwrite(&request.meta),
     )?;
 
-    Ok(crate::CreateWorkspaceResponse {
-        response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
-    })
+    let mut response = response_envelope(context, crate::AggregateStatus::Ok, Vec::new());
+    // A `.claude/settings.json` the deny-rule merge declined to touch must not vanish
+    // silently just because this handler has no other message to carry.
+    if !bootstrap.notes.is_empty() {
+        response.meta.message = Some(bootstrap.notes.join("; "));
+    }
+    Ok(crate::CreateWorkspaceResponse { response })
 }
 
 pub fn handle_create_repo<B>(
@@ -88,6 +92,12 @@ where
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
         dry_run,
+    )?;
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::RepoMutate,
+        reconcile_authority(_guard.as_ref(), dry_run),
     )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
@@ -236,6 +246,12 @@ where
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
         dry_run,
+    )?;
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::RepoMutate,
+        reconcile_authority(_guard.as_ref(), dry_run),
     )?;
     let mut manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
@@ -444,6 +460,12 @@ where
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
         dry_run,
+    )?;
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::RepoMutate,
+        reconcile_authority(_guard.as_ref(), dry_run),
     )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;

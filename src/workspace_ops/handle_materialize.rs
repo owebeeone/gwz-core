@@ -38,6 +38,12 @@ where
             format!("snapshot '{}' already exists", request.snapshot_id),
         ));
     }
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::Snapshot,
+        reconcile_authority(Some(&_guard), request.meta.dry_run.unwrap_or(false)),
+    )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
@@ -91,6 +97,12 @@ where
         OpenMergeCommand::Capture,
     )?;
     let root = _guard.root().to_path_buf();
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::Capture,
+        reconcile_authority(Some(&_guard), request.meta.dry_run.unwrap_or(false)),
+    )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
@@ -134,6 +146,12 @@ where
         request.meta.workspace.as_ref(),
         OpenMergeCommand::Materialize,
         request.meta.dry_run.unwrap_or(false),
+    )?;
+    assert_conf_unmodified_for(
+        backend,
+        &root,
+        OpenMergeCommand::Materialize,
+        reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
     )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
