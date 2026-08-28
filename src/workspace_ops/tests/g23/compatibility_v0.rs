@@ -527,6 +527,12 @@ pub(super) fn assert_i2_valid_unlisted_fixture<B: GitBackend>(
     assert_eq!(error.code, ErrorCode::MergeRecordUnreadable, "{case_id}");
 }
 
+/// The corpus's own state vocabulary. `Finalizing` is deliberately absent and
+/// falls through to the panic: it is the one state the whitelist adapts, so a
+/// corpus row could not mean "not whitelisted" for it
+/// (`GwzM5-8R4bG-Evidence.md` §12.9(c)). R2-E Phase E5.1, 2026-08-28 adds the
+/// three pre-acceptance states for §12.9(d)'s unbound progress rows; they are
+/// non-`Finalizing`, so `assert_ne!` below keeps its full force.
 fn operation_state(state: OperationState) -> &'static str {
     match state {
         OperationState::Completed => "completed",
@@ -534,6 +540,9 @@ fn operation_state(state: OperationState) -> &'static str {
         OperationState::RecoveryRequired => "recovery_required",
         OperationState::Preserving => "preserving",
         OperationState::RollingBack => "rolling_back",
+        OperationState::Executing => "executing",
+        OperationState::AwaitingResolution => "awaiting_resolution",
+        OperationState::Halted => "halted",
         other => panic!("state {other:?} is not in the I2 valid-unlisted corpus"),
     }
 }
@@ -632,6 +641,37 @@ fn i2_runtime_binding_inventories_equal_the_registry() {
             ),
             ("preserving/stash", "single", "preserving"),
             ("rollback/participant", "0", "rolling_back"),
+            // R2-E Phase E5.1, 2026-08-28: the nine `valid_unlisted_corpus`
+            // rows of `GwzM5-8R4bG-Evidence.md` §12.9(d)'s ten unbound
+            // progress shapes, in §12.3 Table A order. `G-VERIFYING` is the
+            // tenth and takes no row -- it is `Finalizing`, which §12.9(c)
+            // rules the corpus cannot express; its disposition is recorded by
+            // clause in `compatibility_unbound_v0`.
+            ("open/executing", "a_executing", "executing"),
+            (
+                "open/awaiting-resolution",
+                "a_awaiting",
+                "awaiting_resolution"
+            ),
+            ("open/halted", "a_halted", "halted"),
+            ("preserving/pre-acceptance", "a_pre_preserve", "preserving"),
+            ("rollback/pre-acceptance", "a_pre_rollback", "rolling_back"),
+            (
+                "preserving/candidate",
+                "h_preserving_candidate",
+                "preserving"
+            ),
+            (
+                "preserving/root-prefix",
+                "h_preserving_prefix",
+                "preserving"
+            ),
+            ("rollback/evidence", "i_evidence_rollback", "rolling_back"),
+            (
+                "terminal/completed-no-publication",
+                "k_completed_nopub_open",
+                "completed"
+            ),
         ]
     );
 }

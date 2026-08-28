@@ -117,6 +117,28 @@ def _fault_count(darwin: str, linux: str) -> str:
     linux 456 is DERIVED (+46 over the 410 base, cfg-independent) and
     FIRST-DISPATCH-EXPECTED -- the Platform matrix dispatch at this
     landing measures it, and a measured number wins.
+
+    R2-E Phase E5.1 (2026-08-28) moves the LIB REMAINDER partition and only
+    it: the step adds exactly one lib test,
+    `workspace_ops::tests::g23::compatibility_unbound_v0::
+    v0_unbound_progress_shapes_are_refused_by_adapt_open` -- the one
+    parametric `adapt_open` refusal test over the ten unbound progress
+    shapes, which the L6 ruling requires to land with its registry rows. It
+    is under neither `checked_artifact::` nor
+    `workspace_ops::merge::v1_lifecycle::`, so the remainder is the only
+    partition that moves and `checked_artifact::` stays at the E2 landing's
+    446/456.
+
+      darwin 932 -> 933: MEASURED on this step's own tree
+        (`cargo test --lib -p gwz-core -- --skip checked_artifact:: --skip
+        workspace_ops::merge::v1_lifecycle::`, 933 passed + 1 ignored,
+        2026-08-28), with `checked_artifact::` re-measured unchanged at 446
+        in the same run.
+      linux  933 -> 934: DERIVED (+1, cfg-independent -- the new test
+        carries no `cfg` gate and builds on every platform), *not* measured,
+        and therefore FIRST-DISPATCH-EXPECTED at the lane owner's
+        three-platform landing dispatch, in the same form as the E2 counts
+        above. A measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -155,7 +177,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("932 passed", "933 passed")),
+         _fault_count("933 passed", "934 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         ("frozen predicate registry",
@@ -166,12 +188,30 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("merge-doc checker suite", suite("test_check_merge_docs.py"), "OK"),
     ]),
     "byte-equivalence": ("byte-equivalence gate, both halves of O8 (rows 2.3a/2.3b, §12)", [
+        # DOC-PENDING (R2-E Phase E5.1, 2026-08-28). This marker is the value
+        # the map prints once the lane owner lands E5.1's companion edit to
+        # `dev-docs/GwzM5-8R4bG-Evidence.md` §12.3 Table A -- the ten unbound
+        # progress rows gaining their nine new registry case ids plus
+        # `G-VERIFYING`'s DISPOSITIONED-UNLISTED, and each citing the new
+        # parametric test. The step's own worktree cannot make that edit (the
+        # map lives in the gwz-dev workspace's dev-docs, outside this
+        # checkout, exactly as this script's own J-7 scope disclosure
+        # records), so the marker is stated forward rather than left stale:
+        # 39 scenario rows are unchanged, named tests go 41 -> 42 (the one new
+        # test), registry rows go 13 -> 22 (the nine new
+        # `valid_unlisted_corpus` rows). VERIFIED by running the checker
+        # against a patched copy of the map on 2026-08-28; until the real
+        # edit lands this battery command is RED and E5.1's per-commit
+        # greenness rests on the compatibility and call-graph batteries, which
+        # are green.
         ("M4 scenario map",
          check("check_m4_scenario_map.py"),
-         "M4 scenario map: ok (39 scenario rows, 41 named tests, "
-         "13 registry rows all claimed)"),
+         "M4 scenario map: ok (39 scenario rows, 42 named tests, "
+         "22 registry rows all claimed)"),
+        # R2-E Phase E5.1 (2026-08-28): 119 -> 120, the one parametric
+        # `adapt_open` refusal test. MEASURED on this step's tree.
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "119 passed"),
+         lib("workspace_ops::tests::g23::"), "120 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),

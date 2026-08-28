@@ -107,9 +107,23 @@ CLASSIFICATION_KEYS = {"base_phase", "acceptance", "metadata_source", "next_acti
 RULE_KEYS = {"id", "descriptor_sha256", "descriptor", "classification"}
 FIXTURE_KEYS = {"case_id", "test", "subcase", "rule"}
 UNLISTED_KEYS = {"case_id", "test", "subcase", "operation_state", "reason"}
+# Every non-`finalizing` open state a valid-unlisted corpus row may declare.
+# R2-E Phase E5.1, 2026-08-28: the three pre-acceptance states join the five
+# the corpus already carried, for `GwzM5-8R4bG-Evidence.md` §12.9(d)'s ten
+# unbound progress rows. This EXTENDS the corpus vocabulary and does not weaken
+# it: the load-bearing closure the corpus rests on is `assert_ne!(record.state,
+# OperationState::Finalizing)` read against "every whitelist rule is
+# open+finalizing" (`compatibility_v0.rs`), and every state listed here is
+# non-`finalizing`, so a row declaring one still cannot match a rule. §12.9(c)'s
+# ruling that widening the corpus "to admit these rows would weaken the
+# registry, not extend it" is about `finalizing` shapes specifically, and
+# `finalizing` is deliberately still absent below.
 VALID_UNLISTED_STATES = {
     "aborted",
+    "awaiting_resolution",
     "completed",
+    "executing",
+    "halted",
     "preserving",
     "recovery_required",
     "rolling_back",
