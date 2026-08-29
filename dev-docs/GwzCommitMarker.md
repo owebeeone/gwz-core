@@ -1,6 +1,17 @@
 # GWZ Commit Marker
 
-Status: proposed
+Status: **LANDED — both halves in production** *(status line corrected
+2026-08-29; it read "proposed" long after the feature shipped, and that
+stale line was the root cause of the gwz-log S0.1 round-1 P0 — see
+`gwz-cli/dev-docs/GwzLog-S0.1-Review.md`. The trailers and the artifact
+are minted and written by `workspace_ops/handle_commit.rs` +
+`artifact::MarkerArtifact`; wire flag `commit_marker`; CLI
+`--commit-marker`/`--no-commit-marker`; tests `workspace_ops/tests/g13.rs`.
+Parts of the schema text below predate the landed form — notably the
+artifact's `merge:` field — and the full reconcile of this document,
+including the superseded "`gwz log --merged` locates the root by marker
+file" mechanism and the retry-identity fix, is owned by gwz-log plan step
+S1.2 (`gwz-cli/dev-docs/GwzLogPlan.md`).)*
 
 Owner: `gwz-core`
 
