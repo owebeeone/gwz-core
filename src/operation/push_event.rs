@@ -35,6 +35,7 @@ pub enum ActionKind {
     DetachRepoMember,
     AttachRepoMember,
     Merge,
+    Log,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,6 +118,7 @@ pub enum OperationRequest {
     DetachRepoMember(crate::DetachRepoMemberRequest),
     AttachRepoMember(crate::AttachRepoMemberRequest),
     Merge(crate::MergeRequest),
+    Log(crate::LogRequest),
 }
 
 impl OperationRequest {
@@ -146,6 +148,7 @@ impl OperationRequest {
             Self::DetachRepoMember(request) => (ActionKind::DetachRepoMember, &request.meta),
             Self::AttachRepoMember(request) => (ActionKind::AttachRepoMember, &request.meta),
             Self::Merge(request) => (ActionKind::Merge, &request.meta),
+            Self::Log(request) => (ActionKind::Log, &request.meta),
         };
         OperationContext::from_meta(operation_id.into(), action, meta)
     }
@@ -672,6 +675,7 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::DetachRepoMember => Self::DetachRepoMember,
             ActionKind::AttachRepoMember => Self::AttachRepoMember,
             ActionKind::Merge => Self::Merge,
+            ActionKind::Log => Self::Log,
         }
     }
 }
@@ -698,4 +702,13 @@ impl From<PlannedAction> for crate::PlannedAction {
             PlannedAction::AttachMember => Self::AttachMember,
         }
     }
+}
+
+/// Dispatch a unified commit-log request through the operation seam.
+pub fn handle_log(
+    start: &std::path::Path,
+    request: crate::LogRequest,
+    operation_id: impl Into<String>,
+) -> model::ModelResult<crate::LogResponse> {
+    super::commit_log::handle_log(start, request, operation_id)
 }

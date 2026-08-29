@@ -30,6 +30,7 @@ pub enum ActionKind {
     DetachRepoMember,
     AttachRepoMember,
     Merge,
+    Log,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -59,6 +60,7 @@ impl ActionKind {
         Self::DetachRepoMember => 23,
         Self::AttachRepoMember => 24,
         Self::Merge => 25,
+        Self::Log => 26,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::CreateWorkspace,
@@ -87,6 +89,7 @@ impl ActionKind {
         23 => Self::DetachRepoMember,
         24 => Self::AttachRepoMember,
         25 => Self::Merge,
+        26 => Self::Log,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "ActionKind", value: v }),
     }) }
 }
@@ -1785,6 +1788,75 @@ impl DiffTargetExclusionReason {
         2 => Self::RootNotInSnapshot,
         3 => Self::TagMissing,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "DiffTargetExclusionReason", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LogMergeKind {
+    #[default] None,
+    Marker,
+    Heuristic,
+}
+impl LogMergeKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::None => 0,
+        Self::Marker => 1,
+        Self::Heuristic => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::None,
+        1 => Self::Marker,
+        2 => Self::Heuristic,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LogMergeKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LogDegradationReason {
+    #[default] RepositoryUnreadable,
+    RepositoryMissing,
+    Unborn,
+    RevisionUnresolved,
+    SnapshotEntryMissing,
+    LockEntryMissing,
+    UnsupportedSourceKind,
+}
+impl LogDegradationReason {
+    pub fn wire(self) -> i64 { match self {
+        Self::RepositoryUnreadable => 0,
+        Self::RepositoryMissing => 1,
+        Self::Unborn => 2,
+        Self::RevisionUnresolved => 3,
+        Self::SnapshotEntryMissing => 4,
+        Self::LockEntryMissing => 5,
+        Self::UnsupportedSourceKind => 6,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::RepositoryUnreadable,
+        1 => Self::RepositoryMissing,
+        2 => Self::Unborn,
+        3 => Self::RevisionUnresolved,
+        4 => Self::SnapshotEntryMissing,
+        5 => Self::LockEntryMissing,
+        6 => Self::UnsupportedSourceKind,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LogDegradationReason", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LogOutputRecordKind {
+    #[default] Entry,
+    Degradation,
+}
+impl LogOutputRecordKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::Entry => 0,
+        Self::Degradation => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Entry,
+        1 => Self::Degradation,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LogOutputRecordKind", value: v }),
     }) }
 }
 
@@ -5346,6 +5418,258 @@ impl DiffOutputRecord {
             data: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
             stale: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             diagnostic: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogOptions {
+    pub max_entries: Option<i64>,
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub author: Option<String>,
+    pub grep: Option<String>,
+    pub no_merges: Option<bool>,
+    pub first_parent: Option<bool>,
+    pub strict: Option<bool>,
+    pub coalesce: Option<bool>,
+    pub include_body: Option<bool>,
+}
+impl LogOptions {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, match &self.max_entries { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (2, match &self.since { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, match &self.until { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.author { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (5, match &self.grep { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.no_merges { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (7, match &self.first_parent { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (8, match &self.strict { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (9, match &self.coalesce { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (10, match &self.include_body { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            max_entries: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            since: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            until: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            author: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            grep: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            no_merges: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            first_parent: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            strict: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            coalesce: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            include_body: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogRequest {
+    pub meta: RequestMeta,
+    pub workspace_cwd: Option<String>,
+    pub operands: Vec<String>,
+    pub explicit_pathspecs: Vec<String>,
+    pub options: Option<LogOptions>,
+    pub tagged: Option<bool>,
+}
+impl LogRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+            (2, match &self.workspace_cwd { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, Cbor::Array(self.operands.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (4, Cbor::Array(self.explicit_pathspecs.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (5, match &self.options { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (6, match &self.tagged { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            workspace_cwd: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            operands: c.try_get(3)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            explicit_pathspecs: c.try_get(4)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            options: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(LogOptions::from_cbor(v)?) } },
+            tagged: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogEntryMember {
+    pub member_id: String,
+    pub member_path: String,
+    pub source_kind: Option<SourceKind>,
+    pub commit: String,
+    pub parents: Vec<String>,
+}
+impl LogEntryMember {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.member_id.clone())),
+            (2, Cbor::Text(self.member_path.clone())),
+            (3, match &self.source_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (4, Cbor::Text(self.commit.clone())),
+            (5, Cbor::Array(self.parents.iter().map(|x| Cbor::Text(x.clone())).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            member_path: c.try_get(2)?.try_text()?,
+            source_kind: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(SourceKind::from_wire(v.try_int()?)?) } },
+            commit: c.try_get(4)?.try_text()?,
+            parents: c.try_get(5)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogMergeProvenance {
+    pub kind: LogMergeKind,
+    pub gwz_commit_id: Option<String>,
+}
+impl LogMergeProvenance {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, match &self.gwz_commit_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: LogMergeKind::from_wire(c.try_get(1)?.try_int()?)?,
+            gwz_commit_id: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogEntry {
+    pub members: Vec<LogEntryMember>,
+    pub provenance: LogMergeProvenance,
+    pub author: GitObjectIdentity,
+    pub committer: GitObjectIdentity,
+    pub subject: String,
+    pub body: Option<String>,
+    pub ordering_timestamp_ms: i64,
+}
+impl LogEntry {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Array(self.members.iter().map(|x| x.to_cbor()).collect())),
+            (2, self.provenance.to_cbor()),
+            (3, self.author.to_cbor()),
+            (4, self.committer.to_cbor()),
+            (5, Cbor::Text(self.subject.clone())),
+            (6, match &self.body { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (7, Cbor::Int(self.ordering_timestamp_ms)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            members: c.try_get(1)?.try_array()?.iter().map(|x| LogEntryMember::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            provenance: LogMergeProvenance::from_cbor(c.try_get(2)?)?,
+            author: GitObjectIdentity::from_cbor(c.try_get(3)?)?,
+            committer: GitObjectIdentity::from_cbor(c.try_get(4)?)?,
+            subject: c.try_get(5)?.try_text()?,
+            body: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            ordering_timestamp_ms: c.try_get(7)?.try_int()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogDegradation {
+    pub member_id: String,
+    pub member_path: String,
+    pub source_kind: Option<SourceKind>,
+    pub reason: LogDegradationReason,
+    pub operand: Option<String>,
+    pub message: Option<String>,
+}
+impl LogDegradation {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.member_id.clone())),
+            (2, Cbor::Text(self.member_path.clone())),
+            (3, match &self.source_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (4, Cbor::Int(self.reason.wire())),
+            (5, match &self.operand { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            member_path: c.try_get(2)?.try_text()?,
+            source_kind: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(SourceKind::from_wire(v.try_int()?)?) } },
+            reason: LogDegradationReason::from_wire(c.try_get(4)?.try_int()?)?,
+            operand: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            message: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogOutputRecord {
+    pub kind: LogOutputRecordKind,
+    pub entry: Option<LogEntry>,
+    pub degradation: Option<LogDegradation>,
+}
+impl LogOutputRecord {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.kind.wire())),
+            (2, match &self.entry { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (3, match &self.degradation { Some(v) => v.to_cbor(), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            kind: LogOutputRecordKind::from_wire(c.try_get(1)?.try_int()?)?,
+            entry: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(LogEntry::from_cbor(v)?) } },
+            degradation: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(LogDegradation::from_cbor(v)?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogOutputLogRef {
+    pub log_id: String,
+}
+impl LogOutputLogRef {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.log_id.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            log_id: c.try_get(1)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LogResponse {
+    pub response: ResponseEnvelope,
+    pub output: LogOutputLogRef,
+}
+impl LogResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+            (2, self.output.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            output: LogOutputLogRef::from_cbor(c.try_get(2)?)?,
         })
     }
 }

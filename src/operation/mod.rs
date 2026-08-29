@@ -1,5 +1,6 @@
 mod aggregate_status;
 mod attribution_from_protocol;
+mod commit_log;
 mod eventemitter;
 mod eventsubscription;
 mod impl_operationrecord;

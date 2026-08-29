@@ -274,6 +274,14 @@ def main() -> None:
     version = installed_version(args.venv)
     log(f"using taut-proto {version}  (venv: {args.venv})")
 
+    additive_check = run(
+        [venv_exe(args.venv, "python"), "protocol/check_log_additive.py", SCHEMA],
+        cwd=GWZ_CORE,
+        env=taut_env(),
+    )
+    if additive_check.returncode != 0:
+        fail("gwz-log changed a pre-existing protocol wire shape")
+
     if args.check:
         raise SystemExit(do_check(args.venv))
 

@@ -8,15 +8,17 @@ use gwz_core::{
     CloneRepoMemberRequest, CloneRepoMemberResponse, DetachRepoMemberRequest,
     DetachRepoMemberResponse, EventKind, GitBranchDifference, GitBranchGroup, GitFileChange,
     GitMemberBranchStatus, GitObjectIdentity, GwzError, GwzErrorCode, ListSnapshotsResponse,
-    MaterializeRequest, MaterializeTarget, MaterializeTargetKind, MemberResponse, MemberStatus,
-    MergeRecordCompatibilityContext, MergeRecordRequiredWave, OperationActor, OperationAttribution,
-    OperationEvent, PlannedAction, RepoSyncRequest, RepoSyncResponse, RequestMeta,
-    ResponseEnvelope, ResponseMeta, Severity, SnapshotInfo, SnapshotRequest, SnapshotSource,
-    SnapshotSourceKind, SourceKind, SourceUrl, StashBundle, StashBundleMember, StashDirtySummary,
-    StashDrift, StashErrorDetail, StashOp, StashParticipation, StashPushLifecycle, StashRequest,
-    StashResponse, StashRestoreState, StashWarning, StatusMode, StatusPathStyle, StatusRequest,
-    StatusResponse, WorkspaceGitStatus, WorkspaceRootFileChange, WorkspaceRootGitStatus, decode,
-    encode,
+    LogDegradation, LogDegradationReason, LogEntry, LogEntryMember, LogMergeKind,
+    LogMergeProvenance, LogOptions, LogOutputLogRef, LogOutputRecord, LogOutputRecordKind,
+    LogRequest, LogResponse, MaterializeRequest, MaterializeTarget, MaterializeTargetKind,
+    MemberResponse, MemberStatus, MergeRecordCompatibilityContext, MergeRecordRequiredWave,
+    OperationActor, OperationAttribution, OperationEvent, PlannedAction, RepoSyncRequest,
+    RepoSyncResponse, RequestMeta, ResponseEnvelope, ResponseMeta, Severity, SnapshotInfo,
+    SnapshotRequest, SnapshotSource, SnapshotSourceKind, SourceKind, SourceUrl, StashBundle,
+    StashBundleMember, StashDirtySummary, StashDrift, StashErrorDetail, StashOp,
+    StashParticipation, StashPushLifecycle, StashRequest, StashResponse, StashRestoreState,
+    StashWarning, StatusMode, StatusPathStyle, StatusRequest, StatusResponse, WorkspaceGitStatus,
+    WorkspaceRootFileChange, WorkspaceRootGitStatus, decode, encode,
 };
 
 fn round_trip<T>(
@@ -45,6 +47,126 @@ fn status_request_round_trips() {
     assert_eq!(
         round_trip(&request, StatusRequest::to_cbor, StatusRequest::from_cbor),
         request
+    );
+}
+
+#[test]
+fn log_stream_shape_round_trips_entries_and_structured_degradations() {
+    let request = log_request();
+    assert_eq!(
+        round_trip(&request, LogRequest::to_cbor, LogRequest::from_cbor),
+        request
+    );
+
+    let entry = LogEntry {
+        members: vec![LogEntryMember {
+            member_id: "mem_core".to_owned(),
+            member_path: "gwz-core".to_owned(),
+            source_kind: Some(SourceKind::Git),
+            commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            parents: vec!["1111111111111111111111111111111111111111".to_owned()],
+        }],
+        provenance: LogMergeProvenance {
+            kind: LogMergeKind::Marker,
+            gwz_commit_id: Some("01987b0c-2f75-7c4a-9a32-8fd22f7d7c91".to_owned()),
+        },
+        author: GitObjectIdentity {
+            name: "Author".to_owned(),
+            email: "author@example.invalid".to_owned(),
+            time_ms: Some(1_727_000_000_000),
+            timezone_offset_minutes: Some(600),
+        },
+        committer: GitObjectIdentity {
+            name: "Committer".to_owned(),
+            email: "committer@example.invalid".to_owned(),
+            time_ms: Some(1_727_000_000_500),
+            timezone_offset_minutes: Some(600),
+        },
+        subject: "Add log protocol".to_owned(),
+        body: Some("Protocol-only body".to_owned()),
+        ordering_timestamp_ms: 1_727_000_000_500,
+    };
+    let entry_record = LogOutputRecord {
+        kind: LogOutputRecordKind::Entry,
+        entry: Some(entry),
+        degradation: None,
+    };
+    assert_eq!(
+        round_trip(
+            &entry_record,
+            LogOutputRecord::to_cbor,
+            LogOutputRecord::from_cbor,
+        ),
+        entry_record
+    );
+
+    let degradation_record = LogOutputRecord {
+        kind: LogOutputRecordKind::Degradation,
+        entry: None,
+        degradation: Some(LogDegradation {
+            member_id: "@root".to_owned(),
+            member_path: ".".to_owned(),
+            source_kind: Some(SourceKind::Git),
+            reason: LogDegradationReason::SnapshotEntryMissing,
+            operand: Some("+release".to_owned()),
+            message: Some("snapshots do not record the workspace root".to_owned()),
+        }),
+    };
+    assert_eq!(
+        round_trip(
+            &degradation_record,
+            LogOutputRecord::to_cbor,
+            LogOutputRecord::from_cbor,
+        ),
+        degradation_record
+    );
+
+    let response = LogResponse {
+        response: response_envelope("req-log", ActionKind::Log),
+        output: LogOutputLogRef {
+            log_id: "log-output-1".to_owned(),
+        },
+    };
+    assert_eq!(
+        round_trip(&response, LogResponse::to_cbor, LogResponse::from_cbor),
+        response
+    );
+}
+
+#[test]
+fn log_dispatch_reaches_the_future_engine_stub() {
+    let error = gwz_core::operation::handle_log(Path::new("."), log_request(), "op-log-protocol")
+        .expect_err("S2.0 must leave execution to future log engine steps");
+
+    assert_eq!(error.code, gwz_core::model::ErrorCode::UnsupportedOperation);
+    assert_eq!(error.message, "log engine is not implemented yet");
+}
+
+#[test]
+fn log_protocol_wire_values_are_additive() {
+    assert_eq!(ActionKind::Merge.wire(), 25);
+    assert_eq!(ActionKind::Log.wire(), 26);
+    assert_eq!(LogMergeKind::None.wire(), 0);
+    assert_eq!(LogMergeKind::Marker.wire(), 1);
+    assert_eq!(LogMergeKind::Heuristic.wire(), 2);
+    assert_eq!(LogOutputRecordKind::Entry.wire(), 0);
+    assert_eq!(LogOutputRecordKind::Degradation.wire(), 1);
+    assert_eq!(LogDegradationReason::RepositoryUnreadable.wire(), 0);
+    assert_eq!(LogDegradationReason::UnsupportedSourceKind.wire(), 6);
+}
+
+#[test]
+fn log_addition_preserves_the_complete_pre_log_wire_projection() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let status = taut_python_command(&root)
+        .arg("protocol/check_log_additive.py")
+        .arg("protocol/gwz.taut.py")
+        .status()
+        .expect("failed to run additive log protocol check");
+
+    assert!(
+        status.success(),
+        "log protocol changed a pre-existing wire shape"
     );
 }
 
@@ -1098,6 +1220,28 @@ fn request_meta(request_id: &str) -> RequestMeta {
     }
 }
 
+fn log_request() -> LogRequest {
+    LogRequest {
+        meta: request_meta("req-log"),
+        workspace_cwd: Some("gwz-core".to_owned()),
+        operands: vec!["main..HEAD".to_owned()],
+        explicit_pathspecs: vec!["src".to_owned()],
+        options: Some(LogOptions {
+            max_entries: Some(25),
+            since: Some("2026-08-01".to_owned()),
+            until: None,
+            author: Some("Author".to_owned()),
+            grep: Some("protocol".to_owned()),
+            no_merges: Some(true),
+            first_parent: Some(false),
+            strict: Some(true),
+            coalesce: Some(false),
+            include_body: Some(true),
+        }),
+        tagged: Some(false),
+    }
+}
+
 fn response_envelope(request_id: &str, action: ActionKind) -> ResponseEnvelope {
     ResponseEnvelope {
         meta: ResponseMeta {
@@ -1212,12 +1356,24 @@ fn member_error() -> GwzError {
 }
 
 fn taut_command(root: &Path) -> Command {
+    let mut command = taut_python_command(root);
+    command.args(["-m", "taut.cli"]);
+    command
+}
+
+fn taut_python_command(root: &Path) -> Command {
     let default_python = if cfg!(windows) { "python" } else { "python3" };
     let python = std::env::var("TAUT_PYTHON").unwrap_or_else(|_| default_python.to_owned());
-    taut_command_for_python(root, &python)
+    taut_python_command_for_python(root, &python)
 }
 
 fn taut_command_for_python(root: &Path, python: &str) -> Command {
+    let mut command = taut_python_command_for_python(root, python);
+    command.args(["-m", "taut.cli"]);
+    command
+}
+
+fn taut_python_command_for_python(root: &Path, python: &str) -> Command {
     let mut command = Command::new(python);
     let taut_src = root
         .parent()
@@ -1228,8 +1384,7 @@ fn taut_command_for_python(root: &Path, python: &str) -> Command {
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .env("SETUPTOOLS_SCM_PRETEND_VERSION", "0.6.0")
-        .env("PYTHONPATH", taut_src)
-        .args(["-m", "taut.cli"]);
+        .env("PYTHONPATH", taut_src);
     command
 }
 

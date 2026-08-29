@@ -125,7 +125,17 @@ SCHEMA = schema(
         # events.subscribe shape="log" precedent above (operation_id only).
         method("diff.output", role="out", shape="log",
                params=Params(log_id=STR),
-               out=Ref.DiffOutputRecord)),
+               out=Ref.DiffOutputRecord),
+        # Start a unified workspace commit-log read. The unary response carries
+        # only metadata and a shape-log handle; entries are never paged into it.
+        method("log", role="in",
+               params=Params(request=Ref.LogRequest),
+               out=Ref.LogResponse),
+        # Stream typed entry/degradation records. Cursor/tail/EOF/retention are
+        # supplied by the taut-shape log contract, exactly as for diff.output.
+        method("log.output", role="out", shape="log",
+               params=Params(log_id=STR),
+               out=Ref.LogOutputRecord)),
 
     # ---- enums ------------------------------------------------------------
     # Operation action inferred from request type.
@@ -155,7 +165,8 @@ SCHEMA = schema(
          clone_repo_member=22,
          detach_repo_member=23,
          attach_repo_member=24,
-         merge=25),
+         merge=25,
+         log=26),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -716,6 +727,30 @@ SCHEMA = schema(
          root_not_in_snapshot=2,
          # --tagged candidate does not contain every requested local tag.
          tag_missing=3),
+
+    # Provenance for a workspace-level log entry. Marker entries additionally
+    # carry the UUID in LogMergeProvenance.gwz_commit_id.
+    LogMergeKind=Enum(
+         none=0,
+         marker=1,
+         heuristic=2),
+
+    # Stable machine reasons for a selected target contributing no entries.
+    # Human detail belongs in LogDegradation.message, not in this enum.
+    LogDegradationReason=Enum(
+         repository_unreadable=0,
+         repository_missing=1,
+         unborn=2,
+         revision_unresolved=3,
+         snapshot_entry_missing=4,
+         lock_entry_missing=5,
+         unsupported_source_kind=6),
+
+    # A single stream carries both record forms so JSONL/API consumers observe
+    # one ordered, bounded channel and never need a separately paged side list.
+    LogOutputRecordKind=Enum(
+         entry=0,
+         degradation=1),
 
 
     # ---- common request/response values ----------------------------------
@@ -1917,4 +1952,91 @@ SCHEMA = schema(
         # because the worktree changed before output materialization.
         stale=F(6, BOOL, optional=True),
         diagnostic=F(7, STR, optional=True)),
+
+    # ---- unified commit-log request / response / output messages ----------
+    # Core-owned execution options. Client-only rendering controls (color,
+    # compact/full, JSON/JSONL) deliberately do not cross the protocol.
+    LogOptions=Msg(
+        # Absent lets core apply the bare-command default; zero means unbounded.
+        max_entries=F(1, INT, optional=True),
+        since=F(2, STR, optional=True),
+        until=F(3, STR, optional=True),
+        author=F(4, STR, optional=True),
+        grep=F(5, STR, optional=True),
+        no_merges=F(6, BOOL, optional=True),
+        first_parent=F(7, BOOL, optional=True),
+        # Any degradation becomes a failed aggregate when true.
+        strict=F(8, BOOL, optional=True),
+        # Positive wire spelling: absent/true coalesces; false is
+        # --no-coalesce.
+        coalesce=F(9, BOOL, optional=True),
+        # Populate LogEntry.body when true; subject remains unconditional.
+        include_body=F(10, BOOL, optional=True)),
+
+    # DiffRequest-compatible operand routing, with log-specific execution
+    # options kept in their own message.
+    LogRequest=Msg(
+        meta=F(1, Ref.RequestMeta),
+        # Workspace-relative logical cwd used for operand/pathspec routing.
+        workspace_cwd=F(2, STR, optional=True),
+        # Raw positional tokens before `--`; core classifies per repository.
+        operands=F(3, List(STR)),
+        # Literal pathspecs after `--`; leading `+` remains a path here.
+        explicit_pathspecs=F(4, List(STR)),
+        options=F(5, Ref.LogOptions, optional=True),
+        # Every comparison endpoint is an exact local tag when true.
+        tagged=F(6, BOOL, optional=True)),
+
+    # One repository carrying a singleton or sibling commit in an entry.
+    # @root is represented uniformly as member_id="@root", member_path=".".
+    LogEntryMember=Msg(
+        member_id=F(1, STR),
+        member_path=F(2, STR),
+        source_kind=F(3, Ref.SourceKind, optional=True),
+        commit=F(4, STR),
+        parents=F(5, List(STR))),
+
+    # Proven marker identity stays separate from heuristic/none, avoiding a
+    # free-form provenance string while preserving marker:<uuid> rendering.
+    LogMergeProvenance=Msg(
+        kind=F(1, Ref.LogMergeKind),
+        gwz_commit_id=F(2, STR, optional=True)),
+
+    # One post-coalescing workspace-level change. ordering_timestamp_ms is the
+    # latest sibling committer timestamp admitted by the bounded merge window.
+    LogEntry=Msg(
+        members=F(1, List(Ref.LogEntryMember)),
+        provenance=F(2, Ref.LogMergeProvenance),
+        author=F(3, Ref.GitObjectIdentity),
+        committer=F(4, Ref.GitObjectIdentity),
+        subject=F(5, STR),
+        body=F(6, STR, optional=True),
+        ordering_timestamp_ms=F(7, INT)),
+
+    # A selected repository that could not contribute to this request. The
+    # stable enum drives machine behavior; operand/message add specific context.
+    LogDegradation=Msg(
+        member_id=F(1, STR),
+        member_path=F(2, STR),
+        source_kind=F(3, Ref.SourceKind, optional=True),
+        reason=F(4, Ref.LogDegradationReason),
+        operand=F(5, STR, optional=True),
+        message=F(6, STR, optional=True)),
+
+    # Discriminated stream payload. Exactly one of entry/degradation must match
+    # kind; the future engine owns that semantic validation at emission time.
+    LogOutputRecord=Msg(
+        kind=F(1, Ref.LogOutputRecordKind),
+        entry=F(2, Ref.LogEntry, optional=True),
+        degradation=F(3, Ref.LogDegradation, optional=True)),
+
+    # Opaque authority to read log.output. Paging/cursors/EOF are intentionally
+    # absent because the taut-shape log contract owns them.
+    LogOutputLogRef=Msg(
+        log_id=F(1, STR)),
+
+    # A successful request always has a stream handle, including an empty log.
+    LogResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope),
+        output=F(2, Ref.LogOutputLogRef)),
 )
