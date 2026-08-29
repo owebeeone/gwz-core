@@ -223,6 +223,24 @@ def _fault_count(darwin: str, linux: str) -> str:
         tests carries a `cfg` gate), *not* measured, and therefore
         FIRST-DISPATCH-EXPECTED at the landing dispatch. A measured number
         wins.
+
+    R2-E E7.2 (2026-08-29, the settled-gate acceptance) moves NO count and
+    converts linux provenance only: the release verify's ubuntu-24.04 leg at
+    tag v0.11.1 (= this tree, be693bd) executed the fault battery
+    per-partition against the pinned counts -- checked_artifact 457, lib
+    remainder 980, v1_lifecycle 256, root_fault_matrix (release profile) 1
+    -- so every linux value above marked DERIVED / FIRST-DISPATCH-EXPECTED
+    for the CURRENT pin set (457 and 980; 256 and the release-leg 1 were
+    already measured per-partition) is now MEASURED, by direct execution at
+    the exact tree under settlement. Citation: Release workflow run
+    33196576270, job "Verify (ubuntu-24.04)" 98935133025, conclusion
+    success, head be693bd (the checkpoint's release record notates the pair
+    "33196574973 -> 33196576270"); run and job re-verified via gh at the
+    acceptance, 2026-08-29. The darwin values were measured at the release's
+    own local gate on the same tree (447 / 979 + 1 ignored / 256 / 1). The
+    FIRST-DISPATCH-EXPECTED convention above stays in force for future
+    moves; a measured number wins, and these are now the measured numbers.
+    Acceptance record: dev-docs/GwzM5-8R2E-E7-Acceptance.md (gwz-dev root).
     """
     if sys.platform == "darwin":
         return darwin
