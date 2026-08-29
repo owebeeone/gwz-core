@@ -48,6 +48,105 @@ impl Endpoint {
     }
 }
 
+/// One revision-set argument after applying the canonical diff endpoint/range
+/// grammar. Consumers such as commit history may combine any number of these
+/// arguments while preserving diff's `+snapshot`, `..`, `...`, and open-side
+/// classification rules.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ParsedRevisionArg {
+    Endpoint(Endpoint),
+    Range {
+        left: Endpoint,
+        right: Endpoint,
+        symmetric: bool,
+    },
+}
+
+pub(crate) fn parse_revision_arg(token: &str) -> ParsedRevisionArg {
+    match split_range(token) {
+        Some((left, right, symmetric)) => ParsedRevisionArg::Range {
+            left: default_endpoint(&left),
+            right: default_endpoint(&right),
+            symmetric,
+        },
+        None => ParsedRevisionArg::Endpoint(Endpoint::parse(token)),
+    }
+}
+
+pub(crate) fn parse_revision_arg_with_snapshot_ids(
+    token: &str,
+    snapshot_ids: &[String],
+) -> ModelResult<ParsedRevisionArg> {
+    if let Some(endpoint) = exact_snapshot_endpoint(token, snapshot_ids) {
+        return Ok(ParsedRevisionArg::Endpoint(endpoint));
+    }
+    reject_ambiguous_legacy_snapshot_range(token, snapshot_ids)?;
+    Ok(parse_revision_arg(token))
+}
+
+fn exact_snapshot_endpoint(token: &str, snapshot_ids: &[String]) -> Option<Endpoint> {
+    let id = token.strip_prefix('+')?;
+    snapshot_ids
+        .iter()
+        .any(|candidate| candidate == id)
+        .then(|| Endpoint::Snapshot(id.to_owned()))
+}
+
+fn reject_ambiguous_legacy_snapshot_range(token: &str, snapshot_ids: &[String]) -> ModelResult<()> {
+    let ambiguous = snapshot_ids
+        .iter()
+        .filter(|id| crate::artifact::snapshot_id_requires_legacy_compatibility(id))
+        .filter(|id| legacy_id_participates_in_range(token, id))
+        .max_by_key(|id| id.len());
+    if let Some(id) = ambiguous {
+        return Err(invalid(format!(
+            "snapshot id '{id}' is ambiguous as a revision-range endpoint; use '+{id}' standalone or create a range-safe snapshot id without adjacent, leading, or trailing dots"
+        )));
+    }
+    Ok(())
+}
+
+fn legacy_id_participates_in_range(token: &str, id: &str) -> bool {
+    ["..", "..."].into_iter().any(|delimiter| {
+        let left = format!("+{id}{delimiter}");
+        let right = format!("{delimiter}+{id}");
+        (token.starts_with(&left) && token.len() > left.len())
+            || (token.ends_with(&right) && token.len() > right.len())
+    })
+}
+
+/// Apply the tagged operand policy to any number of canonical revision-set
+/// arguments. Diff consumes the bounded comparison form below; log consumes
+/// this list form so every argument still shares the same range grammar.
+pub(crate) fn parse_tagged_revision_args(
+    operands: &[String],
+) -> ModelResult<(Vec<ParsedRevisionArg>, Vec<String>)> {
+    if operands.is_empty() {
+        return Err(invalid("--tagged requires at least one tag operand"));
+    }
+    let mut args = Vec::with_capacity(operands.len());
+    let mut tags = Vec::new();
+    for operand in operands {
+        if let Some((left, right, _)) = split_range(operand)
+            && (left.is_empty() || right.is_empty())
+        {
+            return Err(invalid(
+                "--tagged requires both sides of a range to name a tag",
+            ));
+        }
+        let mut arg = parse_revision_arg(operand);
+        match &mut arg {
+            ParsedRevisionArg::Endpoint(endpoint) => qualify_tag(endpoint, &mut tags)?,
+            ParsedRevisionArg::Range { left, right, .. } => {
+                qualify_tag(left, &mut tags)?;
+                qualify_tag(right, &mut tags)?;
+            }
+        }
+        args.push(arg);
+    }
+    Ok((args, tags))
+}
+
 /// The workspace-level comparison after operand lowering: the kind plus its
 /// resolved endpoints. `left`/`right` are `None` for the sides a kind fills in
 /// per repo (the worktree/index side, or a defaulted `HEAD`).
@@ -110,19 +209,24 @@ pub fn parse_tagged_comparison(
         .into_iter()
         .flatten()
     {
-        let Endpoint::Revision(name) = endpoint else {
-            return Err(invalid("--tagged does not accept GWZ snapshot operands"));
-        };
-        if !tags.contains(name) {
-            tags.push(name.clone());
-        }
-        *name = format!("refs/tags/{name}");
+        qualify_tag(endpoint, &mut tags)?;
     }
 
     if tags.is_empty() {
         return Err(invalid("--tagged requires at least one tag operand"));
     }
     Ok((comparison, tags))
+}
+
+fn qualify_tag(endpoint: &mut Endpoint, tags: &mut Vec<String>) -> ModelResult<()> {
+    let Endpoint::Revision(name) = endpoint else {
+        return Err(invalid("--tagged does not accept GWZ snapshot operands"));
+    };
+    if !tags.contains(name) {
+        tags.push(name.clone());
+    }
+    *name = format!("refs/tags/{name}");
+    Ok(())
 }
 
 /// Lower parsed CLI operands + flags into a [`ParsedComparison`] (D0 §7.1).
@@ -140,27 +244,58 @@ pub fn parse_comparison(
     cached: bool,
     merge_base: bool,
 ) -> ModelResult<ParsedComparison> {
+    parse_comparison_with_snapshot_ids(operands, cached, merge_base, &[])
+}
+
+pub(crate) fn parse_comparison_with_snapshot_ids(
+    operands: &[String],
+    cached: bool,
+    merge_base: bool,
+    snapshot_ids: &[String],
+) -> ModelResult<ParsedComparison> {
     if operands.len() > 2 {
         return Err(invalid("diff accepts at most two revision operands"));
     }
 
     // A range operand (A..B / A...B) is a single token that expands to two
     // endpoints; it cannot be combined with another operand.
-    if let Some(first) = operands.first()
-        && let Some(range) = split_range(first)
-    {
-        if operands.len() != 1 {
-            return Err(invalid(
-                "a range operand cannot be combined with another revision",
-            ));
+    if let Some(first) = operands.first() {
+        match parse_revision_arg_with_snapshot_ids(first, snapshot_ids)? {
+            ParsedRevisionArg::Range {
+                left,
+                right,
+                symmetric,
+            } => {
+                if operands.len() != 1 {
+                    return Err(invalid(
+                        "a range operand cannot be combined with another revision",
+                    ));
+                }
+                return lower_parsed_range(left, right, symmetric, cached, merge_base);
+            }
+            ParsedRevisionArg::Endpoint(_) => {}
         }
-        return lower_range(range, cached, merge_base);
     }
 
     match operands.len() {
         0 => Ok(lower_no_operand(cached, merge_base)),
-        1 => lower_one_operand(&operands[0], cached, merge_base),
-        2 => lower_two_operands(&operands[0], &operands[1], cached, merge_base),
+        1 => lower_one_endpoint(
+            exact_snapshot_endpoint(&operands[0], snapshot_ids)
+                .unwrap_or_else(|| Endpoint::parse(&operands[0])),
+            cached,
+            merge_base,
+        ),
+        2 => {
+            reject_ambiguous_legacy_snapshot_range(&operands[1], snapshot_ids)?;
+            lower_two_endpoints(
+                exact_snapshot_endpoint(&operands[0], snapshot_ids)
+                    .unwrap_or_else(|| Endpoint::parse(&operands[0])),
+                exact_snapshot_endpoint(&operands[1], snapshot_ids)
+                    .unwrap_or_else(|| Endpoint::parse(&operands[1])),
+                cached,
+                merge_base,
+            )
+        }
         _ => unreachable!("operand count checked above"),
     }
 }
@@ -193,22 +328,22 @@ fn split_range(token: &str) -> Option<(String, String, bool)> {
     None
 }
 
-fn lower_range(
-    (left, right, three_dot): (String, String, bool),
+fn lower_parsed_range(
+    left: Endpoint,
+    right: Endpoint,
+    symmetric: bool,
     cached: bool,
     merge_base: bool,
 ) -> ModelResult<ParsedComparison> {
     if cached {
         return Err(invalid("--cached does not accept a range operand"));
     }
-    let left = default_endpoint(&left);
-    let right = default_endpoint(&right);
     Ok(ParsedComparison {
         kind: RepoDiffComparisonKind::TreeVsTree,
         left: Some(left),
         right: Some(right),
         // `A...B` uses merge-base(A, B); `--merge-base A..B` would too.
-        merge_base: three_dot || merge_base,
+        merge_base: symmetric || merge_base,
     })
 }
 
@@ -242,12 +377,11 @@ fn lower_no_operand(cached: bool, merge_base: bool) -> ParsedComparison {
     }
 }
 
-fn lower_one_operand(
-    operand: &str,
+fn lower_one_endpoint(
+    left: Endpoint,
     cached: bool,
     merge_base: bool,
 ) -> ModelResult<ParsedComparison> {
-    let left = Endpoint::parse(operand);
     let kind = if cached {
         // `--cached <commit>`: index vs <commit> tree.
         RepoDiffComparisonKind::IndexVsTree
@@ -263,9 +397,9 @@ fn lower_one_operand(
     })
 }
 
-fn lower_two_operands(
-    left: &str,
-    right: &str,
+fn lower_two_endpoints(
+    left: Endpoint,
+    right: Endpoint,
     cached: bool,
     merge_base: bool,
 ) -> ModelResult<ParsedComparison> {
@@ -274,8 +408,8 @@ fn lower_two_operands(
     }
     Ok(ParsedComparison {
         kind: RepoDiffComparisonKind::TreeVsTree,
-        left: Some(Endpoint::parse(left)),
-        right: Some(Endpoint::parse(right)),
+        left: Some(left),
+        right: Some(right),
         merge_base,
     })
 }

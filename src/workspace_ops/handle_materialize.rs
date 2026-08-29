@@ -32,7 +32,7 @@ where
     let root = _guard.root().to_path_buf();
     // F13: reject a duplicate snapshot id up front, the same guard `tag` already has —
     // never silently overwrite an existing snapshot.
-    if artifact::snapshot_path(&root, &request.snapshot_id).exists() {
+    if artifact::snapshot_path(&root, &request.snapshot_id)?.exists() {
         return Err(ModelError::new(
             ErrorCode::InvalidRequest,
             format!("snapshot '{}' already exists", request.snapshot_id),

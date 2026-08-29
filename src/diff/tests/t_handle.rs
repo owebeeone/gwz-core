@@ -5,6 +5,10 @@
 //! the output ordering, the per-file records, and the workspace-relative bytes
 //! are all checked against actual libgit2 output — not a mock.
 
+use crate::artifact::{
+    self, ArtifactSourceKind, CreatedByArtifact, ResolvedMemberArtifact, SNAPSHOT_SCHEMA,
+    SnapshotArtifact,
+};
 use crate::diff::{DiffLogRegistry, LogReadRequest, LogReadState, decode_record, handle_diff};
 use crate::git::{Git2Backend, GitBackend};
 use crate::protocol::generated::{
@@ -12,6 +16,7 @@ use crate::protocol::generated::{
     DiffTargetExclusionReason,
 };
 use std::process::Command;
+use std::{collections::BTreeMap, fs};
 
 use super::workspace_fixture::Workspace;
 
@@ -75,6 +80,162 @@ fn git_tree_oid(root: &std::path::Path, rev: &str) -> String {
     git_stdout(root, &["rev-parse", &format!("{rev}^{{tree}}")])
         .trim()
         .to_owned()
+}
+
+fn write_member_snapshot(
+    ws: &Workspace,
+    id: &str,
+    member_id: &str,
+    member_path: &str,
+    commit: &str,
+) {
+    artifact::write_snapshot(
+        ws.root(),
+        &member_snapshot(id, member_id, member_path, commit),
+    )
+    .unwrap();
+}
+
+fn write_legacy_member_snapshot(
+    ws: &Workspace,
+    id: &str,
+    member_id: &str,
+    member_path: &str,
+    commit: &str,
+) {
+    let yaml = member_snapshot("legacy_placeholder", member_id, member_path, commit)
+        .to_yaml()
+        .unwrap()
+        .replace(
+            "snapshot_id: legacy_placeholder",
+            &format!("snapshot_id: {id}"),
+        );
+    fs::create_dir_all(ws.root().join(artifact::SNAPSHOT_DIR)).unwrap();
+    fs::write(
+        ws.root()
+            .join(artifact::SNAPSHOT_DIR)
+            .join(format!("{id}.yaml")),
+        yaml,
+    )
+    .unwrap();
+}
+
+fn member_snapshot(id: &str, member_id: &str, member_path: &str, commit: &str) -> SnapshotArtifact {
+    SnapshotArtifact {
+        schema: SNAPSHOT_SCHEMA.to_owned(),
+        workspace_id: super::workspace_fixture::WS_ID.to_owned(),
+        snapshot_id: id.to_owned(),
+        created_at: "2026-08-30T00:00:00Z".to_owned(),
+        created_by: CreatedByArtifact {
+            actor_id: "agent_test".to_owned(),
+        },
+        selected_members: vec![member_id.to_owned()],
+        members: BTreeMap::from([(
+            member_id.to_owned(),
+            ResolvedMemberArtifact {
+                path: member_path.to_owned(),
+                source_kind: ArtifactSourceKind::Git,
+                source_id: Some("src_app".to_owned()),
+                commit: Some(commit.to_owned()),
+                branch: Some("main".to_owned()),
+                detached: Some(false),
+                upstream: None,
+                dirty: Some(false),
+                materialized: Some(true),
+            },
+        )]),
+    }
+}
+
+#[test]
+fn l_rng_6_diff_internal_dotted_snapshot_ids_work_on_both_range_sides() {
+    let ws = Workspace::new("dotted-snapshot-ranges");
+    let app = ws.add_member("mem_app", "app");
+    Workspace::write(&app, "tracked", b"base\n");
+    Workspace::commit(&app, "base");
+    let base = git_stdout(&app, &["rev-parse", "HEAD"]).trim().to_owned();
+    Workspace::write(&app, "tracked", b"tip\n");
+    Workspace::commit(&app, "tip");
+    let tip = git_stdout(&app, &["rev-parse", "HEAD"]).trim().to_owned();
+    write_member_snapshot(&ws, "base.one", "mem_app", "app", &base);
+    write_member_snapshot(&ws, "tip.one", "mem_app", "app", &tip);
+
+    for delimiter in ["..", "..."] {
+        let operand = format!("+base.one{delimiter}+tip.one");
+        let mut request = ws.request_operands(&[operand.as_str()], &[], "");
+        request.options = Some(DiffOptions {
+            output_format: Some(DiffOutputFormat::NoPatch),
+            ..Default::default()
+        });
+        let outcome = handle_diff(
+            ws.root(),
+            request,
+            format!("op_{delimiter}"),
+            &DiffLogRegistry::new(),
+        )
+        .unwrap();
+        assert_eq!(changed_paths(&outcome), ["app/tracked"]);
+        assert_eq!(outcome.response.targets.len(), 1);
+        assert_eq!(
+            outcome.response.targets[0].scope.member_id.as_deref(),
+            Some("mem_app")
+        );
+    }
+}
+
+#[test]
+fn l_rng_6_diff_standalone_legacy_dotted_snapshot_id_remains_accessible() {
+    let ws = Workspace::new("legacy-snapshot-standalone");
+    let app = ws.add_member("mem_app", "app");
+    Workspace::write(&app, "tracked", b"base\n");
+    Workspace::commit(&app, "base");
+    let base = git_stdout(&app, &["rev-parse", "HEAD"]).trim().to_owned();
+    Workspace::write(&app, "tracked", b"tip\n");
+    Workspace::commit(&app, "tip");
+    for id in ["adjacent..dots", ".leading", "trailing."] {
+        write_legacy_member_snapshot(&ws, id, "mem_app", "app", &base);
+        let operand = format!("+{id}");
+        let mut request = ws.request_operands(&[operand.as_str()], &[], "");
+        request.options = Some(DiffOptions {
+            output_format: Some(DiffOutputFormat::NoPatch),
+            ..Default::default()
+        });
+        let outcome = handle_diff(
+            ws.root(),
+            request,
+            format!("op_legacy_{id}"),
+            &DiffLogRegistry::new(),
+        )
+        .unwrap();
+        assert_eq!(changed_paths(&outcome), ["app/tracked"], "id {id:?}");
+    }
+}
+
+#[test]
+fn l_rng_6_diff_teaches_for_ambiguous_legacy_snapshot_range_endpoints() {
+    let ws = Workspace::new("legacy-snapshot-range");
+    let app = ws.add_member("mem_app", "app");
+    Workspace::write(&app, "tracked", b"head\n");
+    Workspace::commit(&app, "head");
+    let head = git_stdout(&app, &["rev-parse", "HEAD"]).trim().to_owned();
+    write_member_snapshot(&ws, "safe.one", "mem_app", "app", &head);
+    for id in ["adjacent..dots", ".leading", "trailing."] {
+        write_legacy_member_snapshot(&ws, id, "mem_app", "app", &head);
+        for delimiter in ["..", "..."] {
+            let operand = format!("+{id}{delimiter}+safe.one");
+            let error = handle_diff(
+                ws.root(),
+                ws.request_operands(&[operand.as_str()], &[], ""),
+                "op_ambiguous",
+                &DiffLogRegistry::new(),
+            )
+            .err()
+            .expect("ambiguous legacy range endpoint must be refused");
+            assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+            assert!(error.message.contains(id), "{}", error.message);
+            assert!(error.message.contains("standalone"), "{}", error.message);
+        }
+    }
 }
 
 #[test]

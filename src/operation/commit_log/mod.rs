@@ -8,22 +8,26 @@
 
 mod coalesce;
 mod handler;
+mod request;
 
 pub(super) use handler::handle_log;
+#[cfg(test)]
+use request::CommitLogHistories;
+use request::open_request_histories;
 
+use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::process::{Child, ChildStdout, Command, Stdio};
 
-use crate::artifact::{self, ArtifactSourceKind};
+use crate::artifact::ArtifactSourceKind;
 use crate::model::ModelResult;
-use crate::workspace_ops::{
-    CommandDefaultTargets, RootSelectionPolicy, SelectedTarget, resolve_targets,
-};
 
 /// Internal identity for the repository carrying one raw entry or degradation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitLogTarget {
     pub member_id: String,
     pub member_path: String,
+    pub source_kind: ArtifactSourceKind,
 }
 
 /// A Git signature timestamp, preserving the recorded timezone offset.
@@ -58,6 +62,8 @@ pub enum CommitLogDegradationKind {
     UnsupportedSourceKind,
     RepositoryUnreadable,
     UnbornHead,
+    RevisionUnresolved,
+    SnapshotEntryMissing,
     HistoryUnreadable,
 }
 
@@ -66,6 +72,7 @@ pub enum CommitLogDegradationKind {
 pub struct CommitLogDegradation {
     pub target: CommitLogTarget,
     pub kind: CommitLogDegradationKind,
+    pub operand: Option<String>,
     pub detail: String,
 }
 
@@ -79,14 +86,21 @@ pub enum CommitLogEvent {
 enum RepositoryState {
     Ready {
         repository: git2::Repository,
-        head_id: git2::Oid,
+        walk: WalkPlan,
     },
     Degraded(CommitLogDegradation),
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct WalkPlan {
+    pushes: Vec<git2::Oid>,
+    hides: Vec<git2::Oid>,
 }
 
 /// One selected repository. [`Self::messages`] creates a streaming HEAD cursor.
 pub struct RepositoryHistory {
     target: CommitLogTarget,
+    pathspecs: Vec<String>,
     state: RepositoryState,
 }
 
@@ -95,12 +109,16 @@ impl RepositoryHistory {
         &self.target
     }
 
+    #[cfg(test)]
+    fn pathspecs(&self) -> &[String] {
+        &self.pathspecs
+    }
+
     pub fn messages(&self) -> RepositoryMessages<'_> {
         match &self.state {
-            RepositoryState::Ready {
-                repository,
-                head_id,
-            } => RepositoryMessages::from_repository(&self.target, repository, *head_id),
+            RepositoryState::Ready { repository, walk } => {
+                RepositoryMessages::from_repository(&self.target, repository, walk, &self.pathspecs)
+            }
             RepositoryState::Degraded(record) => RepositoryMessages::single(
                 &self.target,
                 CommitLogEvent::Degradation(record.clone()),
@@ -113,6 +131,11 @@ enum MessagesState<'repo> {
     Walk {
         repository: &'repo git2::Repository,
         walk: git2::Revwalk<'repo>,
+    },
+    PathWalk {
+        repository: &'repo git2::Repository,
+        child: Child,
+        stdout: BufReader<ChildStdout>,
     },
     Single(Option<Box<CommitLogEvent>>),
     Done,
@@ -128,8 +151,12 @@ impl<'repo> RepositoryMessages<'repo> {
     fn from_repository(
         target: &'repo CommitLogTarget,
         repository: &'repo git2::Repository,
-        head_id: git2::Oid,
+        plan: &WalkPlan,
+        pathspecs: &'repo [String],
     ) -> Self {
+        if !pathspecs.is_empty() {
+            return Self::from_path_walk(target, repository, plan, pathspecs);
+        }
         let mut walk = match repository.revwalk() {
             Ok(walk) => walk,
             Err(error) => {
@@ -143,15 +170,35 @@ impl<'repo> RepositoryMessages<'repo> {
                 );
             }
         };
-        if let Err(error) = walk.push(head_id) {
-            return Self::single(
-                target,
-                degradation(
+        for oid in &plan.pushes {
+            if let Err(error) = walk.push(*oid) {
+                return Self::single(
                     target,
-                    CommitLogDegradationKind::HistoryUnreadable,
-                    format!("could not start history cursor: {}", error.message()),
-                ),
-            );
+                    degradation(
+                        target,
+                        CommitLogDegradationKind::HistoryUnreadable,
+                        format!(
+                            "could not push {oid} onto history cursor: {}",
+                            error.message()
+                        ),
+                    ),
+                );
+            }
+        }
+        for oid in &plan.hides {
+            if let Err(error) = walk.hide(*oid) {
+                return Self::single(
+                    target,
+                    degradation(
+                        target,
+                        CommitLogDegradationKind::HistoryUnreadable,
+                        format!(
+                            "could not hide {oid} from history cursor: {}",
+                            error.message()
+                        ),
+                    ),
+                );
+            }
         }
 
         // Deliberately do not call `set_sorting`: libgit2's default revwalk is
@@ -159,6 +206,49 @@ impl<'repo> RepositoryMessages<'repo> {
         Self {
             target,
             state: MessagesState::Walk { repository, walk },
+        }
+    }
+
+    fn from_path_walk(
+        target: &'repo CommitLogTarget,
+        repository: &'repo git2::Repository,
+        plan: &WalkPlan,
+        pathspecs: &[String],
+    ) -> Self {
+        let mut command = Command::new("git");
+        command
+            .arg("--git-dir")
+            .arg(repository.path())
+            .arg("rev-list")
+            .args(plan.pushes.iter().map(ToString::to_string))
+            .args(plan.hides.iter().map(|oid| format!("^{oid}")))
+            .arg("--")
+            .args(pathspecs)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                return Self::single(
+                    target,
+                    degradation(
+                        target,
+                        CommitLogDegradationKind::HistoryUnreadable,
+                        format!("could not start local path history cursor: {error}"),
+                    ),
+                );
+            }
+        };
+        let stdout = child.stdout.take().expect("piped git stdout is present");
+        Self {
+            target,
+            state: MessagesState::PathWalk {
+                repository,
+                child,
+                stdout: BufReader::new(stdout),
+            },
         }
     }
 
@@ -199,11 +289,57 @@ impl Iterator for RepositoryMessages<'_> {
                     None
                 }
             },
+            MessagesState::PathWalk {
+                repository,
+                child,
+                stdout,
+            } => {
+                let mut line = String::new();
+                match stdout.read_line(&mut line) {
+                    Ok(0) => match child.wait() {
+                        Ok(status) if status.success() => {
+                            self.state = MessagesState::Done;
+                            None
+                        }
+                        Ok(status) => {
+                            self.fail(format!("local path history cursor exited with {status}"))
+                        }
+                        Err(error) => self.fail(format!(
+                            "could not finish local path history cursor: {error}"
+                        )),
+                    },
+                    Ok(_) => match git2::Oid::from_str(line.trim()) {
+                        Ok(oid) => match repository.find_commit(oid) {
+                            Ok(commit) => Some(CommitLogEvent::Entry(entry(self.target, &commit))),
+                            Err(error) => self.fail(format!(
+                                "could not read path history commit {oid}: {}",
+                                error.message()
+                            )),
+                        },
+                        Err(error) => self.fail(format!(
+                            "local path history cursor returned an invalid object id: {}",
+                            error.message()
+                        )),
+                    },
+                    Err(error) => {
+                        self.fail(format!("could not read local path history cursor: {error}"))
+                    }
+                }
+            }
         }
     }
 }
 
 impl std::iter::FusedIterator for RepositoryMessages<'_> {}
+
+impl Drop for RepositoryMessages<'_> {
+    fn drop(&mut self) {
+        if let MessagesState::PathWalk { child, .. } = &mut self.state {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
 
 /// Open the no-operand, default selection: `@root` plus every active member.
 ///
@@ -211,80 +347,8 @@ impl std::iter::FusedIterator for RepositoryMessages<'_> {}
 /// repository thereafter either exposes its own HEAD cursor or a degradation
 /// event. This path performs no integrity gate, transport operation, or lock.
 pub fn open_default_head_histories(workspace_root: &Path) -> ModelResult<Vec<RepositoryHistory>> {
-    let manifest = artifact::read_manifest(workspace_root)?;
-    let selected = resolve_targets(
-        &manifest,
-        None,
-        CommandDefaultTargets::All,
-        RootSelectionPolicy::Allow,
-    )?;
-
-    Ok(selected
-        .into_iter()
-        .map(|selected| match selected {
-            SelectedTarget::Root => open_history(
-                CommitLogTarget {
-                    member_id: "@root".to_owned(),
-                    member_path: ".".to_owned(),
-                },
-                workspace_root,
-                ArtifactSourceKind::Git,
-            ),
-            SelectedTarget::Member(member) => open_history(
-                CommitLogTarget {
-                    member_id: member.id.clone(),
-                    member_path: member.path.clone(),
-                },
-                &workspace_root.join(&member.path),
-                member.source_kind,
-            ),
-        })
-        .collect())
-}
-
-fn open_history(
-    target: CommitLogTarget,
-    path: &Path,
-    source_kind: ArtifactSourceKind,
-) -> RepositoryHistory {
-    let state = if source_kind != ArtifactSourceKind::Git {
-        RepositoryState::Degraded(CommitLogDegradation {
-            target: target.clone(),
-            kind: CommitLogDegradationKind::UnsupportedSourceKind,
-            detail: format!("commit history does not support {source_kind:?} members"),
-        })
-    } else {
-        match git2::Repository::open(path) {
-            Ok(repository) => match repository
-                .head()
-                .and_then(|head| head.peel_to_commit())
-                .map(|commit| commit.id())
-            {
-                Ok(head_id) => RepositoryState::Ready {
-                    repository,
-                    head_id,
-                },
-                Err(error) if error.code() == git2::ErrorCode::UnbornBranch => {
-                    RepositoryState::Degraded(CommitLogDegradation {
-                        target: target.clone(),
-                        kind: CommitLogDegradationKind::UnbornHead,
-                        detail: "repository HEAD is unborn".to_owned(),
-                    })
-                }
-                Err(error) => RepositoryState::Degraded(CommitLogDegradation {
-                    target: target.clone(),
-                    kind: CommitLogDegradationKind::HistoryUnreadable,
-                    detail: format!("could not resolve HEAD locally: {}", error.message()),
-                }),
-            },
-            Err(error) => RepositoryState::Degraded(CommitLogDegradation {
-                target: target.clone(),
-                kind: CommitLogDegradationKind::RepositoryUnreadable,
-                detail: format!("could not open repository: {}", error.message()),
-            }),
-        }
-    };
-    RepositoryHistory { target, state }
+    let request = crate::LogRequest::default();
+    Ok(open_request_histories(workspace_root, &request)?.into_histories())
 }
 
 fn degradation(
@@ -295,6 +359,7 @@ fn degradation(
     CommitLogEvent::Degradation(CommitLogDegradation {
         target: target.clone(),
         kind,
+        operand: None,
         detail: detail.into(),
     })
 }

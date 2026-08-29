@@ -43,8 +43,8 @@ use super::render::{PrefixPolicy, RenderOptions, ScopeRender};
 use super::tagged::narrow_plan_to_exact_tags;
 use super::{
     RepoDiffAlgorithm, RepoDiffComparison, RepoDiffEntry, RepoDiffManifest, RepoDiffOptions,
-    RepoDiffStatus, RepoDiffWhitespace, diff_repo, parse_comparison, parse_tagged_comparison,
-    plan_diff, reject_unsupported_options, resolve_comparison,
+    RepoDiffStatus, RepoDiffWhitespace, diff_repo, parse_comparison_with_snapshot_ids,
+    parse_tagged_comparison, plan_diff, reject_unsupported_options, resolve_comparison,
 };
 
 /// The outcome of a `diff` planning call: the wire response plus, when patch
@@ -107,11 +107,21 @@ pub fn handle_diff(
             };
             super::classify_operands(&request.operands, &manifest, &ctx)?
         };
+        let snapshot_ids = if classified
+            .revisions
+            .iter()
+            .any(|operand| operand.contains('+'))
+        {
+            artifact::snapshot_ids_for_operand_parsing(&root)?
+        } else {
+            Vec::new()
+        };
         (
-            parse_comparison(
+            parse_comparison_with_snapshot_ids(
                 &classified.revisions,
                 request.cached.unwrap_or(false),
                 request.merge_base.unwrap_or(false),
+                &snapshot_ids,
             )?,
             Vec::new(),
             classified.pathspecs,
@@ -119,7 +129,11 @@ pub fn handle_diff(
     };
 
     // Snapshots referenced by the comparison, read once for planning.
-    let snapshots = read_referenced_snapshots(&root, &comparison_snapshot_ids(&comparison))?;
+    let snapshots = read_referenced_snapshots(
+        &root,
+        &manifest.workspace.id,
+        &comparison_snapshot_ids(&comparison),
+    )?;
 
     // Pathspecs derived from bare operands precede the explicit (`--`) ones, so a
     // routing that intersects them keeps operand-order intent (git resolves both
@@ -241,7 +255,7 @@ pub fn handle_diff(
 /// Both paths are canonicalized first so symlinks and `..` compare correctly.
 /// Returns `None` when `start` is not under `root` (the caller then falls back to
 /// the client value), so an out-of-tree invocation degrades rather than misroutes.
-fn resolved_cwd_rel(start: &Path, root: &Path) -> Option<String> {
+pub(crate) fn resolved_cwd_rel(start: &Path, root: &Path) -> Option<String> {
     let start_abs = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
     let root_abs = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let rel = start_abs.strip_prefix(&root_abs).ok()?;
@@ -557,13 +571,14 @@ fn comparison_snapshot_ids(comparison: &super::ParsedComparison) -> Vec<String> 
 
 /// Read each referenced snapshot artifact. A missing snapshot is a typed
 /// `SnapshotNotFound` (matching the plan's error taxonomy).
-fn read_referenced_snapshots(
+pub(crate) fn read_referenced_snapshots(
     root: &Path,
+    expected_workspace_id: &str,
     ids: &[String],
 ) -> ModelResult<Vec<artifact::SnapshotArtifact>> {
     let mut out = Vec::new();
     for id in ids {
-        out.push(artifact::read_snapshot(root, id).map_err(|err| {
+        let snapshot = artifact::read_snapshot(root, id).map_err(|err| {
             if err.code == ErrorCode::SnapshotNotFound {
                 err
             } else {
@@ -572,7 +587,17 @@ fn read_referenced_snapshots(
                     format!("snapshot '{id}' could not be read: {}", err.message),
                 )
             }
-        })?);
+        })?;
+        if snapshot.workspace_id != expected_workspace_id {
+            return Err(ModelError::new(
+                ErrorCode::SnapshotNotFound,
+                format!(
+                    "snapshot '{id}' belongs to workspace '{}' instead of current workspace '{expected_workspace_id}'",
+                    snapshot.workspace_id
+                ),
+            ));
+        }
+        out.push(snapshot);
     }
     Ok(out)
 }

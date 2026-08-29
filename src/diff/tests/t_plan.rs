@@ -12,7 +12,8 @@ use crate::artifact::{
     ResolvedMemberArtifact, SNAPSHOT_SCHEMA, SnapshotArtifact, WORKSPACE_SCHEMA, WorkspaceHeader,
 };
 use crate::diff::{
-    Endpoint, ParsedComparison, PlanScope, RepoDiffComparisonKind, parse_comparison,
+    Endpoint, ParsedComparison, ParsedRevisionArg, PlanScope, RepoDiffComparisonKind,
+    parse_comparison, parse_revision_arg, parse_revision_arg_with_snapshot_ids,
     parse_tagged_comparison, plan_diff,
 };
 use crate::model::ErrorCode;
@@ -90,6 +91,58 @@ fn selection(all: bool, targets: &[&str], exclude: &[&str]) -> crate::Selection 
 
 fn plain() -> ParsedComparison {
     parse_comparison(&[], false, false).unwrap()
+}
+
+#[test]
+fn reserved_range_looking_snapshot_spelling_parses_only_as_a_range() {
+    assert_eq!(
+        parse_revision_arg("+release..one"),
+        ParsedRevisionArg::Range {
+            left: Endpoint::Snapshot("release".to_owned()),
+            right: Endpoint::Revision("one".to_owned()),
+            symmetric: false,
+        }
+    );
+    assert_eq!(
+        parse_revision_arg("+release.one"),
+        ParsedRevisionArg::Endpoint(Endpoint::Snapshot("release.one".to_owned()))
+    );
+}
+
+#[test]
+fn l_rng_6_exact_legacy_dotted_snapshot_ids_parse_as_standalone() {
+    let ids = ["release..one", ".release", "release."]
+        .map(str::to_owned)
+        .to_vec();
+
+    for id in &ids {
+        assert_eq!(
+            parse_revision_arg_with_snapshot_ids(&format!("+{id}"), &ids).unwrap(),
+            ParsedRevisionArg::Endpoint(Endpoint::Snapshot(id.clone())),
+            "id {id:?}"
+        );
+    }
+}
+
+#[test]
+fn l_rng_6_ambiguous_legacy_snapshot_range_endpoints_teach_for_both_range_forms() {
+    let ids = ["adjacent..dots", ".leading", "trailing."]
+        .map(str::to_owned)
+        .to_vec();
+
+    for id in &ids {
+        for delimiter in ["..", "..."] {
+            for token in [
+                format!("+{id}{delimiter}+safe.one"),
+                format!("+safe.one{delimiter}+{id}"),
+            ] {
+                let error = parse_revision_arg_with_snapshot_ids(&token, &ids).unwrap_err();
+                assert_eq!(error.code, ErrorCode::InvalidRequest, "token {token:?}");
+                assert!(error.message.contains(id), "{}", error.message);
+                assert!(error.message.contains("standalone"), "{}", error.message);
+            }
+        }
+    }
 }
 
 /// Every member is materialized.

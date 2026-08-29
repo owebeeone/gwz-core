@@ -22,12 +22,14 @@ mod tagged;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use classify::classify_operands_for_command;
 pub use classify::{
     ClassifiedOperands, RevContext, candidate_repos, classify_operands, default_rev_resolver,
 };
 pub(crate) use git_diff::build_repo_diff;
 pub use git_diff::{ComparisonSpec, diff_repo, reject_unsupported_options, resolve_comparison};
 pub use handle_diff::{DiffOutcome, handle_diff};
+pub(crate) use handle_diff::{read_referenced_snapshots, resolved_cwd_rel};
 pub use log_service::{
     DiffLog, DiffLogRegistry, LogReadRequest, LogReadResponse, LogReadState, LogRecord,
 };
@@ -35,9 +37,16 @@ pub use model::{
     RepoDiffAlgorithm, RepoDiffComparison, RepoDiffComparisonKind, RepoDiffEntry, RepoDiffManifest,
     RepoDiffOptions, RepoDiffStatus, RepoDiffWhitespace,
 };
+#[cfg(test)]
+pub(crate) use operands::parse_revision_arg;
 pub use operands::{Endpoint, ParsedComparison, parse_comparison, parse_tagged_comparison};
+pub(crate) use operands::{
+    ParsedRevisionArg, parse_comparison_with_snapshot_ids, parse_revision_arg_with_snapshot_ids,
+    parse_tagged_revision_args,
+};
 pub use output::{decode_record, encode_record};
 pub use plan::{
     DiffPlan, ExcludedTarget, MaterializationOracle, PlanScope, PlannedTarget, ROOT_EXCLUDE_FIXED,
     plan_diff,
 };
+pub(crate) use tagged::{missing_exact_local_tags, validate_exact_tag_narrowing};

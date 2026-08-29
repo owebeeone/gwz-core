@@ -128,8 +128,10 @@ fn ambiguous_name_that_is_both_errors_suggesting_dashdash() {
     sb.touch("main");
     let err = run(&sb, &["main"], &["main"]).unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidRequest);
-    assert!(err.message.contains("ambiguous"), "{}", err.message);
-    assert!(err.message.contains("--"), "{}", err.message);
+    assert_eq!(
+        err.message,
+        "ambiguous argument 'main': both a revision and a path exist. Use '--' to separate paths from revisions, like this:\n'gwz diff [<revision>...] -- [<file>...]'"
+    );
 }
 
 #[test]
@@ -138,12 +140,10 @@ fn nonexistent_operand_errors_with_improved_message() {
     let sb = Sandbox::new("none");
     let err = run(&sb, &["nope"], &[]).unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidRequest);
-    assert!(
-        err.message.contains("unknown revision or path"),
-        "{}",
-        err.message
+    assert_eq!(
+        err.message,
+        "ambiguous argument 'nope': unknown revision or path not in the working tree. Use '--' to separate paths from revisions, like this:\n'gwz diff [<revision>...] -- [<file>...]'"
     );
-    assert!(err.message.contains("--"), "{}", err.message);
 }
 
 #[test]

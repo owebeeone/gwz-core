@@ -90,6 +90,18 @@ pub fn classify_operands(
     manifest: &ManifestArtifact,
     ctx: &RevContext<'_>,
 ) -> ModelResult<ClassifiedOperands> {
+    classify_operands_for_command(operands, manifest, ctx, "gwz diff")
+}
+
+/// The shared classifier with a caller-specific command in diagnostics.
+/// [`classify_operands`] pins the established diff wording; log uses this seam
+/// so its otherwise identical errors recommend `gwz log`.
+pub(crate) fn classify_operands_for_command(
+    operands: &[String],
+    manifest: &ManifestArtifact,
+    ctx: &RevContext<'_>,
+    command: &str,
+) -> ModelResult<ClassifiedOperands> {
     let _ = manifest;
     let mut out = ClassifiedOperands::default();
     let mut in_pathspec_zone = false;
@@ -100,7 +112,7 @@ pub fn classify_operands(
         // case → error (git's verify_filename).
         if is_never_path_operand(operand) {
             if in_pathspec_zone {
-                return Err(ambiguous_after_path(operand));
+                return Err(ambiguous_after_path(operand, command));
             }
             out.revisions.push(operand.clone());
             continue;
@@ -112,7 +124,7 @@ pub fn classify_operands(
             // Everything after the first pathspec is a pathspec. A token that is
             // not a path but resolves as a revision is git's ambiguous error.
             if !is_path && (ctx.resolve)(&ctx.repos, operand)? {
-                return Err(ambiguous_after_path(operand));
+                return Err(ambiguous_after_path(operand, command));
             }
             out.pathspecs.push(operand.clone());
             continue;
@@ -125,8 +137,8 @@ pub fn classify_operands(
                 in_pathspec_zone = true;
                 out.pathspecs.push(operand.clone());
             }
-            (true, true) => return Err(ambiguous(operand)),
-            (false, false) => return Err(unknown_rev_or_path(operand)),
+            (true, true) => return Err(ambiguous(operand, command)),
+            (false, false) => return Err(unknown_rev_or_path(operand, command)),
         }
     }
 
@@ -149,35 +161,35 @@ fn operand_is_existing_path(operand: &str, ctx: &RevContext<'_>) -> bool {
     Path::new(&abs).exists()
 }
 
-fn ambiguous(operand: &str) -> ModelError {
+fn ambiguous(operand: &str, command: &str) -> ModelError {
     ModelError::new(
         ErrorCode::InvalidRequest,
         format!(
             "ambiguous argument '{operand}': both a revision and a path exist. \
              Use '--' to separate paths from revisions, like this:\n\
-             'gwz diff [<revision>...] -- [<file>...]'"
+             '{command} [<revision>...] -- [<file>...]'"
         ),
     )
 }
 
-fn ambiguous_after_path(operand: &str) -> ModelError {
+fn ambiguous_after_path(operand: &str, command: &str) -> ModelError {
     ModelError::new(
         ErrorCode::InvalidRequest,
         format!(
             "ambiguous argument '{operand}': a revision cannot follow a path operand. \
              Use '--' to separate paths from revisions, like this:\n\
-             'gwz diff [<revision>...] -- [<file>...]'"
+             '{command} [<revision>...] -- [<file>...]'"
         ),
     )
 }
 
-fn unknown_rev_or_path(operand: &str) -> ModelError {
+fn unknown_rev_or_path(operand: &str, command: &str) -> ModelError {
     ModelError::new(
         ErrorCode::InvalidRequest,
         format!(
             "ambiguous argument '{operand}': unknown revision or path not in the working tree. \
              Use '--' to separate paths from revisions, like this:\n\
-             'gwz diff [<revision>...] -- [<file>...]'"
+             '{command} [<revision>...] -- [<file>...]'"
         ),
     )
 }

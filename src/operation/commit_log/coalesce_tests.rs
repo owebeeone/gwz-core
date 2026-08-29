@@ -739,6 +739,7 @@ fn entry(
         target: CommitLogTarget {
             member_id: member_id.to_owned(),
             member_path: member_id.trim_start_matches("mem_").to_owned(),
+            source_kind: crate::artifact::ArtifactSourceKind::Git,
         },
         commit_id: commit_id.to_owned(),
         parent_ids: Vec::new(),

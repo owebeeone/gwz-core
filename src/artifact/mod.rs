@@ -244,7 +244,7 @@ pub struct SnapshotArtifact {
 impl SnapshotArtifact {
     pub fn from_yaml(text: &str) -> ModelResult<Self> {
         let artifact: Self = parse_yaml(text)?;
-        artifact.validate()?;
+        artifact.validate_for_read()?;
         Ok(artifact)
     }
 
@@ -254,9 +254,14 @@ impl SnapshotArtifact {
     }
 
     pub fn validate(&self) -> ModelResult<()> {
+        self.validate_for_read()?;
+        validate_snapshot_id_for_creation(&self.snapshot_id)
+    }
+
+    fn validate_for_read(&self) -> ModelResult<()> {
         require_schema(&self.schema, SNAPSHOT_SCHEMA)?;
         parse_id("workspace_id", "ws_", &self.workspace_id)?;
-        require_slug("snapshot_id", &self.snapshot_id)?;
+        validate_snapshot_id_for_read(&self.snapshot_id)?;
         validate_member_record(
             &self.created_at,
             &self.created_by,
@@ -387,19 +392,59 @@ pub fn write_lock(root: &Path, artifact: &LockArtifact) -> ModelResult<()> {
 }
 
 pub fn read_snapshot(root: &Path, snapshot_id: &str) -> ModelResult<SnapshotArtifact> {
-    SnapshotArtifact::from_yaml(&read_to_string(snapshot_path(root, snapshot_id))?)
+    read_snapshot_with(root, snapshot_id, read_to_string)
+}
+
+fn read_snapshot_with(
+    root: &Path,
+    snapshot_id: &str,
+    read: impl FnOnce(PathBuf) -> ModelResult<String>,
+) -> ModelResult<SnapshotArtifact> {
+    let path = snapshot_path(root, snapshot_id)?;
+    let artifact = SnapshotArtifact::from_yaml(&read(path)?)?;
+    if artifact.snapshot_id != snapshot_id {
+        return Err(invalid(format!(
+            "snapshot filename id '{snapshot_id}' does not match embedded snapshot_id '{}'",
+            artifact.snapshot_id
+        )));
+    }
+    Ok(artifact)
 }
 
 pub fn write_snapshot(root: &Path, artifact: &SnapshotArtifact) -> ModelResult<()> {
-    write_atomic(
-        &snapshot_path(root, &artifact.snapshot_id),
-        artifact.to_yaml()?,
-    )
+    let yaml = artifact.to_yaml()?;
+    write_atomic(&snapshot_path(root, &artifact.snapshot_id)?, yaml)
 }
 
 /// All snapshots in the workspace, sorted by file name. A missing dir is an empty list.
 pub fn list_snapshots(root: &Path) -> ModelResult<Vec<SnapshotArtifact>> {
     list_artifacts(root.join(SNAPSHOT_DIR), SnapshotArtifact::from_yaml)
+}
+
+/// Snapshot ids present on disk, without opening artifact bodies.
+///
+/// Operand lowering uses this filename-only view so an exact legacy v0 id wins
+/// over range punctuation before either diff or log reads the referenced body.
+pub(crate) fn snapshot_ids_for_operand_parsing(root: &Path) -> ModelResult<Vec<String>> {
+    let dir = root.join(SNAPSHOT_DIR);
+    let mut ids = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io_error)?
+            .into_iter()
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("yaml"))
+            .filter_map(|path| {
+                let id = path.file_stem()?.to_str()?.to_owned();
+                validate_snapshot_id_for_read(&id).is_ok().then_some(id)
+            })
+            .collect::<Vec<_>>(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(io_error(error)),
+    };
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
 }
 
 pub fn read_marker(root: &Path, gwz_commit_id: &str) -> ModelResult<MarkerArtifact> {
@@ -531,8 +576,9 @@ fn read_to_string(path: PathBuf) -> ModelResult<String> {
     fs::read_to_string(path).map_err(io_error)
 }
 
-pub(crate) fn snapshot_path(root: &Path, snapshot_id: &str) -> PathBuf {
-    root.join(SNAPSHOT_DIR).join(format!("{snapshot_id}.yaml"))
+pub(crate) fn snapshot_path(root: &Path, snapshot_id: &str) -> ModelResult<PathBuf> {
+    validate_snapshot_id_for_read(snapshot_id)?;
+    Ok(root.join(SNAPSHOT_DIR).join(format!("{snapshot_id}.yaml")))
 }
 
 pub fn marker_path(root: &Path, gwz_commit_id: &str) -> PathBuf {
@@ -676,6 +722,29 @@ fn require_slug(field: &str, value: &str) -> ModelResult<()> {
     }
 }
 
+// `gwz.snapshot/v0` shipped with unrestricted portable-slug ids. Reads MUST
+// retain that schema-v0 grammar forever (including adjacent and boundary dots),
+// while creation uses the disjoint range-safe subset below. Do not collapse
+// these validators: doing so makes already-written v0 artifacts unreadable.
+fn validate_snapshot_id_for_read(value: &str) -> ModelResult<()> {
+    require_slug("snapshot_id", value)
+}
+
+fn validate_snapshot_id_for_creation(value: &str) -> ModelResult<()> {
+    require_slug("snapshot_id", value)?;
+    if value.contains("..") || value.starts_with('.') || value.ends_with('.') {
+        return Err(invalid(
+            "snapshot_id must not contain adjacent dots or start/end with a dot because those spellings are reserved for revision ranges",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn snapshot_id_requires_legacy_compatibility(value: &str) -> bool {
+    validate_snapshot_id_for_read(value).is_ok()
+        && validate_snapshot_id_for_creation(value).is_err()
+}
+
 fn optional_text_target(field: &str, value: &Option<String>) -> ModelResult<usize> {
     match value {
         Some(value) => {
@@ -711,6 +780,7 @@ fn io_error(err: io::Error) -> ModelError {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -899,6 +969,110 @@ pub(crate) mod tests {
                 .join("gwz.conf/markers/01987b0c-2f75-7c4a-9a32-8fd22f7d7c91.yaml")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn snapshot_reader_rejects_escape_and_absolute_ids_before_access() {
+        let root = TempDir::new("snapshot-id-root");
+        let outside = TempDir::new("snapshot-id-outside");
+        fs::create_dir_all(root.path().join(SNAPSHOT_DIR)).unwrap();
+
+        // Both files are valid snapshot YAML. A reader that joins before
+        // validating can escape to either one.
+        fs::write(
+            root.path().join("gwz.conf/escape.yaml"),
+            sample_snapshot().to_yaml().unwrap(),
+        )
+        .unwrap();
+        let absolute_stem = outside.path().join("absolute");
+        fs::write(
+            absolute_stem.with_extension("yaml"),
+            sample_snapshot().to_yaml().unwrap(),
+        )
+        .unwrap();
+
+        for id in [
+            "",
+            "../escape",
+            absolute_stem.to_str().expect("UTF-8 temp path"),
+        ] {
+            let error = read_snapshot(root.path(), id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "id {id:?}");
+            assert!(error.message.contains("snapshot_id"), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn f2_snapshot_id_validation_precedes_the_first_filesystem_read() {
+        let temp = TempDir::new("snapshot-access-order");
+        let reads = Cell::new(0);
+
+        let error = read_snapshot_with(temp.path(), "../escape", |_| {
+            reads.set(reads.get() + 1);
+            Err(io_error(io::Error::other("access-order sentinel fired")))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(reads.get(), 0, "invalid id reached the filesystem reader");
+    }
+
+    #[test]
+    fn snapshot_reader_binds_requested_filename_to_embedded_id() {
+        let temp = TempDir::new("snapshot-id-binding");
+        fs::create_dir_all(temp.path().join(SNAPSHOT_DIR)).unwrap();
+        fs::write(
+            snapshot_path(temp.path(), "alias").unwrap(),
+            sample_snapshot().to_yaml().unwrap(),
+        )
+        .unwrap();
+
+        let error = read_snapshot(temp.path(), "alias").unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("alias"), "{}", error.message);
+        assert!(error.message.contains("snap_demo"), "{}", error.message);
+    }
+
+    #[test]
+    fn l_rng_6_creation_rejects_boundary_and_adjacent_dots_only() {
+        let temp = TempDir::new("snapshot-range-id");
+        let mut dotted = sample_snapshot();
+        dotted.snapshot_id = "release.one".to_owned();
+        write_snapshot(temp.path(), &dotted).unwrap();
+        assert_eq!(read_snapshot(temp.path(), "release.one").unwrap(), dotted);
+
+        for id in ["release..one", ".release", "release."] {
+            let mut invalid = sample_snapshot();
+            invalid.snapshot_id = id.to_owned();
+            let error = write_snapshot(temp.path(), &invalid).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "id {id:?}");
+            assert!(error.message.contains("snapshot_id"), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn l_rng_6_schema_v0_legacy_dotted_ids_remain_listable_and_readable() {
+        let temp = TempDir::new("snapshot-legacy-dotted-ids");
+        fs::create_dir_all(temp.path().join(SNAPSHOT_DIR)).unwrap();
+        for id in ["release..one", ".release", "release."] {
+            fs::write(
+                temp.path().join(SNAPSHOT_DIR).join(format!("{id}.yaml")),
+                SNAPSHOT_GOLDEN.replace("snap_demo", id),
+            )
+            .unwrap();
+            assert_eq!(
+                read_snapshot(temp.path(), id).unwrap().snapshot_id,
+                id,
+                "id {id:?}"
+            );
+        }
+
+        let ids = list_snapshots(temp.path())
+            .unwrap()
+            .into_iter()
+            .map(|snapshot| snapshot.snapshot_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [".release", "release..one", "release."]);
     }
 
     #[test]
