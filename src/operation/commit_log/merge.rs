@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -8,6 +8,7 @@ use super::request::CommitLogHistories;
 use super::{CommitLogDegradation, CommitLogEntry, CommitLogEvent, RepositoryHistory};
 
 pub(super) const DEFAULT_MAX_ENTRIES: usize = 50;
+const GROUP_CLOSURE_PATIENCE_ENTRIES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CommitLogMergeOptions {
@@ -158,11 +159,13 @@ where
                 reply: reply_rx,
                 head: None,
                 done: false,
+                oldest_seen: None,
+                recent_yields: VecDeque::new(),
             });
         }
 
-        prime_cursors(&mut cursors, &mut emit);
-        let stats = merge_cursors(&mut cursors, options, &mut emit);
+        let yield_serial = prime_cursors(&mut cursors, &mut emit);
+        let stats = merge_cursors(&mut cursors, options, yield_serial, &mut emit);
         drop(cursors);
         stats
     });
@@ -193,31 +196,55 @@ struct CursorState {
     reply: Receiver<Option<CommitLogEvent>>,
     head: Option<CommitLogEntry>,
     done: bool,
+    oldest_seen: Option<i64>,
+    recent_yields: VecDeque<u64>,
 }
 
-fn prime_cursors(cursors: &mut [CursorState], emit: &mut impl FnMut(CommitLogMergedEvent)) {
+fn prime_cursors(cursors: &mut [CursorState], emit: &mut impl FnMut(CommitLogMergedEvent)) -> u64 {
+    let mut yield_serial = 0;
     for cursor in cursors.iter_mut().filter(|cursor| !cursor.done) {
         if cursor.pull.send(()).is_err() {
             cursor.done = true;
         }
     }
     for cursor in cursors {
-        receive_head(cursor, emit);
+        receive_head(cursor, &mut yield_serial, emit);
     }
+    yield_serial
 }
 
-fn advance_cursor(cursor: &mut CursorState, emit: &mut impl FnMut(CommitLogMergedEvent)) {
+fn advance_cursor(
+    cursor: &mut CursorState,
+    yield_serial: &mut u64,
+    emit: &mut impl FnMut(CommitLogMergedEvent),
+) {
     if cursor.done || cursor.pull.send(()).is_err() {
         cursor.done = true;
         return;
     }
-    receive_head(cursor, emit);
+    receive_head(cursor, yield_serial, emit);
 }
 
-fn receive_head(cursor: &mut CursorState, emit: &mut impl FnMut(CommitLogMergedEvent)) {
+fn receive_head(
+    cursor: &mut CursorState,
+    yield_serial: &mut u64,
+    emit: &mut impl FnMut(CommitLogMergedEvent),
+) {
     while !cursor.done {
         match cursor.reply.recv() {
             Ok(Some(CommitLogEvent::Entry(entry))) => {
+                *yield_serial = yield_serial.saturating_add(1);
+                cursor.oldest_seen = Some(
+                    cursor
+                        .oldest_seen
+                        .map_or(entry.committer.time.seconds, |seen| {
+                            seen.min(entry.committer.time.seconds)
+                        }),
+                );
+                cursor.recent_yields.push_back(*yield_serial);
+                if cursor.recent_yields.len() > GROUP_CLOSURE_PATIENCE_ENTRIES {
+                    cursor.recent_yields.pop_front();
+                }
                 cursor.head = Some(entry);
                 return;
             }
@@ -235,6 +262,7 @@ fn receive_head(cursor: &mut CursorState, emit: &mut impl FnMut(CommitLogMergedE
 fn merge_cursors(
     cursors: &mut [CursorState],
     options: CommitLogMergeOptions,
+    mut yield_serial: u64,
     emit: &mut impl FnMut(CommitLogMergedEvent),
 ) -> CommitLogMergeStats {
     let mut state = MergeState::new(cursors.len());
@@ -247,7 +275,7 @@ fn merge_cursors(
         }
 
         let Some(index) =
-            frontier_blocker_cursor(&state.pending, cursors).or_else(|| next_cursor(cursors))
+            closure_progress_cursor(&state.pending, cursors).or_else(|| next_cursor(cursors))
         else {
             emit_forced_groups(&mut state.pending, options.max_entries, &mut stats, emit);
             return stats;
@@ -269,11 +297,11 @@ fn merge_cursors(
             {
                 return stats;
             }
-            advance_cursor(&mut cursors[index], emit);
+            advance_cursor(&mut cursors[index], &mut yield_serial, emit);
             continue;
         }
 
-        state.admit(index, entry);
+        state.admit(index, entry, yield_serial);
         stats.max_buffered_entries = stats
             .max_buffered_entries
             .max(buffered_entry_count(&state.pending));
@@ -290,7 +318,7 @@ fn merge_cursors(
             }
         }
 
-        advance_cursor(&mut cursors[index], emit);
+        advance_cursor(&mut cursors[index], &mut yield_serial, emit);
     }
 }
 
@@ -302,6 +330,7 @@ struct PendingGroup {
     sealed: bool,
     repositories: BTreeSet<usize>,
     predecessors: BTreeSet<GroupId>,
+    opened_at_yield: u64,
 }
 
 struct MergeState {
@@ -319,7 +348,7 @@ impl MergeState {
         }
     }
 
-    fn admit(&mut self, cursor: usize, entry: CommitLogEntry) {
+    fn admit(&mut self, cursor: usize, entry: CommitLogEntry, yield_serial: u64) {
         if self.try_join(cursor, &entry) {
             return;
         }
@@ -335,6 +364,7 @@ impl MergeState {
             sealed: false,
             repositories: [cursor].into_iter().collect(),
             predecessors,
+            opened_at_yield: yield_serial,
         });
         self.last_group_by_cursor[cursor] = Some(id);
     }
@@ -417,18 +447,30 @@ fn seal_groups(groups: &mut [PendingGroup], cursors: &[CursorState]) {
             .group
             .ordering_timestamp_seconds()
             .saturating_sub(COALESCING_WINDOW_SECONDS);
-        group.sealed = cursors.iter().enumerate().all(|(index, cursor)| {
-            group.repositories.contains(&index)
-                || cursor.done
-                || cursor
-                    .head
-                    .as_ref()
-                    .is_some_and(|entry| entry.committer.time.seconds < threshold)
-        });
+        group.sealed = cursors
+            .iter()
+            .enumerate()
+            .all(|(index, cursor)| cursor_closes_group(group, index, cursor, threshold));
     }
 }
 
-fn frontier_blocker_cursor(groups: &[PendingGroup], cursors: &[CursorState]) -> Option<usize> {
+fn cursor_closes_group(
+    group: &PendingGroup,
+    index: usize,
+    cursor: &CursorState,
+    threshold: i64,
+) -> bool {
+    group.repositories.contains(&index)
+        || cursor.done
+        || cursor.oldest_seen.is_some_and(|seen| seen < threshold)
+        || (cursor.recent_yields.len() == GROUP_CLOSURE_PATIENCE_ENTRIES
+            && cursor
+                .recent_yields
+                .front()
+                .is_some_and(|serial| *serial > group.opened_at_yield))
+}
+
+fn closure_progress_cursor(groups: &[PendingGroup], cursors: &[CursorState]) -> Option<usize> {
     let root = (0..groups.len())
         .filter(|index| {
             !groups[*index].sealed
@@ -446,11 +488,7 @@ fn frontier_blocker_cursor(groups: &[PendingGroup], cursors: &[CursorState]) -> 
         .iter()
         .enumerate()
         .filter(|(index, cursor)| {
-            !groups[root].repositories.contains(index)
-                && cursor
-                    .head
-                    .as_ref()
-                    .is_some_and(|entry| entry.committer.time.seconds >= threshold)
+            cursor.head.is_some() && !cursor_closes_group(&groups[root], *index, cursor, threshold)
         })
         .min_by(|(_, left), (_, right)| {
             compare_entries(

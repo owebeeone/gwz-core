@@ -144,9 +144,10 @@ fn l_env_3_cap_force_closes_an_open_group_with_seen_siblings_only() {
     let pulls = Arc::new(AtomicUsize::new(0));
     let cursors = vec![
         CountingCursor::new(
-            [CommitLogEvent::Entry(marked_entry(
-                "mem_a", "a-seen", 100, MARKER_A,
-            ))],
+            [
+                CommitLogEvent::Entry(marked_entry("mem_a", "a-seen", 100, MARKER_A)),
+                CommitLogEvent::Degradation(degradation("mem_a", "past cap")),
+            ],
             pulls.clone(),
         ),
         CountingCursor::new(
@@ -165,6 +166,12 @@ fn l_env_3_cap_force_closes_an_open_group_with_seen_siblings_only() {
     ];
     let mut events = Vec::new();
     let stats = stream_test_cursors(cursors, options(Some(1), 1), |event| events.push(event));
+    assert!(
+        events
+            .iter()
+            .all(|event| matches!(event, CommitLogMergedEvent::Group(_))),
+        "the beyond-cap degradation sentinel must never be yielded"
+    );
     let groups = groups(events);
 
     assert_eq!(groups.len(), 1);
@@ -174,10 +181,7 @@ fn l_env_3_cap_force_closes_an_open_group_with_seen_siblings_only() {
         &CommitLogProvenance::Marker(MARKER_A.to_owned())
     );
     assert_eq!(stats.groups_emitted(), 1);
-    assert!(
-        pulls.load(Ordering::SeqCst) <= 4,
-        "one head per repo plus the selected cursor's advance must not reach c-unseen"
-    );
+    assert_eq!(pulls.load(Ordering::SeqCst), 3, "prime each cursor only");
 }
 
 #[test]
@@ -353,30 +357,49 @@ fn l_prf_1_streaming_has_a_window_bounded_high_water_and_stops_at_cap() {
     );
 }
 
+#[rustfmt::skip]
 #[test]
-fn f3_non_monotone_no_limit_high_water_is_independent_of_tail_length() {
+fn l_coa_7_frontier_eligibility_is_exact_and_bounded() {
+    fn marked(member: &str, times: [i64; 3]) -> Vec<CommitLogEntry> {
+        times.into_iter().enumerate().map(|(i, time)|
+            marked_entry(&format!("mem_{member}"), &format!("{member}-{i}"), time, MARKER_A)).collect()
+    }
+    fn marker_hashes(output: &MergeOutput) -> Vec<Vec<&str>> {
+        output.groups.iter().filter(|group|
+            matches!(group.provenance(), CommitLogProvenance::Marker(_))).map(member_hashes).collect()
+    }
     fn high_water(tail_len: usize) -> usize {
-        let inverted = std::iter::once(entry("mem_a", "frontier", 0))
-            .chain((0..tail_len).map(|index| {
-                entry(
-                    "mem_a",
-                    &format!("tail-{index}"),
-                    10_000 - (index as i64 * 61),
-                )
-            }))
-            .collect::<Vec<_>>();
-        merge(
-            vec![inverted, vec![entry("mem_b", "other-frontier", 0)]],
-            options(None, 1),
-        )
-        .stats
-        .max_buffered_entries()
+        fn inverted(member: &str, tail_len: usize) -> Vec<CommitLogEntry> {
+            std::iter::once(entry(member, &format!("{member}-frontier"), 0)).chain((0..tail_len).map(|i|
+                entry(member, &format!("{member}-tail-{i}"), 1_000_000 - i as i64 * 61))).collect()
+        }
+        let output = merge(vec![inverted("mem_a", tail_len), inverted("mem_b", tail_len)], options(None, 1));
+        assert_eq!(output.groups.len(), 2 * (tail_len + 1));
+        output.stats.max_buffered_entries()
     }
 
-    let short = high_water(20);
-    let long = high_water(200);
-    assert!(short <= 4, "short inversion buffered {short} entries");
-    assert!(long <= 4, "long inversion buffered {long} entries");
+    let seen = merge(vec![marked("0", [0, 0, 100]), marked("1", [40, 0, 99]),
+        marked("2", [39, 40, 100])], options(None, 1));
+    assert_eq!(seen.groups.iter().map(member_hashes).collect::<Vec<_>>(), [
+        vec!["1-0", "2-0", "0-0"], vec!["2-1", "0-1", "1-1"],
+        vec!["2-2"], vec!["0-2"], vec!["1-2"]]);
+
+    let blocker = std::iter::once(entry("mem_b", "prime", 99))
+        .chain((1..63).map(|i| entry("mem_b", &format!("b-{i}"), 99)))
+        .chain([marked_entry("mem_b", "b-late", 100, MARKER_A)]).collect();
+    let joinable = merge(vec![vec![marked_entry("mem_a", "a", 100, MARKER_A)], blocker], options(None, 1));
+    assert_eq!(marker_hashes(&joinable), [vec!["a", "b-late"]]);
+
+    let blocker = std::iter::once(entry("mem_c", "prime", 99))
+        .chain((0..63).map(|i| entry("mem_c", &format!("c-{i}"), 1_000 - i)))
+        .chain([marked_entry("mem_c", "c-late", 97, MARKER_A)]).collect();
+    let closed = merge(vec![vec![marked_entry("mem_a", "a", 100, MARKER_A)],
+        vec![marked_entry("mem_b", "b-join", 98, MARKER_A)], blocker], options(None, 1));
+    assert_eq!(marker_hashes(&closed), [vec!["a", "b-join"], vec!["c-late"]]);
+
+    let short = high_water(100);
+    let long = high_water(1_000);
+    assert_eq!(short, 66, "two frontier entries plus K=64 patience");
     assert_eq!(long, short);
 }
 
