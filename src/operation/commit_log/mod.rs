@@ -64,6 +64,7 @@ pub enum CommitLogDegradationKind {
     UnbornHead,
     RevisionUnresolved,
     SnapshotEntryMissing,
+    LockEntryMissing,
     HistoryUnreadable,
 }
 

@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::artifact::{ArtifactSourceKind, ManifestArtifact, SnapshotArtifact};
+use crate::artifact::{ArtifactSourceKind, LockArtifact, ManifestArtifact, SnapshotArtifact};
 use crate::diff::{
     Endpoint, ParsedRevisionArg, RevContext, candidate_repos, classify_operands_for_command,
     default_rev_resolver, missing_exact_local_tags, parse_revision_arg_with_snapshot_ids,
     parse_tagged_revision_args, read_referenced_snapshots, resolved_cwd_rel,
     validate_exact_tag_narrowing,
 };
-use crate::model::ModelResult;
+use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::{
     CommandDefaultTargets, RootSelectionPolicy, SelectedTarget, assert_workspace_id, join_cwd,
     lexical_normalize, owning_member, resolve_targets, resolve_workspace_root, route_pathspec,
@@ -52,6 +52,8 @@ struct TargetPlan {
     pathspecs: Vec<String>,
     degradation: Option<CommitLogDegradation>,
 }
+
+const LOCK_ENDPOINT_ID: &str = "lock";
 
 /// Lower one S2.0 wire request into independently streaming repository cursors.
 pub(super) fn open_request_histories(
@@ -101,6 +103,17 @@ pub(super) fn open_request_histories(
     // Post-`--` values bypass classification by construction. In particular,
     // `+name` here is a literal path rather than a snapshot reference.
     pathspecs.extend(request.explicit_pathspecs.iter().cloned());
+    let lock = uses_lock_endpoint(&revision_args)
+        .then(|| crate::artifact::read_lock(&root))
+        .transpose()?;
+    if let Some(lock) = &lock
+        && lock.workspace_id != manifest.workspace.id
+    {
+        return Err(ModelError::new(
+            ErrorCode::SourceIdentityMismatch,
+            "workspace manifest and lock identify different workspaces",
+        ));
+    }
     let snapshots =
         read_referenced_snapshots(&root, &manifest.workspace.id, &snapshot_ids(&revision_args))?;
     let selected = resolve_targets(
@@ -109,8 +122,12 @@ pub(super) fn open_request_histories(
         CommandDefaultTargets::All,
         RootSelectionPolicy::Allow,
     )?;
-    let plans =
-        validate_selected_snapshots(selected_plans(&root, selected), &revision_args, &snapshots);
+    let plans = validate_selected_operands(
+        selected_plans(&root, selected),
+        &revision_args,
+        &snapshots,
+        lock.as_ref(),
+    );
     let plans = route_pathspecs(&root, &manifest, &cwd_rel, &pathspecs, plans)?;
     let plans = if tagged {
         narrow_to_exact_tags(plans, &tag_names)?
@@ -125,7 +142,7 @@ pub(super) fn open_request_histories(
         .unwrap_or(false);
     let histories = plans
         .into_iter()
-        .map(|plan| open_history(plan, &revision_args, &snapshots))
+        .map(|plan| open_history(plan, &revision_args, &snapshots, lock.as_ref()))
         .collect();
     Ok(CommitLogHistories { histories, strict })
 }
@@ -133,14 +150,27 @@ pub(super) fn open_request_histories(
 fn snapshot_ids(args: &[ParsedRevisionArg]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut ids = Vec::new();
-    for endpoint in args.iter().flat_map(arg_endpoints).flatten() {
-        if let Endpoint::Snapshot(id) = endpoint
-            && seen.insert(id.clone())
-        {
-            ids.push(id.clone());
+    for arg in args {
+        let lock_is_pseudo = matches!(arg, ParsedRevisionArg::Range { .. });
+        for endpoint in arg_endpoints(arg).into_iter().flatten() {
+            if let Endpoint::Snapshot(id) = endpoint
+                && !(lock_is_pseudo && id == LOCK_ENDPOINT_ID)
+                && seen.insert(id.clone())
+            {
+                ids.push(id.clone());
+            }
         }
     }
     ids
+}
+
+fn uses_lock_endpoint(args: &[ParsedRevisionArg]) -> bool {
+    args.iter().any(|arg| {
+        matches!(arg, ParsedRevisionArg::Range { .. })
+            && arg_endpoints(arg).into_iter().flatten().any(
+                |endpoint| matches!(endpoint, Endpoint::Snapshot(id) if id == LOCK_ENDPOINT_ID),
+            )
+    })
 }
 
 fn arg_endpoints(arg: &ParsedRevisionArg) -> [Option<&Endpoint>; 2] {
@@ -178,13 +208,14 @@ fn selected_plans(root: &Path, selected: Vec<SelectedTarget<'_>>) -> Vec<TargetP
         .collect()
 }
 
-fn validate_selected_snapshots(
+fn validate_selected_operands(
     mut plans: Vec<TargetPlan>,
     args: &[ParsedRevisionArg],
     snapshots: &[SnapshotArtifact],
+    lock: Option<&LockArtifact>,
 ) -> Vec<TargetPlan> {
     for plan in &mut plans {
-        if let Err(record) = validate_snapshots(&plan.target, args, snapshots) {
+        if let Err(record) = validate_operands(&plan.target, args, snapshots, lock) {
             plan.degradation = Some(record);
         }
     }
@@ -385,6 +416,7 @@ fn open_history(
     plan: TargetPlan,
     args: &[ParsedRevisionArg],
     snapshots: &[SnapshotArtifact],
+    lock: Option<&LockArtifact>,
 ) -> RepositoryHistory {
     let TargetPlan {
         target,
@@ -416,7 +448,7 @@ fn open_history(
             );
         }
     };
-    let walk = match resolve_walk(&repository, &target, args, snapshots) {
+    let walk = match resolve_walk(&repository, &target, args, snapshots, lock) {
         Ok(walk) => walk,
         Err(record) => return degraded_history(target, pathspecs, record),
     };
@@ -427,17 +459,62 @@ fn open_history(
     }
 }
 
-fn validate_snapshots(
+fn validate_operands(
     target: &CommitLogTarget,
     args: &[ParsedRevisionArg],
     snapshots: &[SnapshotArtifact],
+    lock: Option<&LockArtifact>,
 ) -> Result<(), CommitLogDegradation> {
-    for endpoint in args.iter().flat_map(arg_endpoints).flatten() {
-        if let Endpoint::Snapshot(snapshot_id) = endpoint {
-            snapshot_commit(target, snapshot_id, snapshots)?;
+    for arg in args {
+        let lock_is_pseudo = matches!(arg, ParsedRevisionArg::Range { .. });
+        for endpoint in arg_endpoints(arg).into_iter().flatten() {
+            if let Endpoint::Snapshot(snapshot_id) = endpoint {
+                if lock_is_pseudo && snapshot_id == LOCK_ENDPOINT_ID {
+                    lock_commit(target, lock)?;
+                } else {
+                    snapshot_commit(target, snapshot_id, snapshots)?;
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn lock_commit<'a>(
+    target: &CommitLogTarget,
+    lock: Option<&'a LockArtifact>,
+) -> Result<&'a str, CommitLogDegradation> {
+    let missing = |detail| {
+        record(
+            target,
+            CommitLogDegradationKind::LockEntryMissing,
+            Some("+lock".to_owned()),
+            detail,
+        )
+    };
+    if target.member_id == "@root" {
+        return Err(missing(
+            "the workspace lock does not record the workspace root".to_owned(),
+        ));
+    }
+    let member = lock
+        .and_then(|lock| lock.members.get(&target.member_id))
+        .ok_or_else(|| {
+            missing(format!(
+                "member '{}' is not recorded in the workspace lock",
+                target.member_id
+            ))
+        })?;
+    member
+        .commit
+        .as_deref()
+        .filter(|_| member.source_kind == ArtifactSourceKind::Git)
+        .ok_or_else(|| {
+            missing(format!(
+                "member '{}' has no Git commit in the workspace lock",
+                target.member_id
+            ))
+        })
 }
 
 fn snapshot_commit<'a>(
@@ -498,6 +575,7 @@ fn resolve_walk(
     target: &CommitLogTarget,
     args: &[ParsedRevisionArg],
     snapshots: &[SnapshotArtifact],
+    lock: Option<&LockArtifact>,
 ) -> Result<WalkPlan, CommitLogDegradation> {
     if args.is_empty() {
         return match repository
@@ -530,7 +608,7 @@ fn resolve_walk(
             ParsedRevisionArg::Endpoint(endpoint) => {
                 push_unique(
                     &mut walk.pushes,
-                    resolve_oid(repository, target, endpoint, snapshots)?,
+                    resolve_oid(repository, target, endpoint, snapshots, lock, false)?,
                 );
             }
             ParsedRevisionArg::Range {
@@ -538,8 +616,8 @@ fn resolve_walk(
                 right,
                 symmetric,
             } => {
-                let left_oid = resolve_oid(repository, target, left, snapshots)?;
-                let right_oid = resolve_oid(repository, target, right, snapshots)?;
+                let left_oid = resolve_oid(repository, target, left, snapshots, lock, true)?;
+                let right_oid = resolve_oid(repository, target, right, snapshots, lock, true)?;
                 push_unique(&mut walk.pushes, right_oid);
                 if *symmetric {
                     push_unique(&mut walk.pushes, left_oid);
@@ -577,10 +655,15 @@ fn resolve_oid(
     target: &CommitLogTarget,
     endpoint: &Endpoint,
     snapshots: &[SnapshotArtifact],
+    lock: Option<&LockArtifact>,
+    lock_is_pseudo: bool,
 ) -> Result<git2::Oid, CommitLogDegradation> {
     let operand = endpoint_operand(endpoint);
     let token = match endpoint {
         Endpoint::Revision(token) => token.as_str(),
+        Endpoint::Snapshot(snapshot_id) if lock_is_pseudo && snapshot_id == LOCK_ENDPOINT_ID => {
+            lock_commit(target, lock)?
+        }
         Endpoint::Snapshot(snapshot_id) => snapshot_commit(target, snapshot_id, snapshots)?,
     };
     repository

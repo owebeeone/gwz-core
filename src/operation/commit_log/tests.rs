@@ -9,8 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use git2::{Commit, ObjectType, Oid, Repository, Signature, Time};
 
 use crate::artifact::{
-    ArtifactSourceKind, CreatedByArtifact, ManifestArtifact, ManifestMember, RemoteArtifact,
-    ResolvedMemberArtifact, SNAPSHOT_SCHEMA, SnapshotArtifact, WORKSPACE_SCHEMA, WorkspaceHeader,
+    ArtifactSourceKind, CreatedByArtifact, LOCK_SCHEMA, LockArtifact, ManifestArtifact,
+    ManifestMember, RemoteArtifact, ResolvedMemberArtifact, SNAPSHOT_SCHEMA, SnapshotArtifact,
+    WORKSPACE_SCHEMA, WorkspaceHeader,
 };
 
 use super::*;
@@ -888,6 +889,118 @@ fn l_rng_3_missing_snapshot_member_and_root_both_degrade_with_records() {
 }
 
 #[test]
+fn l_rng_4_lock_resolves_each_member_to_pin_dot_dot_head_and_degrades_root() {
+    let fixture = Fixture::new("lock-per-member");
+    commit(&fixture.root, "root", 50, &[]);
+    let app = Repository::init(fixture.path().join("app")).unwrap();
+    let lib = Repository::init(fixture.path().join("lib")).unwrap();
+    let app_pin = commit_file(&app, "app.txt", b"pin\n", "app pin", 100, &[]);
+    let app_middle = commit_file(&app, "app.txt", b"middle\n", "app middle", 200, &[app_pin]);
+    let app_head = commit_file(
+        &app,
+        "app.txt",
+        b"head\n",
+        "app detached head",
+        300,
+        &[app_middle],
+    );
+    app.set_head_detached(app_head).unwrap();
+    let lib_pin = commit(&lib, "lib pin", 400, &[]);
+    let lib_head = commit(&lib, "lib head", 500, &[lib_pin]);
+    fixture.write_manifest(&[
+        member("mem_app", "app", true),
+        member("mem_lib", "lib", true),
+    ]);
+    fixture.write_lock(&[
+        ("mem_app", "app", Some(app_pin)),
+        ("mem_lib", "lib", Some(lib_pin)),
+    ]);
+    fixture.write_snapshot("lock", &[("mem_app", "app", Some(app_middle))]);
+
+    for operand in ["+lock..HEAD", "+lock.."] {
+        let opened =
+            open_request_histories(fixture.path(), &log_request(&[operand], &[], false)).unwrap();
+
+        let root = degradations(&opened.histories()[0]);
+        assert_eq!(root[0].kind, CommitLogDegradationKind::LockEntryMissing);
+        assert_eq!(root[0].operand.as_deref(), Some("+lock"));
+        assert_eq!(entry_ids(&opened.histories()[1]), [app_head, app_middle]);
+        assert_eq!(entry_ids(&opened.histories()[2]), [lib_head]);
+    }
+
+    let routed = open_request_histories(
+        fixture.path(),
+        &log_request(&["+lock..HEAD"], &["app"], false),
+    )
+    .unwrap();
+    assert_eq!(target_ids(&routed), ["@root", "mem_app"]);
+    assert_eq!(
+        degradations(&routed.histories()[0])[0].kind,
+        CommitLogDegradationKind::LockEntryMissing
+    );
+    assert_eq!(entry_ids(&routed.histories()[1]), [app_head, app_middle]);
+
+    // A pre-existing snapshot named `lock` remains exact-standalone access;
+    // only a range-position `+lock` is the lock pseudo-endpoint.
+    let snapshot =
+        open_request_histories(fixture.path(), &log_request(&["+lock"], &[], false)).unwrap();
+    let ordinary =
+        open_request_histories(fixture.path(), &log_request(&["HEAD"], &[], false)).unwrap();
+    assert_eq!(entry_ids(&snapshot.histories()[1])[0], app_middle);
+    assert_eq!(entry_ids(&ordinary.histories()[1])[0], app_head);
+
+    let mut foreign = crate::artifact::read_lock(fixture.path()).unwrap();
+    foreign.workspace_id = "ws_other".to_owned();
+    crate::artifact::write_lock(fixture.path(), &foreign).unwrap();
+    let error = open_request_histories(fixture.path(), &log_request(&["+lock..HEAD"], &[], false))
+        .err()
+        .expect("foreign workspace lock must be rejected");
+    assert_eq!(error.code, crate::model::ErrorCode::SourceIdentityMismatch);
+    assert_eq!(
+        error.message,
+        "workspace manifest and lock identify different workspaces"
+    );
+}
+
+#[test]
+fn l_rng_4_missing_and_unborn_lock_rows_degrade_benignly_and_strictly() {
+    let fixture = Fixture::new("lock-degradations");
+    commit(&fixture.root, "root", 50, &[]);
+    let missing = Repository::init(fixture.path().join("missing")).unwrap();
+    commit(&missing, "missing head", 100, &[]);
+    Repository::init(fixture.path().join("unborn")).unwrap();
+    fixture.write_manifest(&[
+        member("mem_missing", "missing", true),
+        member("mem_unborn", "unborn", true),
+    ]);
+    fixture.write_lock(&[("mem_unborn", "unborn", None)]);
+    let request = log_request(&["+lock..HEAD"], &[], false);
+
+    let benign = open_request_histories(fixture.path(), &request).unwrap();
+    let missing = degradations(&benign.histories()[1]);
+    let unborn = degradations(&benign.histories()[2]);
+    assert_eq!(missing[0].kind, CommitLogDegradationKind::LockEntryMissing);
+    assert_eq!(missing[0].operand.as_deref(), Some("+lock"));
+    assert_eq!(unborn[0].kind, CommitLogDegradationKind::LockEntryMissing);
+    assert_eq!(unborn[0].operand.as_deref(), Some("+lock"));
+    assert_eq!(
+        benign.strictness_status(observed_degradation(&benign)),
+        crate::AggregateStatus::Ok
+    );
+
+    let mut strict_request = request;
+    strict_request.options = Some(crate::LogOptions {
+        strict: Some(true),
+        ..crate::LogOptions::default()
+    });
+    let strict = open_request_histories(fixture.path(), &strict_request).unwrap();
+    assert_eq!(
+        strict.strictness_status(observed_degradation(&strict)),
+        crate::AggregateStatus::Failed
+    );
+}
+
+#[test]
 fn f2_mismatched_snapshot_identity_cannot_panic_log_planning() {
     let fixture = Fixture::new("snapshot-escape-log");
     commit(&fixture.root, "root", 50, &[]);
@@ -1049,19 +1162,21 @@ fn l_rng_1_tagged_supports_three_arguments_and_a_nonfirst_range() {
 }
 
 #[test]
-fn l_sel_3_tagged_reuses_the_diff_snapshot_operand_refusal() {
-    let fixture = Fixture::new("tagged-snapshot-refusal");
+fn l_sel_3_tagged_refusal_names_snapshot_and_lock_operands_accurately() {
+    let fixture = Fixture::new("tagged-plus-refusal");
     fixture.write_manifest(&[]);
 
-    let error = open_request_histories(fixture.path(), &log_request(&["+snapshot"], &[], true))
-        .err()
-        .expect("tagged snapshot operand must be refused");
+    for operand in ["+snapshot", "+lock..HEAD"] {
+        let error = open_request_histories(fixture.path(), &log_request(&[operand], &[], true))
+            .err()
+            .expect("tagged GWZ '+' operand must be refused");
 
-    assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
-    assert_eq!(
-        error.message,
-        "--tagged does not accept GWZ snapshot operands"
-    );
+        assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+        assert_eq!(
+            error.message,
+            "--tagged does not accept GWZ '+'-prefixed operands"
+        );
+    }
 }
 
 #[test]
@@ -1568,6 +1683,22 @@ impl Fixture {
 
     fn write_snapshot(&self, id: &str, members: &[(&str, &str, Option<Oid>)]) {
         self.write_snapshot_for_workspace(id, "ws_test", members);
+    }
+
+    fn write_lock(&self, members: &[(&str, &str, Option<Oid>)]) {
+        let members = self
+            .snapshot_artifact("lock-fixture", "ws_test", members)
+            .members;
+        crate::artifact::write_lock(
+            self.path(),
+            &LockArtifact {
+                schema: LOCK_SCHEMA.to_owned(),
+                workspace_id: "ws_test".to_owned(),
+                manifest_schema: WORKSPACE_SCHEMA.to_owned(),
+                members,
+            },
+        )
+        .unwrap();
     }
 
     fn write_snapshot_for_workspace(

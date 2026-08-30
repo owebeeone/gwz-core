@@ -219,7 +219,9 @@ pub fn parse_tagged_comparison(
 
 fn qualify_tag(endpoint: &mut Endpoint, tags: &mut Vec<String>) -> ModelResult<()> {
     let Endpoint::Revision(name) = endpoint else {
-        return Err(invalid("--tagged does not accept GWZ snapshot operands"));
+        return Err(invalid(
+            "--tagged does not accept GWZ '+'-prefixed operands",
+        ));
     };
     if !tags.contains(name) {
         tags.push(name.clone());
