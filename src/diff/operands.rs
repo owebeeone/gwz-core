@@ -110,8 +110,7 @@ fn legacy_id_participates_in_range(token: &str, id: &str) -> bool {
     ["..", "..."].into_iter().any(|delimiter| {
         let left = format!("+{id}{delimiter}");
         let right = format!("{delimiter}+{id}");
-        (token.starts_with(&left) && token.len() > left.len())
-            || (token.ends_with(&right) && token.len() > right.len())
+        token.starts_with(&left) || token.ends_with(&right)
     })
 }
 

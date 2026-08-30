@@ -145,6 +145,45 @@ fn l_rng_6_ambiguous_legacy_snapshot_range_endpoints_teach_for_both_range_forms(
     }
 }
 
+#[test]
+fn l_rng_6_open_legacy_snapshot_range_endpoints_teach_before_shorter_matches() {
+    let ids = [
+        ".leading",
+        "trailing",
+        "trailing.",
+        "adjacent",
+        "adjacent..dots",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let cases = [
+        ("+.leading..", ".leading"),
+        ("..+.leading", ".leading"),
+        ("+.leading...", ".leading"),
+        ("...+.leading", ".leading"),
+        ("+trailing...", "trailing."),
+        ("..+trailing.", "trailing."),
+        ("+trailing....", "trailing."),
+        ("...+trailing.", "trailing."),
+        ("+adjacent..dots..", "adjacent..dots"),
+        ("..+adjacent..dots", "adjacent..dots"),
+        ("+adjacent..dots...", "adjacent..dots"),
+        ("...+adjacent..dots", "adjacent..dots"),
+    ];
+
+    for (token, id) in cases {
+        let error = parse_revision_arg_with_snapshot_ids(token, &ids).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "token {token:?}");
+        assert_eq!(
+            error.message,
+            format!(
+                "snapshot id '{id}' is ambiguous as a revision-range endpoint; use '+{id}' standalone or create a range-safe snapshot id without adjacent, leading, or trailing dots"
+            ),
+            "token {token:?}"
+        );
+    }
+}
+
 /// Every member is materialized.
 fn all_materialized(_: &ManifestMember) -> bool {
     true

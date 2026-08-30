@@ -799,6 +799,49 @@ fn l_rng_6_log_teaches_for_ambiguous_legacy_snapshot_range_endpoints() {
 }
 
 #[test]
+fn l_rng_6_log_teaches_for_open_legacy_range_endpoints_before_shorter_matches() {
+    let fixture = Fixture::new("legacy-snapshot-open-range-log");
+    commit(&fixture.root, "root", 50, &[]);
+    let app = Repository::init(fixture.path().join("app")).unwrap();
+    let head = commit(&app, "head", 100, &[]);
+    fixture.write_manifest(&[member("mem_app", "app", true)]);
+    for id in ["trailing", "adjacent"] {
+        fixture.write_snapshot(id, &[("mem_app", "app", Some(head))]);
+    }
+    for id in [".leading", "trailing.", "adjacent..dots"] {
+        fixture.write_legacy_snapshot(id, &[("mem_app", "app", Some(head))]);
+    }
+    let cases = [
+        ("+.leading..", ".leading"),
+        ("..+.leading", ".leading"),
+        ("+.leading...", ".leading"),
+        ("...+.leading", ".leading"),
+        ("+trailing...", "trailing."),
+        ("..+trailing.", "trailing."),
+        ("+trailing....", "trailing."),
+        ("...+trailing.", "trailing."),
+        ("+adjacent..dots..", "adjacent..dots"),
+        ("..+adjacent..dots", "adjacent..dots"),
+        ("+adjacent..dots...", "adjacent..dots"),
+        ("...+adjacent..dots", "adjacent..dots"),
+    ];
+
+    for (operand, id) in cases {
+        let error = open_request_histories(fixture.path(), &log_request(&[operand], &[], false))
+            .err()
+            .expect("open legacy range endpoint must be refused");
+        assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+        assert_eq!(
+            error.message,
+            format!(
+                "snapshot id '{id}' is ambiguous as a revision-range endpoint; use '+{id}' standalone or create a range-safe snapshot id without adjacent, leading, or trailing dots"
+            ),
+            "operand {operand:?}"
+        );
+    }
+}
+
+#[test]
 fn l_rng_3_snapshot_to_head_range_resolves_mixed_endpoints() {
     let fixture = Fixture::new("snapshot-head-range");
     commit(&fixture.root, "root", 50, &[]);

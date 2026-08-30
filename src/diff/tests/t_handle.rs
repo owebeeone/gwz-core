@@ -239,6 +239,54 @@ fn l_rng_6_diff_teaches_for_ambiguous_legacy_snapshot_range_endpoints() {
 }
 
 #[test]
+fn l_rng_6_diff_teaches_for_open_legacy_range_endpoints_before_shorter_matches() {
+    let ws = Workspace::new("legacy-snapshot-open-range");
+    let app = ws.add_member("mem_app", "app");
+    Workspace::write(&app, "tracked", b"head\n");
+    Workspace::commit(&app, "head");
+    let head = git_stdout(&app, &["rev-parse", "HEAD"]).trim().to_owned();
+    for id in ["trailing", "adjacent"] {
+        write_member_snapshot(&ws, id, "mem_app", "app", &head);
+    }
+    for id in [".leading", "trailing.", "adjacent..dots"] {
+        write_legacy_member_snapshot(&ws, id, "mem_app", "app", &head);
+    }
+    let cases = [
+        ("+.leading..", ".leading"),
+        ("..+.leading", ".leading"),
+        ("+.leading...", ".leading"),
+        ("...+.leading", ".leading"),
+        ("+trailing...", "trailing."),
+        ("..+trailing.", "trailing."),
+        ("+trailing....", "trailing."),
+        ("...+trailing.", "trailing."),
+        ("+adjacent..dots..", "adjacent..dots"),
+        ("..+adjacent..dots", "adjacent..dots"),
+        ("+adjacent..dots...", "adjacent..dots"),
+        ("...+adjacent..dots", "adjacent..dots"),
+    ];
+
+    for (operand, id) in cases {
+        let error = handle_diff(
+            ws.root(),
+            ws.request_operands(&[operand], &[], ""),
+            format!("op_open_{id}_{operand}"),
+            &DiffLogRegistry::new(),
+        )
+        .err()
+        .expect("open legacy range endpoint must be refused");
+        assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+        assert_eq!(
+            error.message,
+            format!(
+                "snapshot id '{id}' is ambiguous as a revision-range endpoint; use '+{id}' standalone or create a range-safe snapshot id without adjacent, leading, or trailing dots"
+            ),
+            "operand {operand:?}"
+        );
+    }
+}
+
+#[test]
 fn manifest_order_is_root_first_then_members() {
     let ws = Workspace::new("order");
     let member_a = ws.add_member("mem_a", "crate-a");
