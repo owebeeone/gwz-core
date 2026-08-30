@@ -14,6 +14,7 @@ use crate::artifact::{
     WORKSPACE_SCHEMA, WorkspaceHeader,
 };
 
+use super::merge::{CommitLogMergedEvent, stream_request_histories};
 use super::*;
 
 #[test]
@@ -1340,6 +1341,35 @@ fn l_tol_2_default_degradation_is_benign_and_strict_escalates_aggregate() {
         degradations(&strict.histories()[1])[0].kind,
         CommitLogDegradationKind::RevisionUnresolved
     );
+}
+
+#[test]
+fn s2_5_production_merge_consumes_range_histories_and_degradations() {
+    let fixture = Fixture::new("s2-5-production-merge");
+    let root_first = commit(&fixture.root, "root first", 100, &[]);
+    let root_head = commit(&fixture.root, "root head", 200, &[root_first]);
+    let member_repo = Repository::init(fixture.path().join("member")).unwrap();
+    commit(&member_repo, "unrelated member", 300, &[]);
+    fixture.write_manifest(&[member("mem_member", "member", true)]);
+    let request = log_request(&[&format!("{root_first}..{root_head}")], &[], false);
+
+    let histories = open_request_histories(fixture.path(), &request).unwrap();
+    assert!(histories.has_explicit_range());
+    let mut events = Vec::new();
+    let stats = stream_request_histories(histories, &request, |event| events.push(event));
+
+    assert_eq!(stats.groups_emitted(), 1);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        CommitLogMergedEvent::Group(group)
+            if group.entries()[0].commit_id == root_head.to_string()
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        CommitLogMergedEvent::Degradation(record)
+            if record.target.member_id == "mem_member"
+                && record.kind == CommitLogDegradationKind::RevisionUnresolved
+    )));
 }
 
 fn entry_ids(history: &RepositoryHistory) -> Vec<Oid> {

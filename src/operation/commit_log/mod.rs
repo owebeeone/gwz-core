@@ -8,6 +8,7 @@
 
 mod coalesce;
 mod handler;
+mod merge;
 mod request;
 
 pub(super) use handler::handle_log;
@@ -399,5 +400,7 @@ fn identity(signature: git2::Signature<'_>) -> CommitLogIdentity {
 
 #[cfg(test)]
 mod coalesce_tests;
+#[cfg(test)]
+mod merge_tests;
 #[cfg(test)]
 mod tests;

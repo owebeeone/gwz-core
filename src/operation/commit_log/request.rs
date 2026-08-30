@@ -23,12 +23,17 @@ use super::{
 /// Later merge/output steps consume these cursors without collecting history.
 pub(super) struct CommitLogHistories {
     histories: Vec<RepositoryHistory>,
+    has_explicit_range: bool,
     strict: bool,
 }
 
 impl CommitLogHistories {
     pub fn histories(&self) -> &[RepositoryHistory] {
         &self.histories
+    }
+
+    pub fn has_explicit_range(&self) -> bool {
+        self.has_explicit_range
     }
 
     /// Apply only L-TOL-2's strict overlay to an observed degradation bit.
@@ -140,11 +145,18 @@ pub(super) fn open_request_histories(
         .as_ref()
         .and_then(|options| options.strict)
         .unwrap_or(false);
+    let has_explicit_range = revision_args
+        .iter()
+        .any(|arg| matches!(arg, ParsedRevisionArg::Range { .. }));
     let histories = plans
         .into_iter()
         .map(|plan| open_history(plan, &revision_args, &snapshots, lock.as_ref()))
         .collect();
-    Ok(CommitLogHistories { histories, strict })
+    Ok(CommitLogHistories {
+        histories,
+        has_explicit_range,
+        strict,
+    })
 }
 
 fn snapshot_ids(args: &[ParsedRevisionArg]) -> Vec<String> {
