@@ -1372,6 +1372,48 @@ fn s2_5_production_merge_consumes_range_histories_and_degradations() {
     )));
 }
 
+#[test]
+fn f4_jobs_one_bounds_real_path_reader_lifetimes() {
+    let fixture = Fixture::new("s2-5-path-reader-jobs");
+    commit_file(&fixture.root, "root.txt", b"root\n", "root", 100, &[]);
+    let members = [
+        ("mem_f4_jobs_a", "member-a", 200),
+        ("mem_f4_jobs_b", "member-b", 300),
+        ("mem_f4_jobs_c", "member-c", 400),
+    ];
+    for (member_id, path, seconds) in members {
+        let repository = Repository::init(fixture.path().join(path)).unwrap();
+        commit_file(
+            &repository,
+            "tracked.txt",
+            member_id.as_bytes(),
+            member_id,
+            seconds,
+            &[],
+        );
+    }
+    fixture.write_manifest(
+        &members
+            .into_iter()
+            .map(|(member_id, path, _)| member(member_id, path, true))
+            .collect::<Vec<_>>(),
+    );
+    let mut request = log_request(&[], &["."], false);
+    request.meta.policy = Some(crate::OperationPolicy {
+        concurrency: Some(1),
+        ..crate::OperationPolicy::default()
+    });
+
+    watch_path_readers("mem_f4_jobs_");
+    let histories = open_request_histories(fixture.path(), &request).unwrap();
+    let stats = stream_request_histories(histories, &request, |_| {});
+    let max_path_readers = finish_watching_path_readers();
+
+    assert_eq!(stats.groups_emitted(), 4);
+    assert_eq!(stats.max_concurrent_reads(), 1);
+    assert_eq!(max_path_readers, 1);
+}
+
 fn entry_ids(history: &RepositoryHistory) -> Vec<Oid> {
     events(history)
         .into_iter()

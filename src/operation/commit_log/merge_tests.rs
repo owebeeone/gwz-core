@@ -1,7 +1,7 @@
 //! S2.5 requirement-row tests for the bounded cross-repository merge.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::{LogOptions, LogRequest};
 
@@ -79,21 +79,86 @@ fn l_env_2_non_monotone_frontier_escape_repeats_marker_provenance() {
 }
 
 #[test]
+fn f1_time_closed_output_blocked_group_rejects_a_frontier_late_sibling() {
+    let output = merge(
+        vec![
+            vec![
+                entry("mem_a", "a-blocker", 0),
+                marked_entry("mem_a", "a-marker", 100, MARKER_A),
+            ],
+            vec![
+                entry("mem_b", "b-blocker", 0),
+                marked_entry("mem_b", "b-marker", 100, MARKER_A),
+            ],
+        ],
+        options(None, 2),
+    );
+    let marker_groups = output
+        .groups
+        .iter()
+        .filter(|group| group.provenance() == &CommitLogProvenance::Marker(MARKER_A.to_owned()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(marker_groups.len(), 2);
+    assert_eq!(member_hashes(marker_groups[0]), ["b-marker"]);
+    assert_eq!(member_hashes(marker_groups[1]), ["a-marker"]);
+}
+
+#[test]
+fn f2_late_group_membership_inherits_each_repository_predecessor() {
+    let output = merge(
+        vec![
+            vec![
+                entry("mem_a", "a-prior", 90),
+                marked_entry("mem_a", "a-late", 100, MARKER_A),
+            ],
+            vec![marked_entry("mem_b", "b", 100, MARKER_A)],
+        ],
+        options(None, 2),
+    );
+
+    assert_eq!(
+        output.groups.iter().map(member_hashes).collect::<Vec<_>>(),
+        [vec!["a-prior"], vec!["b", "a-late"]]
+    );
+
+    let held = merge(
+        vec![
+            vec![
+                entry("mem_a", "a-prior", 90),
+                marked_entry("mem_a", "a-late", 100, MARKER_A),
+            ],
+            vec![marked_entry("mem_b", "b", 100, MARKER_A)],
+            vec![entry("mem_c", "c-blocker", 50)],
+        ],
+        options(None, 3),
+    );
+    assert_eq!(
+        held.groups.iter().map(member_hashes).collect::<Vec<_>>(),
+        [vec!["a-prior"], vec!["b", "a-late"], vec!["c-blocker"]]
+    );
+}
+
+#[test]
 fn l_env_3_cap_force_closes_an_open_group_with_seen_siblings_only() {
     let pulls = Arc::new(AtomicUsize::new(0));
     let cursors = vec![
         CountingCursor::new(
-            [marked_entry("mem_a", "a-seen", 100, MARKER_A)],
+            [CommitLogEvent::Entry(marked_entry(
+                "mem_a", "a-seen", 100, MARKER_A,
+            ))],
             pulls.clone(),
         ),
         CountingCursor::new(
-            [marked_entry("mem_b", "b-seen", 100, MARKER_A)],
+            [CommitLogEvent::Entry(marked_entry(
+                "mem_b", "b-seen", 100, MARKER_A,
+            ))],
             pulls.clone(),
         ),
         CountingCursor::new(
             [
-                entry("mem_c", "blocker", 99),
-                marked_entry("mem_c", "c-unseen", 98, MARKER_A),
+                CommitLogEvent::Entry(entry("mem_c", "blocker", 99)),
+                CommitLogEvent::Entry(marked_entry("mem_c", "c-unseen", 98, MARKER_A)),
             ],
             pulls.clone(),
         ),
@@ -113,6 +178,31 @@ fn l_env_3_cap_force_closes_an_open_group_with_seen_siblings_only() {
         pulls.load(Ordering::SeqCst) <= 4,
         "one head per repo plus the selected cursor's advance must not reach c-unseen"
     );
+}
+
+#[test]
+fn f5_satisfied_cap_never_pulls_or_reports_the_successor() {
+    let pulls = Arc::new(AtomicUsize::new(0));
+    let cursor = CountingCursor::new(
+        [
+            CommitLogEvent::Entry(entry("mem_a", "visible", 100)),
+            CommitLogEvent::Degradation(degradation("mem_a", "past cap")),
+        ],
+        pulls.clone(),
+    );
+    let mut events = Vec::new();
+    let stats = stream_test_cursors(
+        vec![cursor],
+        CommitLogMergeOptions::new(false, Some(1), 1),
+        |event| events.push(event),
+    );
+
+    assert_eq!(pulls.load(Ordering::SeqCst), 1);
+    assert_eq!(stats.groups_emitted(), 1);
+    assert!(matches!(
+        events.as_slice(),
+        [CommitLogMergedEvent::Group(_)]
+    ));
 }
 
 #[test]
@@ -264,23 +354,78 @@ fn l_prf_1_streaming_has_a_window_bounded_high_water_and_stops_at_cap() {
 }
 
 #[test]
-fn l_prf_2_and_l_env_4_jobs_values_are_byte_identical_and_ceiling_bounded() {
-    let cursors = || {
-        vec![
-            vec![entry("mem_a", "a2", 200), entry("mem_a", "a1", 100)],
-            vec![entry("mem_b", "b2", 200), entry("mem_b", "b1", 99)],
-            vec![entry("mem_c", "c", 150)],
-        ]
-    };
-    let one = merge(cursors(), options(None, 1));
-    let two = merge(cursors(), options(None, 2));
-    let eight = merge(cursors(), options(None, 8));
+fn f3_non_monotone_no_limit_high_water_is_independent_of_tail_length() {
+    fn high_water(tail_len: usize) -> usize {
+        let inverted = std::iter::once(entry("mem_a", "frontier", 0))
+            .chain((0..tail_len).map(|index| {
+                entry(
+                    "mem_a",
+                    &format!("tail-{index}"),
+                    10_000 - (index as i64 * 61),
+                )
+            }))
+            .collect::<Vec<_>>();
+        merge(
+            vec![inverted, vec![entry("mem_b", "other-frontier", 0)]],
+            options(None, 1),
+        )
+        .stats
+        .max_buffered_entries()
+    }
 
-    assert_eq!(fingerprint(&one.groups), fingerprint(&two.groups));
-    assert_eq!(fingerprint(&one.groups), fingerprint(&eight.groups));
-    assert!(one.stats.max_concurrent_reads() <= 1);
-    assert!(two.stats.max_concurrent_reads() <= 2);
-    assert!(eight.stats.max_concurrent_reads() <= 8);
+    let short = high_water(20);
+    let long = high_water(200);
+    assert!(short <= 4, "short inversion buffered {short} entries");
+    assert!(long <= 4, "long inversion buffered {long} entries");
+    assert_eq!(long, short);
+}
+
+#[test]
+fn f6_jobs_values_overlap_to_the_ceiling_and_preserve_complete_events() {
+    fn run(jobs: usize) -> (Vec<CommitLogMergedEvent>, usize) {
+        let gate = Arc::new(OverlapGate::new(jobs.min(4)));
+        let cursors = vec![
+            OverlapCursor::new(
+                [CommitLogEvent::Entry(marked_entry(
+                    "mem_z", MARKER_A, 200, MARKER_A,
+                ))],
+                gate.clone(),
+            ),
+            OverlapCursor::new(
+                [CommitLogEvent::Entry(marked_entry(
+                    "mem_b", "b", 200, MARKER_A,
+                ))],
+                gate.clone(),
+            ),
+            OverlapCursor::new(
+                [CommitLogEvent::Entry(entry_with_offset(
+                    "mem_a", "a", 150, -720,
+                ))],
+                gate.clone(),
+            ),
+            OverlapCursor::new(
+                [CommitLogEvent::Degradation(degradation(
+                    "mem_d",
+                    "deterministic degradation",
+                ))],
+                gate.clone(),
+            ),
+        ];
+        let mut events = Vec::new();
+        let stats = stream_test_cursors(cursors, options(None, jobs), |event| events.push(event));
+        assert_eq!(stats.max_concurrent_reads(), jobs.min(4));
+        (events, gate.max_active())
+    }
+
+    let one = run(1);
+    let two = run(2);
+    let eight = run(8);
+
+    assert_eq!(one.0, two.0);
+    assert_eq!(one.0, eight.0);
+    assert_eq!(one.1, 1);
+    assert_eq!(two.1, 2);
+    assert_eq!(eight.1, 4);
 }
 
 struct MergeOutput {
@@ -330,20 +475,17 @@ fn member_hashes(group: &CommitLogGroup) -> Vec<&str> {
         .collect()
 }
 
-fn fingerprint(groups: &[CommitLogGroup]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for group in groups {
-        bytes.extend_from_slice(group.ordering_timestamp_seconds().to_string().as_bytes());
-        bytes.push(b'|');
-        for entry in group.entries() {
-            bytes.extend_from_slice(entry.target.member_id.as_bytes());
-            bytes.push(b':');
-            bytes.extend_from_slice(entry.commit_id.as_bytes());
-            bytes.push(b',');
-        }
-        bytes.push(b'\n');
+fn degradation(member_id: &str, detail: &str) -> super::CommitLogDegradation {
+    super::CommitLogDegradation {
+        target: CommitLogTarget {
+            member_id: member_id.to_owned(),
+            member_path: member_id.to_owned(),
+            source_kind: crate::artifact::ArtifactSourceKind::Git,
+        },
+        kind: super::CommitLogDegradationKind::HistoryUnreadable,
+        operand: Some("HEAD".to_owned()),
+        detail: detail.to_owned(),
     }
-    bytes
 }
 
 fn marked_entry(member_id: &str, hash: &str, seconds: i64, marker: &str) -> CommitLogEntry {
@@ -395,14 +537,14 @@ fn entry_with_offset(
 }
 
 struct CountingCursor {
-    entries: std::vec::IntoIter<CommitLogEntry>,
+    events: std::vec::IntoIter<CommitLogEvent>,
     pulls: Arc<AtomicUsize>,
 }
 
 impl CountingCursor {
-    fn new(entries: impl IntoIterator<Item = CommitLogEntry>, pulls: Arc<AtomicUsize>) -> Self {
+    fn new(events: impl IntoIterator<Item = CommitLogEvent>, pulls: Arc<AtomicUsize>) -> Self {
         Self {
-            entries: entries.into_iter().collect::<Vec<_>>().into_iter(),
+            events: events.into_iter().collect::<Vec<_>>().into_iter(),
             pulls,
         }
     }
@@ -413,7 +555,78 @@ impl Iterator for CountingCursor {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.pulls.fetch_add(1, Ordering::SeqCst);
-        self.entries.next().map(CommitLogEvent::Entry)
+        self.events.next()
+    }
+}
+
+struct OverlapGate {
+    state: Mutex<OverlapState>,
+    ready: Condvar,
+    target: usize,
+}
+
+struct OverlapState {
+    active: usize,
+    max_active: usize,
+    released: bool,
+}
+
+impl OverlapGate {
+    fn new(target: usize) -> Self {
+        Self {
+            state: Mutex::new(OverlapState {
+                active: 0,
+                max_active: 0,
+                released: false,
+            }),
+            ready: Condvar::new(),
+            target,
+        }
+    }
+
+    fn enter(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.active += 1;
+        state.max_active = state.max_active.max(state.active);
+        if state.active == self.target {
+            state.released = true;
+            self.ready.notify_all();
+        }
+        while !state.released {
+            state = self.ready.wait(state).unwrap();
+        }
+        state.active -= 1;
+    }
+
+    fn max_active(&self) -> usize {
+        self.state.lock().unwrap().max_active
+    }
+}
+
+struct OverlapCursor {
+    events: std::vec::IntoIter<CommitLogEvent>,
+    gate: Arc<OverlapGate>,
+    first: bool,
+}
+
+impl OverlapCursor {
+    fn new(events: impl IntoIterator<Item = CommitLogEvent>, gate: Arc<OverlapGate>) -> Self {
+        Self {
+            events: events.into_iter().collect::<Vec<_>>().into_iter(),
+            gate,
+            first: true,
+        }
+    }
+}
+
+impl Iterator for OverlapCursor {
+    type Item = CommitLogEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if std::mem::take(&mut self.first) {
+            self.gate.enter();
+        }
+        self.events.next()
     }
 }
 

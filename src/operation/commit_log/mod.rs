@@ -16,9 +16,10 @@ pub(super) use handler::handle_log;
 use request::CommitLogHistories;
 use request::open_request_histories;
 
-use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Command, Stdio};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 use crate::artifact::ArtifactSourceKind;
 use crate::model::ModelResult;
@@ -136,8 +137,9 @@ enum MessagesState<'repo> {
     },
     PathWalk {
         repository: &'repo git2::Repository,
-        child: Child,
-        stdout: BufReader<ChildStdout>,
+        plan: WalkPlan,
+        pathspecs: Vec<String>,
+        skip: usize,
     },
     Single(Option<Box<CommitLogEvent>>),
     Done,
@@ -217,39 +219,13 @@ impl<'repo> RepositoryMessages<'repo> {
         plan: &WalkPlan,
         pathspecs: &[String],
     ) -> Self {
-        let mut command = Command::new("git");
-        command
-            .arg("--git-dir")
-            .arg(repository.path())
-            .arg("rev-list")
-            .args(plan.pushes.iter().map(ToString::to_string))
-            .args(plan.hides.iter().map(|oid| format!("^{oid}")))
-            .arg("--")
-            .args(pathspecs)
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .env("GIT_NO_LAZY_FETCH", "1")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                return Self::single(
-                    target,
-                    degradation(
-                        target,
-                        CommitLogDegradationKind::HistoryUnreadable,
-                        format!("could not start local path history cursor: {error}"),
-                    ),
-                );
-            }
-        };
-        let stdout = child.stdout.take().expect("piped git stdout is present");
         Self {
             target,
             state: MessagesState::PathWalk {
                 repository,
-                child,
-                stdout: BufReader::new(stdout),
+                plan: plan.clone(),
+                pathspecs: pathspecs.to_vec(),
+                skip: 0,
             },
         }
     }
@@ -293,38 +269,59 @@ impl Iterator for RepositoryMessages<'_> {
             },
             MessagesState::PathWalk {
                 repository,
-                child,
-                stdout,
+                plan,
+                pathspecs,
+                skip,
             } => {
-                let mut line = String::new();
-                match stdout.read_line(&mut line) {
-                    Ok(0) => match child.wait() {
-                        Ok(status) if status.success() => {
-                            self.state = MessagesState::Done;
-                            None
-                        }
-                        Ok(status) => {
-                            self.fail(format!("local path history cursor exited with {status}"))
-                        }
-                        Err(error) => self.fail(format!(
-                            "could not finish local path history cursor: {error}"
-                        )),
-                    },
-                    Ok(_) => match git2::Oid::from_str(line.trim()) {
-                        Ok(oid) => match repository.find_commit(oid) {
-                            Ok(commit) => Some(CommitLogEvent::Entry(entry(self.target, &commit))),
-                            Err(error) => self.fail(format!(
-                                "could not read path history commit {oid}: {}",
-                                error.message()
-                            )),
-                        },
-                        Err(error) => self.fail(format!(
-                            "local path history cursor returned an invalid object id: {}",
-                            error.message()
-                        )),
-                    },
+                #[cfg(test)]
+                let _reader_probe = path_reader_probe_enter(self.target);
+                let output = Command::new("git")
+                    .arg("--git-dir")
+                    .arg(repository.path())
+                    .arg("rev-list")
+                    .arg("--max-count=1")
+                    .arg(format!("--skip={skip}"))
+                    .args(plan.pushes.iter().map(ToString::to_string))
+                    .args(plan.hides.iter().map(|oid| format!("^{oid}")))
+                    .arg("--")
+                    .args(pathspecs.iter())
+                    .env("GIT_OPTIONAL_LOCKS", "0")
+                    .env("GIT_NO_LAZY_FETCH", "1")
+                    .stderr(Stdio::null())
+                    .output();
+                match output {
                     Err(error) => {
-                        self.fail(format!("could not read local path history cursor: {error}"))
+                        self.fail(format!("could not run local path history cursor: {error}"))
+                    }
+                    Ok(output) if !output.status.success() => self.fail(format!(
+                        "local path history cursor exited with {}",
+                        output.status
+                    )),
+                    Ok(output) if output.stdout.is_empty() => {
+                        self.state = MessagesState::Done;
+                        None
+                    }
+                    Ok(output) => {
+                        let line = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+                        match std::str::from_utf8(line)
+                            .ok()
+                            .and_then(|line| git2::Oid::from_str(line.trim()).ok())
+                        {
+                            Some(oid) => match repository.find_commit(oid) {
+                                Ok(commit) => {
+                                    *skip += 1;
+                                    Some(CommitLogEvent::Entry(entry(self.target, &commit)))
+                                }
+                                Err(error) => self.fail(format!(
+                                    "could not read path history commit {oid}: {}",
+                                    error.message()
+                                )),
+                            },
+                            None => self.fail(
+                                "local path history cursor returned an invalid object id"
+                                    .to_owned(),
+                            ),
+                        }
                     }
                 }
             }
@@ -332,16 +329,65 @@ impl Iterator for RepositoryMessages<'_> {
     }
 }
 
-impl std::iter::FusedIterator for RepositoryMessages<'_> {}
+#[cfg(test)]
+#[derive(Default)]
+struct PathReaderProbeState {
+    watched_prefix: Option<String>,
+    active: usize,
+    max_active: usize,
+}
 
-impl Drop for RepositoryMessages<'_> {
+#[cfg(test)]
+fn path_reader_probe() -> &'static Mutex<PathReaderProbeState> {
+    static PROBE: OnceLock<Mutex<PathReaderProbeState>> = OnceLock::new();
+    PROBE.get_or_init(|| Mutex::new(PathReaderProbeState::default()))
+}
+
+#[cfg(test)]
+fn path_reader_probe_enter(target: &CommitLogTarget) -> PathReaderProbeGuard {
+    let mut state = path_reader_probe().lock().unwrap();
+    let watched = state
+        .watched_prefix
+        .as_ref()
+        .is_some_and(|prefix| target.member_id.starts_with(prefix));
+    if watched {
+        state.active += 1;
+        state.max_active = state.max_active.max(state.active);
+    }
+    PathReaderProbeGuard { watched }
+}
+
+#[cfg(test)]
+struct PathReaderProbeGuard {
+    watched: bool,
+}
+
+#[cfg(test)]
+impl Drop for PathReaderProbeGuard {
     fn drop(&mut self) {
-        if let MessagesState::PathWalk { child, .. } = &mut self.state {
-            let _ = child.kill();
-            let _ = child.wait();
+        if self.watched {
+            path_reader_probe().lock().unwrap().active -= 1;
         }
     }
 }
+
+#[cfg(test)]
+fn watch_path_readers(prefix: &str) {
+    let mut state = path_reader_probe().lock().unwrap();
+    assert_eq!(state.active, 0);
+    state.watched_prefix = Some(prefix.to_owned());
+    state.max_active = 0;
+}
+
+#[cfg(test)]
+fn finish_watching_path_readers() -> usize {
+    let mut state = path_reader_probe().lock().unwrap();
+    assert_eq!(state.active, 0);
+    state.watched_prefix = None;
+    state.max_active
+}
+
+impl std::iter::FusedIterator for RepositoryMessages<'_> {}
 
 /// Open the no-operand, default selection: `@root` plus every active member.
 ///

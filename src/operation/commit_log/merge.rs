@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -106,7 +107,10 @@ fn stream_histories(
         histories,
         options,
         |history, pull, reply, budget| {
-            let mut messages = history.messages();
+            let mut messages = {
+                let _permit = budget.acquire();
+                history.messages()
+            };
             serve_cursor(&mut messages, pull, reply, &budget);
         },
         emit,
@@ -233,20 +237,25 @@ fn merge_cursors(
     options: CommitLogMergeOptions,
     emit: &mut impl FnMut(CommitLogMergedEvent),
 ) -> CommitLogMergeStats {
-    let mut pending = Vec::<CommitLogGroup>::new();
+    let mut state = MergeState::new(cursors.len());
     let mut stats = CommitLogMergeStats::default();
 
     loop {
-        let Some(index) = next_cursor(cursors) else {
-            let ready = order_forced_groups(std::mem::take(&mut pending));
-            emit_ready_groups(ready, options.max_entries, &mut stats, emit);
+        seal_groups(&mut state.pending, cursors);
+        if emit_ready_groups(&mut state.pending, options.max_entries, &mut stats, emit) {
+            return stats;
+        }
+
+        let Some(index) =
+            frontier_blocker_cursor(&state.pending, cursors).or_else(|| next_cursor(cursors))
+        else {
+            emit_forced_groups(&mut state.pending, options.max_entries, &mut stats, emit);
             return stats;
         };
         let entry = cursors[index]
             .head
             .take()
             .expect("the selected cursor has an entry");
-        advance_cursor(&mut cursors[index], emit);
 
         if !options.coalesce {
             let group = assemble_commit_log_groups([entry], false)
@@ -260,32 +269,115 @@ fn merge_cursors(
             {
                 return stats;
             }
+            advance_cursor(&mut cursors[index], emit);
             continue;
         }
 
-        admit_entry(&mut pending, entry);
+        state.admit(index, entry);
         stats.max_buffered_entries = stats
             .max_buffered_entries
-            .max(buffered_entry_count(&pending));
-
-        let ready = take_emittable_groups(&mut pending, cursors);
-        if emit_ready_groups(ready, options.max_entries, &mut stats, emit) {
-            return stats;
-        }
+            .max(buffered_entry_count(&state.pending));
 
         if let Some(limit) = options.max_entries {
             let remaining = limit.saturating_sub(stats.groups_emitted);
-            if remaining != 0 && pending.len() >= remaining {
-                absorb_seen_siblings(&mut pending, cursors);
+            if remaining != 0 && state.pending.len() >= remaining {
+                state.absorb_seen_siblings(cursors);
                 stats.max_buffered_entries = stats
                     .max_buffered_entries
-                    .max(buffered_entry_count(&pending));
-                let forced = order_forced_groups(std::mem::take(&mut pending));
-                for group in forced.into_iter().take(remaining) {
-                    emit(CommitLogMergedEvent::Group(group));
-                    stats.groups_emitted += 1;
-                }
+                    .max(buffered_entry_count(&state.pending));
+                emit_forced_groups(&mut state.pending, Some(limit), &mut stats, emit);
                 return stats;
+            }
+        }
+
+        advance_cursor(&mut cursors[index], emit);
+    }
+}
+
+type GroupId = u64;
+
+struct PendingGroup {
+    id: GroupId,
+    group: CommitLogGroup,
+    sealed: bool,
+    repositories: BTreeSet<usize>,
+    predecessors: BTreeSet<GroupId>,
+}
+
+struct MergeState {
+    pending: Vec<PendingGroup>,
+    last_group_by_cursor: Vec<Option<GroupId>>,
+    next_group_id: GroupId,
+}
+
+impl MergeState {
+    fn new(cursor_count: usize) -> Self {
+        Self {
+            pending: Vec::new(),
+            last_group_by_cursor: vec![None; cursor_count],
+            next_group_id: 0,
+        }
+    }
+
+    fn admit(&mut self, cursor: usize, entry: CommitLogEntry) {
+        if self.try_join(cursor, &entry) {
+            return;
+        }
+
+        let id = self.next_group_id;
+        self.next_group_id += 1;
+        let predecessors = self.pending_predecessor(cursor).into_iter().collect();
+        self.pending.push(PendingGroup {
+            id,
+            group: assemble_commit_log_groups([entry], true)
+                .pop()
+                .expect("one entry assembles one group"),
+            sealed: false,
+            repositories: [cursor].into_iter().collect(),
+            predecessors,
+        });
+        self.last_group_by_cursor[cursor] = Some(id);
+    }
+
+    fn try_join(&mut self, cursor: usize, entry: &CommitLogEntry) -> bool {
+        let predecessor = self.pending_predecessor(cursor);
+        let candidate = (0..self.pending.len()).find_map(|index| {
+            let pending = &self.pending[index];
+            if pending.sealed
+                || predecessor.is_some_and(|predecessor| {
+                    group_depends_on(&self.pending, predecessor, pending.id)
+                })
+            {
+                return None;
+            }
+            join_group(&pending.group, entry).map(|joined| (index, joined))
+        });
+        let Some((index, joined)) = candidate else {
+            return false;
+        };
+
+        let group = &mut self.pending[index];
+        group.group = joined;
+        group.repositories.insert(cursor);
+        if let Some(predecessor) = predecessor {
+            group.predecessors.insert(predecessor);
+        }
+        self.last_group_by_cursor[cursor] = Some(group.id);
+        true
+    }
+
+    fn pending_predecessor(&self, cursor: usize) -> Option<GroupId> {
+        self.last_group_by_cursor[cursor]
+            .filter(|id| self.pending.iter().any(|group| group.id == *id))
+    }
+
+    fn absorb_seen_siblings(&mut self, cursors: &mut [CursorState]) {
+        for (cursor, state) in cursors.iter_mut().enumerate() {
+            let Some(entry) = state.head.as_ref().cloned() else {
+                continue;
+            };
+            if self.try_join(cursor, &entry) {
+                state.head = None;
             }
         }
     }
@@ -298,20 +390,6 @@ fn next_cursor(cursors: &[CursorState]) -> Option<usize> {
         .filter_map(|(index, cursor)| cursor.head.as_ref().map(|entry| (index, entry)))
         .min_by(|(_, left), (_, right)| compare_entries(left, right))
         .map(|(index, _)| index)
-}
-
-fn admit_entry(pending: &mut Vec<CommitLogGroup>, entry: CommitLogEntry) {
-    for group in pending.iter_mut() {
-        if let Some(joined) = join_group(group, &entry) {
-            *group = joined;
-            return;
-        }
-    }
-    pending.push(
-        assemble_commit_log_groups([entry], true)
-            .pop()
-            .expect("one entry assembles one group"),
-    );
 }
 
 fn join_group(group: &CommitLogGroup, entry: &CommitLogEntry) -> Option<CommitLogGroup> {
@@ -333,94 +411,118 @@ fn join_group(group: &CommitLogGroup, entry: &CommitLogEntry) -> Option<CommitLo
         .then(|| assembled.pop().expect("one assembled group remains"))
 }
 
-fn absorb_seen_siblings(pending: &mut [CommitLogGroup], cursors: &mut [CursorState]) {
-    for cursor in cursors {
-        let Some(entry) = cursor.head.as_ref() else {
-            continue;
-        };
-        for group in pending.iter_mut() {
-            if let Some(joined) = join_group(group, entry) {
-                *group = joined;
-                cursor.head = None;
-                break;
-            }
-        }
+fn seal_groups(groups: &mut [PendingGroup], cursors: &[CursorState]) {
+    for group in groups.iter_mut().filter(|group| !group.sealed) {
+        let threshold = group
+            .group
+            .ordering_timestamp_seconds()
+            .saturating_sub(COALESCING_WINDOW_SECONDS);
+        group.sealed = cursors.iter().enumerate().all(|(index, cursor)| {
+            group.repositories.contains(&index)
+                || cursor.done
+                || cursor
+                    .head
+                    .as_ref()
+                    .is_some_and(|entry| entry.committer.time.seconds < threshold)
+        });
     }
 }
 
-fn group_is_closed(group: &CommitLogGroup, cursors: &[CursorState]) -> bool {
-    let threshold = group
+fn frontier_blocker_cursor(groups: &[PendingGroup], cursors: &[CursorState]) -> Option<usize> {
+    let root = (0..groups.len())
+        .filter(|index| {
+            !groups[*index].sealed
+                && !group_is_blocked(groups, *index)
+                && groups.iter().any(|group| {
+                    group.sealed && group_depends_on(groups, group.id, groups[*index].id)
+                })
+        })
+        .min_by(|left, right| compare_groups(&groups[*left].group, &groups[*right].group))?;
+    let threshold = groups[root]
+        .group
         .ordering_timestamp_seconds()
         .saturating_sub(COALESCING_WINDOW_SECONDS);
-    cursors.iter().all(|cursor| {
-        cursor
-            .head
-            .as_ref()
-            .is_none_or(|entry| entry.committer.time.seconds < threshold)
-    })
-}
-
-fn take_emittable_groups(
-    pending: &mut Vec<CommitLogGroup>,
-    cursors: &[CursorState],
-) -> Vec<CommitLogGroup> {
-    let mut ready = Vec::new();
-    loop {
-        let next = (0..pending.len())
-            .filter(|index| {
-                group_is_closed(&pending[*index], cursors)
-                    && !blocked_by_earlier_group(pending, *index)
-            })
-            .min_by(|left, right| compare_groups(&pending[*left], &pending[*right]));
-        let Some(index) = next else {
-            break;
-        };
-        ready.push(pending.remove(index));
-    }
-    ready
-}
-
-fn order_forced_groups(mut groups: Vec<CommitLogGroup>) -> Vec<CommitLogGroup> {
-    let mut ordered = Vec::with_capacity(groups.len());
-    while !groups.is_empty() {
-        let index = (0..groups.len())
-            .filter(|index| !blocked_by_earlier_group(&groups, *index))
-            .min_by(|left, right| compare_groups(&groups[*left], &groups[*right]))
-            .expect("the first pending group is never blocked");
-        ordered.push(groups.remove(index));
-    }
-    ordered
-}
-
-fn blocked_by_earlier_group(groups: &[CommitLogGroup], index: usize) -> bool {
-    groups[..index]
+    cursors
         .iter()
-        .any(|earlier| groups_share_repository(earlier, &groups[index]))
+        .enumerate()
+        .filter(|(index, cursor)| {
+            !groups[root].repositories.contains(index)
+                && cursor
+                    .head
+                    .as_ref()
+                    .is_some_and(|entry| entry.committer.time.seconds >= threshold)
+        })
+        .min_by(|(_, left), (_, right)| {
+            compare_entries(
+                left.head.as_ref().expect("a blocker has a head"),
+                right.head.as_ref().expect("a blocker has a head"),
+            )
+        })
+        .map(|(index, _)| index)
 }
 
-fn groups_share_repository(left: &CommitLogGroup, right: &CommitLogGroup) -> bool {
-    left.entries().iter().any(|left_entry| {
-        right
-            .entries()
-            .iter()
-            .any(|right_entry| left_entry.target.member_id == right_entry.target.member_id)
-    })
+fn group_depends_on(groups: &[PendingGroup], group: GroupId, ancestor: GroupId) -> bool {
+    let mut frontier = vec![group];
+    let mut seen = BTreeSet::new();
+    while let Some(id) = frontier.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(group) = groups.iter().find(|group| group.id == id) else {
+            continue;
+        };
+        if group.predecessors.contains(&ancestor) {
+            return true;
+        }
+        frontier.extend(group.predecessors.iter().copied());
+    }
+    false
+}
+
+fn group_is_blocked(groups: &[PendingGroup], index: usize) -> bool {
+    groups[index]
+        .predecessors
+        .iter()
+        .any(|predecessor| groups.iter().any(|group| group.id == *predecessor))
 }
 
 fn emit_ready_groups(
-    groups: Vec<CommitLogGroup>,
+    groups: &mut Vec<PendingGroup>,
     max_entries: Option<usize>,
     stats: &mut CommitLogMergeStats,
     emit: &mut impl FnMut(CommitLogMergedEvent),
 ) -> bool {
-    for group in groups {
+    loop {
         if max_entries.is_some_and(|limit| stats.groups_emitted >= limit) {
             return true;
         }
-        emit(CommitLogMergedEvent::Group(group));
+        let next = (0..groups.len())
+            .filter(|index| groups[*index].sealed && !group_is_blocked(groups, *index))
+            .min_by(|left, right| compare_groups(&groups[*left].group, &groups[*right].group));
+        let Some(index) = next else {
+            return false;
+        };
+        let group = groups.remove(index);
+        emit(CommitLogMergedEvent::Group(group.group));
         stats.groups_emitted += 1;
     }
-    max_entries.is_some_and(|limit| stats.groups_emitted >= limit)
+}
+
+fn emit_forced_groups(
+    groups: &mut Vec<PendingGroup>,
+    max_entries: Option<usize>,
+    stats: &mut CommitLogMergeStats,
+    emit: &mut impl FnMut(CommitLogMergedEvent),
+) {
+    while !groups.is_empty() && max_entries.is_none_or(|limit| stats.groups_emitted < limit) {
+        let index = (0..groups.len())
+            .filter(|index| !group_is_blocked(groups, *index))
+            .min_by(|left, right| compare_groups(&groups[*left].group, &groups[*right].group))
+            .expect("the acyclic predecessor graph has an unblocked group");
+        let group = groups.remove(index);
+        emit(CommitLogMergedEvent::Group(group.group));
+        stats.groups_emitted += 1;
+    }
 }
 
 fn compare_groups(left: &CommitLogGroup, right: &CommitLogGroup) -> Ordering {
@@ -449,8 +551,8 @@ fn group_tiebreak(group: &CommitLogGroup) -> (&str, &str) {
         .expect("a group always contains an entry")
 }
 
-fn buffered_entry_count(groups: &[CommitLogGroup]) -> usize {
-    groups.iter().map(|group| group.entries().len()).sum()
+fn buffered_entry_count(groups: &[PendingGroup]) -> usize {
+    groups.iter().map(|group| group.group.entries().len()).sum()
 }
 
 struct ReadBudget {
