@@ -3,6 +3,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 
+use super::aggregate::{CommitLogAggregate, CommitLogAggregateCollector};
 use super::coalesce::{COALESCING_WINDOW_SECONDS, CommitLogGroup, assemble_commit_log_groups};
 use super::request::CommitLogHistories;
 use super::{CommitLogDegradation, CommitLogEntry, CommitLogEvent, RepositoryHistory};
@@ -69,6 +70,25 @@ impl CommitLogMergeStats {
     }
 }
 
+pub(super) struct CommitLogStreamResult {
+    stats: CommitLogMergeStats,
+    aggregate: CommitLogAggregate,
+}
+
+impl CommitLogStreamResult {
+    pub(super) fn groups_emitted(&self) -> usize {
+        self.stats.groups_emitted()
+    }
+
+    pub(super) fn max_concurrent_reads(&self) -> usize {
+        self.stats.max_concurrent_reads()
+    }
+
+    pub(super) fn aggregate(&self) -> &CommitLogAggregate {
+        &self.aggregate
+    }
+}
+
 /// Resolve only S2.5's depth policy. S2.6 owns the filters themselves.
 pub(super) fn effective_max_entries(
     request: &crate::LogRequest,
@@ -94,9 +114,29 @@ pub(super) fn stream_request_histories(
     histories: CommitLogHistories,
     request: &crate::LogRequest,
     emit: impl FnMut(CommitLogMergedEvent),
-) -> CommitLogMergeStats {
+) -> CommitLogStreamResult {
     let options = CommitLogMergeOptions::from_request(request, histories.has_explicit_range());
-    stream_histories(histories.into_histories(), options, emit)
+    let strict = histories.strict();
+    let mut aggregate = CommitLogAggregateCollector::new(
+        histories
+            .histories()
+            .iter()
+            .map(|history| history.target().clone())
+            .collect(),
+        strict,
+    );
+    let mut emit = emit;
+    let stats = stream_histories(histories.into_histories(), options, |event| {
+        match &event {
+            CommitLogMergedEvent::Group(group) => aggregate.observe_group(group),
+            CommitLogMergedEvent::Degradation(record) => aggregate.observe_degradation(record),
+        }
+        emit(event);
+    });
+    CommitLogStreamResult {
+        stats,
+        aggregate: aggregate.finish(),
+    }
 }
 
 fn stream_histories(

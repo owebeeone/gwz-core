@@ -6,7 +6,9 @@
     )
 )]
 
+mod aggregate;
 mod coalesce;
+mod filter;
 mod handler;
 mod merge;
 mod request;
@@ -23,6 +25,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::artifact::ArtifactSourceKind;
 use crate::model::ModelResult;
+
+use filter::CommitLogFilters;
 
 /// Internal identity for the repository carrying one raw entry or degradation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,6 +108,7 @@ struct WalkPlan {
 pub struct RepositoryHistory {
     target: CommitLogTarget,
     pathspecs: Vec<String>,
+    filters: CommitLogFilters,
     state: RepositoryState,
 }
 
@@ -119,12 +124,17 @@ impl RepositoryHistory {
 
     pub fn messages(&self) -> RepositoryMessages<'_> {
         match &self.state {
-            RepositoryState::Ready { repository, walk } => {
-                RepositoryMessages::from_repository(&self.target, repository, walk, &self.pathspecs)
-            }
+            RepositoryState::Ready { repository, walk } => RepositoryMessages::from_repository(
+                &self.target,
+                repository,
+                walk,
+                &self.pathspecs,
+                &self.filters,
+            ),
             RepositoryState::Degraded(record) => RepositoryMessages::single(
                 &self.target,
                 CommitLogEvent::Degradation(record.clone()),
+                &self.filters,
             ),
         }
     }
@@ -139,6 +149,7 @@ enum MessagesState<'repo> {
         repository: &'repo git2::Repository,
         plan: WalkPlan,
         pathspecs: Vec<String>,
+        first_parent: bool,
         skip: usize,
     },
     Single(Option<Box<CommitLogEvent>>),
@@ -148,6 +159,7 @@ enum MessagesState<'repo> {
 /// A newest-first, per-repository cursor in native `git log` default order.
 pub struct RepositoryMessages<'repo> {
     target: &'repo CommitLogTarget,
+    filters: &'repo CommitLogFilters,
     state: MessagesState<'repo>,
 }
 
@@ -157,9 +169,10 @@ impl<'repo> RepositoryMessages<'repo> {
         repository: &'repo git2::Repository,
         plan: &WalkPlan,
         pathspecs: &'repo [String],
+        filters: &'repo CommitLogFilters,
     ) -> Self {
         if !pathspecs.is_empty() {
-            return Self::from_path_walk(target, repository, plan, pathspecs);
+            return Self::from_path_walk(target, repository, plan, pathspecs, filters);
         }
         let mut walk = match repository.revwalk() {
             Ok(walk) => walk,
@@ -171,6 +184,7 @@ impl<'repo> RepositoryMessages<'repo> {
                         CommitLogDegradationKind::HistoryUnreadable,
                         format!("could not create history cursor: {}", error.message()),
                     ),
+                    filters,
                 );
             }
         };
@@ -186,6 +200,7 @@ impl<'repo> RepositoryMessages<'repo> {
                             error.message()
                         ),
                     ),
+                    filters,
                 );
             }
         }
@@ -201,14 +216,33 @@ impl<'repo> RepositoryMessages<'repo> {
                             error.message()
                         ),
                     ),
+                    filters,
                 );
             }
+        }
+
+        if filters.first_parent()
+            && let Err(error) = walk.simplify_first_parent()
+        {
+            return Self::single(
+                target,
+                degradation(
+                    target,
+                    CommitLogDegradationKind::HistoryUnreadable,
+                    format!(
+                        "could not simplify history to first parents: {}",
+                        error.message()
+                    ),
+                ),
+                filters,
+            );
         }
 
         // Deliberately do not call `set_sorting`: libgit2's default revwalk is
         // the repository-local default order required by `git log` parity.
         Self {
             target,
+            filters,
             state: MessagesState::Walk { repository, walk },
         }
     }
@@ -218,21 +252,29 @@ impl<'repo> RepositoryMessages<'repo> {
         repository: &'repo git2::Repository,
         plan: &WalkPlan,
         pathspecs: &[String],
+        filters: &'repo CommitLogFilters,
     ) -> Self {
         Self {
             target,
+            filters,
             state: MessagesState::PathWalk {
                 repository,
                 plan: plan.clone(),
                 pathspecs: pathspecs.to_vec(),
+                first_parent: filters.first_parent(),
                 skip: 0,
             },
         }
     }
 
-    fn single(target: &'repo CommitLogTarget, event: CommitLogEvent) -> Self {
+    fn single(
+        target: &'repo CommitLogTarget,
+        event: CommitLogEvent,
+        filters: &'repo CommitLogFilters,
+    ) -> Self {
         Self {
             target,
+            filters,
             state: MessagesState::Single(Some(Box::new(event))),
         }
     }
@@ -245,12 +287,8 @@ impl<'repo> RepositoryMessages<'repo> {
             detail,
         ))
     }
-}
 
-impl Iterator for RepositoryMessages<'_> {
-    type Item = CommitLogEvent;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next_unfiltered(&mut self) -> Option<CommitLogEvent> {
         match &mut self.state {
             MessagesState::Single(event) => event.take().map(|event| *event),
             MessagesState::Done => None,
@@ -271,16 +309,22 @@ impl Iterator for RepositoryMessages<'_> {
                 repository,
                 plan,
                 pathspecs,
+                first_parent,
                 skip,
             } => {
                 #[cfg(test)]
                 let _reader_probe = path_reader_probe_enter(self.target);
-                let output = Command::new("git")
+                let mut command = Command::new("git");
+                command
                     .arg("--git-dir")
                     .arg(repository.path())
                     .arg("rev-list")
                     .arg("--max-count=1")
-                    .arg(format!("--skip={skip}"))
+                    .arg(format!("--skip={skip}"));
+                if *first_parent {
+                    command.arg("--first-parent");
+                }
+                let output = command
                     .args(plan.pushes.iter().map(ToString::to_string))
                     .args(plan.hides.iter().map(|oid| format!("^{oid}")))
                     .arg("--")
@@ -324,6 +368,19 @@ impl Iterator for RepositoryMessages<'_> {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+impl Iterator for RepositoryMessages<'_> {
+    type Item = CommitLogEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let event = self.next_unfiltered()?;
+            if !matches!(&event, CommitLogEvent::Entry(entry) if !self.filters.allows(entry)) {
+                return Some(event);
             }
         }
     }

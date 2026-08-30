@@ -15,8 +15,8 @@ use crate::workspace_ops::{
 };
 
 use super::{
-    CommitLogDegradation, CommitLogDegradationKind, CommitLogTarget, RepositoryHistory,
-    RepositoryState, WalkPlan,
+    CommitLogDegradation, CommitLogDegradationKind, CommitLogFilters, CommitLogTarget,
+    RepositoryHistory, RepositoryState, WalkPlan,
 };
 
 /// Request-scoped repository histories plus the S2.2 strictness parameter.
@@ -36,14 +36,8 @@ impl CommitLogHistories {
         self.has_explicit_range
     }
 
-    /// Apply only L-TOL-2's strict overlay to an observed degradation bit.
-    /// S2.6 remains responsible for the complete event-derived aggregate.
-    pub fn strictness_status(&self, degradation_seen: bool) -> crate::AggregateStatus {
-        if self.strict && degradation_seen {
-            crate::AggregateStatus::Failed
-        } else {
-            crate::AggregateStatus::Ok
-        }
+    pub fn strict(&self) -> bool {
+        self.strict
     }
 
     pub fn into_histories(self) -> Vec<RepositoryHistory> {
@@ -65,6 +59,8 @@ pub(super) fn open_request_histories(
     start: &Path,
     request: &crate::LogRequest,
 ) -> ModelResult<CommitLogHistories> {
+    // Invocation grammar is rejected before workspace or repository access.
+    let filters = CommitLogFilters::from_request(request)?;
     let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
     let manifest = crate::artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
@@ -150,7 +146,7 @@ pub(super) fn open_request_histories(
         .any(|arg| matches!(arg, ParsedRevisionArg::Range { .. }));
     let histories = plans
         .into_iter()
-        .map(|plan| open_history(plan, &revision_args, &snapshots, lock.as_ref()))
+        .map(|plan| open_history(plan, &revision_args, &snapshots, lock.as_ref(), &filters))
         .collect();
     Ok(CommitLogHistories {
         histories,
@@ -429,6 +425,7 @@ fn open_history(
     args: &[ParsedRevisionArg],
     snapshots: &[SnapshotArtifact],
     lock: Option<&LockArtifact>,
+    filters: &CommitLogFilters,
 ) -> RepositoryHistory {
     let TargetPlan {
         target,
@@ -437,7 +434,7 @@ fn open_history(
         degradation,
     } = plan;
     if let Some(record) = degradation {
-        return degraded_history(target, pathspecs, record);
+        return degraded_history(target, pathspecs, record, filters);
     }
     if target.source_kind != ArtifactSourceKind::Git {
         return degraded(
@@ -446,6 +443,7 @@ fn open_history(
             CommitLogDegradationKind::UnsupportedSourceKind,
             None,
             "commit history supports Git members only",
+            filters,
         );
     }
     let repository = match git2::Repository::open(&repo_path) {
@@ -457,16 +455,18 @@ fn open_history(
                 CommitLogDegradationKind::RepositoryUnreadable,
                 None,
                 format!("could not open repository: {}", error.message()),
+                filters,
             );
         }
     };
     let walk = match resolve_walk(&repository, &target, args, snapshots, lock) {
         Ok(walk) => walk,
-        Err(record) => return degraded_history(target, pathspecs, record),
+        Err(record) => return degraded_history(target, pathspecs, record, filters),
     };
     RepositoryHistory {
         target,
         pathspecs,
+        filters: filters.clone(),
         state: RepositoryState::Ready { repository, walk },
     }
 }
@@ -715,19 +715,22 @@ fn degraded(
     kind: CommitLogDegradationKind,
     operand: Option<String>,
     detail: impl Into<String>,
+    filters: &CommitLogFilters,
 ) -> RepositoryHistory {
     let record = record(&target, kind, operand, detail);
-    degraded_history(target, pathspecs, record)
+    degraded_history(target, pathspecs, record, filters)
 }
 
 fn degraded_history(
     target: CommitLogTarget,
     pathspecs: Vec<String>,
     record: CommitLogDegradation,
+    filters: &CommitLogFilters,
 ) -> RepositoryHistory {
     RepositoryHistory {
         target,
         pathspecs,
+        filters: filters.clone(),
         state: RepositoryState::Degraded(record),
     }
 }

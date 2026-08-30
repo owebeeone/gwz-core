@@ -985,18 +985,22 @@ fn l_rng_4_missing_and_unborn_lock_rows_degrade_benignly_and_strictly() {
     assert_eq!(unborn[0].kind, CommitLogDegradationKind::LockEntryMissing);
     assert_eq!(unborn[0].operand.as_deref(), Some("+lock"));
     assert_eq!(
-        benign.strictness_status(observed_degradation(&benign)),
+        stream_request_histories(benign, &request, |_| {})
+            .aggregate()
+            .status(),
         crate::AggregateStatus::Ok
     );
 
-    let mut strict_request = request;
+    let mut strict_request = request.clone();
     strict_request.options = Some(crate::LogOptions {
         strict: Some(true),
         ..crate::LogOptions::default()
     });
     let strict = open_request_histories(fixture.path(), &strict_request).unwrap();
     assert_eq!(
-        strict.strictness_status(observed_degradation(&strict)),
+        stream_request_histories(strict, &strict_request, |_| {})
+            .aggregate()
+            .status(),
         crate::AggregateStatus::Failed
     );
 }
@@ -1303,7 +1307,7 @@ fn l_tol_2_default_degradation_is_benign_and_strict_escalates_aggregate() {
         ..crate::Selection::default()
     });
     let clean_benign = open_request_histories(fixture.path(), &clean_request).unwrap();
-    let mut strict_request = request;
+    let mut strict_request = request.clone();
     strict_request.options = Some(crate::LogOptions {
         strict: Some(true),
         ..crate::LogOptions::default()
@@ -1312,34 +1316,29 @@ fn l_tol_2_default_degradation_is_benign_and_strict_escalates_aggregate() {
     clean_request.options = strict_request.options.clone();
     let clean_strict = open_request_histories(fixture.path(), &clean_request).unwrap();
 
-    let benign_degradation = observed_degradation(&benign);
-    let strict_degradation = observed_degradation(&strict);
-    let clean_benign_degradation = observed_degradation(&clean_benign);
-    let clean_strict_degradation = observed_degradation(&clean_strict);
-    assert!(benign_degradation);
-    assert!(strict_degradation);
-    assert!(!clean_benign_degradation);
-    assert!(!clean_strict_degradation);
     assert_eq!(
-        benign.strictness_status(benign_degradation),
+        stream_request_histories(benign, &request, |_| {})
+            .aggregate()
+            .status(),
         crate::AggregateStatus::Ok
     );
     assert_eq!(
-        clean_benign.strictness_status(clean_benign_degradation),
+        stream_request_histories(clean_benign, &clean_request, |_| {})
+            .aggregate()
+            .status(),
         crate::AggregateStatus::Ok
     );
     assert_eq!(
-        strict.strictness_status(strict_degradation),
+        stream_request_histories(strict, &strict_request, |_| {})
+            .aggregate()
+            .status(),
         crate::AggregateStatus::Failed
     );
     assert_eq!(
-        clean_strict.strictness_status(clean_strict_degradation),
+        stream_request_histories(clean_strict, &clean_request, |_| {})
+            .aggregate()
+            .status(),
         crate::AggregateStatus::Ok
-    );
-    assert_eq!(entry_ids(&strict.histories()[0])[0], root_head);
-    assert_eq!(
-        degradations(&strict.histories()[1])[0].kind,
-        CommitLogDegradationKind::RevisionUnresolved
     );
 }
 
@@ -1370,6 +1369,712 @@ fn s2_5_production_merge_consumes_range_histories_and_degradations() {
             if record.target.member_id == "mem_member"
                 && record.kind == CommitLogDegradationKind::RevisionUnresolved
     )));
+}
+
+#[test]
+fn l_fil_1_and_l_env_5_regexes_filter_raw_message_and_combined_author() {
+    let fixture = Fixture::new("s2-6-regex-filters");
+    let raw = raw_commit(
+        &fixture.root,
+        b"Subject without token\nbody has needle and byte \xff\n",
+        None,
+    );
+    fixture.write_manifest(&[]);
+
+    let mut request = log_request(&[], &[], false);
+    request.options = Some(crate::LogOptions {
+        author: Some(r"Test Author <test@example\.com>".to_owned()),
+        grep: Some(r"needle.*(?-u:\xFF)".to_owned()),
+        ..crate::LogOptions::default()
+    });
+    assert_eq!(
+        entry_ids(
+            &open_request_histories(fixture.path(), &request)
+                .unwrap()
+                .histories()[0]
+        ),
+        [raw]
+    );
+
+    request.options.as_mut().unwrap().grep = Some("Needle".to_owned());
+    assert!(
+        entry_ids(
+            &open_request_histories(fixture.path(), &request)
+                .unwrap()
+                .histories()[0]
+        )
+        .is_empty(),
+        "matching is case-sensitive"
+    );
+}
+
+#[test]
+fn l_env_5_6_filters_distinct_raw_author_and_committer_surfaces() {
+    let fixture = Fixture::new("s2-6-distinct-author-committer");
+    let raw = raw_identity_commit(
+        &fixture.root,
+        b"raw identity fixture\n",
+        b"Auth\xffor",
+        b"author-\xfe@example.com",
+        10,
+        b"Comm\xfdtter",
+        b"committer-\xfc@example.com",
+        100,
+    );
+    fixture.write_manifest(&[]);
+
+    let unfiltered = open_default_head_histories(fixture.path()).unwrap();
+    let unfiltered_events = events(&unfiltered[0]);
+    let [CommitLogEvent::Entry(entry)] = unfiltered_events.as_slice() else {
+        panic!("raw identity fixture did not yield exactly one entry");
+    };
+    assert_eq!(entry.author.name, b"Auth\xffor");
+    assert_eq!(entry.author.email, b"author-\xfe@example.com");
+    assert_eq!(entry.author.time.seconds, 10);
+    assert_eq!(entry.committer.name, b"Comm\xfdtter");
+    assert_eq!(entry.committer.email, b"committer-\xfc@example.com");
+    assert_eq!(entry.committer.time.seconds, 100);
+
+    for options in [
+        crate::LogOptions {
+            author: Some(r"(?-u:Auth\xFFor <author-\xFE@example\.com>)".to_owned()),
+            ..Default::default()
+        },
+        crate::LogOptions {
+            since: Some("@100".to_owned()),
+            until: Some("@100".to_owned()),
+            ..Default::default()
+        },
+        crate::LogOptions {
+            author: Some(r"(?-u:Auth\xFFor <author-\xFE@example\.com>)".to_owned()),
+            since: Some("@100".to_owned()),
+            until: Some("@100".to_owned()),
+            ..Default::default()
+        },
+    ] {
+        let mut request = log_request(&[], &[], false);
+        request.options = Some(options);
+        assert_eq!(
+            entry_ids(
+                &open_request_histories(fixture.path(), &request)
+                    .unwrap()
+                    .histories()[0]
+            ),
+            [raw]
+        );
+    }
+}
+
+#[test]
+fn l_env_5_invalid_regex_refuses_before_workspace_access() {
+    for (field, option) in [
+        (
+            "--grep",
+            crate::LogOptions {
+                grep: Some("[".to_owned()),
+                ..Default::default()
+            },
+        ),
+        (
+            "--author",
+            crate::LogOptions {
+                author: Some("(".to_owned()),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let request = crate::LogRequest {
+            options: Some(option),
+            ..crate::LogRequest::default()
+        };
+        let error =
+            open_request_histories(Path::new("/definitely/missing/gwz-workspace"), &request)
+                .err()
+                .expect("invalid Rust regex must be an invocation refusal");
+        assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+        assert!(error.message.contains(field), "{}", error.message);
+        assert!(error.message.contains("Rust regex"), "{}", error.message);
+        assert!(error.message.contains("error"), "{}", error.message);
+    }
+}
+
+#[test]
+fn l_env_6_time_grammar_is_exact_local_and_inclusive() {
+    use chrono::{Local, NaiveDate, TimeZone};
+
+    assert_eq!(super::filter::parse_filter_time("@-1").unwrap(), -1);
+    assert_eq!(
+        super::filter::parse_filter_time("2026-08-31T02:03:04+10:00").unwrap(),
+        1_788_105_784
+    );
+    assert_eq!(
+        super::filter::parse_filter_time("20260831T020304+1000").unwrap(),
+        1_788_105_784
+    );
+    let midnight = Local
+        .from_local_datetime(
+            &NaiveDate::from_ymd_opt(2026, 8, 31)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        )
+        .single()
+        .unwrap()
+        .timestamp();
+    assert_eq!(
+        super::filter::parse_filter_time("2026-08-31").unwrap(),
+        midnight
+    );
+    let local_time = Local
+        .from_local_datetime(
+            &NaiveDate::from_ymd_opt(2026, 8, 31)
+                .unwrap()
+                .and_hms_opt(2, 3, 4)
+                .unwrap(),
+        )
+        .single()
+        .unwrap()
+        .timestamp();
+    assert_eq!(
+        super::filter::parse_filter_time("2026-08-31T02:03:04").unwrap(),
+        local_time
+    );
+    assert_eq!(
+        super::filter::parse_filter_time("2026-08-31T02:03").unwrap(),
+        local_time - 4
+    );
+
+    for value in ["yesterday", "2026/08/31", "2026-02-30"] {
+        let error = super::filter::parse_filter_time(value).unwrap_err();
+        assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+        assert!(error.message.contains("RFC3339"), "{}", error.message);
+        assert!(
+            error.message.contains("@<epoch-seconds>"),
+            "{}",
+            error.message
+        );
+    }
+    let request = crate::LogRequest {
+        options: Some(crate::LogOptions {
+            since: Some("yesterday".to_owned()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let error = open_request_histories(Path::new("/definitely/missing/gwz-workspace"), &request)
+        .err()
+        .expect("approxidate must refuse before workspace access");
+    assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+
+    let fixture = Fixture::new("s2-6-inclusive-time");
+    let before = commit(&fixture.root, "before", 99, &[]);
+    let at = commit(&fixture.root, "at", 100, &[before]);
+    commit(&fixture.root, "after", 101, &[at]);
+    fixture.write_manifest(&[]);
+    let mut request = log_request(&[], &[], false);
+    request.options = Some(crate::LogOptions {
+        since: Some("@100".to_owned()),
+        until: Some("@100".to_owned()),
+        ..Default::default()
+    });
+    assert_eq!(
+        entry_ids(
+            &open_request_histories(fixture.path(), &request)
+                .unwrap()
+                .histories()[0]
+        ),
+        [at]
+    );
+}
+
+#[test]
+fn l_env_5_6_locale_independence_and_local_timezone_are_process_pinned() {
+    const CHILD_EPOCH: &str = "GWZ_S2_6_EXPECT_LOCAL_EPOCH";
+    if let Ok(expected) = std::env::var(CHILD_EPOCH) {
+        assert_eq!(
+            super::filter::parse_filter_time("2026-08-31T02:03:04").unwrap(),
+            expected.parse::<i64>().unwrap()
+        );
+        return;
+    }
+
+    for (timezone, expected) in [
+        ("UTC", 1_788_141_784_i64),
+        ("Australia/Sydney", 1_788_105_784_i64),
+    ] {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("operation::commit_log::tests::l_env_5_6_locale_independence_and_local_timezone_are_process_pinned")
+            .arg("--nocapture")
+            .env(CHILD_EPOCH, expected.to_string())
+            .env("TZ", timezone)
+            .env("LC_ALL", "tr_TR.UTF-8")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "TZ={timezone}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn l_env_6_epoch_extremes_and_dst_gap_overlap_fail_closed() {
+    const DST_CHILD: &str = "GWZ_S2_6_DST_FAIL_CLOSED_CHILD";
+    if std::env::var_os(DST_CHILD).is_some() {
+        for local in ["2026-04-05T02:30:00", "2026-10-04T02:30:00"] {
+            let error = super::filter::parse_filter_time(local).unwrap_err();
+            assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+            assert!(error.message.contains(local), "{}", error.message);
+        }
+        return;
+    }
+
+    assert_eq!(
+        super::filter::parse_filter_time(&format!("@{}", i64::MIN)).unwrap(),
+        i64::MIN
+    );
+    assert_eq!(
+        super::filter::parse_filter_time(&format!("@{}", i64::MAX)).unwrap(),
+        i64::MAX
+    );
+    for overflow in ["@9223372036854775808", "@-9223372036854775809"] {
+        let error = super::filter::parse_filter_time(overflow).unwrap_err();
+        assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+        assert!(error.message.contains(overflow), "{}", error.message);
+    }
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("operation::commit_log::tests::l_env_6_epoch_extremes_and_dst_gap_overlap_fail_closed")
+        .arg("--nocapture")
+        .env(DST_CHILD, "1")
+        .env("TZ", "Australia/Sydney")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Sydney DST child failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn l_fil_1_first_parent_and_no_merges_match_native_git_premerge() {
+    let fixture = Fixture::new("s2-6-ancestry-filters");
+    build_native_path_history(fixture.path());
+    fixture.write_manifest(&[]);
+
+    for (options, native_flag) in [
+        (
+            crate::LogOptions {
+                first_parent: Some(true),
+                ..Default::default()
+            },
+            "--first-parent",
+        ),
+        (
+            crate::LogOptions {
+                no_merges: Some(true),
+                ..Default::default()
+            },
+            "--no-merges",
+        ),
+    ] {
+        let mut request = log_request(&[], &["."], false);
+        request.options = Some(options);
+        let actual = entry_ids(
+            &open_request_histories(fixture.path(), &request)
+                .unwrap()
+                .histories()[0],
+        );
+        let expected = git_oid_lines(
+            Command::new("git")
+                .arg("-C")
+                .arg(fixture.path())
+                .arg("rev-list")
+                .arg(native_flag)
+                .arg("HEAD")
+                .arg("--")
+                .arg("."),
+        );
+        assert_eq!(actual, expected, "{native_flag}");
+    }
+}
+
+#[test]
+fn l_fil_1_ancestry_filters_match_native_merge_range_with_and_without_paths() {
+    let fixture = Fixture::new("s2-6-ancestry-range");
+    build_native_path_history(fixture.path());
+    fixture.write_manifest(&[]);
+
+    for (options, native_flag) in [
+        (
+            crate::LogOptions {
+                first_parent: Some(true),
+                ..Default::default()
+            },
+            "--first-parent",
+        ),
+        (
+            crate::LogOptions {
+                no_merges: Some(true),
+                ..Default::default()
+            },
+            "--no-merges",
+        ),
+    ] {
+        for pathspecs in [&[][..], &["."][..]] {
+            let mut request = log_request(&["HEAD~2..HEAD"], pathspecs, false);
+            request.options = Some(options.clone());
+            let actual = entry_ids(
+                &open_request_histories(fixture.path(), &request)
+                    .unwrap()
+                    .histories()[0],
+            );
+            let mut native = Command::new("git");
+            native
+                .arg("-C")
+                .arg(fixture.path())
+                .arg("rev-list")
+                .arg(native_flag)
+                .arg("HEAD~2..HEAD");
+            if !pathspecs.is_empty() {
+                native.arg("--").args(pathspecs);
+            }
+            let expected = git_oid_lines(&mut native);
+            assert_eq!(expected.len(), 2, "{native_flag} {pathspecs:?}");
+            assert_eq!(actual, expected, "{native_flag} {pathspecs:?}");
+        }
+    }
+}
+
+#[test]
+fn l_coa_5_l_env_7_partial_filtering_keeps_survivors_and_empty_is_ok() {
+    const MARKER: &str = "01987b0c-2f75-7c4a-9a32-8fd22f7d7c91";
+    let fixture = Fixture::new("s2-6-filter-survivors");
+    let root_base = commit(&fixture.root, "root base", 100, &[]);
+    let root_side = detached_commit(&fixture.root, "root side", 100, &[root_base]);
+    commit(
+        &fixture.root,
+        &format!("shared\n\nGWZ-Commit-ID: {MARKER}\nGWZ-Workspace-ID: ws_test"),
+        200,
+        &[root_base, root_side],
+    );
+    let member_repo = Repository::init(fixture.path().join("member")).unwrap();
+    let member_base = commit(&member_repo, "member base", 100, &[]);
+    commit(
+        &member_repo,
+        &format!("shared\n\nGWZ-Commit-ID: {MARKER}\nGWZ-Workspace-ID: ws_test"),
+        200,
+        &[member_base],
+    );
+    fixture.write_manifest(&[member("mem_member", "member", true)]);
+
+    let mut request = log_request(&[], &[], false);
+    request.options = Some(crate::LogOptions {
+        since: Some("@200".to_owned()),
+        no_merges: Some(true),
+        ..Default::default()
+    });
+    let mut events = Vec::new();
+    let run = stream_request_histories(
+        open_request_histories(fixture.path(), &request).unwrap(),
+        &request,
+        |event| events.push(event),
+    );
+    let groups = events
+        .iter()
+        .filter_map(|event| match event {
+            CommitLogMergedEvent::Group(group) => Some(group),
+            CommitLogMergedEvent::Degradation(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].entries()[0].target.member_id, "mem_member");
+    assert_eq!(
+        groups[0].provenance(),
+        &super::coalesce::CommitLogProvenance::Marker(MARKER.to_owned())
+    );
+    assert_eq!(run.aggregate().status(), crate::AggregateStatus::Ok);
+
+    request.options.as_mut().unwrap().grep = Some("does-not-exist".to_owned());
+    let empty = stream_request_histories(
+        open_request_histories(fixture.path(), &request).unwrap(),
+        &request,
+        |_| {},
+    );
+    assert_eq!(empty.groups_emitted(), 0);
+    assert_eq!(empty.aggregate().status(), crate::AggregateStatus::Ok);
+    assert!(
+        empty.aggregate().outcomes().iter().all(|outcome| {
+            outcome.kind() == super::aggregate::CommitLogMemberOutcomeKind::Empty
+        })
+    );
+}
+
+#[test]
+fn l_env_7_filtering_precedes_cap_and_order_for_every_jobs_value() {
+    fn add_history(repository: &Repository, survivor: &str, seconds: i64, prefix: &str) -> Oid {
+        let survivor = commit(repository, survivor, seconds, &[]);
+        let first = commit(
+            repository,
+            &format!("reject {prefix} newest"),
+            seconds + 300,
+            &[survivor],
+        );
+        commit(
+            repository,
+            &format!("reject {prefix} head"),
+            seconds + 200,
+            &[first],
+        );
+        survivor
+    }
+
+    let fixture = Fixture::new("s2-6-filter-before-cap");
+    let root = add_history(&fixture.root, "KEEP root bytes", 300, "root");
+    let member_a_repo = Repository::init(fixture.path().join("member-a")).unwrap();
+    let member_a = add_history(&member_a_repo, "KEEP member-a", 200, "a");
+    let member_b_repo = Repository::init(fixture.path().join("member-b")).unwrap();
+    add_history(&member_b_repo, "KEEP member-b", 100, "b");
+    fixture.write_manifest(&[
+        member("mem_a", "member-a", true),
+        member("mem_b", "member-b", true),
+    ]);
+
+    let run = |jobs| {
+        let mut request = log_request(&[], &[], false);
+        request.options = Some(crate::LogOptions {
+            grep: Some("^KEEP".to_owned()),
+            max_entries: Some(2),
+            ..Default::default()
+        });
+        request.meta.policy = Some(crate::OperationPolicy {
+            concurrency: Some(jobs),
+            ..Default::default()
+        });
+        let mut events = Vec::new();
+        let result = stream_request_histories(
+            open_request_histories(fixture.path(), &request).unwrap(),
+            &request,
+            |event| events.push(event),
+        );
+        assert_eq!(result.groups_emitted(), 2);
+        events
+    };
+
+    let one = run(1);
+    let two = run(2);
+    let eight = run(8);
+    assert_eq!(one, two, "jobs=1 and jobs=2 must be byte-complete equal");
+    assert_eq!(one, eight, "jobs=1 and jobs=8 must be byte-complete equal");
+    assert_eq!(
+        one.iter()
+            .map(|event| match event {
+                CommitLogMergedEvent::Group(group) => group.entries()[0].commit_id.clone(),
+                CommitLogMergedEvent::Degradation(record) => {
+                    panic!("unexpected degradation: {record:?}")
+                }
+            })
+            .collect::<Vec<_>>(),
+        [root.to_string(), member_a.to_string()]
+    );
+}
+
+#[test]
+fn l_exit_1_aggregate_distinguishes_benign_strict_and_read_failure() {
+    let fixture = Fixture::new("s2-6-aggregate");
+    let root = commit(&fixture.root, "root", 100, &[]);
+    fixture
+        .root
+        .reference("refs/heads/root-only", root, true, "root-only")
+        .unwrap();
+    let member_repo = Repository::init(fixture.path().join("member")).unwrap();
+    commit(&member_repo, "member", 100, &[]);
+    fixture.write_manifest(&[member("mem_member", "member", true)]);
+
+    let request = log_request(&["root-only"], &[], false);
+    let benign = stream_request_histories(
+        open_request_histories(fixture.path(), &request).unwrap(),
+        &request,
+        |_| {},
+    );
+    assert_eq!(benign.aggregate().status(), crate::AggregateStatus::Ok);
+    assert_eq!(benign.aggregate().outcomes()[0].target().member_id, "@root");
+    assert_eq!(
+        benign.aggregate().outcomes()[1].kind(),
+        super::aggregate::CommitLogMemberOutcomeKind::Degraded
+    );
+
+    let mut strict_request = request.clone();
+    strict_request.options = Some(crate::LogOptions {
+        strict: Some(true),
+        ..Default::default()
+    });
+    let strict = stream_request_histories(
+        open_request_histories(fixture.path(), &strict_request).unwrap(),
+        &strict_request,
+        |_| {},
+    );
+    assert_eq!(strict.aggregate().status(), crate::AggregateStatus::Failed);
+
+    fixture.write_manifest(&[member("mem_missing", "missing", true)]);
+    let failed_request = log_request(&[], &[], false);
+    let failed = stream_request_histories(
+        open_request_histories(fixture.path(), &failed_request).unwrap(),
+        &failed_request,
+        |_| {},
+    );
+    assert_eq!(failed.aggregate().status(), crate::AggregateStatus::Partial);
+    assert_eq!(
+        failed.aggregate().outcomes()[1].kind(),
+        super::aggregate::CommitLogMemberOutcomeKind::Failed
+    );
+
+    let mut failed_only_request = failed_request;
+    failed_only_request.meta.selection = Some(crate::Selection {
+        targets: vec!["mem_missing".to_owned()],
+        ..Default::default()
+    });
+    let failed_only = stream_request_histories(
+        open_request_histories(fixture.path(), &failed_only_request).unwrap(),
+        &failed_only_request,
+        |_| {},
+    );
+    assert_eq!(
+        failed_only.aggregate().status(),
+        crate::AggregateStatus::Failed
+    );
+}
+
+#[test]
+fn l_exit_1_aggregate_tables_every_degradation_kind_and_truth_class() {
+    use super::aggregate::{CommitLogAggregateCollector, CommitLogMemberOutcomeKind};
+    use super::coalesce::assemble_commit_log_groups;
+
+    let cases = [
+        (
+            CommitLogDegradationKind::UnbornHead,
+            CommitLogMemberOutcomeKind::Degraded,
+            crate::AggregateStatus::Ok,
+        ),
+        (
+            CommitLogDegradationKind::RevisionUnresolved,
+            CommitLogMemberOutcomeKind::Degraded,
+            crate::AggregateStatus::Ok,
+        ),
+        (
+            CommitLogDegradationKind::SnapshotEntryMissing,
+            CommitLogMemberOutcomeKind::Degraded,
+            crate::AggregateStatus::Ok,
+        ),
+        (
+            CommitLogDegradationKind::LockEntryMissing,
+            CommitLogMemberOutcomeKind::Degraded,
+            crate::AggregateStatus::Ok,
+        ),
+        (
+            CommitLogDegradationKind::UnsupportedSourceKind,
+            CommitLogMemberOutcomeKind::Failed,
+            crate::AggregateStatus::Failed,
+        ),
+        (
+            CommitLogDegradationKind::RepositoryUnreadable,
+            CommitLogMemberOutcomeKind::Failed,
+            crate::AggregateStatus::Failed,
+        ),
+        (
+            CommitLogDegradationKind::HistoryUnreadable,
+            CommitLogMemberOutcomeKind::Failed,
+            crate::AggregateStatus::Failed,
+        ),
+    ];
+
+    let target = |member_id: &str| CommitLogTarget {
+        member_id: member_id.to_owned(),
+        member_path: member_id.to_owned(),
+        source_kind: ArtifactSourceKind::Git,
+    };
+    let degradation = |target: &CommitLogTarget, kind| CommitLogDegradation {
+        target: target.clone(),
+        kind,
+        operand: Some("HEAD".to_owned()),
+        detail: "aggregate class fixture".to_owned(),
+    };
+
+    let empty_target = target("mem_empty");
+    let empty = CommitLogAggregateCollector::new(vec![empty_target], false).finish();
+    assert_eq!(
+        empty.outcomes()[0].kind(),
+        CommitLogMemberOutcomeKind::Empty
+    );
+    assert_eq!(empty.status(), crate::AggregateStatus::Ok);
+
+    for (kind, expected_outcome, expected_status) in cases {
+        let case_target = target("mem_case");
+        let record = degradation(&case_target, kind);
+        let mut default = CommitLogAggregateCollector::new(vec![case_target.clone()], false);
+        default.observe_degradation(&record);
+        let default = default.finish();
+        assert_eq!(default.outcomes()[0].kind(), expected_outcome, "{kind:?}");
+        assert_eq!(default.status(), expected_status, "{kind:?}");
+
+        let mut strict = CommitLogAggregateCollector::new(vec![case_target], true);
+        strict.observe_degradation(&record);
+        assert_eq!(
+            strict.finish().status(),
+            crate::AggregateStatus::Failed,
+            "{kind:?}"
+        );
+    }
+
+    let contributed_target = target("mem_contributed");
+    let failed_target = target("mem_failed");
+    let mut collector = CommitLogAggregateCollector::new(
+        vec![contributed_target.clone(), failed_target.clone()],
+        false,
+    );
+    let contributed = CommitLogEntry {
+        target: contributed_target,
+        commit_id: "contributed".to_owned(),
+        parent_ids: Vec::new(),
+        author: CommitLogIdentity {
+            name: b"Author".to_vec(),
+            email: b"author@example.invalid".to_vec(),
+            time: CommitLogTime {
+                seconds: 100,
+                offset_minutes: 0,
+            },
+        },
+        committer: CommitLogIdentity {
+            name: b"Committer".to_vec(),
+            email: b"committer@example.invalid".to_vec(),
+            time: CommitLogTime {
+                seconds: 100,
+                offset_minutes: 0,
+            },
+        },
+        message: b"contributed".to_vec(),
+        message_encoding: None,
+    };
+    let group = assemble_commit_log_groups([contributed], false).remove(0);
+    collector.observe_group(&group);
+    collector.observe_degradation(&degradation(
+        &failed_target,
+        CommitLogDegradationKind::HistoryUnreadable,
+    ));
+    let partial = collector.finish();
+    assert_eq!(
+        partial.outcomes()[0].kind(),
+        CommitLogMemberOutcomeKind::Contributed
+    );
+    assert_eq!(
+        partial.outcomes()[1].kind(),
+        CommitLogMemberOutcomeKind::Failed
+    );
+    assert_eq!(partial.status(), crate::AggregateStatus::Partial);
 }
 
 #[test]
@@ -1440,14 +2145,6 @@ fn degradations(history: &RepositoryHistory) -> Vec<CommitLogDegradation> {
 
 fn events(history: &RepositoryHistory) -> Vec<CommitLogEvent> {
     history.messages().collect()
-}
-
-fn observed_degradation(opened: &CommitLogHistories) -> bool {
-    opened.histories().iter().any(|history| {
-        history
-            .messages()
-            .any(|event| matches!(event, CommitLogEvent::Degradation(_)))
-    })
 }
 
 fn target_ids(opened: &CommitLogHistories) -> Vec<&str> {
@@ -1720,6 +2417,36 @@ fn raw_commit(repo: &Repository, message: &[u8], encoding: Option<&[u8]>) -> Oid
 
     let oid = repo.odb().unwrap().write(ObjectType::Commit, &raw).unwrap();
     repo.reference("refs/heads/main", oid, true, "raw test commit")
+        .unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    oid
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raw_identity_commit(
+    repo: &Repository,
+    message: &[u8],
+    author_name: &[u8],
+    author_email: &[u8],
+    author_seconds: i64,
+    committer_name: &[u8],
+    committer_email: &[u8],
+    committer_seconds: i64,
+) -> Oid {
+    let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
+    let mut raw = format!("tree {tree_id}\nauthor ").into_bytes();
+    raw.extend_from_slice(author_name);
+    raw.extend_from_slice(b" <");
+    raw.extend_from_slice(author_email);
+    raw.extend_from_slice(format!("> {author_seconds} +0000\ncommitter ").as_bytes());
+    raw.extend_from_slice(committer_name);
+    raw.extend_from_slice(b" <");
+    raw.extend_from_slice(committer_email);
+    raw.extend_from_slice(format!("> {committer_seconds} +0000\n\n").as_bytes());
+    raw.extend_from_slice(message);
+
+    let oid = repo.odb().unwrap().write(ObjectType::Commit, &raw).unwrap();
+    repo.reference("refs/heads/main", oid, true, "raw identity test commit")
         .unwrap();
     repo.set_head("refs/heads/main").unwrap();
     oid
