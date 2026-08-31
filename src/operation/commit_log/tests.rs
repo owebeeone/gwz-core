@@ -2596,6 +2596,36 @@ fn l_int_1_dispatch_spools_every_record_with_cursor_eof_and_release() {
 }
 
 #[test]
+fn missing_explicit_root_manifest_is_a_typed_pre_dispatch_rejection() {
+    let fixture = Fixture::new("handler-missing-manifest");
+    let mut request = log_request(&[], &[], false);
+    request.meta.workspace = Some(crate::WorkspaceRef {
+        root: Some(fixture.path().to_string_lossy().into_owned()),
+        workspace_id: None,
+    });
+    let registry = crate::operation::CommitLogOutputRegistry::new();
+
+    let error = crate::operation::handle_log(
+        fixture.path(),
+        request,
+        "op-log-missing-manifest",
+        &registry,
+    )
+    .expect_err("an explicit existing directory without a manifest must refuse");
+
+    assert_eq!(error.code, crate::model::ErrorCode::ManifestNotFound);
+    assert!(
+        registry
+            .read(
+                "commitlog_000000000001",
+                &crate::operation::CommitLogReadRequest::default(),
+            )
+            .is_err(),
+        "pre-dispatch rejection must not create an output spool"
+    );
+}
+
+#[test]
 fn l_env_1_l_env_12_projection_preserves_seconds_and_marks_lossy_bytes() {
     let marker =
         b"\n\nGWZ-Commit-ID: 01987b0c-2f75-7c4a-9a32-8fd22f7d7c91\nGWZ-Workspace-ID: ws_test\n";

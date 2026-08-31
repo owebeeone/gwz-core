@@ -374,7 +374,8 @@ pub enum ArtifactSourceKind {
 /// displaces the merge lane's own errors. The gate lives at the command sites instead --
 /// see [`assert_conf_unmodified_for`].
 pub fn read_manifest(root: &Path) -> ModelResult<ManifestArtifact> {
-    ManifestArtifact::from_yaml(&read_to_string(root.join(WORKSPACE_MANIFEST))?)
+    let text = fs::read_to_string(root.join(WORKSPACE_MANIFEST)).map_err(manifest_io_error)?;
+    ManifestArtifact::from_yaml(&text)
 }
 
 pub fn write_manifest(root: &Path, artifact: &ManifestArtifact) -> ModelResult<()> {
@@ -778,6 +779,16 @@ fn io_error(err: io::Error) -> ModelError {
     ModelError::new(ErrorCode::IoError, err.to_string())
 }
 
+fn manifest_io_error(err: io::Error) -> ModelError {
+    match err.kind() {
+        io::ErrorKind::NotFound => ModelError::new(ErrorCode::ManifestNotFound, err.to_string()),
+        io::ErrorKind::PermissionDenied => {
+            ModelError::new(ErrorCode::PermissionDenied, err.to_string())
+        }
+        _ => ModelError::new(ErrorCode::ManifestInvalid, err.to_string()),
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::cell::Cell;
@@ -968,6 +979,38 @@ pub(crate) mod tests {
             temp.path()
                 .join("gwz.conf/markers/01987b0c-2f75-7c4a-9a32-8fd22f7d7c91.yaml")
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn missing_manifest_is_typed_without_reclassifying_other_artifact_io() {
+        let temp = TempDir::new("missing-manifest-code");
+
+        let manifest = read_manifest(temp.path()).expect_err("manifest is absent");
+        assert_eq!(manifest.code, ErrorCode::ManifestNotFound);
+
+        let permission = manifest_io_error(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "injected permission denial",
+        ));
+        assert_eq!(permission.code, ErrorCode::PermissionDenied);
+
+        for error in [
+            io::Error::new(io::ErrorKind::InvalidData, "injected invalid UTF-8"),
+            io::Error::other("injected manifest read failure"),
+        ] {
+            assert_eq!(
+                manifest_io_error(error).code,
+                ErrorCode::ManifestInvalid,
+                "other workspace-manifest read failures are typed workspace rejections"
+            );
+        }
+
+        let lock = read_lock(temp.path()).expect_err("lock is absent");
+        assert_eq!(
+            lock.code,
+            ErrorCode::IoError,
+            "the narrow correction must not reclassify general artifact I/O"
         );
     }
 
