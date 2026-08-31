@@ -71,10 +71,13 @@ provide named points that can be inspected or materialized later.
 
 ### One view across repositories
 
-`status`, `diff`, `add`, `commit`, `pull`, `push`, branch, stash, snapshot, and
-materialization workflows use the same member selection and report results per
-repository. A caller can see what succeeded, what failed, and which member was
-responsible.
+`status`, `diff`, `log`, `add`, `commit`, `pull`, `push`, branch, stash,
+snapshot, and materialization workflows use the same member selection and
+report results per repository. A caller can see what succeeded, what failed,
+and which member was responsible. `gwz log` also presents the root and member
+histories as one newest-first stream, coalescing coordinated commits into a
+single workspace-level change while retaining explicit degradation records for
+repositories that could not contribute.
 
 ### Explicit repository membership
 
