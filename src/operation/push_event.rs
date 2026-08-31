@@ -705,10 +705,15 @@ impl From<PlannedAction> for crate::PlannedAction {
 }
 
 /// Dispatch a unified commit-log request through the operation seam.
+pub use super::commit_log::{
+    CommitLogOutputRegistry, CommitLogReadRequest, CommitLogReadResponse, CommitLogReadState,
+};
+
 pub fn handle_log(
     start: &std::path::Path,
     request: crate::LogRequest,
     operation_id: impl Into<String>,
+    output_registry: &CommitLogOutputRegistry,
 ) -> model::ModelResult<crate::LogResponse> {
-    super::commit_log::handle_log(start, request, operation_id)
+    super::commit_log::handle_log(start, request, operation_id, output_registry)
 }

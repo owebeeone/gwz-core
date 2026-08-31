@@ -14,6 +14,9 @@ mod merge;
 mod request;
 
 pub(super) use handler::handle_log;
+pub use handler::{
+    CommitLogOutputRegistry, CommitLogReadRequest, CommitLogReadResponse, CommitLogReadState,
+};
 #[cfg(test)]
 use request::CommitLogHistories;
 use request::open_request_histories;

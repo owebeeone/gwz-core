@@ -2002,8 +2002,10 @@ SCHEMA = schema(
         kind=F(1, Ref.LogMergeKind),
         gwz_commit_id=F(2, STR, optional=True)),
 
-    # One post-coalescing workspace-level change. ordering_timestamp_ms is the
-    # latest sibling committer timestamp admitted by the bounded merge window.
+    # One post-coalescing workspace-level change. Slot 7 remains the original
+    # millisecond convenience field but is optional because Git's signed-i64
+    # seconds domain is wider. Slots 8-10 preserve exact seconds; slot 11 tells
+    # clients whether any emitted source bytes required lossy UTF-8 projection.
     LogEntry=Msg(
         members=F(1, List(Ref.LogEntryMember)),
         provenance=F(2, Ref.LogMergeProvenance),
@@ -2011,7 +2013,11 @@ SCHEMA = schema(
         committer=F(4, Ref.GitObjectIdentity),
         subject=F(5, STR),
         body=F(6, STR, optional=True),
-        ordering_timestamp_ms=F(7, INT)),
+        ordering_timestamp_ms=F(7, INT, optional=True),
+        author_timestamp_seconds=F(8, INT),
+        committer_timestamp_seconds=F(9, INT),
+        ordering_timestamp_seconds=F(10, INT),
+        lossy=F(11, BOOL, optional=True)),
 
     # A selected repository that could not contribute to this request. The
     # stable enum drives machine behavior; operand/message add specific context.

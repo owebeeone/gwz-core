@@ -2452,6 +2452,408 @@ fn raw_identity_commit(
     oid
 }
 
+#[test]
+fn l_int_1_dispatch_spools_every_record_with_cursor_eof_and_release() {
+    let fixture = Fixture::new("handler-spool");
+    let root = commit(&fixture.root, "root subject\nroot body", 100, &[]);
+    let member_repo = Repository::init(fixture.path().join("app")).unwrap();
+    let app = commit(&member_repo, "app subject", 200, &[]);
+    fixture.write_manifest(&[member("mem_app", "app", true)]);
+
+    let registry = crate::operation::CommitLogOutputRegistry::new();
+    let response = crate::operation::handle_log(
+        fixture.path(),
+        log_request(&[], &[], false),
+        "op-log-spool",
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    let log_id = response.output.log_id;
+    assert!(!log_id.is_empty());
+
+    let second_response = crate::operation::handle_log(
+        fixture.path(),
+        log_request(&[], &[], false),
+        "op-log-spool-second",
+        &registry,
+    )
+    .unwrap();
+    let second_log_id = second_response.output.log_id;
+    assert!(!second_log_id.is_empty());
+    assert_ne!(log_id, second_log_id);
+    for id in [&log_id, &second_log_id] {
+        let batch = registry
+            .read(
+                id,
+                &crate::operation::CommitLogReadRequest {
+                    cursor: None,
+                    max_records: Some(1),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            batch.records[0].entry.as_ref().unwrap().members[0].commit,
+            app.to_string()
+        );
+    }
+
+    for max_records in [0, u32::MAX] {
+        let error = registry
+            .read(
+                &log_id,
+                &crate::operation::CommitLogReadRequest {
+                    cursor: None,
+                    max_records: Some(max_records),
+                },
+            )
+            .expect_err("unbounded batch spellings must be refused");
+        assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+    }
+
+    let first = registry
+        .read(
+            &log_id,
+            &crate::operation::CommitLogReadRequest {
+                cursor: None,
+                max_records: Some(1),
+            },
+        )
+        .unwrap();
+    assert_eq!(first.state, crate::operation::CommitLogReadState::Data);
+    assert_eq!(first.records.len(), 1);
+    assert_eq!(
+        first.records[0].entry.as_ref().unwrap().members[0].commit,
+        app.to_string()
+    );
+
+    let second = registry
+        .read(
+            &log_id,
+            &crate::operation::CommitLogReadRequest {
+                cursor: Some(first.next_cursor),
+                max_records: Some(1),
+            },
+        )
+        .unwrap();
+    assert_eq!(second.state, crate::operation::CommitLogReadState::Data);
+    assert_eq!(
+        second.records[0].entry.as_ref().unwrap().members[0].commit,
+        root.to_string()
+    );
+
+    let eof = registry
+        .read(
+            &log_id,
+            &crate::operation::CommitLogReadRequest {
+                cursor: Some(second.next_cursor),
+                max_records: Some(1),
+            },
+        )
+        .unwrap();
+    assert_eq!(eof.state, crate::operation::CommitLogReadState::Eof);
+    assert!(eof.records.is_empty());
+
+    let invalid = registry
+        .read(
+            &log_id,
+            &crate::operation::CommitLogReadRequest {
+                cursor: Some(1),
+                max_records: Some(1),
+            },
+        )
+        .expect_err("a non-boundary cursor must be rejected");
+    assert_eq!(invalid.code, crate::model::ErrorCode::InvalidRequest);
+
+    registry.release(&log_id);
+    registry.release(&log_id);
+    let released = registry
+        .read(&log_id, &crate::operation::CommitLogReadRequest::default())
+        .expect_err("released ids must stop resolving");
+    assert_eq!(released.code, crate::model::ErrorCode::InvalidRequest);
+    assert_eq!(
+        registry
+            .read(
+                &second_log_id,
+                &crate::operation::CommitLogReadRequest {
+                    cursor: None,
+                    max_records: Some(1),
+                },
+            )
+            .unwrap()
+            .records[0]
+            .entry
+            .as_ref()
+            .unwrap()
+            .members[0]
+            .commit,
+        app.to_string()
+    );
+    registry.release(&second_log_id);
+}
+
+#[test]
+fn l_env_1_l_env_12_projection_preserves_seconds_and_marks_lossy_bytes() {
+    let marker =
+        b"\n\nGWZ-Commit-ID: 01987b0c-2f75-7c4a-9a32-8fd22f7d7c91\nGWZ-Workspace-ID: ws_test\n";
+    let mut a_message = b"least\xff\nbody".to_vec();
+    a_message.extend_from_slice(marker);
+    let mut z_message = b"other sibling".to_vec();
+    z_message.extend_from_slice(marker);
+    let entries = vec![
+        CommitLogEntry {
+            target: CommitLogTarget {
+                member_id: "mem_z".to_owned(),
+                member_path: "z".to_owned(),
+                source_kind: ArtifactSourceKind::Git,
+            },
+            commit_id: "b".repeat(40),
+            parent_ids: Vec::new(),
+            author: CommitLogIdentity {
+                name: b"Zed".to_vec(),
+                email: b"z@example.invalid".to_vec(),
+                time: CommitLogTime {
+                    seconds: 7,
+                    offset_minutes: 0,
+                },
+            },
+            committer: CommitLogIdentity {
+                name: b"Zed".to_vec(),
+                email: b"z@example.invalid".to_vec(),
+                time: CommitLogTime {
+                    seconds: i64::MAX,
+                    offset_minutes: 0,
+                },
+            },
+            message: z_message,
+            message_encoding: None,
+        },
+        CommitLogEntry {
+            target: CommitLogTarget {
+                member_id: "mem_a".to_owned(),
+                member_path: "a".to_owned(),
+                source_kind: ArtifactSourceKind::Git,
+            },
+            commit_id: "a".repeat(40),
+            parent_ids: vec!["0".repeat(40)],
+            author: CommitLogIdentity {
+                name: b"A\xff".to_vec(),
+                email: b"a@example.invalid".to_vec(),
+                time: CommitLogTime {
+                    seconds: i64::MAX,
+                    offset_minutes: 600,
+                },
+            },
+            committer: CommitLogIdentity {
+                name: b"A".to_vec(),
+                email: b"a@example.invalid".to_vec(),
+                time: CommitLogTime {
+                    seconds: i64::MIN,
+                    offset_minutes: -600,
+                },
+            },
+            message: a_message,
+            message_encoding: Some(b"ISO-8859-1".to_vec()),
+        },
+    ];
+    let group = super::coalesce::assemble_commit_log_groups(entries, true)
+        .into_iter()
+        .next()
+        .unwrap();
+    let record =
+        super::handler::project_merged_event(CommitLogMergedEvent::Group(group), true).unwrap();
+    let entry = record.entry.unwrap();
+
+    assert_eq!(
+        entry
+            .members
+            .iter()
+            .map(|member| member.member_id.as_str())
+            .collect::<Vec<_>>(),
+        ["mem_a", "mem_z"]
+    );
+    assert_eq!(entry.subject, "least�");
+    assert!(entry.body.as_deref().unwrap().contains("body"));
+    assert_eq!(entry.author.name, "A�");
+    assert_eq!(entry.author_timestamp_seconds, i64::MAX);
+    assert_eq!(entry.committer_timestamp_seconds, i64::MIN);
+    assert_eq!(entry.ordering_timestamp_seconds, i64::MAX);
+    assert_eq!(entry.author.time_ms, None);
+    assert_eq!(entry.committer.time_ms, None);
+    assert_eq!(entry.ordering_timestamp_ms, None);
+    assert_eq!(entry.lossy, Some(true));
+    assert_eq!(entry.provenance.kind, crate::LogMergeKind::Marker);
+}
+
+#[test]
+fn l_int_1_spool_creation_failure_leaves_no_resolvable_log_id() {
+    let fixture = Fixture::new("handler-spool-failure");
+    commit(&fixture.root, "root", 100, &[]);
+    fixture.write_manifest(&[]);
+    let registry = crate::operation::CommitLogOutputRegistry::new();
+    registry.fail_next_spool_for_test();
+
+    let error = crate::operation::handle_log(
+        fixture.path(),
+        log_request(&[], &[], false),
+        "op-log-spool-failure",
+        &registry,
+    )
+    .expect_err("spool failure must fail the unary request");
+    assert_eq!(error.code, crate::model::ErrorCode::IoError);
+    assert_eq!(registry.registered_log_count_for_test(), 0);
+}
+
+#[test]
+fn l_int_1_post_registration_spool_failure_removes_the_output_authority() {
+    let fixture = Fixture::new("handler-spool-append-failure");
+    commit(&fixture.root, "root", 100, &[]);
+    fixture.write_manifest(&[]);
+    let registry = crate::operation::CommitLogOutputRegistry::new();
+    registry.fail_next_append_for_test();
+
+    let error = crate::operation::handle_log(
+        fixture.path(),
+        log_request(&[], &[], false),
+        "op-log-spool-append-failure",
+        &registry,
+    )
+    .expect_err("append failure must fail the unary request");
+    assert_eq!(error.code, crate::model::ErrorCode::IoError);
+    assert_eq!(registry.registered_log_count_for_test(), 0);
+}
+
+#[test]
+fn l_int_1_seal_failure_removes_the_output_authority() {
+    let fixture = Fixture::new("handler-spool-seal-failure");
+    commit(&fixture.root, "root", 100, &[]);
+    fixture.write_manifest(&[]);
+    let registry = crate::operation::CommitLogOutputRegistry::new();
+    registry.fail_next_seal_for_test();
+
+    let error = crate::operation::handle_log(
+        fixture.path(),
+        log_request(&[], &[], false),
+        "op-log-spool-seal-failure",
+        &registry,
+    )
+    .expect_err("seal failure must fail the unary request");
+    assert_eq!(error.code, crate::model::ErrorCode::IoError);
+    assert_eq!(registry.registered_log_count_for_test(), 0);
+}
+
+#[test]
+fn l_int_1_public_handler_preserves_partial_aggregate() {
+    let fixture = Fixture::new("handler-partial");
+    commit(&fixture.root, "root", 100, &[]);
+    fixture.write_manifest(&[member("mem_missing", "missing", true)]);
+    let registry = crate::operation::CommitLogOutputRegistry::new();
+
+    let response = crate::operation::handle_log(
+        fixture.path(),
+        log_request(&[], &[], false),
+        "op-log-partial",
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Partial
+    );
+    let batch = registry
+        .read(
+            &response.output.log_id,
+            &crate::operation::CommitLogReadRequest::default(),
+        )
+        .unwrap();
+    assert_eq!(batch.records.len(), 2);
+    assert_eq!(
+        batch.records[0].degradation.as_ref().unwrap().reason,
+        crate::LogDegradationReason::RepositoryUnreadable
+    );
+    assert_eq!(batch.records[1].kind, crate::LogOutputRecordKind::Entry);
+}
+
+#[test]
+fn l_int_1_strict_degradation_sets_final_aggregate_and_streams_once() {
+    let fixture = Fixture::new("handler-strict");
+    commit(&fixture.root, "root", 100, &[]);
+    Repository::init(fixture.path().join("empty")).unwrap();
+    fixture.write_manifest(&[member("mem_empty", "empty", true)]);
+    let registry = crate::operation::CommitLogOutputRegistry::new();
+    let mut request = log_request(&[], &[], false);
+    request.options = Some(crate::LogOptions {
+        strict: Some(true),
+        ..crate::LogOptions::default()
+    });
+
+    let response =
+        crate::operation::handle_log(fixture.path(), request, "op-log-strict", &registry).unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Failed
+    );
+    let batch = registry
+        .read(
+            &response.output.log_id,
+            &crate::operation::CommitLogReadRequest::default(),
+        )
+        .unwrap();
+    assert_eq!(batch.records.len(), 2);
+    assert_eq!(
+        batch.records[0].kind,
+        crate::LogOutputRecordKind::Degradation
+    );
+    assert_eq!(
+        batch.records[0].degradation.as_ref().unwrap().reason,
+        crate::LogDegradationReason::Unborn
+    );
+    assert_eq!(batch.records[1].kind, crate::LogOutputRecordKind::Entry);
+}
+
+#[test]
+fn l_coa_6_invalid_marker_projects_the_frozen_additive_token() {
+    let entry = CommitLogEntry {
+        target: CommitLogTarget {
+            member_id: "mem_bad".to_owned(),
+            member_path: "bad".to_owned(),
+            source_kind: ArtifactSourceKind::Git,
+        },
+        commit_id: "d".repeat(40),
+        parent_ids: Vec::new(),
+        author: CommitLogIdentity {
+            name: b"Author".to_vec(),
+            email: b"author@example.invalid".to_vec(),
+            time: CommitLogTime {
+                seconds: 1,
+                offset_minutes: 0,
+            },
+        },
+        committer: CommitLogIdentity {
+            name: b"Author".to_vec(),
+            email: b"author@example.invalid".to_vec(),
+            time: CommitLogTime {
+                seconds: 1,
+                offset_minutes: 0,
+            },
+        },
+        message: b"invalid\n\nGWZ-Commit-ID=not-a-v7\nGWZ-Workspace-ID: ws_test\n".to_vec(),
+        message_encoding: None,
+    };
+    let group = super::coalesce::assemble_commit_log_groups([entry], true)
+        .into_iter()
+        .next()
+        .unwrap();
+    let record =
+        super::handler::project_merged_event(CommitLogMergedEvent::Group(group), false).unwrap();
+    let provenance = record.entry.unwrap().provenance;
+    assert_eq!(provenance.kind, crate::LogMergeKind::None);
+    assert_eq!(provenance.gwz_commit_id.as_deref(), Some("marker-invalid"));
+}
+
 struct Fixture {
     path: PathBuf,
     root: Repository,

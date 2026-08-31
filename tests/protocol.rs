@@ -84,7 +84,11 @@ fn log_stream_shape_round_trips_entries_and_structured_degradations() {
         },
         subject: "Add log protocol".to_owned(),
         body: Some("Protocol-only body".to_owned()),
-        ordering_timestamp_ms: 1_727_000_000_500,
+        ordering_timestamp_ms: Some(1_727_000_000_500),
+        author_timestamp_seconds: 1_727_000_000,
+        committer_timestamp_seconds: 1_727_000_000,
+        ordering_timestamp_seconds: 1_727_000_000,
+        lossy: Some(false),
     };
     let entry_record = LogOutputRecord {
         kind: LogOutputRecordKind::Entry,
@@ -134,12 +138,30 @@ fn log_stream_shape_round_trips_entries_and_structured_degradations() {
 }
 
 #[test]
-fn log_dispatch_reaches_the_future_engine_stub() {
-    let error = gwz_core::operation::handle_log(Path::new("."), log_request(), "op-log-protocol")
-        .expect_err("S2.0 must leave execution to future log engine steps");
+fn log_output_registry_rejects_unknown_or_released_handles() {
+    let registry = gwz_core::operation::CommitLogOutputRegistry::new();
+    let request = gwz_core::operation::CommitLogReadRequest {
+        cursor: None,
+        max_records: Some(1),
+    };
+    let unknown = registry
+        .read("missing", &request)
+        .expect_err("unknown log ids must be typed refusals");
+    assert_eq!(unknown.code, gwz_core::model::ErrorCode::InvalidRequest);
 
-    assert_eq!(error.code, gwz_core::model::ErrorCode::UnsupportedOperation);
-    assert_eq!(error.message, "log engine is not implemented yet");
+    registry.release("missing");
+    registry.release("missing");
+
+    let oversized = registry
+        .read(
+            "missing",
+            &gwz_core::operation::CommitLogReadRequest {
+                cursor: None,
+                max_records: Some(u32::MAX),
+            },
+        )
+        .expect_err("unknown authority is refused before a batch can be read");
+    assert_eq!(oversized.code, gwz_core::model::ErrorCode::InvalidRequest);
 }
 
 #[test]

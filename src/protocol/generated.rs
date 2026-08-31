@@ -5555,7 +5555,11 @@ pub struct LogEntry {
     pub committer: GitObjectIdentity,
     pub subject: String,
     pub body: Option<String>,
-    pub ordering_timestamp_ms: i64,
+    pub ordering_timestamp_ms: Option<i64>,
+    pub author_timestamp_seconds: i64,
+    pub committer_timestamp_seconds: i64,
+    pub ordering_timestamp_seconds: i64,
+    pub lossy: Option<bool>,
 }
 impl LogEntry {
     pub fn to_cbor(&self) -> Cbor {
@@ -5566,7 +5570,11 @@ impl LogEntry {
             (4, self.committer.to_cbor()),
             (5, Cbor::Text(self.subject.clone())),
             (6, match &self.body { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
-            (7, Cbor::Int(self.ordering_timestamp_ms)),
+            (7, match &self.ordering_timestamp_ms { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (8, Cbor::Int(self.author_timestamp_seconds)),
+            (9, Cbor::Int(self.committer_timestamp_seconds)),
+            (10, Cbor::Int(self.ordering_timestamp_seconds)),
+            (11, match &self.lossy { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -5577,7 +5585,11 @@ impl LogEntry {
             committer: GitObjectIdentity::from_cbor(c.try_get(4)?)?,
             subject: c.try_get(5)?.try_text()?,
             body: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
-            ordering_timestamp_ms: c.try_get(7)?.try_int()?,
+            ordering_timestamp_ms: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            author_timestamp_seconds: c.try_get(8)?.try_int()?,
+            committer_timestamp_seconds: c.try_get(9)?.try_int()?,
+            ordering_timestamp_seconds: c.try_get(10)?.try_int()?,
+            lossy: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
         })
     }
 }
