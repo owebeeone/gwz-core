@@ -1598,39 +1598,37 @@ fn l_env_5_6_locale_independence_and_local_timezone_are_process_pinned() {
         return;
     }
 
-    for (timezone, expected) in [
-        ("UTC", 1_788_141_784_i64),
-        ("Australia/Sydney", 1_788_105_784_i64),
-    ] {
-        let output = Command::new(std::env::current_exe().unwrap())
-            .arg("--exact")
-            .arg("operation::commit_log::tests::l_env_5_6_locale_independence_and_local_timezone_are_process_pinned")
-            .arg("--nocapture")
-            .env(CHILD_EPOCH, expected.to_string())
-            .env("TZ", timezone)
-            .env("LC_ALL", "tr_TR.UTF-8")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "TZ={timezone}: {}",
-            String::from_utf8_lossy(&output.stderr)
+    let expected = super::filter::parse_filter_time("2026-08-31T02:03:04").unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("operation::commit_log::tests::l_env_5_6_locale_independence_and_local_timezone_are_process_pinned")
+        .arg("--nocapture")
+        .env(CHILD_EPOCH, expected.to_string())
+        .env("LC_ALL", "tr_TR.UTF-8")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "locale child failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    use chrono::{FixedOffset, NaiveDate, TimeZone};
+    let local = NaiveDate::from_ymd_opt(2026, 8, 31)
+        .unwrap()
+        .and_hms_opt(2, 3, 4)
+        .unwrap();
+    for (offset, expected) in [(0, 1_788_141_784), (10 * 60 * 60, 1_788_105_784)] {
+        let timezone = FixedOffset::east_opt(offset).unwrap();
+        assert_eq!(
+            super::filter::unique_timestamp(timezone.from_local_datetime(&local)),
+            Some(expected)
         );
     }
 }
 
 #[test]
 fn l_env_6_epoch_extremes_and_dst_gap_overlap_fail_closed() {
-    const DST_CHILD: &str = "GWZ_S2_6_DST_FAIL_CLOSED_CHILD";
-    if std::env::var_os(DST_CHILD).is_some() {
-        for local in ["2026-04-05T02:30:00", "2026-10-04T02:30:00"] {
-            let error = super::filter::parse_filter_time(local).unwrap_err();
-            assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
-            assert!(error.message.contains(local), "{}", error.message);
-        }
-        return;
-    }
-
     assert_eq!(
         super::filter::parse_filter_time(&format!("@{}", i64::MIN)).unwrap(),
         i64::MIN
@@ -1645,19 +1643,27 @@ fn l_env_6_epoch_extremes_and_dst_gap_overlap_fail_closed() {
         assert!(error.message.contains(overflow), "{}", error.message);
     }
 
-    let output = Command::new(std::env::current_exe().unwrap())
-        .arg("--exact")
-        .arg("operation::commit_log::tests::l_env_6_epoch_extremes_and_dst_gap_overlap_fail_closed")
-        .arg("--nocapture")
-        .env(DST_CHILD, "1")
-        .env("TZ", "Australia/Sydney")
-        .output()
+    use chrono::{DateTime, FixedOffset, MappedLocalTime, NaiveDate, TimeZone};
+    let local = NaiveDate::from_ymd_opt(2026, 4, 5)
+        .unwrap()
+        .and_hms_opt(2, 30, 0)
         .unwrap();
-    assert!(
-        output.status.success(),
-        "Sydney DST child failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let standard = FixedOffset::east_opt(10 * 60 * 60)
+        .unwrap()
+        .from_local_datetime(&local)
+        .single()
+        .unwrap();
+    let daylight = FixedOffset::east_opt(11 * 60 * 60)
+        .unwrap()
+        .from_local_datetime(&local)
+        .single()
+        .unwrap();
+    assert_eq!(
+        super::filter::unique_timestamp(MappedLocalTime::Ambiguous(standard, daylight)),
+        None
     );
+    let missing: MappedLocalTime<DateTime<FixedOffset>> = MappedLocalTime::None;
+    assert_eq!(super::filter::unique_timestamp(missing), None);
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
+use chrono::{DateTime, Local, MappedLocalTime, NaiveDate, NaiveDateTime, TimeZone};
 use regex::bytes::Regex;
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
@@ -98,9 +98,12 @@ pub(super) fn parse_filter_time(value: &str) -> ModelResult<i64> {
             .find_map(|format| NaiveDateTime::parse_from_str(value, format).ok())
     };
     local
-        .and_then(|local| Local.from_local_datetime(&local).single())
-        .map(|local| local.timestamp())
+        .and_then(|local| unique_timestamp(Local.from_local_datetime(&local)))
         .ok_or_else(|| invalid_time(value))
+}
+
+pub(super) fn unique_timestamp<Tz: TimeZone>(local: MappedLocalTime<DateTime<Tz>>) -> Option<i64> {
+    local.single().map(|local| local.timestamp())
 }
 
 fn invalid_time(value: &str) -> ModelError {
