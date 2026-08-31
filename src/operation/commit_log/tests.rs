@@ -2901,6 +2901,7 @@ impl Fixture {
         ));
         fs::create_dir_all(&path).unwrap();
         let root = Repository::init(&path).unwrap();
+        root.set_head("refs/heads/main").unwrap();
         Self { path, root }
     }
 
