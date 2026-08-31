@@ -483,26 +483,19 @@ fn join_group(group: &CommitLogGroup, entry: &CommitLogEntry) -> Option<CommitLo
 
 fn seal_groups(groups: &mut [PendingGroup], cursors: &[CursorState]) {
     for group in groups.iter_mut().filter(|group| !group.sealed) {
-        let threshold = group
-            .group
-            .ordering_timestamp_seconds()
-            .saturating_sub(COALESCING_WINDOW_SECONDS);
         group.sealed = cursors
             .iter()
             .enumerate()
-            .all(|(index, cursor)| cursor_closes_group(group, index, cursor, threshold));
+            .all(|(index, cursor)| cursor_closes_group(group, index, cursor));
     }
 }
 
-fn cursor_closes_group(
-    group: &PendingGroup,
-    index: usize,
-    cursor: &CursorState,
-    threshold: i64,
-) -> bool {
+fn cursor_closes_group(group: &PendingGroup, index: usize, cursor: &CursorState) -> bool {
     group.repositories.contains(&index)
         || cursor.done
-        || cursor.oldest_seen.is_some_and(|seen| seen < threshold)
+        || cursor
+            .oldest_seen
+            .is_some_and(|seen| seen < group_closure_threshold(group))
         || (cursor.recent_yields.len() == GROUP_CLOSURE_PATIENCE_ENTRIES
             && cursor
                 .recent_yields
@@ -510,33 +503,40 @@ fn cursor_closes_group(
                 .is_some_and(|serial| *serial > group.opened_at_yield))
 }
 
-fn closure_progress_cursor(groups: &[PendingGroup], cursors: &[CursorState]) -> Option<usize> {
-    let root = (0..groups.len())
-        .filter(|index| {
-            !groups[*index].sealed
-                && !group_is_blocked(groups, *index)
-                && groups.iter().any(|group| {
-                    group.sealed && group_depends_on(groups, group.id, groups[*index].id)
-                })
-        })
-        .min_by(|left, right| compare_groups(&groups[*left].group, &groups[*right].group))?;
-    let threshold = groups[root]
+fn group_closure_threshold(group: &PendingGroup) -> i64 {
+    group
         .group
         .ordering_timestamp_seconds()
-        .saturating_sub(COALESCING_WINDOW_SECONDS);
+        .saturating_sub(COALESCING_WINDOW_SECONDS)
+}
+
+fn closure_progress_cursor(groups: &[PendingGroup], cursors: &[CursorState]) -> Option<usize> {
+    let group = oldest_group_blocking_sealed_output(groups)?;
     cursors
         .iter()
         .enumerate()
-        .filter(|(index, cursor)| {
-            cursor.head.is_some() && !cursor_closes_group(&groups[root], *index, cursor, threshold)
+        .filter_map(|(index, cursor)| {
+            let head = cursor.head.as_ref()?;
+            (!cursor_closes_group(group, index, cursor)).then_some((index, head))
         })
-        .min_by(|(_, left), (_, right)| {
-            compare_entries(
-                left.head.as_ref().expect("a blocker has a head"),
-                right.head.as_ref().expect("a blocker has a head"),
-            )
-        })
+        .min_by(|(_, left), (_, right)| compare_entries(left, right))
         .map(|(index, _)| index)
+}
+
+fn oldest_group_blocking_sealed_output(groups: &[PendingGroup]) -> Option<&PendingGroup> {
+    (0..groups.len())
+        .filter(|index| group_blocks_sealed_output(groups, *index))
+        .min_by(|left, right| compare_groups(&groups[*left].group, &groups[*right].group))
+        .map(|index| &groups[index])
+}
+
+fn group_blocks_sealed_output(groups: &[PendingGroup], index: usize) -> bool {
+    let candidate = &groups[index];
+    !candidate.sealed
+        && !group_is_blocked(groups, index)
+        && groups
+            .iter()
+            .any(|group| group.sealed && group_depends_on(groups, group.id, candidate.id))
 }
 
 fn group_depends_on(groups: &[PendingGroup], group: GroupId, ancestor: GroupId) -> bool {
