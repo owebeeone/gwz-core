@@ -241,6 +241,14 @@ def _fault_count(darwin: str, linux: str) -> str:
     FIRST-DISPATCH-EXPECTED convention above stays in force for future
     moves; a measured number wins, and these are now the measured numbers.
     Acceptance record: dev-docs/GwzM5-8R2E-E7-Acceptance.md (gwz-dev root).
+
+    gwz log settlement (2026-09-01) moves the lib remainder and only it by
+    116 portable tests. Darwin 1095 passed + 1 ignored is MEASURED by the
+    exact v0.12.0 remainder command after release workflow 33412428402
+    exposed the stale marker. Linux 1096 is the same cfg-independent +116
+    over the workflow-measured v0.11.1 Linux value 980; it is
+    FIRST-DISPATCH-EXPECTED until the corrected release workflow executes
+    it, at which point the measured result wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -279,7 +287,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("979 passed", "980 passed")),
+         _fault_count("1095 passed", "1096 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
