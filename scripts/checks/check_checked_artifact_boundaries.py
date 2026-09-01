@@ -53,7 +53,11 @@ PROTECTED_SOURCE_DIGESTS = {
     # `bootstrap_merge_start_parents` and `create_merge_store_record` join the
     # door above, and [P3-2]'s renderer is extracted to a named `pub(super)` fn
     # so its three arms take an in-suite guard.
-    "checked_artifact/entry.rs": "a454c04d434979a769bba4d89abaac5295ef208db3bab24ede437f38516a3958",
+    # R2-E E4.3 re-pins it once more for row `:280`'s other half:
+    # `rewrite_merge_store_record`, the exact-existing-source replacement the v1
+    # store's rewrite path publishes through, carrying O14's interim gate
+    # statement (durability opened, authority and admission both closed).
+    "checked_artifact/entry.rs": "257a2d1396d801aea297f02478eb0136df35cde6eefb7621b4a01fd906f218cc",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
     "checked_artifact/mod.rs": "48d9261bd994dcf81ca77d3b3195b2e2e1ac6f2231f8c506580ab79571057e7c",
     # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
@@ -225,6 +229,15 @@ APPROVED_RUST_PATH_EDGES = {
 # bootstrapping §10 row `:273`'s two managed parents before `create_open`, with
 # the creation path publishing through the checked boundary rather than its own
 # raw durable writers. The other five were recomputed and are unchanged.
+#
+# R2-E E4.3 re-pins ONE, `v1_lifecycle/mod.rs`: `store/rewrite.rs`'s `commit`
+# publishes through `entry::rewrite_merge_store_record` instead of its own
+# staged/rename/fsync, `create_temporary` retires with the staging it served
+# (taking this path's last `create_dir_all` with it), `CommitFault`'s first
+# variant is renamed to the crash shape it now names, and `tests/store.rs`
+# gains the three rows that drive the converted path. The other six digests
+# were recomputed in the same pass and are unchanged, which is the evidence
+# that the edit stayed inside the v1 lifecycle.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
@@ -232,7 +245,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "5c76c6a4d87444684f7e44ab67be496847196491be30b17e3507dcd0f1765329",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "1b36abfea784ee1b6cfaa35d601d9bcee442c1240183ecfd61c9db8a6461676d",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "9a52e570e67ffe1518d25fcac7a81593a7a13d9842c2ffd45575e818d875e8bd",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -342,10 +355,20 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
 # ways. `create_open`'s publication moved to the checked boundary, so
 # `store/rewrite.rs` drops from three references of each writer to two -- the
 # `use` and `commit`'s call, exactly E4.3's remaining half.
+#
+# R2-E E4.3 RETIRES `store/rewrite.rs` from the map: `commit`'s
+# `rename_durable`/`sync_dir` pair is the last raw writer on the v1 store's
+# rewrite path, and it publishes through `entry::rewrite_merge_store_record`
+# now, so the file names `durable_fs` nowhere and drops out of the derived
+# inventory entirely. The retirement is deliberate and fails closed BOTH ways:
+# a re-added writer in that file trips the "gained a raw durable_fs writer
+# outside the O13 accepted residual" arm, and a pin entry left behind for a file
+# that no longer names `durable_fs` trips the "must be retired from the pin
+# deliberately" arm. The two archive files stay: they are the terminal-archive
+# §10 row, E4.4's.
 V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = {
     "workspace_ops/merge/v1_lifecycle/archive.rs": {"sync_dir": 2},
     "workspace_ops/merge/v1_lifecycle/store/archive.rs": {"rename_noreplace": 2, "sync_dir": 7},
-    "workspace_ops/merge/v1_lifecycle/store/rewrite.rs": {"rename_durable": 2, "sync_dir": 2},
 }
 V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_dir")
 
@@ -375,6 +398,14 @@ ENTRY_REFERENCES = {
         "workspace_ops/merge/v1_lifecycle/checked.rs"
     },
     "create_merge_store_record": {
+        "workspace_ops/merge/v1_lifecycle/store/rewrite.rs"
+    },
+
+    # R2-E Step E4.3 — row `:280`'s other half: the rewrite of the exact
+    # existing record. Same file, same boundary, expected fact `Bytes` rather
+    # than `Missing`; with it `store/rewrite.rs` names no raw durable writer at
+    # all and leaves the O13 inventory above.
+    "rewrite_merge_store_record": {
         "workspace_ops/merge/v1_lifecycle/store/rewrite.rs"
     },
 
@@ -452,6 +483,8 @@ ENTRY_ITEMS = {
     "replace_merge_preservation_workspace",
     "replace_merge_root_artifact",
     "require_canonical_bundle_parent",
+    # E4.3's one: row `:280`'s rewrite door.
+    "rewrite_merge_store_record",
     "root_artifact",
 }
 

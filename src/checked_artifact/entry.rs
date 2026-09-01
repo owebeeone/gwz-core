@@ -390,6 +390,62 @@ pub(crate) fn create_merge_store_record(
     artifact.replace_exact(&CheckedArtifactFact::Missing, goal)
 }
 
+/// R2-E Step E4.3 — O13's substantive half on the REWRITE path.
+///
+/// Row `:280` asks the v1 checked store for "the same purposes and artifact
+/// actions" its converted siblings use; this is the rewrite verb — a checked
+/// replacement whose expected fact is the EXACT EXISTING record bytes, so the
+/// boundary's own exact-source proof, not the caller's word, authorizes the
+/// publication. A separate door from `create_merge_store_record` rather than one
+/// parameterised over the expected fact: their frozen rows differ (row `:273`
+/// bootstraps parents before the record, row `:280`'s rewrite must never create
+/// one), their refusal sentences differ with them, and E4.2's landed text stays
+/// byte-identical.
+///
+/// **No parent creation** — the row's first frozen clause, held structurally.
+/// `CheckedArtifact::acquire` never creates a parent, and with an absent or
+/// noncanonical one `classify_exact` returns `Ambiguous`
+/// (`classification.rs:130-139`), which `replace_exact` turns into a refusal
+/// (`transition.rs:45-51`). No managed-parent admission session runs here at
+/// all: the rewrite is reached under BOTH `V1MutationLease::acquire` — the
+/// reverse arms' plain lease — and `acquire_activated`, and neither bootstraps;
+/// `acquire_for_merge_start` is the creation lease's alone. (That plain lease
+/// stays capability-free AS A LEASE, but this door is not: `acquire` above takes
+/// a durable object identity, so from E4.3 the reverse arms depend on an
+/// admitted filesystem too — disclosed at `store/rewrite.rs`'s `commit`,
+/// consequence 2, and not owned here.) Unlike the creation door there is
+/// deliberately no earlier parent sentence: the store re-reads the record
+/// immediately before calling here, so a record it could read has a parent, and
+/// a pre-check would be production-dead.
+///
+/// **Which gate this opens, which stays closed** (O14's interim statement,
+/// binding on E4.3-E4.6; the E4.2 C1(iii) pattern at
+/// `coordinator/execution.rs`'s `execute_merge_start_managed_parents`):
+/// DURABILITY, and only durability. `replace_exact` detaches the exact existing
+/// source into the private area, publishes the goal no-replace, barriers the
+/// managed parent and the private area, and re-verifies durably
+/// (`transition.rs:391-425`; `cleanup.rs:55-60`). The AUTHORITY gate stays SHUT:
+/// `authorize_write`/`RetainedWriteAuthorityV1` still have no production
+/// consumer and this leaf is written from a path, which §9 `:264-266` names as
+/// NOT parent authority. E4.3 does not even open the ADMISSION half E4.2 opened
+/// — it mints no `AdmittedCheckedActionV1` and no `ManagedParentFacadeV1`,
+/// because "no parent creation" forbids the session that would mint them. That
+/// conversion is the plan's minted O14, decided at E4.6's chartering.
+pub(crate) fn rewrite_merge_store_record(
+    root: &Path,
+    relative: &Path,
+    expected: &[u8],
+    goal: &[u8],
+) -> ModelResult<()> {
+    CheckedArtifact::acquire(
+        CheckedArtifactPolicy::workspace(root),
+        relative,
+        ErrorCode::MergeRecoveryRequired,
+        format!("merge record '{}'", relative.display()),
+    )?
+    .replace_exact(&CheckedArtifactFact::Bytes(expected.to_vec()), goal)
+}
+
 /// The catalog doors' error rendering, as a named function.
 ///
 /// E4.1 review [P3-2]: inline, the three arms were unreachable from a test

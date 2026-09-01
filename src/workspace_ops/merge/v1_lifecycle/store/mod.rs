@@ -13,9 +13,15 @@ pub(super) struct CheckedV1Store {
     commit_fault: Option<CommitFault>,
 }
 
+/// The two crash shapes a rewrite is driven at.
+///
+/// R2-E Step E4.3 renamed the first: with the conversion the store owns no
+/// temporary of its own, so "after temporary sync" named nothing. Both variants
+/// now sit either side of the checked publication — nothing published, and
+/// published-then-interrupted — which is the pair the rows below assert on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CommitFault {
-    AfterTemporarySync,
+    BeforePublication,
     AfterPublish,
 }
 

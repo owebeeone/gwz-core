@@ -399,6 +399,31 @@ def _fault_count(darwin: str, linux: str) -> str:
       linux  1100 -> 1111: DERIVED (+11, cfg-independent per the audit
         above), FIRST-DISPATCH-EXPECTED at the E4.2 landing dispatch. A
         measured number wins.
+
+    R2-E E4.3 -- the merge record REWRITE (§10 row `:280`'s other half: the
+    exact existing `MergeStore`, "no parent creation; unknown fields and exact
+    reread preserved") -- moves ONE partition, by three rows, none carrying a
+    cfg gate (grep of this step's test diff: zero cfg( occurrences in the added
+    lines):
+
+      v1_lifecycle:: 260 -> 263, MEASURED on this step's own tree (263 passed,
+        2026-09-01): the three rows in `v1_lifecycle::tests::store` that drive
+        the converted rewrite -- the durable leaf re-read from scratch and
+        required to be an exact reread of the committed handle with its unknown
+        manifest intact; the door refusing a rewrite whose whole `.gwz` prefix
+        is absent and creating nothing; and the DISCLOSED detach window, which
+        drives `CheckedArtifactFault::BeforeManagedPublication` and measures the
+        state it leaves (see the step's flag 1). All three plant only
+        directories and a YAML leaf, and the fault key is census-free and
+        cross-platform, exactly as E4.2's fault row above. This partition
+        carries no per-OS split, so 263 is the pin on every admitted host --
+        with E4.1 [P3-7]'s standing requirement of a catalog-admitted
+        filesystem, which the rewrite now needs on every commit rather than
+        only on a start (flag 2).
+      checked_artifact:: 457 / 467 and lib remainder 1110 / 1111: UNMOVED --
+        the new boundary door carries no suite of its own and the rewrite's
+        rows all live in the v1 partition. darwin 457 and 1110 + 1 ignored
+        re-MEASURED unchanged on this tree in the same session.
     """
     if sys.platform == "darwin":
         return darwin
@@ -414,7 +439,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "fault": ("aggregate fault/restart matrices (TransitionDesign:1469-1475)", [
         ("v1 lifecycle fault and restart matrices",
          lib("workspace_ops::merge::v1_lifecycle::", "--", "--skip", "root_fault_matrix"),
-         "260 passed"),
+         "263 passed"),
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         # LINUX-COUNT-OWED (R2-E E2): the darwin value is measured on this

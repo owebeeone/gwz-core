@@ -1,16 +1,12 @@
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::durable_fs::{rename_durable, sync_dir};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::super::checked::{StoredV1Record, V1MutationLease};
 use super::super::transition::PreparedV1Rewrite;
 use super::{CommitFault, unknown};
-
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn load_open(root: &Path, merge_id: &str) -> ModelResult<StoredV1Record> {
     validate_merge_id(merge_id)?;
@@ -39,7 +35,8 @@ pub(super) fn load_open(root: &Path, merge_id: &str) -> ModelResult<StoredV1Reco
 /// BEFORE this call; an unbootstrapped parent is refused, not papered over. The
 /// single-open-record invariant survives: the pre-flight existence check stays
 /// and the checked replacement publishes no-replace onto an absent leaf.
-/// `commit`'s raw writers are untouched — E4.3's half of O13.
+/// `commit`'s raw writers are E4.3's half of O13, converted at that step; with
+/// it this module names `durable_fs` nowhere at all.
 pub(super) fn create_open(
     lease: &V1MutationLease,
     root: &Path,
@@ -74,6 +71,55 @@ pub(super) fn create_open(
     Ok(published)
 }
 
+/// Rewrite the exact existing open record.
+///
+/// **R2-E Step E4.3 — the converted rewrite path (O13's substantive half,
+/// ConsumerCheckpoint §10 row `:280`).** The publication is a CHECKED ARTIFACT
+/// ACTION now, not this module's own staged/rename/fsync:
+/// `entry::rewrite_merge_store_record` replaces an expected-`Bytes` leaf, so the
+/// boundary re-proves the exact existing source under its own retained parent
+/// before publishing and barriers both areas afterwards. With `create_open`'s
+/// half (E4.2) this module names `durable_fs` nowhere, which is O13's
+/// "no legacy raw writer" clause discharged for the v1 store.
+///
+/// The frozen row's three clauses, and where each lives:
+///
+/// * **exact existing `MergeStore`** — driven twice over. Here, the record is
+///   re-read and `same_source_as` the caller's `current` before anything is
+///   serialized; then the boundary is handed those same bytes as its expected
+///   fact, so a leaf that moved between the two refuses inside `replace_exact`
+///   rather than being clobbered.
+/// * **no parent creation** — `create_temporary`'s `create_dir_all` was this
+///   path's only parent-creating primitive and it is gone with the staging it
+///   served. Nothing replaces it: the boundary never creates a parent, and no
+///   managed-parent bootstrap runs on a rewrite (see the door's doc).
+/// * **unknown fields and exact reread preserved** — the overlay and the
+///   `require_expected` pair are UNCHANGED; what moved is only the writer under
+///   them. The pre-publication proof no longer needs a temporary of ours: the
+///   bytes about to be published are decoded and checked in memory, and the
+///   post-publication reread proves the durable leaf decodes to the same
+///   record, the same unknown manifest and the same digest.
+///
+/// **TWO DISCLOSED CONSEQUENCES of riding this boundary, both measured, neither
+/// owned by this step (2026-09-01, E4.3; the builder delivery's flags 1 and 2).**
+///
+/// 1. *The detach window.* The boundary replaces an existing leaf by moving it
+///    into the private area and then publishing the goal no-replace; between
+///    those two durable edges the open record does not exist, where
+///    `rename_durable(temp, path, replace=true)` was atomic. Nothing is lost —
+///    the prior and intended bytes are both durable in the private area — but
+///    the lifecycle cannot reopen the merge from them and
+///    `classify_open_record` enumerates `.gwz/merge/*.yaml`, so a workspace
+///    interrupted there reports NO OPEN MERGE. The merge record is the one §10
+///    leaf with no outer artifact to reconcile it from: every other converted
+///    leaf is reconciled FROM this record. Driven at
+///    `tests::store::an_interrupted_checked_rewrite_detaches_the_record_beyond_the_lifecycles_reach`.
+/// 2. *Capability reach.* `CheckedArtifact::acquire` takes a durable object
+///    identity, so every commit — including the reverse arms' on the
+///    capability-free plain lease — now needs an admitted filesystem. Post-
+///    publication aborts already did (`abort/evidence.rs`'s `artifact_facts`
+///    calls); pre-publication ones did not. `capability.rs`'s shipped remedy
+///    sentence still promises `gwz merge --abort` "needs no such filesystem".
 pub(super) fn commit(
     lease: &V1MutationLease,
     current: &StoredV1Record,
@@ -85,9 +131,10 @@ pub(super) fn commit(
             "checked v1 rewrite does not match its lease or source digest",
         ));
     }
+    let root = current.location().root();
     let path = current.location().path();
     let source_bytes = read_regular(path)?;
-    let reopened = StoredV1Record::from_open_bytes(current.location().root(), path, &source_bytes)?;
+    let reopened = StoredV1Record::from_open_bytes(root, path, &source_bytes)?;
     if !current.same_source_as(&reopened) {
         return Err(recovery("checked v1 source bytes changed before commit"));
     }
@@ -100,51 +147,36 @@ pub(super) fn commit(
     let encoded = serde_yaml::to_string(&raw)
         .map(String::into_bytes)
         .map_err(encode_error)?;
-    let (temporary, mut file) = create_temporary(path)?;
-    let staged_write = file.write_all(&encoded).and_then(|()| file.sync_all());
-    drop(file);
-    if let Err(error) = staged_write {
-        let _ = fs::remove_file(&temporary);
-        return Err(io_error(error));
-    }
-    let staged = match read_regular(&temporary).and_then(|bytes| {
-        let staged = StoredV1Record::from_open_bytes(current.location().root(), path, &bytes)?;
-        require_expected(&staged, rewrite.next(), &expected_unknown)?;
-        if bytes != encoded {
-            return Err(recovery(
-                "checked v1 temporary bytes changed after serialization",
-            ));
-        }
-        Ok(staged)
-    }) {
-        Ok(staged) => staged,
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-    };
-    if fault == Some(CommitFault::AfterTemporarySync) {
-        let _ = fs::remove_file(&temporary);
+    let intended = StoredV1Record::from_open_bytes(root, path, &encoded)?;
+    require_expected(&intended, rewrite.next(), &expected_unknown)?;
+
+    // The boundary is addressed by workspace-relative path, so the leaf it acts
+    // on is proved to be the leaf just validated rather than assumed to be.
+    let relative = PathBuf::from(".gwz/merge").join(format!("{}.yaml", current.record().merge_id));
+    if root.join(&relative) != path {
         return Err(recovery(
-            "injected checked-store fault after temporary sync",
+            "checked v1 rewrite target is not its canonical open path",
         ));
     }
-    if let Err(error) = rename_durable(&temporary, path, true) {
-        let _ = fs::remove_file(&temporary);
-        return Err(io_error(error));
+    if fault == Some(CommitFault::BeforePublication) {
+        return Err(recovery("injected checked-store fault before publication"));
     }
+    crate::checked_artifact::entry::rewrite_merge_store_record(
+        root,
+        &relative,
+        &source_bytes,
+        &encoded,
+    )?;
     if fault == Some(CommitFault::AfterPublish) {
         return Err(recovery("injected checked-store fault after publication"));
     }
-    sync_dir(path.parent().expect("open record has a parent")).map_err(io_error)?;
 
     let published_bytes = read_regular(path)?;
-    let published =
-        StoredV1Record::from_open_bytes(current.location().root(), path, &published_bytes)?;
+    let published = StoredV1Record::from_open_bytes(root, path, &published_bytes)?;
     require_expected(&published, rewrite.next(), &expected_unknown)?;
-    if !staged.same_source_as(&published) {
+    if !intended.same_source_as(&published) {
         return Err(recovery(
-            "checked v1 published bytes differ from the synced temporary",
+            "checked v1 published bytes differ from the encoded rewrite",
         ));
     }
     Ok(published)
@@ -161,27 +193,6 @@ fn require_expected(
         Err(recovery(
             "checked v1 canonical model or unknown manifest changed during commit",
         ))
-    }
-}
-
-fn create_temporary(path: &Path) -> ModelResult<(PathBuf, File)> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| recovery("open record path has no parent"))?;
-    fs::create_dir_all(parent).map_err(io_error)?;
-    loop {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate =
-            path.with_extension(format!("yaml.{}.{}.v1.tmp", std::process::id(), sequence));
-        match File::options()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => return Ok((candidate, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(io_error(error)),
-        }
     }
 }
 

@@ -15,6 +15,7 @@ use super::super::transition::{
 };
 use super::fixtures::up_to_date_action;
 use crate::artifact::{ArtifactSourceKind, LockArtifact, ResolvedMemberArtifact};
+use crate::checked_artifact::{CheckedArtifactFault, fail_next_checked_artifact_at};
 use crate::model::ErrorCode;
 use crate::workspace_ops::merge::acceptance::{
     V1AcceptanceMetadata, V1AcceptanceRecord, build_v1_acceptance,
@@ -236,6 +237,10 @@ fn contention_and_wrong_root_are_rejected_before_mutation() {
     assert_eq!(fs::read(current.location().path()).unwrap(), contended);
 }
 
+/// R2-E Step E4.3: a refusal raised before the checked publication leaves the
+/// record byte-identical and NOTHING behind — neither this module's old `.v1.tmp`
+/// staging (which no longer exists) nor a checked family residue, the boundary
+/// never having been entered.
 #[test]
 fn fault_before_publish_keeps_source_and_cleans_temporary() {
     let root = TempDir::new_git("merge-v1-store-temp-fault");
@@ -246,7 +251,7 @@ fn fault_before_publish_keeps_source_and_cleans_temporary() {
     let current = CheckedV1Store::default()
         .load_open(&root.path, "merge_1")
         .unwrap();
-    let error = CheckedV1Store::failing_after(CommitFault::AfterTemporarySync)
+    let error = CheckedV1Store::failing_after(CommitFault::BeforePublication)
         .commit(&lease, &current, prepare_outcome(&lease, &current))
         .err()
         .unwrap();
@@ -254,6 +259,149 @@ fn fault_before_publish_keeps_source_and_cleans_temporary() {
     assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert_eq!(fs::read(current.location().path()).unwrap(), original);
     assert!(temporary_files(current.location().path()).is_empty());
+    assert_eq!(
+        entries(current.location().path().parent().unwrap()),
+        ["merge_1.yaml"]
+    );
+    assert!(checked_family_residue(&root.path).is_empty());
+}
+
+/// R2-E Step E4.3, the frozen row's third clause: **unknown fields and exact
+/// reread preserved**, through the CONVERTED path.
+///
+/// The pins the store already carried prove the overlay
+/// (`commit_preserves_survivors_…`, `first_acceptance_write_…`); what they read
+/// is the handle `commit` returns. This row reads the DURABLE LEAF instead —
+/// an independent `std::fs::read`, re-decoded from scratch — and requires it to
+/// be the same record, the same unknown manifest, the same raw document and the
+/// same digest as the handle. That is the exact-reread property, asserted about
+/// bytes the checked boundary published rather than about the value in hand.
+///
+/// It also pins the boundary's cleanup: a successful rewrite leaves no source,
+/// goal or authority residue in the legacy private area, so the service loop's
+/// many commits cannot accumulate copies of the record.
+#[test]
+fn the_converted_rewrite_preserves_unknown_fields_and_rereads_exactly() {
+    let root = TempDir::new_git("merge-v1-e43-exact-reread");
+    let mut model = record();
+    model.participants.get_mut("mem_a").unwrap().pending_action = Some(up_to_date_action());
+    let original = seed_open(&root, &model, |raw| {
+        insert(raw, "future_record", "must-survive-the-boundary");
+        let action = &mut raw["participants"]["mem_a"]["pending_action"];
+        insert(action, "future_action", "retires-with-its-container");
+    });
+    let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
+    let store = CheckedV1Store::default();
+    let current = store.load_open(&root.path, "merge_1").unwrap();
+
+    let next = store
+        .commit(&lease, &current, prepare_outcome(&lease, &current))
+        .unwrap();
+
+    let path = current.location().path();
+    let durable = fs::read(path).unwrap();
+    assert_ne!(durable, original, "the rewrite published nothing");
+    let reread = StoredV1Record::from_open_bytes(&root.path, path, &durable).unwrap();
+    assert!(
+        reread.same_source_as(&next),
+        "the durable leaf is not an exact reread of the committed rewrite"
+    );
+    assert_eq!(reread.raw()["future_record"], "must-survive-the-boundary");
+    assert_eq!(reread.unknown_fields(), next.unknown_fields());
+    assert_eq!(reread.unknown_fields().entries().len(), 1);
+    assert!(
+        reread
+            .unknown_fields()
+            .entries()
+            .keys()
+            .all(|locator| locator.field != "future_action")
+    );
+    assert!(
+        checked_family_residue(&root.path).is_empty(),
+        "the checked rewrite left family residue behind"
+    );
+}
+
+/// R2-E Step E4.3, the frozen row's first clause: **no parent creation**.
+///
+/// Driven at the door, because the store cannot reach it: `commit` re-reads the
+/// record before publishing, so a record it could read always has a parent. The
+/// door itself is what must never bootstrap one, and here it is asked to rewrite
+/// a leaf whose whole `.gwz` prefix is absent. It refuses, and creates nothing —
+/// no `.gwz`, no `.gwz/merge`, and no private area either.
+#[test]
+fn the_converted_rewrite_door_refuses_an_absent_parent_and_creates_nothing() {
+    let root = TempDir::new_git("merge-v1-e43-no-parent-creation");
+    assert!(!root.path.join(".gwz").exists());
+
+    let refused = crate::checked_artifact::entry::rewrite_merge_store_record(
+        &root.path,
+        Path::new(".gwz/merge/merge_1.yaml"),
+        b"exact existing record",
+        b"rewritten record",
+    )
+    .expect_err("a rewrite published into an unbootstrapped parent");
+
+    assert_eq!(refused.code, ErrorCode::MergeRecoveryRequired);
+    assert!(
+        !root.path.join(".gwz").exists(),
+        "the converted rewrite path created a parent"
+    );
+}
+
+/// R2-E Step E4.3 — the DISCLOSED crash window the conversion opens, driven so
+/// it is a measurement rather than a claim.
+///
+/// The boundary replaces an existing leaf by detaching it into the private area
+/// and then publishing the goal no-replace; between those two durable edges the
+/// open record does not exist. `rename_durable(temp, path, replace=true)` — the
+/// writer this step retires — had no such window. Nothing is LOST: the exact
+/// prior bytes and the intended bytes are both durable in the private area. But
+/// the v1 lifecycle cannot reopen the merge from them, and `classify_open_record`
+/// (`merge/store/mod.rs:211-241`) enumerates `.gwz/merge/*.yaml`, so a workspace
+/// interrupted here reports NO OPEN MERGE.
+///
+/// This row asserts exactly that state, so the disclosure cannot go stale and so
+/// whichever way the lane owner rules, the ruling has a fixture. See the builder
+/// delivery's flag 1: E4.3 does not own the reader-side reconciliation that
+/// would converge it, and no other §10 leaf needs one — each of the others is
+/// reconciled from the merge record, which is why the record itself is the
+/// single leaf row `:280` leaves without a recovery root.
+#[test]
+fn an_interrupted_checked_rewrite_detaches_the_record_beyond_the_lifecycles_reach() {
+    let root = TempDir::new_git("merge-v1-e43-detach-window");
+    let mut model = record();
+    model.participants.get_mut("mem_a").unwrap().pending_action = Some(up_to_date_action());
+    let original = seed_open(&root, &model, |_| {});
+    let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
+    let store = CheckedV1Store::default();
+    let current = store.load_open(&root.path, "merge_1").unwrap();
+    let merge_directory = current.location().path().parent().unwrap().to_owned();
+
+    fail_next_checked_artifact_at(CheckedArtifactFault::BeforeManagedPublication);
+    assert!(
+        store
+            .commit(&lease, &current, prepare_outcome(&lease, &current))
+            .is_err()
+    );
+
+    assert!(
+        entries(&merge_directory).is_empty(),
+        "the detach window is not what this row measured"
+    );
+    assert!(
+        store.load_open(&root.path, "merge_1").is_err(),
+        "the lifecycle reopened a detached record; the disclosure is stale"
+    );
+    let residue = checked_family_residue(&root.path);
+    assert_eq!(residue.len(), 3, "residue is {residue:?}");
+    assert!(
+        residue.iter().any(
+            |name| fs::read(root.path.join(".gwz/checked-artifacts").join(name))
+                .is_ok_and(|bytes| bytes == original)
+        ),
+        "the prior record bytes did not survive in the private area"
+    );
 }
 
 #[test]
@@ -473,6 +621,24 @@ fn insert(value: &mut Value, key: &str, content: &str) {
         .as_mapping_mut()
         .unwrap()
         .insert(Value::String(key.into()), Value::String(content.into()));
+}
+
+/// Sorted file names directly under `directory`; empty when it does not exist.
+fn entries(directory: &Path) -> Vec<String> {
+    let Ok(read) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut names = read
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+/// The legacy checked private area's family files (`policy.rs:46-54`), which a
+/// completed checked action retires and an interrupted one leaves behind.
+fn checked_family_residue(root: &Path) -> Vec<String> {
+    entries(&root.join(".gwz/checked-artifacts"))
 }
 
 fn temporary_files(path: &Path) -> Vec<String> {
