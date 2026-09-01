@@ -2,6 +2,15 @@ use std::time::UNIX_EPOCH;
 
 use super::*;
 
+/// The ordinary retention sweep — run by the id-less `--gc` AND by every
+/// v0-lifecycle archive operation (`store::archived`), not by `--gc` alone.
+///
+/// REACH, disclosed 2026-09-02: now that v1 archives are classified below, a
+/// workspace holding more than `ORDINARY_RETENTION` archives sweeps its v1 ones
+/// on the next ordinary merge that archives, not only on an explicit
+/// `gwz merge --gc`. Policy-consistent — such an archive owns no backup ref, no
+/// ref or stash is deleted, and it is the cap v0 has always had — but
+/// user-visible, so it is stated here rather than left to be discovered.
 pub(super) fn enforce(root: &Path) -> ModelResult<()> {
     let mut ordinary = Vec::new();
     for path in record_files(&root.join(DONE_DIR))? {
@@ -47,18 +56,17 @@ pub(super) fn enforce(root: &Path) -> ModelResult<()> {
     }
 }
 
-#[cfg(test)]
-fn validated_future_cleanup(root: &Path, path: &Path) -> Option<bool> {
-    let merge_id = path.file_stem()?.to_str()?;
-    let locations =
-        super::super::record_wire::acquire_canonical_merge_locations(root, merge_id).ok()?;
-    let (_, bytes, _) = locations.archived().exact()?;
-    super::super::record_wire::decode_archived(bytes.as_slice(), merge_id)
-        .ok()
-        .map(|record| !record.cleanup().backup_refs().is_empty())
-}
-
-#[cfg(not(test))]
+/// An archive this binary cannot read may own preservation evidence, so it is
+/// retained rather than classified.
+///
+/// This had a `#[cfg(test)]` twin that classified such an archive by decoding
+/// it with `decode_archived` and asking whether its cleanup worklist owned a
+/// backup ref. It MASKED this site: under `cargo test` a v1 archive was
+/// classified whether or not the read above could see it, so no row could
+/// guard the cure. It was TEST-ONLY — no shipped build ever contained it — so
+/// deleting it changes no production behaviour and makes test builds execute
+/// the arm that ships. Its two consumers, `store::tests`'s retention rows, are
+/// served by the read above, which classifies their v1 archives directly.
 fn validated_future_cleanup(_root: &Path, _path: &Path) -> Option<bool> {
     None
 }

@@ -434,6 +434,16 @@ def _fault_count(darwin: str, linux: str) -> str:
 
       darwin 1112 -> 1113: MEASURED (1113 passed + 1 ignored, 2026-09-02).
       linux  1113 -> 1114: DERIVED (+1, cfg-independent), FIRST-DISPATCH-EXPECTED.
+
+    Its commit (d) -- round-1 review [P2-1]: the `store::retention` site was
+    UNPINNED, because `validated_future_cleanup`'s `cfg(test)` twin classified
+    v1 archives through `decode_archived` and so masked the site under
+    `cargo test`. The cure had made that twin inert, so (d) deletes it and adds
+    ONE cfg-free row driving the id-less sweep through production dispatch.
+    Ablation: reverting the retention hunk fails that row and only that row.
+
+      darwin 1113 -> 1114: MEASURED (1114 passed + 1 ignored, 2026-09-02).
+      linux  1114 -> 1115: DERIVED (+1, cfg-independent), FIRST-DISPATCH-EXPECTED.
     """
     if sys.platform == "darwin":
         return darwin
@@ -472,7 +482,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1113 passed", "1114 passed")),
+         _fault_count("1114 passed", "1115 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
@@ -519,13 +529,14 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # Windows host; the `fault` battery's `_fault_count` refuses such a
         # host first, which is why no split is added here.
         # The v1-archive GC fix (2026-09-02) adds two rows here in its commit
-        # (b) and one in (c), and finds this marker ALREADY two short: R2-E
+        # (b), one in (c) and one in (d), and finds this marker ALREADY two
+        # short: R2-E
         # E4.1 commit (c) added two `g23::a1_activation` rows while recording
         # that it "moves the LIB REMAINDER and only it" -- that attribution is
         # an erratum, and those two rows are counted here for the first time.
-        # 124 -> 129, MEASURED on each step's own snapshot binary.
+        # 124 -> 130, MEASURED on each step's own snapshot binary.
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "129 passed"),
+         lib("workspace_ops::tests::g23::"), "130 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),

@@ -230,7 +230,9 @@ fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
             "workspace_ops/tests/g23/compatibility_v0_edges.rs",
             "workspace_ops/tests/g23/continue_v0_gate.rs",
             // JOINED 2026-09-02 by the v1-archive GC fix: `--no-ff` is the only
-            // production door to a v1 archive, so the GC rows must start one.
+            // door a FRESH START has to a v1 archive, so the GC rows must start
+            // one. E4.1(c)'s `adapt_open` upgrade is the second door, and it
+            // needs no mention of this variant.
             "workspace_ops/tests/g23/gc.rs",
         ]
     );

@@ -237,7 +237,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "5c76c6a4d87444684f7e44ab67be496847196491be30b17e3507dcd0f1765329",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "06e417151aac85e67a40a38e85a1c3d0d6c082ad9e9552109256e5effe99204c",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "88e85e3067a38d3a11e044165e6f124bf19dd07d59cd40d3e0a3a82d08aa8627",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,

@@ -346,7 +346,7 @@ fn explicit_gc_collects_a_v1_archive_and_deletes_its_backup_ref() {
 
 /// **The refusal, kept.** The dispatch widens which envelopes decode, not which
 /// archives are collectable: a v1 envelope whose body is not a v1 record still
-/// refuses typed before any ref is observed, and both are retained.
+/// refuses typed before any ref is deleted, and both are retained.
 #[test]
 fn explicit_gc_refuses_an_unreadable_v1_archive_and_retains_every_ref() {
     let (temp, backend, merge_id) = v1_archive_owning_a_backup_ref("merge-gc-v1-corrupt");
@@ -436,4 +436,64 @@ fn explicit_gc_collects_a_completed_no_ff_archive() {
             .code,
         ErrorCode::OperationNotFound
     );
+}
+
+/// **The id-less sweep, pinned.** `retention::enforce` classifies each archive
+/// so the ordinary cap can retire the oldest; under the v0-only reader a v1
+/// archive fell to the "unknown archive: retain it" arm and was never
+/// classified, so it outlived the cap forever. Twenty v0 fillers fill
+/// `ORDINARY_RETENTION` exactly, so the sweep retires exactly one row — and it
+/// can only be the v1 archive, which is both the oldest and the first by path.
+///
+/// The row drives the arm that SHIPS: `validated_future_cleanup`'s `cfg(test)`
+/// twin, which classified through `decode_archived` and masked this site, was
+/// test-only and is gone. The archive here also carries an UNKNOWN FIELD, the
+/// one shape where the two decoders genuinely differ — the shared decoder
+/// extracts an unknown-field manifest that `decode_archived` does not — so the
+/// row pins that the shipped read classifies it rather than retaining it.
+#[test]
+fn ordinary_retention_sweeps_a_v1_archive_once_it_can_be_classified() {
+    let (temp, backend, merge_id) = completed_v1_archive("merge-gc-v1-sweep");
+    let done = temp.path().join(".gwz/merge/done");
+    let archive = archived_path(temp.path(), &merge_id);
+    let mut yaml: serde_yaml::Value = serde_yaml::from_slice(&fs::read(&archive).unwrap()).unwrap();
+    yaml.as_mapping_mut().unwrap().insert(
+        serde_yaml::Value::from("unknown_rider"),
+        serde_yaml::Value::from("from a newer writer"),
+    );
+    fs::write(&archive, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+    for index in 0..20 {
+        let filler_id = format!("merge_z{index:02}");
+        let mut filler = yaml.clone();
+        let map = filler.as_mapping_mut().unwrap();
+        map.insert(
+            serde_yaml::Value::from("schema"),
+            serde_yaml::Value::from("gwz.merge-operation/v0"),
+        );
+        map.insert(
+            serde_yaml::Value::from("record_schema_version"),
+            serde_yaml::Value::from(0),
+        );
+        map.insert(
+            serde_yaml::Value::from("merge_id"),
+            serde_yaml::Value::from(filler_id.as_str()),
+        );
+        map.remove(serde_yaml::Value::from("accepted_workspace"));
+        fs::write(
+            done.join(format!("{filler_id}.yaml")),
+            serde_yaml::to_string(&filler).unwrap(),
+        )
+        .unwrap();
+    }
+    assert_eq!(fs::read_dir(&done).unwrap().count(), 21);
+    let mut sweep = recovery_request(crate::MergeOp::Gc, None);
+    sweep.preserve = None;
+
+    handle_merge(&backend, temp.path(), sweep, "op_gc_v1_sweep").unwrap();
+
+    assert!(
+        !archived_path(temp.path(), &merge_id).exists(),
+        "the v1 archive must join the ordinary set and be retired by the cap"
+    );
+    assert_eq!(fs::read_dir(&done).unwrap().count(), 20);
 }
