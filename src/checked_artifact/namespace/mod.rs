@@ -46,7 +46,8 @@ mod tests_managed_matrix;
 
 #[allow(
     unused_imports,
-    reason = "the sole production namespace backend; the Step-3.1 provider binds it, and entry-point reachability is R2-E"
+    reason = "the sole production namespace backend; the Step-3.1 provider binds it — REACHED \
+              from the entry point at R2-E E4.2 via the provider's execute_row (2026-09-01)"
 )]
 pub(in crate::checked_artifact) use host::{HostActionNamespaceV1, retain_action_namespace};
 

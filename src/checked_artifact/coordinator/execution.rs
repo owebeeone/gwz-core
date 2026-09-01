@@ -17,12 +17,16 @@
 //! (`derive_new_reservation`) now have production callers — here. Before this
 //! step each was reachable only from tests.
 //!
-//! What it does **not** change: nothing here is reachable from an entry point.
-//! The whole owner is `pub(in crate::checked_artifact)`, no consumer calls it,
-//! and `entry.rs` still routes parent preparation through
-//! `CheckedArtifact::prepare_parent`. Production *catalog activation* also
-//! remains forbidden outright for the whole of R2-D (plan §5 item 2). So the
-//! gate stays shut, deliberately, and R2-E's conversion is what opens it.
+//! *[Reachability cured 2026-09-01, E4.2 review C1: the paragraph that stood
+//! here — "nothing here is reachable from an entry point / no consumer calls
+//! it / the gate stays shut" — is no longer the state of the world. Since
+//! R2-E E4.1/E4.2: production catalog activation landed (E4.1), `entry.rs`
+//! imports `admit_merge_start_managed_parents` and
+//! `execute_merge_start_managed_parents` from this module, and the chain
+//! `entry.rs` → `v1_lifecycle/checked.rs` → `start.rs` → merge dispatch
+//! reaches them on every checked v1 start. `entry.rs` still routes the BUNDLE
+//! parent through `CheckedArtifact::prepare_parent` — that conversion is a
+//! later E4 row's.]*
 //!
 //! A note for whoever audits those allows, **corrected at Phase 4 Step 5.1**
 //! because Step 4.3's narrowing falsified the previous version of it. The
@@ -108,6 +112,63 @@ pub(in crate::checked_artifact) fn schedule_checked_action(
             })),
         ),
     }
+}
+
+/// R2-E Step E4.2 — the first merge record's parent half, admitted.
+///
+/// The admission session of ConsumerCheckpoint §10 row `:273`: preflight the
+/// sealed merge-start action against durable state, schedule it, admit it. It
+/// returns `None` on a proof-only plan — the row's "when missing" qualifier:
+/// both prefixes already fully resident, nothing to create. Scope, per the E7.2
+/// clauses ([P3-2], 2026-09-01): on that path residency comes from a bounded,
+/// identity-proved WALK (an observation, not a flush), so "both parents
+/// durable" is INHERITED from whoever installed them, not established here;
+/// only the bootstrap path barriers (the provider's per-generation
+/// install-and-reobserve). Converged does not imply flushed.
+/// The action is rebuilt from `workspace_id` rather than carried, so execution
+/// re-derives the identical sealed request instead of trusting a handed one.
+pub(in crate::checked_artifact) fn admit_merge_start_managed_parents(
+    workspace_id: &str,
+    catalog: OpaqueRetainedCatalogV1<'_>,
+) -> Result<Option<AdmittedCheckedActionV1>, CheckedFsError> {
+    let action = CheckedManagedActionV1::for_merge_start(workspace_id)?;
+    let plan = {
+        let provider = RetainedManagedParentProviderV1::from_retained_catalog(&catalog)?;
+        ManagedParentBootstrapOwnerV1::new(&provider).preflight_checked(&action)?
+    };
+    match schedule_checked_action(action.checked(), Some(&plan))? {
+        CheckedExecutionPlanV1::ProofOnly => Ok(None),
+        CheckedExecutionPlanV1::Scheduled(scheduled) => scheduled.admit(catalog).map(Some),
+    }
+}
+
+/// The execution session of the same row: install the missing prefixes, then
+/// re-prove each through its own facade before the caller may write.
+///
+/// **The re-proof is not decoration.** E7.2's two scope clauses say a settled
+/// barrier ordinal does not imply ordered parent dirents and a converged restart
+/// does not imply a flush, so the row's durability rests on the provider's own
+/// install-and-reobserve — each generation made durable before the next, then a
+/// reproof of the whole declared path — never on this caller's observation.
+///
+/// **Which gate this opens ([P2-1] boundary, 2026-09-01):** admission plus the
+/// facade re-proof — the DURABILITY gate. The AUTHORITY gate stays closed:
+/// `authorize_write`/`RetainedWriteAuthorityV1` still have no production
+/// consumer, and the record leaf is written from a path, which §9 `:264-266`
+/// names as NOT parent authority. The re-proof here must not be read as
+/// satisfying §9 `:266`; that conversion is the plan's minted O14, decided at
+/// E4.6's chartering.
+pub(in crate::checked_artifact) fn execute_merge_start_managed_parents(
+    workspace_id: &str,
+    admitted: &AdmittedCheckedActionV1,
+    catalog: &OpaqueRetainedCatalogV1<'_>,
+) -> Result<Vec<ManagedParentPurpose>, CheckedFsError> {
+    let action = CheckedManagedActionV1::for_merge_start(workspace_id)?;
+    admitted
+        .bootstrap_managed_parents(catalog, &action)?
+        .iter()
+        .map(|facade| facade.revalidate(catalog).map(|proved| proved.purpose()))
+        .collect()
 }
 
 /// One checked request bound to the reservation it derives, before admission.

@@ -206,6 +206,19 @@ pub(super) fn canonical_path_identity(root: &Dir, relative: &Path) -> std::io::R
 /// The typed catalog half is `CheckedFsError::unsupported(
 /// PlatformCapability::PersistentFilesystemIdentity, …)` in the four platform
 /// providers; both halves spell the sentence once, from `capability.rs`.
+///
+/// **Scope, corrected 2026-09-01 (E4.1 review [P3-3], disposed at E4.2).** The
+/// sentence above governs a *substrate gap*, and the DOWNGRADE that recognizes
+/// one is Linux/macOS only, by [`persistent_identity_error`]'s own `cfg`. Not an
+/// oversight on the Windows arm: an errno allowlist fits only where a probe
+/// reports "this filesystem does not do that" through a specific code, as
+/// `EOPNOTSUPP`/`ENOTSUP` and their siblings do. Windows' one capability-shaped
+/// gap carries no errno at all — a volume with no GUID path, which
+/// `platform::facts` detects structurally and routes to
+/// [`persistent_identity_unsupported`] already. Its two remaining arms are hard
+/// `GetFileInformationByHandleEx` / `GetFinalPathNameByHandleW` failures, and
+/// stay loud for the reason `EBADF` does below: a broken handle must never
+/// masquerade as a graceful capability downgrade. No Windows code moves here.
 fn persistent_identity_unsupported() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::Unsupported,

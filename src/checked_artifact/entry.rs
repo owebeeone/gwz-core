@@ -10,6 +10,9 @@ use std::path::Path;
 use super::bootstrap::CatalogMutationLeaseV1;
 use super::capability::CheckedFsError;
 use super::catalog::recover_or_create;
+use super::coordinator::execution::{
+    admit_merge_start_managed_parents, execute_merge_start_managed_parents,
+};
 use super::{
     CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
 };
@@ -306,27 +309,117 @@ fn require_canonical_bundle_parent(artifact: &CheckedArtifact) -> ModelResult<()
 pub(crate) fn activate_workspace_catalog(lease: CatalogMutationLeaseV1<'_>) -> ModelResult<()> {
     recover_or_create(lease)
         .map(|_retained| ())
-        .map_err(|cause| {
-            let label = "merge artifact catalog";
-            match cause {
-                CheckedFsError::Unsupported { capability, detail } => ModelError::new(
-                    ErrorCode::UnsupportedOperation,
-                    match capability.remedy() {
-                        // Precondition 1: the one gap a user can act on arrives as
-                        // the sentence that says what to do, with the substrate's
-                        // own words kept for diagnosis.
-                        Some(remedy) => format!("checked {label}: {remedy} (detail: {detail})"),
-                        None => format!("checked {label} is unsupported: {detail}"),
-                    },
-                ),
-                CheckedFsError::Io { operation, source } => ModelError::new(
-                    ErrorCode::IoError,
-                    format!("checked {label} {operation}: {source}"),
-                ),
-                CheckedFsError::Ambiguous { fact, detail } => ModelError::new(
-                    ErrorCode::IoError,
-                    format!("checked {label} rejected {fact}: {detail}"),
-                ),
-            }
-        })
+        .map_err(|cause| render_catalog_refusal(CATALOG_LABEL, cause))
 }
+
+/// R2-E Step E4.2 — the first merge record's parent half (ConsumerCheckpoint
+/// §10 row `:273`, "`MergeStore` and `PreservationBundles` when missing";
+/// frozen clause one, "both parents durable before record").
+///
+/// **The row's whole creation authority.** Both prefixes are installed by the
+/// managed-parent provider through an admitted `ParentOnly` action over a sealed
+/// purpose set, never by a raw `create_dir_all` on the writer's side — which is
+/// why `store/rewrite.rs` now REFUSES a missing parent instead of making one.
+/// Two leases because the Phase-1 owner CONSUMES the retained catalog: admission
+/// ends when it returns, and execution recovers again, after admission created
+/// the retained directory the execution walk has to find.
+///
+/// **The §11.3-item-2(b) answer, recorded against freeze `:672-680`
+/// (2026-09-01, E4.2).** *For a Git-directory catalog target, which durable root
+/// binds a managed parent's prefix?* Its OWN retained root — the Git directory —
+/// never the workspace root; and so no production managed parent exists on that
+/// variant at all. Four facts settle it: (i) the purposes' declared components
+/// are workspace-relative (`bootstrap/managed.rs`), so under a Git directory
+/// they have no `.gwz` ancestor and both merge-start purposes fail their minimum
+/// retained-parent count — pinned as production behaviour by
+/// `tests_provider.rs`'s
+/// `a_git_directory_target_refuses_the_workspace_rooted_managed_paths`;
+/// (ii) `CheckedActionRequestV1::for_managed_parents` pins
+/// `PreCatalogRootKindV1::Workspace` unconditionally, so no managed-parent
+/// action can be identified against a Git-directory root kind at all; (iii) this
+/// door's lease is workspace-rooted by construction (`catalog_lease/witness.rs`,
+/// `WorkspaceRuntime` arm); (iv) no production caller builds a Git-directory
+/// catalog lease. Route (b) therefore stands for TEST topologies, where the
+/// parent is fixture-placed, and the owner decision closes as: the workspace
+/// root binds it, the other variant carrying no production parent.
+pub(crate) fn bootstrap_merge_start_parents(
+    workspace_id: &str,
+    admission: CatalogMutationLeaseV1<'_>,
+    execution: CatalogMutationLeaseV1<'_>,
+) -> ModelResult<()> {
+    let refuse = |cause| render_catalog_refusal("merge start parents", cause);
+    let admitted = admit_merge_start_managed_parents(
+        workspace_id,
+        recover_or_create(admission).map_err(refuse)?,
+    )
+    .map_err(refuse)?;
+    let Some(admitted) = admitted else {
+        return Ok(());
+    };
+    let catalog = recover_or_create(execution).map_err(refuse)?;
+    execute_merge_start_managed_parents(workspace_id, &admitted, &catalog)
+        .map(|_proved| ())
+        .map_err(refuse)
+}
+
+/// R2-E Step E4.2 — O13's substantive half on the creation path.
+///
+/// Row `:280` asks the v1 checked store for "the same purposes and artifact
+/// actions" its converted siblings use; this is the creation verb — a checked
+/// replacement whose expected fact is `Missing`, publishing onto an absent leaf
+/// inside an already-retained parent.
+pub(crate) fn create_merge_store_record(
+    root: &Path,
+    relative: &Path,
+    goal: &[u8],
+) -> ModelResult<()> {
+    let artifact = CheckedArtifact::acquire(
+        CheckedArtifactPolicy::workspace(root),
+        relative,
+        ErrorCode::MergeRecoveryRequired,
+        format!("merge record '{}'", relative.display()),
+    )?;
+    // Row `:273`'s clause said out loud, rather than left as the generic
+    // ambiguity `classify_replace_exact` reports for an absent parent.
+    if !artifact.parent_is_canonical()? {
+        return Err(ModelError::new(
+            ErrorCode::MergeRecoveryRequired,
+            "merge record parent is missing or noncanonical; it is bootstrapped before the record",
+        ));
+    }
+    artifact.replace_exact(&CheckedArtifactFact::Missing, goal)
+}
+
+/// The catalog doors' error rendering, as a named function.
+///
+/// E4.1 review [P3-2]: inline, the three arms were unreachable from a test
+/// without a filesystem that lacks the capability, so precondition 1's sentence
+/// was driven only by hand on a real FAT32 volume. Named, a direct-constructor
+/// row pushes each arm through it. `pub(super)` and not `pub(crate)`:
+/// `CheckedFsError` is subsystem private and a crate-visible signature over it
+/// trips `clippy::private_interfaces` (E4.1(c) flag 5, proven).
+pub(super) fn render_catalog_refusal(label: &str, cause: CheckedFsError) -> ModelError {
+    match cause {
+        CheckedFsError::Unsupported { capability, detail } => ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            match capability.remedy() {
+                // Precondition 1: the one gap a user can act on arrives as
+                // the sentence that says what to do, with the substrate's
+                // own words kept for diagnosis.
+                Some(remedy) => format!("checked {label}: {remedy} (detail: {detail})"),
+                None => format!("checked {label} is unsupported: {detail}"),
+            },
+        ),
+        CheckedFsError::Io { operation, source } => ModelError::new(
+            ErrorCode::IoError,
+            format!("checked {label} {operation}: {source}"),
+        ),
+        CheckedFsError::Ambiguous { fact, detail } => ModelError::new(
+            ErrorCode::IoError,
+            format!("checked {label} rejected {fact}: {detail}"),
+        ),
+    }
+}
+
+/// E4.1's activation label, spelled once so door and guard cannot drift.
+pub(super) const CATALOG_LABEL: &str = "merge artifact catalog";

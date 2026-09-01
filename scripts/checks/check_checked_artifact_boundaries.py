@@ -49,7 +49,11 @@ PROTECTED_SOURCE_DIGESTS = {
     # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
     # `activate_workspace_catalog`, the first production catalog activation,
     # and the four ENTRY_* inventories below move with it.
-    "checked_artifact/entry.rs": "1cdf540650ee91a4f57015f663f43fb48e0614ed6a789520c9f49efdf310e1f3",
+    # R2-E E4.2 re-pins it again for §10 rows `:273`/`:280`:
+    # `bootstrap_merge_start_parents` and `create_merge_store_record` join the
+    # door above, and [P3-2]'s renderer is extracted to a named `pub(super)` fn
+    # so its three arms take an in-suite guard.
+    "checked_artifact/entry.rs": "a454c04d434979a769bba4d89abaac5295ef208db3bab24ede437f38516a3958",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
     "checked_artifact/mod.rs": "48d9261bd994dcf81ca77d3b3195b2e2e1ac6f2231f8c506580ab79571057e7c",
     # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
@@ -214,14 +218,21 @@ APPROVED_RUST_PATH_EDGES = {
 # R2-E E4.1 commit (c) re-pins ONE of them, `v1_lifecycle/mod.rs`: activation
 # moves off the shared prologue onto `acquire_activated`, so the reverse (abort)
 # arms stay capability-free. The other six were recomputed and are unchanged.
+#
+# R2-E E4.2 re-pins TWO: `capability/pre_catalog.rs`, for §11.3 item 2(a)'s
+# dated disposition at `retain_managed_parent_at_for_test` (comment only); and
+# `v1_lifecycle/mod.rs`, whose creation lease gains `acquire_for_merge_start`,
+# bootstrapping §10 row `:273`'s two managed parents before `create_open`, with
+# the creation path publishing through the checked boundary rather than its own
+# raw durable writers. The other five were recomputed and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "d531ce50a0092f8c1ff15bc1d9eef5ebd1928ced6e331c8ebacf630b2430e27a",
+    "checked_artifact/capability/pre_catalog.rs": "4b7cef22b64d668f9864ca734a71942d6d2a1e892fc5833259cc6c4e11800eaf",
     "checked_artifact/catalog.rs": "5c76c6a4d87444684f7e44ab67be496847196491be30b17e3507dcd0f1765329",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "3146b52783aa17b898ca410afd4f7934c96a0b4ffe326de3863a43d45fed9322",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "1b36abfea784ee1b6cfaa35d601d9bcee442c1240183ecfd61c9db8a6461676d",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -317,13 +328,26 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
 # `durable_fs` under `v1_lifecycle/` fails closed here, and E4.2/E4.3 retire
 # entries to empty deliberately, in their own commits, each retirement taking
 # a dated comment in this pin's established form.
-V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = frozenset(
-    {
-        "workspace_ops/merge/v1_lifecycle/archive.rs",
-        "workspace_ops/merge/v1_lifecycle/store/archive.rs",
-        "workspace_ops/merge/v1_lifecycle/store/rewrite.rs",
-    }
-)
+#
+# E4.2 (2026-09-01) WIDENS the pin from a bare file set to per-file raw-writer
+# COUNTS, and moves them. The file set alone could not record this step: E4.2
+# owns the store's CREATION path and E4.3 its rewrite path, both in
+# `store/rewrite.rs`, so converting `create_open` retires no file -- while
+# `archive.rs` and `store/archive.rs` are the terminal-archive row's, E4.4's,
+# and were never E4.2/E4.3's to retire at all. (A correction on the record to
+# the plan's E4.3 note, "the O13 checker inventory retires to empty across
+# E4.2/E4.3": two of its three files belong to a third step.) Counting bare
+# identifiers on masked source, in `RAW_RENAME_CALL_ALLOWLIST`'s own idiom,
+# makes each conversion measurable in its own commit and stays fail-closed BOTH
+# ways. `create_open`'s publication moved to the checked boundary, so
+# `store/rewrite.rs` drops from three references of each writer to two -- the
+# `use` and `commit`'s call, exactly E4.3's remaining half.
+V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = {
+    "workspace_ops/merge/v1_lifecycle/archive.rs": {"sync_dir": 2},
+    "workspace_ops/merge/v1_lifecycle/store/archive.rs": {"rename_noreplace": 2, "sync_dir": 7},
+    "workspace_ops/merge/v1_lifecycle/store/rewrite.rs": {"rename_durable": 2, "sync_dir": 2},
+}
+V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_dir")
 
 ENTRY_REFERENCES = {
     # R2-E Phase E4 Step E4.1 (O2): the first production catalog activation.
@@ -339,6 +363,19 @@ ENTRY_REFERENCES = {
     "activate_workspace_catalog": {
         "workspace_ops/merge/runtime/dispatch.rs",
         "workspace_ops/merge/v1_lifecycle/checked.rs",
+    },
+
+    # R2-E Step E4.2 — ConsumerCheckpoint §10 row `:273`, the first merge
+    # record: the parent half is its own door because the frozen ordering makes
+    # it a step that completes before the record's action begins; the leaf half
+    # is O13's creation-path conversion, row `:280`. `recover_or_create`'s
+    # further calls are inside THIS file, so `catalog_activation_pin.rs` — which
+    # counts FILES outside the owner, not call sites — stays at one.
+    "bootstrap_merge_start_parents": {
+        "workspace_ops/merge/v1_lifecycle/checked.rs"
+    },
+    "create_merge_store_record": {
+        "workspace_ops/merge/v1_lifecycle/store/rewrite.rs"
     },
 
     "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
@@ -383,6 +420,11 @@ ENTRY_REFERENCES = {
 
 ENTRY_ITEMS = {
     "activate_workspace_catalog",
+    # E4.2's four: rows `:273`/`:280`'s doors and [P3-2]'s renderer and label.
+    "CATALOG_LABEL",
+    "bootstrap_merge_start_parents",
+    "create_merge_store_record",
+    "render_catalog_refusal",
     "MergeArtifactFact",
     "MergeArtifactTransition",
     "classify_expected",
@@ -421,6 +463,8 @@ ENTRY_USES = {
     "super::bootstrap::CatalogMutationLeaseV1",
     "super::capability::CheckedFsError",
     "super::catalog::recover_or_create",
+    # E4.2's one: the coordinator's two merge-start bootstrap sessions.
+    "super::coordinator::execution::{ admit_merge_start_managed_parents, execute_merge_start_managed_parents, }",
     "super::{ CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition, }",
 }
 
@@ -437,6 +481,10 @@ ENTRY_CALLS = {
     "Ok",
     "Path::new",
     "Some",
+    # E4.2's three: row `:273`'s two sessions and the shared named renderer.
+    "admit_merge_start_managed_parents",
+    "execute_merge_start_managed_parents",
+    "render_catalog_refusal",
     "classify_expected",
     "classify_remove",
     "classify_replace",
@@ -1136,22 +1184,34 @@ def check(source: Path) -> list[str]:
                     "v1 lifecycle names the v0 persistence seam: "
                     f"{relative} ({token})"
                 )
-    raw_writer_files = set()
+    raw_writer_files: dict[str, dict[str, int]] = {}
     for path in production_rust_files(source / V1_LIFECYCLE_TREE):
         relative = path.relative_to(source).as_posix()
         text = mask_non_code(path.read_text(encoding="utf-8"))
         if re.search(r"\bdurable_fs\b", text):
-            raw_writer_files.add(relative)
-    for relative in sorted(raw_writer_files - V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES):
+            raw_writer_files[relative] = {
+                writer: count
+                for writer in V1_LIFECYCLE_RAW_DURABLE_WRITERS
+                if (count := len(re.findall(r"\b" + writer + r"\b", text)))
+            }
+    expected_files = set(V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES)
+    for relative in sorted(set(raw_writer_files) - expected_files):
         findings.append(
             "v1 lifecycle gained a raw durable_fs writer outside the O13 "
             f"accepted residual: {relative}"
         )
-    for relative in sorted(V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES - raw_writer_files):
+    for relative in sorted(expected_files - set(raw_writer_files)):
         findings.append(
             "O13 accepted-residual entry no longer names durable_fs and must "
             f"be retired from the pin deliberately: {relative}"
         )
+    for relative in sorted(expected_files & set(raw_writer_files)):
+        counts = V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES[relative]
+        if raw_writer_files[relative] != counts:
+            findings.append(
+                "O13 raw-writer count moved and must move the pin with it: "
+                f"{relative}: expected={counts} actual={raw_writer_files[relative]}"
+            )
     for relative in sorted(PROTECTED_COMPILER_MODULES):
         raw = (source / relative).read_bytes()
         if forbid not in mask_non_code(raw.decode("utf-8")):
@@ -1277,6 +1337,17 @@ def check(source: Path) -> list[str]:
     masked_sources: dict[str, str] = {}
     for path in production_rust_files(source):
         relative = path.relative_to(source).as_posix()
+        # KNOWN SCAN HOLE, recorded 2026-09-01 (E4.1 review [P3-4], carried to
+        # E4.2). `masked_sources` is what `CATALOG_LEASE_REFERENCE_SETS` and
+        # `FORBIDDEN_PROVISIONAL_CATALOG_INTERFACES` scan, so both are BLIND at
+        # `entry.rs`: E4.1's `use super::bootstrap::CatalogMutationLeaseV1`
+        # moved no lease-reference row even though that name IS a key in the
+        # set, and a reintroduced provisional spelling here would not fire
+        # either. The skip exists so the four `ENTRY_*` equality inventories
+        # above do not also count entry.rs as a consumer of itself. A RECORD,
+        # not a repair: the hole stays P3 because entry.rs is byte-pinned in
+        # `PROTECTED_SOURCE_DIGESTS`, listed in `PROTECTED_COMPILER_MODULES`,
+        # and equality-checked four ways -- no edit passes unreviewed.
         if relative == "checked_artifact/entry.rs":
             continue
         text = mask_non_code(path.read_text(encoding="utf-8"))
