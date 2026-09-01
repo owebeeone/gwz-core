@@ -478,7 +478,11 @@ fn struct_body<'a>(source: &'a str, name: &str) -> &'a str {
 /// move the frozen 165-key census.
 #[test]
 fn the_shared_leaf_reader_bounds_its_read_by_its_own_fstat() {
-    let observation = include_str!("../observation.rs");
+    // Normalized so the pin holds on CRLF checkouts (Windows runners hand
+    // `include_str!` the working-tree bytes, not the index bytes) — the
+    // `r2d_seam_freeze.rs` idiom; first Windows dispatch of this pin went red
+    // on exactly this (run 33498089904, 2026-09-01).
+    let observation = include_str!("../observation.rs").replace("\r\n", "\n");
 
     assert!(observation.contains("let bound = opened.len().saturating_add(1);"));
     assert!(observation.contains("bytes\n        .try_reserve_exact(capacity)"));
