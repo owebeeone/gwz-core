@@ -249,6 +249,21 @@ def _fault_count(darwin: str, linux: str) -> str:
     over the workflow-measured v0.11.1 Linux value 980; it is
     FIRST-DISPATCH-EXPECTED until the corrected release workflow executes
     it, at which point the measured result wins.
+
+    The ahead-only pull fix (2026-09-01) moves the lib remainder and only
+    it, by two: g25's ahead-only regressions
+    (an_ahead_only_root_is_up_to_date_for_ff_and_merge_pulls,
+    an_ahead_only_member_is_up_to_date_for_ff_and_merge_pulls) pin that a
+    root or member strictly AHEAD of its remote is up to date for pull
+    purposes under every non-destructive sync mode, not a
+    DivergedMember/MergeRecoveryRequired misclassification.
+
+      darwin 1095 -> 1097: MEASURED on this tree (1097 passed + 1
+        ignored, 2026-09-01), with checked_artifact:: re-measured
+        unchanged at 447 and v1_lifecycle:: at 256 in the same session.
+      linux  1096 -> 1098: DERIVED (+2, cfg-independent -- neither test
+        carries a cfg gate), FIRST-DISPATCH-EXPECTED at the next linux
+        execution. A measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -287,7 +302,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1095 passed", "1096 passed")),
+         _fault_count("1097 passed", "1098 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

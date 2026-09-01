@@ -246,6 +246,14 @@ where
         return Ok(false);
     }
     let behind = backend.is_ancestor(root, &local_commit, &remote_commit)?;
+    if !behind
+        && !matches!(sync, crate::SyncBehavior::Reset)
+        && backend.is_ancestor(root, &remote_commit, &local_commit)?
+    {
+        // Strictly ahead of the remote: integrating an ancestor is a no-op
+        // under every non-destructive sync mode — up to date, not divergence.
+        return Ok(false);
+    }
     match sync {
         crate::SyncBehavior::FetchOnly => Ok(false),
         crate::SyncBehavior::FfOnly | crate::SyncBehavior::DriverSelected => {
@@ -756,102 +764,125 @@ where
         // modes take it too (git merge/rebase fast-forward by default). Diverged ⇒
         // the chosen sync mode decides; fetch-only never integrates either way.
         let behind = backend.is_ancestor(&member_root, &local_commit, &remote_commit)?;
-        match sync {
-            crate::SyncBehavior::FetchOnly => PullHeadAction::FetchOnly,
-            crate::SyncBehavior::FfOnly | crate::SyncBehavior::DriverSelected => {
-                if behind {
-                    PullHeadAction::FastForward {
-                        prepared: prepare_pull_fast_forward(
-                            backend,
-                            &member_root,
-                            &branch,
-                            &source,
-                            &member.id,
-                            &state.path,
-                        )?,
-                        source,
-                    }
-                } else {
-                    return Err(ModelError::new(
-                        ErrorCode::DivergedMember,
-                        format!("member '{member_id}' has diverged from remote"),
-                    ));
-                }
+        let ahead = !behind
+            && !matches!(
+                sync,
+                crate::SyncBehavior::FetchOnly | crate::SyncBehavior::Reset
+            )
+            && backend.is_ancestor(&member_root, &remote_commit, &local_commit)?;
+        if ahead {
+            // Strictly ahead of the remote: integrating an ancestor is a
+            // no-op under every non-destructive sync mode — up to date, not
+            // divergence.
+            PullHeadAction::UpToDate {
+                source: source.clone(),
+                prepared: Some(prepare_pull_unchanged(
+                    backend,
+                    &member_root,
+                    &branch,
+                    &source,
+                    &member.id,
+                    &state.path,
+                )?),
             }
-            crate::SyncBehavior::Merge => {
-                if behind {
-                    PullHeadAction::FastForward {
-                        prepared: prepare_pull_fast_forward(
-                            backend,
-                            &member_root,
-                            &branch,
-                            &source,
-                            &member.id,
-                            &state.path,
-                        )?,
-                        source,
+        } else {
+            match sync {
+                crate::SyncBehavior::FetchOnly => PullHeadAction::FetchOnly,
+                crate::SyncBehavior::FfOnly | crate::SyncBehavior::DriverSelected => {
+                    if behind {
+                        PullHeadAction::FastForward {
+                            prepared: prepare_pull_fast_forward(
+                                backend,
+                                &member_root,
+                                &branch,
+                                &source,
+                                &member.id,
+                                &state.path,
+                            )?,
+                            source,
+                        }
+                    } else {
+                        return Err(ModelError::new(
+                            ErrorCode::DivergedMember,
+                            format!("member '{member_id}' has diverged from remote"),
+                        ));
                     }
-                } else {
-                    match backend
-                        .merge_simulate(&member_root, &local_commit, &remote_commit)
-                        .map_err(|error| error.with_member(&member.id, &state.path))?
-                    {
-                        crate::git::GitMergeSimulation::Clean => {
-                            let prepared = backend
-                                .prepare_merge_upstream_checked(
-                                    &member_root,
-                                    &branch,
-                                    &source.expected_local,
-                                    &source.source_commit,
-                                    None,
-                                )
-                                .map_err(|error| error.with_member(&member.id, &state.path))?;
-                            if !matches!(prepared, crate::git::GitPreparedMerge::Commit(_)) {
+                }
+                crate::SyncBehavior::Merge => {
+                    if behind {
+                        PullHeadAction::FastForward {
+                            prepared: prepare_pull_fast_forward(
+                                backend,
+                                &member_root,
+                                &branch,
+                                &source,
+                                &member.id,
+                                &state.path,
+                            )?,
+                            source,
+                        }
+                    } else {
+                        match backend
+                            .merge_simulate(&member_root, &local_commit, &remote_commit)
+                            .map_err(|error| error.with_member(&member.id, &state.path))?
+                        {
+                            crate::git::GitMergeSimulation::Clean => {
+                                let prepared = backend
+                                    .prepare_merge_upstream_checked(
+                                        &member_root,
+                                        &branch,
+                                        &source.expected_local,
+                                        &source.source_commit,
+                                        None,
+                                    )
+                                    .map_err(|error| error.with_member(&member.id, &state.path))?;
+                                if !matches!(prepared, crate::git::GitPreparedMerge::Commit(_)) {
+                                    return Err(ModelError::new(
+                                        ErrorCode::MergeRecoveryRequired,
+                                        "pull merge result changed during preparation",
+                                    )
+                                    .with_member(&member.id, &state.path));
+                                }
+                                PullHeadAction::Merge { source, prepared }
+                            }
+                            crate::git::GitMergeSimulation::Conflicts(conflicts)
+                                if policy.and_then(|policy| policy.partial)
+                                    == Some(crate::PartialBehavior::Partial) =>
+                            {
+                                PullHeadAction::PredictedConflict { conflicts }
+                            }
+                            crate::git::GitMergeSimulation::Conflicts(conflicts) => {
                                 return Err(ModelError::new(
-                                    ErrorCode::MergeRecoveryRequired,
-                                    "pull merge result changed during preparation",
+                                    ErrorCode::MergeValidationFailed,
+                                    format!(
+                                        "pull merge is predicted to conflict in: {}",
+                                        conflicts.join(", ")
+                                    ),
                                 )
                                 .with_member(&member.id, &state.path));
                             }
-                            PullHeadAction::Merge { source, prepared }
-                        }
-                        crate::git::GitMergeSimulation::Conflicts(conflicts)
-                            if policy.and_then(|policy| policy.partial)
-                                == Some(crate::PartialBehavior::Partial) =>
-                        {
-                            PullHeadAction::PredictedConflict { conflicts }
-                        }
-                        crate::git::GitMergeSimulation::Conflicts(conflicts) => {
-                            return Err(ModelError::new(
-                                ErrorCode::MergeValidationFailed,
-                                format!(
-                                    "pull merge is predicted to conflict in: {}",
-                                    conflicts.join(", ")
-                                ),
-                            )
-                            .with_member(&member.id, &state.path));
                         }
                     }
                 }
-            }
-            crate::SyncBehavior::Rebase => {
-                if behind {
-                    PullHeadAction::FastForward {
-                        prepared: prepare_pull_fast_forward(
-                            backend,
-                            &member_root,
-                            &branch,
-                            &source,
-                            &member.id,
-                            &state.path,
-                        )?,
-                        source,
+                crate::SyncBehavior::Rebase => {
+                    if behind {
+                        PullHeadAction::FastForward {
+                            prepared: prepare_pull_fast_forward(
+                                backend,
+                                &member_root,
+                                &branch,
+                                &source,
+                                &member.id,
+                                &state.path,
+                            )?,
+                            source,
+                        }
+                    } else {
+                        PullHeadAction::Rebase { source }
                     }
-                } else {
-                    PullHeadAction::Rebase { source }
                 }
+                crate::SyncBehavior::Reset => PullHeadAction::Reset { source },
             }
-            crate::SyncBehavior::Reset => PullHeadAction::Reset { source },
         }
     };
     if let Some(emitter) = emitter {

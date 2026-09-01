@@ -145,6 +145,34 @@ fn plan_root_merge_pull_inner<B: GitBackend>(
         });
     }
 
+    if backend.is_ancestor(root, &remote_commit, &local_commit)? {
+        // Strictly ahead of the remote: merging an ancestor is a no-op —
+        // up to date, not divergence; mirror the equal-commit arm exactly.
+        let prepared = backend.prepare_merge_upstream_checked(
+            root,
+            &branch,
+            &local_commit,
+            &remote_commit,
+            None,
+        )?;
+        if prepared != GitPreparedMerge::Unchanged {
+            return Err(root_error(
+                ErrorCode::MergeRecoveryRequired,
+                "root up-to-date result changed during pull preparation",
+            ));
+        }
+        return Ok(RootMergePullPlan {
+            action: RootMergePullAction::UpToDate {
+                branch,
+                local_commit,
+                remote_commit,
+                remote_ref,
+                prepared,
+            },
+            manifest,
+            lock,
+        });
+    }
     let base = backend
         .merge_base(root, &local_commit, &remote_commit)?
         .ok_or_else(|| {

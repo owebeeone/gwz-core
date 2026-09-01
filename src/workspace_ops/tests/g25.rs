@@ -448,3 +448,178 @@ fn final_pull_barrier_reports_target_branch_drift_with_member_context() {
     assert_eq!(error.member_path.as_deref(), Some("repos/app"));
     assert!(backend.merge_state(&member.path).unwrap().is_none());
 }
+
+struct RootAhead {
+    _temp: TempDir,
+    remote: String,
+    local: String,
+}
+
+fn seed_root_ahead(backend: &Git2Backend, root: &Path) -> RootAhead {
+    fs::write(root.join(".gitignore"), "repos/\n").unwrap();
+    backend
+        .stage_paths(root, &["gwz.conf", ".gitignore"])
+        .unwrap();
+    let remote = commit_file(root, "root.txt", "root\n", "root baseline", &[]).unwrap();
+    let temp = TempDir::new("pull-ahead-root-remote");
+    let bare = temp.path().join("remote.git");
+    init_bare_main(&bare);
+    backend
+        .add_remote(root, "origin", bare.to_str().unwrap())
+        .unwrap();
+    backend
+        .push(root, "origin", "refs/heads/main:refs/heads/main")
+        .unwrap();
+    let local = commit_file(
+        root,
+        "ahead.txt",
+        "ahead\n",
+        "local ahead",
+        &[git2::Oid::from_str(&remote).unwrap()],
+    )
+    .unwrap();
+    RootAhead {
+        _temp: temp,
+        remote,
+        local,
+    }
+}
+
+fn seed_ahead_member(
+    backend: &Git2Backend,
+    root: &Path,
+    path: &str,
+    fixture_name: &str,
+) -> (RemoteFixture, String, String) {
+    let fixture = RemoteFixture::new(fixture_name);
+    let base = fixture.commit_and_push("README.md", "base\n", "base", backend);
+    let member = root.join(path);
+    backend.clone_repo(fixture.remote_url(), &member).unwrap();
+    let local = commit_file(
+        &member,
+        "local.txt",
+        "local\n",
+        "local ahead",
+        &[git2::Oid::from_str(&base).unwrap()],
+    )
+    .unwrap();
+    (fixture, base, local)
+}
+
+#[test]
+fn an_ahead_only_root_is_up_to_date_for_ff_and_merge_pulls() {
+    let temp = TempDir::new("pull-ahead-root");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let seeded = seed_root_ahead(&backend, temp.path());
+
+    for (sync, op) in [
+        (crate::SyncBehavior::FfOnly, "op_pull_ff"),
+        (crate::SyncBehavior::Merge, "op_pull_merge"),
+        (crate::SyncBehavior::Rebase, "op_pull_rebase"),
+        (crate::SyncBehavior::DriverSelected, "op_pull_driver"),
+    ] {
+        let response =
+            handle_pull_head(&backend, temp.path(), pull_head_request_with_sync(sync), op)
+                .unwrap_or_else(|error| {
+                    panic!("ahead-only root refused under {sync:?}: {}", error.message)
+                });
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Noop,
+            "unexpected aggregate under {sync:?}"
+        );
+        assert_eq!(
+            backend.head(temp.path()).unwrap().commit.as_deref(),
+            Some(seeded.local.as_str()),
+            "ahead-only root head moved under {sync:?}"
+        );
+    }
+    assert!(backend.merge_state(temp.path()).unwrap().is_none());
+    assert_eq!(
+        backend
+            .read_ref(temp.path(), "refs/remotes/origin/main")
+            .unwrap()
+            .as_deref(),
+        Some(seeded.remote.as_str())
+    );
+
+    handle_pull_head(
+        &backend,
+        temp.path(),
+        pull_head_request_with_sync(crate::SyncBehavior::Reset),
+        "op_pull_reset",
+    )
+    .unwrap();
+    assert_eq!(
+        backend.head(temp.path()).unwrap().commit.as_deref(),
+        Some(seeded.remote.as_str()),
+        "reset must still discard the ahead-only root commit"
+    );
+}
+
+#[test]
+fn an_ahead_only_member_is_up_to_date_for_ff_and_merge_pulls() {
+    let temp = TempDir::new("pull-ahead-member");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let (fixture, base, local) =
+        seed_ahead_member(&backend, temp.path(), "repos/app", "pull-ahead-member");
+    write_pull_fixture(
+        temp.path(),
+        vec![("mem_app", "repos/app", fixture.remote_url(), &local)],
+    );
+
+    for (sync, op) in [
+        (crate::SyncBehavior::FfOnly, "op_pull_ff"),
+        (crate::SyncBehavior::Merge, "op_pull_merge"),
+        (crate::SyncBehavior::Rebase, "op_pull_rebase"),
+        (crate::SyncBehavior::DriverSelected, "op_pull_driver"),
+    ] {
+        let response =
+            handle_pull_head(&backend, temp.path(), pull_head_request_with_sync(sync), op)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "ahead-only member refused under {sync:?}: {}",
+                        error.message
+                    )
+                });
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Noop,
+            "unexpected aggregate under {sync:?}"
+        );
+        assert_eq!(
+            backend
+                .head(&temp.path().join("repos/app"))
+                .unwrap()
+                .commit
+                .as_deref(),
+            Some(local.as_str()),
+            "ahead-only member head moved under {sync:?}"
+        );
+    }
+    assert!(
+        backend
+            .merge_state(&temp.path().join("repos/app"))
+            .unwrap()
+            .is_none()
+    );
+
+    handle_pull_head(
+        &backend,
+        temp.path(),
+        pull_head_request_with_sync(crate::SyncBehavior::Reset),
+        "op_pull_reset",
+    )
+    .unwrap();
+    assert_eq!(
+        backend
+            .head(&temp.path().join("repos/app"))
+            .unwrap()
+            .commit
+            .as_deref(),
+        Some(base.as_str()),
+        "reset must still discard the ahead-only member commit"
+    );
+}
