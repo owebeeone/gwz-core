@@ -14,7 +14,9 @@ mod plan;
 /// live lint.
 #[allow(
     dead_code,
-    reason = "Step 3.3 wires the coordinator caller; reachability from an entry point is R2-E"
+    reason = "Step 3.3 wired the coordinator caller; REACHED from the entry point at R2-E E4.2 \
+              (admit/execute_merge_start_managed_parents, 2026-09-01) — what stays dead is the \
+              surface no converted consumer reads yet"
 )]
 mod provider;
 
@@ -40,7 +42,8 @@ pub(in crate::checked_artifact) use owner::*;
 pub(in crate::checked_artifact) use plan::*;
 #[allow(
     unused_imports,
-    reason = "Step 3.3 wires the coordinator caller; reachability from an entry point is R2-E"
+    reason = "Step 3.3 wired the coordinator caller; REACHED from the entry point at R2-E E4.2 \
+              (2026-09-01) — the unconsumed imports shrink as E4.3-E4.6 convert"
 )]
 pub(in crate::checked_artifact) use provider::*;
 

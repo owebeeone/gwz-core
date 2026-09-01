@@ -24,7 +24,9 @@ mod authority_record_binding;
 /// production entry point.
 #[allow(
     dead_code,
-    reason = "E2 lands the barrier edges and their matrix; the production consumer is R2-E Phase E4"
+    reason = "E2 landed the barrier edges and their matrix; the first production consumer \
+              arrived at R2-E E4.2 (advance_one's stage_component, 2026-09-01) — the allow \
+              stays for the arms no converted consumer drives yet"
 )]
 mod barrier_mutation;
 mod completed;
