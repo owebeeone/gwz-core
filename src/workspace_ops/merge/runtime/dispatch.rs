@@ -403,6 +403,18 @@ fn adapt_before_mutating<B: MergeAuthorityBackend>(
     if open.adaptation != super::super::AdaptationPrecheck::MayAdapt {
         return Ok(false);
     }
+    // R2-E E4.1 review [P1-1]: prove the destination lifecycle can serve this
+    // record BEFORE the upgrade writes anything, and hold the window open
+    // across the write. The guard drops when this function returns, before the
+    // command re-acquires it.
+    let _window = if request.op == crate::MergeOp::Resume {
+        match forward_lifecycle_viability_window(root) {
+            Some(guard) => Some(guard),
+            None => return Ok(false),
+        }
+    } else {
+        None
+    };
     match super::super::upgrade_open_v0(
         backend,
         root,
@@ -413,6 +425,34 @@ fn adapt_before_mutating<B: MergeAuthorityBackend>(
         Ok(super::super::AtomicUpgradeOutcome::Upgraded { .. }) => Ok(true),
         Ok(super::super::AtomicUpgradeOutcome::ValidUnlisted) | Err(_) => Ok(false),
     }
+}
+
+/// Proves the v1 forward lifecycle can serve this record and holds the proof
+/// while the upgrade writes, or answers `None` — one more non-`Upgraded`
+/// answer, leaving the v0 lifecycle in command to complete the record.
+///
+/// **E4.1 review [P1-1]:** the upgrade is durable and one-way, so upgrading
+/// into a lifecycle that then refuses is what wedged an interrupted ORDINARY
+/// merge — the class the [P1-1] doctrine above rejects. **Only `Resume` asks:**
+/// abort routes to the reverse service and its capability-free lease, so that
+/// route cannot be made unviable here and an abort never creates a catalog.
+/// **The lock:** a catalog lease is borrowable only from a held one, and the
+/// adapter runs after `drop(start_guard)`; the guard is held across
+/// `upgrade_open_v0`, which takes none of its own, and released before the
+/// command re-acquires it. A lock we cannot take is itself a `None` — the v0
+/// route takes the same lock and reports contention in its own voice.
+///
+/// **Residual, disclosed (review R4):** the forward service re-proves
+/// activation one layer down, so a catalog lost between the two — a race, not a
+/// capability — refuses after the upgrade. Not a wedge: `gwz merge --abort` is
+/// capability-free and clears it. Driven.
+fn forward_lifecycle_viability_window(
+    root: &Path,
+) -> Option<crate::operation::WorkspaceMutatorLock> {
+    let guard = crate::operation::WorkspaceMutatorLock::acquire(root).ok()?;
+    crate::checked_artifact::entry::activate_workspace_catalog(guard.catalog_mutation_lease())
+        .ok()?;
+    Some(guard)
 }
 
 fn resolve_recovery_root<S: MergeStore>(

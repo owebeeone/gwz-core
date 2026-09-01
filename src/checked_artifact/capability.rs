@@ -39,13 +39,20 @@ impl SupportedFilesystemProfile {
 ///
 /// R2-E E4.1 precondition 1 (E0.2 §5.3): the durable-identity gap must reach
 /// the user as an actionable sentence rather than an `errno`. It names the
-/// substrate, the admitted filesystems, and the escape — the escape being real,
-/// because the blast radius of `PersistentFilesystemIdentity` is exactly the
-/// checked `--no-ff` v1 path (`model/version.rs`'s `ACTIVE_WRITER_FLOOR` keeps
-/// ordinary and `--ff-only` starts on v0, which never take a catalog lease).
+/// substrate, the admitted filesystems, and TWO escapes, because one of them
+/// is wrong for a merge already open.
+///
+/// **Scope, corrected by the E4.1 review's [P1-1]/[P2-1].** The earlier claim
+/// here — "the blast radius is exactly the checked `--no-ff` v1 path" — was
+/// true of STARTS and false of records already on disk:
+/// `workspace_ops/merge/model/version.rs`'s `ACTIVE_WRITER_FLOOR` governs which
+/// version a start writes, not which lifecycle an existing record routes to. A
+/// `--no-ff` start and the resume of a v1 record refuse; `--abort` never does;
+/// an ordinary merge falls back to the v0 lifecycle instead of refusing.
 pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem does not expose the persistent file handles and mount identity that checked \
-     merge artifacts require; run the workspace on a filesystem that does (local ext4 on Linux, \
-     APFS or HFS+ on macOS, NTFS on Windows), or start the merge without --no-ff";
+     merge artifacts require; run the workspace on a filesystem that does (on Linux that is ext4 \
+     only; APFS or HFS+ on macOS; NTFS on Windows). An open merge can be cleared with `gwz merge \
+     --abort`, which needs no such filesystem; a new merge can be started without --no-ff";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlatformCapability {

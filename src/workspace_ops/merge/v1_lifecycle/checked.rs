@@ -124,41 +124,43 @@ pub(super) struct V1MutationLease {
 }
 
 impl V1MutationLease {
-    /// R2-E Phase E4 Step E4.1 (O2): the checked v1 operation's prologue is
-    /// where the catalog is activated, and it is this crate's only production
-    /// catalog activation.
+    /// The plain lease: the workspace mutator lock and nothing else.
     ///
-    /// **Why here.** `recover_or_create` needs a `CatalogMutationLeaseV1`,
-    /// which is borrowed from a HELD `WorkspaceMutatorLock` — so the activation
-    /// is structurally inside an operation already holding the lock, which is
-    /// what E0.2 §5.2's relocation decision requires. Of the lock's nine
-    /// production sites, that decision's frozen text keeps `repo create`,
-    /// `init-from-sources`, the ordinary merge, abort, GC and the mutation
-    /// guard capability-free; the v1 lifecycle's are what remain, and this one
-    /// is the prologue BOTH v1 production entries take (`start.rs`'s creation
-    /// lease and `service.rs`'s mutation loop), so one site covers the whole
-    /// checked path. `--no-ff` is the only route into v1 at this writer floor
-    /// (`model/version.rs`), so a filesystem without durable identity refuses
-    /// exactly the checked feature and nothing else.
-    ///
-    /// **Ordering** (E0.2b §5.3 item 6): activation happens before the
-    /// operation's own first durable mutation — the lease is taken before
-    /// `create_open` and before the service's commit loop — so a capability
-    /// refusal leaves the merge store untouched. The catalog's OWN partial
-    /// state is the other arm: `recover_or_create` is a recover-or-create
-    /// owner and converges on restart. Both arms are driven, not asserted.
-    ///
-    /// The retained catalog is dropped here: activation proves and persists
-    /// it, and each consumer re-acquires under its own lease. E4.2-E4.6 are the
-    /// consumers.
+    /// **CAPABILITY-FREE, and that is the contract** (E4.1 review [P1-1]/[P2-1]
+    /// cure). The v1 ABORT and PRESERVE routes take this one: abort is on
+    /// E0.2 §5.2's capability-free list, so an open v1 record on a filesystem
+    /// the catalog cannot use must still be abortable — that is the in-code
+    /// exit every refusal below depends on existing.
     pub(super) fn acquire(root: &Path) -> ModelResult<Self> {
         let workspace_root = root.canonicalize().map_err(io_error)?;
         let guard = WorkspaceMutatorLock::acquire(&workspace_root)?;
-        crate::checked_artifact::entry::activate_workspace_catalog(guard.catalog_mutation_lease())?;
         Ok(Self {
             _guard: guard,
             workspace_root,
         })
+    }
+
+    /// The lease plus R2-E Step E4.1's catalog activation (O2), for the arms
+    /// that mutate a record toward v1 semantics: `start.rs`'s creation lease
+    /// and `service.rs`'s forward (`ResumeStart`/`Continue`) loop.
+    ///
+    /// **Why not in `acquire`** (review [P1-1]): that caught every arm taking
+    /// the lock, abort included, and — through the A1 adapter — an ORDINARY
+    /// merge resumed after a `Finalizing` interruption.
+    /// `ACTIVE_WRITER_FLOOR` (`workspace_ops/merge/model/version.rs`) governs
+    /// which version a START writes, not which lifecycle a record already on
+    /// disk routes to. The adapter now proves viability before its durable
+    /// v0->v1 rewrite; abort keeps the plain lease above.
+    ///
+    /// **Ordering** (E0.2b §5.3 item 6): taken before `create_open` and before
+    /// the service's commit loop, so a refusal leaves the merge store
+    /// untouched; the catalog's own partial state converges on restart.
+    pub(super) fn acquire_activated(root: &Path) -> ModelResult<Self> {
+        let lease = Self::acquire(root)?;
+        crate::checked_artifact::entry::activate_workspace_catalog(
+            lease._guard.catalog_mutation_lease(),
+        )?;
+        Ok(lease)
     }
 
     pub(super) fn covers(&self, location: &OpenRecordLocation) -> bool {
@@ -168,6 +170,11 @@ impl V1MutationLease {
     #[cfg(test)]
     pub(super) fn acquire_for_test(root: &Path) -> ModelResult<Self> {
         Self::acquire(root)
+    }
+
+    #[cfg(test)]
+    pub(super) fn acquire_activated_for_test(root: &Path) -> ModelResult<Self> {
+        Self::acquire_activated(root)
     }
 }
 

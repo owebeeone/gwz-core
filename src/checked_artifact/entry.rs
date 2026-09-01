@@ -276,16 +276,20 @@ fn require_canonical_bundle_parent(artifact: &CheckedArtifact) -> ModelResult<()
 /// `recover_or_create` is `pub(in crate::checked_artifact)`, so its caller must
 /// live inside this module tree, and this module is the crate's declared
 /// production checked boundary — so the door is here and the operation calls
-/// it. The caller is `v1_lifecycle`'s `V1MutationLease::acquire`, the checked
-/// v1 operation's prologue, which holds `WorkspaceMutatorLock` across the whole
-/// operation.
+/// it. Its callers are the arms that mutate a record toward v1 semantics —
+/// `v1_lifecycle`'s `V1MutationLease::acquire_activated` (start's creation
+/// lease and the forward service loop) and `dispatch.rs`'s A1 adapter, which
+/// proves viability here before its durable v0->v1 upgrade.
 ///
-/// **Where the capability is required, and where it is not** (E0.2 §5.2, with
-/// E0.2b §6.4's fifth ground): `WorkspaceMutatorLock::try_acquire` constructs
-/// no witness and executes no `DurableObjectIdentity` probe, here or after.
-/// `gwz repo create`, `init-from-sources`, an ordinary or `--ff-only` merge,
-/// abort, GC and the mutation guard all keep working on a filesystem that
-/// cannot answer; the checked `--no-ff` v1 path refuses, typed, right here.
+/// **Where the capability is required, and where it is not** (E0.2 §5.2 with
+/// E0.2b §6.4's fifth ground, corrected by the E4.1 review's [P1-1]/[P2-1]):
+/// `WorkspaceMutatorLock::try_acquire` probes no durable identity, here or
+/// after. `gwz repo create`, `init-from-sources`, GC, the mutation guard and
+/// `gwz merge --abort` never reach this door — so a refusal always has an exit.
+/// An ordinary or `--ff-only` merge reaches it only through the A1 adapter's
+/// viability window, where a refusal is never surfaced: the v0 lifecycle stays
+/// in command. What refuses, typed, is a `--no-ff` start and the resume of a
+/// record already at v1.
 ///
 /// **The retained catalog is dropped.** Activation proves the catalog and
 /// leaves it durable; the lease model is that each consumer re-acquires

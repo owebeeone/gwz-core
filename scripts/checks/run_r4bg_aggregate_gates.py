@@ -341,6 +341,22 @@ def _fault_count(darwin: str, linux: str) -> str:
         landing dispatch re-measures it on the other two platforms.
       lib remainder 1097 / 1098: UNMOVED; darwin 1097 + 1 ignored re-MEASURED
         on this tree in the same session.
+
+    R2-E E4.1 commit (c) -- the review's [P1-1]/[P2-1] cure -- moves the LIB
+    REMAINDER and only it, by two rows in `workspace_ops::tests::g23::
+    a1_activation`, neither carrying a cfg gate: the cured wedge (an
+    interrupted ordinary merge completes under v0 when the catalog is
+    unavailable) and the v1 resume/abort recoverability row.
+
+      lib remainder darwin 1097 -> 1099: MEASURED on this step's own tree
+        (1099 passed + 1 ignored, 2026-09-01).
+      lib remainder linux  1098 -> 1100: DERIVED (+2, cfg-independent -- both
+        rows plant a plain file and drive production dispatch), *not*
+        measured, and therefore FIRST-DISPATCH-EXPECTED. A measured number
+        wins.
+      checked_artifact:: 456 / 466 and v1_lifecycle:: 257: UNMOVED -- the cure
+        rewrites existing rows rather than adding any. Both darwin numbers
+        re-MEASURED unchanged in the same session.
     """
     if sys.platform == "darwin":
         return darwin
@@ -379,7 +395,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1097 passed", "1098 passed")),
+         _fault_count("1099 passed", "1100 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

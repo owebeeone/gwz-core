@@ -32,10 +32,11 @@ fn checked_record_and_lease_are_bound_to_exact_root_and_bytes() {
 /// refusal is proved to occur BEFORE the operation's first durable mutation,
 /// rather than asserted.
 ///
-/// The checked v1 prologue takes the catalog before any record is written, so a
+/// The FORWARD prologue takes the catalog before any record is written, so a
 /// workspace whose catalog cannot be activated refuses with the merge store
-/// untouched and the obstruction unread and unmoved. Driven by a real
-/// un-bootstrappable catalog target — a foreign FILE where the catalog's own
+/// untouched and the obstruction unread and unmoved. (The reverse prologue —
+/// abort — takes the plain `acquire`, and is capability-free by the E4.1
+/// review's [P1-1] cure.) Driven by a real un-bootstrappable catalog target — a foreign FILE where the catalog's own
 /// directory belongs — because the catalog's injection keys are
 /// `pub(in crate::checked_artifact)` and this partition is outside that tree;
 /// the injection-driven arm (an interrupted durable edge converging on restart)
@@ -47,9 +48,12 @@ fn the_v1_prologue_refuses_an_unactivatable_catalog_before_any_durable_mutation(
     std::fs::create_dir_all(&private).unwrap();
     std::fs::write(private.join("catalog-final"), b"foreign").unwrap();
 
-    let Err(refused) = V1MutationLease::acquire_for_test(&workspace.path) else {
+    let Err(refused) = V1MutationLease::acquire_activated_for_test(&workspace.path) else {
         panic!("the prologue activated a catalog over a foreign object");
     };
+    // The capability-free lease the abort route takes is unaffected by the same
+    // obstruction — the exit every refusal above depends on.
+    assert!(V1MutationLease::acquire_for_test(&workspace.path).is_ok());
 
     assert!(
         refused.to_string().contains("catalog"),

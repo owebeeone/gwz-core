@@ -134,18 +134,27 @@ its lock:
 * **A mount identity**, so a rename can be proved to stay on one filesystem.
 
 Filesystems that do not expose both are refused with a message naming the
-capability. The known families are network filesystems (NFS, SMB/CIFS, SSHFS
-and other FUSE mounts), overlay and container filesystems, and `tmpfs`; on
-Linux the admitted local filesystem is `ext4`.
+capability. **On Linux the admitted filesystem is `ext4` and nothing else** —
+btrfs, xfs and zfs are refused, as are `tmpfs`, overlay and container
+filesystems and every network mount (NFS, SMB/CIFS, SSHFS and other FUSE
+mounts). On macOS: local APFS or HFS+. On Windows: NTFS.
 
-**The refusal is scoped to the checked feature.** `gwz repo create`,
-`init-from-sources`, an ordinary or `--ff-only` merge, merge abort, GC and the
-workspace mutation guard all take the same workspace mutator lock and none of
-them asks for a durable identity, so they keep working unchanged on a
-filesystem that cannot answer.
+**What refuses:** `gwz merge --no-ff`, and `gwz merge --resume` of a merge
+record already at v1.
+
+**What never refuses:** `gwz merge --abort`, with or without `--preserve`, on a
+record of either version — so a `--no-ff` merge left open on a workspace that
+later becomes incapable can always be cleared. Nor does an ordinary or
+`--ff-only` merge, including resuming one interrupted during finalization: such
+a record is eligible for an automatic upgrade to the v1 lifecycle, and when the
+catalog is unavailable that upgrade is declined before it writes anything and
+the v0 lifecycle completes the merge itself. Nor do `gwz repo create`,
+`init-from-sources`, `gwz merge --status`, GC, or the workspace mutation guard,
+none of which reaches the catalog.
 
 **Workaround:** run the workspace on a filesystem that exposes persistent
-handles, or start the merge without `--no-ff`.
+handles. A merge already open can be cleared with `gwz merge --abort`; a new one
+can be started without `--no-ff`.
 
 ## Branch And Stash Outcomes
 

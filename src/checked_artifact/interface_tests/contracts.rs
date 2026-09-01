@@ -149,7 +149,14 @@ fn only_the_substrate_identity_capability_carries_an_actionable_remedy() {
     let remedy = PlatformCapability::PersistentFilesystemIdentity
         .remedy()
         .expect("the substrate identity gap is actionable");
-    for named in ["persistent file handles", "mount identity", "--no-ff"] {
+    // `--abort` is named because the review's [P2-1] found the sentence advising
+    // an exit that does not exist for a merge already open.
+    for named in [
+        "persistent file handles",
+        "mount identity",
+        "--abort",
+        "--no-ff",
+    ] {
         assert!(remedy.contains(named), "the remedy never names {named}");
     }
     assert_eq!(PlatformCapability::DurableObjectIdentity.remedy(), None);

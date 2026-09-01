@@ -553,3 +553,151 @@ fn the_overlong_staging_name_refuses_the_atomic_upgrade_at_the_filesystem() {
     assert_eq!(error.code, ErrorCode::IoError);
     assert_eq!(fs::read(&path).unwrap(), source, "nothing was published");
 }
+
+/// A foreign object where the catalog's own directory belongs: activation
+/// refuses on this workspace from here on.
+fn obstruct_the_catalog(root: &Path) {
+    fs::create_dir_all(root.join(".gwz")).unwrap();
+    fs::write(root.join(".gwz/catalog-final"), b"foreign").unwrap();
+}
+
+/// The three rows' shared setup: a one-member workspace with a source commit.
+fn workspace(label: &str) -> (TempDir, crate::git::Git2Backend, RemoteFixture) {
+    let temp = TempDir::new(label);
+    let backend = crate::git::Git2Backend::new();
+    let fixture = init_one_member_workspace(temp.path(), &backend, label);
+    feature_commit(
+        &backend,
+        &temp.path().join("remote"),
+        "README.md",
+        "source\n",
+    );
+    (temp, backend, fixture)
+}
+
+/// An ordinary merge interrupted at `Finalizing` — a `MayAdapt` v0 row.
+fn interrupted_ordinary_merge(
+    backend: &crate::git::Git2Backend,
+    root: &Path,
+    merge_id: &str,
+    label: &str,
+) {
+    let store = FaultingMergeStore::new(FinalizationFault::AfterEnteringFinalizing);
+    let error = invoke_with_store_and_merge_id(backend, &store, root, merge_id, label).unwrap_err();
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired, "{label}");
+    let open = classify_open_record(root).unwrap().unwrap();
+    assert_eq!(open.version, RecordVersion::V0, "{label}");
+    assert_eq!(open.adaptation, AdaptationPrecheck::MayAdapt, "{label}");
+}
+
+/// Leaves a genuine OPEN v1 record and returns its id, by carrying an
+/// interrupted ordinary merge across with the production A1 migration itself —
+/// the adapter's own call, with the production `AtomicUpgradeFault::None`.
+fn open_v1_record_from_an_adapted_crash(
+    backend: &crate::git::Git2Backend,
+    root: &Path,
+    label: &str,
+) -> String {
+    use crate::workspace_ops::merge::{AtomicUpgradeFault, AtomicUpgradeOutcome, upgrade_open_v0};
+
+    let merge_id = format!("merge_{label}");
+    interrupted_ordinary_merge(backend, root, &merge_id, &format!("op_{label}"));
+    let outcome = upgrade_open_v0(
+        backend,
+        root,
+        &merge_id,
+        crate::VERSION,
+        AtomicUpgradeFault::None,
+    )
+    .unwrap();
+    assert!(
+        matches!(outcome, AtomicUpgradeOutcome::Upgraded { .. }),
+        "{label}: {outcome:?}"
+    );
+    assert_eq!(
+        classify_open_record(root).unwrap().unwrap().version,
+        RecordVersion::V1,
+        "{label}"
+    );
+    merge_id
+}
+
+/// **E4.1 review [P1-1], cured and driven.** The A1 adapter used to upgrade a
+/// `MayAdapt` v0 row durably to v1 before the v1 lifecycle spoke, so an
+/// unavailable catalog left it v1, `Skip`, and refusing forever. It now proves
+/// the destination viable BEFORE it writes: the catalog is one more
+/// non-`Upgraded` answer, v0 completes the record, the envelope stays v0.
+#[test]
+fn an_interrupted_ordinary_merge_completes_under_v0_when_the_catalog_is_unavailable() {
+    let (temp, backend, _fixture) = workspace("a1-e41-wedge");
+    let merge_id = "merge_e41_wedge".to_owned();
+    interrupted_ordinary_merge(&backend, temp.path(), &merge_id, "op_e41_wedge");
+
+    obstruct_the_catalog(temp.path());
+    let completed = handle_merge(
+        &backend,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(merge_id.clone())),
+        "op_e41_wedge_resume".to_owned(),
+    )
+    .unwrap();
+
+    assert_eq!(completed.state, crate::MergeOperationState::Completed);
+    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+    assert_eq!(
+        completed
+            .record
+            .as_ref()
+            .map(|record| record.source_version),
+        Some(crate::MergeRecordVersion::V0),
+        "the declined upgrade must leave the v0 lifecycle in command"
+    );
+    assert_eq!(
+        envelope_on_disk(temp.path(), &merge_id),
+        ("gwz.merge-operation/v0".to_owned(), 0),
+        "no durable upgrade may precede a refusal the v1 lifecycle would raise"
+    );
+}
+
+/// **E4.1 review R3, driven — and R2's abort claim with it.** Resuming a genuine
+/// v1 record whose catalog cannot be activated refuses typed, writes nothing,
+/// and leaves the record byte-identical; `--abort` on that same record then
+/// clears it without ever asking for a catalog. That recoverability is the
+/// whole safety argument for refusing at all, and it is also R4's exit for the
+/// disclosed post-upgrade race.
+#[test]
+fn a_v1_resume_refuses_without_mutation_and_abort_still_clears_the_record() {
+    let (temp, backend, _fixture) = workspace("a1-e41-v1-resume");
+    let merge_id = open_v1_record_from_an_adapted_crash(&backend, temp.path(), "e41_v1_resume");
+    let record_path = temp.path().join(format!(".gwz/merge/{merge_id}.yaml"));
+    let before = fs::read(&record_path).unwrap();
+    obstruct_the_catalog(temp.path());
+
+    let refused = handle_merge(
+        &backend,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(merge_id.clone())),
+        "op_e41_v1_resume".to_owned(),
+    )
+    .unwrap_err();
+    assert!(
+        refused.message.contains("merge artifact catalog"),
+        "the refusal does not name the catalog: {refused:?}"
+    );
+    assert_eq!(fs::read(&record_path).unwrap(), before, "record mutated");
+
+    let aborted = handle_merge(
+        &backend,
+        temp.path(),
+        recovery_request(crate::MergeOp::Abort, Some(merge_id)),
+        "op_e41_v1_abort".to_owned(),
+    )
+    .unwrap();
+    assert!(!aborted.open, "{aborted:?}");
+    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+    assert_eq!(
+        fs::read(temp.path().join(".gwz/catalog-final")).unwrap(),
+        b"foreign",
+        "abort must not have touched the catalog it never needed"
+    );
+}

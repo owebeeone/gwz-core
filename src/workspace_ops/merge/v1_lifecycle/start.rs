@@ -78,7 +78,9 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
     // workspace mutator lock is not re-entrant, so the creation lease must be
     // released before the service starts.
     let created_state = {
-        let lease = super::checked::V1MutationLease::acquire(root)?;
+        // E4.1: the creation lease activates — this record is being written at
+        // v1 and the catalog must be viable before the first durable write.
+        let lease = super::checked::V1MutationLease::acquire_activated(root)?;
         store.create_open(&lease, root, &record)?.record().state
     };
     emitter.operation_state_changed(created_state.into());

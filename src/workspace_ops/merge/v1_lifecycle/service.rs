@@ -109,7 +109,16 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
         V1NextAction::Reject(error) => return Err(error),
         V1NextAction::Observe(_) | V1NextAction::Apply(_) => {}
     }
-    let lease = V1MutationLease::acquire(root)?;
+    // E4.1 review [P1-1]/[P2-1] cure: only the FORWARD arms mutate a record
+    // toward v1 semantics and so require the catalog; the reverse arms are on
+    // E0.2 §5.2's capability-free list, and abort is the in-code exit for a v1
+    // record stranded on a filesystem the catalog cannot use.
+    let lease = match request {
+        V1LifecycleRequest::ResumeStart | V1LifecycleRequest::Continue => {
+            V1MutationLease::acquire_activated(root)?
+        }
+        _ => V1MutationLease::acquire(root)?,
+    };
     let mut current = store.load_open(root, merge_id)?;
     let mut attempt = None;
     let mut invocation = V1Invocation::new();

@@ -45,11 +45,11 @@ PROTECTED_SOURCE_DIGESTS = {
     # value, distinct from the identity VALUE contract that keeps
     # `DurableObjectIdentity`, and it is the one capability carrying an
     # actionable remedy sentence.
-    "checked_artifact/capability.rs": "c9c314e100bf37245c8e9cde81e167e56091d9d44542a2a43699b14745397e7b",
+    "checked_artifact/capability.rs": "c1760e95fa91d8f51cb6a2fd7c71be4444d0923cc820d2c353b4d8e9050d8063",
     # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
     # `activate_workspace_catalog`, the first production catalog activation,
     # and the four ENTRY_* inventories below move with it.
-    "checked_artifact/entry.rs": "ea69805944078830f731560070fea9239b57cd3556800c39d6a86864b766998f",
+    "checked_artifact/entry.rs": "1cdf540650ee91a4f57015f663f43fb48e0614ed6a789520c9f49efdf310e1f3",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
     "checked_artifact/mod.rs": "48d9261bd994dcf81ca77d3b3195b2e2e1ac6f2231f8c506580ab79571057e7c",
     # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
@@ -210,6 +210,10 @@ APPROVED_RUST_PATH_EDGES = {
 # lands in its own suite), and `v1_lifecycle/mod.rs` (the checked prologue calls
 # the activation door, and its ordering row lands beside it). The other four
 # digests were recomputed in the same pass and are unchanged.
+#
+# R2-E E4.1 commit (c) re-pins ONE of them, `v1_lifecycle/mod.rs`: activation
+# moves off the shared prologue onto `acquire_activated`, so the reverse (abort)
+# arms stay capability-free. The other six were recomputed and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
@@ -217,7 +221,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "e1a8f1f05f0aeeaca27f20f8f749f0027f712802779889634beb1ad5b3767f61",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "23ee7d417b8a317819289d2725234f7430c0820ee22060a176ca787fe698781f",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "3146b52783aa17b898ca410afd4f7934c96a0b4ffe326de3863a43d45fed9322",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -329,7 +333,14 @@ ENTRY_REFERENCES = {
     # `WorkspaceMutatorLock` across the whole operation (E0.2 §5.2). A SECOND
     # caller is an E4.2-E4.6 conversion and moves this row deliberately, exactly
     # as `interface_tests/catalog_activation_pin.rs` moves with it.
-    "activate_workspace_catalog": {"workspace_ops/merge/v1_lifecycle/checked.rs"},
+    #
+    # E4.1 review [P1-1] cure adds the SECOND caller: the A1 adapter, proving
+    # the destination lifecycle viable before its durable v0->v1 upgrade.
+    "activate_workspace_catalog": {
+        "workspace_ops/merge/runtime/dispatch.rs",
+        "workspace_ops/merge/v1_lifecycle/checked.rs",
+    },
+
     "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
     "MergeArtifactTransition": {
         "git/gitbackend/preservation_root.rs",
@@ -792,9 +803,8 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider/filesystem.rs",
         "checked_artifact/capability/pre_catalog/provider/filesystem/bound.rs",
     },
-    # R2-E E4.1: the accessor gains its FIRST production caller outside the
-    # lock's own file -- the checked v1 prologue, which reads the lease off the
-    # `WorkspaceMutatorLock` it is holding and hands it to the activation door.
+    # R2-E E4.1: the accessor's production callers outside the lock's own file
+    # -- the forward v1 prologue and the A1 adapter's viability window.
     "catalog_mutation_lease": {
         "checked_artifact/bootstrap/runtime/mod.rs",
         "checked_artifact/capability/pre_catalog/provider/catalog_tests.rs",
@@ -804,6 +814,7 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider/mutation_tests.rs",
         "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
         "operation/workspace_mutator_lock.rs",
+        "workspace_ops/merge/runtime/dispatch.rs",
         "workspace_ops/merge/v1_lifecycle/checked.rs",
     },
 }
