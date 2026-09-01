@@ -57,7 +57,12 @@ pub(super) fn enforce(root: &Path) -> ModelResult<()> {
 }
 
 /// An archive this binary cannot read may own preservation evidence, so it is
-/// retained rather than classified.
+/// retained rather than classified. That class is not only malformed YAML: the
+/// shared decoder's unknown-field manifest refuses a well-formed archive whose
+/// `operation_drift` identity is duplicated, which the projection alone would
+/// accept — such an archive is retained here forever, uniformly with
+/// `--gc <id>`, which reads through the same decoder (round-2 review
+/// [R2-P3-3], 2026-09-02).
 ///
 /// This had a `#[cfg(test)]` twin that classified such an archive by decoding
 /// it with `decode_archived` and asking whether its cleanup worklist owned a

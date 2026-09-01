@@ -444,6 +444,11 @@ def _fault_count(darwin: str, linux: str) -> str:
 
       darwin 1113 -> 1114: MEASURED (1114 passed + 1 ignored, 2026-09-02).
       linux  1114 -> 1115: DERIVED (+1, cfg-independent), FIRST-DISPATCH-EXPECTED.
+
+    LANDED rebased onto 0dae0d5 (E4.3-B), 2026-09-02: the fix's own blocks above
+    measured v1_lifecycle:: 260 on their 7f28907 base; at the landing the
+    partition is E4.3-B's 262 and the remainder 1114 + 1 ignored, both
+    re-MEASURED on the rebased tree from a --list-verified snapshot binary.
     """
     if sys.platform == "darwin":
         return darwin
