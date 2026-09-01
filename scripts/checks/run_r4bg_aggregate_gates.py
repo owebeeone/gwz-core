@@ -319,6 +319,28 @@ def _fault_count(darwin: str, linux: str) -> str:
         dispatch. A measured number wins.
       lib remainder 1097 / 1098 and v1_lifecycle:: 256: UNMOVED by this
         commit; darwin re-MEASURED unchanged in the same session.
+
+    R2-E E4.1 commit (b) -- the activation package (O2: `recover_or_create`'s
+    first production caller) -- moves TWO partitions, by three rows, none
+    carrying a cfg gate:
+
+      checked_artifact:: darwin 454 -> 456, MEASURED on this step's own tree
+        (456 passed, 2026-09-01): precondition 6's restart arm, which drives
+        the production activation door through an interrupted durable edge
+        (`catalog::bootstrap::tests`), and precondition 1's remedy pin
+        (`interface_tests::contracts`).
+      checked_artifact:: linux 464 -> 466: DERIVED (+2, cfg-independent -- the
+        fault key and the capability vocabulary are portable), *not* measured,
+        and therefore FIRST-DISPATCH-EXPECTED at this package's landing
+        dispatch. A measured number wins.
+      v1_lifecycle:: 256 -> 257, MEASURED on this step's own tree (257 passed,
+        2026-09-01): precondition 6's ordering arm, which proves the checked v1
+        prologue refuses an unactivatable catalog before the operation's first
+        durable mutation. This row is a single cross-platform string; the
+        obstruction it plants is a plain file, so it is cfg-independent and the
+        landing dispatch re-measures it on the other two platforms.
+      lib remainder 1097 / 1098: UNMOVED; darwin 1097 + 1 ignored re-MEASURED
+        on this tree in the same session.
     """
     if sys.platform == "darwin":
         return darwin
@@ -334,7 +356,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "fault": ("aggregate fault/restart matrices (TransitionDesign:1469-1475)", [
         ("v1 lifecycle fault and restart matrices",
          lib("workspace_ops::merge::v1_lifecycle::", "--", "--skip", "root_fault_matrix"),
-         "256 passed"),
+         "257 passed"),
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         # LINUX-COUNT-OWED (R2-E E2): the darwin value is measured on this
@@ -353,7 +375,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # first Windows compile of that code. Marked here beside the linux
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("454 passed", "464 passed")),
+         lib("checked_artifact::"), _fault_count("456 passed", "466 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),

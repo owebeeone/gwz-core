@@ -192,6 +192,47 @@ pub(super) fn canonical_path_identity(root: &Dir, relative: &Path) -> std::io::R
     Ok(output)
 }
 
+/// R2-E E4.1 precondition 1, the legacy half.
+///
+/// This module's probes return `std::io::Result`, and `observation.rs`'s
+/// `unsupported(...)` mapper renders the cause verbatim into the user's
+/// sentence — so on the legacy path the capability refusal must BE the cause.
+/// A substrate gap therefore carries
+/// `capability::PERSISTENT_FILESYSTEM_IDENTITY_REMEDY` rather than a bare
+/// `errno`, and
+/// the message the user reads names persistent file handles, the admitted
+/// filesystems and the escape.
+///
+/// The typed catalog half is `CheckedFsError::unsupported(
+/// PlatformCapability::PersistentFilesystemIdentity, …)` in the four platform
+/// providers; both halves spell the sentence once, from `capability.rs`.
+fn persistent_identity_unsupported() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        super::capability::PERSISTENT_FILESYSTEM_IDENTITY_REMEDY,
+    )
+}
+
+/// The same refusal for a probe that failed with an `errno`.
+///
+/// The downgrade allowlist is the catalog provider's
+/// (`provider/platform/linux.rs`'s `query_error`): only substrates that
+/// genuinely lack the capability are converted. Everything else — `EBADF` and
+/// its lifecycle-defect siblings above all — stays a loud raw error, because a
+/// dead descriptor must never masquerade as a graceful capability downgrade.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn persistent_identity_error(source: std::io::Error) -> std::io::Error {
+    #[cfg(target_os = "linux")]
+    const DOWNGRADED: &[i32] = &[libc::EOPNOTSUPP, libc::ENOSYS, libc::ENOTTY, libc::EINVAL];
+    #[cfg(target_os = "macos")]
+    const DOWNGRADED: &[i32] = &[libc::ENOTSUP, libc::EINVAL, libc::ENOTTY];
+
+    match source.raw_os_error() {
+        Some(code) if DOWNGRADED.contains(&code) => persistent_identity_unsupported(),
+        _ => source,
+    }
+}
+
 fn put_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
     output.extend((bytes.len() as u16).to_le_bytes());
     output.extend(bytes);
@@ -273,14 +314,13 @@ mod platform {
             )
         };
         if result != 0 {
-            return Err(std::io::Error::last_os_error());
+            return Err(super::persistent_identity_error(
+                std::io::Error::last_os_error(),
+            ));
         }
         let handle_length = handle.handle_bytes as usize;
         if handle_length == 0 || handle_length > MAX_HANDLE_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "filesystem returned an unsupported persistent file handle",
-            ));
+            return Err(super::persistent_identity_unsupported());
         }
         Ok(ObjectIdentity {
             durable: DurableObjectIdentity::Linux {
@@ -308,10 +348,7 @@ mod platform {
             rustix::fs::StatxFlags::MNT_ID,
         )?;
         if stat.stx_mask & rustix::fs::StatxFlags::MNT_ID.bits() == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "filesystem does not expose a mount identity",
-            ));
+            return Err(super::persistent_identity_unsupported());
         }
         Ok(RenameDomainProof::LinuxMountId(stat.stx_mnt_id))
     }
@@ -373,14 +410,13 @@ mod platform {
             )
         } != 0
         {
-            return Err(std::io::Error::last_os_error());
+            return Err(super::persistent_identity_error(
+                std::io::Error::last_os_error(),
+            ));
         }
         let attributes = unsafe { attributes.assume_init() };
         if attributes.length as usize != std::mem::size_of::<MacObjectAttributes>() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "filesystem returned a noncanonical object-identity record",
-            ));
+            return Err(super::persistent_identity_unsupported());
         }
         Ok(attributes)
     }
@@ -406,24 +442,20 @@ mod platform {
             )
         } != 0
         {
-            return Err(std::io::Error::last_os_error());
+            return Err(super::persistent_identity_error(
+                std::io::Error::last_os_error(),
+            ));
         }
         let attributes = unsafe { attributes.assume_init() };
         if attributes.length as usize != std::mem::size_of::<MacVolumeAttributes>() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "filesystem returned a noncanonical volume-identity record",
-            ));
+            return Err(super::persistent_identity_unsupported());
         }
         let capabilities = unsafe { std::ptr::addr_of!(attributes.capabilities).read_unaligned() };
         let format = libc::VOL_CAPABILITIES_FORMAT;
         if capabilities.valid[format] & libc::VOL_CAP_FMT_PERSISTENTOBJECTIDS == 0
             || capabilities.capabilities[format] & libc::VOL_CAP_FMT_PERSISTENTOBJECTIDS == 0
         {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "filesystem does not promise persistent object identities",
-            ));
+            return Err(super::persistent_identity_unsupported());
         }
         Ok(attributes)
     }
@@ -535,12 +567,7 @@ mod platform {
             .enumerate()
             .skip(4)
             .find_map(|(index, unit)| (*unit == b'\\' as u16).then_some(index))
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "opened object did not expose a volume GUID path",
-                )
-            })?;
+            .ok_or_else(super::persistent_identity_unsupported)?;
         path.truncate(separator);
         Ok((path, info.FileId.Identifier))
     }
@@ -604,10 +631,7 @@ mod platform {
     use super::{ObjectIdentity, RenameDomainProof};
 
     fn unsupported() -> std::io::Error {
-        std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "checked-artifact durable identity is unsupported on this platform",
-        )
+        super::persistent_identity_unsupported()
     }
 
     pub(super) fn dir_object_identity(_dir: &Dir) -> std::io::Result<ObjectIdentity> {

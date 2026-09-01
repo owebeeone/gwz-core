@@ -143,7 +143,7 @@ fn require_ext4(fd: RawFd) -> Result<(), CheckedFsError> {
     }
     if unsafe { stat.assume_init() }.f_type != EXT4_SUPER_MAGIC {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "only local ext4 with FS_IOC_GETFSUUID is admitted",
         ));
     }
@@ -157,13 +157,13 @@ fn filesystem_uuid(fd: RawFd) -> Result<[u8; 16], CheckedFsError> {
     };
     if unsafe { libc::ioctl(fd, FS_IOC_GETFSUUID, &mut value) } != 0 {
         return Err(query_error(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "query ext4 external filesystem UUID",
         ));
     }
     if value.len != 16 || value.uuid == [0; 16] {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "ext4 returned an absent or malformed external UUID",
         ));
     }
@@ -188,14 +188,14 @@ fn persistent_handle(fd: RawFd) -> Result<(i32, Vec<u8>), CheckedFsError> {
     } != 0
     {
         return Err(query_error(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "query retained empty-path file handle",
         ));
     }
     let length = value.handle_bytes as usize;
     if value.handle_type <= 0 || !(1..=MAX_HANDLE_BYTES).contains(&length) {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "ext4 returned an unsupported persistent handle",
         ));
     }
@@ -350,7 +350,7 @@ mod tests {
         // that genuinely lack the capability (for example `FS_IOC_GETFSUUID`
         // on pre-6.8 kernels reports `ENOTTY` on a real descriptor).
         unsafe { *libc::__errno_location() = libc::ENOTTY };
-        let error = query_error(PlatformCapability::DurableObjectIdentity, "probe");
+        let error = query_error(PlatformCapability::PersistentFilesystemIdentity, "probe");
         assert!(
             matches!(error, CheckedFsError::Unsupported { .. }),
             "got {error:?}"
@@ -364,7 +364,7 @@ mod tests {
         // dead or recycled descriptor — a defect that must stay loud rather
         // than masquerade as a graceful capability downgrade.
         unsafe { *libc::__errno_location() = libc::EBADF };
-        let error = query_error(PlatformCapability::DurableObjectIdentity, "probe");
+        let error = query_error(PlatformCapability::PersistentFilesystemIdentity, "probe");
         assert!(is_hard_io(&error, libc::EBADF), "got {error:?}");
     }
 

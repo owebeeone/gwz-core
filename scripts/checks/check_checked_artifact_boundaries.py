@@ -40,8 +40,16 @@ PROTECTED_COMPILER_MODULES = {
 PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/bootstrap.rs": "d85d894032512125ee5ad0cab770db25dd37cee32096ad84be3061eaab94b2aa",
     "checked_artifact/bootstrap/runtime/mod.rs": "1bddf4b40e4bd6454300e7b08b54119875ec19daacb819a14dbd0c483784230d",
-    "checked_artifact/capability.rs": "a1cdb1d5b2ff92507f6138322a51a0dec1d6b4cd788421b10f27736d47e7566c",
-    "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
+    # R2-E E4.1 commit (b) re-pins this entry for precondition 1: the SUBSTRATE
+    # that answers a durable-identity probe gains its own `PlatformCapability`
+    # value, distinct from the identity VALUE contract that keeps
+    # `DurableObjectIdentity`, and it is the one capability carrying an
+    # actionable remedy sentence.
+    "checked_artifact/capability.rs": "c9c314e100bf37245c8e9cde81e167e56091d9d44542a2a43699b14745397e7b",
+    # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
+    # `activate_workspace_catalog`, the first production catalog activation,
+    # and the four ENTRY_* inventories below move with it.
+    "checked_artifact/entry.rs": "ea69805944078830f731560070fea9239b57cd3556800c39d6a86864b766998f",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
     "checked_artifact/mod.rs": "48d9261bd994dcf81ca77d3b3195b2e2e1ac6f2231f8c506580ab79571057e7c",
     # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
@@ -193,14 +201,23 @@ APPROVED_RUST_PATH_EDGES = {
 # `leaf_is_resident` is a full bounded leaf observation. Comment only -- no
 # production semantics move; the other six digests were recomputed in the same
 # pass and are unchanged.
+# R2-E E4.1 commit (b), the activation package (O2), re-pins THREE tree
+# entries: `capability/pre_catalog.rs` (the four platform providers' substrate
+# refusals move to `PersistentFilesystemIdentity`, and the unsupported stub's
+# Linux-profile claim is swept to a named unreachable placeholder),
+# `catalog.rs` (the owner is activated: the blanket `dead_code` allow retires to
+# the two admitted-action capabilities that stay dead, and the restart-arm row
+# lands in its own suite), and `v1_lifecycle/mod.rs` (the checked prologue calls
+# the activation door, and its ordering row lands beside it). The other four
+# digests were recomputed in the same pass and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "d92367426106ac251497432d511480fa6f9c3fc662f8d88ba462bb9f2db8d045",
-    "checked_artifact/catalog.rs": "05918c3672d93a056e396b7db80ef6de29a69ef9ebd40ea0ede5e1ee6a3ee670",
+    "checked_artifact/capability/pre_catalog.rs": "d531ce50a0092f8c1ff15bc1d9eef5ebd1928ced6e331c8ebacf630b2430e27a",
+    "checked_artifact/catalog.rs": "e1a8f1f05f0aeeaca27f20f8f749f0027f712802779889634beb1ad5b3767f61",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "74a416a623ad421b1646e8692d6b449d76cc754045ff43348c5e897c39eae96c",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "23ee7d417b8a317819289d2725234f7430c0820ee22060a176ca787fe698781f",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -305,6 +322,14 @@ V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = frozenset(
 )
 
 ENTRY_REFERENCES = {
+    # R2-E Phase E4 Step E4.1 (O2): the first production catalog activation.
+    # `recover_or_create` is `pub(in crate::checked_artifact)`, so its caller
+    # must live inside that tree and this boundary module is where it lives;
+    # the operation that calls the door is the checked v1 prologue, which holds
+    # `WorkspaceMutatorLock` across the whole operation (E0.2 §5.2). A SECOND
+    # caller is an E4.2-E4.6 conversion and moves this row deliberately, exactly
+    # as `interface_tests/catalog_activation_pin.rs` moves with it.
+    "activate_workspace_catalog": {"workspace_ops/merge/v1_lifecycle/checked.rs"},
     "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
     "MergeArtifactTransition": {
         "git/gitbackend/preservation_root.rs",
@@ -346,6 +371,7 @@ ENTRY_REFERENCES = {
 }
 
 ENTRY_ITEMS = {
+    "activate_workspace_catalog",
     "MergeArtifactFact",
     "MergeArtifactTransition",
     "classify_expected",
@@ -379,6 +405,11 @@ ENTRY_ITEMS = {
 ENTRY_USES = {
     "crate::model::{ErrorCode, ModelError, ModelResult}",
     "std::path::Path",
+    # E4.1's three: the lease the door takes, the subsystem error it renders,
+    # and the sealed catalog entry point it calls.
+    "super::bootstrap::CatalogMutationLeaseV1",
+    "super::capability::CheckedFsError",
+    "super::catalog::recover_or_create",
     "super::{ CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition, }",
 }
 
@@ -402,6 +433,10 @@ ENTRY_CALLS = {
     "fact",
     "format!",
     "is_some",
+    # E4.1's first two: the combinators the activation door's error rendering
+    # uses.
+    "map",
+    "map_err",
     "map_fact",
     "map_or",
     "map_transition",
@@ -415,6 +450,10 @@ ENTRY_CALLS = {
     "preservation_bundle",
     "preservation_git_directory",
     "preservation_workspace",
+    # E4.1's fourth: the sealed catalog entry point the activation door calls.
+    "recover_or_create",
+    # E4.1's third: the capability's actionable-remedy lookup.
+    "remedy",
     "remove_exact",
     "replace_exact",
     "replace_expected",
@@ -753,6 +792,9 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider/filesystem.rs",
         "checked_artifact/capability/pre_catalog/provider/filesystem/bound.rs",
     },
+    # R2-E E4.1: the accessor gains its FIRST production caller outside the
+    # lock's own file -- the checked v1 prologue, which reads the lease off the
+    # `WorkspaceMutatorLock` it is holding and hands it to the activation door.
     "catalog_mutation_lease": {
         "checked_artifact/bootstrap/runtime/mod.rs",
         "checked_artifact/capability/pre_catalog/provider/catalog_tests.rs",
@@ -762,6 +804,7 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider/mutation_tests.rs",
         "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
         "operation/workspace_mutator_lock.rs",
+        "workspace_ops/merge/v1_lifecycle/checked.rs",
     },
 }
 

@@ -124,9 +124,37 @@ pub(super) struct V1MutationLease {
 }
 
 impl V1MutationLease {
+    /// R2-E Phase E4 Step E4.1 (O2): the checked v1 operation's prologue is
+    /// where the catalog is activated, and it is this crate's only production
+    /// catalog activation.
+    ///
+    /// **Why here.** `recover_or_create` needs a `CatalogMutationLeaseV1`,
+    /// which is borrowed from a HELD `WorkspaceMutatorLock` — so the activation
+    /// is structurally inside an operation already holding the lock, which is
+    /// what E0.2 §5.2's relocation decision requires. Of the lock's nine
+    /// production sites, that decision's frozen text keeps `repo create`,
+    /// `init-from-sources`, the ordinary merge, abort, GC and the mutation
+    /// guard capability-free; the v1 lifecycle's are what remain, and this one
+    /// is the prologue BOTH v1 production entries take (`start.rs`'s creation
+    /// lease and `service.rs`'s mutation loop), so one site covers the whole
+    /// checked path. `--no-ff` is the only route into v1 at this writer floor
+    /// (`model/version.rs`), so a filesystem without durable identity refuses
+    /// exactly the checked feature and nothing else.
+    ///
+    /// **Ordering** (E0.2b §5.3 item 6): activation happens before the
+    /// operation's own first durable mutation — the lease is taken before
+    /// `create_open` and before the service's commit loop — so a capability
+    /// refusal leaves the merge store untouched. The catalog's OWN partial
+    /// state is the other arm: `recover_or_create` is a recover-or-create
+    /// owner and converges on restart. Both arms are driven, not asserted.
+    ///
+    /// The retained catalog is dropped here: activation proves and persists
+    /// it, and each consumer re-acquires under its own lease. E4.2-E4.6 are the
+    /// consumers.
     pub(super) fn acquire(root: &Path) -> ModelResult<Self> {
         let workspace_root = root.canonicalize().map_err(io_error)?;
         let guard = WorkspaceMutatorLock::acquire(&workspace_root)?;
+        crate::checked_artifact::entry::activate_workspace_catalog(guard.catalog_mutation_lease())?;
         Ok(Self {
             _guard: guard,
             workspace_root,

@@ -7,6 +7,9 @@
 
 use std::path::Path;
 
+use super::bootstrap::CatalogMutationLeaseV1;
+use super::capability::CheckedFsError;
+use super::catalog::recover_or_create;
 use super::{
     CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
 };
@@ -266,4 +269,60 @@ fn require_canonical_bundle_parent(artifact: &CheckedArtifact) -> ModelResult<()
             "preservation bundle parent hierarchy is missing or noncanonical",
         ))
     }
+}
+
+/// R2-E Phase E4 Step E4.1 (O2): the first production catalog activation.
+///
+/// `recover_or_create` is `pub(in crate::checked_artifact)`, so its caller must
+/// live inside this module tree, and this module is the crate's declared
+/// production checked boundary — so the door is here and the operation calls
+/// it. The caller is `v1_lifecycle`'s `V1MutationLease::acquire`, the checked
+/// v1 operation's prologue, which holds `WorkspaceMutatorLock` across the whole
+/// operation.
+///
+/// **Where the capability is required, and where it is not** (E0.2 §5.2, with
+/// E0.2b §6.4's fifth ground): `WorkspaceMutatorLock::try_acquire` constructs
+/// no witness and executes no `DurableObjectIdentity` probe, here or after.
+/// `gwz repo create`, `init-from-sources`, an ordinary or `--ff-only` merge,
+/// abort, GC and the mutation guard all keep working on a filesystem that
+/// cannot answer; the checked `--no-ff` v1 path refuses, typed, right here.
+///
+/// **The retained catalog is dropped.** Activation proves the catalog and
+/// leaves it durable; the lease model is that each consumer re-acquires
+/// (`coordinator/execution.rs`'s admission session says the same). E4.2-E4.6
+/// convert the consumers that will read it.
+///
+/// **Two scope clauses this door's consumers must not lean on** (E7.2's
+/// [R2-P3-1] and its terminal sibling, written at the plan's E4 gate note):
+/// a settled barrier ordinal does not imply its target parent's dirents were
+/// ever ordered, and a converged-by-observation restart does not imply key #8's
+/// retired-root flush or key #9's catalog-root barrier ran on that drive.
+/// Converged does not imply flushed; settled does not imply barriered. A
+/// consumer that needs either must barrier or flush for itself.
+pub(crate) fn activate_workspace_catalog(lease: CatalogMutationLeaseV1<'_>) -> ModelResult<()> {
+    recover_or_create(lease)
+        .map(|_retained| ())
+        .map_err(|cause| {
+            let label = "merge artifact catalog";
+            match cause {
+                CheckedFsError::Unsupported { capability, detail } => ModelError::new(
+                    ErrorCode::UnsupportedOperation,
+                    match capability.remedy() {
+                        // Precondition 1: the one gap a user can act on arrives as
+                        // the sentence that says what to do, with the substrate's
+                        // own words kept for diagnosis.
+                        Some(remedy) => format!("checked {label}: {remedy} (detail: {detail})"),
+                        None => format!("checked {label} is unsupported: {detail}"),
+                    },
+                ),
+                CheckedFsError::Io { operation, source } => ModelError::new(
+                    ErrorCode::IoError,
+                    format!("checked {label} {operation}: {source}"),
+                ),
+                CheckedFsError::Ambiguous { fact, detail } => ModelError::new(
+                    ErrorCode::IoError,
+                    format!("checked {label} rejected {fact}: {detail}"),
+                ),
+            }
+        })
 }

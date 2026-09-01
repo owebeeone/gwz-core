@@ -7,30 +7,43 @@
 // `allow(dead_code)` in `checked_artifact/mod.rs` down to the three children
 // that still carry a frozen surface. `scratch` needs none: every item it
 // exports has a production consumer today.
+// R2-E Phase E4 Step E4.1 (2026-09-01) ACTIVATED this owner: `recover_or_create`
+// now has a production caller — `checked_artifact/entry.rs`'s
+// `activate_workspace_catalog`, reached from the checked v1 operation's
+// prologue — and `interface_tests/catalog_activation_pin.rs` pins the count at
+// exactly one. The blanket allow that stood here for the unactivated entry
+// point is retired; what remains dead is what `dead_code` still names.
 #[allow(
     dead_code,
-    reason = "the sealed catalog owner is complete but unactivated: `recover_or_create` gains \
-              its first production caller in R2-E, behind the Phase 4.3 coexistence criterion \
-              (plan §5 item 2)"
+    reason = "E4.1 activated `recover_or_create`; what stays dead on the retained catalog is the \
+              two admitted-action capabilities no activation path uses — \
+              `retire_admitted_action` and `observe_roaming_anchor_home` — whose first production \
+              consumers are the E4.2-E4.6 conversions"
 )]
 mod bootstrap;
 #[allow(
     dead_code,
-    reason = "the pure recovery classifier is consumed only by the owner above and by its own \
-              suites until that activation"
+    reason = "E4.1 activated the owner above, which consumes this classifier on every drive; what \
+              stays dead is the classifier's own unreached vocabulary, whose readers are the \
+              E4.2-E4.6 consumers and its interface suites"
 )]
 mod classifier;
 #[allow(
     dead_code,
-    reason = "the catalog-root enumeration budgets are exercised by the owner above and by \
-              interface tests; R2-E's consumer is their first production reader"
+    reason = "E4.1 activated the owner above, which exercises the catalog-root budgets on every \
+              drive; what stays dead is the enumeration surface no activation path reads yet — \
+              its first production reader is an E4.2-E4.6 consumer"
 )]
 mod enumeration;
 mod scratch;
 
+// E4.1: `recover_or_create` is re-exported here for its production caller and
+// `OpaqueRetainedCatalogV1`/`CatalogOwnerEdgeV1` travel with it, so the blanket
+// forward-reference allow is retired down to the one name still unconsumed.
 #[allow(
     unused_imports,
-    reason = "R2-C2 freezes the sealed catalog owner before C3 consumes its retained result"
+    reason = "the owner TYPE is re-exported for the E4.2-E4.6 consumers that will name it; E4.1's \
+              caller needs only the free function and the opaque retained result"
 )]
 pub(in crate::checked_artifact) use bootstrap::{
     CatalogOwnerEdgeV1, CatalogOwnerV1, OpaqueRetainedCatalogV1, recover_or_create,

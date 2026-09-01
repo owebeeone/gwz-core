@@ -1,9 +1,13 @@
-//! The A1 activation tripwire: the catalog owner has no production caller.
+//! The A1 activation tripwire: how many production callers the catalog owner
+//! has, pinned exactly.
 //!
 //! A1's coexistence gate — no production catalog activation until the R2-F
-//! relocation lands — is enforced today only by the ABSENCE of a caller, kept
-//! quiet by the `#[allow(dead_code)]` at `catalog.rs:10-16`: nothing FIRES when
-//! a caller appears. This file is that check.
+//! relocation lands — was enforced only by the ABSENCE of a caller, kept quiet
+//! by an `#[allow(dead_code)]` on the owner: nothing FIRED when a caller
+//! appeared. This file is that check. The gate has since been satisfied and
+//! R2-E E4.1 added the first caller, so the pin is now an exact count rather
+//! than a zero: a second production namer is as much a reviewed decision as the
+//! first was.
 //!
 //! Shape: the file-set idiom of `admission/tests_namer_pin.rs` — rescan the
 //! production tree for files that NAME the entry point, and subtract the
@@ -25,10 +29,19 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// Production files naming the entry point outside the owner's own two.
-/// 2026-09-01 (R2-F R1.2): ZERO, and deliberately so — A1 forbids production
-/// catalog activation until the relocation lands. **E4.1 is the step that moves
-/// this pin to 1**, in the same reviewed commit as the caller it adds.
-const PRODUCTION_CALLER_COUNT: usize = 0;
+///
+/// 2026-09-01 (R2-F R1.2): ZERO, and deliberately so — A1 forbade production
+/// catalog activation until the relocation landed.
+///
+/// **2026-09-01 (R2-E E4.1): ONE — this step is the mover.** The relocation
+/// landed (R1.1 `027da5b`), the A1 coexistence gate is satisfied, and the first
+/// production catalog activation is `checked_artifact/entry.rs`'s
+/// `activate_workspace_catalog`, called from the checked v1 operation's
+/// prologue (`v1_lifecycle/checked.rs`'s `V1MutationLease::acquire`). The pin
+/// moved in that same reviewed commit, as this comment promised it would. A
+/// SECOND production namer is E4.2-E4.6 work and must move this pin again,
+/// deliberately.
+const PRODUCTION_CALLER_COUNT: usize = 1;
 
 /// The entry point's declaration and definition sites. Neither calls it; both
 /// name it, so both are subtracted before the pin above is counted.
@@ -116,10 +129,10 @@ fn the_catalog_owner_gains_its_first_production_caller_only_at_e4_1() {
     assert_eq!(
         callers.len(),
         PRODUCTION_CALLER_COUNT,
-        "a production file outside the owner names `recover_or_create` — usually a caller, \
-         possibly a mention — in {callers:?}. A1's coexistence gate forbids production catalog \
-         activation until the R2-F relocation lands, and E4.1 is the step that deliberately adds \
-         the first caller AND moves PRODUCTION_CALLER_COUNT to 1 in that same reviewed commit. If \
-         you are E4.1, move the pin with the caller; if you are not, it does not belong here yet"
+        "the production files outside the owner naming `recover_or_create` — usually callers, \
+         possibly mentions — are {callers:?}, which is not {PRODUCTION_CALLER_COUNT}. E4.1 added \
+         the first deliberately (`entry.rs`'s `activate_workspace_catalog`); a further one is an \
+         E4.2-E4.6 conversion and moves this pin in its own reviewed commit, and a LOST one means \
+         production catalog activation was removed"
     );
 }

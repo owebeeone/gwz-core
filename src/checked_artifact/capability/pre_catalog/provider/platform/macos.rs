@@ -103,14 +103,14 @@ fn object_attributes(fd: RawFd) -> Result<ObjectAttributes, CheckedFsError> {
     } != 0
     {
         return Err(query_error(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "query macOS persistent object identity",
         ));
     }
     let attributes = unsafe { attributes.assume_init() };
     if attributes.length as usize != std::mem::size_of::<ObjectAttributes>() {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "filesystem returned a noncanonical object identity",
         ));
     }
@@ -139,7 +139,7 @@ fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, CheckedFsError> {
     } != 0
     {
         return Err(query_error(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "query macOS volume identity",
         ));
     }
@@ -151,21 +151,21 @@ fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, CheckedFsError> {
         || capabilities.capabilities[format] & libc::VOL_CAP_FMT_PERSISTENTOBJECTIDS == 0
     {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "filesystem does not promise persistent object identities",
         ));
     }
     let mut stat = std::mem::MaybeUninit::<libc::statfs>::zeroed();
     if unsafe { libc::fstatfs(fd, stat.as_mut_ptr()) } != 0 {
         return Err(query_error(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "query macOS mounted filesystem",
         ));
     }
     let stat = unsafe { stat.assume_init() };
     if stat.f_flags & libc::MNT_LOCAL as u32 == 0 {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "remote macOS filesystems are not an admitted profile",
         ));
     }

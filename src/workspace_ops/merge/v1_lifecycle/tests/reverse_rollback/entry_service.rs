@@ -202,9 +202,20 @@ fn collect_files(
         let entry = entry.unwrap();
         let path = entry.path();
         let relative = path.strip_prefix(root).unwrap();
+        // Control state this snapshot deliberately does not weigh: it is proved
+        // by the fields beside `root_files`, not by the file set. `.git` is
+        // covered by `root_head`/`root_index`/`root_repository_state`,
+        // `.gwz/merge` by `record`, and `.gwz/locks` by the operation prologue
+        // that creates it. R2-E E4.1 adds `.gwz/catalog-final` to exactly that
+        // class: the SAME prologue (`V1MutationLease::acquire`) that creates
+        // the lock now also activates the catalog, and the catalog is
+        // exact-managed control state with a closed interior grammar that
+        // converges on every drive. What these rows prove — that a refused
+        // operation moves no merge, member or native Git state — is untouched.
         if relative.components().any(|part| part.as_os_str() == ".git")
             || relative.starts_with(".gwz/merge")
             || relative.starts_with(".gwz/locks")
+            || relative.starts_with(".gwz/catalog-final")
         {
             continue;
         }

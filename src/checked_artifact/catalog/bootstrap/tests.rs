@@ -690,3 +690,39 @@ fn bootstrap_over_a_resident_legacy_directory_on_the_git_directory_root() {
     assert!(private_parent.join("catalog-final").is_dir());
     assert_eq!(interior_names(&legacy), ["residue"]);
 }
+
+/// R2-E E4.1 precondition 6, SECOND arm (E0.2b §5.3 item 6): the partially
+/// mutated state an interrupted activation leaves behind is proved CONVERGENT
+/// on restart, fault-driven rather than asserted.
+///
+/// Driven through the PRODUCTION DOOR — `entry::activate_workspace_catalog`,
+/// the crate's only production catalog activation — rather than through
+/// `recover_or_create` directly, so what is proved convergent is the shape a
+/// user's `--no-ff` merge actually executes, its error rendering included. The
+/// first arm (the refusal precedes the operation's own first durable mutation)
+/// is driven where the operation lives, at `v1_lifecycle::tests::checked`.
+#[test]
+fn the_production_activation_door_converges_after_an_interrupted_durable_edge() {
+    let fixture = Fixture::new("e41-door-restart");
+    run_next_catalog_fault(Fault::CatalogBootstrapScratchWrite, || {
+        panic!("simulated catalog process stop")
+    });
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let runtime = try_acquire_workspace_runtime(fixture.path())
+            .unwrap()
+            .expect("workspace runtime lease");
+        let _ = crate::checked_artifact::entry::activate_workspace_catalog(
+            runtime.catalog_mutation_lease(),
+        );
+    }));
+    assert!(
+        interrupted.is_err(),
+        "the durable edge the restart converges over was never reached"
+    );
+
+    let runtime = try_acquire_workspace_runtime(fixture.path())
+        .unwrap()
+        .expect("reacquired workspace runtime lease");
+    crate::checked_artifact::entry::activate_workspace_catalog(runtime.catalog_mutation_lease())
+        .expect("the production door converges over its own partial state");
+}

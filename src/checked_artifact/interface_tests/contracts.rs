@@ -138,6 +138,24 @@ fn supported_profiles_and_typed_errors_are_closed() {
     assert!(matches!(ambiguity, CheckedFsError::Ambiguous { .. }));
 }
 
+/// R2-E E4.1 precondition 1: the durable-identity gap is a capability of its
+/// own, and it is the ONLY one that carries an actionable sentence — because it
+/// is the only platform gap a user meets on a supported OS and can do something
+/// about. The value-shape contract keeps `DurableObjectIdentity`; the substrate
+/// gap is `PersistentFilesystemIdentity`, and its refusal names persistent file
+/// handles, the admitted filesystems, and the escape.
+#[test]
+fn only_the_substrate_identity_capability_carries_an_actionable_remedy() {
+    let remedy = PlatformCapability::PersistentFilesystemIdentity
+        .remedy()
+        .expect("the substrate identity gap is actionable");
+    for named in ["persistent file handles", "mount identity", "--no-ff"] {
+        assert!(remedy.contains(named), "the remedy never names {named}");
+    }
+    assert_eq!(PlatformCapability::DurableObjectIdentity.remedy(), None);
+    assert_eq!(PlatformCapability::RuntimeAdvisoryLock.remedy(), None);
+}
+
 #[test]
 fn collision_facts_keep_raw_paths_stages_and_flags() {
     let path = GitPathBytes::new(vec![0xff, b'/', b'a']).unwrap();

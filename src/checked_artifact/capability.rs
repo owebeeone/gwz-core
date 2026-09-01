@@ -35,16 +35,49 @@ impl SupportedFilesystemProfile {
     ];
 }
 
+/// The one refusal a user can act on, spelled once.
+///
+/// R2-E E4.1 precondition 1 (E0.2 §5.3): the durable-identity gap must reach
+/// the user as an actionable sentence rather than an `errno`. It names the
+/// substrate, the admitted filesystems, and the escape — the escape being real,
+/// because the blast radius of `PersistentFilesystemIdentity` is exactly the
+/// checked `--no-ff` v1 path (`model/version.rs`'s `ACTIVE_WRITER_FLOOR` keeps
+/// ordinary and `--ff-only` starts on v0, which never take a catalog lease).
+pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem does not expose the persistent file handles and mount identity that checked \
+     merge artifacts require; run the workspace on a filesystem that does (local ext4 on Linux, \
+     APFS or HFS+ on macOS, NTFS on Windows), or start the merge without --no-ff";
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlatformCapability {
     AsciiProtocolPath,
     PathEquivalence,
+    /// The identity VALUE contract: an identity the substrate already returned
+    /// is well formed for its profile (`durable_identity.rs`'s three
+    /// constructors). Distinct from the substrate capability below, which is
+    /// about whether the filesystem can answer at all.
     DurableObjectIdentity,
+    /// R2-E E4.1: the SUBSTRATE the checked catalog needs — persistent file
+    /// handles (Linux `name_to_handle_at`, macOS `ATTR_CMN_OBJPERMANENTID`,
+    /// NTFS 128-bit file ids) and a mount identity. Its absence is the one
+    /// platform gap a user meets on a supported OS, so it is the only value
+    /// carrying a [`PERSISTENT_FILESYSTEM_IDENTITY_REMEDY`].
+    PersistentFilesystemIdentity,
     AtomicRenameDomain,
     NamespaceDurability,
     PrivateNamespaceCollisionScan,
     RuntimeAdvisoryLock,
     ManagedParentBootstrap,
+}
+
+impl PlatformCapability {
+    /// The actionable sentence a refusal of this capability shows the user, if
+    /// the gap is one a user can do something about.
+    pub(super) const fn remedy(self) -> Option<&'static str> {
+        match self {
+            Self::PersistentFilesystemIdentity => Some(PERSISTENT_FILESYSTEM_IDENTITY_REMEDY),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]

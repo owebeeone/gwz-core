@@ -120,6 +120,33 @@ The lock protects cross-process operations in normal local filesystems. Network
 filesystems with unreliable advisory locking are unsupported for concurrent GWZ
 mutations; run branch and stash mutators serially there.
 
+## Checked Merge Artifacts And Filesystem Identity
+
+`gwz merge --no-ff` records its operation through the checked merge artifact
+catalog under `.gwz/catalog-final`. The catalog identifies its own files and
+directories by a *durable* identity that survives renames and process exits, so
+that an interrupted merge can prove on restart which objects it created. That
+needs two things from the filesystem, and it asks for them when the merge takes
+its lock:
+
+* **Persistent file handles** — `name_to_handle_at` on Linux,
+  `ATTR_CMN_OBJPERMANENTID` on macOS, 128-bit file ids on NTFS.
+* **A mount identity**, so a rename can be proved to stay on one filesystem.
+
+Filesystems that do not expose both are refused with a message naming the
+capability. The known families are network filesystems (NFS, SMB/CIFS, SSHFS
+and other FUSE mounts), overlay and container filesystems, and `tmpfs`; on
+Linux the admitted local filesystem is `ext4`.
+
+**The refusal is scoped to the checked feature.** `gwz repo create`,
+`init-from-sources`, an ordinary or `--ff-only` merge, merge abort, GC and the
+workspace mutation guard all take the same workspace mutator lock and none of
+them asks for a durable identity, so they keep working unchanged on a
+filesystem that cannot answer.
+
+**Workaround:** run the workspace on a filesystem that exposes persistent
+handles, or start the merge without `--no-ff`.
+
 ## Branch And Stash Outcomes
 
 `gwz branch --create --switch` and `gwz materialize --switch` rewrite the lock

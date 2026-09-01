@@ -83,14 +83,14 @@ fn facts(value: &impl AsRawHandle) -> Result<(Vec<u16>, [u8; 16]), CheckedFsErro
     } == 0
     {
         return Err(query_error(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "query NTFS 128-bit file identity",
         ));
     }
     let volume_guid = volume_guid(handle)?;
     if info.FileId.Identifier == [0; 16] {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "NTFS returned a zero file identity",
         ));
     }
@@ -113,7 +113,7 @@ fn require_ntfs(handle: std::os::windows::io::RawHandle) -> Result<(), CheckedFs
     } == 0
     {
         return Err(query_error(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "query Windows filesystem profile",
         ));
     }
@@ -123,13 +123,13 @@ fn require_ntfs(handle: std::os::windows::io::RawHandle) -> Result<(), CheckedFs
         .unwrap_or(filesystem.len());
     let name = String::from_utf16(&filesystem[..length]).map_err(|_| {
         CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "filesystem name is not valid UTF-16",
         )
     })?;
     if name != "NTFS" {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "only local NTFS is an admitted Windows profile",
         ));
     }
@@ -148,7 +148,7 @@ fn volume_guid(handle: std::os::windows::io::RawHandle) -> Result<Vec<u16>, Chec
     };
     if length == 0 || length as usize >= path.len() {
         return Err(query_error(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "query local NTFS volume GUID",
         ));
     }
@@ -156,7 +156,7 @@ fn volume_guid(handle: std::os::windows::io::RawHandle) -> Result<Vec<u16>, Chec
     let prefix = "\\\\?\\Volume{".encode_utf16().collect::<Vec<_>>();
     if !path.starts_with(&prefix) {
         return Err(CheckedFsError::unsupported(
-            PlatformCapability::DurableObjectIdentity,
+            PlatformCapability::PersistentFilesystemIdentity,
             "opened object is not on a local volume GUID path",
         ));
     }
@@ -167,7 +167,7 @@ fn volume_guid(handle: std::os::windows::io::RawHandle) -> Result<Vec<u16>, Chec
         .find_map(|(index, unit)| (*unit == b'\\' as u16).then_some(index))
         .ok_or_else(|| {
             CheckedFsError::unsupported(
-                PlatformCapability::DurableObjectIdentity,
+                PlatformCapability::PersistentFilesystemIdentity,
                 "opened object did not expose a complete volume GUID",
             )
         })?;
