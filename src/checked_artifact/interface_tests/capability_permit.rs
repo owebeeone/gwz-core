@@ -466,3 +466,25 @@ fn struct_body<'a>(source: &'a str, name: &str) -> &'a str {
         .unwrap()
         .0
 }
+
+/// R2-E E4.1, anchor nit 1's owed companion (the E7 dual's Q1 shape, recorded
+/// verbatim at `GwzM5-8R2E-E7-Acceptance.md` §4's O12 row): the shared leaf
+/// reader is bounded by its own already-identity-checked `fstat`, and the
+/// bound cannot silently regress to an infallible `read_to_end`.
+///
+/// Source-shape pin rather than a behavioural row because the take-cap is only
+/// observable when a leaf grows between its post-open `fstat` and the read —
+/// a window this subsystem exposes no injection key for, and minting one would
+/// move the frozen 165-key census.
+#[test]
+fn the_shared_leaf_reader_bounds_its_read_by_its_own_fstat() {
+    let observation = include_str!("../observation.rs");
+
+    assert!(observation.contains("let bound = opened.len().saturating_add(1);"));
+    assert!(observation.contains("bytes\n        .try_reserve_exact(capacity)"));
+    assert!(observation.contains(".take(bound)"));
+    assert!(
+        !observation.contains("file.read_to_end(&mut bytes)"),
+        "the shared leaf reader regressed to an unbounded read"
+    );
+}

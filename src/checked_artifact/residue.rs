@@ -127,8 +127,24 @@ impl CheckedArtifact {
             if !name.to_string_lossy().starts_with(&prefix) {
                 continue;
             }
+            // [R2-E E7 Code F3] The family byte budget charges at STAT level,
+            // before any read. It used to charge `bytes.len()` of an
+            // already-read allocation, so a large foreign object under a
+            // `ca1-` name was fully read before the 1 MiB intent could
+            // classify it foreign. `DirEntry::metadata` is the same no-follow
+            // stat `observe_leaf_exact` opens against, so the two agree on
+            // what is being weighed.
+            //
+            // Residual, stated: an object that grows after this stat is still
+            // read, bounded by its own post-open `fstat` (anchor nit 1's
+            // cure), and caught by the len-mismatch arm — so the budget bounds
+            // the survey, not a concurrent writer.
+            let stat = entry.metadata().map_err(|cause| {
+                io_op_error(self.code, &self.label, "stat private family entry", cause)
+            })?;
+            total_bytes = total_bytes.saturating_add(stat.len());
             names.push(name);
-            if names.len() > MAX_FAMILY_ENTRIES {
+            if names.len() > MAX_FAMILY_ENTRIES || total_bytes > MAX_FAMILY_BYTES {
                 return Ok(FamilyResidue {
                     foreign: true,
                     ..FamilyResidue::empty()
@@ -143,14 +159,6 @@ impl CheckedArtifact {
         let mut foreign = false;
         for name in names {
             let observed = observe_leaf_exact(&dir, &name, self.code, &self.label)?;
-            total_bytes = total_bytes.saturating_add(match &observed.fact {
-                CheckedArtifactFact::Bytes(bytes) => bytes.len() as u64,
-                CheckedArtifactFact::Missing | CheckedArtifactFact::Invalid => 0,
-            });
-            if total_bytes > MAX_FAMILY_BYTES {
-                foreign = true;
-                continue;
-            }
             let Some(text) = name.to_str() else {
                 foreign = true;
                 continue;

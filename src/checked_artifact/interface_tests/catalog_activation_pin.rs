@@ -116,9 +116,10 @@ fn the_catalog_owner_gains_its_first_production_caller_only_at_e4_1() {
     assert_eq!(
         callers.len(),
         PRODUCTION_CALLER_COUNT,
-        "production catalog activation appeared in {callers:?}. A1's coexistence gate forbids it \
-         until the R2-F relocation lands, and E4.1 is the step that deliberately adds the first \
-         caller AND moves PRODUCTION_CALLER_COUNT to 1 in that same reviewed commit. If you are \
-         E4.1, move the pin with the caller; if you are not, it does not belong here yet"
+        "a production file outside the owner names `recover_or_create` — usually a caller, \
+         possibly a mention — in {callers:?}. A1's coexistence gate forbids production catalog \
+         activation until the R2-F relocation lands, and E4.1 is the step that deliberately adds \
+         the first caller AND moves PRODUCTION_CALLER_COUNT to 1 in that same reviewed commit. If \
+         you are E4.1, move the pin with the caller; if you are not, it does not belong here yet"
     );
 }

@@ -486,7 +486,7 @@ pub(super) enum RoamingTargetStateV1 {
 /// not a crash.
 ///
 /// Portable, and deliberately not `cfg`-split. Off Windows nothing renames the
-/// alias, so the survey is two `symlink_metadata` calls that always answer the
+/// alias, so the survey is two bounded leaf observations that always answer the
 /// first two rows — but keeping it portable is what lets every platform execute
 /// the restart rows for a window only Windows can open, exactly as
 /// `platform/anchor.rs`'s header argues for the protocol it serves.

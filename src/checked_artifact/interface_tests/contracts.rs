@@ -217,6 +217,41 @@ fn the_split_moves_both_persisted_catalog_fields_and_is_free_before_activation()
     );
 }
 
+/// R2-E E4.1 (plan §3's E4 gate note, rider 4): the two private paths are
+/// spelled a SECOND time, as string constants, inside the merge preservation
+/// image — `CHECKED_ARTIFACT_PRIVATE_PATH` (the legacy writer's, `:8`) and
+/// `CATALOG_PRIVATE_PATH` (the catalog's, `:20`). The git-status dirt exemption
+/// and preservation blindness compile against those strings, not against
+/// `CatalogPrivateNameV1`, and neither side can see the other
+/// (`pub(in crate::checked_artifact)` versus `pub(super)`), so a future leaf
+/// rename would move the catalog while merge silently kept exempting the OLD
+/// path. Fixtures are fail-loud; this pair is the silent one. Source-scan
+/// idiom, beside the `leaf_bytes` pins above. `//` comments are stripped first,
+/// per the R1.2 tripwire's [P3-8] precedent: a `// was: …` remnant must not
+/// satisfy a pin after a real rename.
+#[test]
+fn the_preservation_image_spells_both_private_paths_beside_their_names() {
+    let image = include_str!("../../git/gitbackend/preservation_image.rs")
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(kept, _)| kept))
+        .collect::<String>();
+
+    for (name, literal) in [
+        (
+            "CHECKED_ARTIFACT_PRIVATE_PATH",
+            r#"".gwz/checked-artifacts""#,
+        ),
+        ("CATALOG_PRIVATE_PATH", r#"".gwz/catalog-final""#),
+    ] {
+        assert!(
+            image.contains(&format!("{name}: &str = {literal};")),
+            "the preservation image's second authority for {name} drifted from \
+             {literal}; the dirt exemption and preservation blindness compile \
+             against this string, not against `CatalogPrivateNameV1`"
+        );
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Identity(u8);
 

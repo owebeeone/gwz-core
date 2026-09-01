@@ -245,8 +245,44 @@ pub(super) fn observe_leaf_exact(
             identity: None,
         });
     }
+    // Anchor nit 1, the E7 dual's Q1 shape (`GwzM5-8R2E-E7-Acceptance.md` §4's
+    // O12 row; template at `platform.rs`'s sealed publication verifier): the
+    // read is bounded by the reader's OWN already-identity-checked `fstat`
+    // above, not by a family constant — this reader serves fixed-expected
+    // verifiers and arbitrary user-artifact content reads alike, and a constant
+    // would refuse legitimate user files. What it cures is the infallible
+    // geometric growth of a bare `read_to_end`: an object growing under the
+    // read now costs one bounded reservation and a typed refusal instead of an
+    // allocation abort.
+    //
+    // The bound is this reader's own and is NOT INHERITED by its callers: a
+    // caller that needs a tighter budget must impose it before the read, which
+    // is what `residue.rs`'s family survey now does at stat level.
+    //
+    // Accepted residual, stated: a stable multi-GB foreign object still
+    // reserves its stat size fallibly, and is refused typed only if the
+    // reservation fails.
+    let bound = opened.len().saturating_add(1);
+    let Ok(capacity) = usize::try_from(bound) else {
+        // A leaf larger than this address space is not a canonical artifact.
+        return Ok(LeafObservation {
+            fact: CheckedArtifactFact::Invalid,
+            identity: None,
+        });
+    };
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    // `io_op_error`'s rendering is `"{operation}: {cause}"` and an allocation
+    // refusal has no `io::Error`, so the same sentence is built with its
+    // sibling constructor at the same `ErrorCode`. Never an abort.
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| error(code, label, "read artifact bytes: allocation refused"))?;
+    // Over-read by exactly one byte so a leaf that grew past its `fstat` fails
+    // the existing five-way check below (`opened.len() != bytes.len()`) and is
+    // reported `Invalid` — today's arm, kept; no new refusal vocabulary.
+    file.by_ref()
+        .take(bound)
+        .read_to_end(&mut bytes)
         .map_err(|cause| io_op_error(code, label, "read artifact bytes", cause))?;
     let after = match dir.symlink_metadata(leaf) {
         Ok(after) => after,

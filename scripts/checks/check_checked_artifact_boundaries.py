@@ -44,7 +44,11 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/entry.rs": "33f05b79dbbbc81cb995ba6d94ff0076731faf310f4cd8b1ade396aaca3b7228",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
     "checked_artifact/mod.rs": "48d9261bd994dcf81ca77d3b3195b2e2e1ac6f2231f8c506580ab79571057e7c",
-    "checked_artifact/residue.rs": "717c2417cd3707a72c5d1c4aee4845bdab525a566c5ea9d99b74ea6850480150",
+    # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
+    # `inspect_family`'s 1 MiB budget now charges `DirEntry::metadata().len()`
+    # in the enumeration loop, before any leaf is read, and the post-read
+    # accumulation it replaces is gone.
+    "checked_artifact/residue.rs": "8894be425ddd6755aa053a4e42aca540611ba45c688b42c4757343be5142349a",
     "checked_artifact/transition.rs": "13b483bc0dc3099082727a5d499b97f627ba7d41a65b929ec557416ac59b37ca",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
@@ -182,12 +186,19 @@ APPROVED_RUST_PATH_EDGES = {
 # recoverable fail-closed refusal on the foreign shape). Comments and one
 # test assertion only -- no production semantics move; the other six digests
 # were recomputed in the same pass and are unchanged.
+#
+# R2-E E4.1 commit (a) re-pins the SAME entry once more, for [R2-P3-3]'s
+# one-word cost-claim fix (`GwzM5-8R2E-E7-Acceptance.md` §5 record act 2): the
+# roaming survey's cost sentence said "two `symlink_metadata` calls" while
+# `leaf_is_resident` is a full bounded leaf observation. Comment only -- no
+# production semantics move; the other six digests were recomputed in the same
+# pass and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
     "checked_artifact/capability/pre_catalog.rs": "d92367426106ac251497432d511480fa6f9c3fc662f8d88ba462bb9f2db8d045",
     "checked_artifact/catalog.rs": "05918c3672d93a056e396b7db80ef6de29a69ef9ebd40ea0ede5e1ee6a3ee670",
-    "checked_artifact/platform.rs": "5405b6921185253905f97b85865d39e9025d05c333888892be44b769efbab366",
+    "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "74a416a623ad421b1646e8692d6b449d76cc754045ff43348c5e897c39eae96c",
 }

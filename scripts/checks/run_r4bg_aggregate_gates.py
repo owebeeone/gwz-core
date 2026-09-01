@@ -302,6 +302,23 @@ def _fault_count(darwin: str, linux: str) -> str:
       lib remainder 1097 / 1098: UNMOVED. darwin 1097 re-MEASURED on this
         tree; linux 1098 keeps its existing FIRST-DISPATCH-EXPECTED status
         from the ahead-only block above, unchanged by R1.1.
+
+    R2-E E4.1 commit (a) -- the catalog-free hygiene riders (anchor nit 1's Q1
+    bounded read, [R2-P3-3]'s wording fix, Code [P3 F3]'s stat-level family
+    gate, the preservation-image path-constant second-authority pin) -- moves
+    the checked_artifact:: partition and ONLY it, by two rows, neither
+    carrying a cfg gate: the preservation-image path pin in
+    `interface_tests::contracts` and anchor nit 1's owed bounded-read shape
+    companion in `interface_tests::capability_permit`. Both read source text
+    that is checked out on every platform.
+
+      darwin 452 -> 454: MEASURED on this step's own tree (454 passed,
+        2026-09-01).
+      linux  462 -> 464: DERIVED (+2, cfg-independent), *not* measured, and
+        therefore FIRST-DISPATCH-EXPECTED at this package's landing
+        dispatch. A measured number wins.
+      lib remainder 1097 / 1098 and v1_lifecycle:: 256: UNMOVED by this
+        commit; darwin re-MEASURED unchanged in the same session.
     """
     if sys.platform == "darwin":
         return darwin
@@ -336,7 +353,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # first Windows compile of that code. Marked here beside the linux
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("452 passed", "462 passed")),
+         lib("checked_artifact::"), _fault_count("454 passed", "464 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
