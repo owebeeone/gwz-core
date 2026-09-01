@@ -5,7 +5,10 @@ use super::*;
 pub(super) fn enforce(root: &Path) -> ModelResult<()> {
     let mut ordinary = Vec::new();
     for path in record_files(&root.join(DONE_DIR))? {
-        let owns_backup_ref = match read_record(&path, RecordLocation::Archived) {
+        // Both installed envelopes, for the reason `store::gc::collect` reads
+        // them: under the v0-only reader every v1 archive fell to the `Err`
+        // arm, which retains forever, so no v1 archive was ever classified.
+        let owns_backup_ref = match read_seam_record(&path, RecordLocation::Archived, true) {
             Ok((_, record)) => record
                 .participants
                 .values()

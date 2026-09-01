@@ -185,9 +185,8 @@ pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
             format!("archived merge record '{merge_id}' was not found"),
         )
     })?;
-    let (_, _, record) = super::record_wire::decode_production_v0(bytes.as_slice())
-        .map_err(|_| archived_record_unreadable(merge_id))?
-        .into_production_parts();
+    let (_, _, record) = super::record_wire::decode_archived_common(bytes.as_slice())
+        .map_err(|_| archived_record_unreadable(merge_id))?;
     let artifacts = preflight_backup_artifacts(backend, root, &record)?;
     let archived = super::record_wire::decode_archived(bytes.as_slice(), merge_id)?;
     let response = super::response::attach_archived_record_projection(

@@ -229,6 +229,9 @@ fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
             "workspace_ops/tests/g23/compatibility_v0.rs",
             "workspace_ops/tests/g23/compatibility_v0_edges.rs",
             "workspace_ops/tests/g23/continue_v0_gate.rs",
+            // JOINED 2026-09-02 by the v1-archive GC fix: `--no-ff` is the only
+            // production door to a v1 archive, so the GC rows must start one.
+            "workspace_ops/tests/g23/gc.rs",
         ]
     );
 }

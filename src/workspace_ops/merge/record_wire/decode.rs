@@ -107,6 +107,55 @@ pub(crate) fn decode_production(bytes: &[u8]) -> Result<DecodedRecord, RecordDec
     }
 }
 
+/// The ARCHIVED leaf's decoder, over both installed envelopes, projected onto
+/// the common record half retention reads.
+///
+/// Retention read the archive with `decode_production_v0`, whose `V0_ONLY`
+/// installed set classifies a v1 envelope `Unsupported` below — the live
+/// refusal, not the unreachable mirror arm after it — so no v1 archive could be
+/// collected. The registry dispatch (contract §1) picks the body decoder
+/// instead, running the v1 decode and `validate_v1_record` as `decode_archived`
+/// does. Retention reads only the half the two envelopes hold IDENTICALLY,
+/// field for field and type for type; the v1-only halves are its
+/// archive-PROJECTION inputs. Envelope fields are carried verbatim.
+pub(crate) fn decode_archived_common(
+    bytes: &[u8],
+) -> Result<(Value, MergeRecordHeader, MergeOperationRecord), RecordDecodeError> {
+    Ok(match decode_production(bytes)? {
+        DecodedRecord::V0(decoded) => decoded.into_production_parts(),
+        DecodedRecord::V1(decoded) => {
+            let DecodedV1Record {
+                raw,
+                header,
+                record,
+                ..
+            } = *decoded;
+            (
+                raw,
+                header,
+                MergeOperationRecord {
+                    schema: record.schema,
+                    record_schema_version: record.record_schema_version,
+                    writer_version: record.writer_version,
+                    workspace_id: record.workspace_id,
+                    merge_id: record.merge_id,
+                    operation_id: record.operation_id,
+                    state: record.state,
+                    source_ref: record.source_ref,
+                    mode: record.mode,
+                    created_at: record.created_at,
+                    baseline: record.baseline,
+                    selected_targets: record.selected_targets,
+                    participants: record.participants,
+                    publication: record.publication,
+                    operation_drift: record.operation_drift,
+                    extensions: record.extensions,
+                },
+            )
+        }
+    })
+}
+
 /// The v0 record store's decoder. The store owns only v0 bodies, so it
 /// installs v0 alone; a v1 envelope classifies `UnsupportedRecordVersion`
 /// here and the dispatch routes that record to the v1 lifecycle before this

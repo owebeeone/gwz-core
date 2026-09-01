@@ -264,3 +264,107 @@ fn assert_gc_rejects_later_target_before_deleting_earlier_ref(invalid_commit: &s
     );
     assert!(archive.is_file());
 }
+
+fn archived_path(root: &Path, merge_id: &str) -> PathBuf {
+    root.join(format!(".gwz/merge/done/{merge_id}.yaml"))
+}
+
+/// A real, production-written v1 archive owning one canonical backup ref.
+/// `--no-ff` is the shipped writer floor's v1 door, so the record is v1 from
+/// creation; the conflicting member leaves it open and `--abort` archives it.
+/// The preservation row is injected as the v0 rows above inject theirs.
+fn v1_archive_owning_a_backup_ref(label: &str) -> (TempDir, crate::git::Git2Backend, String) {
+    let temp = TempDir::new(label);
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_mixed_merge_workspace(temp.path(), &backend);
+    let started = handle_merge(
+        &backend,
+        temp.path(),
+        crate::MergeRequest {
+            mode: Some(crate::MergeMode::NoFf),
+            ..request(false)
+        },
+        format!("op_{label}_start"),
+    )
+    .unwrap();
+    let merge_id = handle_merge(
+        &backend,
+        temp.path(),
+        recovery_request(crate::MergeOp::Abort, started.merge_id),
+        format!("op_{label}_abort"),
+    )
+    .unwrap()
+    .merge_id
+    .unwrap();
+    let lib = temp.path().join("lib");
+    let name = format!("refs/gwz/merge/{merge_id}/mem_lib/head");
+    let commit = backend.head(&lib).unwrap().commit.unwrap();
+    backend.create_backup_ref(&lib, &name, &commit).unwrap();
+    let archive = archived_path(temp.path(), &merge_id);
+    let mut yaml: serde_yaml::Value = serde_yaml::from_slice(&fs::read(&archive).unwrap()).unwrap();
+    // These rows only stand while --no-ff archives under the v1 envelope.
+    assert_eq!(yaml["schema"].as_str(), Some("gwz.merge-operation/v1"));
+    yaml["participants"]["mem_lib"]["preservation"] =
+        serde_yaml::to_value(vec![crate::workspace_ops::merge::PreservationEvidence {
+            backup_ref: Some(name),
+            backup_commit: Some(commit),
+            stash_id: None,
+            stash_object_id: None,
+            noop_commit: None,
+            reset_commit: None,
+        }])
+        .unwrap();
+    fs::write(&archive, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+    (temp, backend, merge_id)
+}
+
+/// **The shipped defect, driven end to end through the live `--gc` dispatch.**
+/// A `--no-ff` merge archives as v1, and BOTH reads the live path makes of those
+/// bytes — the retention decode and the store's last read before unlink — were
+/// v0-only, so no v1 archive could be collected. Now the ref goes under the
+/// checked rule and the archive with it.
+#[test]
+fn explicit_gc_collects_a_v1_archive_and_deletes_its_backup_ref() {
+    let (temp, backend, merge_id) = v1_archive_owning_a_backup_ref("merge-gc-v1");
+    let lib = temp.path().join("lib");
+    let name = format!("refs/gwz/merge/{merge_id}/mem_lib/head");
+    let mut gc = recovery_request(crate::MergeOp::Gc, Some(merge_id.clone()));
+    gc.preserve = None;
+
+    let collected = handle_merge(&backend, temp.path(), gc, "op_gc_v1_collect").unwrap();
+
+    assert_eq!(collected.merge_id.as_deref(), Some(merge_id.as_str()));
+    assert_eq!(collected.state, crate::MergeOperationState::Aborted);
+    assert!(!collected.open);
+    assert_eq!(
+        collected.record.as_ref().map(|row| row.source_version),
+        Some(crate::MergeRecordVersion::V1)
+    );
+    assert!(backend.read_ref(&lib, &name).unwrap().is_none());
+    assert!(!archived_path(temp.path(), &merge_id).exists());
+}
+
+/// **The refusal, kept.** The dispatch widens which envelopes decode, not which
+/// archives are collectable: a v1 envelope whose body is not a v1 record still
+/// refuses typed before any ref is observed, and both are retained.
+#[test]
+fn explicit_gc_refuses_an_unreadable_v1_archive_and_retains_every_ref() {
+    let (temp, backend, merge_id) = v1_archive_owning_a_backup_ref("merge-gc-v1-corrupt");
+    let lib = temp.path().join("lib");
+    let name = format!("refs/gwz/merge/{merge_id}/mem_lib/head");
+    let archive = archived_path(temp.path(), &merge_id);
+    let mut yaml: serde_yaml::Value = serde_yaml::from_slice(&fs::read(&archive).unwrap()).unwrap();
+    yaml.as_mapping_mut()
+        .unwrap()
+        .remove(serde_yaml::Value::String("participants".to_owned()))
+        .unwrap();
+    fs::write(&archive, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+    let mut gc = recovery_request(crate::MergeOp::Gc, Some(merge_id));
+    gc.preserve = None;
+
+    let error = handle_merge(&backend, temp.path(), gc, "op_gc_v1_corrupt_collect").unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
+    assert!(backend.read_ref(&lib, &name).unwrap().is_some());
+    assert!(archive.is_file());
+}

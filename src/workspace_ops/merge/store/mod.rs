@@ -114,7 +114,7 @@ impl MergeStore for FileMergeStore {
     }
 
     fn write_open(&self, root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
-        validate_record(record, None)?;
+        validate_record(record, None, false)?;
         let path = open_path(root, &record.merge_id);
         for existing in record_files(&root.join(MERGE_DIR))? {
             if existing != path {
@@ -335,21 +335,29 @@ fn validate_merge_id(merge_id: &str) -> ModelResult<()> {
 /// v0-only installed set — a v1 envelope is not "unreadable", it is *not
 /// this store's record*, and `runtime::dispatch` routes it to the v1
 /// lifecycle before this store is reached (Safety review §2.2 R3).
-fn validate_record(record: &MergeOperationRecord, path: Option<&Path>) -> ModelResult<()> {
+fn validate_record(
+    record: &MergeOperationRecord,
+    path: Option<&Path>,
+    both_installed_envelopes: bool,
+) -> ModelResult<()> {
     validate_merge_id(&record.merge_id)?;
     let header = super::record_wire::MergeRecordHeader {
         schema: record.schema.clone(),
         record_schema_version: record.record_schema_version,
     };
-    match super::record_wire::classify_merge_record_header(
-        &header,
-        super::record_wire::InstalledMergeRecordVersions::V0_ONLY,
-    ) {
+    let installed = if both_installed_envelopes {
+        super::record_wire::InstalledMergeRecordVersions::PRODUCTION
+    } else {
+        super::record_wire::InstalledMergeRecordVersions::V0_ONLY
+    };
+    match super::record_wire::classify_merge_record_header(&header, installed) {
         Ok(super::record_wire::MergeRecordDispatch::V0) => {}
-        Ok(super::record_wire::MergeRecordDispatch::V1) => {
-            unreachable!("the v0-only installed set never dispatches v1")
+        // Legal only for the archived reads that install both; the v0-only set
+        // never dispatches v1, so the next arm refuses typed, not by panic.
+        Ok(super::record_wire::MergeRecordDispatch::V1) if both_installed_envelopes => {}
+        Ok(super::record_wire::MergeRecordDispatch::V1) | Err(_) => {
+            return Err(unreadable(path, "unsupported merge record schema"));
         }
-        Err(_) => return Err(unreadable(path, "unsupported merge record schema")),
     }
     if let Some(path) = path {
         let expected = path.file_stem().and_then(|value| value.to_str());
@@ -373,6 +381,14 @@ fn read_record(
     path: &Path,
     location: RecordLocation,
 ) -> ModelResult<(Value, MergeOperationRecord)> {
+    read_seam_record(path, location, false)
+}
+
+fn read_seam_record(
+    path: &Path,
+    location: RecordLocation,
+    both_installed_envelopes: bool,
+) -> ModelResult<(Value, MergeOperationRecord)> {
     let merge_id = path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -391,10 +407,15 @@ fn read_record(
     }
     let bytes =
         fs::read(path).map_err(|error| location_unreadable(path, merge_id, location, error))?;
-    let decoded = decode_production_v0(&bytes)
-        .map_err(|error| decode_error(path, merge_id, location, error))?;
-    let (raw, header, record) = decoded.into_production_parts();
-    if let Err(error) = validate_record(&record, Some(path)) {
+    let (raw, header, record) = if both_installed_envelopes {
+        super::record_wire::decode_archived_common(&bytes)
+            .map_err(|error| decode_error(path, merge_id, location, error))?
+    } else {
+        decode_production_v0(&bytes)
+            .map_err(|error| decode_error(path, merge_id, location, error))?
+            .into_production_parts()
+    };
+    if let Err(error) = validate_record(&record, Some(path), both_installed_envelopes) {
         return Err(match location {
             RecordLocation::Open => {
                 error.with_record_context(record_context(merge_id, &header, None))

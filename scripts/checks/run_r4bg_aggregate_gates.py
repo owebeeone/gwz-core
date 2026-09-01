@@ -412,6 +412,19 @@ def _fault_count(darwin: str, linux: str) -> str:
       linux  1100 -> 1111: DERIVED (+11, cfg-independent per the audit
         above), FIRST-DISPATCH-EXPECTED at the E4.2 landing dispatch. A
         measured number wins.
+
+    The standalone v1-archive GC fix (2026-09-02, branch gc/v1-archive-decode:
+    `merge::gc`, `store::gc` and `store::retention` read an archived record
+    over either installed envelope) moves the LIB REMAINDER and the g23 marker
+    below by the same two cfg-free rows in `workspace_ops::tests::g23::gc`.
+    Both numbers below MEASURED on this step's own tree from a SNAPSHOT of its
+    own lib test binary -- a shared `--target` dir gives two worktrees one
+    binary path, so an unsnapshotted `cargo test` can run the other tree's
+    binary. checked_artifact:: 457 and v1_lifecycle:: 260 re-MEASURED UNMOVED.
+
+      darwin 1110 -> 1112: MEASURED (1112 passed + 1 ignored, 2026-09-02).
+      linux  1111 -> 1113: DERIVED (+2, cfg-independent -- both rows drive
+        production dispatch over plain files), FIRST-DISPATCH-EXPECTED.
     """
     if sys.platform == "darwin":
         return darwin
@@ -450,7 +463,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1110 passed", "1111 passed")),
+         _fault_count("1112 passed", "1113 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
@@ -496,8 +509,12 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # no per-OS split -- is a darwin/linux number and would read 122 on a
         # Windows host; the `fault` battery's `_fault_count` refuses such a
         # host first, which is why no split is added here.
+        # The v1-archive GC fix (2026-09-02) adds two rows here, and finds
+        # this marker ALREADY two short: E4.1 commit (c) added two
+        # `g23::a1_activation` rows while recording "the LIB REMAINDER and
+        # only it". 124 -> 128, MEASURED on this step's own snapshot binary.
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "124 passed"),
+         lib("workspace_ops::tests::g23::"), "128 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),

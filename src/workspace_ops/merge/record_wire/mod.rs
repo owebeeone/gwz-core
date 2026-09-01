@@ -45,7 +45,8 @@ pub(crate) use location::{
 };
 
 pub(crate) use decode::{
-    DecodedRecord, decode_production, decode_production_v0, decode_production_v1,
+    DecodedRecord, decode_archived_common, decode_production, decode_production_v0,
+    decode_production_v1,
 };
 
 #[cfg(test)]
