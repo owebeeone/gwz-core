@@ -43,9 +43,11 @@ pub(in crate::checked_artifact) use plan::*;
 #[allow(
     unused_imports,
     reason = "Step 3.3 wired the coordinator caller; REACHED from the entry point at R2-E E4.2 \
-              (2026-09-01) — the unconsumed imports shrink as E4.4-E4.6 convert (2026-09-02, \
-              R2-E E4.3-B: E4.3 converts nothing, its rewrite path being permanently carved out \
-              by GwzM5-8R2E-RecordRootAmendment.md §2, so E4.4 is the next mover)"
+              (2026-09-01). The unconsumed imports shrink only as the remaining ACTIVATED-LEASE \
+              forward arms convert (E4.5/6-B) — per the operator's 2026-09-02 ruling, \
+              GwzM5-8R2E-CapabilityFreeRuling-2026-09-02.md: no E4.4-E4.6 as chartered, \
+              activated-lease forward arms only; E4.3's rewrite path (RecordRootAmendment §2) \
+              and the capability-free arms (CapabilityFreeAmendment §3) are permanent by decision"
 )]
 pub(in crate::checked_artifact) use provider::*;
 

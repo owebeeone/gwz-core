@@ -237,7 +237,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "5c76c6a4d87444684f7e44ab67be496847196491be30b17e3507dcd0f1765329",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "c99ae927dd0c33033f4e81c870d7ccc097eb9a90ecde66cb02b4907783d29cc7",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "3f2e5ec3c096ab29e4523a5441ed94eb80dff0ae926d6caa9771b3fd6a87ec2e",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -360,7 +360,9 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
 # conversion may not land until the amendment is revised, at O14's fork. The
 # marker is a per-row REASON in `V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS`,
 # general by design: the 2026-09-02 capability-free ruling foresees further
-# `:275`-`:279` carve-outs, one data row each naming its own amendment. The two
+# `:275`-`:279` carve-outs, one data row each AT THE DATA LAYER — each row carries
+# its own authority and both directions fire naming it; widening the SCAN SET
+# to the non-v1 carved files is the pins package's (amendment §3 (i)-(iii)). The two
 # ARCHIVE rows keep their retire-on-conversion marker until E4.4 (§6); class
 # scope is `durable_fs` only, a std::fs writer here being backstopped by
 # `PROTECTED_SOURCE_TREE_DIGESTS` and stated as a property by P-2.
@@ -375,11 +377,17 @@ V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_
 # and authority. Membership changes nothing this checker MEASURES and everything
 # it SAYS when a row moves, in BOTH directions. Adding a row is an
 # amendment-tier act, not a checker edit; the shape is deliberately general so a
-# follow-on amendment's further §10 carve-outs are one data row each.
+# follow-on amendment's further §10 carve-outs are one data row each within
+# this v1_lifecycle scan; the wider scan set is that package's.
 V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS = {
     "workspace_ops/merge/v1_lifecycle/store/rewrite.rs": "the record-root exception, dev-docs/GwzM5-8R2E-RecordRootAmendment.md §2/§3",
 }
-assert V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() <= V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES.keys(), "a permanent writer exception names no pinned row"
+for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES.keys()):
+    raise SystemExit(
+        f"check_checked_artifact_boundaries: permanent writer exception {_key!r} "
+        f"({V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS[_key]}) names no pinned row -- "
+        "an exception must sit on a row of V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES"
+    )
 
 ENTRY_REFERENCES = {
     # R2-E Phase E4 Step E4.1 (O2): the first production catalog activation.
@@ -1233,12 +1241,14 @@ def check(source: Path) -> list[str]:
         return (
             f"permanent writer exception ({carved[relative]}), {relative}: {moved}. "
             "That path is PERMANENT-DOCUMENTED: revise its amendment first -- the "
-            "conversion is re-decided there (for the record root, at O14's fork), "
+            "conversion is re-decided there (each row's amendment names its own re-decision point), "
             "not by a commit that moves this pin"
         )
 
     for relative in sorted(set(raw_writer_files) - expected_files):
         findings.append(
+            # Unreachable while the module-scope guard above stands (an exception key
+            # must sit on a pinned row); kept as the second belt if that guard goes.
             carved_finding(relative, "its pin row was DELETED while the file still names durable_fs")
             if relative in carved
             else "v1 lifecycle gained a raw durable_fs writer outside the O13 "
@@ -1263,7 +1273,7 @@ def check(source: Path) -> list[str]:
                 f"the raw-writer count SHRANK ({moved}) -- a PARTIAL conversion may not land"
                 if shrank
                 else f"the raw-writer count GREW ({moved}) -- the exception blesses "
-                "`commit`'s existing publication primitive only, not a new raw writer"
+                "the carved path's EXISTING publication primitive only, not a new raw writer"
             )))
         else:
             findings.append(

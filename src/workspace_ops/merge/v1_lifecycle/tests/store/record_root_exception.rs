@@ -36,7 +36,9 @@ const LANDED_DOOR_FILES: [&str; 2] = [
     "workspace_ops/merge/v1_lifecycle/store/rewrite.rs",
 ];
 
-/// 411 production files at this landing; fewer means a lost subtree.
+/// 411 production files at this landing; the floor fires at 350 — up to 61 files may
+/// vanish unseen by it, so the EXACT positive control (`LANDED_DOOR` named by exactly its
+/// two files) is what catches the blinding that matters.
 const PRODUCTION_FILE_FLOOR: usize = 350;
 
 /// CRLF normalized, `//` stripped to end of line, LINES PRESERVED — unlike
@@ -45,6 +47,13 @@ fn code(source: &str) -> String {
     source
         .replace("\r\n", "\n")
         .lines()
+        // NAMED RESIDUAL (E4.3-B review [P3-3]): this strip is string-unaware, so a door
+        // on a line whose earlier `//` sits inside a string literal (e.g. "https://…") is
+        // INVISIBLE to the absence half — the strip errs QUIET here, the inverse of the
+        // house pin's loud trade. The real threat (a conversion of `commit`) is caught
+        // independently by P-1's counts, the `v1_lifecycle/mod.rs` tree digest and
+        // `entry.rs`'s byte pin; the pins package's shared scan helper masks string
+        // literals before stripping (the checker's `mask_non_code` idiom).
         .map(|line| line.split_once("//").map_or(line, |(kept, _)| kept))
         .collect::<Vec<_>>()
         .join("\n")
@@ -63,7 +72,7 @@ fn body<'a>(source: &'a str, signature: &str) -> &'a str {
 }
 
 /// Every production source under `src/`, as (path, comment-stripped text), by
-/// `production_rust_files` (`check_checked_artifact_boundaries.py:942-949`)
+/// `production_rust_files` (`check_checked_artifact_boundaries.py:974-981`)
 /// extended with the `_tests.rs` stem it misses.
 fn production_sources() -> Vec<(String, String)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -112,7 +121,8 @@ fn the_record_root_rewrite_publishes_by_atomic_rename_and_creates_no_parent() {
         assert!(
             !commit.contains(bypass),
             "`commit` publishes through a raw std::fs writer ({bypass}); the exception carves out \
-             `durable_fs::rename_durable` + `sync_dir` and nothing else"
+             `durable_fs::rename_durable` + `sync_dir` and nothing else in this denylist \
+             (the `v1_lifecycle/mod.rs` tree digest sees every byte)"
         );
     }
     assert_eq!(
@@ -122,7 +132,9 @@ fn the_record_root_rewrite_publishes_by_atomic_rename_and_creates_no_parent() {
     );
     assert!(
         body(&rewrite, "fn create_temporary(").contains("fs::create_dir_all(parent)"),
-        "the one admitted `create_dir_all` — race-only code that `read_regular` at the head of \
+        "the one admitted `create_dir_all` — DECLINED as a refusal at E4.3-B because it is \
+         structurally undrivable (no fault hook between `read_regular` and `create_temporary`, \
+         so a refusal would ship unexercised) — race-only code that `read_regular` at the head of \
          `commit` proves unreached in every driven behavior — left `create_temporary`'s shape"
     );
 }
