@@ -5,6 +5,9 @@ use super::entry_service::{
 use super::*;
 use std::io::Write;
 
+// [2026-09-02, R2-E E4.4-6-B: [P3-8] closes (nothing converts, no snapshot exclusion
+// grows) for every row here too — see `entry_service.rs::collect_files`.]
+
 #[test]
 fn selected_root_service_entry_rejects_complete_checkout_drift_without_mutation() {
     for case in [

@@ -44,7 +44,7 @@ const LANDED_DOOR_FILES: [&str; 2] = [
 const PRODUCTION_FILE_FLOOR: usize = 350;
 
 /// Every production source under `src/`, as (path, comment-stripped text), by
-/// `production_rust_files` (`check_checked_artifact_boundaries.py:1099-1106`)
+/// `production_rust_files` (`check_checked_artifact_boundaries.py:1120-1127`)
 /// extended with the `_tests.rs` stem it misses.
 fn production_sources() -> Vec<(String, String)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -66,7 +66,7 @@ fn production_sources() -> Vec<(String, String)> {
             let text = std::fs::read_to_string(&path).expect("a readable production source");
             sources.push((
                 relative.to_string_lossy().replace('\\', "/"),
-                masked_code(&text),
+                masked_code(&relative.to_string_lossy(), &text),
             ));
         }
     }
@@ -78,7 +78,7 @@ fn production_sources() -> Vec<(String, String)> {
 /// (amendment §2's acknowledged latent, §3's P-2).
 #[test]
 fn the_record_root_rewrite_publishes_by_atomic_rename_and_creates_no_parent() {
-    let rewrite = masked_code(REWRITE);
+    let rewrite = masked_code("store/rewrite.rs", REWRITE);
     let commit = item_body(&rewrite, "store/rewrite.rs", "pub(super) fn commit(");
 
     assert!(

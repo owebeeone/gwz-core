@@ -61,8 +61,8 @@ impl SupportedFilesystemProfile {
 /// `require_ext4` refuses, so the string's "ext4 only" is the CATALOG's admission
 /// list, not the abort's. The capability-free half is pinned by E4.1(c)'s
 /// `a_v1_resume_refuses_without_mutation_and_abort_still_clears_the_record`
-/// (`tests/g23/a1_activation.rs`) — [P3-C1]'s carrier discharged by name, and
-/// [P3-8] closes with it: this package converts nothing.
+/// (`src/workspace_ops/tests/g23/a1_activation.rs`) — [P3-C1]'s carrier, discharged
+/// by name; and [P3-8] closes (nothing converts, no snapshot exclusion grows).
 pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem does not expose the persistent file handles and mount identity that checked \
      merge artifacts require; run the workspace on a filesystem that does (on Linux the checked \
      catalog admits ext4 only; APFS or HFS+ on macOS; NTFS on Windows). An open merge can be \

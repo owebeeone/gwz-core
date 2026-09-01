@@ -7,7 +7,7 @@
 //! counts what STAYS; it cannot say the carved arms took no checked door. These
 //! rows say it.
 //!
-//! Seventeen files are PURE — every writer in them is carved, so the whole file is
+//! Eighteen files are PURE — every writer in them is carved, so the whole file is
 //! asserted door-free. Two are MIXED: `abort/evidence.rs` carries the carved v0
 //! `rollback_evidence` beside twenty-six converted-arm door references, and
 //! `abort/preflight.rs` the carved `restore_baseline` beside its `artifact_facts`
@@ -30,7 +30,7 @@ use super::{item_body, masked_code};
 
 /// The checker inventory's rows minus the two mixed files: every writer in each
 /// is carved, so the WHOLE file is asserted.
-const PURE_CARVED_FILES: [&str; 17] = [
+const PURE_CARVED_FILES: [&str; 18] = [
     "stash/mod.rs",
     "workspace_ops/handle_branch.rs",
     "workspace_ops/handle_commit.rs",
@@ -42,6 +42,7 @@ const PURE_CARVED_FILES: [&str; 17] = [
     "workspace_ops/handle_stash/commands.rs",
     "workspace_ops/merge/finalize.rs",
     "workspace_ops/merge/preserve/artifacts.rs",
+    "workspace_ops/merge/store/archived.rs",
     "workspace_ops/merge/store/gc.rs",
     "workspace_ops/merge/store/retention.rs",
     "workspace_ops/merge/v1_lifecycle/archive.rs",
@@ -86,7 +87,7 @@ fn carved(relative: &str) -> String {
         .join(relative);
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("carved path `{relative}` is unreadable: {error}"));
-    let stripped = masked_code(&text);
+    let stripped = masked_code(relative, &text);
     assert!(
         stripped.len() >= SOURCE_FLOOR,
         "`{relative}` read as {} bytes, under the {SOURCE_FLOOR} floor: an absence \

@@ -212,6 +212,11 @@ fn collect_files(
         // exact-managed control state with a closed interior grammar that
         // converges on every drive. What these rows prove — that a refused
         // operation moves no merge, member or native Git state — is untouched.
+        // [2026-09-02, R2-E E4.4-6-B: [P3-8] closes (nothing converts, no snapshot
+        // exclusion grows) — the capability-free carve-out keeps every §10 row
+        // `:275`-`:279` writer raw, so this list does not grow for it. Every row in
+        // this file and in `entry_service_drift.rs` reaches the list through
+        // `assert_entry_rejected_without_mutation`.]
         if relative.components().any(|part| part.as_os_str() == ".git")
             || relative.starts_with(".gwz/merge")
             || relative.starts_with(".gwz/locks")

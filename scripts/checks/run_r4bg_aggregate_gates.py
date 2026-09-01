@@ -400,14 +400,21 @@ def _fault_count(darwin: str, linux: str) -> str:
         darwin values re-MEASURED unchanged in the same session.
 
     R2-E E4.4-6-B (2026-09-02) -- the capability-free carve-out's pins (P-1's
-    generalized inventory, P-2's two negative-scan rows, the shared string-literal
-    masker; no converted code) -- moves the v1_lifecycle:: partition and ONLY it.
-      v1_lifecycle:: 262 -> 264: darwin MEASURED on this step's own tree (264
-        passed, 2026-09-02). Both new rows read source text checked out everywhere
-        and CRLF-normalize it under no `cfg` gate, so 264 is DERIVED for linux and
-        cfg-AUDITED as portable, FIRST-DISPATCH-EXPECTED at the landing dispatch.
+    generalized inventory, P-2's negative scans, the shared source masker; no
+    converted code) -- moves the v1_lifecycle:: partition and ONLY it, by FOUR
+    rows: P-2's two (`tests::capability_free_exception`, the pure-file and the
+    per-arm scan) and, from the round-1 [P1-1] fold, the shared masker's own
+    table-driven self-test and its fail-loud `#[should_panic]` belt
+    (`tests::the_shared_masker_*`).
+      v1_lifecycle:: 262 -> 266: darwin MEASURED on this step's own tree (266
+        passed, 2026-09-02). All four rows read source text checked out everywhere
+        (two of them only in-memory literals) under no `cfg` gate, so 266 is
+        DERIVED for linux and cfg-AUDITED as portable, FIRST-DISPATCH-EXPECTED at
+        the landing dispatch. A measured number wins.
       checked_artifact:: 457 / 467 and lib remainder 1110 / 1111: UNMOVED, both
-        darwin values re-MEASURED unchanged in the same session.
+        darwin values re-MEASURED unchanged in the same session, at the `0dae0d5`
+        base -- the standalone GC decode fix has NOT landed and its +4 to the
+        remainder is deliberately NOT pre-counted here.
 
     The --target handoff snapshot (gwz-core c201a01, 2026-09-01, an
     operator-directed WIP handoff of another lane's in-flight fix -- suites
@@ -474,7 +481,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "fault": ("aggregate fault/restart matrices (TransitionDesign:1469-1475)", [
         ("v1 lifecycle fault and restart matrices",
          lib("workspace_ops::merge::v1_lifecycle::", "--", "--skip", "root_fault_matrix"),
-         "264 passed"),
+         "266 passed"),
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         # LINUX-COUNT-OWED (R2-E E2): the darwin value is measured on this

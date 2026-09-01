@@ -38,6 +38,11 @@ PROTECTED_COMPILER_MODULES = {
 # or non-executable source change requires deliberate review and a digest
 # update; this closes aliases and new wrappers without guessing writer names.
 PROTECTED_SOURCE_DIGESTS = {
+    # R2-E E4.4-6-B (2026-09-02) pins the `write_atomic` family's own implementation:
+    # the capability-free inventory counts its CALLERS, so converting THIS file would
+    # convert every carved `:277`/`:278`/`:279` writer while moving no count there
+    # (round 1 [P3-5]). Not a boundary module -- pinned solely as that backstop.
+    "artifact/mod.rs": "22bce8182daf6865512c639957dcb16d3c91af15972bb34b25e9fdd9ae546d11",
     "checked_artifact/bootstrap.rs": "d85d894032512125ee5ad0cab770db25dd37cee32096ad84be3061eaab94b2aa",
     "checked_artifact/bootstrap/runtime/mod.rs": "1bddf4b40e4bd6454300e7b08b54119875ec19daacb819a14dbd0c483784230d",
     # R2-E E4.1 commit (b) re-pins this entry for precondition 1: the SUBSTRATE
@@ -45,7 +50,7 @@ PROTECTED_SOURCE_DIGESTS = {
     # value, distinct from the identity VALUE contract that keeps
     # `DurableObjectIdentity`, and it is the one capability carrying an
     # actionable remedy sentence.
-    "checked_artifact/capability.rs": "da1d946305abda142a55a17b3812e7b4029ae27c4f83bae01341c1194c893f48",
+    "checked_artifact/capability.rs": "dcb8d2b0f74fea8033db1eeba5523788ef0742077e2eca158789369709a22df7",
     # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
     # `activate_workspace_catalog`, the first production catalog activation,
     # and the four ENTRY_* inventories below move with it.
@@ -237,7 +242,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "e5ff1f3fd014ca52b98802ed4093517b24d4fa9bfe3aa0b4594449480219f16e",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "637fbbbb5ef1ca2088b8a46f9ccd59426dfd3d5c6ce60073069fcd14cffd3dfc",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "6e2624c290b752bc9ead55c5e8850d63d0bbf50dc5cfbc20c071f981da8a394b",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -421,14 +426,17 @@ for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCL
 # fail-closed both ways -- with the amendment's three generalizations. (i) An
 # EXPLICIT carved-file list under `src/` replaces the `v1_lifecycle/` scan root:
 # these writers live across the whole crate. (ii) The `\bdurable_fs\b` population
-# gate is DROPPED; thirteen of these files never name it. (iii) The vocabulary
+# gate is DROPPED; fourteen of these files never name it. (iii) The vocabulary
 # widens to all THREE primitive classes of §1, every spelling countable by the
 # bare-identifier idiom (`\bcreate_dir_all\b` matches `fs::create_dir_all`); an
 # inventory counting only `durable_fs` names would read ZERO at most carved files.
 # Counts are PIN REFERENCES, not call sites: `use` lines and definitions count, as
-# O13's do. ONE departure from O13, load bearing: `#[cfg(test)]` modules are
-# dropped first, so the pin measures the PRODUCTION surface -- without it
-# `stash/mod.rs` would pin eleven references of which eight are its own tests'.
+# O13's do. ONE departure from O13, load bearing: TOP-LEVEL `#[cfg(test)] mod`
+# blocks are dropped first -- without it `stash/mod.rs` would pin eleven references
+# of which eight are its own tests'. The drop is deliberately narrow: `cfg(all(test,
+# ...))` and an INDENTED `#[cfg(test)] mod` are NOT dropped, so they OVER-count,
+# which an exact-count pin raises immediately (round 1 [P3-3]). No carved file
+# carries either shape today.
 #
 # MEASURED EXACTLY ONCE. Two rows are also O13 rows; O13 stays, being a SCAN --
 # fail-closed against a `durable_fs` file it has never seen under `v1_lifecycle/`,
@@ -439,16 +447,20 @@ for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCL
 #
 # Digest coverage, MEASURED with `source_tree_digest`'s own semantics (a `mod.rs`
 # tree root digests its WHOLE parent subtree), because the amendment's §3 and Code
-# axis [P2-5] state it wrongly: THREE of the nineteen are pinned -- flat for
+# axis [P2-5] state it wrongly: THREE of the twenty are pinned -- flat for
 # `preserve/artifacts.rs`, and by the `v1_lifecycle/mod.rs` TREE root for both v1
 # archive files, a root that also covers `store/rewrite.rs`, so RR §3 P-1's
-# backstop and the `:366` note above are TRUE. Sixteen are unpinned. The CHOICE
+# backstop and the `:366` note above are TRUE. Seventeen are unpinned. The CHOICE
 # stands regardless: a digest only says "this tree changed, go look" and is
 # refreshed on every legitimate edit, so the classes go into THIS map, which
-# states the property and survives every refresh. Two corrections to the
+# states the property and survives every refresh. THREE corrections to the
 # amendment's §1 table, measured here: `store/archive.rs` has THREE raw `std::fs`
-# mutations, not "four"; and `handle_stash/commands.rs` is a second carved `:276`
-# home it omits, under the StashMutate guard.
+# mutations, not "four"; `handle_stash/commands.rs` is a second carved `:276` home
+# it omits, under the StashMutate guard; and the v0 terminal archive
+# `store/archived.rs::archive` -- reached from ordinary v0 merge finalization
+# (`finalize_dispatch.rs:34`, `finalize_support.rs:99`) and from BOTH abort forms
+# (`abort/mod.rs:111,:189,:218`) via `archive_merge_record` -- is named by the
+# amendment, the charter prep and neither axis of its dual (round 1 [P2-1]).
 CAPABILITY_FREE_WRITER_TOKENS = (
     "rename_noreplace", "rename_durable", "sync_dir",  # `durable_fs`
     "create_dir_all", "remove_file",  # `std::fs`-direct
@@ -460,9 +472,17 @@ CAPABILITY_FREE_WRITER_TOKENS = (
 # Per carved file: its §10 row and reached operation, then the primitives and their
 # pin-reference counts. Every row's authority is `CAPABILITY_FREE_EXCEPTION`. The
 # key-set DIGEST below is the third direction -- a row added, deleted or swapped --
-# for all nineteen. (A crate-wide namer closure over the leaf-publication spellings
-# would also catch a new raw writer in a file NOT listed here: drafted, dropped for
-# the line budget; allowlist `artifact/mod.rs`, `finalization/execute.rs`, `mod.rs`.)
+# for all twenty. (A crate-wide namer closure over the leaf-publication spellings
+# would also catch a new raw writer in a file NOT listed here; it was drafted and
+# dropped for the line budget, and its allowlist is NOT reconstructable from this
+# text -- round 1 [P3-4].)
+#
+# SCOPE LIMIT, stated (round 1 [P3-5]): this map counts references to the
+# `write_atomic` family's NAMES at their CALL sites, so converting the family's own
+# implementation in `artifact/mod.rs` would convert every carved `:277`/`:278`/`:279`
+# caller at a stroke while moving no count here and naming no door in any scanned
+# file. That cheapest defeat is closed by the flat `PROTECTED_SOURCE_DIGESTS` row on
+# `artifact/mod.rs`, which this package adds for exactly this reason.
 CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
     "stash/mod.rs": (":276 the `gwz stash` bundle writer, mutation guard", {"write_atomic": 2, "write_bundle": 1}),
     "workspace_ops/handle_branch.rs": (":278/:279 `gwz branch`, BranchMutate guard", {"write_lock": 1, "sync_workspace_boundary": 1}),
@@ -477,6 +497,7 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
     "workspace_ops/merge/abort/preflight.rs": (":278 the abort preflight's `restore_baseline` ARM", {"write_atomic": 2}),
     "workspace_ops/merge/finalize.rs": (":277/:278/:279 ordinary v0 merge publication", {"write_atomic": 2, "publish_workspace_exclude_candidate": 2}),
     "workspace_ops/merge/preserve/artifacts.rs": (":276/:277/:279 v0 `--abort --preserve`", {"remove_file": 1, "write_atomic": 3, "write_bundle": 1, "publish_workspace_exclude_candidate": 1}),
+    "workspace_ops/merge/store/archived.rs": (":275 the v0 terminal archive -- ordinary merge finalization and BOTH abort forms", {"rename_durable": 1, "sync_dir": 2, "create_dir_all": 1, "remove_file": 1}),
     "workspace_ops/merge/store/gc.rs": (":275 the LIVE GC deletion writer, WorkspaceMutatorLock", {"sync_dir": 1, "remove_file": 1}),
     "workspace_ops/merge/store/retention.rs": (":275 GC retention enforcement, the same lock", {"sync_dir": 1, "remove_file": 1}),
     "workspace_ops/merge/v1_lifecycle/archive.rs": (":275 the DEAD `remove_archive` arm behind the `:108-111` allowance", {"remove_file": 1}),
@@ -486,7 +507,7 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
 }
 if hashlib.sha256(
     "\n".join(sorted(CAPABILITY_FREE_RAW_WRITER_INVENTORY)).encode("utf-8")
-).hexdigest() != "2e5bd359ac71a0a2234e867dbc6be32d852921b2d01a666cb1268b2aa8c86315":
+).hexdigest() != "867c580f625d7efe0cf72dcc8e0ad01e36268d1478829a469eb0f57953dbd385":
     raise SystemExit(
         "check_checked_artifact_boundaries: the capability-free carved SET moved -- a row "
         "added, DELETED or swapped. It is the amendment's, not a checker edit: revise "

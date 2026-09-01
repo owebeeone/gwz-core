@@ -36,6 +36,7 @@ pub(super) fn archive(root: &Path, merge_id: &str) -> ModelResult<()> {
     }
     let (source_raw, record) = read_record(&source, RecordLocation::Open)?;
     ensure_terminal_for_archive(&record)?;
+    // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the v0 terminal archive runs from ordinary merge finalization and from BOTH abort forms, all on E0.2 §5.2's capability-free list, so this bootstrap and the publication below stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     fs::create_dir_all(root.join(DONE_DIR)).map_err(io_error)?;
     if path_exists(&destination)? {
         let (archived_raw, archived) = read_record(&destination, RecordLocation::Archived)?;
