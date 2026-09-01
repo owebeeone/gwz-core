@@ -368,3 +368,72 @@ fn explicit_gc_refuses_an_unreadable_v1_archive_and_retains_every_ref() {
     assert!(backend.read_ref(&lib, &name).unwrap().is_some());
     assert!(archive.is_file());
 }
+
+/// The shape every COMPLETED `--no-ff` merge has archived since 0.11.0: a v1
+/// envelope whose body carries the publication candidate AND the persisted
+/// `accepted_workspace` the v1 acceptance model defines.
+fn completed_v1_archive(label: &str) -> (TempDir, crate::git::Git2Backend, String) {
+    let temp = TempDir::new(label);
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, label);
+    feature_commit(
+        &backend,
+        &temp.path().join("remote"),
+        "README.md",
+        "source\n",
+    );
+    let completed = handle_merge(
+        &backend,
+        temp.path(),
+        crate::MergeRequest {
+            mode: Some(crate::MergeMode::NoFf),
+            ..request(false)
+        },
+        format!("op_{label}_start"),
+    )
+    .unwrap();
+    assert_eq!(completed.state, crate::MergeOperationState::Completed);
+    let merge_id = completed.merge_id.unwrap();
+    let yaml: serde_yaml::Value =
+        serde_yaml::from_slice(&fs::read(archived_path(temp.path(), &merge_id)).unwrap()).unwrap();
+    assert_eq!(yaml["schema"].as_str(), Some("gwz.merge-operation/v1"));
+    assert!(yaml["publication"]["candidate"].is_mapping());
+    assert!(yaml["accepted_workspace"].is_mapping());
+    (temp, backend, merge_id)
+}
+
+/// **The order's own case: a COMPLETED `--no-ff` archive, collected end to end
+/// through the live `--gc` dispatch.** Only the two v0-only read sites stood in
+/// its way; the archive projection needs no change, because a completed
+/// `--no-ff` merge DOES persist `accepted_workspace`, so the projection takes
+/// its `SupportedPersisted` arm over `source_version: v1`. This row pins that
+/// whole answer, so no future reader has to re-derive it from a record dump.
+#[test]
+fn explicit_gc_collects_a_completed_no_ff_archive() {
+    let (temp, backend, merge_id) = completed_v1_archive("merge-gc-v1-done");
+    let mut gc = recovery_request(crate::MergeOp::Gc, Some(merge_id.clone()));
+    gc.preserve = None;
+
+    let collected = handle_merge(&backend, temp.path(), gc, "op_gc_v1_done_collect").unwrap();
+
+    assert_eq!(collected.state, crate::MergeOperationState::Completed);
+    assert!(!collected.open);
+    let record = collected.record.as_ref().unwrap();
+    assert_eq!(record.source_version, crate::MergeRecordVersion::V1);
+    assert_eq!(
+        record.terminal_outcome,
+        Some(crate::MergeTerminalOutcome::Completed)
+    );
+    assert_eq!(
+        record.acceptance.as_ref().map(|value| value.kind),
+        Some(crate::MergeAcceptanceKind::SupportedPersisted)
+    );
+    assert!(!archived_path(temp.path(), &merge_id).exists());
+    assert_eq!(
+        FileMergeStore
+            .load(temp.path(), &merge_id)
+            .unwrap_err()
+            .code,
+        ErrorCode::OperationNotFound
+    );
+}
