@@ -218,7 +218,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
     "checked_artifact/capability/pre_catalog.rs": "d531ce50a0092f8c1ff15bc1d9eef5ebd1928ced6e331c8ebacf630b2430e27a",
-    "checked_artifact/catalog.rs": "e1a8f1f05f0aeeaca27f20f8f749f0027f712802779889634beb1ad5b3767f61",
+    "checked_artifact/catalog.rs": "5c76c6a4d87444684f7e44ab67be496847196491be30b17e3507dcd0f1765329",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "3146b52783aa17b898ca410afd4f7934c96a0b4ffe326de3863a43d45fed9322",

@@ -332,7 +332,6 @@ fn upgrade_only_overlong_merge_id() -> String {
 
 /// Starts one merge under an exact merge-record id, otherwise
 /// [`invoke_with_store`].
-#[cfg(unix)]
 fn invoke_with_store_and_merge_id(
     backend: &crate::git::Git2Backend,
     store: &FaultingMergeStore,

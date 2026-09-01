@@ -36,8 +36,9 @@ use std::path::{Path, PathBuf};
 /// **2026-09-01 (R2-E E4.1): ONE — this step is the mover.** The relocation
 /// landed (R1.1 `027da5b`), the A1 coexistence gate is satisfied, and the first
 /// production catalog activation is `checked_artifact/entry.rs`'s
-/// `activate_workspace_catalog`, called from the checked v1 operation's
-/// prologue (`v1_lifecycle/checked.rs`'s `V1MutationLease::acquire`). The pin
+/// `activate_workspace_catalog`, called from the FORWARD v1 paths only —
+/// `V1MutationLease::acquire_activated` (checked start/resume) and dispatch's
+/// pre-upgrade viability window; the plain abort lease never activates. The pin
 /// moved in that same reviewed commit, as this comment promised it would. A
 /// SECOND production namer is E4.2-E4.6 work and must move this pin again,
 /// deliberately.

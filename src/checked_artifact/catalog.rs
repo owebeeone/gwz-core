@@ -9,8 +9,9 @@
 // exports has a production consumer today.
 // R2-E Phase E4 Step E4.1 (2026-09-01) ACTIVATED this owner: `recover_or_create`
 // now has a production caller — `checked_artifact/entry.rs`'s
-// `activate_workspace_catalog`, reached from the checked v1 operation's
-// prologue — and `interface_tests/catalog_activation_pin.rs` pins the count at
+// `activate_workspace_catalog`, reached from the forward v1 paths (the
+// activated lease and dispatch's pre-upgrade viability window; the plain
+// abort lease never activates) — and `interface_tests/catalog_activation_pin.rs` pins the count at
 // exactly one. The blanket allow that stood here for the unactivated entry
 // point is retired; what remains dead is what `dead_code` still names.
 #[allow(

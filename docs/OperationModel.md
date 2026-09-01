@@ -126,8 +126,10 @@ mutations; run branch and stash mutators serially there.
 catalog under `.gwz/catalog-final`. The catalog identifies its own files and
 directories by a *durable* identity that survives renames and process exits, so
 that an interrupted merge can prove on restart which objects it created. That
-needs two things from the filesystem, and it asks for them when the merge takes
-its lock:
+needs two things from the filesystem, and it asks for them when the operation
+moves FORWARD under its lock — at a checked start or resume, and before an
+interrupted ordinary merge is migrated to the checked record form. An abort
+never asks:
 
 * **Persistent file handles** — `name_to_handle_at` on Linux,
   `ATTR_CMN_OBJPERMANENTID` on macOS, 128-bit file ids on NTFS.
