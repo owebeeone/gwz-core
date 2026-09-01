@@ -225,6 +225,11 @@ APPROVED_RUST_PATH_EDGES = {
 # bootstrapping §10 row `:273`'s two managed parents before `create_open`, with
 # the creation path publishing through the checked boundary rather than its own
 # raw durable writers. The other five were recomputed and are unchanged.
+#
+# R2-E E4.3-B (2026-09-02) re-pins ONE, `v1_lifecycle/mod.rs`: the exception's
+# dated `///` at `store/rewrite.rs::commit` (doc only) and P-2's tripwire module
+# with its `mod` declaration. The other six were recomputed unchanged;
+# `bootstrap/managed.rs`, re-dated by this package, is under NO entry -- measured.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
@@ -232,7 +237,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "5c76c6a4d87444684f7e44ab67be496847196491be30b17e3507dcd0f1765329",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "1b36abfea784ee1b6cfaa35d601d9bcee442c1240183ecfd61c9db8a6461676d",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "c99ae927dd0c33033f4e81c870d7ccc097eb9a90ecde66cb02b4907783d29cc7",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -342,12 +347,39 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
 # ways. `create_open`'s publication moved to the checked boundary, so
 # `store/rewrite.rs` drops from three references of each writer to two -- the
 # `use` and `commit`'s call, exactly E4.3's remaining half.
+#
+# R2-E E4.3-B (2026-09-02) makes the `store/rewrite.rs` row PERMANENT-DOCUMENTED
+# rather than retire-on-conversion, under `dev-docs/GwzM5-8R2E-
+# RecordRootAmendment.md` §2's RECORD-ROOT EXCEPTION and §3's P-1: a dated,
+# dual-reviewed exception to row `:280`'s "no legacy raw writer" clause, scoped
+# to `commit` and only it, because the record is the ROOT of reconciliation and
+# the boundary's detach-then-publish shape opens a discovery-dead window no
+# shipped reconciler closes (§1a, driven). So the carved row fails closed both
+# ways with DIFFERENT meanings: growth is an unblessed new raw writer, while
+# SHRINKAGE -- the direction that used to DEMAND retirement -- says a partial
+# conversion may not land until the amendment is revised, at O14's fork. The
+# marker is a per-row REASON in `V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS`,
+# general by design: the 2026-09-02 capability-free ruling foresees further
+# `:275`-`:279` carve-outs, one data row each naming its own amendment. The two
+# ARCHIVE rows keep their retire-on-conversion marker until E4.4 (§6); class
+# scope is `durable_fs` only, a std::fs writer here being backstopped by
+# `PROTECTED_SOURCE_TREE_DIGESTS` and stated as a property by P-2.
 V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = {
     "workspace_ops/merge/v1_lifecycle/archive.rs": {"sync_dir": 2},
     "workspace_ops/merge/v1_lifecycle/store/archive.rs": {"rename_noreplace": 2, "sync_dir": 7},
     "workspace_ops/merge/v1_lifecycle/store/rewrite.rs": {"rename_durable": 2, "sync_dir": 2},
 }
 V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_dir")
+
+# Rows carved out PERMANENTLY by a dated amendment, each naming its own reason
+# and authority. Membership changes nothing this checker MEASURES and everything
+# it SAYS when a row moves, in BOTH directions. Adding a row is an
+# amendment-tier act, not a checker edit; the shape is deliberately general so a
+# follow-on amendment's further §10 carve-outs are one data row each.
+V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS = {
+    "workspace_ops/merge/v1_lifecycle/store/rewrite.rs": "the record-root exception, dev-docs/GwzM5-8R2E-RecordRootAmendment.md §2/§3",
+}
+assert V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() <= V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES.keys(), "a permanent writer exception names no pinned row"
 
 ENTRY_REFERENCES = {
     # R2-E Phase E4 Step E4.1 (O2): the first production catalog activation.
@@ -1195,22 +1227,48 @@ def check(source: Path) -> list[str]:
                 if (count := len(re.findall(r"\b" + writer + r"\b", text)))
             }
     expected_files = set(V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES)
+    carved = V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS
+
+    def carved_finding(relative: str, moved: str) -> str:
+        return (
+            f"permanent writer exception ({carved[relative]}), {relative}: {moved}. "
+            "That path is PERMANENT-DOCUMENTED: revise its amendment first -- the "
+            "conversion is re-decided there (for the record root, at O14's fork), "
+            "not by a commit that moves this pin"
+        )
+
     for relative in sorted(set(raw_writer_files) - expected_files):
         findings.append(
-            "v1 lifecycle gained a raw durable_fs writer outside the O13 "
+            carved_finding(relative, "its pin row was DELETED while the file still names durable_fs")
+            if relative in carved
+            else "v1 lifecycle gained a raw durable_fs writer outside the O13 "
             f"accepted residual: {relative}"
         )
     for relative in sorted(expected_files - set(raw_writer_files)):
         findings.append(
-            "O13 accepted-residual entry no longer names durable_fs and must "
+            carved_finding(relative, "it no longer names durable_fs AT ALL -- a conversion of it may not land")
+            if relative in carved
+            else "O13 accepted-residual entry no longer names durable_fs and must "
             f"be retired from the pin deliberately: {relative}"
         )
     for relative in sorted(expected_files & set(raw_writer_files)):
         counts = V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES[relative]
-        if raw_writer_files[relative] != counts:
+        actual = raw_writer_files[relative]
+        if actual == counts:
+            continue
+        moved = f"expected={counts} actual={actual}"
+        if relative in carved:
+            shrank = any(actual.get(w, 0) < c for w, c in counts.items())
+            findings.append(carved_finding(relative, (
+                f"the raw-writer count SHRANK ({moved}) -- a PARTIAL conversion may not land"
+                if shrank
+                else f"the raw-writer count GREW ({moved}) -- the exception blesses "
+                "`commit`'s existing publication primitive only, not a new raw writer"
+            )))
+        else:
             findings.append(
                 "O13 raw-writer count moved and must move the pin with it: "
-                f"{relative}: expected={counts} actual={raw_writer_files[relative]}"
+                f"{relative}: {moved}"
             )
     for relative in sorted(PROTECTED_COMPILER_MODULES):
         raw = (source / relative).read_bytes()

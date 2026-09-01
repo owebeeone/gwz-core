@@ -74,6 +74,13 @@ pub(super) fn create_open(
     Ok(published)
 }
 
+/// **RECORD-ROOT EXCEPTION (2026-09-02, `GwzM5-8R2E-RecordRootAmendment.md`
+/// §2, operator-authorized).** This rewrite of the exact existing record — the
+/// ROOT of reconciliation, which recovers from nothing in the shipped tree —
+/// keeps `rename_durable(replace = true)` + `sync_dir` permanently, because the
+/// checked boundary's detach-then-publish shape opens a discovery-dead window
+/// no shipped reconciler closes (§1a, driven); pinned both ways by the O13 row
+/// and `tests/store/record_root_exception.rs`, re-examined at O14's fork.
 pub(super) fn commit(
     lease: &V1MutationLease,
     current: &StoredV1Record,

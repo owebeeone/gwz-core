@@ -43,7 +43,9 @@ pub(in crate::checked_artifact) use plan::*;
 #[allow(
     unused_imports,
     reason = "Step 3.3 wired the coordinator caller; REACHED from the entry point at R2-E E4.2 \
-              (2026-09-01) — the unconsumed imports shrink as E4.3-E4.6 convert"
+              (2026-09-01) — the unconsumed imports shrink as E4.4-E4.6 convert (2026-09-02, \
+              R2-E E4.3-B: E4.3 converts nothing, its rewrite path being permanently carved out \
+              by GwzM5-8R2E-RecordRootAmendment.md §2, so E4.4 is the next mover)"
 )]
 pub(in crate::checked_artifact) use provider::*;
 

@@ -30,6 +30,7 @@ use crate::workspace_ops::tests::TempDir;
 
 mod drift;
 mod matrix;
+mod record_root_exception;
 mod shapes;
 
 #[test]

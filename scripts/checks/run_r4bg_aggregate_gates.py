@@ -386,6 +386,19 @@ def _fault_count(darwin: str, linux: str) -> str:
       lib remainder 1099 / 1100: UNMOVED; darwin 1099 + 1 ignored re-MEASURED
         on this tree in the same session.
 
+    R2-E E4.3-B (2026-09-02) -- the record-root carve-out's pins (P-1's checker
+    re-shape, P-2's tripwire; no converted code) -- moves the v1_lifecycle::
+    partition and ONLY it, by two rows in `tests::store::record_root_exception`.
+
+      v1_lifecycle:: 260 -> 262: darwin MEASURED on this step's own tree (262
+        passed, 2026-09-02). The partition carries one cross-platform literal,
+        not a per-OS split, so 262 is DERIVED for linux and cfg-AUDITED as
+        portable (no `cfg` gate on either row; both read source text checked out
+        everywhere and CRLF-normalize it), hence FIRST-DISPATCH-EXPECTED at the
+        landing dispatch. A measured number wins.
+      checked_artifact:: 457 / 467 and lib remainder 1110 / 1111: UNMOVED, both
+        darwin values re-MEASURED unchanged in the same session.
+
     The --target handoff snapshot (gwz-core c201a01, 2026-09-01, an
     operator-directed WIP handoff of another lane's in-flight fix -- suites
     deliberately unrun at its own push) moves the LIB REMAINDER and only it,
@@ -414,7 +427,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "fault": ("aggregate fault/restart matrices (TransitionDesign:1469-1475)", [
         ("v1 lifecycle fault and restart matrices",
          lib("workspace_ops::merge::v1_lifecycle::", "--", "--skip", "root_fault_matrix"),
-         "260 passed"),
+         "262 passed"),
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         # LINUX-COUNT-OWED (R2-E E2): the darwin value is measured on this
