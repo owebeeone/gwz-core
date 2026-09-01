@@ -264,6 +264,19 @@ def _fault_count(darwin: str, linux: str) -> str:
       linux  1096 -> 1098: DERIVED (+2, cfg-independent -- neither test
         carries a cfg gate), FIRST-DISPATCH-EXPECTED at the next linux
         execution. A measured number wins.
+
+    R2-F R1.2 (2026-09-01) moves the checked_artifact:: partition and only
+    it, by one: the A1 activation tripwire (`interface_tests::
+    catalog_activation_pin`), which pins `recover_or_create`'s production
+    caller count at zero until E4.1 moves it to one.
+
+      darwin 447 -> 448: MEASURED on this step's own tree (448 passed,
+        2026-09-01), with the lib remainder re-measured unchanged at 1097
+        + 1 ignored and v1_lifecycle:: at 256 in the same session.
+      linux  457 -> 458: DERIVED (+1, cfg-independent -- the test carries
+        no cfg gate and walks a source tree checked out on every
+        platform), FIRST-DISPATCH-EXPECTED at the landing dispatch. A
+        measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -298,7 +311,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # first Windows compile of that code. Marked here beside the linux
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("447 passed", "457 passed")),
+         lib("checked_artifact::"), _fault_count("448 passed", "458 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),

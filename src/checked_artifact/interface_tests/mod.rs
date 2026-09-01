@@ -1,5 +1,6 @@
 mod bounds_slots;
 mod capability_permit;
+mod catalog_activation_pin;
 mod catalog_admission;
 mod catalog_classifier;
 mod catalog_recovery;
