@@ -10,6 +10,28 @@
 //! rejection, zero mutation of the managed set, and a state that resumes
 //! cleanly once the breach is removed — never an OS panic, never partial
 //! mutation.
+//!
+//! **R2-F R1.1, 2026-09-01 — re-measured for the split, each arm naming the
+//! directory it measures ([P3-2]).** The split moves only the CATALOG's leaf
+//! (to `catalog-final`); the legacy writer keeps `checked-artifacts`, and the
+//! 173-char `ca1-*` names are minted by the legacy writer alone. Three
+//! measurements, three different directories:
+//!
+//! - **Legacy / workspace root — what THIS fixture measures.**
+//!   `<root>/.gwz/checked-artifacts/<173>` = root + **197** (prefix 23).
+//!   Unchanged by the split.
+//! - **Legacy / git-directory root** — measured against `repo.path()`, the
+//!   PER-WORKTREE git dir (`preservation_root/files.rs:29-31`), which for a
+//!   linked worktree is `<common>/worktrees/<name>/` and longer again.
+//!   Unchanged, and inert: that arm never writes (`entry.rs:182` observes).
+//! - **Catalog** — measured against the COMMON git directory
+//!   (`repository_common_git_directory`; `retained.rs:200-206`) or
+//!   `<root>/.gwz`, at the 13-char leaf: a −4 delta on the catalog's OWN
+//!   paths, and it carries none of this exposure (its interior holds only the
+//!   ten fixed infrastructure slot names, never a `ca1-*`).
+//!
+//! So R2-F leaves the product exposure untouched, as the falsified MAX_PATH
+//! rider says: 160 of the 173 characters are the 64+64+32-hex triple.
 
 use super::support::*;
 use super::*;
@@ -31,8 +53,10 @@ fn staged_source_shape_name() -> String {
 #[test]
 fn staged_source_beyond_max_path_without_longpaths_fails_closed() {
     // Root long enough that `<root>/.gwz/checked-artifacts/<173>` breaches
-    // MAX_PATH (root + 198 > 260), while every fixture-build path stays
-    // well below the un-opted limit.
+    // MAX_PATH (root + 197 > 260 — measured, correcting this comment's former
+    // 198), while every fixture-build path stays well below the un-opted
+    // limit. This is the LEGACY writer's workspace-root arm; the split leaves
+    // it exactly here (module doc).
     let fixture = fixture_configured("sha1", None, None, Some(b"handoff marker\n"), false, 120);
     let private = fixture.root.join(".gwz").join("checked-artifacts");
     fs::create_dir_all(&private).unwrap();

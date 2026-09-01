@@ -310,6 +310,13 @@ fn create_stash_remains_exact_over_checked_artifact_private_residue() {
         b"GWZ-CHECKED-ARTIFACT-DURABILITY-ANCHOR-V1\n",
     )
     .unwrap();
+    // R2-F R1.1, 2026-09-01: the catalog's own directory is blind on its own
+    // ground and must be proved alongside the legacy one. This fixture passes
+    // `excluded_worktree_paths = Vec::new()` (`support.rs:133`), so the
+    // blindness rests SOLELY on the two constants.
+    let catalog = fixture.root.join(".gwz/catalog-final");
+    fs::create_dir_all(&catalog).unwrap();
+    fs::write(catalog.join("catalog-format"), b"GWZ-CATALOG-FORMAT-V1\n").unwrap();
     let step = create_stash_step();
     assert_eq!(
         fixture

@@ -147,7 +147,7 @@ fn fresh_workspace_converges_to_the_exact_completed_catalog() {
     let retained = recover_or_create(runtime.catalog_mutation_lease()).unwrap();
 
     retained.revalidate_for_test().unwrap();
-    let catalog = fixture.path().join(".gwz/checked-artifacts");
+    let catalog = fixture.path().join(".gwz/catalog-final");
     let mut present = fs::read_dir(&catalog)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -194,7 +194,7 @@ fn git_directory_target_creates_its_parent_then_converges_to_completion() {
     let retained = recover_or_create(lease).unwrap();
 
     retained.revalidate_for_test().unwrap();
-    assert!(private_parent.join("checked-artifacts").is_dir());
+    assert!(private_parent.join("catalog-final").is_dir());
     assert!(
         !private_parent
             .join("checked-artifacts-catalog-bootstrap-v1.active")
@@ -211,10 +211,10 @@ fn returned_catalog_rejects_named_final_substitution() {
         .unwrap()
         .expect("workspace runtime lease");
     let retained = recover_or_create(runtime.catalog_mutation_lease()).unwrap();
-    let final_directory = fixture.path().join(".gwz/checked-artifacts");
+    let final_directory = fixture.path().join(".gwz/catalog-final");
     fs::rename(
         &final_directory,
-        fixture.path().join(".gwz/displaced-checked-artifacts"),
+        fixture.path().join(".gwz/displaced-catalog-final"),
     )
     .unwrap();
     fs::create_dir(&final_directory).unwrap();
@@ -234,7 +234,7 @@ fn returned_catalog_rejects_byte_identical_interior_file_substitution() {
         .unwrap()
         .expect("workspace runtime lease");
     let retained = recover_or_create(runtime.catalog_mutation_lease()).unwrap();
-    let final_directory = fixture.path().join(".gwz/checked-artifacts");
+    let final_directory = fixture.path().join(".gwz/catalog-final");
     let format = final_directory.join(InfrastructureSlotV1::CatalogFormat.name());
     let bytes = fs::read(&format).unwrap();
     fs::rename(
@@ -524,4 +524,169 @@ fn run_retry_edges(fixture: &Fixture, count: usize) {
             CatalogOwnerStepV1::Retry(_)
         ));
     }
+}
+
+// R2-F R1.1, 2026-09-01 — the split's executable rows
+// (`GwzM5-8R2F-RelocationPlan.md` §1/§3, ADOPTED).
+
+fn interior_names(directory: &Path) -> Vec<String> {
+    let mut names = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
+}
+
+/// Every production source under `src/checked_artifact/` that NAMES
+/// `prepare_private` — definitions plus uses, by path relative to the scan
+/// root. Spelling-blind per the R1.2 [P1-1] precedent ([R1.1-P1-1]): a `use`
+/// import, an alias (`use … as pp; pp(dir, …)`) and a qualified call all put
+/// the bare identifier in the file, while a call-site matcher sees only the
+/// spellings its prefix rules admit — over-eager toward RED by design.
+/// `prepare_private` is `pub(super)` on `platform`, so no namer can exist
+/// outside this subtree and the scan is exhaustive. `//` comments are
+/// stripped first, so prose naming the identifier (as `platform.rs:437-439`
+/// does) cannot move the list; the `_tests.rs` stems are `#[cfg(test)]`
+/// companions and excluded with the `tests*` files.
+fn production_namers_of_prepare_private() -> Vec<String> {
+    fn walk(root: &Path, directory: &Path, found: &mut Vec<String>) {
+        for entry in fs::read_dir(directory).expect("the scan root is readable") {
+            let path = entry.expect("a readable directory entry").path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "tests" && name != "interface_tests" {
+                    walk(root, &path, found);
+                }
+                continue;
+            }
+            if !name.ends_with(".rs") || name.starts_with("tests") || name.ends_with("_tests.rs") {
+                continue;
+            }
+            let code = fs::read_to_string(&path)
+                .expect("a production source is readable")
+                .lines()
+                .map(|line| line.split_once("//").map_or(line, |(kept, _)| kept))
+                .collect::<String>();
+            if code.contains("prepare_private") {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("a source under the scan root");
+                found.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/checked_artifact");
+    let mut found = Vec::new();
+    walk(&root, &root, &mut found);
+    found.sort_unstable();
+    found
+}
+
+/// THE decisive row ([R2-P2-1] — the executable form of Phase4Closure §2.7's
+/// coexistence criterion, strengthened by [RC-P3-1]).
+///
+/// Bootstrap the catalog, run ONE real legacy checked-artifact drive through
+/// the production entry point, then re-observe the catalog: it must still be
+/// recoverable. This row fails under BOTH designs the reviews killed — round
+/// 1's, where bootstrap itself refuses on the resident directory's mere
+/// presence (`provider/directory_mutation.rs:179-185`), and round 2's, where
+/// renaming the shared `Final` marches the legacy writer into the catalog's
+/// new home. The killing teeth there differ by platform ([R1.1-P2-1]): on
+/// Windows the drive plants a `.ca1-*` anchor that makes re-observation
+/// refuse (`provider/interior.rs:437-440`); on darwin/linux `prepare_private`
+/// is a no-op (`platform.rs:344-351`) and a clean drive removes its
+/// write-ahead names, so what discriminates is the disjointness assertion
+/// below — the legacy area appears as its OWN directory — not the
+/// recoverability lines. It passes only under the split.
+#[test]
+fn a_legacy_drive_after_bootstrap_leaves_the_catalog_recoverable() {
+    let fixture = Fixture::new("legacy-drive-after-bootstrap");
+    let runtime = try_acquire_workspace_runtime(fixture.path())
+        .unwrap()
+        .expect("workspace runtime lease");
+    let retained = recover_or_create(runtime.catalog_mutation_lease()).unwrap();
+    let catalog = fixture.path().join(".gwz/catalog-final");
+    let published = interior_names(&catalog);
+
+    fs::create_dir_all(fixture.path().join("a")).unwrap();
+    fs::write(fixture.path().join("a/value"), b"before").unwrap();
+    crate::checked_artifact::entry::replace_merge_root_artifact(
+        fixture.path(),
+        Path::new("a/value"),
+        b"before",
+        b"after",
+    )
+    .unwrap();
+    assert_eq!(fs::read(fixture.path().join("a/value")).unwrap(), b"after");
+
+    // Disjointness — the property, asserted directly: the drive built and used
+    // the LEGACY area, and the catalog's interior is byte-for-byte what
+    // bootstrap published.
+    assert!(
+        fixture.path().join(".gwz/checked-artifacts").is_dir(),
+        "the legacy writer creates its own private area, not the catalog's"
+    );
+    assert_eq!(interior_names(&catalog), published);
+
+    // The structural no-anchor guarantee ([RC-P3-1]), identical on both
+    // platforms and carried into the Windows first-dispatch obligation:
+    // `platform::prepare_private` is the only planter of
+    // `.ca1-durability-anchor-<32hex>` (Windows arm, `platform.rs:687-695`),
+    // and the only production files NAMING it are its definer and its one
+    // caller — `residue.rs:102`, inside the legacy writer's `open_private`.
+    // The catalog's directory therefore cannot acquire an anchor, on any
+    // platform, by construction rather than by test.
+    assert_eq!(
+        production_namers_of_prepare_private(),
+        ["platform.rs", "residue.rs"]
+    );
+
+    // Still recoverable — the criterion itself.
+    retained.revalidate_for_test().unwrap();
+    recover_or_create(runtime.catalog_mutation_lease())
+        .unwrap()
+        .revalidate_for_test()
+        .unwrap();
+}
+
+/// A resident `checked-artifacts/` is the legacy writer's LIVE area, never
+/// residue — and after the split it is recognized by NOTHING: `fixed_roles`
+/// (`catalog/enumeration.rs:373-388`) is a fixed variant-keyed table built from
+/// `Final.leaf_bytes()`, now `catalog-final`, so the resident directory
+/// classifies as an unrecognized sibling (`Ok(None)`), refuses nothing, and is
+/// left exactly as found. Bootstrap must succeed on BOTH roots over it.
+#[test]
+fn bootstrap_over_a_resident_legacy_directory_on_the_workspace_root() {
+    let fixture = Fixture::new("resident-legacy-workspace");
+    let legacy = fixture.path().join(".gwz/checked-artifacts");
+    fs::create_dir_all(&legacy).unwrap();
+    let anchor = ".ca1-durability-anchor-deadbeefdeadbeefdeadbeefdeadbeef";
+    fs::write(legacy.join(anchor), b"anchor\n").unwrap();
+    let runtime = try_acquire_workspace_runtime(fixture.path())
+        .unwrap()
+        .expect("workspace runtime lease");
+
+    let retained = recover_or_create(runtime.catalog_mutation_lease()).unwrap();
+
+    retained.revalidate_for_test().unwrap();
+    assert!(fixture.path().join(".gwz/catalog-final").is_dir());
+    assert_eq!(interior_names(&legacy), [anchor]);
+}
+
+#[test]
+fn bootstrap_over_a_resident_legacy_directory_on_the_git_directory_root() {
+    let fixture = Fixture::new("resident-legacy-git");
+    let private_parent = git2::Repository::open(fixture.path())
+        .unwrap()
+        .commondir()
+        .join("gwz");
+    let legacy = private_parent.join("checked-artifacts");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(legacy.join("residue"), b"legacy\n").unwrap();
+
+    drive_git_directory_recovery(&fixture).unwrap();
+
+    assert!(private_parent.join("catalog-final").is_dir());
+    assert_eq!(interior_names(&legacy), ["residue"]);
 }

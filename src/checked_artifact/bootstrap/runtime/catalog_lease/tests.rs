@@ -282,7 +282,7 @@ fn assert_catalog_roles_absent(parent: &Path) {
     for name in [
         "checked-artifacts-catalog-bootstrap-v1.active",
         "checked-artifacts-catalog-bootstrap-v1.staging",
-        "checked-artifacts",
+        "catalog-final",
     ] {
         assert!(
             !parent.join(name).exists(),

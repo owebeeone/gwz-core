@@ -8,6 +8,7 @@ use super::super::capability::{
     LosslessIndexEntry, LosslessIndexMetadataV1, PathComponentMode, PlatformCapability,
     PrivateControlDomain, SupportedFilesystemProfile, TrackedWorktreeEntry, TrackedWorktreeKind,
 };
+use super::super::catalog_names::CatalogPrivateNameV1;
 use super::super::leaf::{
     DurableLeafExpectation, DurableLeafProof, ExpectedLeafContent, LeafOther, LeafProof,
 };
@@ -164,14 +165,56 @@ fn collision_facts_keep_raw_paths_stages_and_flags() {
 
     let tracked = TrackedWorktreeEntry::new(path, TrackedWorktreeKind::Symlink);
     assert_eq!(tracked.kind(), TrackedWorktreeKind::Symlink);
-    assert_eq!(PrivateControlDomain::checked_v1().members().len(), 4);
+    assert_eq!(PrivateControlDomain::checked_v1().members().len(), 5);
 }
 
 #[test]
 fn collision_domain_is_fixed_and_digest_bound() {
     let domain = PrivateControlDomain::checked_v1();
-    assert_eq!(domain.members().len(), 4);
+    assert_eq!(domain.members().len(), 5);
     assert_ne!(domain.version_digest(), [0; 32]);
+}
+
+/// `PrivateControlDomain::checked_v1().version_digest()` measured at gwz-core
+/// `ea3a924` (v0.12.1), immediately before R2-F R1.1 — the four-member domain
+/// whose `Final` member was `.gwz/checked-artifacts`.
+const PRE_R2F_WORKSPACE_COLLISION_DIGEST: [u8; 32] = [
+    0x3b, 0xa1, 0x85, 0x95, 0xfb, 0x99, 0x1a, 0x64, 0x3f, 0xdb, 0x5c, 0xe7, 0xcc, 0x51, 0x49, 0xa8,
+    0xe2, 0xd2, 0x57, 0xa8, 0x04, 0x25, 0xdc, 0x30, 0x2b, 0x48, 0xa7, 0xb5, 0xc1, 0x86, 0x85, 0xc6,
+];
+
+/// R2-F R1.1, 2026-09-01 — the persisted-field movements, asserted once each.
+///
+/// THE TRADE, complete (plan §1, [R2-P3-1]/[RC-P2-1]): the split moves exactly
+/// three durable surfaces, and declares all three free. (1)
+/// `historical_collision_digest`, CBOR key 4 of `CheckedCatalogBootstrapV1` —
+/// moved by `LegacyPrivate` joining `ALL`. (2) `final_name`, CBOR key 8
+/// (`protocol/catalog_bootstrap_record.rs:75`, validated `:242`) — moved by
+/// `Final`'s bytes. (3) the on-disk scratch DIRECTORY name
+/// (`capability/pre_catalog.rs:331-335`), which frames the same digest.
+///
+/// They are free because no durable record exists to invalidate: the movement
+/// lands strictly before the first catalog activation
+/// (`catalog_names.rs`'s ordering ground; `recover_or_create` has zero
+/// production callers). Deliberately ONE assertion per persisted field — the
+/// digest's ~57 read references are NOT enumerated; enumerating them was
+/// withdrawn as scope inflation ([RC-P2-1]).
+#[test]
+fn the_split_moves_both_persisted_catalog_fields_and_is_free_before_activation() {
+    // Field 1 — historical_collision_digest, via the domain's member set.
+    let domain = PrivateControlDomain::checked_v1();
+    assert_ne!(domain.version_digest(), PRE_R2F_WORKSPACE_COLLISION_DIGEST);
+    // Field 2 — final_name, the catalog's own leaf, now disjoint from the
+    // legacy writer's. `LegacyPrivate` is what `policy.rs` composes; the two
+    // names are the split.
+    assert_eq!(
+        CatalogPrivateNameV1::Final.leaf_bytes(),
+        b"catalog-final".as_slice()
+    );
+    assert_eq!(
+        CatalogPrivateNameV1::LegacyPrivate.leaf_bytes(),
+        b"checked-artifacts".as_slice()
+    );
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

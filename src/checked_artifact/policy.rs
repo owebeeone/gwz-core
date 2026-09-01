@@ -30,14 +30,26 @@ impl CheckedArtifactPolicy {
         }
     }
 
+    /// The LEGACY leaf writer's private area — not the catalog's Final
+    /// directory. R2-F R1.1, 2026-09-01: these two arms were the second
+    /// consumer of `CatalogPrivateNameV1::Final`, and pinning them to
+    /// `LegacyPrivate` is the split (`GwzM5-8R2F-RelocationPlan.md` §1). The
+    /// leaf bytes are unchanged — `checked-artifacts` — so the legacy area does
+    /// not move, its residue is not orphaned, and its git-status dirt exemption
+    /// and preservation-image blindness stay correct where they already are.
+    ///
+    /// The `GitDirectoryArtifact` arm is symmetry, not behaviour: its only
+    /// production construction site is `entry.rs:182`, reached only from
+    /// `observe_merge_preservation_git_directory`, which never mutates — no
+    /// production write lands under `<git-dir>/gwz/` through this policy
+    /// ([P3-7]).
     pub(super) fn private_parent(&self) -> PathBuf {
         match self {
             Self::WorkspaceArtifact { .. } => {
-                CatalogPrivateNameV1::Final.relative_path(CatalogPrivateRootV1::Workspace)
+                CatalogPrivateNameV1::LegacyPrivate.relative_path(CatalogPrivateRootV1::Workspace)
             }
-            Self::GitDirectoryArtifact { .. } => {
-                CatalogPrivateNameV1::Final.relative_path(CatalogPrivateRootV1::GitDirectory)
-            }
+            Self::GitDirectoryArtifact { .. } => CatalogPrivateNameV1::LegacyPrivate
+                .relative_path(CatalogPrivateRootV1::GitDirectory),
         }
     }
 }

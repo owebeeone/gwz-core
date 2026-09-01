@@ -6,6 +6,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const PREIMAGE_FRAME: &[u8] = b"gwz.merge-preservation-preimage/v1\0";
 pub(super) const CHECKED_ARTIFACT_PRIVATE_PATH: &str = ".gwz/checked-artifacts";
+/// The catalog's private area, alongside — not instead of — the legacy writer's
+/// (R2-F R1.1, 2026-09-01; `GwzM5-8R2F-RelocationPlan.md` §1). Its exemption
+/// ground is its OWN, not the legacy path's: the catalog directory is
+/// exact-managed product state the user never authored, whose interior grammar
+/// (`provider/interior.rs::exact_row`) admits only the ten infrastructure slot
+/// names and the catalog's own action rows — exact-managed either way. The
+/// legacy path's ground — a Windows durability anchor retained for
+/// the life of the repository — does NOT transfer ([RC-P3-3]): `prepare_private`
+/// has exactly one production caller, `residue.rs:102` inside the LEGACY
+/// writer's `open_private`, so this directory structurally cannot acquire an
+/// anchor.
+pub(super) const CATALOG_PRIVATE_PATH: &str = ".gwz/catalog-final";
 
 #[derive(Default, Eq, PartialEq)]
 struct ImageEntry {
@@ -222,7 +234,8 @@ fn apply_overlay(
 }
 
 fn raw_excluded_paths(paths: &[String]) -> ModelResult<Vec<Vec<u8>>> {
-    std::iter::once(CHECKED_ARTIFACT_PRIVATE_PATH)
+    [CHECKED_ARTIFACT_PRIVATE_PATH, CATALOG_PRIVATE_PATH]
+        .into_iter()
         .chain(paths.iter().map(String::as_str))
         .map(|path| {
             let mut raw = preservation_root::files::path_to_raw(Path::new(path))?;

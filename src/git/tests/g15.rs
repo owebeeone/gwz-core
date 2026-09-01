@@ -469,6 +469,17 @@ fn complete_checkout_excludes_only_the_checked_artifact_private_tree() {
         &[git2::Oid::from_str(&head).unwrap()],
     )
     .unwrap();
+    // R2-F R1.1, 2026-09-01: after the split there are TWO blind private
+    // trees, each on its own ground, and `.gwz` itself is still NOT blind —
+    // that is what `.gwz/sibling` proves below.
+    let head = commit_file(
+        &repo,
+        ".gwz/catalog-final/catalog-format",
+        "catalog baseline\n",
+        "catalog infrastructure state",
+        &[git2::Oid::from_str(&head).unwrap()],
+    )
+    .unwrap();
     let head = commit_file(
         &repo,
         ".gwz/sibling",
@@ -483,6 +494,11 @@ fn complete_checkout_excludes_only_the_checked_artifact_private_tree() {
         "private live residue\n",
     )
     .unwrap();
+    fs::write(
+        repo.join(".gwz/catalog-final/catalog-format"),
+        "catalog live drift\n",
+    )
+    .unwrap();
     assert!(
         backend
             .checkout_matches_commit_except(&repo, &head, &[])
@@ -492,6 +508,11 @@ fn complete_checkout_excludes_only_the_checked_artifact_private_tree() {
     fs::write(
         repo.join(".gwz/checked-artifacts/protocol"),
         "private baseline\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join(".gwz/catalog-final/catalog-format"),
+        "catalog baseline\n",
     )
     .unwrap();
     fs::write(repo.join(".gwz/sibling"), "sibling drift\n").unwrap();

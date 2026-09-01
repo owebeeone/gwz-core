@@ -49,7 +49,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
-    "git/gitbackend/preservation_image.rs": "b1f193279069fd84492c423ccead5ac051415550c0024b01d4c75f4e51c93981",
+    "git/gitbackend/preservation_image.rs": "b45057e105a74d50c5163886d3346e9ea859464971c4cd03fc49392c5b67bac5",
     "workspace_ops/merge/preserve/artifacts.rs": "a4e9f7055c3d8aeacd494c08629223dbb15fea0a2e271303b0c27f11833be696",
     "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
     "workspace_ops/merge/preserve/plan.rs": "3730179e156151c4a853752ec769712d3ae81bd21e7729b892ab4cb14474ff89",
@@ -183,10 +183,10 @@ APPROVED_RUST_PATH_EDGES = {
 # test assertion only -- no production semantics move; the other six digests
 # were recomputed in the same pass and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
-    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "1a13b93320660755f4e53190288d08c1b6d92bc6ecb8ec7a1719de48123f1a0e",
+    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "5c65d5a248ec5b03812db5cfe2874943a4d6b4f0df5f0ad01bfd26f4f38e2b24",
-    "checked_artifact/catalog.rs": "cc845e20eae62f601e6c730799e77b69ba184324e7dfd58b4791dd139f133708",
+    "checked_artifact/capability/pre_catalog.rs": "d92367426106ac251497432d511480fa6f9c3fc662f8d88ba462bb9f2db8d045",
+    "checked_artifact/catalog.rs": "05918c3672d93a056e396b7db80ef6de29a69ef9ebd40ea0ede5e1ee6a3ee670",
     "checked_artifact/platform.rs": "5405b6921185253905f97b85865d39e9025d05c333888892be44b769efbab366",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "74a416a623ad421b1646e8692d6b449d76cc754045ff43348c5e897c39eae96c",

@@ -206,7 +206,7 @@ impl Fixture {
     }
 
     fn private_catalog(&self) -> PathBuf {
-        self.root.join(".gwz/checked-artifacts")
+        self.root.join(".gwz/catalog-final")
     }
 }
 
@@ -429,7 +429,7 @@ fn symlinked_workspace_parent_rejects_before_catalog_bootstrap() {
     let (result, called) = run_workspace(&fixture.root, FakePlatform::sensitive(), None);
     assert!(result.is_err());
     assert!(!called.load(Ordering::SeqCst));
-    assert!(!outside.join("checked-artifacts").exists());
+    assert!(!outside.join("catalog-final").exists());
 }
 
 #[test]

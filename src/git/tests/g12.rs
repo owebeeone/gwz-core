@@ -827,16 +827,26 @@ fn checked_rollback_tolerates_checked_artifact_private_residue() {
     fs::create_dir_all(&private).unwrap();
     let anchor = private.join(".ca1-durability-anchor-deadbeefdeadbeefdeadbeefdeadbeef");
     fs::write(&anchor, b"GWZ-CHECKED-ARTIFACT-DURABILITY-ANCHOR-V1\n").unwrap();
+    // R2-F R1.1, 2026-09-01: the split gives the catalog its own directory, and
+    // it is exempt on its own ground — exact-managed catalog state the user
+    // never authored (`preservation_image.rs::CATALOG_PRIVATE_PATH`). Both
+    // paths must be covered, and the legacy path must STAY covered: the writer
+    // that fills it is still live until E4.7.
+    let catalog = repo.join(".gwz/catalog-final");
+    fs::create_dir_all(&catalog).unwrap();
+    let format = catalog.join("catalog-format");
+    fs::write(&format, b"GWZ-CATALOG-FORMAT-V1\n").unwrap();
     let result = backend
         .set_branch_target_checked(&repo, "main", &merged, &before)
         .unwrap();
     assert!(result.updated);
     assert_eq!(backend.head(&repo).unwrap().commit, Some(before.clone()));
-    // The rollback must neither remove nor rewrite the anchor.
+    // The rollback must neither remove nor rewrite either private area.
     assert_eq!(
         fs::read(&anchor).unwrap(),
         b"GWZ-CHECKED-ARTIFACT-DURABILITY-ANCHOR-V1\n"
     );
+    assert_eq!(fs::read(&format).unwrap(), b"GWZ-CATALOG-FORMAT-V1\n");
 }
 
 /// Seed a rollback fixture whose rewrite set crosses an attribute-covered

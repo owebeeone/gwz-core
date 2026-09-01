@@ -277,6 +277,31 @@ def _fault_count(darwin: str, linux: str) -> str:
         no cfg gate and walks a source tree checked out on every
         platform), FIRST-DISPATCH-EXPECTED at the landing dispatch. A
         measured number wins.
+
+    R2-F R1.1, the relocation split (2026-09-01,
+    `GwzM5-8R2F-RelocationPlan.md` §3), landing sequentially after R1.2,
+    moves the checked_artifact:: partition and ONLY it, by four rows,
+    none carrying a cfg gate: the decisive drive-after-bootstrap row and
+    the two bootstrap-over-a-resident-legacy-directory rows (workspace
+    and git-directory roots) in `catalog::bootstrap::tests`, plus the
+    per-persisted-field digest-movement row in
+    `interface_tests::contracts`. The lib remainder is untouched by
+    construction: R1.1 edits three existing `src/git/tests/**` bodies
+    (g12, g15, stash) to cover the catalog's new path alongside the
+    legacy one and ADDS no test there, and the markers count `N passed`.
+
+      darwin 448 -> 452: MEASURED on the reconciled landing tree
+        (`cargo test --lib -p gwz-core checked_artifact::`, 452 passed,
+        2026-09-01), with the lib remainder re-measured unchanged at 1097
+        passed + 1 ignored and v1_lifecycle:: at 256 in the same session.
+      linux  458 -> 462: DERIVED (+4 over R1.2's derived 458, itself +1
+        over the workflow-measured 457; all five deltas cfg-independent),
+        *not* measured, and therefore FIRST-DISPATCH-EXPECTED at this
+        package's named Windows/three-platform landing dispatch. A
+        measured number wins.
+      lib remainder 1097 / 1098: UNMOVED. darwin 1097 re-MEASURED on this
+        tree; linux 1098 keeps its existing FIRST-DISPATCH-EXPECTED status
+        from the ahead-only block above, unchanged by R1.1.
     """
     if sys.platform == "darwin":
         return darwin
@@ -311,7 +336,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # first Windows compile of that code. Marked here beside the linux
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("448 passed", "458 passed")),
+         lib("checked_artifact::"), _fault_count("452 passed", "462 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),

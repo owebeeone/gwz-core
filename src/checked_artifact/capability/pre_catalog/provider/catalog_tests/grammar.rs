@@ -14,7 +14,7 @@ fn physical_parent_enumeration_rejects_maximum_plus_one_entries() {
     }
 
     assert!(observe(&fixture.root).is_err());
-    assert!(!fixture.private_parent().join("checked-artifacts").exists());
+    assert!(!fixture.private_parent().join("catalog-final").exists());
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn physical_case_fold_parent_rejects_non_ascii_equivalent_fixed_and_scratch_name
     let fixed = Fixture::new();
     let fixed_alias = "checked-artifact\u{017f}";
     fs::write(fixed.private_parent().join(fixed_alias), b"fixed-alias\n").unwrap();
-    if fixed.private_parent().join("checked-artifacts").exists() {
+    if fixed.private_parent().join("catalog-final").exists() {
         assert!(observe(&fixed.root).is_err());
         assert_eq!(
             fs::read(fixed.private_parent().join(fixed_alias)).unwrap(),

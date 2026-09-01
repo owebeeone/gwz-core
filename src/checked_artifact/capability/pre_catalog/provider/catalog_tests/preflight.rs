@@ -125,7 +125,7 @@ fn exact_active_record_is_the_recovery_attempt_source() {
 fn exact_retired_record_is_the_completed_reopen_attempt_source() {
     let fixture = Fixture::new();
     let record = fresh_record(&fixture, 12);
-    let final_directory = fixture.private_parent().join("checked-artifacts");
+    let final_directory = fixture.private_parent().join("catalog-final");
     fs::create_dir(&final_directory).unwrap();
     fs::write(
         final_directory.join(InfrastructureSlotV1::CatalogBootstrapRetired.name()),

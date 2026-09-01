@@ -106,12 +106,15 @@ pub(crate) fn verify_merge_result(
 }
 
 /// Checked-mutation cleanliness: dirty state outside the checked-artifact
-/// private area. The private area (`.gwz/checked-artifacts`) is permanent
-/// product infrastructure — on Windows it retains a durability anchor for the
-/// life of the repository — so checked rollback/recovery preflights and
-/// post-verifications must not classify its untracked residue as user work.
-/// Any staged, unstaged, or unresolved entry (anywhere, including the private
-/// area) and any untracked entry outside the private area remain dirt.
+/// private areas. The legacy private area (`.gwz/checked-artifacts`) is
+/// permanent product infrastructure — on Windows it retains a durability
+/// anchor for the life of the repository — and the catalog's
+/// (`.gwz/catalog-final`) is exact-managed product state; the two grounds are
+/// stated at `checked_artifact_private_status_path` below. Checked
+/// rollback/recovery preflights and post-verifications must not classify
+/// their untracked residue as user work. Any staged, unstaged, or unresolved
+/// entry (anywhere, including the private areas) and any untracked entry
+/// outside the private areas remain dirt.
 pub(crate) fn status_dirty_outside_checked_artifact_private(status: &GitStatus) -> bool {
     // `files` omits paths git2 cannot report as UTF-8; private-area names are
     // ASCII by construction, so every private untracked entry is counted and
@@ -129,9 +132,22 @@ pub(crate) fn status_dirty_outside_checked_artifact_private(status: &GitStatus) 
         || status.untracked > private_untracked
 }
 
+/// Two exempt private areas, each under its own ground (R2-F R1.1,
+/// 2026-09-01). The legacy writer's is exempt for the reason stated above — a
+/// Windows durability anchor held for the life of the repository. The catalog's
+/// (`CATALOG_PRIVATE_PATH`) is exempt on different footing, stated at its
+/// declaration: exact-managed catalog state the user never authored, which can
+/// never hold an anchor. Neither ground transfers to the other ([RC-P3-3]).
 fn checked_artifact_private_status_path(path: &str) -> bool {
-    path.strip_prefix(super::preservation_image::CHECKED_ARTIFACT_PRIVATE_PATH)
-        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+    [
+        super::preservation_image::CHECKED_ARTIFACT_PRIVATE_PATH,
+        super::preservation_image::CATALOG_PRIVATE_PATH,
+    ]
+    .into_iter()
+    .any(|private| {
+        path.strip_prefix(private)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+    })
 }
 
 /// Create `branch` at `oid` when missing. If it exists, require it already points

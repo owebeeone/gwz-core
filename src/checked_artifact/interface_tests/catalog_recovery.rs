@@ -232,12 +232,18 @@ fn one_catalog_name_owner_drives_record_collision_and_policy_paths() {
             .collect::<Vec<_>>()
     );
 
+    // R2-F R1.1, 2026-09-01: the legacy writer routes through `LegacyPrivate`,
+    // never `Final` — that pinning IS the split (plan §1).
     assert_eq!(
         CheckedArtifactPolicy::workspace(Path::new(".")).private_parent(),
-        CatalogPrivateNameV1::Final.relative_path(CatalogPrivateRootV1::Workspace)
+        CatalogPrivateNameV1::LegacyPrivate.relative_path(CatalogPrivateRootV1::Workspace)
     );
     assert_eq!(
         CheckedArtifactPolicy::git_directory(Path::new(".")).private_parent(),
-        CatalogPrivateNameV1::Final.relative_path(CatalogPrivateRootV1::GitDirectory)
+        CatalogPrivateNameV1::LegacyPrivate.relative_path(CatalogPrivateRootV1::GitDirectory)
+    );
+    assert_ne!(
+        CheckedArtifactPolicy::workspace(Path::new(".")).private_parent(),
+        CatalogPrivateNameV1::Final.relative_path(CatalogPrivateRootV1::Workspace)
     );
 }
