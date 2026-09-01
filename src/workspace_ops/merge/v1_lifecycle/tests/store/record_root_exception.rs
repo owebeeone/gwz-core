@@ -72,7 +72,7 @@ fn body<'a>(source: &'a str, signature: &str) -> &'a str {
 }
 
 /// Every production source under `src/`, as (path, comment-stripped text), by
-/// `production_rust_files` (`check_checked_artifact_boundaries.py:974-981`)
+/// `production_rust_files` (`check_checked_artifact_boundaries.py:982-989`)
 /// extended with the `_tests.rs` stem it misses.
 fn production_sources() -> Vec<(String, String)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
