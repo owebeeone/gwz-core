@@ -379,6 +379,13 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn managed_provider_ins
 /// `ManagedParentBootstrap` provider drives. This door lets Step 2.3's matrix
 /// drive the two real edges against a managed parent placed beside the catalog,
 /// and it is the only place in this owner that opens an ambient path.
+///
+/// *[E4.2 disposition, 2026-09-01, §11.3 item 2(a): SURVIVES. E4.2 gave the
+/// managed-parent provider its production caller, and that caller does supply a
+/// real retained managed parent — but through `retain_managed_prefix`'s depth-d
+/// composition, never this ONE-COMPONENT enclosure shape. The three
+/// `namespace/tests_managed.rs` callers are Step 2.3's only route to it, so
+/// retiring the door would delete coverage rather than duplication.]*
 #[cfg(test)]
 pub(in crate::checked_artifact) fn retain_managed_parent_at_for_test(
     enclosing: &std::path::Path,

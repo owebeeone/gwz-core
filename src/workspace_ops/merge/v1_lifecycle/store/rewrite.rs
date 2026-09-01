@@ -26,12 +26,20 @@ pub(super) fn load_open(root: &Path, merge_id: &str) -> ModelResult<StoredV1Reco
 /// A1's writer floor needs a creation owner: `commit` rewrites a record that
 /// already exists (it requires a lease-covered base digest), and before the
 /// activation nothing in this tree could bring a v1 record into being. This
-/// is that owner, in `commit`'s own staged/fsync/rename/verify shape, so a
-/// crash leaves either no record or one complete valid v1 record.
+/// is that owner.
 ///
-/// `create_new` on the staged file plus the pre-flight existence check keeps
-/// the store's single-open-record invariant: a second concurrent start under
-/// the same workspace mutation lease cannot publish a second record.
+/// **R2-E Step E4.2 — the converted creation path (O13's substantive half,
+/// ConsumerCheckpoint §10 row `:280`).** The publication is a CHECKED ARTIFACT
+/// ACTION now, not this module's own raw `durable_fs` staged/rename/fsync:
+/// `entry::create_merge_store_record` replaces an expected-`Missing` leaf,
+/// staging, publishing and flushing the managed parent inside the boundary. So
+/// this path no longer creates its parent either — `create_temporary`'s
+/// `create_dir_all` was the raw when-missing bootstrap of `.gwz/merge`, and row
+/// `:273` gives that to the provider, reached through `acquire_for_merge_start`
+/// BEFORE this call; an unbootstrapped parent is refused, not papered over. The
+/// single-open-record invariant survives: the pre-flight existence check stays
+/// and the checked replacement publishes no-replace onto an absent leaf.
+/// `commit`'s raw writers are untouched — E4.3's half of O13.
 pub(super) fn create_open(
     lease: &V1MutationLease,
     root: &Path,
@@ -39,8 +47,8 @@ pub(super) fn create_open(
 ) -> ModelResult<StoredV1Record> {
     validate_merge_id(&record.merge_id)?;
     let root = root.canonicalize().map_err(io_error)?;
-    let directory = root.join(".gwz/merge");
-    let path = directory.join(format!("{}.yaml", record.merge_id));
+    let relative = PathBuf::from(".gwz/merge").join(format!("{}.yaml", record.merge_id));
+    let path = root.join(&relative);
     if path_exists(&path)? {
         return Err(recovery(format!(
             "merge record '{}' already exists",
@@ -52,30 +60,7 @@ pub(super) fn create_open(
     let encoded = serde_yaml::to_string(&raw)
         .map(String::into_bytes)
         .map_err(encode_error)?;
-    let (temporary, mut file) = create_temporary(&path)?;
-    let staged_write = file.write_all(&encoded).and_then(|()| file.sync_all());
-    drop(file);
-    if let Err(error) = staged_write {
-        let _ = fs::remove_file(&temporary);
-        return Err(io_error(error));
-    }
-    if let Err(error) = read_regular(&temporary).and_then(|bytes| {
-        if bytes == encoded {
-            Ok(())
-        } else {
-            Err(recovery(
-                "checked v1 temporary bytes changed after serialization",
-            ))
-        }
-    }) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
-    if let Err(error) = rename_durable(&temporary, &path, false) {
-        let _ = fs::remove_file(&temporary);
-        return Err(io_error(error));
-    }
-    sync_dir(&directory).map_err(io_error)?;
+    crate::checked_artifact::entry::create_merge_store_record(&root, &relative, &encoded)?;
 
     let published = StoredV1Record::from_open_bytes(&root, &path, &read_regular(&path)?)?;
     if published.record() != record {

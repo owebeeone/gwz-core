@@ -110,6 +110,50 @@ pub(in crate::checked_artifact) fn schedule_checked_action(
     }
 }
 
+/// R2-E Step E4.2 — the first merge record's parent half, admitted.
+///
+/// The admission session of ConsumerCheckpoint §10 row `:273`: preflight the
+/// sealed merge-start action against durable state, schedule it, admit it. It
+/// returns `None` on a proof-only plan, which is precisely the row's "when
+/// missing" qualifier — both prefixes already fully resident, nothing to create.
+/// The action is rebuilt from `workspace_id` rather than carried, so execution
+/// re-derives the identical sealed request instead of trusting a handed one.
+pub(in crate::checked_artifact) fn admit_merge_start_managed_parents(
+    workspace_id: &str,
+    catalog: OpaqueRetainedCatalogV1<'_>,
+) -> Result<Option<AdmittedCheckedActionV1>, CheckedFsError> {
+    let action = CheckedManagedActionV1::for_merge_start(workspace_id)?;
+    let plan = {
+        let provider = RetainedManagedParentProviderV1::from_retained_catalog(&catalog)?;
+        ManagedParentBootstrapOwnerV1::new(&provider).preflight_checked(&action)?
+    };
+    match schedule_checked_action(action.checked(), Some(&plan))? {
+        CheckedExecutionPlanV1::ProofOnly => Ok(None),
+        CheckedExecutionPlanV1::Scheduled(scheduled) => scheduled.admit(catalog).map(Some),
+    }
+}
+
+/// The execution session of the same row: install the missing prefixes, then
+/// re-prove each through its own facade before the caller may write.
+///
+/// **The re-proof is not decoration.** E7.2's two scope clauses say a settled
+/// barrier ordinal does not imply ordered parent dirents and a converged restart
+/// does not imply a flush, so the row's durability rests on the provider's own
+/// install-and-reobserve — each generation made durable before the next, then a
+/// reproof of the whole declared path — never on this caller's observation.
+pub(in crate::checked_artifact) fn execute_merge_start_managed_parents(
+    workspace_id: &str,
+    admitted: &AdmittedCheckedActionV1,
+    catalog: &OpaqueRetainedCatalogV1<'_>,
+) -> Result<Vec<ManagedParentPurpose>, CheckedFsError> {
+    let action = CheckedManagedActionV1::for_merge_start(workspace_id)?;
+    admitted
+        .bootstrap_managed_parents(catalog, &action)?
+        .iter()
+        .map(|facade| facade.revalidate(catalog).map(|proved| proved.purpose()))
+        .collect()
+}
+
 /// One checked request bound to the reservation it derives, before admission.
 pub(in crate::checked_artifact) struct ScheduledCheckedActionV1 {
     request: CheckedActionRequestV1,

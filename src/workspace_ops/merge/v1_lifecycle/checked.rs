@@ -163,6 +163,25 @@ impl V1MutationLease {
         Ok(lease)
     }
 
+    /// R2-E Step E4.2 — the CREATION lease: activation plus the §10 row `:273`
+    /// bootstrap, in the order that row freezes.
+    ///
+    /// **Both parents durable before record.** They are installed and re-proved
+    /// here, before `create_open` and before any Git work, so a record can only
+    /// ever be published into prefixes made durable first. The bootstrap door
+    /// recovers the catalog itself, so taking this lease activates it; E4.1's
+    /// `acquire_activated` stays the forward SERVICE loop's, creating no parent.
+    /// Two leases: admission consumes the first, execution recovers after it.
+    pub(super) fn acquire_for_merge_start(root: &Path, workspace_id: &str) -> ModelResult<Self> {
+        let lease = Self::acquire(root)?;
+        crate::checked_artifact::entry::bootstrap_merge_start_parents(
+            workspace_id,
+            lease._guard.catalog_mutation_lease(),
+            lease._guard.catalog_mutation_lease(),
+        )?;
+        Ok(lease)
+    }
+
     pub(super) fn covers(&self, location: &OpenRecordLocation) -> bool {
         self.workspace_root == location.root && location.path.starts_with(&self.workspace_root)
     }
@@ -175,6 +194,11 @@ impl V1MutationLease {
     #[cfg(test)]
     pub(super) fn acquire_activated_for_test(root: &Path) -> ModelResult<Self> {
         Self::acquire_activated(root)
+    }
+
+    #[cfg(test)]
+    pub(super) fn acquire_for_merge_start_for_test(root: &Path, id: &str) -> ModelResult<Self> {
+        Self::acquire_for_merge_start(root, id)
     }
 }
 

@@ -7,11 +7,15 @@
 /// no consumer to justify it, which is the pattern this step spent its budget
 /// correcting elsewhere. R2-E's consumer names `coordinator::execution::…`
 /// directly, exactly as `tests_execution.rs` already does.
+///
+/// *[E4.2, 2026-09-01: unimplementable as written — `mod execution;` was
+/// module-private, so `coordinator::execution::…` was nameable only inside
+/// `coordinator`; widened to the subsystem here, not by the rejected re-export.]*
 #[allow(
     dead_code,
-    reason = "Step 3.3 wires the machinery; consumer conversion is R2-E (plan §4 Step 3.3, §5 item 1)"
+    reason = "Step 3.3 wires the machinery; conversion arrives consumer by consumer across E4.2-E4.6"
 )]
-mod execution;
+pub(in crate::checked_artifact) mod execution;
 /// R2-D Phase 4 Step 4.3 (settle item 7): the subtree-wide allow that used to
 /// cover this module moved here, because `identity` is the whole of the
 /// coordinator's remaining frozen surface — `execution` carries its own above

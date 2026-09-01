@@ -9,6 +9,7 @@ use super::super::capability::{
     PrivateControlDomain, SupportedFilesystemProfile, TrackedWorktreeEntry, TrackedWorktreeKind,
 };
 use super::super::catalog_names::CatalogPrivateNameV1;
+use super::super::entry::{CATALOG_LABEL, render_catalog_refusal};
 use super::super::leaf::{
     DurableLeafExpectation, DurableLeafProof, ExpectedLeafContent, LeafOther, LeafProof,
 };
@@ -26,6 +27,7 @@ use super::super::protocol::{
     ActionDirectoryObservationV1, ActionScheduleV1, CleanupAliasSetV1, RecordObservationV1,
     RequestOwnerBindingV1, admit_observed_action,
 };
+use crate::model::ErrorCode;
 
 #[test]
 fn ascii_components_and_component_modes_are_exact() {
@@ -161,6 +163,49 @@ fn only_the_substrate_identity_capability_carries_an_actionable_remedy() {
     }
     assert_eq!(PlatformCapability::DurableObjectIdentity.remedy(), None);
     assert_eq!(PlatformCapability::RuntimeAdvisoryLock.remedy(), None);
+}
+
+/// R2-E E4.1 review [P3-2], carried to E4.2: precondition 1's rendering, driven.
+///
+/// The sentence a user reads on a substrate without persistent file handles was
+/// verified by hand on a real FAT32 volume and by nothing in-suite, the renderer
+/// being inline. Named, every arm takes a direct-constructor row here.
+#[test]
+fn the_catalog_refusal_renderer_carries_the_remedy_into_every_arm() {
+    let identity = PlatformCapability::PersistentFilesystemIdentity;
+    let rows = [
+        // The actionable sentence AND the substrate's own words, together.
+        (
+            CheckedFsError::unsupported(identity, "vfat lacks handles"),
+            ErrorCode::UnsupportedOperation,
+            ["persistent file handles", "--abort", "vfat lacks handles"],
+        ),
+        // A capability with no remedy must not borrow the actionable one.
+        (
+            CheckedFsError::unsupported(PlatformCapability::RuntimeAdvisoryLock, "no flock"),
+            ErrorCode::UnsupportedOperation,
+            ["is unsupported", "no flock", "no flock"],
+        ),
+        (
+            CheckedFsError::io("open catalog root", std::io::Error::other("gone")),
+            ErrorCode::IoError,
+            ["open catalog root", "gone", "gone"],
+        ),
+        (
+            CheckedFsError::ambiguous("catalog root", "identity changed"),
+            ErrorCode::IoError,
+            ["rejected catalog root", "identity changed", "changed"],
+        ),
+    ];
+    for (index, (cause, code, named)) in rows.into_iter().enumerate() {
+        let rendered = render_catalog_refusal(CATALOG_LABEL, cause);
+        assert_eq!(rendered.code, code);
+        assert!(rendered.message.contains(CATALOG_LABEL));
+        assert_eq!(rendered.message.contains("--abort"), index == 0);
+        for term in named {
+            assert!(rendered.message.contains(term), "{}", rendered.message);
+        }
+    }
 }
 
 #[test]

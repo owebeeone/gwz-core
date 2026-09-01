@@ -357,6 +357,34 @@ def _fault_count(darwin: str, linux: str) -> str:
       checked_artifact:: 456 / 466 and v1_lifecycle:: 257: UNMOVED -- the cure
         rewrites existing rows rather than adding any. Both darwin numbers
         re-MEASURED unchanged in the same session.
+
+    R2-E E4.2 -- the first merge record (§10 row `:273`, `MergeStore` and
+    `PreservationBundles` when missing, plus O13's substantive half on the
+    creation path, row `:280`) -- moves TWO partitions, by four rows, none
+    carrying a cfg gate:
+
+      v1_lifecycle:: 257 -> 260, MEASURED on this step's own tree (260 passed,
+        2026-09-01): the three frozen-ordering rows in
+        `v1_lifecycle::tests::checked` -- the creation lease installing both
+        managed parents before any record exists (under the workspace root, not
+        the Git directory), the converted creation path refusing a record whose
+        parent was never bootstrapped, and the faulted publication leaving both
+        parents installed and no record. All three plant only directories and a
+        YAML leaf; the fault row uses `CheckedArtifactFault`, which is
+        census-free and cross-platform. This partition carries no per-OS split,
+        so 260 is the pin on every admitted host -- with E4.1 [P3-7]'s standing
+        requirement of a catalog-admitted filesystem.
+      checked_artifact:: darwin 456 -> 457, MEASURED on this step's own tree
+        (457 passed, 2026-09-01): E4.1 review [P3-2]'s renderer guard in
+        `interface_tests::contracts`, one table-driven row over all four
+        rendered shapes of the now-named `render_catalog_refusal`.
+      checked_artifact:: linux 466 -> 467: DERIVED (+1, cfg-independent -- the
+        row constructs typed errors and reads rendered strings, touching no
+        filesystem and no platform probe), *not* measured, and therefore
+        FIRST-DISPATCH-EXPECTED at this package's landing dispatch. A measured
+        number wins.
+      lib remainder 1099 / 1100: UNMOVED; darwin 1099 + 1 ignored re-MEASURED
+        on this tree in the same session.
     """
     if sys.platform == "darwin":
         return darwin
@@ -372,7 +400,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "fault": ("aggregate fault/restart matrices (TransitionDesign:1469-1475)", [
         ("v1 lifecycle fault and restart matrices",
          lib("workspace_ops::merge::v1_lifecycle::", "--", "--skip", "root_fault_matrix"),
-         "257 passed"),
+         "260 passed"),
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         # LINUX-COUNT-OWED (R2-E E2): the darwin value is measured on this
@@ -391,7 +419,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # first Windows compile of that code. Marked here beside the linux
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("456 passed", "466 passed")),
+         lib("checked_artifact::"), _fault_count("457 passed", "467 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
