@@ -12,8 +12,8 @@
 //! aliased one (`use … as rc; rc(lease)`) all put the literal name in the file,
 //! while a call-site matcher sees only the spellings its prefix rules admit.
 //! Inside the owner's two files the file set says nothing, so call-shaped
-//! occurrences there are pinned separately; a caller aliased inside the
-//! defining file itself stays the one uncovered shape.
+//! occurrences there are pinned separately; a caller aliased inside either
+//! owner file stays the one uncovered shape.
 //!
 //! The root is exhaustive because the entry point is
 //! `pub(in crate::checked_artifact)` (`catalog/bootstrap.rs:233`, re-exported at
@@ -42,6 +42,17 @@ const OWNER_CALL_SHAPED: usize = 3;
 /// The visibility premise that makes the scan root exhaustive.
 const ENTRY_POINT_DECLARATION: &str = "pub(in crate::checked_artifact) fn recover_or_create(";
 
+/// The scan's reading of a source file: `//` comments stripped to end of line.
+/// Shared with the premise assertion below, so a
+/// `// was: pub(in crate::checked_artifact) fn recover_or_create(` remnant
+/// cannot satisfy it after a real widening.
+fn strip_line_comments(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(kept, _)| kept))
+        .collect()
+}
+
 /// `production_rust_files` (`check_checked_artifact_boundaries.py:829-836`),
 /// extended by the `_tests.rs` stem it misses — `catalog_tests.rs`,
 /// `directory_mutation_tests.rs`, `mutation_tests.rs` and `production_tests.rs`
@@ -64,10 +75,7 @@ fn scan(root: &Path, directory: &Path, named: &mut BTreeSet<String>, calls: &mut
             continue;
         }
         let source = std::fs::read_to_string(&path).expect("a production source is readable");
-        let code = source
-            .lines()
-            .map(|line| line.split_once("//").map_or(line, |(kept, _)| kept))
-            .collect::<String>();
+        let code = strip_line_comments(&source);
         if !code.contains("recover_or_create") {
             continue;
         }
@@ -87,9 +95,11 @@ fn the_catalog_owner_gains_its_first_production_caller_only_at_e4_1() {
     scan(&root, &root, &mut named, &mut calls);
 
     assert!(
-        std::fs::read_to_string(root.join("catalog/bootstrap.rs"))
-            .expect("the catalog owner is readable")
-            .contains(ENTRY_POINT_DECLARATION),
+        strip_line_comments(
+            &std::fs::read_to_string(root.join("catalog/bootstrap.rs"))
+                .expect("the catalog owner is readable")
+        )
+        .contains(ENTRY_POINT_DECLARATION),
         "the entry point is no longer declared `{ENTRY_POINT_DECLARATION}`; the root is \
          exhaustive only while it stays `pub(in crate::checked_artifact)`, since a wider one \
          admits callers outside `src/checked_artifact/`, where nothing here looks"
