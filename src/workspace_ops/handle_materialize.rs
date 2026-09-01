@@ -124,6 +124,7 @@ where
     for (member_id, state) in &members {
         next.members.insert(member_id.clone(), state.clone());
     }
+    // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `gwz materialize` is under the mutation guard, so all three writer pairs in this file stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     artifact::write_lock(&root, &next)?;
     sync_workspace_boundary(backend, &root, &manifest, &next)?;
     Ok(crate::CaptureResponse {

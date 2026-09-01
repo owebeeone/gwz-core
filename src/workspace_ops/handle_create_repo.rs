@@ -47,6 +47,7 @@ pub fn handle_create_workspace(
         manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
         members: BTreeMap::new(),
     };
+    // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `gwz repo create`, add-existing and workspace create are all capability-free (E0.2 §5.2), so all four writer pairs in this file stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
     sync_workspace_boundary(&backend, &root, &manifest, &lock)?;
     let bootstrap = ensure_workspace_bootstrap_files(

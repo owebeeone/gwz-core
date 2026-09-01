@@ -230,6 +230,7 @@ fn create_branch<B: GitBackend>(
         for (member_id, observed) in &observed_states {
             next.members.insert(member_id.clone(), observed.clone());
         }
+        // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `gwz branch` is under the mutation guard, so this lock and boundary pair stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
         artifact::write_lock(root, &next)?;
         sync_workspace_boundary(backend, root, &manifest, &next)?;
         locked_member_responses(&manifest, &observed_states)

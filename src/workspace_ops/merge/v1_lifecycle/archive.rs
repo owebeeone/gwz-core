@@ -105,6 +105,10 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
 
 /// Collect only merge-owned backup refs from an immutable archive worklist,
 /// then delete that unchanged archive. Stashes and bundles are never inputs.
+/// [2026-09-02, E4.4-6-B: RE-REASONED. The terminal archive is CARVED
+/// (`GwzM5-8R2E-CapabilityFreeAmendment.md` §3/§5), so this checked family has no
+/// consumer to arrive: the route RE-OWNS to DR-1, conditional on (C), and E4.7
+/// deletes the family or re-reasons this allowance as permanent-pending-DR-1.]
 #[allow(
     dead_code,
     reason = "A1 activation: landed v1 surface the activation's dispatch does not route yet. A1's enumerated package (Safety review §2) routes start/status/resume/abort into the v1 service and reaches the archive PROJECTION through `record_wire::decode_archived`; v1 archive GC keeps its typed open-record refusal, so this family has no production caller until that route lands."
@@ -203,6 +207,7 @@ fn remove_archive(root: &Path, merge_id: &str, expected: &[u8]) -> ModelResult<(
         .as_path()
         .parent()
         .ok_or_else(|| recovery("validated archive path has no parent"))?;
+    // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the DEAD `remove_archive` arm behind the `:108-111` allowance; carved with the rest of the row rather than half-converted (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     fs::remove_file(path.as_path()).map_err(io_error)?;
     sync_dir(done).map_err(io_error)
 }

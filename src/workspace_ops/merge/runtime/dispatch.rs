@@ -436,6 +436,8 @@ fn adapt_before_mutating<B: MergeAuthorityBackend>(
 /// merge — the class the [P1-1] doctrine above rejects. **Only `Resume` asks:**
 /// abort routes to the reverse service and its capability-free lease, so that
 /// route cannot be made unviable here and an abort never creates a catalog.
+/// **Scoped by path** (2026-09-02, CapabilityFreeAmendment §6): an abort that
+/// re-verifies a checked artifact still takes the legacy identity probe there.
 /// **The lock:** a catalog lease is borrowable only from a held one, and the
 /// adapter runs after `drop(start_guard)`; the guard is held across
 /// `upgrade_open_v0`, which takes none of its own, and released before the
@@ -444,8 +446,9 @@ fn adapt_before_mutating<B: MergeAuthorityBackend>(
 ///
 /// **Residual, disclosed (review R4):** the forward service re-proves
 /// activation one layer down, so a catalog lost between the two — a race, not a
-/// capability — refuses after the upgrade. Not a wedge: `gwz merge --abort` is
-/// capability-free and clears it. Driven.
+/// capability — refuses after the upgrade. Not a wedge: `gwz merge --abort`
+/// clears it, and this abort is capability-free BY PATH (§6, 2026-09-02): it
+/// touches no checked artifact. Driven.
 fn forward_lifecycle_viability_window(
     root: &Path,
 ) -> Option<crate::operation::WorkspaceMutatorLock> {

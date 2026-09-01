@@ -3,6 +3,7 @@
 //! R2-C1 deliberately contains no filesystem writer. Physical observation is
 //! supplied by the retained provider, and R2-C2 will consume these decisions.
 
+// [2026-09-02, R2-E E4.4-6-B: the E4.2-E4.6 / "awaiting R2-E consumer conversion" range is STALE — E4.4-E4.6 as chartered do not start (GwzM5-8R2E-CapabilityFreeAmendment.md §7); E4.7 EXPIRES or RE-REASONS each, and this package only dates them.] Class members here: the three `dead_code` allows on `bootstrap`, `classifier` and `enumeration`, and the `unused_imports` allow on the re-export below.
 // R2-D Phase 4 Step 4.3 (settle item 7) narrowed one subtree-wide
 // `allow(dead_code)` in `checked_artifact/mod.rs` down to the three children
 // that still carry a frozen surface. `scratch` needs none: every item it

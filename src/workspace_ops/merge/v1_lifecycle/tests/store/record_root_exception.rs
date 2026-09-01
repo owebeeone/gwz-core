@@ -22,6 +22,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use super::super::{item_body, masked_code};
+
 /// The carved-out path's own source, bound at compile time.
 const REWRITE: &str = include_str!("../../store/rewrite.rs");
 
@@ -41,38 +43,8 @@ const LANDED_DOOR_FILES: [&str; 2] = [
 /// two files) is what catches the blinding that matters.
 const PRODUCTION_FILE_FLOOR: usize = 350;
 
-/// CRLF normalized, `//` stripped to end of line, LINES PRESERVED — unlike
-/// `catalog_activation_pin.rs:63-68`, whose `collect()` joins with nothing.
-fn code(source: &str) -> String {
-    source
-        .replace("\r\n", "\n")
-        .lines()
-        // NAMED RESIDUAL (E4.3-B review [P3-3]): this strip is string-unaware, so a door
-        // on a line whose earlier `//` sits inside a string literal (e.g. "https://…") is
-        // INVISIBLE to the absence half — the strip errs QUIET here, the inverse of the
-        // house pin's loud trade. The real threat (a conversion of `commit`) is caught
-        // independently by P-1's counts, the `v1_lifecycle/mod.rs` tree digest and
-        // `entry.rs`'s byte pin; the pins package's shared scan helper masks string
-        // literals before stripping (the checker's `mask_non_code` idiom).
-        .map(|line| line.split_once("//").map_or(line, |(kept, _)| kept))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// One top-level item's text, from its signature to the first column-zero `}`.
-fn body<'a>(source: &'a str, signature: &str) -> &'a str {
-    let start = source
-        .find(signature)
-        .unwrap_or_else(|| panic!("store/rewrite.rs no longer declares `{signature}`"));
-    let rest = &source[start..];
-    let end = rest
-        .find("\n}\n")
-        .unwrap_or_else(|| panic!("`{signature}` has no column-zero close; scan unbounded"));
-    &rest[..end]
-}
-
 /// Every production source under `src/`, as (path, comment-stripped text), by
-/// `production_rust_files` (`check_checked_artifact_boundaries.py:982-989`)
+/// `production_rust_files` (`check_checked_artifact_boundaries.py:1099-1106`)
 /// extended with the `_tests.rs` stem it misses.
 fn production_sources() -> Vec<(String, String)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -92,7 +64,10 @@ fn production_sources() -> Vec<(String, String)> {
             }
             let relative = path.strip_prefix(&root).expect("a source under the root");
             let text = std::fs::read_to_string(&path).expect("a readable production source");
-            sources.push((relative.to_string_lossy().replace('\\', "/"), code(&text)));
+            sources.push((
+                relative.to_string_lossy().replace('\\', "/"),
+                masked_code(&text),
+            ));
         }
     }
     sources
@@ -103,8 +78,8 @@ fn production_sources() -> Vec<(String, String)> {
 /// (amendment §2's acknowledged latent, §3's P-2).
 #[test]
 fn the_record_root_rewrite_publishes_by_atomic_rename_and_creates_no_parent() {
-    let rewrite = code(REWRITE);
-    let commit = body(&rewrite, "pub(super) fn commit(");
+    let rewrite = masked_code(REWRITE);
+    let commit = item_body(&rewrite, "store/rewrite.rs", "pub(super) fn commit(");
 
     assert!(
         commit.contains("rename_durable(&temporary, path, true)"),
@@ -131,7 +106,8 @@ fn the_record_root_rewrite_publishes_by_atomic_rename_and_creates_no_parent() {
         "the rewrite path's parent-creation surface moved; row `:274`'s clause still binds"
     );
     assert!(
-        body(&rewrite, "fn create_temporary(").contains("fs::create_dir_all(parent)"),
+        item_body(&rewrite, "store/rewrite.rs", "fn create_temporary(")
+            .contains("fs::create_dir_all(parent)"),
         "the one admitted `create_dir_all` — DECLINED as a refusal at E4.3-B because it is \
          structurally undrivable (no fault hook between `read_regular` and `create_temporary`, \
          so a refusal would ship unexercised) — race-only code that `read_regular` at the head of \

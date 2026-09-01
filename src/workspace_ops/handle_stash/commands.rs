@@ -64,6 +64,7 @@ where
         ));
     }
 
+    // CAPABILITY-FREE EXCEPTION, §10 row `:276`: every `stash::write_bundle` here runs under `guarded_workspace_root(StashMutate)` and stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     stash::write_bundle(&root, &bundle)?;
 
     let options = GitStashPushOptions {

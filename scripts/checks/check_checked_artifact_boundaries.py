@@ -45,7 +45,7 @@ PROTECTED_SOURCE_DIGESTS = {
     # value, distinct from the identity VALUE contract that keeps
     # `DurableObjectIdentity`, and it is the one capability carrying an
     # actionable remedy sentence.
-    "checked_artifact/capability.rs": "c1760e95fa91d8f51cb6a2fd7c71be4444d0923cc820d2c353b4d8e9050d8063",
+    "checked_artifact/capability.rs": "da1d946305abda142a55a17b3812e7b4029ae27c4f83bae01341c1194c893f48",
     # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
     # `activate_workspace_catalog`, the first production catalog activation,
     # and the four ENTRY_* inventories below move with it.
@@ -53,9 +53,9 @@ PROTECTED_SOURCE_DIGESTS = {
     # `bootstrap_merge_start_parents` and `create_merge_store_record` join the
     # door above, and [P3-2]'s renderer is extracted to a named `pub(super)` fn
     # so its three arms take an in-suite guard.
-    "checked_artifact/entry.rs": "a454c04d434979a769bba4d89abaac5295ef208db3bab24ede437f38516a3958",
+    "checked_artifact/entry.rs": "2873107fc155d7f36b50f792737d99427bdbdb0ea889be8171f70767120f4453",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
-    "checked_artifact/mod.rs": "48d9261bd994dcf81ca77d3b3195b2e2e1ac6f2231f8c506580ab79571057e7c",
+    "checked_artifact/mod.rs": "c4125e60ad18ee4838d838d697f268cc39ccc51f6d62394f3c793827e54b1c81",
     # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
     # `inspect_family`'s 1 MiB budget now charges `DirEntry::metadata().len()`
     # in the enumeration loop, before any leaf is read, and the post-read
@@ -66,7 +66,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "b45057e105a74d50c5163886d3346e9ea859464971c4cd03fc49392c5b67bac5",
-    "workspace_ops/merge/preserve/artifacts.rs": "a4e9f7055c3d8aeacd494c08629223dbb15fea0a2e271303b0c27f11833be696",
+    "workspace_ops/merge/preserve/artifacts.rs": "c2f97f284c6e9ad241184d8db0bdbb7e8e5d8afe2890b3e08333d8bd212e71d9",
     "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
     "workspace_ops/merge/preserve/plan.rs": "3730179e156151c4a853752ec769712d3ae81bd21e7729b892ab4cb14474ff89",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
@@ -234,10 +234,10 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
     "checked_artifact/capability/pre_catalog.rs": "4b7cef22b64d668f9864ca734a71942d6d2a1e892fc5833259cc6c4e11800eaf",
-    "checked_artifact/catalog.rs": "5c76c6a4d87444684f7e44ab67be496847196491be30b17e3507dcd0f1765329",
+    "checked_artifact/catalog.rs": "e5ff1f3fd014ca52b98802ed4093517b24d4fa9bfe3aa0b4594449480219f16e",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "88e85e3067a38d3a11e044165e6f124bf19dd07d59cd40d3e0a3a82d08aa8627",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "637fbbbb5ef1ca2088b8a46f9ccd59426dfd3d5c6ce60073069fcd14cffd3dfc",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -323,6 +323,9 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
     }
 )
 
+# The authority both exception maps cite for the `:275`-`:279` carve-out (E4.4-6-B).
+CAPABILITY_FREE_EXCEPTION = "the capability-free exception, dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §3"
+
 # O13 raw-writer pin (2026-08-27, R2-E E0 landing; `GwzM5-8R2E-Plan.md` §1.1
 # O13, addendum §7.6.1). ConsumerCheckpoint §10 row `:280` forbids a legacy
 # raw writer on the v1 checked store/root/bundle paths, and its "test-gated
@@ -362,10 +365,21 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
 # general by design: the 2026-09-02 capability-free ruling foresees further
 # `:275`-`:279` carve-outs, one data row each AT THE DATA LAYER — each row carries
 # its own authority and both directions fire naming it; widening the SCAN SET
-# to the non-v1 carved files is the pins package's (amendment §3 (i)-(iii)). The two
+# to the non-v1 carved files is the pins package's, LANDED BELOW as
+# `CAPABILITY_FREE_RAW_WRITER_INVENTORY` (amendment §3 (i)-(iii)). The two
 # ARCHIVE rows keep their retire-on-conversion marker until E4.4 (§6); class
 # scope is `durable_fs` only, a std::fs writer here being backstopped by
 # `PROTECTED_SOURCE_TREE_DIGESTS` and stated as a property by P-2.
+#
+# R2-E E4.4-6-B (2026-09-02) makes the two ARCHIVE rows permanent as well, under
+# `dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md` §3: the terminal archive runs
+# from every terminal disposition on the PLAIN lease, so converting it would put an
+# operation E0.2 §5.2 keeps capability-free onto the durable-identity probe. ALL
+# THREE ROWS ARE NOW PERMANENT-DOCUMENTED and this inventory NEVER EMPTIES -- the
+# plan's ":90 empties across E4.2-E4.4" and ":110 empties for the CONVERTIBLE
+# files" are superseded (§4). "Until E4.4" above is spent: E4.4 as chartered does
+# not start and E4.7 retires none of the three. The archive rows' `std::fs` surface
+# is measured ONCE, by the inventory below.
 V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = {
     "workspace_ops/merge/v1_lifecycle/archive.rs": {"sync_dir": 2},
     "workspace_ops/merge/v1_lifecycle/store/archive.rs": {"rename_noreplace": 2, "sync_dir": 7},
@@ -378,8 +392,11 @@ V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_
 # it SAYS when a row moves, in BOTH directions. Adding a row is an
 # amendment-tier act, not a checker edit; the shape is deliberately general so a
 # follow-on amendment's further §10 carve-outs are one data row each within
-# this v1_lifecycle scan; the wider scan set is that package's.
+# this v1_lifecycle scan; the wider scan set landed as
+# `CAPABILITY_FREE_RAW_WRITER_INVENTORY` below.
 V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS = {
+    "workspace_ops/merge/v1_lifecycle/archive.rs": CAPABILITY_FREE_EXCEPTION,
+    "workspace_ops/merge/v1_lifecycle/store/archive.rs": CAPABILITY_FREE_EXCEPTION,
     "workspace_ops/merge/v1_lifecycle/store/rewrite.rs": "the record-root exception, dev-docs/GwzM5-8R2E-RecordRootAmendment.md §2/§3",
 }
 for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES.keys()):
@@ -389,6 +406,102 @@ for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCL
         "an exception must sit on a row of V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES"
     )
 
+# THE CAPABILITY-FREE RAW WRITER INVENTORY (R2-E E4.4-6-B, 2026-09-02), under
+# `dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md` §3 and the operator ruling of
+# the same date. E0.2 §5.2's capability-free list STANDS, so every §10 row
+# `:275`-`:279` durable writer reached from `gwz repo create`, `init-from-sources`,
+# an ordinary merge, `gwz commit`, either abort form, GC, or an operation under
+# the mutation guard (read BROADLY: commit, stage, materialize, branch, repo
+# lifecycle, pull, stash) KEEPS its raw publication primitive PERMANENTLY --
+# converting one would place its operation on the durable-identity probe, which
+# the list forbids. A DATED EXCEPTION, not unfinished work: no E4 step owes the
+# conversion and E4.7 does not retire it.
+#
+# Mechanism: O13's above -- count per primitive per file on masked source,
+# fail-closed both ways -- with the amendment's three generalizations. (i) An
+# EXPLICIT carved-file list under `src/` replaces the `v1_lifecycle/` scan root:
+# these writers live across the whole crate. (ii) The `\bdurable_fs\b` population
+# gate is DROPPED; thirteen of these files never name it. (iii) The vocabulary
+# widens to all THREE primitive classes of §1, every spelling countable by the
+# bare-identifier idiom (`\bcreate_dir_all\b` matches `fs::create_dir_all`); an
+# inventory counting only `durable_fs` names would read ZERO at most carved files.
+# Counts are PIN REFERENCES, not call sites: `use` lines and definitions count, as
+# O13's do. ONE departure from O13, load bearing: `#[cfg(test)]` modules are
+# dropped first, so the pin measures the PRODUCTION surface -- without it
+# `stash/mod.rs` would pin eleven references of which eight are its own tests'.
+#
+# MEASURED EXACTLY ONCE. Two rows are also O13 rows; O13 stays, being a SCAN --
+# fail-closed against a `durable_fs` file it has never seen under `v1_lifecycle/`,
+# which a list cannot be -- so for a file O13 already holds this map measures only
+# the classes O13 does not name, and the assertion below refuses any overlap.
+# `store/rewrite.rs` is NOT here: the record root is RR's carve, pinned by O13 and
+# `tests/store/record_root_exception.rs`.
+#
+# Digest coverage, MEASURED with `source_tree_digest`'s own semantics (a `mod.rs`
+# tree root digests its WHOLE parent subtree), because the amendment's §3 and Code
+# axis [P2-5] state it wrongly: THREE of the nineteen are pinned -- flat for
+# `preserve/artifacts.rs`, and by the `v1_lifecycle/mod.rs` TREE root for both v1
+# archive files, a root that also covers `store/rewrite.rs`, so RR §3 P-1's
+# backstop and the `:366` note above are TRUE. Sixteen are unpinned. The CHOICE
+# stands regardless: a digest only says "this tree changed, go look" and is
+# refreshed on every legitimate edit, so the classes go into THIS map, which
+# states the property and survives every refresh. Two corrections to the
+# amendment's §1 table, measured here: `store/archive.rs` has THREE raw `std::fs`
+# mutations, not "four"; and `handle_stash/commands.rs` is a second carved `:276`
+# home it omits, under the StashMutate guard.
+CAPABILITY_FREE_WRITER_TOKENS = (
+    "rename_noreplace", "rename_durable", "sync_dir",  # `durable_fs`
+    "create_dir_all", "remove_file",  # `std::fs`-direct
+    "write_atomic", "write_marker", "write_lock", "write_manifest_and_lock",  # the
+    "write_bundle", "publish_workspace_exclude_candidate",  # `write_atomic` family
+    "sync_workspace_boundary", "ensure_workspace_exclude",
+)
+
+# Per carved file: its §10 row and reached operation, then the primitives and their
+# pin-reference counts. Every row's authority is `CAPABILITY_FREE_EXCEPTION`. The
+# key-set DIGEST below is the third direction -- a row added, deleted or swapped --
+# for all nineteen. (A crate-wide namer closure over the leaf-publication spellings
+# would also catch a new raw writer in a file NOT listed here: drafted, dropped for
+# the line budget; allowlist `artifact/mod.rs`, `finalization/execute.rs`, `mod.rs`.)
+CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
+    "stash/mod.rs": (":276 the `gwz stash` bundle writer, mutation guard", {"write_atomic": 2, "write_bundle": 1}),
+    "workspace_ops/handle_branch.rs": (":278/:279 `gwz branch`, BranchMutate guard", {"write_lock": 1, "sync_workspace_boundary": 1}),
+    "workspace_ops/handle_commit.rs": (":277/:278/:279 `gwz commit`, mutation guard", {"create_dir_all": 1, "write_marker": 1, "write_lock": 1, "sync_workspace_boundary": 2}),
+    "workspace_ops/handle_create_repo.rs": (":278/:279 workspace create (bare lock), repo create and add-existing (RepoMutate guard)", {"write_manifest_and_lock": 4, "sync_workspace_boundary": 4}),
+    "workspace_ops/handle_init_from_sources.rs": (":278/:279 `init-from-sources`, bare lock", {"write_manifest_and_lock": 1, "sync_workspace_boundary": 1}),
+    "workspace_ops/handle_materialize.rs": (":278/:279 `gwz materialize`, mutation guard", {"write_lock": 3, "sync_workspace_boundary": 3}),
+    "workspace_ops/handle_repo_lifecycle.rs": (":278/:279 repo lifecycle, RepoMutate guard", {"write_manifest_and_lock": 3, "sync_workspace_boundary": 3}),
+    "workspace_ops/handle_stage.rs": (":279 `gwz stage`, mutation guard", {"ensure_workspace_exclude": 1}),
+    "workspace_ops/handle_stash/commands.rs": (":276 `gwz stash`'s bundle callers, StashMutate guard", {"remove_file": 1, "write_bundle": 6}),
+    "workspace_ops/merge/abort/evidence.rs": (":277/:278/:279 v0 abort, the `rollback_evidence` ARM", {"remove_file": 1, "write_atomic": 1, "publish_workspace_exclude_candidate": 1}),
+    "workspace_ops/merge/abort/preflight.rs": (":278 the abort preflight's `restore_baseline` ARM", {"write_atomic": 2}),
+    "workspace_ops/merge/finalize.rs": (":277/:278/:279 ordinary v0 merge publication", {"write_atomic": 2, "publish_workspace_exclude_candidate": 2}),
+    "workspace_ops/merge/preserve/artifacts.rs": (":276/:277/:279 v0 `--abort --preserve`", {"remove_file": 1, "write_atomic": 3, "write_bundle": 1, "publish_workspace_exclude_candidate": 1}),
+    "workspace_ops/merge/store/gc.rs": (":275 the LIVE GC deletion writer, WorkspaceMutatorLock", {"sync_dir": 1, "remove_file": 1}),
+    "workspace_ops/merge/store/retention.rs": (":275 GC retention enforcement, the same lock", {"sync_dir": 1, "remove_file": 1}),
+    "workspace_ops/merge/v1_lifecycle/archive.rs": (":275 the DEAD `remove_archive` arm behind the `:108-111` allowance", {"remove_file": 1}),
+    "workspace_ops/merge/v1_lifecycle/store/archive.rs": (":275 terminal archive, every terminal disposition on the PLAIN lease", {"create_dir_all": 1, "remove_file": 2}),
+    "workspace_ops/pull_head_member_preflight.rs": (":278/:279 `gwz pull`, Pull guard", {"write_lock": 3, "sync_workspace_boundary": 2}),
+    "workspace_ops/sync_workspace_boundary.rs": (":279 the `.git/info/exclude` family itself", {"write_atomic": 2, "publish_workspace_exclude_candidate": 1, "sync_workspace_boundary": 1, "ensure_workspace_exclude": 2}),
+}
+if hashlib.sha256(
+    "\n".join(sorted(CAPABILITY_FREE_RAW_WRITER_INVENTORY)).encode("utf-8")
+).hexdigest() != "2e5bd359ac71a0a2234e867dbc6be32d852921b2d01a666cb1268b2aa8c86315":
+    raise SystemExit(
+        "check_checked_artifact_boundaries: the capability-free carved SET moved -- a row "
+        "added, DELETED or swapped. It is the amendment's, not a checker edit: revise "
+        "GwzM5-8R2E-CapabilityFreeAmendment.md §3"
+    )
+for _row, (_, _counts) in sorted(CAPABILITY_FREE_RAW_WRITER_INVENTORY.items()):
+    if _row in V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES and set(_counts) & set(
+        V1_LIFECYCLE_RAW_DURABLE_WRITERS
+    ):
+        raise SystemExit(
+            f"check_checked_artifact_boundaries: carved site {_row!r} would be measured "
+            "TWICE -- O13 above already counts that file's durable_fs class"
+        )
+
+
 ENTRY_REFERENCES = {
     # R2-E Phase E4 Step E4.1 (O2): the first production catalog activation.
     # `recover_or_create` is `pub(in crate::checked_artifact)`, so its caller
@@ -397,6 +510,10 @@ ENTRY_REFERENCES = {
     # `WorkspaceMutatorLock` across the whole operation (E0.2 §5.2). A SECOND
     # caller is an E4.2-E4.6 conversion and moves this row deliberately, exactly
     # as `interface_tests/catalog_activation_pin.rs` moves with it.
+    # [2026-09-02, R2-E E4.4-6-B: the "E4.2-E4.6" RANGE is STALE -- E4.4-E4.6 as
+    # chartered do not start (GwzM5-8R2E-CapabilityFreeAmendment.md §7); the movers
+    # left are E4.5/6-B's three `finalization/execute.rs` arms. E4.7 expires or
+    # re-reasons this allowance class, not this package, which only dates it.]
     #
     # E4.1 review [P1-1] cure adds the SECOND caller: the A1 adapter, proving
     # the destination lifecycle viable before its durable v0->v1 upgrade.
@@ -989,6 +1106,31 @@ def production_rust_files(source: Path) -> list[Path]:
     )
 
 
+TEST_MODULE = re.compile(
+    r"(?m)^#\[cfg\(test\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{"
+)
+
+
+def without_test_modules(masked: str) -> str:
+    """Drop each `#[cfg(test)] mod ... { ... }` body from ALREADY-MASKED source.
+
+    Brace counting is exact only after `mask_non_code`, which blanks string and
+    comment contents, so no brace inside either can unbalance the walk.
+    """
+    kept, index = [], 0
+    for match in TEST_MODULE.finditer(masked):
+        if match.start() < index:
+            continue
+        kept.append(masked[index : match.start()])
+        depth, cursor = 1, match.end()
+        while depth and cursor < len(masked):
+            depth += (masked[cursor] == "{") - (masked[cursor] == "}")
+            cursor += 1
+        index = cursor
+    kept.append(masked[index:])
+    return "".join(kept)
+
+
 def mask_non_code(text: str) -> str:
     """Replace comments and string/character contents while retaining newlines."""
     output = list(text)
@@ -1280,6 +1422,38 @@ def check(source: Path) -> list[str]:
                 "O13 raw-writer count moved and must move the pin with it: "
                 f"{relative}: {moved}"
             )
+    for relative, (row, counts) in sorted(CAPABILITY_FREE_RAW_WRITER_INVENTORY.items()):
+        path = source / relative
+        if not path.is_file():
+            findings.append(
+                f"capability-free carved file is GONE: {relative} ({row}); "
+                f"{CAPABILITY_FREE_EXCEPTION} names it and must be revised first"
+            )
+            continue
+        text = without_test_modules(mask_non_code(path.read_text(encoding="utf-8")))
+        o13 = relative in V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES
+        actual = {
+            token: found
+            for token in CAPABILITY_FREE_WRITER_TOKENS
+            if not (o13 and token in V1_LIFECYCLE_RAW_DURABLE_WRITERS)
+            and (found := len(re.findall(r"\b" + token + r"\b", text)))
+        }
+        if actual == counts:
+            continue
+        shrank = any(actual.get(token, 0) < count for token, count in counts.items())
+        findings.append(
+            f"capability-free raw writer inventory moved, {relative} ({row}): "
+            f"expected={counts} actual={actual}. "
+            + (
+                "a PARTIAL CONVERSION of a carved arm may not land without revising "
+                "GwzM5-8R2E-CapabilityFreeAmendment.md §3 -- these writers are a DATED "
+                "EXCEPTION, not unfinished work, and E4.7 does not retire them"
+                if shrank
+                else "A NEW RAW WRITER IS NOT BLESSED: the exception covers the arms it "
+                "enumerates and nothing else, and converting this one instead would put "
+                "a capability-free operation on the durable-identity probe"
+            )
+        )
     for relative in sorted(PROTECTED_COMPILER_MODULES):
         raw = (source / relative).read_bytes()
         if forbid not in mask_non_code(raw.decode("utf-8")):

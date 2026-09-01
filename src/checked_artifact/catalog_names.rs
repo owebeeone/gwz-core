@@ -41,7 +41,9 @@ impl CatalogPrivateRootV1 {
 /// **Legacy stays inside `ALL` deliberately** (plan §1, re-charter [RC-P1-1]):
 /// `ALL`'s only consumers are the collision domain and a test pin, so keeping
 /// `checked-artifacts` a member preserves today's `reject_private_collisions`
-/// guard over a directory that is still live until E4.7 — the actual content of
+/// guard over a directory that is still live until DR-1 decides its retirement —
+/// E4.7's legacy in-place-writer clause RE-OWNS there (2026-09-02,
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §4) — the actual content of
 /// "zero behavioral change for legacy". De-recognition of resident
 /// `checked-artifacts/` directories does not come from `ALL` at all: the
 /// recognition table is `catalog/enumeration.rs::fixed_roles`' fixed

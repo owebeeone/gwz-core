@@ -7,6 +7,7 @@ use crate::model::{ErrorCode, ModelError};
 
 mod admission;
 mod authority;
+// [2026-09-02, R2-E E4.4-6-B: the E4.2-E4.6 / "awaiting R2-E consumer conversion" range is STALE — E4.4-E4.6 as chartered do not start (GwzM5-8R2E-CapabilityFreeAmendment.md §7); E4.7 EXPIRES or RE-REASONS each, and this package only dates them.] Class members here: the `dead_code` allows on `bootstrap`, `capability`, `entry`, `fault_v1`, `leaf`, `namespace` and `protocol` below.
 #[allow(
     dead_code,
     reason = "frozen interface awaiting R2-E consumer conversion (plan §5 item 1); narrowed \

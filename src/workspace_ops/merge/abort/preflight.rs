@@ -343,6 +343,10 @@ pub(super) fn verify_baseline(root: &Path, record: &MergeOperationRecord) -> Mod
     Ok(())
 }
 
+/// CAPABILITY-FREE EXCEPTION, §10 row `:278` (2026-09-02,
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §3): THIS ARM only — the baseline
+/// manifest and lock restore stays raw permanently, the `artifact_facts` observe
+/// above is the converted arm, and P-2 scans the two by region.
 pub(super) fn restore_baseline(root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
     let root_selected = record
         .selected_targets

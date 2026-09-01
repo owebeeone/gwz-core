@@ -197,6 +197,7 @@ where
         for (member_id, state) in &members {
             next.members.insert(member_id.clone(), state.clone());
         }
+        // CAPABILITY-FREE EXCEPTION, §10 rows `:277`/`:278`/`:279`: the operator's ruling names `gwz commit` by name, so its marker, lock and boundary writers stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
         artifact::write_lock(&root, &next)?;
         lock_for_boundary = next;
     }

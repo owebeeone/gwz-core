@@ -180,6 +180,10 @@ pub(super) fn prepare_root_for_stash<B: GitBackend>(
     member_result(backend.stage_paths(root, &paths), plan).map(|_| ())
 }
 
+/// CAPABILITY-FREE EXCEPTION, §10 rows `:276`/`:277`/`:279` (2026-09-02,
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §3): every writer in this file runs
+/// from v0 `--abort --preserve` (`abort/mod.rs:46` → `preserve.rs:145`), on E0.2
+/// §5.2's list, so all stay raw permanently; `:276`'s ordering clause is UNMET.
 pub(super) fn restore_root_publication<B: GitBackend>(
     backend: &B,
     root: &Path,

@@ -242,6 +242,7 @@ pub(super) fn publish_candidate<B: GitBackend, S: MergeStore>(
     }
     let candidate = candidate(record)?.clone();
     let marker_path = artifact::marker_path(root, &candidate.marker_id);
+    // CAPABILITY-FREE EXCEPTION, §10 rows `:277`/`:278`/`:279`: an ORDINARY merge is on E0.2 §5.2's capability-free list, so this publication trio stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     artifact::write_atomic(&marker_path, &candidate.marker_yaml)?;
     #[cfg(test)]
     fail_candidate_publication_after(CandidatePublicationMutation::Marker)?;

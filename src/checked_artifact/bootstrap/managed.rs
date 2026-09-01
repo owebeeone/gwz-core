@@ -40,6 +40,7 @@ mod tests_writer_matrix;
 )]
 pub(in crate::checked_artifact) use owner::*;
 pub(in crate::checked_artifact) use plan::*;
+// [2026-09-02, R2-E E4.4-6-B: the E4.2-E4.6 / "awaiting R2-E consumer conversion" range is STALE — E4.4-E4.6 as chartered do not start (GwzM5-8R2E-CapabilityFreeAmendment.md §7); E4.7 EXPIRES or RE-REASONS each, and this package only dates them.]
 #[allow(
     unused_imports,
     reason = "Step 3.3 wired the coordinator caller; REACHED from the entry point at R2-E E4.2 \

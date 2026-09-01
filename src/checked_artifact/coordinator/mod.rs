@@ -11,6 +11,7 @@
 /// *[E4.2, 2026-09-01: unimplementable as written — `mod execution;` was
 /// module-private, so `coordinator::execution::…` was nameable only inside
 /// `coordinator`; widened to the subsystem here, not by the rejected re-export.]*
+// [2026-09-02, R2-E E4.4-6-B: the E4.2-E4.6 / "awaiting R2-E consumer conversion" range is STALE — E4.4-E4.6 as chartered do not start (GwzM5-8R2E-CapabilityFreeAmendment.md §7); E4.7 EXPIRES or RE-REASONS each, and this package only dates them.]
 #[allow(
     dead_code,
     reason = "Step 3.3 wires the machinery; conversion arrives consumer by consumer across E4.2-E4.6"

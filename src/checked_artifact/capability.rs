@@ -47,12 +47,28 @@ impl SupportedFilesystemProfile {
 /// true of STARTS and false of records already on disk:
 /// `workspace_ops/merge/model/version.rs`'s `ACTIVE_WRITER_FLOOR` governs which
 /// version a start writes, not which lifecycle an existing record routes to. A
-/// `--no-ff` start and the resume of a v1 record refuse; `--abort` never does;
-/// an ordinary merge falls back to the v0 lifecycle instead of refusing.
+/// `--no-ff` start and the resume of a v1 record refuse; an ordinary merge falls
+/// back to the v0 lifecycle instead of refusing.
+///
+/// **The `--abort` clause, SCOPED BY PATH** (2026-09-02,
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §6): an abort that touches no checked
+/// artifact needs no such filesystem; aborts that must re-verify checked
+/// artifacts — preservation bundles, a selected root's manifest and lock, or the
+/// merge's published evidence, re-verified through the checked boundary — need
+/// persistent file handles and a mount identity. A dated residual, shipped with
+/// A1's v1 reverse path, cured only by DR-1's (C). Those doors take the LEGACY
+/// probe (`identity.rs:312-367`), which admits btrfs/xfs/zfs where the catalog's
+/// `require_ext4` refuses, so the string's "ext4 only" is the CATALOG's admission
+/// list, not the abort's. The capability-free half is pinned by E4.1(c)'s
+/// `a_v1_resume_refuses_without_mutation_and_abort_still_clears_the_record`
+/// (`tests/g23/a1_activation.rs`) — [P3-C1]'s carrier discharged by name, and
+/// [P3-8] closes with it: this package converts nothing.
 pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem does not expose the persistent file handles and mount identity that checked \
-     merge artifacts require; run the workspace on a filesystem that does (on Linux that is ext4 \
-     only; APFS or HFS+ on macOS; NTFS on Windows). An open merge can be cleared with `gwz merge \
-     --abort`, which needs no such filesystem; a new merge can be started without --no-ff";
+     merge artifacts require; run the workspace on a filesystem that does (on Linux the checked \
+     catalog admits ext4 only; APFS or HFS+ on macOS; NTFS on Windows). An open merge can be \
+     cleared with `gwz merge --abort`, which needs no such filesystem unless it must re-verify \
+     checked artifacts — a preservation bundle, a selected root's manifest and lock, or the \
+     merge's published evidence; a new merge can be started without --no-ff";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlatformCapability {

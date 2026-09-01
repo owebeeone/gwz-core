@@ -81,6 +81,7 @@ pub(crate) fn workspace_exclude_candidate<B: GitBackend>(
     Ok((existing, updated))
 }
 
+// CAPABILITY-FREE EXCEPTION, §10 row `:279`: this family is the `.git/info/exclude` writer for every capability-free caller, so it stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3). Its `write_atomic` bootstraps `.git/info` by construction (`artifact/mod.rs:492-495`), which row `:279`'s third cell forbids: ACCEPTED-UNMET, inert because `git init` always creates it.
 pub(crate) fn publish_workspace_exclude_candidate(root: &Path, contents: &str) -> ModelResult<()> {
     crate::artifact::write_atomic(&workspace_exclude_path(root), contents)
 }

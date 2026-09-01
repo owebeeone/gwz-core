@@ -58,6 +58,7 @@ pub(super) fn archive(
         }
         (true, false) => {
             let source_bytes = require_exact_source(current)?;
+            // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the terminal archive is reached from EVERY terminal disposition on the PLAIN lease (`service.rs:120`), so this bootstrap and the whole file stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
             fs::create_dir_all(&done).map_err(io_error)?;
             require_plain_directory(&done)?;
             match rename_noreplace(source, &destination) {

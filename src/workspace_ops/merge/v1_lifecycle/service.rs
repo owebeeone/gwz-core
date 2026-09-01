@@ -112,7 +112,10 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
     // E4.1 review [P1-1]/[P2-1] cure: only the FORWARD arms mutate a record
     // toward v1 semantics and so require the catalog; the reverse arms are on
     // E0.2 §5.2's capability-free list, and abort is the in-code exit for a v1
-    // record stranded on a filesystem the catalog cannot use.
+    // record stranded on a filesystem the catalog cannot use. SCOPED BY PATH
+    // (2026-09-02, CapabilityFreeAmendment §6): a reverse arm re-verifying a
+    // checked artifact — a bundle, a selected root's manifest and lock, or the
+    // published evidence — still takes the legacy identity probe on this lease.
     let lease = match request {
         V1LifecycleRequest::ResumeStart | V1LifecycleRequest::Continue => {
             V1MutationLease::acquire_activated(root)?

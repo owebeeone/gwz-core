@@ -128,8 +128,9 @@ directories by a *durable* identity that survives renames and process exits, so
 that an interrupted merge can prove on restart which objects it created. That
 needs two things from the filesystem, and it asks for them when the operation
 moves FORWARD under its lock — at a checked start or resume, and before an
-interrupted ordinary merge is migrated to the checked record form. An abort
-never asks:
+interrupted ordinary merge is migrated to the checked record form. An abort asks
+only when it must re-verify a checked artifact, and then of a weaker probe (see
+*What never refuses* below):
 
 * **Persistent file handles** — `name_to_handle_at` on Linux,
   `ATTR_CMN_OBJPERMANENTID` on macOS, 128-bit file ids on NTFS.
@@ -137,6 +138,8 @@ never asks:
 
 Filesystems that do not expose both are refused with a message naming the
 capability. **On Linux the admitted filesystem is `ext4` and nothing else** —
+that is the CATALOG's admission list; an abort's checked doors go through the
+weaker legacy identity probe, which also admits btrfs, xfs and zfs —
 btrfs, xfs and zfs are refused, as are `tmpfs`, overlay and container
 filesystems and every network mount (NFS, SMB/CIFS, SSHFS and other FUSE
 mounts). On macOS: local APFS or HFS+. On Windows: NTFS.
@@ -144,9 +147,12 @@ mounts). On macOS: local APFS or HFS+. On Windows: NTFS.
 **What refuses:** `gwz merge --no-ff`, and `gwz merge --resume` of a merge
 record already at v1.
 
-**What never refuses:** `gwz merge --abort`, with or without `--preserve`, on a
-record of either version — so a `--no-ff` merge left open on a workspace that
-later becomes incapable can always be cleared. Nor does an ordinary or
+**What never refuses:** an abort that touches no checked artifact needs no such
+filesystem, on a record of either version. Aborts that must re-verify checked
+artifacts — preservation bundles, a selected root's manifest and lock, or the
+merge's published evidence, re-verified through the checked boundary — need
+persistent file handles and a mount identity, of the weaker legacy probe above
+(2026-09-02, `GwzM5-8R2E-CapabilityFreeAmendment.md` §6). Nor does an ordinary or
 `--ff-only` merge, including resuming one interrupted during finalization: such
 a record is eligible for an automatic upgrade to the v1 lifecycle, and when the
 catalog is unavailable that upgrade is declined before it writes anything and
@@ -155,7 +161,8 @@ the v0 lifecycle completes the merge itself. Nor do `gwz repo create`,
 none of which reaches the catalog.
 
 **Workaround:** run the workspace on a filesystem that exposes persistent
-handles. A merge already open can be cleared with `gwz merge --abort`; a new one
+handles. A merge already open can be cleared with `gwz merge --abort`, which
+needs no such filesystem unless it must re-verify checked artifacts; a new one
 can be started without `--no-ff`.
 
 ## Branch And Stash Outcomes

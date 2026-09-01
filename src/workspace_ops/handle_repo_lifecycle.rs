@@ -140,6 +140,7 @@ where
             return Err(error);
         }
     };
+    // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: repo lifecycle runs under `guarded_workspace_root(RepoMutate)`, so all three writer pairs stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     if let Err(error) = artifact::write_manifest_and_lock(&root, &manifest, &lock) {
         let published = artifact::read_manifest(&root)
             .map(|current| current.members.iter().any(|item| item.id == member.id))

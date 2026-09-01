@@ -257,6 +257,7 @@ pub fn read_bundle(root: &Path, stash_id: &str) -> ModelResult<StashBundle> {
     }
 }
 
+// CAPABILITY-FREE EXCEPTION, §10 row `:276`: `gwz stash` runs under the mutation guard, which E0.2 §5.2 keeps capability-free, so this bundle writer stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
 pub fn write_bundle(root: &Path, bundle: &StashBundle) -> ModelResult<()> {
     write_atomic(&bundle_path(root, &bundle.stash_id), bundle.to_yaml()?)
 }

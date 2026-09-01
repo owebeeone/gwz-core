@@ -199,6 +199,7 @@ where
         emitter.operation_finished();
         return Err(error);
     }
+    // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `init-from-sources` is named on E0.2 §5.2's list, so this writer pair stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
     sync_workspace_boundary(backend, &root, &manifest, &lock)?;
     let bootstrap = ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;

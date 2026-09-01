@@ -661,6 +661,10 @@ pub(super) fn preflight_evidence<A: AbortRuntime>(
     }))
 }
 
+/// CAPABILITY-FREE EXCEPTION, §10 rows `:277`/`:278`/`:279` (2026-09-02,
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §3): THIS ARM only. Abort is on E0.2
+/// §5.2's list, so the v0 boundary, lock and marker writers below stay raw
+/// permanently; the converted v1 arms above are untouched, and P-2 scans by region.
 pub(super) fn rollback_evidence<A: AbortRuntime, S: MergeStore>(
     runtime: &A,
     store: &S,

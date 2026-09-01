@@ -46,6 +46,7 @@ pub(super) fn enforce(root: &Path) -> ModelResult<()> {
     }
     ordinary.sort_by(|left, right| right.cmp(left));
     for (_, path) in ordinary.into_iter().skip(ORDINARY_RETENTION) {
+        // CAPABILITY-FREE EXCEPTION, §10 row `:275`: GC retention enforcement, same list, same permanent carve (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
         fs::remove_file(path).map_err(io_error)?;
     }
     let done = root.join(DONE_DIR);

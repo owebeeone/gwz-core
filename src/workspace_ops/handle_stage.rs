@@ -94,6 +94,7 @@ where
     // `.git/info/exclude` is a mutation, so a dry run never refreshes it.
     if !dry_run && targets.iter().any(|target| target.member_path.is_none()) {
         let lock = artifact::read_lock(&root)?;
+        // CAPABILITY-FREE EXCEPTION, §10 row `:279`: `gwz stage` is under the mutation guard, so this boundary writer stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
         ensure_workspace_exclude(backend, &root, &manifest, &lock)?;
     }
 

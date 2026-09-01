@@ -131,6 +131,11 @@ impl V1MutationLease {
     /// E0.2 §5.2's capability-free list, so an open v1 record on a filesystem
     /// the catalog cannot use must still be abortable — that is the in-code
     /// exit every refusal below depends on existing.
+    /// **Scoped by path** (2026-09-02, CapabilityFreeAmendment §6): the LEASE
+    /// is capability-free unconditionally, but an abort that must re-verify a
+    /// checked artifact — a preservation bundle, a selected root's manifest and
+    /// lock, or the published evidence — still takes the legacy identity probe
+    /// ON this lease. A dated residual shipped with A1; DR-1's (C) is the cure.
     pub(super) fn acquire(root: &Path) -> ModelResult<Self> {
         let workspace_root = root.canonicalize().map_err(io_error)?;
         let guard = WorkspaceMutatorLock::acquire(&workspace_root)?;
