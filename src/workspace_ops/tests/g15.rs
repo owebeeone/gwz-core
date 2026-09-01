@@ -25,6 +25,28 @@ fn staged(backend: &Git2Backend, repo: &Path, path: &str) -> bool {
         .any(|file| file.path == path && file.index_status == "A")
 }
 
+fn selected_stage_request(
+    cwd: &Path,
+    pathspecs: &[&str],
+    all: bool,
+    targets: &[&str],
+) -> crate::StageRequest {
+    crate::StageRequest {
+        meta: crate::RequestMeta {
+            selection: Some(crate::Selection {
+                targets: targets.iter().map(|target| (*target).to_owned()).collect(),
+                ..Default::default()
+            }),
+            ..request_meta()
+        },
+        ..stage_request(cwd, pathspecs, all)
+    }
+}
+
+fn index_bytes(repo: &Path) -> Vec<u8> {
+    fs::read(repo.join(".git/index")).unwrap_or_default()
+}
+
 #[test]
 fn stages_pathspec_into_owning_member() {
     let temp = TempDir::new("stage-member");
@@ -281,4 +303,117 @@ fn root_stage_refresh_protects_detached_checkout_from_gitlink_staging() {
         output.stdout.is_empty(),
         "detached checkout must not be staged as a root gitlink"
     );
+}
+
+// Pathspec routing is selection-blind on its own; an explicit `--target` must constrain it.
+
+#[test]
+fn pathspec_routing_outside_the_selection_is_rejected() {
+    let temp = TempDir::new("stage-select-reject");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "stage-select-reject-source");
+    let member_root = temp.path().join("remote");
+    fs::create_dir_all(temp.path().join("docs")).unwrap();
+    fs::write(temp.path().join("docs/plan.md"), "plan\n").unwrap();
+    fs::write(member_root.join("a.txt"), "x\n").unwrap();
+
+    let error = handle_stage(
+        &backend,
+        temp.path(),
+        selected_stage_request(temp.path(), &["docs"], false, &["mem_remote"]),
+        "op_stage",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("@root") && error.message.contains("mem_remote"),
+        "error names the routed repo and the selection: {}",
+        error.message
+    );
+    assert!(
+        !staged(&backend, temp.path(), "docs/plan.md"),
+        "nothing staged in the root"
+    );
+    assert!(
+        !staged(&backend, &member_root, "a.txt"),
+        "nothing staged in the member"
+    );
+}
+
+#[test]
+fn pathspec_routing_into_the_selected_member_stages_there_only() {
+    let temp = TempDir::new("stage-select-member");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "stage-select-member-source");
+    let member_root = temp.path().join("remote");
+    fs::write(member_root.join("a.txt"), "x\n").unwrap();
+    fs::write(temp.path().join("root.txt"), "y\n").unwrap();
+
+    handle_stage(
+        &backend,
+        temp.path(),
+        selected_stage_request(temp.path(), &["remote/a.txt"], false, &["mem_remote"]),
+        "op_stage",
+    )
+    .unwrap();
+
+    assert!(staged(&backend, &member_root, "a.txt"), "member staged");
+    assert!(!staged(&backend, temp.path(), "root.txt"), "root untouched");
+}
+
+#[test]
+fn dot_fan_out_drops_members_outside_a_root_only_selection() {
+    let temp = TempDir::new("stage-select-root");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "stage-select-root-source");
+    let member_root = temp.path().join("remote");
+    fs::write(member_root.join("a.txt"), "x\n").unwrap();
+    fs::write(temp.path().join("root.txt"), "y\n").unwrap();
+
+    handle_stage(
+        &backend,
+        temp.path(),
+        selected_stage_request(temp.path(), &["."], false, &["@root"]),
+        "op_stage",
+    )
+    .unwrap();
+
+    assert!(staged(&backend, temp.path(), "root.txt"), "root staged");
+    assert!(
+        !staged(&backend, &member_root, "a.txt"),
+        "member fan-out target silently dropped"
+    );
+}
+
+#[test]
+fn dry_run_stage_with_all_mutates_no_index_and_no_exclude() {
+    let temp = TempDir::new("stage-dry-run");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "stage-dry-run-source");
+    let member_root = temp.path().join("remote");
+    fs::write(member_root.join("a.txt"), "x\n").unwrap();
+    fs::write(temp.path().join("root.txt"), "y\n").unwrap();
+    let exclude_path = temp.path().join(".git/info/exclude");
+    let exclude_before = fs::read(&exclude_path).ok();
+    let root_index = index_bytes(temp.path());
+    let member_index = index_bytes(&member_root);
+
+    let mut request = stage_request(temp.path(), &[], true);
+    request.meta.dry_run = Some(true);
+    handle_stage(&backend, temp.path(), request, "op_stage_dry_run").unwrap();
+
+    assert_eq!(index_bytes(temp.path()), root_index, "root index unchanged");
+    assert_eq!(
+        index_bytes(&member_root),
+        member_index,
+        "member index unchanged"
+    );
+    assert_eq!(
+        fs::read(&exclude_path).ok(),
+        exclude_before,
+        ".git/info/exclude untouched"
+    );
+    assert!(!staged(&backend, temp.path(), "root.txt"));
+    assert!(!staged(&backend, &member_root, "a.txt"));
 }

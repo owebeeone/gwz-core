@@ -12,12 +12,18 @@ use crate::operation::{OpenMergeCommand, OperationRequest};
 
 use super::*;
 
-/// Fan out `git commit` across selected members and the root (root last) — the multi-repo
-/// commit verb. Members with staged changes (or, with `all`, tracked modifications too)
-/// are committed; a member with nothing to commit is skipped (never an empty commit). The
+/// Fan out `git commit` across the selected targets (root last) — the multi-repo commit
+/// verb. Members with staged changes (or, with `all`, tracked modifications too) are
+/// committed; a member with nothing to commit is skipped (never an empty commit). The
 /// member commits update gwz's lock (new member HEADs); that lock update is then committed
-/// into the root last, so the root records the post-commit composition. Members are hidden
-/// via `.git/info/exclude`, not tracked. Nothing commit-able anywhere is a success no-op.
+/// into the root last, so the root records the post-commit composition.
+///
+/// The root is committed only when the selection includes it (the default selection does).
+/// `git commit` is not pathspec-scoped, so a root commit sweeps the whole root index — a
+/// selection that excludes the root therefore leaves the lock update staged there instead,
+/// capture-style, and persists no marker artifact (the message trailers, which is what
+/// `gwz log` coalesces on, are still written on every commit). Members are hidden via
+/// `.git/info/exclude`, not tracked. Nothing commit-able anywhere is a success no-op.
 pub fn handle_commit<B>(
     backend: &B,
     start: &Path,
@@ -67,6 +73,11 @@ where
     }
     let all = request.all.unwrap_or(false);
     let marker_enabled = request.commit_marker.unwrap_or(true);
+    let dry_run = request.meta.dry_run.unwrap_or(false);
+    // The marker artifact is a root-commit artifact: it is persisted only when the root is
+    // itself committed, so it is never left pending. A selection that excludes the root
+    // still gets the message trailers, and `gwz log` coalesces on those.
+    let marker_persisted = marker_enabled && commit_root_selected;
 
     // Validate (non-mutating): every selected member must be materialized before any commit.
     for member_id in &selected {
@@ -124,6 +135,12 @@ where
             response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
         });
     }
+    // Everything above is planning and validation; a dry run stops before the first write.
+    if dry_run {
+        return Ok(crate::CommitResponse {
+            response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
+        });
+    }
 
     let marker = if marker_enabled {
         if !root_is_repo {
@@ -143,11 +160,16 @@ where
                 )
             })?,
         };
-        preflight_marker_path(&root, &marker.gwz_commit_id)?;
+        if marker_persisted {
+            preflight_marker_path(&root, &marker.gwz_commit_id)?;
+        }
         Some(marker)
     } else {
         None
     };
+    // The root is committed when the marker must be carried into history, or when the root
+    // itself has something staged. A selection that excludes the root does neither.
+    let commit_root = marker_persisted || root_has_changes;
     let commit_message = marker
         .as_ref()
         .map(|marker| marker.commit_message(&request.message))
@@ -179,11 +201,15 @@ where
         lock_for_boundary = next;
     }
 
-    if let Some(marker) = &marker {
+    if let Some(marker) = &marker
+        && marker_persisted
+    {
         let full_members =
             marker_member_map(backend, &root, &manifest, &lock_for_boundary, &selected)?;
         let mut committed_targets = committed_members.clone();
-        committed_targets.push("@root".to_owned());
+        if commit_root {
+            committed_targets.push("@root".to_owned());
+        }
         artifact::write_marker(
             &root,
             &artifact::MarkerArtifact {
@@ -209,28 +235,68 @@ where
         sync_workspace_boundary(backend, &root, &manifest, &lock_for_boundary)?;
     } else if committed_member {
         // Refresh the boundary excludes + stage gwz.conf so the lock update (the
-        // post-commit member HEADs) lands in the root commit when the root is selected.
+        // post-commit member HEADs) lands in the root commit when the root is selected —
+        // and, when it is not, stays staged in the root index for the user to commit.
         sync_workspace_boundary(backend, &root, &manifest, &lock_for_boundary)?;
     }
 
     // Commit the root last. This covers both the lock update from member commits
-    // and ordinary root-only staged changes. Marker-enabled member commits force a
-    // root metadata commit so the marker is not left pending.
-    if marker.is_some() || root_has_changes {
-        backend.commit(&root, &commit_message, all)?;
+    // and ordinary root-only staged changes. Marker-enabled commits that include the root
+    // force a root metadata commit so the marker is not left pending. When the root is not
+    // selected the lock update stays staged in the root index, capture-style.
+    let root_commit = if commit_root {
+        Some(backend.commit(&root, &commit_message, all)?)
+    } else {
+        None
+    };
+
+    let mut rows = if committed_member {
+        let next = artifact::read_lock(&root)?;
+        locked_member_responses(&manifest, &next.members)
+    } else {
+        Vec::new()
+    };
+    if let Some(result) = &root_commit {
+        rows.push(root_commit_response(backend, &root, result)?);
     }
 
     Ok(crate::CommitResponse {
-        response: response_envelope(
-            context,
-            crate::AggregateStatus::Ok,
-            if committed_member {
-                let next = artifact::read_lock(&root)?;
-                locked_member_responses(&manifest, &next.members)
-            } else {
-                Vec::new()
-            },
-        ),
+        response: response_envelope(context, crate::AggregateStatus::Ok, rows),
+    })
+}
+
+/// The response row for the workspace root's own commit. The root is not a lock member, so
+/// it carries the `@root` identity used by every other root row (push, ls) and reports the
+/// commit it just created.
+fn root_commit_response<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    result: &crate::git::GitCommitResult,
+) -> ModelResult<crate::MemberResponse> {
+    let head = backend.head(root)?;
+    Ok(crate::MemberResponse {
+        member_id: "@root".to_owned(),
+        member_path: ".".to_owned(),
+        source_kind: crate::SourceKind::Git,
+        status: crate::MemberStatus::Ok,
+        error: None,
+        planned: None,
+        state: Some(crate::ResolvedMemberState {
+            member_id: "@root".to_owned(),
+            path: ".".to_owned(),
+            source_id: String::new(),
+            source_kind: crate::SourceKind::Git,
+            commit: Some(result.commit.clone()),
+            branch: head.branch.clone(),
+            detached: Some(head.is_detached),
+            upstream: None,
+            dirty: None,
+            materialized: true,
+            remotes: Vec::new(),
+        }),
+        git_status: None,
+        target_kind: Some(crate::TargetKind::Root),
+        lock_match: None,
     })
 }
 

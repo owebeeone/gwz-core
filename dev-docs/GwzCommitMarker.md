@@ -273,10 +273,22 @@ If the root cannot commit the marker, the operation must fail. The implementatio
 should preflight root availability and writability before committing members to
 avoid partial mutation.
 
-Marker-enabled member-only selection still requires a root metadata commit when
+> **SUPERSEDED (2026-09-01).** The paragraph below was the shipped behavior from
+> v0.8.0 (`f88150b`) through v0.12.1 and is the design statement behind the
+> over-claiming-commit incident (see
+> `gwz-dev/dev-docs/GwzOverClaimingCommitDiagnosis.md`): the forced root commit
+> was unannounced, not pathspec-scoped, and swept whatever the root index held.
+> Owner ruling: a commit whose selection excludes the root creates **no root
+> commit and no marker artifact**; member commits keep the `GWZ-Commit-ID`
+> trailers (commit-log coalescing groups on trailers, not marker files, per
+> §"not the coalescing authority" above), and the lock update lands staged in
+> the root, capture-style. The marker-pending invariant is preserved by not
+> writing a marker rather than by forcing a root commit.
+
+~~Marker-enabled member-only selection still requires a root metadata commit when
 any member commit is created. This is intentional: marker persistence is part of
 the GWZ commit operation. Use `--no-commit-marker` to keep the old no-marker
-behavior.
+behavior.~~
 
 Marker disabled:
 

@@ -69,6 +69,58 @@ fn commit_request() -> crate::CommitRequest {
     }
 }
 
+fn commit_request_for(targets: &[&str]) -> crate::CommitRequest {
+    crate::CommitRequest {
+        meta: crate::RequestMeta {
+            selection: Some(crate::Selection {
+                targets: targets.iter().map(|target| (*target).to_owned()).collect(),
+                ..Default::default()
+            }),
+            ..request_meta()
+        },
+        ..commit_request()
+    }
+}
+
+fn dry_run_commit_request() -> crate::CommitRequest {
+    crate::CommitRequest {
+        meta: crate::RequestMeta {
+            dry_run: Some(true),
+            ..request_meta()
+        },
+        ..commit_request()
+    }
+}
+
+fn root_row(response: &crate::CommitResponse) -> Option<&crate::MemberResponse> {
+    response
+        .response
+        .members
+        .iter()
+        .find(|member| member.target_kind == Some(crate::TargetKind::Root))
+}
+
+fn staged_paths(backend: &Git2Backend, repo: &Path) -> Vec<String> {
+    backend
+        .status(repo)
+        .unwrap()
+        .files
+        .into_iter()
+        .filter(|file| !file.index_status.is_empty() && file.index_status != " ")
+        .map(|file| file.path)
+        .collect()
+}
+
+fn marker_dir_entries(root: &Path) -> Vec<String> {
+    let dir = root.join(crate::artifact::MARKER_DIR);
+    match fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 #[test]
 fn commit_fans_out_to_members_then_commits_root_last() {
     let temp = TempDir::new("commit-ws");
@@ -142,6 +194,16 @@ fn commit_fans_out_to_members_then_commits_root_last() {
         .is_ok(),
         "marker artifact was committed in the root"
     );
+
+    // The default selection includes the root, so the root commit is reported too.
+    let root = root_row(&response).expect("default-selection commit reports a root row");
+    assert_eq!(root.member_id, "@root");
+    assert_eq!(root.member_path, ".");
+    assert_eq!(
+        root.state.as_ref().unwrap().commit,
+        backend.head(temp.path()).unwrap().commit,
+        "the root row carries the root commit"
+    );
 }
 
 #[test]
@@ -173,8 +235,14 @@ fn commit_commits_root_only_staged_changes() {
         response.response.meta.aggregate_status,
         crate::AggregateStatus::Ok
     );
-    assert!(
-        response.response.members.is_empty(),
+    assert_eq!(
+        response
+            .response
+            .members
+            .iter()
+            .filter(|member| member.target_kind == Some(crate::TargetKind::Member))
+            .count(),
+        0,
         "root-only commit should not report member commits"
     );
 
@@ -195,6 +263,16 @@ fn commit_commits_root_only_staged_changes() {
     assert!(
         head_message(temp.path()).contains("GWZ-Commit-ID:"),
         "root-only marker commit has trailers"
+    );
+    assert_eq!(
+        root_row(&response)
+            .expect("root commit is reported")
+            .state
+            .as_ref()
+            .unwrap()
+            .commit,
+        after,
+        "the root row carries the root commit"
     );
 }
 
@@ -259,4 +337,229 @@ fn commit_marker_can_be_disabled() {
     assert!(list_markers(temp.path()).unwrap().is_empty());
     assert!(!head_message(&member_root).contains("GWZ-Commit-ID:"));
     assert!(!head_message(temp.path()).contains("GWZ-Commit-ID:"));
+}
+
+// A commit whose selection excludes the root must not create a root commit: the root index
+// is the user's, and commit is not pathspec-scoped, so committing it would sweep in
+// everything staged there.
+
+#[test]
+fn member_selected_commit_leaves_the_root_uncommitted() {
+    let temp = TempDir::new("commit-member-only");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "commit-member-only-source");
+
+    let member_root = temp.path().join("remote");
+    set_identity(&member_root);
+    set_identity(temp.path());
+    // Give the root a HEAD so "unchanged" is a real comparison, not "still empty".
+    handle_commit(&backend, temp.path(), commit_request(), "op_commit_seed").unwrap();
+
+    fs::write(member_root.join("work.txt"), "data\n").unwrap();
+    backend.stage_paths(&member_root, &["work.txt"]).unwrap();
+    let root_before = backend.head(temp.path()).unwrap().commit;
+    let markers_before = list_markers(temp.path()).unwrap().len();
+    let marker_files_before = marker_dir_entries(temp.path());
+
+    let response = handle_commit(
+        &backend,
+        temp.path(),
+        commit_request_for(&["mem_remote"]),
+        "op_commit_member_only",
+    )
+    .unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+
+    // The member committed, with the coalescing trailers.
+    let member_after = backend.head(&member_root).unwrap().commit;
+    let member_message = head_message(&member_root);
+    assert!(trailer_value(&member_message, "GWZ-Commit-ID").is_some());
+    assert_eq!(
+        trailer_value(&member_message, "GWZ-Workspace-ID").as_deref(),
+        Some("ws_ops")
+    );
+
+    // The root did not.
+    assert_eq!(
+        backend.head(temp.path()).unwrap().commit,
+        root_before,
+        "root HEAD must not move for a member-scoped commit"
+    );
+    assert_eq!(
+        list_markers(temp.path()).unwrap().len(),
+        markers_before,
+        "no marker artifact for a commit that does not commit the root"
+    );
+    assert_eq!(
+        marker_dir_entries(temp.path()),
+        marker_files_before,
+        "no marker file was written"
+    );
+
+    // The lock records the new member head and is staged in the root index, capture-style.
+    assert_eq!(
+        read_lock(temp.path()).unwrap().members["mem_remote"].commit,
+        member_after
+    );
+    assert!(
+        staged_paths(&backend, temp.path())
+            .iter()
+            .any(|path| path.starts_with("gwz.conf/")),
+        "gwz.conf is staged in the root index: {:?}",
+        staged_paths(&backend, temp.path())
+    );
+
+    assert!(
+        root_row(&response).is_none(),
+        "no root row when the root was not committed"
+    );
+}
+
+#[test]
+fn root_selected_commit_skips_members_and_reports_a_root_row() {
+    let temp = TempDir::new("commit-root-selected");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "commit-root-selected-source");
+
+    let member_root = temp.path().join("remote");
+    set_identity(&member_root);
+    set_identity(temp.path());
+    fs::write(member_root.join("work.txt"), "data\n").unwrap();
+    backend.stage_paths(&member_root, &["work.txt"]).unwrap();
+    let member_before = backend.head(&member_root).unwrap().commit;
+
+    let response = handle_commit(
+        &backend,
+        temp.path(),
+        commit_request_for(&["@root"]),
+        "op_commit_root_selected",
+    )
+    .unwrap();
+
+    assert_eq!(
+        backend.head(&member_root).unwrap().commit,
+        member_before,
+        "an unselected member must not be committed"
+    );
+    assert!(backend.head(temp.path()).unwrap().commit.is_some());
+    assert!(head_message(temp.path()).contains("GWZ-Commit-ID:"));
+    assert_eq!(
+        list_markers(temp.path()).unwrap().len(),
+        1,
+        "the root commit persists its marker"
+    );
+
+    let root = root_row(&response).expect("root commit is reported");
+    assert_eq!(
+        root.state.as_ref().unwrap().commit,
+        backend.head(temp.path()).unwrap().commit
+    );
+}
+
+#[test]
+fn member_selected_commit_does_not_sweep_the_root_index() {
+    let temp = TempDir::new("commit-no-overclaim");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "commit-no-overclaim-source");
+
+    let member_root = temp.path().join("remote");
+    set_identity(&member_root);
+    set_identity(temp.path());
+    handle_commit(&backend, temp.path(), commit_request(), "op_commit_seed").unwrap();
+    let root_before = backend.head(temp.path()).unwrap().commit;
+
+    // The user stages an unrelated file in the root and commits only the member.
+    fs::create_dir_all(temp.path().join("dev-docs")).unwrap();
+    fs::write(temp.path().join("dev-docs/WorkInProgress.md"), "draft\n").unwrap();
+    backend
+        .stage_paths(temp.path(), &["dev-docs/WorkInProgress.md"])
+        .unwrap();
+    fs::write(member_root.join("work.txt"), "data\n").unwrap();
+    backend.stage_paths(&member_root, &["work.txt"]).unwrap();
+
+    handle_commit(
+        &backend,
+        temp.path(),
+        commit_request_for(&["mem_remote"]),
+        "op_commit_member_scoped",
+    )
+    .unwrap();
+
+    assert_eq!(
+        backend.head(temp.path()).unwrap().commit,
+        root_before,
+        "there is no new root commit to sweep the index into"
+    );
+    assert!(
+        staged_paths(&backend, temp.path())
+            .iter()
+            .any(|path| path == "dev-docs/WorkInProgress.md"),
+        "the user's staged root file is still staged: {:?}",
+        staged_paths(&backend, temp.path())
+    );
+    let repo = git2::Repository::open(temp.path()).unwrap();
+    assert!(
+        repo.revparse_single("HEAD:dev-docs/WorkInProgress.md")
+            .is_err(),
+        "the user's staged root file was not committed"
+    );
+}
+
+#[test]
+fn dry_run_commit_mutates_nothing() {
+    let temp = TempDir::new("commit-dry-run");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "commit-dry-run-source");
+
+    let member_root = temp.path().join("remote");
+    set_identity(&member_root);
+    set_identity(temp.path());
+    fs::write(member_root.join("work.txt"), "data\n").unwrap();
+    backend.stage_paths(&member_root, &["work.txt"]).unwrap();
+
+    let root_head = backend.head(temp.path()).unwrap();
+    let member_head = backend.head(&member_root).unwrap();
+    let lock_path = temp.path().join(crate::artifact::LOCK_PATH);
+    let lock_bytes = fs::read(&lock_path).expect("lock artifact exists");
+    let root_index = staged_paths(&backend, temp.path());
+    let member_index = staged_paths(&backend, &member_root);
+    let markers_before = marker_dir_entries(temp.path());
+
+    let response = handle_commit(
+        &backend,
+        temp.path(),
+        dry_run_commit_request(),
+        "op_commit_dry_run",
+    )
+    .unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert!(
+        response.response.members.is_empty(),
+        "dry run reports no rows"
+    );
+
+    assert_eq!(backend.head(temp.path()).unwrap(), root_head, "root HEAD");
+    assert_eq!(
+        backend.head(&member_root).unwrap(),
+        member_head,
+        "member HEAD"
+    );
+    assert_eq!(fs::read(&lock_path).unwrap(), lock_bytes, "lock bytes");
+    assert_eq!(
+        staged_paths(&backend, temp.path()),
+        root_index,
+        "root index"
+    );
+    assert_eq!(
+        staged_paths(&backend, &member_root),
+        member_index,
+        "member index"
+    );
+    assert_eq!(marker_dir_entries(temp.path()), markers_before, "markers");
 }

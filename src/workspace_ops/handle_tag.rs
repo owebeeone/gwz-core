@@ -22,6 +22,7 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
+    let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = if request.op == crate::TagOp::List {
         (
             None,
@@ -41,7 +42,7 @@ where
             backend,
             &root,
             OpenMergeCommand::TagMutate,
-            reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
+            reconcile_authority(_guard.as_ref(), dry_run),
         )?;
     }
     let manifest = artifact::read_manifest(&root)?;
@@ -73,6 +74,10 @@ where
                     "a signed tag requires a message (-m)",
                 ));
             }
+            // Validation is done; a dry run stops before the fan-out.
+            if dry_run {
+                return ok_envelope(context);
+            }
             for repo in &repos {
                 // Tag a repo only if it has a commit (skip unborn) and does not already carry the
                 // tag — keeping create idempotent and symmetric with delete/push.
@@ -92,32 +97,40 @@ where
             }
             ok_envelope(context)
         }
-        crate::TagOp::Delete => match request.remote.as_deref() {
-            // Remote delete: push a delete refspec to each member's remote that has the tag.
-            Some(remote) => {
-                let git_name = require_name(&request)?;
-                let delete_refspec = format!(":refs/tags/{git_name}");
-                for member_root in &member_roots {
-                    if backend.is_repository(member_root)?
-                        && remote_has_tag(backend, member_root, remote, &git_name)?
-                    {
-                        backend
-                            .push(member_root, remote, &delete_refspec)
-                            .map_err(tag_error)?;
-                    }
-                }
-                ok_envelope(context)
+        crate::TagOp::Delete => {
+            let git_name = require_name(&request)?;
+            // Validation is done; a dry run stops before the fan-out — including the
+            // `ls_remote` probe the remote arm would otherwise make.
+            if dry_run {
+                return ok_envelope(context);
             }
-            None => {
-                let git_name = require_name(&request)?;
-                for repo in &repos {
-                    if backend.is_repository(repo)? && backend.tag_list(repo)?.contains(&git_name) {
-                        backend.tag_delete(repo, &git_name).map_err(tag_error)?;
+            match request.remote.as_deref() {
+                // Remote delete: push a delete refspec to each member's remote that has the tag.
+                Some(remote) => {
+                    let delete_refspec = format!(":refs/tags/{git_name}");
+                    for member_root in &member_roots {
+                        if backend.is_repository(member_root)?
+                            && remote_has_tag(backend, member_root, remote, &git_name)?
+                        {
+                            backend
+                                .push(member_root, remote, &delete_refspec)
+                                .map_err(tag_error)?;
+                        }
                     }
+                    ok_envelope(context)
                 }
-                ok_envelope(context)
+                None => {
+                    for repo in &repos {
+                        if backend.is_repository(repo)?
+                            && backend.tag_list(repo)?.contains(&git_name)
+                        {
+                            backend.tag_delete(repo, &git_name).map_err(tag_error)?;
+                        }
+                    }
+                    ok_envelope(context)
+                }
             }
-        },
+        }
         crate::TagOp::List => match request.remote.as_deref() {
             // Remote list: ls-remote each member and keep the tag refs.
             Some(remote) => {
@@ -150,6 +163,10 @@ where
         },
         crate::TagOp::Push => {
             let remote = request.remote.as_deref().unwrap_or("origin");
+            // A dry run stops before any remote traffic.
+            if dry_run {
+                return ok_envelope(context);
+            }
             for member_root in &member_roots {
                 if !backend.is_repository(member_root)? {
                     continue;
@@ -178,6 +195,10 @@ where
         }
         crate::TagOp::Fetch => {
             let remote = request.remote.as_deref().unwrap_or("origin");
+            // A dry run stops before any remote traffic.
+            if dry_run {
+                return ok_envelope(context);
+            }
             for member_root in &member_roots {
                 if backend.is_repository(member_root)? {
                     backend.tag_fetch(member_root, remote).map_err(tag_error)?;

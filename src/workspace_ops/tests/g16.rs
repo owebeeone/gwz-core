@@ -123,6 +123,83 @@ fn materialize_tag_restores_the_tagged_commit() {
     );
 }
 
+#[test]
+fn dry_run_create_and_delete_leave_every_ref_byte_identical() {
+    let temp = TempDir::new("tag-dry-run");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "tag-dry-run-source");
+    let member_root = temp.path().join("remote");
+    let dry_run = |op: crate::TagOp, name: Option<&str>| crate::TagRequest {
+        meta: crate::RequestMeta {
+            dry_run: Some(true),
+            ..request_meta()
+        },
+        ..tag_request(op, name)
+    };
+    let refs = |repo: &std::path::Path| {
+        let mut names: Vec<String> = git2::Repository::open(repo)
+            .unwrap()
+            .references()
+            .unwrap()
+            .map(|reference| {
+                let reference = reference.unwrap();
+                format!("{} {:?}", reference.name().unwrap(), reference.target())
+            })
+            .collect();
+        names.sort();
+        names
+    };
+
+    // `create --dry-run` writes no tag ref, in the member or the root.
+    let member_refs = refs(&member_root);
+    let root_refs = refs(temp.path());
+    let response = handle_tag(
+        &backend,
+        temp.path(),
+        dry_run(crate::TagOp::Create, Some("v1")),
+        "op_tag_create_dry",
+    )
+    .unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert!(response.tags.is_none(), "a mutating op reports no listing");
+    assert_eq!(refs(&member_root), member_refs, "member refs");
+    assert_eq!(refs(temp.path()), root_refs, "root refs");
+
+    // `delete --dry-run` leaves a real tag in place.
+    handle_tag(
+        &backend,
+        temp.path(),
+        tag_request(crate::TagOp::Create, Some("v1")),
+        "op_tag_create",
+    )
+    .unwrap();
+    let tagged_refs = refs(&member_root);
+    handle_tag(
+        &backend,
+        temp.path(),
+        dry_run(crate::TagOp::Delete, Some("v1")),
+        "op_tag_delete_dry",
+    )
+    .unwrap();
+    assert_eq!(refs(&member_root), tagged_refs, "member refs after delete");
+
+    // A dry run still validates: a nameless create is rejected before the gate.
+    assert_eq!(
+        handle_tag(
+            &backend,
+            temp.path(),
+            dry_run(crate::TagOp::Create, None),
+            "op_tag_noname_dry",
+        )
+        .unwrap_err()
+        .code,
+        crate::model::ErrorCode::InvalidRequest
+    );
+}
+
 fn init_two_member_workspace(
     temp: &std::path::Path,
     backend: &Git2Backend,

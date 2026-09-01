@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::artifact;
@@ -67,25 +68,38 @@ where
             })
             .collect::<ModelResult<Vec<_>>>()?
     } else {
-        resolve_stage_targets(
+        // Pathspec routing is selection-blind, so an explicit `--target` must constrain the
+        // routed targets: a root-territory pathspec fans out across every member and would
+        // otherwise stage outside the requested scope.
+        let routed = resolve_stage_targets(
             &root,
             &member_paths,
             Path::new(&request.cwd),
             &request.pathspecs,
             all,
-        )?
+        )?;
+        if narrowed {
+            SelectionScope::resolve(&manifest, request.meta.selection.as_ref())?
+                .constrain(routed)?
+        } else {
+            routed
+        }
     };
     super::merge::enforce_open_merge_stage_targets(&root, &targets)?;
 
+    let dry_run = request.meta.dry_run.unwrap_or(false);
+
     // A root stage must see the current physical nested-repository boundary before
     // Git examines the worktree. Inactive checkouts remain excluded while present.
-    if targets.iter().any(|target| target.member_path.is_none()) {
+    // `.git/info/exclude` is a mutation, so a dry run never refreshes it.
+    if !dry_run && targets.iter().any(|target| target.member_path.is_none()) {
         let lock = artifact::read_lock(&root)?;
         ensure_workspace_exclude(backend, &root, &manifest, &lock)?;
     }
 
     // Stage each target repo. An unmaterialized repo is an error if a pathspec named it
-    // directly, but is skipped if it was only reached by `.` / `-A` fan-out.
+    // directly, but is skipped if it was only reached by `.` / `-A` fan-out. A dry run
+    // still validates, but stages nothing.
     for target in &targets {
         let repo_root = match &target.member_path {
             Some(path) => root.join(path),
@@ -101,6 +115,9 @@ where
                     ),
                 ));
             }
+            continue;
+        }
+        if dry_run {
             continue;
         }
         let pathspecs: Vec<&str> = target.pathspecs.iter().map(String::as_str).collect();
@@ -125,15 +142,25 @@ fn handle_open_merge_stage<B: GitBackend>(
     let targets = if all && narrowed {
         selected_open_merge_targets(record, request.meta.selection.as_ref().unwrap())?
     } else {
-        resolve_stage_targets(
+        // Same rule as the ordinary pathspec branch: an explicit selection constrains where
+        // routed pathspecs may stage.
+        let routed = resolve_stage_targets(
             root,
             &member_paths,
             Path::new(&request.cwd),
             &request.pathspecs,
             all,
-        )?
+        )?;
+        if narrowed {
+            let manifest = artifact::read_manifest(root)?;
+            SelectionScope::resolve(&manifest, request.meta.selection.as_ref())?
+                .constrain(routed)?
+        } else {
+            routed
+        }
     };
     merge::enforce_open_merge_stage_targets(root, &targets)?;
+    let dry_run = request.meta.dry_run.unwrap_or(false);
     for target in &targets {
         let repo_root = target
             .member_path
@@ -148,6 +175,9 @@ fn handle_open_merge_stage<B: GitBackend>(
                 ),
             ));
         }
+        if dry_run {
+            continue;
+        }
         let pathspecs = target
             .pathspecs
             .iter()
@@ -158,6 +188,80 @@ fn handle_open_merge_stage<B: GitBackend>(
     Ok(crate::StageResponse {
         response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
     })
+}
+
+/// The repos an explicit `--target` selection admits, in the shape routed stage targets use:
+/// the workspace root plus a set of member paths.
+struct SelectionScope {
+    root: bool,
+    member_paths: BTreeSet<String>,
+    label: String,
+}
+
+impl SelectionScope {
+    fn resolve(
+        manifest: &artifact::ManifestArtifact,
+        selection: Option<&crate::Selection>,
+    ) -> ModelResult<Self> {
+        let selected = resolve_targets(
+            manifest,
+            selection,
+            CommandDefaultTargets::All,
+            RootSelectionPolicy::Allow,
+        )?;
+        let mut root = false;
+        let mut member_paths = BTreeSet::new();
+        let mut labels = Vec::with_capacity(selected.len());
+        for target in selected {
+            match target {
+                SelectedTarget::Root => {
+                    root = true;
+                    labels.push("@root".to_owned());
+                }
+                SelectedTarget::Member(member) => {
+                    member_paths.insert(member.path.clone());
+                    labels.push(member.id.clone());
+                }
+            }
+        }
+        Ok(Self {
+            root,
+            member_paths,
+            label: labels.join(", "),
+        })
+    }
+
+    fn admits(&self, member_path: Option<&str>) -> bool {
+        member_path.map_or(self.root, |path| self.member_paths.contains(path))
+    }
+
+    /// Keep only the routed targets the selection admits. A repo a pathspec named directly
+    /// (`explicit`) but the selection excludes is a hard error — the request asked to stage
+    /// outside its own scope. A target reached only by `.` / `-A` fan-out is dropped, the
+    /// same way an unmaterialized fan-out target is skipped.
+    fn constrain(&self, targets: Vec<StageTarget>) -> ModelResult<Vec<StageTarget>> {
+        let mut kept = Vec::with_capacity(targets.len());
+        for target in targets {
+            if self.admits(target.member_path.as_deref()) {
+                kept.push(target);
+                continue;
+            }
+            if target.explicit {
+                let owner = target
+                    .member_path
+                    .as_deref()
+                    .map_or_else(|| "@root".to_owned(), |path| format!("member '{path}'"));
+                return Err(ModelError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "pathspec routes to {owner} which is outside the selected targets [{}]",
+                        self.label
+                    ),
+                ));
+            }
+        }
+        Ok(kept)
+    }
 }
 
 fn selected_open_merge_targets(

@@ -684,6 +684,63 @@ pub(crate) fn snapshot_records_observed_dirty_state_not_stale_lock() {
 }
 
 #[test]
+pub(crate) fn snapshot_dry_run_writes_no_artifact_and_leaves_the_tree_byte_identical() {
+    let temp = TempDir::new("snapshot-dry-run");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "snapshot-dry-run-source");
+    let member_root = temp.path().join("remote");
+    let request = |dry_run: bool| crate::SnapshotRequest {
+        meta: crate::RequestMeta {
+            dry_run: dry_run.then_some(true),
+            ..request_meta()
+        },
+        snapshot_id: "snap_dry".to_owned(),
+        source: None,
+    };
+
+    let snapshot_path = crate::artifact::snapshot_path(temp.path(), "snap_dry").unwrap();
+    let lock_path = temp.path().join(crate::artifact::LOCK_PATH);
+    let manifest_path = temp.path().join(crate::workspace::WORKSPACE_MANIFEST);
+    let lock_bytes = fs::read(&lock_path).unwrap();
+    let manifest_bytes = fs::read(&manifest_path).unwrap();
+    let porcelain = conf_porcelain(&backend, temp.path());
+    let member_head = backend.head(&member_root).unwrap();
+
+    let response =
+        handle_snapshot(&backend, temp.path(), request(true), "op_snapshot_dry").unwrap();
+
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert!(
+        response.response.members.is_empty(),
+        "dry run reports no rows"
+    );
+    assert!(!snapshot_path.exists(), "no snapshot artifact");
+    assert_eq!(fs::read(&lock_path).unwrap(), lock_bytes, "lock bytes");
+    assert_eq!(
+        fs::read(&manifest_path).unwrap(),
+        manifest_bytes,
+        "manifest bytes"
+    );
+    assert_eq!(
+        conf_porcelain(&backend, temp.path()),
+        porcelain,
+        "root status"
+    );
+    assert_eq!(
+        backend.head(&member_root).unwrap(),
+        member_head,
+        "member HEAD"
+    );
+
+    // The same request without --dry-run does write it: the dry run really skipped work.
+    handle_snapshot(&backend, temp.path(), request(false), "op_snapshot").unwrap();
+    assert!(snapshot_path.exists(), "the real run writes the snapshot");
+}
+
+#[test]
 pub(crate) fn capture_adopts_observed_state_into_lock_without_mutating() {
     let temp = TempDir::new("capture");
     let backend = Git2Backend::new();
@@ -729,6 +786,78 @@ pub(crate) fn capture_adopts_observed_state_into_lock_without_mutating() {
         Some(second)
     );
     assert_eq!(response.response.members.single().member_id, "mem_app");
+}
+
+#[test]
+pub(crate) fn capture_dry_run_leaves_the_lock_and_boundary_byte_identical() {
+    let temp = TempDir::new("capture-dry-run");
+    let backend = Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "capture-dry-run-source");
+    let member_root = temp.path().join("remote");
+    // Advance the member past the lock, so a real capture would rewrite it.
+    fs::write(member_root.join("work.txt"), "data\n").unwrap();
+    backend.stage_paths(&member_root, &["work.txt"]).unwrap();
+    backend.commit(&member_root, "advance", false).unwrap();
+    let advanced = backend.head(&member_root).unwrap().commit;
+    assert_ne!(
+        read_lock(temp.path()).unwrap().members["mem_remote"].commit,
+        advanced,
+        "the lock lags the member, so capture has work to do"
+    );
+
+    let lock_path = temp.path().join(crate::artifact::LOCK_PATH);
+    let exclude_path = temp.path().join(".git/info/exclude");
+    let lock_bytes = fs::read(&lock_path).unwrap();
+    let exclude_before = fs::read(&exclude_path).ok();
+    let porcelain = conf_porcelain(&backend, temp.path());
+
+    let response = handle_capture(
+        &backend,
+        temp.path(),
+        crate::CaptureRequest {
+            meta: crate::RequestMeta {
+                dry_run: Some(true),
+                ..request_meta()
+            },
+        },
+        "op_capture_dry",
+    )
+    .unwrap();
+
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert!(
+        response.response.members.is_empty(),
+        "dry run reports no rows"
+    );
+    assert_eq!(fs::read(&lock_path).unwrap(), lock_bytes, "lock bytes");
+    assert_eq!(
+        fs::read(&exclude_path).ok(),
+        exclude_before,
+        ".git/info/exclude"
+    );
+    assert_eq!(
+        conf_porcelain(&backend, temp.path()),
+        porcelain,
+        "root status"
+    );
+
+    // The real run does adopt the advanced commit.
+    handle_capture(
+        &backend,
+        temp.path(),
+        crate::CaptureRequest {
+            meta: request_meta(),
+        },
+        "op_capture",
+    )
+    .unwrap();
+    assert_eq!(
+        read_lock(temp.path()).unwrap().members["mem_remote"].commit,
+        advanced
+    );
 }
 
 #[test]

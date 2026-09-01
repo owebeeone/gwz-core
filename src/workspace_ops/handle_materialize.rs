@@ -56,6 +56,12 @@ where
         &selected,
         request.source.as_ref(),
     )?;
+    // Everything above is validation and planning; a dry run stops before the write.
+    if request.meta.dry_run.unwrap_or(false) {
+        return Ok(crate::SnapshotResponse {
+            response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
+        });
+    }
     artifact::write_snapshot(
         &root,
         &artifact::SnapshotArtifact {
@@ -108,6 +114,12 @@ where
     let lock = artifact::read_lock(&root)?;
     let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
     let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
+    // Everything above is observation; a dry run stops before the lock rewrite.
+    if request.meta.dry_run.unwrap_or(false) {
+        return Ok(crate::CaptureResponse {
+            response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
+        });
+    }
     let mut next = read_lock_or_empty(&root, &manifest.workspace.id)?;
     for (member_id, state) in &members {
         next.members.insert(member_id.clone(), state.clone());
