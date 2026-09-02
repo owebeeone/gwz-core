@@ -466,6 +466,34 @@ def _fault_count(darwin: str, linux: str) -> str:
     measured v1_lifecycle:: 260 on their 7f28907 base; at the landing the
     partition is E4.3-B's 262 and the remainder 1114 + 1 ignored, both
     re-MEASURED on the rebased tree from a --list-verified snapshot binary.
+
+    The dry-run class fix (2026-09-02, gwz-core 22f388d + 5ae6df7, released in
+    v0.13.0) added FIVE cfg-free rows to the LIB REMAINDER -- g20's three stash
+    dry-run rows, g02's dry_run_create_workspace_creates_nothing and
+    merge::runtime::tests::mutation_guard::a_dry_run_acquisition_yields_no_write_authority
+    -- and this pin was NOT moved with it: the builder ran only the partitions it
+    touched, the landing verification was the focused set, and the release
+    script runs the full suite but not this driver. The v0.13.0 release
+    verify's ubuntu leg (run 33639413040) was the first execution of this
+    driver after the fix and refused on "expected '1115 passed' absent" while
+    the Test step had passed the whole suite (1854 + 1 ignored, identical to the
+    ARM platform matrix). Corrected 2026-09-03:
+
+      darwin 1114 -> 1119: MEASURED (1119 passed + 1 ignored, from a
+        --list-verified snapshot at e15b3a4; --list 1844).
+      linux  1115 -> 1120: MEASURED BY NAME from the verify's own test list
+        (1854 + 1 ignored, minus checked_artifact:: 467, minus the v1_lifecycle::
+        namespace 267): the remainder differs from darwin by exactly one
+        linux-only row (git::tests::g15::root_preservation::stash::
+        exact_handoff_boundary_controls_raw_ignored_or_untracked_membership)
+        against one macOS-only row (git::tests::g01::
+        crlf_sentinel_unpinned_worktree_materializes_blob_exact), net +1.
+        FIRST-DISPATCH-EXPECTED at the next tag's verify; a measured number wins.
+
+    v0.13.0's ubuntu verify stays red: the verify checks out the tag, and a tag
+    is immutable. The landing rule from this miss: a landing that adds or removes
+    a #[test] re-measures this driver's pins, and every landing compares the
+    --list partition counts against these pins (seconds) before the push.
     """
     if sys.platform == "darwin":
         return darwin
@@ -504,7 +532,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1114 passed", "1115 passed")),
+         _fault_count("1119 passed", "1120 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
