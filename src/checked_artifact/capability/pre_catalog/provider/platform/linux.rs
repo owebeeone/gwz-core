@@ -50,8 +50,12 @@ pub(super) fn file_identity(
 }
 
 pub(super) fn parent_mode(parent: &Dir) -> Result<PathComponentMode, CheckedFsError> {
+    // DR-1 (a0), 2026-09-03: no filesystem-type test here. `FS_IOC_GETFLAGS` refuses on
+    // its own where the driver lacks `fileattr_get`, and every path reaching this
+    // function has already passed `identity` (`catalog_lease/target.rs`), which is the
+    // ONE admission gate. A second magic-number test here bought nothing and hid the
+    // real gate behind three.
     let queryable = descriptor_query_fd(parent)?;
-    require_ext4(queryable.as_raw_fd())?;
     let mut flags: libc::c_long = 0;
     if unsafe { libc::ioctl(queryable.as_raw_fd(), FS_IOC_GETFLAGS, &mut flags) } != 0 {
         return Err(query_error(
@@ -67,7 +71,9 @@ pub(super) fn parent_mode(parent: &Dir) -> Result<PathComponentMode, CheckedFsEr
 }
 
 pub(super) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, CheckedFsError> {
-    require_ext4(directory.as_raw_fd())?;
+    // DR-1 (a0), 2026-09-03: no filesystem-type test here either — `statx(MNT_ID)` is a
+    // VFS field present on every Linux filesystem and refuses on its own; `identity`
+    // above is the admission gate.
     let stat = rustix::fs::statx(
         directory,
         "",
@@ -348,7 +354,7 @@ mod tests {
     fn query_error_downgrades_the_documented_capability_refusals() {
         // The graceful `unsupported` downgrade stays reserved for substrates
         // that genuinely lack the capability (for example `FS_IOC_GETFSUUID`
-        // on pre-6.8 kernels reports `ENOTTY` on a real descriptor).
+        // on pre-6.9 kernels, where the ioctl does not exist, reports `ENOTTY` on a real descriptor).
         unsafe { *libc::__errno_location() = libc::ENOTTY };
         let error = query_error(PlatformCapability::PersistentFilesystemIdentity, "probe");
         assert!(

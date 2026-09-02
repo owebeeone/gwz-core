@@ -137,12 +137,13 @@ only when it must re-verify a checked artifact, and then of a weaker probe (see
 * **A mount identity**, so a rename can be proved to stay on one filesystem.
 
 Filesystems that do not expose both are refused with a message naming the
-capability. **On Linux the admitted filesystem is `ext4` and nothing else** —
-that is the CATALOG's admission list; an abort's checked doors go through the
-weaker legacy identity probe, which also admits btrfs, xfs and zfs —
-btrfs, xfs and zfs are refused, as are `tmpfs`, overlay and container
+capability. **On Linux the CATALOG admits `ext4` and nothing else**: btrfs, xfs
+and zfs are refused by the catalog, as are `tmpfs`, overlay and container
 filesystems and every network mount (NFS, SMB/CIFS, SSHFS and other FUSE
-mounts). On macOS: local APFS or HFS+. On Windows: NTFS.
+mounts). An abort's checked doors go through the weaker legacy identity probe,
+which admits btrfs, xfs and zfs as well — the two regimes disagree, and closing
+that gap is DR-1's lead item (`GwzM5-8DR1-FilesystemIdentity-Design.md`). On
+macOS: local APFS or HFS+. On Windows: NTFS.
 
 **What refuses:** `gwz merge --no-ff`, and `gwz merge --resume` of a merge
 record already at v1.
