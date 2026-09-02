@@ -39,9 +39,17 @@ use std::path::{Path, PathBuf};
 /// `activate_workspace_catalog`, called from the FORWARD v1 paths only —
 /// `V1MutationLease::acquire_activated` (checked start/resume) and dispatch's
 /// pre-upgrade viability window; the plain abort lease never activates. The pin
-/// moved in that same reviewed commit, as this comment promised it would. A
-/// SECOND production namer is E4.2-E4.6 work and must move this pin again,
-/// deliberately.
+/// moved in that same reviewed commit, as this comment promised it would.
+///
+/// **2026-09-02 (R2-E E4.7): still ONE, and now PERMANENTLY so within R2-E.**
+/// The "E4.2-E4.6" range that named the second namer is spent: Phase E4's
+/// conversions are E4.1 and E4.2 alone, E4.4-E4.6 as chartered do not start,
+/// and the three `finalization/execute.rs` forward arms stay raw as the
+/// [R2-P3-1] dated residual rather than converting
+/// (`GwzM5-8R2E-CapabilityFreeAmendment.md` §7 and the operator's ruling (a),
+/// both 2026-09-02). No remaining R2-E step adds a `recover_or_create` namer,
+/// so a SECOND production namer is DR-1's work and must move this pin again,
+/// deliberately, in its own reviewed commit.
 const PRODUCTION_CALLER_COUNT: usize = 1;
 
 /// The entry point's declaration and definition sites. Neither calls it; both
@@ -132,8 +140,9 @@ fn the_catalog_owner_gains_its_first_production_caller_only_at_e4_1() {
         PRODUCTION_CALLER_COUNT,
         "the production files outside the owner naming `recover_or_create` — usually callers, \
          possibly mentions — are {callers:?}, which is not {PRODUCTION_CALLER_COUNT}. E4.1 added \
-         the first deliberately (`entry.rs`'s `activate_workspace_catalog`); a further one is an \
-         E4.2-E4.6 conversion and moves this pin in its own reviewed commit, and a LOST one means \
+         the first deliberately (`entry.rs`'s `activate_workspace_catalog`); a further one is \
+         DR-1's conversion, not an E4 step's, and moves this pin in its own reviewed commit, and \
+         a LOST one means \
          production catalog activation was removed"
     );
 }

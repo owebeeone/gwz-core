@@ -28,6 +28,13 @@
 //! parent through `CheckedArtifact::prepare_parent` — that conversion is a
 //! later E4 row's.]*
 //!
+//! *[E4.7, 2026-09-02: the "later E4 row" does NOT arrive. E4.4-E4.6 as
+//! chartered do not start (`GwzM5-8R2E-CapabilityFreeAmendment.md` §7) and
+//! `prepare_parent`'s removal promise is permanently unreachable — it keeps its
+//! v0-store caller (`store/mod.rs` → `entry::prepare_merge_store_parents`),
+//! recorded at `GwzM5-8R4bR2ConsumerCheckpoint.md` §10 `:282-286`. The BUNDLE
+//! parent's routing is DR-1's, not an E4 row's.]*
+//!
 //! A note for whoever audits those allows, **corrected at Phase 4 Step 5.1**
 //! because Step 4.3's narrowing falsified the previous version of it. The
 //! subtrees still carrying a blanket `#[allow(dead_code)]` at
@@ -156,8 +163,10 @@ pub(in crate::checked_artifact) fn admit_merge_start_managed_parents(
 /// `authorize_write`/`RetainedWriteAuthorityV1` still have no production
 /// consumer, and the record leaf is written from a path, which §9 `:264-266`
 /// names as NOT parent authority. The re-proof here must not be read as
-/// satisfying §9 `:266`; that conversion is the plan's minted O14, decided at
-/// E4.6's chartering.
+/// satisfying §9 `:266`; that conversion is the plan's minted O14 — RE-OWNED to
+/// DR-1, the phase-end design round, not decided at "E4.6's chartering" (E4.6
+/// as a conversion step dissolves: `GwzM5-8R2E-CapabilityFreeAmendment.md`
+/// §4/§5, ADOPTED 2026-09-02; re-pointed at E4.7, 2026-09-02).
 pub(in crate::checked_artifact) fn execute_merge_start_managed_parents(
     workspace_id: &str,
     admitted: &AdmittedCheckedActionV1,

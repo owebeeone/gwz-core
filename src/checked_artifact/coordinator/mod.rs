@@ -14,7 +14,11 @@
 // [2026-09-02, R2-E E4.4-6-B: the E4.2-E4.6 / "awaiting R2-E consumer conversion" range is STALE — E4.4-E4.6 as chartered do not start (GwzM5-8R2E-CapabilityFreeAmendment.md §7); E4.7 EXPIRES or RE-REASONS each, and this package only dates them.]
 #[allow(
     dead_code,
-    reason = "Step 3.3 wires the machinery; conversion arrives consumer by consumer across E4.2-E4.6"
+    reason = "Step 3.3 wired the machinery; E4.2 converted the merge-start consumer \
+              (`entry.rs` names `admit_`/`execute_merge_start_managed_parents`); the REMAINING \
+              interior gains no consumer — E4.4-E4.6 do not start (dev-docs/\
+              GwzM5-8R2E-CapabilityFreeAmendment.md §7). PERMANENT pending DR-1, re-measured at \
+              E4.7 (2026-09-02): removal reddens `clippy -D warnings` on the E0.2 §7.4 interior."
 )]
 pub(in crate::checked_artifact) mod execution;
 /// R2-D Phase 4 Step 4.3 (settle item 7): the subtree-wide allow that used to
@@ -24,8 +28,10 @@ pub(in crate::checked_artifact) mod execution;
 #[allow(
     dead_code,
     reason = "the merge-owned identity derivations are consumed by `execution` and by the \
-              interface-test contract pins; R2-E converts the merge consumer that reads the \
-              rest (plan §5 item 1)"
+              interface-test contract pins; the merge consumer that would read the REST does not \
+              arrive — E4.4-E4.6 do not start (dev-docs/\
+              GwzM5-8R2E-CapabilityFreeAmendment.md §7), so plan §5 item 1 is spent here. \
+              PERMANENT pending DR-1, re-measured at E4.7 (2026-09-02)."
 )]
 mod identity;
 mod schedule;

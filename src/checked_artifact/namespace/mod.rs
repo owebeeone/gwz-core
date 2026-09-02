@@ -17,9 +17,27 @@ mod evidence;
 /// R2-F puts it**, not "R2-E" generically; if E4 has not landed by the R2-E
 /// settle, E7 owes this allow a dated re-owning rather than letting it become
 /// permanent by silence.
+///
+/// *[THE DATED RE-OWNING, written at E4.7 (2026-09-02), discharging the
+/// sentence above on its own terms. E7 accepted (2026-08-29) without
+/// discharging it — the obligation appears in no section of
+/// `GwzM5-8R2E-E7-Acceptance.md` — and Phase E4 has since landed. Its
+/// conversions are E4.1 (the production catalog activation) and E4.2 (the first
+/// merge record), and nothing else: E4.3-B, the pins package E4.4-6-B, the
+/// standalone GC decode fix and this close-out convert nothing, and E4.4-E4.6
+/// as chartered do not start (`GwzM5-8R2E-CapabilityFreeAmendment.md` §7, on
+/// the operator's ruling of 2026-09-02). So the promised entry point EXISTS —
+/// the managed-parent provider has driven this backend since Step 3.1 and
+/// `entry.rs` reaches it through E4.2's start sessions — while the six barrier
+/// role methods E2 added still have no production caller. MEASURED at this
+/// step: lifting `checked_artifact/mod.rs`'s `mod namespace` blanket surfaces
+/// SEVEN dead items beneath this allow, so it is load-bearing in waiting and is
+/// re-reasoned rather than expired. The allow is PERMANENT PENDING DR-1 — dated
+/// and owned, not permanent by silence, which is what the sentence above
+/// forbids.]*
 #[allow(
     dead_code,
-    reason = "the managed-parent provider has driven this backend since Step 3.1; entry-point reachability is Phase E4, itself sequenced behind R2-F's relocation"
+    reason = "the managed-parent provider has driven this backend since Step 3.1; the entry point landed at Phase E4 (E4.2), but the six barrier role methods E2 added gain no production caller — E4.4-E4.6 do not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7). PERMANENT pending DR-1, on the dated re-owning above (E4.7, 2026-09-02)."
 )]
 mod host;
 mod managed;
@@ -44,11 +62,7 @@ mod tests_managed;
 #[cfg(test)]
 mod tests_managed_matrix;
 
-#[allow(
-    unused_imports,
-    reason = "the sole production namespace backend; the Step-3.1 provider binds it — REACHED \
-              from the entry point at R2-E E4.2 via the provider's execute_row (2026-09-01)"
-)]
+// [2026-09-02, R2-E E4.7: EXPIRED. The `unused_imports` allow that stood here already said "REACHED from the entry point at R2-E E4.2 via the provider's execute_row (2026-09-01)", and measurement agrees: BOTH names are consumed through exactly this re-export (`bootstrap/managed/provider.rs`'s `use crate::checked_artifact::namespace::{…, HostActionNamespaceV1, retain_action_namespace}`), so the allow suppressed nothing. Removed; `cargo check --all-targets` and `cargo clippy --all-targets -- -D warnings` both green.]
 pub(in crate::checked_artifact) use host::{HostActionNamespaceV1, retain_action_namespace};
 
 use super::capability::{

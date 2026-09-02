@@ -8,15 +8,22 @@ mod plan;
 /// (`coordinator::execution`), which is what the earlier forward reference in
 /// this allow was waiting for. The allow itself stays because *entry-point*
 /// reachability is still gated: `entry.rs` calls `CheckedArtifact::prepare_parent`
-/// until R2-E converts it. Note also that this inner allow is inert either way —
-/// `mod bootstrap` carries a blanket `#[allow(dead_code)]`
-/// (`checked_artifact/mod.rs`), so it documents intent rather than suppressing a
-/// live lint.
+/// and no conversion arrives — E4.4-E4.6 do not start
+/// (`GwzM5-8R2E-CapabilityFreeAmendment.md` §7) and that removal promise is
+/// permanently unreachable (`GwzM5-8R4bR2ConsumerCheckpoint.md` §10 `:282-286`);
+/// the question is DR-1's, not an E4 row's (E4.7, 2026-09-02). Note also that
+/// this inner allow is inert either way — `mod bootstrap` carries a blanket
+/// `#[allow(dead_code)]` (`checked_artifact/mod.rs`), so it documents intent
+/// rather than suppressing a live lint; MEASURED at E4.7, it becomes
+/// load-bearing the moment that blanket goes — one dead item surfaces beneath
+/// it — so it is kept, not expired.
 #[allow(
     dead_code,
     reason = "Step 3.3 wired the coordinator caller; REACHED from the entry point at R2-E E4.2 \
               (admit/execute_merge_start_managed_parents, 2026-09-01) — what stays dead is the \
-              surface no converted consumer reads yet"
+              surface no converted consumer reads, and no further converted consumer arrives: \
+              E4.4-E4.6 do not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7). \
+              PERMANENT pending DR-1 (E4.7, 2026-09-02)."
 )]
 mod provider;
 
@@ -41,15 +48,7 @@ mod tests_writer_matrix;
 pub(in crate::checked_artifact) use owner::*;
 pub(in crate::checked_artifact) use plan::*;
 // [2026-09-02, R2-E E4.4-6-B: the E4.2-E4.6 / "awaiting R2-E consumer conversion" range is STALE — E4.4-E4.6 as chartered do not start (GwzM5-8R2E-CapabilityFreeAmendment.md §7); E4.7 EXPIRES or RE-REASONS each, and this package only dates them.]
-#[allow(
-    unused_imports,
-    reason = "Step 3.3 wired the coordinator caller; REACHED from the entry point at R2-E E4.2 \
-              (2026-09-01). The unconsumed imports shrink only as the remaining ACTIVATED-LEASE \
-              forward arms convert (E4.5/6-B) — per the operator's 2026-09-02 ruling, \
-              GwzM5-8R2E-CapabilityFreeRuling-2026-09-02.md: no E4.4-E4.6 as chartered, \
-              activated-lease forward arms only; E4.3's rewrite path (RecordRootAmendment §2) \
-              and the capability-free arms (CapabilityFreeAmendment §3) are permanent by decision"
-)]
+// [2026-09-02, R2-E E4.7: EXPIRED. The `unused_imports` allow that stood here suppressed nothing and never could — `use provider::*;` is a GLOB, which warns only when NOTHING it brings in is used, and this hop's names are consumed. MEASURED: removed, `cargo check --all-targets` and `cargo clippy --all-targets -- -D warnings` both green. Its reason also carried the tree's last claim that the remaining ACTIVATED-LEASE forward arms still convert "(E4.5/6-B)"; the operator's ruling (a) of 2026-09-02 withdraws it — NONE of the three `finalization/execute.rs` arms converts, all three are the [R2-P3-1] dated residual recorded at their own sites.]
 pub(in crate::checked_artifact) use provider::*;
 
 use crate::checked_artifact::capability::{

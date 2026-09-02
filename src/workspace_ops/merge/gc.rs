@@ -28,9 +28,27 @@ struct ArchivedBackupArtifact {
     delete: bool,
 }
 
+/// [2026-09-02, R2-E E4.7: RE-REASONED. This allowance carried a reason
+/// byte-identical to `v1_lifecycle/archive.rs`'s and was named by no authority
+/// at all — `GwzM5-8R2E-CapabilityFreeAmendment.md` §5's three-name extent of
+/// the `gc_archived` family misses it. It covers the family's downstream half:
+/// `preflight_archived_cleanup`, `delete_preflighted_backup_refs`,
+/// `require_backup_refs_absent` and `PreparedArchivedCleanup`, whose ONLY
+/// callers are `archive.rs`'s `gc_archived_with_hook`. MEASURED at E4.7: this
+/// allow is today redundant — `archive.rs`'s own allowance seeds the family's
+/// liveness, so removing this one alone leaves `clippy -D warnings` green — but
+/// it is KEPT, because it is the record that this half of the family travels
+/// with the other, and because deleting the family is DR-1's choice, not
+/// E4.7's (the O13 shrinkage arm; see `archive.rs`'s note).]
 #[allow(
     dead_code,
-    reason = "A1 activation: landed v1 surface the activation's dispatch does not route yet. A1's enumerated package (Safety review §2) routes start/status/resume/abort into the v1 service and reaches the archive PROJECTION through `record_wire::decode_archived`; v1 archive GC keeps its typed open-record refusal, so this family has no production caller until that route lands."
+    reason = "PERMANENT PENDING DR-1: the checked archive route this family \
+              was built for has no consumer to arrive — the archive is carved \
+              out (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §3, ADOPTED \
+              2026-09-02) and E4.4 does not start (§7). O8's gc_archived route \
+              RE-OWNS to DR-1, conditional on (C) resurrecting the archive \
+              conversion (§5). The live GC deletion path is store/gc.rs and \
+              store/retention.rs, which this family is NOT."
 )]
 pub(super) fn preflight_archived_cleanup<B: GitBackend>(
     backend: &B,

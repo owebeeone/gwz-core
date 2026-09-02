@@ -109,9 +109,30 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
 /// (`GwzM5-8R2E-CapabilityFreeAmendment.md` §3/§5), so this checked family has no
 /// consumer to arrive: the route RE-OWNS to DR-1, conditional on (C), and E4.7
 /// deletes the family or re-reasons this allowance as permanent-pending-DR-1.]
+/// [2026-09-02, E4.7: RE-REASONED, not deleted — the choice, made and costed.
+/// The family is SEVEN functions and one struct across TWO files, not the three
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §5 names: `gc_archived`,
+/// `gc_archived_with_hook`, `remove_archive` and `require_same_archive` here,
+/// plus `merge/gc.rs`'s `preflight_archived_cleanup`,
+/// `delete_preflighted_backup_refs`, `require_backup_refs_absent` and
+/// `PreparedArchivedCleanup`, which have no other caller.
+/// `acquire_archived` is NOT in it — it has live callers on the
+/// archive-recovery path. DELETING the family would drop this file's `sync_dir`
+/// count 2 → 0 and fire the O13 inventory's fail-closed SHRINKAGE arm, which
+/// §3 makes an amendment-tier event; E4.7 is not that tier, and DR-1 convenes
+/// one step later, so the delete option travels there as a named agenda
+/// sub-item ("delete the `gc_archived` family, or rebuild it against (C)'s
+/// boundary") rather than being taken here. The six `tests/gc.rs` tests keep
+/// executing and keep the semantics honest for a DR-1 rebuild.]
 #[allow(
     dead_code,
-    reason = "A1 activation: landed v1 surface the activation's dispatch does not route yet. A1's enumerated package (Safety review §2) routes start/status/resume/abort into the v1 service and reaches the archive PROJECTION through `record_wire::decode_archived`; v1 archive GC keeps its typed open-record refusal, so this family has no production caller until that route lands."
+    reason = "PERMANENT PENDING DR-1: the checked archive route this family \
+              was built for has no consumer to arrive — the archive is carved \
+              out (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §3, ADOPTED \
+              2026-09-02) and E4.4 does not start (§7). O8's gc_archived route \
+              RE-OWNS to DR-1, conditional on (C) resurrecting the archive \
+              conversion (§5). The live GC deletion path is store/gc.rs and \
+              store/retention.rs, which this family is NOT."
 )]
 pub(super) fn gc_archived<B: MergeAuthorityBackend>(
     backend: &B,

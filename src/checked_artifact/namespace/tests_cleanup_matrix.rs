@@ -21,8 +21,11 @@
 //! `ActionAdmissionOwnerV1::resume_or_admit` — the exact call
 //! `ScheduledCheckedActionV1::admit` makes (`coordinator/execution.rs:137-152`).
 //! `coordinator::execution` is a deliberately private module whose own header
-//! reserves its widening for R2-E's *consumer* conversion, so this step names
-//! the seam that module calls rather than widening it for a test; the substance
+//! reserved its widening for R2-E's *consumer* conversion — a conversion that
+//! arrived only for E4.2's merge-start consumer and arrives for no other
+//! (`GwzM5-8R2E-CapabilityFreeAmendment.md` §7; E4.7, 2026-09-02) — so this
+//! step names the seam that module calls rather than widening it for a test;
+//! the substance
 //! the cure asks for — a real admission, never a hand-built reservation — is
 //! unchanged, and the coordinator's own derivation supplies the reservation too.
 //!

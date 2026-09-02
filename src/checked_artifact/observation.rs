@@ -152,10 +152,6 @@ impl CheckedArtifact {
         observe_leaf_exact(dir, &self.leaf, self.code, &self.label)
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "v1 bundle lifecycle remains disabled until A1")
-    )]
     pub(super) fn parent_is_canonical(&self) -> ModelResult<bool> {
         match &self.parent {
             ParentState::Open { identity, .. } => self.parent_is_current(identity),

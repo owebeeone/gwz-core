@@ -19,22 +19,28 @@
     dead_code,
     reason = "E4.1 activated `recover_or_create`; what stays dead on the retained catalog is the \
               two admitted-action capabilities no activation path uses — \
-              `retire_admitted_action` and `observe_roaming_anchor_home` — whose first production \
-              consumers are the E4.2-E4.6 conversions"
+              `retire_admitted_action` and `observe_roaming_anchor_home` — which have no \
+              production consumer and will not gain one: E4.4-E4.6 do not start (dev-docs/\
+              GwzM5-8R2E-CapabilityFreeAmendment.md §7); PERMANENT pending DR-1. Re-measured at \
+              E4.7 (2026-09-02): removal reddens `clippy -D warnings` on both names."
 )]
 mod bootstrap;
 #[allow(
     dead_code,
     reason = "E4.1 activated the owner above, which consumes this classifier on every drive; what \
-              stays dead is the classifier's own unreached vocabulary, whose readers are the \
-              E4.2-E4.6 consumers and its interface suites"
+              stays dead is the classifier's own unreached vocabulary, read by its interface \
+              suites; no further production reader arrives (dev-docs/\
+              GwzM5-8R2E-CapabilityFreeAmendment.md §7) — PERMANENT pending DR-1, re-measured at \
+              E4.7 (2026-09-02)."
 )]
 mod classifier;
 #[allow(
     dead_code,
     reason = "E4.1 activated the owner above, which exercises the catalog-root budgets on every \
-              drive; what stays dead is the enumeration surface no activation path reads yet — \
-              its first production reader is an E4.2-E4.6 consumer"
+              drive; what stays dead is the enumeration surface no activation path reads, and its \
+              interface suites; no further production reader arrives (dev-docs/\
+              GwzM5-8R2E-CapabilityFreeAmendment.md §7) — PERMANENT pending DR-1, re-measured at \
+              E4.7 (2026-09-02)."
 )]
 mod enumeration;
 mod scratch;
@@ -44,8 +50,13 @@ mod scratch;
 // forward-reference allow is retired down to the one name still unconsumed.
 #[allow(
     unused_imports,
-    reason = "the owner TYPE is re-exported for the E4.2-E4.6 consumers that will name it; E4.1's \
-              caller needs only the free function and the opaque retained result"
+    reason = "the owner TYPE is re-exported for a consumer that does not arrive — E4.4-E4.6 do \
+              not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7); E4.1's caller needs \
+              only the free function and the opaque retained result. MEASURED at E4.7 \
+              (2026-09-02): the allow bites on exactly ONE name, `CatalogOwnerV1` — the other \
+              three re-exports are consumed through this path — so PERMANENT pending DR-1. \
+              Narrowing the re-export instead was costed and DECLINED here: it is a surface \
+              change, and E4.7 is allows, reasons and comments only."
 )]
 pub(in crate::checked_artifact) use bootstrap::{
     CatalogOwnerEdgeV1, CatalogOwnerV1, OpaqueRetainedCatalogV1, recover_or_create,

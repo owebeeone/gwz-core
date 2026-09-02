@@ -37,6 +37,16 @@ PROTECTED_COMPILER_MODULES = {
 # Complete positive allowlist for the small production boundary. Any executable
 # or non-executable source change requires deliberate review and a digest
 # update; this closes aliases and new wrappers without guessing writer names.
+# R2-E E4.7 (2026-09-02) re-pins THREE flat entries, for the allowance-class
+# close-out -- comments, `reason` strings and expired allows only, no production
+# semantics: `checked_artifact/entry.rs` (the stale "E4.2-E4.6 convert the
+# consumers that will read it" at the activation door re-pointed);
+# `checked_artifact/mod.rs` (six subtree allows RE-REASONED PERMANENT and the
+# `pub(crate) mod entry` allow EXPIRED -- measured, it suppressed nothing);
+# `operation/workspace_mutator_lock.rs` (E4.1 [P3-5]'s stale allow EXPIRED --
+# `catalog_mutation_lease` has four production callers, so it suppressed
+# nothing). Every other flat and tree digest was recomputed in the same pass and
+# is unchanged.
 PROTECTED_SOURCE_DIGESTS = {
     # R2-E E4.4-6-B (2026-09-02) pins the `write_atomic` family's own implementation:
     # the capability-free inventory counts its CALLERS, so converting THIS file would
@@ -58,9 +68,9 @@ PROTECTED_SOURCE_DIGESTS = {
     # `bootstrap_merge_start_parents` and `create_merge_store_record` join the
     # door above, and [P3-2]'s renderer is extracted to a named `pub(super)` fn
     # so its three arms take an in-suite guard.
-    "checked_artifact/entry.rs": "2873107fc155d7f36b50f792737d99427bdbdb0ea889be8171f70767120f4453",
+    "checked_artifact/entry.rs": "272675b6163641a2186d964aee46fa75926781644ff3e8f925f058c91b39f845",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
-    "checked_artifact/mod.rs": "c4125e60ad18ee4838d838d697f268cc39ccc51f6d62394f3c793827e54b1c81",
+    "checked_artifact/mod.rs": "cffba4530283bb2e1a99cb3b1947e8d43a4a705d70e2c58b347929e06db98933",
     # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
     # `inspect_family`'s 1 MiB budget now charges `DirEntry::metadata().len()`
     # in the enumeration loop, before any leaf is read, and the post-read
@@ -75,7 +85,7 @@ PROTECTED_SOURCE_DIGESTS = {
     "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
     "workspace_ops/merge/preserve/plan.rs": "3730179e156151c4a853752ec769712d3ae81bd21e7729b892ab4cb14474ff89",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
-    "operation/workspace_mutator_lock.rs": "0d9b034edab7e66a5e83b4bc86b7325afa001666220a07e428d4fa73f9384e28",
+    "operation/workspace_mutator_lock.rs": "c390191ea03c64d635ae80de0405cd213a6f067d9648c4735801062330019b0b",
 }
 
 CONCRETE_PRESERVATION_OBSERVER_REFERENCES = {
@@ -235,14 +245,28 @@ APPROVED_RUST_PATH_EDGES = {
 # dated `///` at `store/rewrite.rs::commit` (doc only) and P-2's tripwire module
 # with its `mod` declaration. The other six were recomputed unchanged;
 # `bootstrap/managed.rs`, re-dated by this package, is under NO entry -- measured.
+#
+# R2-E E4.7 (2026-09-02) re-pins THREE tree entries, all comment/`reason`-only:
+# `catalog.rs` (its four allows re-reasoned PERMANENT pending DR-1);
+# `capability/pre_catalog.rs` (`provider.rs`'s `authority_record_binding` and
+# `barrier_mutation` allows re-reasoned, `leaf_observation`'s EXPIRED --
+# measured, nothing in that module is dead even with the `mod capability`
+# blanket lifted); and `v1_lifecycle/mod.rs`, for the three [R2-P3-1] dated
+# residual sentences at `finalization/execute.rs:45,:48,:51` with the operator's
+# ruling (a) quoted in that file's header, and the `gc_archived` allowance
+# re-reasoned PERMANENT PENDING DR-1 rather than deleted. NO count in any row of
+# `V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES` or of
+# `CAPABILITY_FREE_RAW_WRITER_INVENTORY` moves: this step edits only masked-out
+# comments and string contents. The other four tree digests were recomputed in
+# the same pass and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "4b7cef22b64d668f9864ca734a71942d6d2a1e892fc5833259cc6c4e11800eaf",
-    "checked_artifact/catalog.rs": "e5ff1f3fd014ca52b98802ed4093517b24d4fa9bfe3aa0b4594449480219f16e",
+    "checked_artifact/capability/pre_catalog.rs": "e02937db60c39e2a37f2b8432ae0c8fe6144d053784e192f6d72b5e3aced2522",
+    "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "f3cb3df5232dd079441afa31c1b358bc1a02a26db3544f575f782cfbd31d68b9",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "8e436f932fc1ee8718a9c64e26c8784517b87b308a26dcbec38ab14ed1d72bd8",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -535,6 +559,18 @@ ENTRY_REFERENCES = {
     # chartered do not start (GwzM5-8R2E-CapabilityFreeAmendment.md §7); the movers
     # left are E4.5/6-B's three `finalization/execute.rs` arms. E4.7 expires or
     # re-reasons this allowance class, not this package, which only dates it.]
+    # [2026-09-02, R2-E E4.7: the bracket above is CORRECTED on its second
+    # sentence, by the operator's ruling (a) of the same date, quoted in full at
+    # `finalization/execute.rs`. There are NO movers left. E4.5-B does not open;
+    # none of the three `finalization/execute.rs` arms converts; all three stay
+    # RAW as the [R2-P3-1] dated residual -- `:48`/`:51` on the
+    # observation-dead-window ground and `:45` on the directional-residue
+    # ground. Phase E4's conversions are E4.1 and E4.2 and nothing else, so no
+    # remaining R2-E step adds a `recover_or_create` namer and this row's SECOND
+    # caller, if one ever arrives, is DR-1's -- it moves this row and
+    # `interface_tests/catalog_activation_pin.rs` together, deliberately. E4.7
+    # is the step that expires or re-reasons the class, and it has: the class
+    # is dispositioned at each site.]
     #
     # E4.1 review [P1-1] cure adds the SECOND caller: the A1 adapter, proving
     # the destination lifecycle viable before its durable v0->v1 upgrade.

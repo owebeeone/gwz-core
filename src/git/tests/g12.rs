@@ -831,7 +831,11 @@ fn checked_rollback_tolerates_checked_artifact_private_residue() {
     // it is exempt on its own ground — exact-managed catalog state the user
     // never authored (`preservation_image.rs::CATALOG_PRIVATE_PATH`). Both
     // paths must be covered, and the legacy path must STAY covered: the writer
-    // that fills it is still live until E4.7.
+    // that fills it is still live until DR-1 decides its retirement. [E4.7,
+    // 2026-09-02: re-pointed. E4.7's legacy in-place-writer clause RE-OWNS to
+    // DR-1 (`GwzM5-8R2E-CapabilityFreeAmendment.md` §4), which is the landed
+    // reading at `checked_artifact/catalog_names.rs`; this cite disagreed with
+    // it in-tree and now does not.]
     let catalog = repo.join(".gwz/catalog-final");
     fs::create_dir_all(&catalog).unwrap();
     let format = catalog.join("catalog-format");

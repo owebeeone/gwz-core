@@ -12,19 +12,31 @@ use crate::checked_artifact::catalog::{
 mod admission_mutation;
 mod aggregate;
 /// R2-D Phase 2 Step 2.4 — the authority parse / streamed proof split.
+///
+/// *[E4.7, 2026-09-02: the replacement path R2-E was to convert does not
+/// arrive — E4.4-E4.6 do not start (`GwzM5-8R2E-CapabilityFreeAmendment.md`
+/// §7). MEASURED: twenty dead items surface beneath this allow once
+/// `checked_artifact/mod.rs`'s `mod capability` blanket is lifted, so it is
+/// load-bearing in waiting and is re-reasoned, not expired.]*
 #[allow(
     dead_code,
-    reason = "Step 2.4 lands the binding; its consumer is the replacement path R2-E converts, not Step 3.3"
+    reason = "Step 2.4 lands the binding; the replacement path that was to consume it does not arrive — E4.4-E4.6 do not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7). PERMANENT pending DR-1 (E4.7, 2026-09-02)."
 )]
 mod authority_record_binding;
 /// R2-E Phase E2 — the scheduled barrier family's owner-private mutation file
-/// (DECISION B-1). Its consumer is the E4 conversion that gives the roaming
-/// anchor its first admitted action; E2 lands the edges and their executed
-/// matrix, exactly as Step 2.2 landed `namespace_mutation.rs` ahead of its
-/// production entry point.
+/// (DECISION B-1). Its consumer was to be the E4 conversion that gives the
+/// roaming anchor its first admitted action; E2 lands the edges and their
+/// executed matrix, exactly as Step 2.2 landed `namespace_mutation.rs` ahead of
+/// its production entry point.
+///
+/// *[E4.7, 2026-09-02: that E4 conversion does not arrive. Phase E4's
+/// conversions are E4.1 and E4.2 and nothing else — the rest is carve-out,
+/// pins, GC and close-out (operator ruling (a), 2026-09-02;
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §7). MEASURED: two dead items
+/// surface beneath this allow once the `mod capability` blanket is lifted.]*
 #[allow(
     dead_code,
-    reason = "E2 lands the barrier edges and their matrix; the production consumer is R2-E Phase E4"
+    reason = "E2 lands the barrier edges and their matrix; the production consumer named here (R2-E Phase E4) does not arrive — Phase E4 converts E4.1 and E4.2 only (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7, operator ruling (a) 2026-09-02). PERMANENT pending DR-1 (E4.7, 2026-09-02)."
 )]
 mod barrier_mutation;
 mod completed;
@@ -34,14 +46,18 @@ mod filesystem;
 mod index;
 mod interior;
 /// R2-D Step 2.1. Its production caller is Step 2.4's
-/// `authority_record_binding`; the allow remains because that binding's own
-/// consumer is the *replacement* path — Step 3.3 wired the coordinator glue and
-/// deliberately did not convert it, so the streamed-payload consumer is R2-E's
-/// (plan §4 Step 3.3: "wires machinery; it does not convert consumers").
-#[allow(
-    dead_code,
-    reason = "Step 2.4 binds the observer; the binding's consumer is the replacement path R2-E converts"
-)]
+/// `authority_record_binding`.
+///
+/// *[E4.7, 2026-09-02: the `dead_code` allow that stood here EXPIRED. It was
+/// kept for the *replacement* path's streamed-payload consumer, which does not
+/// arrive (E4.4-E4.6 do not start,
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §7) — but MEASUREMENT overtook the
+/// reason: with the allow removed, `cargo check --all-targets` and
+/// `cargo clippy --all-targets -- -D warnings` are green, and with
+/// `checked_artifact/mod.rs`'s `mod capability` blanket ALSO lifted the error
+/// count is unchanged, so NOTHING in this module is dead. Unlike its two
+/// siblings above, this allow was not load-bearing in waiting; it suppressed
+/// nothing and is gone rather than re-reasoned.]*
 mod leaf_observation;
 mod managed_mutation;
 mod mutation;
