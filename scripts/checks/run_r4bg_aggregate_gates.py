@@ -490,6 +490,30 @@ def _fault_count(darwin: str, linux: str) -> str:
         crlf_sentinel_unpinned_worktree_materializes_blob_exact), net +1.
         FIRST-DISPATCH-EXPECTED at the next tag's verify; a measured number wins.
 
+    DR-1 Phase R1 Step S1 (2026-09-03) -- NEW-1, the permanent pin on the
+    CORRECTED directional-residue mechanism (`GwzM5-8DR1-Reconciliation-Design.md`
+    §1.4) -- moves the checked_artifact:: partition and ONLY it, by ONE row:
+    `checked_artifact::tests::removal_recovery::
+    a_counterpart_forward_family_refuses_as_foreign_before_the_authority_check`.
+    The row plants a forward-pair family at `CheckedArtifactFault::
+    BeforeManagedPublication` and then asks the counterpart REVERSE question over
+    the same leaf, pinning `Ambiguous` AND its cause -- `inspect_family` sets
+    `foreign` by name and binds no authority, so `classification.rs:175-177` is
+    unreachable and `classification.rs:141-143` is what refuses. S1 lands NO
+    production behaviour change; its other edits are comment text.
+
+      checked_artifact:: darwin 457 -> 458: MEASURED on this step's own tree
+        from a --list-verified SNAPSHOT of its own lib test binary (458 passed,
+        2026-09-03; --list 1845).
+      checked_artifact:: linux 467 -> 468: DERIVED (+1, cfg-independent -- the
+        row carries no `cfg` gate, drives `CheckedArtifactFault`, which is
+        census-free and cross-platform, and plants only a directory and two
+        private-area files), *not* measured, and therefore
+        FIRST-DISPATCH-EXPECTED at this step's landing dispatch. A measured
+        number wins.
+      v1_lifecycle:: 266 and the lib remainder 1119 / 1120: UNMOVED, both darwin
+        values re-verified from the same --list snapshot.
+
     v0.13.0's ubuntu verify stays red: the verify checks out the tag, and a tag
     is immutable. The landing rule from this miss: a landing that adds or removes
     a #[test] re-measures this driver's pins, and every landing compares the
@@ -528,7 +552,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # first Windows compile of that code. Marked here beside the linux
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("457 passed", "467 passed")),
+         lib("checked_artifact::"), _fault_count("458 passed", "468 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),

@@ -186,7 +186,8 @@ impl CheckedArtifact {
         //
         // The charter prep's fourth row — E4.5-B's marker arm, written
         // conditionally — is VACATED rather than answered: E4.5-B does not open
-        // and `finalization/execute.rs:45` stays raw. There is no fourth
+        // and `finalization/execute.rs:79` (`:45` at the ruling's base sha
+        // `f563446`; DR-1 S1 re-points it) stays raw. There is no fourth
         // converted consumer, now or in R2-E.
         //
         // VERDICT: no converted consumer bypasses both mechanisms. The A-1

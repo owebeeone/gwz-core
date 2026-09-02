@@ -152,3 +152,66 @@ fn removal_recovers_a_same_identity_source_alias() {
     assert!(!managed.exists());
     assert!(family_entries(&root, &family).is_empty());
 }
+
+// [DR-1 S1] NEW-1 — the permanent pin on the CORRECTED directional-residue
+// mechanism (`dev-docs/GwzM5-8DR1-Reconciliation-Design.md` §1.4; the driven
+// wall is `dev-docs/GwzM5-8R2E-E45B-Report.md`, whose own sentence named the
+// wrong layer). An interrupted FORWARD publication `(Missing -> goal, Replace)`
+// leaves an authority record and a staged goal named by the FORWARD
+// `action_key`, which hashes `expected` AND `goal` (`authority.rs:204-223`).
+// The counterpart REVERSE question `(Bytes(goal) -> Missing, Remove)`
+// enumerates the very same family — `family_key` is direction-free,
+// `authority.rs:196-202` — and then rejects every member BY NAME:
+// `residue.rs:179-181` on the `.authority`, `residue.rs:205-206` on the
+// `.goal`. `inspect_family` therefore returns `foreign = true` with
+// `authority == None`, and `classify_exact` short-circuits to `Ambiguous` at
+// `classification.rs:141-143` — BEFORE the authority-current check at
+// `classification.rs:175-177` that the record used to cite, which is
+// unreachable here precisely because `residue.authority` is `None`.
+//
+// The pin asserts the refusal AND its cause, so DR-1's cure (S2's survey, S2b's
+// reconciler, S3's pre-pass) must flip it deliberately rather than by accident.
+#[test]
+fn a_counterpart_forward_family_refuses_as_foreign_before_the_authority_check() {
+    let root = TempRoot::new("counterpart-forward-family");
+    fs::create_dir_all(root.0.join("a")).unwrap();
+    let checked = artifact(&root.0, "a/value");
+    let family = checked.family_key();
+
+    // The canonical power-loss instant: the forward authority record and the
+    // staged goal are published; the leaf is not.
+    fail_next_checked_artifact_at(CheckedArtifactFault::BeforeManagedPublication);
+    assert!(
+        checked
+            .replace_exact(&CheckedArtifactFact::Missing, b"goal")
+            .is_err()
+    );
+    assert!(!root.0.join("a/value").exists());
+    let planted = family_entries(&root, &family);
+    let named = |extension: &str| {
+        planted
+            .iter()
+            .any(|path| path.extension().is_some_and(|value| value == extension))
+    };
+    assert!(named("authority") && named("goal"), "{planted:?}");
+
+    // The counterpart reverse question over the same leaf.
+    let reverse = artifact(&root.0, "a/value");
+    let expected = CheckedArtifactFact::Bytes(b"goal".to_vec());
+    assert_eq!(
+        reverse.classify_remove(&expected).unwrap(),
+        CheckedArtifactTransition::Ambiguous
+    );
+
+    // The CAUSE, pinned to the frame that actually refuses.
+    let residue = reverse.inspect_family(&expected, None).unwrap();
+    assert!(
+        residue.foreign,
+        "the refusal is the `foreign` short-circuit"
+    );
+    assert!(
+        residue.authority.is_none(),
+        "`classification.rs:175-177` is unreachable: no authority is bound"
+    );
+    assert!(residue.source.is_none() && residue.goal.is_none());
+}

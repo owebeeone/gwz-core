@@ -252,13 +252,26 @@ APPROVED_RUST_PATH_EDGES = {
 # `barrier_mutation` allows re-reasoned, `leaf_observation`'s EXPIRED --
 # measured, nothing in that module is dead even with the `mod capability`
 # blanket lifted); and `v1_lifecycle/mod.rs`, for the three [R2-P3-1] dated
-# residual sentences at `finalization/execute.rs:45,:48,:51` with the operator's
+# residual sentences at `finalization/execute.rs:79,:88,:98` (`:45,:48,:51` at
+# the ruling's base sha `f563446`; DR-1 S1 re-points them) with the operator's
 # ruling (a) quoted in that file's header, and the `gc_archived` allowance
 # re-reasoned PERMANENT PENDING DR-1 rather than deleted. NO count in any row of
 # `V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES` or of
 # `CAPABILITY_FREE_RAW_WRITER_INVENTORY` moves: this step edits only masked-out
 # comments and string contents. The other four tree digests were recomputed in
 # the same pass and are unchanged.
+#
+# DR-1 Phase R1 Step S1 (2026-09-03) re-pins ONE tree entry, `v1_lifecycle/mod.rs`,
+# and it is comment-only: the marker's [R2-P3-1] residual sentence at
+# `finalization/execute.rs:71-78` had its MECHANISM CITE corrected -- the refusal
+# is `inspect_family`'s `foreign` flag (`residue.rs:179-181`, `:205-206`) returned
+# at `classification.rs:141-143`, one frame BEFORE the `:175-177` authority-current
+# check the sentence used to name -- plus the file-foot [DR-1 S1] footnote and the
+# header's re-pointed drift note. The sentence keeps its eight lines and the
+# footnote sits BELOW all three arms, so `:79`/`:88`/`:98` do NOT move. NO count in
+# any row of `V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES` or of
+# `CAPABILITY_FREE_RAW_WRITER_INVENTORY` moves. The other six tree digests and every
+# flat digest were recomputed in the same pass and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
@@ -266,7 +279,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "451bc77d5aebe7fbc450df98cac731e0a1db7b4e80d14f326d1290723cbe5f81",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "d4cbe25dc4e5f75c7af15a3aa330a4d2f0d4bf256b5774316cc9d0de353e6b4f",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -563,9 +576,10 @@ ENTRY_REFERENCES = {
     # sentence, by the operator's ruling (a) of the same date, quoted in full at
     # `finalization/execute.rs`. There are NO movers left. E4.5-B does not open;
     # none of the three `finalization/execute.rs` arms converts; all three stay
-    # RAW as the [R2-P3-1] dated residual -- `:48`/`:51` on the
-    # observation-dead-window ground and `:45` on the directional-residue
-    # ground. Phase E4's conversions are E4.1 and E4.2 and nothing else, so no
+    # RAW as the [R2-P3-1] dated residual -- `:88`/`:98` on the
+    # observation-dead-window ground and `:79` on the directional-residue
+    # ground (`:48`/`:51`/`:45` at the ruling's base sha `f563446`; DR-1 S1
+    # re-points them). Phase E4's conversions are E4.1 and E4.2 and nothing else, so no
     # remaining R2-E step adds a `recover_or_create` namer and this row's SECOND
     # caller, if one ever arrives, is DR-1's -- it moves this row and
     # `interface_tests/catalog_activation_pin.rs` together, deliberately. E4.7
