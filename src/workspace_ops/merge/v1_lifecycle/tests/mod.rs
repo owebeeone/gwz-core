@@ -58,14 +58,14 @@ fn blank(output: &mut [char], start: usize, end: usize) {
 /// newlines and offsets retained; CRLF normalized and a trailing newline restored
 /// so a region may be its file's last item. THE shared masker for every
 /// source-text tripwire in this tree, and a faithful port of the checker's own
-/// `mask_non_code` (`check_checked_artifact_boundaries.py:1013-1076`): line
+/// `mask_non_code` (`check_checked_artifact_boundaries.py:1155-1225`, measured at the landing): line
 /// comments to end of line; NESTED `/* … */`; raw strings closed by matching hash
 /// count; strings with escapes; char literals with the lifetime disambiguation the
 /// Python has, so `'a`, `'static`, `<'a>` and `&'a str` stay code — plus
 /// `'\u{…}'`, which the Python skips rather than masks.
 ///
 /// **E4.3-B review [P3-3]'s NAMED RESIDUAL is CURED by this port**, and so are the
-/// four QUIET shapes E4.4-6-B round 1 [P1-1] drove against its first replacement.
+/// six QUIET shapes E4.4-6-B round 1 [P1-1] drove against its first replacement.
 /// The cure is structural: this is a SCANNER that skips each construct whole, not
 /// a `"` toggle, so an unbalanced quote inside a literal cannot desynchronise the
 /// rest of the file. `the_shared_masker_…` below drives every shape the review

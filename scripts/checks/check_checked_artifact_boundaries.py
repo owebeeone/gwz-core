@@ -242,7 +242,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "e5ff1f3fd014ca52b98802ed4093517b24d4fa9bfe3aa0b4594449480219f16e",
     "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "6e2624c290b752bc9ead55c5e8850d63d0bbf50dc5cfbc20c071f981da8a394b",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "f3cb3df5232dd079441afa31c1b358bc1a02a26db3544f575f782cfbd31d68b9",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -459,8 +459,8 @@ for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCL
 # it omits, under the StashMutate guard; and the v0 terminal archive
 # `store/archived.rs::archive` -- reached from ordinary v0 merge finalization
 # (`finalize_dispatch.rs:34`, `finalize_support.rs:99`) and from BOTH abort forms
-# (`abort/mod.rs:111,:189,:218`) via `archive_merge_record` -- is named by the
-# amendment, the charter prep and neither axis of its dual (round 1 [P2-1]).
+# (`abort/mod.rs:111,:189,:218`) via `archive_merge_record` -- is named by NEITHER the
+# amendment, the charter prep, NOR either axis of its dual (round 1 [P2-1]).
 CAPABILITY_FREE_WRITER_TOKENS = (
     "rename_noreplace", "rename_durable", "sync_dir",  # `durable_fs`
     "create_dir_all", "remove_file",  # `std::fs`-direct
