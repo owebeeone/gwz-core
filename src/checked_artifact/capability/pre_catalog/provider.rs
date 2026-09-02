@@ -15,12 +15,14 @@ mod aggregate;
 ///
 /// *[E4.7, 2026-09-02: the replacement path R2-E was to convert does not
 /// arrive — E4.4-E4.6 do not start (`GwzM5-8R2E-CapabilityFreeAmendment.md`
-/// §7). MEASURED: twenty dead items surface beneath this allow once
-/// `checked_artifact/mod.rs`'s `mod capability` blanket is lifted, so it is
-/// load-bearing in waiting and is re-reasoned, not expired.]*
+/// §7). MEASURED, review-corrected (`GwzM5-8R2E-E4.7-Review.md` P2-1):
+/// TWENTY-ONE dead items surface beneath this allow once
+/// `checked_artifact/mod.rs`'s `mod capability` blanket is lifted (20
+/// diagnostics, net `clippy -D warnings` delta +20; one diagnostic names two
+/// items), so it is load-bearing in waiting and is re-reasoned, not expired.]*
 #[allow(
     dead_code,
-    reason = "Step 2.4 lands the binding; the replacement path that was to consume it does not arrive — E4.4-E4.6 do not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7). PERMANENT pending DR-1 (E4.7, 2026-09-02)."
+    reason = "Step 2.4 lands the binding; the replacement path that was to consume it does not arrive — E4.4-E4.6 do not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7). PERMANENT pending DR-1 (E4.7, 2026-09-02); INERT today under checked_artifact/mod.rs's `mod capability` blanket — load-bearing by TWENTY-ONE dead items (net clippy delta +20) if that blanket goes."
 )]
 mod authority_record_binding;
 /// R2-E Phase E2 — the scheduled barrier family's owner-private mutation file
@@ -32,11 +34,15 @@ mod authority_record_binding;
 /// *[E4.7, 2026-09-02: that E4 conversion does not arrive. Phase E4's
 /// conversions are E4.1 and E4.2 and nothing else — the rest is carve-out,
 /// pins, GC and close-out (operator ruling (a), 2026-09-02;
-/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §7). MEASURED: two dead items
-/// surface beneath this allow once the `mod capability` blanket is lifted.]*
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §7). MEASURED, review-corrected
+/// (`GwzM5-8R2E-E4.7-Review.md` P2-1): FOUR dead items surface beneath this
+/// allow once the `mod capability` blanket is lifted — `Active`, `Retired`,
+/// `OwnDrive`, `Stranded` in `barrier_mutation.rs` (2 diagnostics, net
+/// `clippy -D warnings` delta +2; rustc reports only the outermost dead
+/// item).]*
 #[allow(
     dead_code,
-    reason = "E2 lands the barrier edges and their matrix; the production consumer named here (R2-E Phase E4) does not arrive — Phase E4 converts E4.1 and E4.2 only (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7, operator ruling (a) 2026-09-02). PERMANENT pending DR-1 (E4.7, 2026-09-02)."
+    reason = "E2 lands the barrier edges and their matrix; the production consumer named here (R2-E Phase E4) does not arrive — Phase E4 converts E4.1 and E4.2 only (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7, operator ruling (a) 2026-09-02). PERMANENT pending DR-1 (E4.7, 2026-09-02); INERT today under checked_artifact/mod.rs's `mod capability` blanket — load-bearing by FOUR dead items (net clippy delta +2) if that blanket goes."
 )]
 mod barrier_mutation;
 mod completed;

@@ -71,7 +71,7 @@ pub(super) fn publication<B: MergeAuthorityBackend>(
             // [R2-P3-1] DATED RESIDUAL, E4.7 2026-09-02 — the marker STAYS RAW: a crash
             // inside a checked publication leaves a forward-pair authority residue that
             // the abort's reverse-pair `classify_remove` reads as `Ambiguous`
-            // (`classification.rs:175-177` → `abort/evidence.rs` → `Other` →
+            // (`classification.rs:175-177` → `merge/abort/evidence.rs` → `Other` →
             // `RecoveryRequired`), stranding `gwz merge --abort` — a directional-residue
             // window, distinct from and stronger than the detach window below. Operator
             // ruling (a) 2026-09-02 (quoted in this file's header); DR-1;
@@ -80,9 +80,9 @@ pub(super) fn publication<B: MergeAuthorityBackend>(
         }
         PublicationPhysicalAction::WriteLock => {
             // [R2-P3-1] DATED RESIDUAL, E4.7 2026-09-02 — the lock STAYS RAW: a
-            // `Bytes → Bytes` replacement, so the boundary's `replace_exact` detaches
-            // before publishing and the shipped forward (`live.rs`) and abort
-            // (`abort/evidence.rs::classify_file`) observers refuse to classify the
+            // `Bytes → Bytes` replacement, so the checked boundary's `replace_exact` detaches
+            // before publishing and the shipped forward (`authority/observe/finalization/publication/live.rs`) and abort
+            // (`merge/abort/evidence.rs::classify_file`) observers refuse to classify the
             // absence — an observation-dead window. The raw rename is atomic and opens
             // none. DR-1 (`dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md` §5).
             artifact::write_atomic(&root.join(LOCK_PATH), &candidate.lock_yaml)?;
@@ -91,7 +91,7 @@ pub(super) fn publication<B: MergeAuthorityBackend>(
             // [R2-P3-1] DATED RESIDUAL, E4.7 2026-09-02 — the boundary STAYS RAW, on
             // the same ground as the lock above: a `Bytes → Bytes` replacement whose
             // `replace_exact` detaches before publishing, into an absence the shipped
-            // forward (`live.rs`) and abort (`abort/evidence.rs::classify_file`)
+            // forward (`authority/observe/finalization/publication/live.rs`) and abort (`merge/abort/evidence.rs::classify_file`)
             // observers both refuse to classify — an observation-dead window. DR-1
             // (`dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md` §5); row `:279`'s
             // frozen cell-2 wording travels there with it.

@@ -41,6 +41,11 @@ pub(crate) trait MergeStore {
     fn load(&self, _root: &Path, _merge_id: &str) -> ModelResult<MergeOperationRecord> {
         unsupported_store("load")
     }
+    // SWEPT at E4.7 (2026-09-02): the forward reference below is spent (A1
+    // shipped 2026-08-25). Outside the capability-free amendment §4's E4.2-E4.6
+    // class and owned by no adopted record, so left as written; MEASURED
+    // LOAD-BEARING (`load_archived` has no production caller). Routed to DR-1
+    // (`GwzM5-8R2E-E4.7-Review.md` P3-4).
     #[cfg_attr(
         not(test),
         allow(

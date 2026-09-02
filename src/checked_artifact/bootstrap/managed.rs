@@ -14,16 +14,20 @@ mod plan;
 /// the question is DR-1's, not an E4 row's (E4.7, 2026-09-02). Note also that
 /// this inner allow is inert either way — `mod bootstrap` carries a blanket
 /// `#[allow(dead_code)]` (`checked_artifact/mod.rs`), so it documents intent
-/// rather than suppressing a live lint; MEASURED at E4.7, it becomes
-/// load-bearing the moment that blanket goes — one dead item surfaces beneath
-/// it — so it is kept, not expired.
+/// rather than suppressing a live lint; MEASURED at E4.7 and re-measured at its
+/// review (`GwzM5-8R2E-E4.7-Review.md` P2-1): it becomes load-bearing the
+/// moment that blanket goes — THREE dead items surface beneath it
+/// (`ManagedParentPurpose::Archive`, `ALL`, `provider.rs::row`; the net
+/// `clippy -D warnings` error-count delta is +1 only because rustc reports the
+/// outermost dead item and absorbs the nested ones) — so it is kept, not
+/// expired.
 #[allow(
     dead_code,
     reason = "Step 3.3 wired the coordinator caller; REACHED from the entry point at R2-E E4.2 \
               (admit/execute_merge_start_managed_parents, 2026-09-01) — what stays dead is the \
               surface no converted consumer reads, and no further converted consumer arrives: \
               E4.4-E4.6 do not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7). \
-              PERMANENT pending DR-1 (E4.7, 2026-09-02)."
+              PERMANENT pending DR-1 (E4.7, 2026-09-02); INERT today under checked_artifact/mod.rs's `mod bootstrap` blanket — load-bearing by THREE dead items (net clippy delta +1) if that blanket goes."
 )]
 mod provider;
 

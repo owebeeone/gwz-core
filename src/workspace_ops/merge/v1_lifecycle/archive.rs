@@ -110,12 +110,20 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
 /// consumer to arrive: the route RE-OWNS to DR-1, conditional on (C), and E4.7
 /// deletes the family or re-reasons this allowance as permanent-pending-DR-1.]
 /// [2026-09-02, E4.7: RE-REASONED, not deleted — the choice, made and costed.
-/// The family is SEVEN functions and one struct across TWO files, not the three
-/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §5 names: `gc_archived`,
-/// `gc_archived_with_hook`, `remove_archive` and `require_same_archive` here,
-/// plus `merge/gc.rs`'s `preflight_archived_cleanup`,
-/// `delete_preflighted_backup_refs`, `require_backup_refs_absent` and
-/// `PreparedArchivedCleanup`, which have no other caller.
+/// The family, MEASURED at the E4.7 review by removing this allow (14
+/// diagnostics; `GwzM5-8R2E-E4.7-Review.md` P3-1, correcting the builder's
+/// "seven and one"), is ELEVEN functions and TWO structs across two files plus
+/// four family-only members of a shared struct in a third — not the three
+/// `GwzM5-8R2E-CapabilityFreeAmendment.md` §5 names. Here: `gc_archived`,
+/// `gc_archived_with_hook`, `remove_archive`, `require_same_archive`,
+/// `any_open_record_present`, and this file's own `require_real_directory`,
+/// `require_regular_file` and `io_error`. In `merge/gc.rs`:
+/// `preflight_archived_cleanup`, `delete_preflighted_backup_refs`,
+/// `require_backup_refs_absent`, `PreparedArchivedCleanup` and
+/// `ArchivedBackupArtifact`. In `archive_result.rs`: `ValidatedArchivedMerge`'s
+/// `source_version`, `destination_bytes`, `destination_sha256` and `cleanup`
+/// (the struct itself survives, shared with `status.rs`). None has another
+/// caller.
 /// `acquire_archived` is NOT in it — it has live callers on the
 /// archive-recovery path. DELETING the family would drop this file's `sync_dir`
 /// count 2 → 0 and fire the O13 inventory's fail-closed SHRINKAGE arm, which
@@ -228,7 +236,7 @@ fn remove_archive(root: &Path, merge_id: &str, expected: &[u8]) -> ModelResult<(
         .as_path()
         .parent()
         .ok_or_else(|| recovery("validated archive path has no parent"))?;
-    // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the DEAD `remove_archive` arm behind the `:108-111` allowance; carved with the rest of the row rather than half-converted (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
+    // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the DEAD `remove_archive` arm behind the `:135-144` allowance (`:108-111` as adopted; re-measured at the E4.7 landing); carved with the rest of the row rather than half-converted (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     fs::remove_file(path.as_path()).map_err(io_error)?;
     sync_dir(done).map_err(io_error)
 }

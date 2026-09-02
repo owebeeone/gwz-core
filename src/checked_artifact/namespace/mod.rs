@@ -30,14 +30,20 @@ mod evidence;
 /// the managed-parent provider has driven this backend since Step 3.1 and
 /// `entry.rs` reaches it through E4.2's start sessions — while the six barrier
 /// role methods E2 added still have no production caller. MEASURED at this
-/// step: lifting `checked_artifact/mod.rs`'s `mod namespace` blanket surfaces
-/// SEVEN dead items beneath this allow, so it is load-bearing in waiting and is
-/// re-reasoned rather than expired. The allow is PERMANENT PENDING DR-1 — dated
+/// step and RE-MEASURED at its review (`GwzM5-8R2E-E4.7-Review.md` P2-1,
+/// correcting the builder's SEVEN): lifting `checked_artifact/mod.rs`'s
+/// `mod namespace` blanket surfaces FORTY-THREE dead items beneath this allow,
+/// across `namespace/{backend.rs, host.rs, mod.rs, roles.rs}` — the whole
+/// `PublishRoleV1` / `PublishDestination` / `CleanupRetirementDestination` /
+/// `ScheduledBarrierOrdinal` vocabulary plus sixteen `host.rs` and seven
+/// `mod.rs` methods (14 diagnostics; the net `clippy -D warnings` delta is +7
+/// only because rustc reports the outermost dead item) — so it is load-bearing
+/// in waiting and is re-reasoned rather than expired. The allow is PERMANENT PENDING DR-1 — dated
 /// and owned, not permanent by silence, which is what the sentence above
 /// forbids.]*
 #[allow(
     dead_code,
-    reason = "the managed-parent provider has driven this backend since Step 3.1; the entry point landed at Phase E4 (E4.2), but the six barrier role methods E2 added gain no production caller — E4.4-E4.6 do not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7). PERMANENT pending DR-1, on the dated re-owning above (E4.7, 2026-09-02)."
+    reason = "the managed-parent provider has driven this backend since Step 3.1; the entry point landed at Phase E4 (E4.2), but the six barrier role methods E2 added gain no production caller — E4.4-E4.6 do not start (dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §7). PERMANENT pending DR-1, on the dated re-owning above (E4.7, 2026-09-02); INERT today under checked_artifact/mod.rs's `mod namespace` blanket — load-bearing by FORTY-THREE dead items (net clippy delta +7) if that blanket goes."
 )]
 mod host;
 mod managed;
