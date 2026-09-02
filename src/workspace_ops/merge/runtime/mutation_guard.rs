@@ -24,12 +24,15 @@ impl WorkspaceMutationGuard {
 
 /// The outcome of asking a workspace for permission to mutate it.
 ///
-/// The seam takes `dry_run` so no caller can reach write authority without having
-/// stated an answer, and hands that authority back only in the [`Self::Mutating`]
-/// arm — a plan-only run gets a root to read and nothing to write with. The mutator
-/// lock is held in both arms: a plan must observe the same workspace a real run
-/// would have mutated, and the pre-existing dry-run behaviour of the handlers on
-/// this seam (add/commit/snapshot/capture/tag) held it too.
+/// The seam takes `dry_run` so that NO CALLER CAN COMPILE without stating an answer —
+/// that is its guarantee. The arm is the record of the answer: [`Self::Mutating`]
+/// hands back the guard that authorizes the conf-gate reconcile, [`Self::PlanOnly`]
+/// hands back only a root to read. It does not by itself stop a handler from writing
+/// to the filesystem through other paths; each handler still gates its own writes on
+/// the answer (review P3-1, 2026-09-02). The mutator lock is held in both arms: a
+/// plan must observe the same workspace a real run would have mutated, and the
+/// pre-existing dry-run behaviour of the handlers on this seam
+/// (add/commit/snapshot/capture/tag) held it too.
 pub enum WorkspaceMutationAccess {
     /// A real mutation: the inner guard authorizes the writes.
     Mutating(WorkspaceMutationGuard),
