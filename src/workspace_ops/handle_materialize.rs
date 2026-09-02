@@ -39,12 +39,7 @@ where
             format!("snapshot '{}' already exists", request.snapshot_id),
         ));
     }
-    assert_conf_unmodified_for(
-        backend,
-        &root,
-        OpenMergeCommand::Snapshot,
-        access.writes(),
-    )?;
+    assert_conf_unmodified_for(backend, &root, OpenMergeCommand::Snapshot, access.writes())?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
