@@ -44,13 +44,17 @@ where
             start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::StashMutate,
-            request.op == crate::StashOp::Push && request.meta.dry_run.unwrap_or(false),
+            request.meta.dry_run.unwrap_or(false),
         )?
     };
-    // Gate on the op, not the guard: a push dry run holds no guard but
+    // Gate on the op, not the guard: a dry run holds no guard but
     // must still refuse a hand edit (it just never reconciles); only List
     // stays ungated so a damaged workspace remains inspectable
     // (verification NF-1, cured at the landing).
+    //
+    // DR-1/DR-2: this used to AND the flag with `op == Push`, so `--dry-run`
+    // stash apply/pop/drop took the real mutating guard and then ran the real
+    // restore. The op-specific gates now live in the handlers, one per arm.
     if request.op != crate::StashOp::List {
         assert_conf_unmodified_for(
             backend,

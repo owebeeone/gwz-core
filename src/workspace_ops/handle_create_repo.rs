@@ -30,6 +30,19 @@ pub fn handle_create_workspace(
         .clone()
         .unwrap_or_else(|| "ws_default".to_owned());
     crate::model::WorkspaceId::parse_str(&workspace_id)?;
+    // DR-4: everything above is validation — `preflight_create_workspace` refuses an
+    // existing workspace, `preflight_workspace_bootstrap_files` refuses hand-edited
+    // bootstrap files, and the id is parsed. A dry run stops here, before the git repo,
+    // the manifest/lock pair and the AGENTS/.claude bootstrap files are created. The
+    // `init --update` shape is gated separately in `workspace_bootstrap.rs`.
+    if request.meta.dry_run.unwrap_or(false) {
+        let mut response = response_envelope(context, crate::AggregateStatus::Accepted, Vec::new());
+        response.meta.message = Some(format!(
+            "would create workspace '{workspace_id}' at {}",
+            root.display()
+        ));
+        return Ok(crate::CreateWorkspaceResponse { response });
+    }
     ensure_workspace_git_repo(&root)?;
     let backend = Git2Backend::new();
     let _guard = WorkspaceMutatorLock::acquire(&root)?;

@@ -46,7 +46,7 @@ pub(crate) fn resolve_stage_targets(
     if pathspecs.is_empty() {
         return Err(ModelError::new(
             ErrorCode::InvalidRequest,
-            "nothing specified to stage; pass pathspecs or --all",
+            "nothing specified to stage; pass pathspecs or -A",
         ));
     }
 

@@ -24,12 +24,13 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Snapshot(request.clone()).context(operation_id.into())?;
-    let _guard = acquire_workspace_mutation_guard(
+    let access = acquire_workspace_mutation_guard(
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::Snapshot,
+        request.meta.dry_run.unwrap_or(false),
     )?;
-    let root = _guard.root().to_path_buf();
+    let root = access.root().to_path_buf();
     // F13: reject a duplicate snapshot id up front, the same guard `tag` already has —
     // never silently overwrite an existing snapshot.
     if artifact::snapshot_path(&root, &request.snapshot_id)?.exists() {
@@ -42,7 +43,7 @@ where
         backend,
         &root,
         OpenMergeCommand::Snapshot,
-        reconcile_authority(Some(&_guard), request.meta.dry_run.unwrap_or(false)),
+        access.writes(),
     )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
@@ -97,18 +98,14 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Capture(request.clone()).context(operation_id.into())?;
-    let _guard = acquire_workspace_mutation_guard(
+    let access = acquire_workspace_mutation_guard(
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::Capture,
+        request.meta.dry_run.unwrap_or(false),
     )?;
-    let root = _guard.root().to_path_buf();
-    assert_conf_unmodified_for(
-        backend,
-        &root,
-        OpenMergeCommand::Capture,
-        reconcile_authority(Some(&_guard), request.meta.dry_run.unwrap_or(false)),
-    )?;
+    let root = access.root().to_path_buf();
+    assert_conf_unmodified_for(backend, &root, OpenMergeCommand::Capture, access.writes())?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;

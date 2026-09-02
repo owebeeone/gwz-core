@@ -23,27 +23,23 @@ where
 {
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = if request.op == crate::TagOp::List {
+    let (_access, root) = if request.op == crate::TagOp::List {
         (
             None,
             resolve_workspace_root(start, request.meta.workspace.as_ref())?,
         )
     } else {
-        let guard = acquire_workspace_mutation_guard(
+        let access = acquire_workspace_mutation_guard(
             start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::TagMutate,
+            dry_run,
         )?;
-        let root = guard.root().to_path_buf();
-        (Some(guard), root)
+        let root = access.root().to_path_buf();
+        (Some(access), root)
     };
-    if _guard.is_some() {
-        assert_conf_unmodified_for(
-            backend,
-            &root,
-            OpenMergeCommand::TagMutate,
-            reconcile_authority(_guard.as_ref(), dry_run),
-        )?;
+    if let Some(access) = _access.as_ref() {
+        assert_conf_unmodified_for(backend, &root, OpenMergeCommand::TagMutate, access.writes())?;
     }
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;

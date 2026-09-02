@@ -1541,3 +1541,36 @@ impl Drop for TempDir {
         let _ = fs::remove_dir_all(&self.path);
     }
 }
+
+// DR-4: `gwz --dry-run init` (the create-workspace shape) used to create the git
+// repo, the manifest/lock pair, the marker directory and the AGENTS/.claude
+// bootstrap files for real. The assertion is over the directory contents.
+#[test]
+pub(crate) fn dry_run_create_workspace_creates_nothing() {
+    let temp = TempDir::new("create-workspace-dry-run");
+    let root = temp.path().join("fresh");
+    fs::create_dir_all(&root).unwrap();
+    let mut request = create_workspace_request(&root);
+    request.meta.dry_run = Some(true);
+
+    let response = handle_create_workspace(request, "op_create_dry").unwrap();
+
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Accepted
+    );
+    let entries: Vec<String> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(entries.is_empty(), "dry run created {entries:?}");
+    assert!(!root.join(".git").exists());
+    assert!(!root.join(crate::workspace::WORKSPACE_DIR).exists());
+    assert!(!root.join("AGENTS.md").exists());
+    assert!(!root.join("AGENTS_GWZ.md").exists());
+    assert!(!root.join(".claude").exists());
+
+    // The real create still works in the same directory afterwards.
+    handle_create_workspace(create_workspace_request(&root), "op_create_real").unwrap();
+    assert!(root.join(crate::workspace::WORKSPACE_DIR).is_dir());
+}

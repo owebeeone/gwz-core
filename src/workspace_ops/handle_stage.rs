@@ -24,12 +24,13 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Stage(request.clone()).context(operation_id.into())?;
-    let _guard = acquire_workspace_mutation_guard(
+    let _access = acquire_workspace_mutation_guard(
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::StageConflictResolution,
+        request.meta.dry_run.unwrap_or(false),
     )?;
-    let root = _guard.root().to_path_buf();
+    let root = _access.root().to_path_buf();
     if let Some(record) = merge::FileMergeStore.discover_open(&root)? {
         return handle_open_merge_stage(backend, &root, &record, &request, context);
     }

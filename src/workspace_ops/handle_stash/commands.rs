@@ -240,6 +240,31 @@ where
         request.op,
     )?;
 
+    // Everything above is validation and planning: the bundle is resolved, the
+    // selection is checked against it, and `restore_plans` has already refused a
+    // dirty destination or a missing native payload. A dry run stops here, before
+    // the first `stash_apply`/`stash_pop`/`stash_drop` and before any bundle
+    // rewrite (DR-1/DR-2).
+    if request.meta.dry_run.unwrap_or(false) {
+        return Ok(stash_response(
+            context,
+            crate::AggregateStatus::Accepted,
+            plans
+                .iter()
+                .map(|plan| {
+                    stash_target_response(
+                        &plan.target_id,
+                        &plan.relative_path,
+                        plan.target_kind,
+                        crate::MemberStatus::Planned,
+                        None,
+                    )
+                })
+                .collect(),
+            vec![project_bundle(&bundle)],
+        ));
+    }
+
     let mut responses = Vec::with_capacity(plans.len());
     let preserve_index = request.preserve_index.unwrap_or(true);
     for plan in plans {

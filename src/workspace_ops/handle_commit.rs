@@ -34,18 +34,14 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Commit(request.clone()).context(operation_id.into())?;
-    let _guard = acquire_workspace_mutation_guard(
+    let access = acquire_workspace_mutation_guard(
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::Commit,
+        request.meta.dry_run.unwrap_or(false),
     )?;
-    let root = _guard.root().to_path_buf();
-    assert_conf_unmodified_for(
-        backend,
-        &root,
-        OpenMergeCommand::Commit,
-        reconcile_authority(Some(&_guard), request.meta.dry_run.unwrap_or(false)),
-    )?;
+    let root = access.root().to_path_buf();
+    assert_conf_unmodified_for(backend, &root, OpenMergeCommand::Commit, access.writes())?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;

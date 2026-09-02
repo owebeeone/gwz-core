@@ -297,8 +297,11 @@ mod tests {
             root,
             None,
             OpenMergeCommand::RepoMutate,
+            false,
         )
         .unwrap()
+        .into_guard()
+        .expect("a non-dry-run acquisition yields the mutating arm")
     }
 
     #[test]

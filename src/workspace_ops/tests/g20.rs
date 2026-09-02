@@ -424,3 +424,130 @@ fn stash_dirty_destination_rejects_before_restore_mutation() {
     assert_eq!(bundle.members[0].push_lifecycle, StashPushLifecycle::Saved);
     assert_eq!(bundle.members[0].restore_state, StashRestoreState::Pending);
 }
+
+// DR-1/DR-2: `--dry-run` on a restore op must plan and mutate nothing. The
+// assertions are over concrete state — the native stash list, the bundle file and
+// its recorded restore state, and the working tree — not over the response shape.
+
+fn dry_run_stash_request(op: crate::StashOp, stash_id: &str) -> crate::StashRequest {
+    let mut request = stash_request(op, stash_id);
+    request.meta.dry_run = Some(true);
+    request
+}
+
+#[test]
+fn dry_run_stash_apply_restores_nothing() {
+    let temp = TempDir::new("stash-dry-run-apply");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "stash-dry-apply-source");
+    let member = temp.path().join("remote");
+    fs::write(member.join("README.md"), "changed\n").unwrap();
+    handle_stash(
+        &backend,
+        temp.path(),
+        stash_request(crate::StashOp::Push, "stash_dry_apply"),
+        "op_push",
+    )
+    .unwrap();
+    assert_text_eq(member.join("README.md"), "one");
+
+    let planned = handle_stash(
+        &backend,
+        temp.path(),
+        dry_run_stash_request(crate::StashOp::Apply, "stash_dry_apply"),
+        "op_dry_apply",
+    )
+    .unwrap();
+
+    assert_eq!(
+        planned.response.meta.aggregate_status,
+        crate::AggregateStatus::Accepted
+    );
+    assert_eq!(
+        planned.response.members.single().status,
+        crate::MemberStatus::Planned
+    );
+    // The working tree was NOT restored, the native stash is still there, and the
+    // bundle still records the member as pending.
+    assert_text_eq(member.join("README.md"), "one");
+    assert_eq!(backend.stash_list(&member).unwrap().len(), 1);
+    let bundle = stash::read_bundle(temp.path(), "stash_dry_apply").unwrap();
+    assert_eq!(bundle.members[0].restore_state, StashRestoreState::Pending);
+    assert_eq!(bundle.members[0].push_lifecycle, StashPushLifecycle::Saved);
+}
+
+#[test]
+fn dry_run_stash_pop_restores_and_drops_nothing() {
+    let temp = TempDir::new("stash-dry-run-pop");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "stash-dry-pop-source");
+    let member = temp.path().join("remote");
+    fs::write(member.join("README.md"), "changed\n").unwrap();
+    handle_stash(
+        &backend,
+        temp.path(),
+        stash_request(crate::StashOp::Push, "stash_dry_pop"),
+        "op_push",
+    )
+    .unwrap();
+
+    handle_stash(
+        &backend,
+        temp.path(),
+        dry_run_stash_request(crate::StashOp::Pop, "stash_dry_pop"),
+        "op_dry_pop",
+    )
+    .unwrap();
+
+    assert_text_eq(member.join("README.md"), "one");
+    assert_eq!(backend.stash_list(&member).unwrap().len(), 1);
+    assert!(stash::bundle_path(temp.path(), "stash_dry_pop").exists());
+    let bundle = stash::read_bundle(temp.path(), "stash_dry_pop").unwrap();
+    assert_eq!(bundle.members[0].restore_state, StashRestoreState::Pending);
+}
+
+#[test]
+fn dry_run_stash_drop_destroys_nothing() {
+    // The critical one: a dry run used to delete the native stash AND the bundle,
+    // irrecoverably, under a flag whose contract is "changes nothing".
+    let temp = TempDir::new("stash-dry-run-drop");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "stash-dry-drop-source");
+    let member = temp.path().join("remote");
+    fs::write(member.join("README.md"), "changed\n").unwrap();
+    handle_stash(
+        &backend,
+        temp.path(),
+        stash_request(crate::StashOp::Push, "stash_dry_drop"),
+        "op_push",
+    )
+    .unwrap();
+    let before = backend.stash_list(&member).unwrap();
+    assert_eq!(before.len(), 1);
+
+    handle_stash(
+        &backend,
+        temp.path(),
+        dry_run_stash_request(crate::StashOp::Drop, "stash_dry_drop"),
+        "op_dry_drop",
+    )
+    .unwrap();
+
+    let after = backend.stash_list(&member).unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].object_id, before[0].object_id);
+    assert!(stash::bundle_path(temp.path(), "stash_dry_drop").exists());
+    let bundle = stash::read_bundle(temp.path(), "stash_dry_drop").unwrap();
+    assert_eq!(bundle.members[0].restore_state, StashRestoreState::Pending);
+
+    // The real drop still works afterwards, so the plan did not poison the bundle.
+    handle_stash(
+        &backend,
+        temp.path(),
+        stash_request(crate::StashOp::Drop, "stash_dry_drop"),
+        "op_real_drop",
+    )
+    .unwrap();
+    assert!(backend.stash_list(&member).unwrap().is_empty());
+    assert!(!stash::bundle_path(temp.path(), "stash_dry_drop").exists());
+}
