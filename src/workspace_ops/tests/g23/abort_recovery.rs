@@ -93,7 +93,7 @@ fn post_merge_commit_rejects_abort_before_conflicted_member_changes() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
     assert_eq!(backend.head(&lib).unwrap().commit, Some(post_merge));
     assert_eq!(

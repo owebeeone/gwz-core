@@ -158,7 +158,8 @@ fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
             }
             ParticipantState::Planned
             | ParticipantState::Failed
-            | ParticipantState::Unattempted => {
+            | ParticipantState::Unattempted
+            | ParticipantState::UpToDate => {
                 crate::workspace_ops::merge::v1_rollback::verify_v1_no_mutation_participant(
                     backend,
                     current.location().root(),
@@ -168,8 +169,7 @@ fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
                 )
                 .map_err(|error| attach_member(error, member_id, &row.path))?;
             }
-            ParticipantState::UpToDate
-            | ParticipantState::FastForwarded
+            ParticipantState::FastForwarded
             | ParticipantState::Merged
             | ParticipantState::Continued => {
                 return Err(ModelError::new(

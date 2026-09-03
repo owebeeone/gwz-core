@@ -38,7 +38,15 @@ participants: {}
     )
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::OpenOperation);
-    assert!(error.message.contains("merge_1"));
+    assert_eq!(
+        error.message,
+        "this is a pre-0.14 merge; use gwz 0.13.0 (the last release before 0.14) to continue or abort"
+    );
+    assert!(
+        !error.message.contains("merge_1"),
+        "the §2 sentence carries no merge id: {}",
+        error.message
+    );
     assert!(
         enforce_workspace_open_merge_gate(
             root.path(),
@@ -87,19 +95,19 @@ participants:
         pathspecs: vec!["gwz.conf/gwz.yml".to_owned()],
         explicit: true,
     };
-    assert!(enforce_open_merge_stage_targets(root.path(), &[root_target]).is_ok());
+    let sentence = "this is a pre-0.14 merge; use gwz 0.13.0 (the last release before 0.14) to continue or abort";
+    let refused = enforce_open_merge_stage_targets(root.path(), &[root_target]).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::OpenOperation);
+    assert_eq!(refused.message, sentence);
 
     let member_target = crate::workspace_ops::StageTarget {
         member_path: Some("repos/app".to_owned()),
         pathspecs: vec!["README.md".to_owned()],
         explicit: true,
     };
-    assert_eq!(
-        enforce_open_merge_stage_targets(root.path(), &[member_target])
-            .unwrap_err()
-            .code,
-        ErrorCode::OpenOperation
-    );
+    let member = enforce_open_merge_stage_targets(root.path(), &[member_target]).unwrap_err();
+    assert_eq!(member.code, ErrorCode::OpenOperation);
+    assert_eq!(member.message, sentence);
 }
 
 /// **The v1 twin of the row above — the coverage hole that let the defect

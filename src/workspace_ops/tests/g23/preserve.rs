@@ -104,7 +104,7 @@ fn preserve_abort_rejects_diverged_successful_member_before_creating_artifacts()
     let error =
         handle_merge(&backend, temp.path(), abort, "op_preserve_diverged_abort").unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(error.code, ErrorCode::PreservationEvidenceMismatch);
     assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
     let record = open_record(temp.path()).unwrap();
     let record = record.view();

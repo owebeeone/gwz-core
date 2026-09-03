@@ -267,8 +267,8 @@ fn response_shape(response: &crate::MergeResponse) -> ResponseShape {
 }
 
 /// **The parity row.** One clean two-participant-state fixture, merged
-/// ordinarily (v0 today) and with `--no-ff` (v1), with the two event streams
-/// and the two completed responses compared shape for shape.
+/// ordinarily and with `--no-ff`. After the M5d floor raise both writes are
+/// v1; the comparison is still the charter-§4 shape pin.
 ///
 /// This is the row that would have caught all four defects the M5d parity
 /// inventory ranked at 2: absent `member_started` / `merge_member_finished`
@@ -299,10 +299,11 @@ fn an_ordinary_and_a_no_ff_merge_report_the_same_shape() {
     )
     .unwrap();
 
-    // The two runs really are the two engines.
+    // After the floor raise both starts write v1. The comparison below is
+    // ordinary vs `--no-ff` on the same engine, which is the 0.14 pin.
     assert_eq!(
         record_envelope(v0_temp.path(), ordinary.merge_id.as_deref().unwrap()),
-        ("gwz.merge-operation/v0".to_owned(), 0)
+        ("gwz.merge-operation/v1".to_owned(), 1)
     );
     assert_eq!(
         record_envelope(v1_temp.path(), no_ff.merge_id.as_deref().unwrap()),

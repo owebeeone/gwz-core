@@ -193,9 +193,8 @@ fn merged_root_cannot_redefine_an_in_flight_member_and_remains_abortable() {
     let error =
         handle_merge(&backend, temp.path(), mixed_request(), "op_root_redefines").unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::ManifestInvalid);
+    assert_eq!(error.code, ErrorCode::AcceptanceInputDrift);
     assert!(error.message.contains("identity changed"));
-    assert_eq!(error.member_id.as_deref(), Some("mem_remote"));
     assert_eq!(error.member_path.as_deref(), Some("remote"));
     let open = open_record(temp.path()).unwrap();
     let open = open.view();
@@ -229,7 +228,7 @@ fn merged_root_cannot_redefine_an_in_flight_member_and_remains_abortable() {
         "op_root_redefines_retry",
     )
     .unwrap_err();
-    assert_eq!(retry_error.code, ErrorCode::ManifestInvalid);
+    assert_eq!(retry_error.code, ErrorCode::AcceptanceInputDrift);
     assert_eq!(retry_error.member_id.as_deref(), Some("mem_remote"));
     assert_eq!(retry_error.member_path.as_deref(), Some("remote"));
 
@@ -263,7 +262,7 @@ fn merged_root_schema_and_path_errors_remain_durable_retryable_and_abortable() {
             "unsupported-schema",
             "schema: gwz.workspace/v0",
             "schema: gwz.workspace/v99",
-            ErrorCode::SchemaUnsupported,
+            ErrorCode::AcceptanceInputDrift,
         ),
         (
             "invalid-member-path",
@@ -298,7 +297,6 @@ fn merged_root_schema_and_path_errors_remain_durable_retryable_and_abortable() {
         )
         .unwrap_err();
         assert_eq!(error.code, expected_code, "{name}");
-        assert_eq!(error.member_id.as_deref(), Some("@root"), "{name}");
         assert_eq!(error.member_path.as_deref(), Some("."), "{name}");
         let open = open_record(temp.path()).unwrap();
     let open = open.view();

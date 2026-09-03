@@ -83,7 +83,7 @@ fn root_head_advance_is_reported_and_blocks_abort_without_mutation() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert_eq!(error.member_id.as_deref(), Some("@root"));
     assert_eq!(
         backend.head(temp.path()).unwrap().commit.as_deref(),

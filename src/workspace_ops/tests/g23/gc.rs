@@ -171,7 +171,7 @@ fn explicit_gc_rejects_cross_merge_ref_ownership_before_deleting_any_ref() {
 
     let error = handle_merge(&backend, temp.path(), gc, "op_gc_owner_collect").unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeRecordUnreadable);
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
     assert_eq!(
         backend.read_ref(&lib, &original).unwrap().as_deref(),
         Some(extra.as_str())
@@ -256,7 +256,7 @@ fn assert_gc_rejects_later_target_before_deleting_earlier_ref(invalid_commit: &s
 
     let error = handle_merge(&backend, temp.path(), gc, "op_gc_malformed_collect").unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeRecordUnreadable);
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
     assert_eq!(
         backend.read_ref(&app, &app_ref).unwrap().as_deref(),
         Some(app_commit.as_str())

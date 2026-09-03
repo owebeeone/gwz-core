@@ -1173,7 +1173,7 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             + ") -> crate::model::ModelResult<()> {\n"
             + "    use crate::workspace_ops::merge::MergeStore;\n"
             + "    let _ = crate::workspace_ops::merge::FileMergeStore\n"
-            + "        .discover_open(root)?;\n"
+            + "        .gc(root, None)?;\n"
             + "    Ok(())\n}\n",
             encoding="utf-8",
         )
@@ -1193,12 +1193,12 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         result = self.append(
             "workspace_ops/merge/v1_lifecycle/tests/fixtures.rs",
             "\nfn probe_archive(root: &std::path::Path, id: &str) {\n"
-            "    let _ = crate::workspace_ops::merge::archive_merge_record(root, id);\n"
+            "    let _ = crate::workspace_ops::merge::FileMergeStore;\n"
             "}\n",
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("v1 lifecycle names the v0 persistence seam", result.stderr)
-        self.assertIn("archive_merge_record", result.stderr)
+        self.assertIn("FileMergeStore", result.stderr)
 
     def test_v0_persistence_seam_inventory_must_stay_derivable(self) -> None:
         temporary, source = self.copied_source()
@@ -1215,13 +1215,7 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
                 # message never fired, not because derivation broke. Restated
                 # against the reshaped block so the surgery is a real
                 # mutation again.
-                "pub(crate) use store::{\n"
-                "    AdaptationPrecheck, FileMergeStore, MergeStore, OpenRecordEnvelope, "
-                "archive_merge_record,\n"
-                "    classify_open_record, discover_open_envelope_before_manifest, "
-                "enter_finalizing,\n"
-                "    persist_merge_record, persist_operation_transition,\n"
-                "};\n",
+                "pub(crate) use store::{FileMergeStore, MergeStore};\n",
                 "",
                 1,
             ),

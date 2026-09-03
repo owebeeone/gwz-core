@@ -260,7 +260,7 @@ fn post_merge_root_work_blocks_abort_without_mutation() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert_eq!(error.member_id.as_deref(), Some("@root"));
     assert_eq!(backend.head(temp.path()).unwrap(), root_head);
     assert_eq!(backend.head(&member).unwrap(), member_head);

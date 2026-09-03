@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 PROTECTED_COMPILER_ROOT_DIGESTS = {
     "src/lib.rs": "e035f8a53ddb589362972c85593cc0dff4b590129de38fe0fdb72ca1880f544e",
     "src/workspace_ops/mod.rs": "663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124",
-    "src/workspace_ops/merge/mod.rs": "76e4830e6ca1784f3dba5326768c173bfc434f49fe56196c1f565aca8adb8200",
+    # M5d close (2026-09-03): the v0 lifecycle re-exports left; open-record
+    # occupancy and the retained archive/GC store are what remain.
+    "src/workspace_ops/merge/mod.rs": "8e33d1d7d0b3f86cea3d24bfcabbc5c5f4f2e03c01f765a25a14d1fc388da463",
 }
 
 PROTECTED_COMPILER_MODULES = {
@@ -102,9 +104,11 @@ PROTECTED_SOURCE_DIGESTS = {
     "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "b45057e105a74d50c5163886d3346e9ea859464971c4cd03fc49392c5b67bac5",
-    "workspace_ops/merge/preserve/artifacts.rs": "c2f97f284c6e9ad241184d8db0bdbb7e8e5d8afe2890b3e08333d8bd212e71d9",
+    # M5d close: v0 preserve arms left; the v1 owner plan and its artifacts
+    # half remain. plan.rs keeps the compiler-resolved forbid.
+    "workspace_ops/merge/preserve/artifacts.rs": "a46c09473debdd62a1a57c419d8661651a9556ff7688ac42cf9afaa84c623595",
     "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
-    "workspace_ops/merge/preserve/plan.rs": "3730179e156151c4a853752ec769712d3ae81bd21e7729b892ab4cb14474ff89",
+    "workspace_ops/merge/preserve/plan.rs": "07a0d28cbad758c9a95611a33b82d4432421d905723a0efbf8b4cc21a84e94ee",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
     "operation/workspace_mutator_lock.rs": "c390191ea03c64d635ae80de0405cd213a6f067d9648c4735801062330019b0b",
 }
@@ -149,8 +153,6 @@ APPROVED_RUST_PATH_EDGES = {
     ("lib.rs", "../protocol/corpus/rust/vectors.rs"),
     ("lib.rs", "cbor.rs"),
     ("protocol/mod.rs", "generated.rs"),
-    ("workspace_ops/merge/mod.rs", "tests/acceptance_v0/mod.rs"),
-    ("workspace_ops/merge/mod.rs", "tests/transition_matrix_v0.rs"),
     (
         "workspace_ops/merge/participant_semantics/continue_eligibility.rs",
         "continue_eligibility_tests.rs",
@@ -165,13 +167,7 @@ APPROVED_RUST_PATH_EDGES = {
         "status_tests/mod.rs",
     ),
     ("workspace_ops/merge/plan.rs", "plan/tests.rs"),
-    ("workspace_ops/merge/start.rs", "start/tests/durable_recovery.rs"),
-    ("workspace_ops/merge/start.rs", "start/tests/event_sink.rs"),
-    ("workspace_ops/merge/start.rs", "start/tests/execution.rs"),
-    ("workspace_ops/merge/start.rs", "start/tests/prepared_recovery.rs"),
-    ("workspace_ops/merge/start.rs", "start/tests/resolution_race.rs"),
-    ("workspace_ops/merge/start.rs", "start/tests/resolution_validation.rs"),
-    ("workspace_ops/merge/start.rs", "start/tests/root_execution.rs"),
+    ("workspace_ops/merge/v1_rollback/mod.rs", "tests/evidence_shape.rs"),
     ("workspace_ops/merge/v1_lifecycle/archive.rs", "tests/archive.rs"),
     ("workspace_ops/merge/v1_lifecycle/archive.rs", "tests/gc.rs"),
     (
@@ -299,8 +295,10 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/capability/pre_catalog.rs": "89c236e8ed79fee74d9db317fb114086abdb58eab908dc0ffded59fa0d602098",
     "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
     "checked_artifact/platform.rs": "7cc428ded002a0ce549c306d0d4ea70e443e297f215d9ae64190f7b18b06025f",
-    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "0e8697cd0e495fec7678c752937f689a5310ba73efb287d6668f57e32a67eaf7",
+    # M5d close: parity events + the observe-tree re-homes from deleted
+    # abort files. Re-measured on the erasure tree.
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ed054eb85f235d499f02761df33e549c7d98e0dadff7cf85ba129425e2e2b48a",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "dce8ae826401c209d0c4fe721e4eea1f7c92898c5b19d6c608065974f830c3a5",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -373,16 +371,24 @@ RAW_RENAME_TOKENS = ("open_rename_source", "rename_open_source", "rename_relativ
 # string literals, which `mask_non_code` blanks, so a naive grep's ten false
 # positives become the true zero. Definitions (`fn <name>`) are excluded the
 # same way the raw-rename scan excludes them.
+#
+# M5d close (2026-09-03). Four of the six floor names left with the v0
+# lifecycle engine (`archive_merge_record`, `enter_finalizing`,
+# `persist_merge_record`, `persist_operation_transition`). The derivation
+# stays, re-pointed onto the two names that remain as envelope-discovery /
+# GC (`FileMergeStore`, `MergeStore`) — they are still re-exported from
+# `merge/mod.rs` and they are not a hollow seam (charter §2 / §10.3).
+# The full F-3 succession onto a relocated `write_atomic_verified` is
+# charter §9 step (3) and is not on this tree; this shrink is the
+# re-pointed derivation `GwzM5-8M5d-GateRevisions.md` §B.4 Q12 records.
+# J-1's standing-guard duty is preserved: `v1_lifecycle/` still may not
+# name the remaining store seam.
 V1_LIFECYCLE_TREE = "workspace_ops/merge/v1_lifecycle"
 V0_STORE_REEXPORT = re.compile(r"\buse\s+store::\{([^}]*)\}\s*;")
 V0_PERSISTENCE_SEAM_FLOOR = frozenset(
     {
         "FileMergeStore",
         "MergeStore",
-        "archive_merge_record",
-        "enter_finalizing",
-        "persist_merge_record",
-        "persist_operation_transition",
     }
 )
 
@@ -551,11 +557,10 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
     "workspace_ops/handle_repo_lifecycle.rs": (":278/:279 repo lifecycle, RepoMutate guard", {"write_manifest_and_lock": 3, "sync_workspace_boundary": 3}),
     "workspace_ops/handle_stage.rs": (":279 `gwz stage`, mutation guard", {"ensure_workspace_exclude": 1}),
     "workspace_ops/handle_stash/commands.rs": (":276 `gwz stash`'s bundle callers, StashMutate guard", {"remove_file": 1, "write_bundle": 6}),
-    "workspace_ops/merge/abort/evidence.rs": (":277/:278/:279 v0 abort, the `rollback_evidence` ARM", {"remove_file": 1, "write_atomic": 1, "publish_workspace_exclude_candidate": 1}),
-    "workspace_ops/merge/abort/preflight.rs": (":278 the abort preflight's `restore_baseline` ARM", {"write_atomic": 2}),
-    "workspace_ops/merge/finalize.rs": (":277/:278/:279 ordinary v0 merge publication", {"write_atomic": 2, "publish_workspace_exclude_candidate": 2}),
-    "workspace_ops/merge/preserve/artifacts.rs": (":276/:277/:279 v0 `--abort --preserve`", {"remove_file": 1, "write_atomic": 3, "write_bundle": 1, "publish_workspace_exclude_candidate": 1}),
-    "workspace_ops/merge/store/archived.rs": (":275 the v0 terminal archive -- ordinary merge finalization and BOTH abort forms", {"rename_durable": 1, "sync_dir": 2, "create_dir_all": 1, "remove_file": 1}),
+    # M5d close: five v0-engine rows left with the engine (finalize.rs and
+    # store/archived.rs as whole files; abort/evidence.rs, abort/preflight.rs
+    # and preserve/artifacts.rs as v0 arms that dropped to zero tokens).
+    # `store/gc.rs` / `store/retention.rs` stay — I2 §7 GC, charter §7.
     "workspace_ops/merge/store/gc.rs": (":275 the LIVE GC deletion writer, WorkspaceMutatorLock", {"sync_dir": 1, "remove_file": 1}),
     "workspace_ops/merge/store/retention.rs": (":275 GC retention enforcement, the same lock", {"sync_dir": 1, "remove_file": 1}),
     "workspace_ops/merge/v1_lifecycle/archive.rs": (":275 the DEAD `remove_archive` arm behind the `:108-111` allowance", {"remove_file": 1}),
@@ -565,7 +570,7 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
 }
 if hashlib.sha256(
     "\n".join(sorted(CAPABILITY_FREE_RAW_WRITER_INVENTORY)).encode("utf-8")
-).hexdigest() != "867c580f625d7efe0cf72dcc8e0ad01e36268d1478829a469eb0f57953dbd385":
+).hexdigest() != "3db5d529b0a9afb0a1744d8535128108ad2623305a3a0dede8e05b227f2ff8b3":
     raise SystemExit(
         "check_checked_artifact_boundaries: the capability-free carved SET moved -- a row "
         "added, DELETED or swapped. It is the amendment's, not a checker edit: revise "
@@ -610,7 +615,6 @@ ENTRY_REFERENCES = {
     # E4.1 review [P1-1] cure adds the SECOND caller: the A1 adapter, proving
     # the destination lifecycle viable before its durable v0->v1 upgrade.
     "activate_workspace_catalog": {
-        "workspace_ops/merge/runtime/dispatch.rs",
         "workspace_ops/merge/v1_lifecycle/checked.rs",
     },
 
@@ -676,7 +680,7 @@ ENTRY_REFERENCES = {
         "git/gitbackend/preservation_root/files.rs"
     },
     "observe_merge_root_artifact": {"workspace_ops/merge/root/artifact_facts.rs"},
-    "prepare_merge_store_parents": {"workspace_ops/merge/store/mod.rs"},
+    "prepare_merge_store_parents": set(),
     "remove_merge_root_artifact": {"workspace_ops/merge/root/artifact_facts.rs"},
     "replace_merge_preservation_bundle": {
         "workspace_ops/merge/preserve/checked_bundle.rs"
@@ -1156,7 +1160,6 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider/mutation_tests.rs",
         "checked_artifact/capability/pre_catalog/provider/production_tests.rs",
         "operation/workspace_mutator_lock.rs",
-        "workspace_ops/merge/runtime/dispatch.rs",
         "workspace_ops/merge/v1_lifecycle/checked.rs",
     },
 }

@@ -7,16 +7,13 @@
 //! counts what STAYS; it cannot say the carved arms took no checked door. These
 //! rows say it.
 //!
-//! Eighteen files are PURE — every writer in them is carved, so the whole file is
-//! asserted door-free. Two are MIXED: `abort/evidence.rs` carries the carved v0
-//! `rollback_evidence` beside twenty-six converted-arm door references, and
-//! `abort/preflight.rs` the carved `restore_baseline` beside its `artifact_facts`
-//! observe. A per-FILE pin is false on day one for both (Code axis [P2-4]), so
-//! those two are region-scoped, with the same file's converted arms as the LIVE
-//! POSITIVE CONTROL. The needle is the `CheckedArtifact` door vocabulary and NOT
-//! the git backend's `_checked` suffix — `commit_gwz_paths_checked`
-//! (`finalize.rs:193`, `execute.rs:31`) is a git call, and a `_checked(` needle
-//! would fail `finalize.rs` on day one; row 1 states that exclusion.
+//! Fifteen files are PURE — every writer in them is carved, so the whole file is
+//! asserted door-free. M5d deleted the two MIXED v0 abort arms and three PURE
+//! v0-engine files (`finalize.rs`, `preserve/artifacts.rs`, `store/archived.rs`);
+//! no mixed row remains. The needle is the `CheckedArtifact` door vocabulary and
+//! NOT the git backend's `_checked` suffix — `commit_gwz_paths_checked`
+//! (`v1_lifecycle/finalization/execute.rs:57`) is a git call, and a `_checked(`
+//! needle would fail that file on day one; row 1 states that exclusion.
 //!
 //! Anti-vacuity: each carved path is read by name and a missing one panics; a byte
 //! floor refuses a blinded read; each region lookup panics by name; both needles
@@ -30,7 +27,7 @@ use super::{item_body, masked_code};
 
 /// The checker inventory's rows minus the two mixed files: every writer in each
 /// is carved, so the WHOLE file is asserted.
-const PURE_CARVED_FILES: [&str; 18] = [
+const PURE_CARVED_FILES: [&str; 15] = [
     "stash/mod.rs",
     "workspace_ops/handle_branch.rs",
     "workspace_ops/handle_commit.rs",
@@ -40,9 +37,6 @@ const PURE_CARVED_FILES: [&str; 18] = [
     "workspace_ops/handle_repo_lifecycle.rs",
     "workspace_ops/handle_stage.rs",
     "workspace_ops/handle_stash/commands.rs",
-    "workspace_ops/merge/finalize.rs",
-    "workspace_ops/merge/preserve/artifacts.rs",
-    "workspace_ops/merge/store/archived.rs",
     "workspace_ops/merge/store/gc.rs",
     "workspace_ops/merge/store/retention.rs",
     "workspace_ops/merge/v1_lifecycle/archive.rs",
@@ -52,16 +46,8 @@ const PURE_CARVED_FILES: [&str; 18] = [
 ];
 
 /// The MIXED files, each with the signature of the ARM this exception carves.
-const MIXED_CARVED_ARMS: [(&str, &str); 2] = [
-    (
-        "workspace_ops/merge/abort/evidence.rs",
-        "pub(super) fn rollback_evidence<",
-    ),
-    (
-        "workspace_ops/merge/abort/preflight.rs",
-        "pub(super) fn restore_baseline(",
-    ),
-];
+/// M5d: both mixed v0 abort arms left with the engine; the array is the pin.
+const MIXED_CARVED_ARMS: [(&str, &str); 0] = [];
 
 /// Certainly names the first needle, so an absence is the arms' property.
 const DOOR_POSITIVE_CONTROL: &str = "workspace_ops/merge/root/artifact_facts.rs";
@@ -108,11 +94,11 @@ fn the_pure_carved_capability_free_files_name_no_checked_boundary_door() {
          below proves nothing"
     );
     assert!(
-        carved("workspace_ops/merge/finalize.rs").contains(GIT_CHECKED_SEAM)
+        carved("workspace_ops/merge/v1_lifecycle/finalization/execute.rs").contains(GIT_CHECKED_SEAM)
             && !doors.iter().any(|d| GIT_CHECKED_SEAM.contains(d.as_str())),
         "the git backend's `{GIT_CHECKED_SEAM}` is DELIBERATELY not a boundary door: a \
-         `_checked(` needle would fail `finalize.rs` on day one. Re-scope the needle \
-         deliberately, or restore the seam this exclusion is about"
+         `_checked(` needle would fail `finalization/execute.rs` on day one. Re-scope \
+         the needle deliberately, or restore the seam this exclusion is about"
     );
     for relative in PURE_CARVED_FILES {
         let text = carved(relative);

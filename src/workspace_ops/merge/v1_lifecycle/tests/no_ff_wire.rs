@@ -155,21 +155,17 @@ fn no_ff_record_unknown_fields_survive_rewrite_and_retire_on_reconciliation() {
 
 /// T-3 (design §6): no writer output and no positive-path fixture serializes
 /// the no-ff wire row; the deliberate negative fixtures are the allowlist.
+///
+/// RE-PINNED BY M5d. The three v0 hits (the forged-action resume gate, the
+/// store's T-2 envelope rejection, and the T-6 continue-v0 gate) left with
+/// the v0 lifecycle engine. An empty list is the pin: a new YAML mode row
+/// of that shape joins this inventory only through review. The needle is
+/// built at runtime so this file is not itself a hit.
 #[test]
 fn no_writer_output_or_positive_fixture_serializes_the_no_ff_wire_row() {
     // Built at runtime so this assertion is not itself a corpus hit.
     let serialized = format!("mode:{}no_ff", ' ');
-    assert_eq!(
-        files_containing(&serialized),
-        [
-            // Production: the v0 forged-action resume gate's typed message.
-            "workspace_ops/merge/continue_op/execution.rs",
-            // Deliberate negative fixture: the T-2 envelope rejection.
-            "workspace_ops/merge/store/tests.rs",
-            // The gate package's deliberate negative fixtures (T-6).
-            "workspace_ops/tests/g23/continue_v0_gate.rs",
-        ]
-    );
+    assert_eq!(files_containing(&serialized), [] as [&str; 0]);
 }
 
 /// T-3 second needle (M5b Code review round-1 [P2-1]): the literal scan
@@ -186,6 +182,12 @@ fn no_writer_output_or_positive_fixture_serializes_the_no_ff_wire_row() {
 /// rows for `--no-ff`, and the mode reaches the v1 lifecycle instead of a
 /// typed refusal. What the scan still buys is unchanged: no file names this
 /// variant without review. Four files joined, each named below.
+///
+/// RE-PINNED BY M5d. The v0 lifecycle engine and its gate suites left the
+/// tree (`continue_op/execution.rs`, `open_v0/{adapter,structural}.rs`,
+/// `g23/{atomic_upgrade,compatibility,compatibility_v0_edges,continue_v0_gate}_v0.rs`).
+/// `engine_parity.rs` joined: it is the charter-§4 same-fixture comparison
+/// and drives `--no-ff` because that is how every ordinary start now runs.
 #[test]
 fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
     let variant = format!("{}Ff", "No");
@@ -194,8 +196,6 @@ fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
         [
             // Protocol enum declaration (accepted wire vocabulary).
             "protocol/generated.rs",
-            // Production refusals: the F-1 v0 resume gate (survives A1; T-6).
-            "workspace_ops/merge/continue_op/execution.rs",
             // Model enum declaration.
             "workspace_ops/merge/model/lifecycle.rs",
             // Validator arms refusing durable no-ff rows on the v0 view.
@@ -204,12 +204,8 @@ fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
             // JOINED AT A1: the contract-§2 writer floor's requested-semantic
             // that selects v1 for `--no-ff`.
             "workspace_ops/merge/model/version.rs",
-            // v0 archive corpus fixtures.
+            // v0 archive corpus fixtures (I2 §7; retained).
             "workspace_ops/merge/record_wire/archive/tests/v0.rs",
-            // v0 readers recognizing-and-classifying the foreign row; the
-            // adapter's UnsupportedLegacyMode refusal survives A1.
-            "workspace_ops/merge/record_wire/open_v0/adapter.rs",
-            "workspace_ops/merge/record_wire/open_v0/structural.rs",
             // Dispatch: pre-A1 the refusal routing, post-A1 the coupled
             // pair's comment naming the exclusion that fell with it.
             "workspace_ops/merge/runtime/dispatch.rs",
@@ -224,22 +220,15 @@ fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
             "workspace_ops/merge/validate.rs",
             // JOINED AT A1: the activation's own suite.
             "workspace_ops/tests/g23/a1_activation.rs",
-            // The gate package's v0 suites (T-6) and compatibility corpora.
-            "workspace_ops/tests/g23/atomic_upgrade_v0.rs",
-            "workspace_ops/tests/g23/compatibility_v0.rs",
-            "workspace_ops/tests/g23/compatibility_v0_edges.rs",
-            "workspace_ops/tests/g23/continue_v0_gate.rs",
             // JOINED 2026-09-03 by DR-1 ship (1) W3
             // (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §5 row W3): the
-            // crash-recovery decision point's own suite. Every row it holds is
-            // a `--no-ff` START, because the decision point is only reached
-            // from the v1 start owner and the v1 continue — an ordinary or
-            // `--ff-only` start does not reach it until M5c.
+            // crash-recovery decision point's own suite.
             "workspace_ops/tests/g23/crash_recovery.rs",
+            // JOINED AT M5d: charter-§4 same-fixture engine-parity suite.
+            "workspace_ops/tests/g23/engine_parity.rs",
             // JOINED 2026-09-02 by the v1-archive GC fix: `--no-ff` is the only
             // door a FRESH START has to a v1 archive, so the GC rows must start
-            // one. E4.1(c)'s `adapt_open` upgrade is the second door, and it
-            // needs no mention of this variant.
+            // one.
             "workspace_ops/tests/g23/gc.rs",
         ]
     );

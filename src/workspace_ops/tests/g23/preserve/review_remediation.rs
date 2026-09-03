@@ -42,7 +42,14 @@ fn preserve_abort_rejects_edited_or_staged_conflict_resolution_before_artifacts(
         let error =
             handle_merge(&backend, temp.path(), abort, "op_preserve_conflict_abort").unwrap_err();
 
-        assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
+        assert_eq!(
+            error.code,
+            if staged {
+                ErrorCode::MergeRecoveryRequired
+            } else {
+                ErrorCode::DirtyMember
+            }
+        );
         assert_eq!(error.member_id.as_deref(), Some("mem_docs"));
         assert_eq!(
             backend.repository_state(&docs).unwrap(),
@@ -166,7 +173,7 @@ fn preserve_abort_rejects_pending_conflict_after_continue_reconciliation() {
         "op_preserve_pending_conflict_continue",
     )
     .unwrap_err();
-    assert_eq!(continue_error.code, ErrorCode::MergeDrift);
+    assert_eq!(continue_error.code, ErrorCode::MergeRecordUnreadable);
     let reconciled = open_record(temp.path()).unwrap();
     let reconciled = reconciled.view();
     let docs = &reconciled.participants()["mem_docs"];

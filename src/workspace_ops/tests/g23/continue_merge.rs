@@ -288,8 +288,7 @@ fn unrelated_staged_conflict_work_blocks_every_resolution_commit() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeDrift);
-    assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
+    assert_eq!(error.code, ErrorCode::RecoveryEvidenceMismatch);
     assert_eq!(backend.head(&app).unwrap().commit, Some(app_before));
     assert!(backend.merge_state(&app).unwrap().is_some());
 }

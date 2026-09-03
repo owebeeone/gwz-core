@@ -4,6 +4,8 @@
 //! preservation planning left with it; the v1 owner plan the reverse service
 //! drives is what remains.
 
+#![forbid(clippy::disallowed_methods)]
+
 use super::*;
 use crate::git::GitRepositoryState;
 
