@@ -205,7 +205,7 @@ pub(super) fn observe_preserve_participant<B: MergeAuthorityBackend>(
     request: &BoundObservationRequest,
     member_id: &str,
 ) -> ModelResult<ExactObservationFact> {
-    let fact = observe_forward(backend, context, current, request)?.into_fact();
+    let fact = observe_forward(backend, context, current, request, false)?.into_fact();
     match fact {
         ExactObservationFact::NotStarted(NotStartedObservation::Participant {
             member_id: observed,

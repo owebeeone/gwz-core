@@ -3,6 +3,8 @@ use super::authority::{
     PhysicalActionKind, V1LifecycleRequest, observe_finalization, observe_forward,
     preflight_continue_siblings,
 };
+use std::collections::BTreeSet;
+
 use super::checked::{StoredV1Record, V1MutationLease};
 use super::finalization::FinalizationRuntime;
 use super::service::{ExactObserver, PhysicalExecutor};
@@ -19,8 +21,15 @@ pub(super) struct ForwardRuntime<'a, B> {
     /// `handle_continue` call. One `ForwardRuntime` is built per invocation
     /// (`start.rs:84` for a start, `start.rs:209` for a continue), so this
     /// latch is exactly "once per continue" — see
-    /// `preflight_continue_participants`.
+    /// `preflight_continue_siblings`.
     continue_preflight_done: bool,
+    /// The participants whose physical action THIS invocation performed.
+    /// `observe_participant_action` needs it to know whether the live conflict
+    /// markers it is about to observe are the original ones (this process just
+    /// produced them) or bytes that may have been edited while the pending
+    /// action sat durable across processes — see that function's v0-parity
+    /// note. Same per-invocation lifetime as the latch above.
+    executed_participants: BTreeSet<String>,
 }
 
 impl<'a, B> ForwardRuntime<'a, B> {
@@ -29,6 +38,7 @@ impl<'a, B> ForwardRuntime<'a, B> {
             backend,
             context,
             continue_preflight_done: false,
+            executed_participants: BTreeSet::new(),
         }
     }
 }
@@ -55,7 +65,19 @@ impl<B: MergeAuthorityBackend> ExactObserver for ForwardRuntime<'_, B> {
                     preflight_continue_siblings(self.backend, current, member_id)?;
                     self.continue_preflight_done = true;
                 }
-                observe_forward(self.backend, self.context, current, request)
+                let executed_here = match request.kind() {
+                    ObservationKind::ParticipantAction { member_id } => {
+                        self.executed_participants.contains(member_id)
+                    }
+                    _ => false,
+                };
+                observe_forward(
+                    self.backend,
+                    self.context,
+                    current,
+                    request,
+                    executed_here,
+                )
             }
             ObservationKind::ParticipantsComplete
             | ObservationKind::Acceptance
@@ -85,6 +107,10 @@ impl<B: MergeAuthorityBackend> PhysicalExecutor for ForwardRuntime<'_, B> {
         }
         match action {
             PhysicalActionKind::Participant { member_id, action } => {
+                // Recorded BEFORE the attempt: once this process has touched
+                // this repository's merge, the live markers are its own work,
+                // whether the attempt reported success or failure.
+                self.executed_participants.insert(member_id.clone());
                 execute::participant(self.backend, current, member_id, action)
                     .map_or_else(failure, |_| ExecutionDiagnostic::Success)
             }

@@ -180,6 +180,17 @@ fn preserve_abort_rejects_pending_conflict_after_continue_reconciliation() {
             map.remove(serde_yaml::Value::String("conflict_snapshot".to_owned()));
         }
         docs["pending_action"] = pending;
+        // A durable forward `pending_action` is only ever written while the
+        // operation is Executing, and v1's lifecycle validator enforces both
+        // halves of that: `AwaitingResolution` requires some participant to be
+        // Conflicted (this patch just made the only conflicted one Planned),
+        // and `forward_pending_is_legal` admits a pending forward action ONLY
+        // in Executing or Halted (model/v1/validate/lifecycle.rs:22-70). Left
+        // in AwaitingResolution the record does not decode at all, so the
+        // continue below refused with MergeRecordUnreadable for the wrong
+        // reason -- a fixture that never loads, not a reconciliation verdict --
+        // and the later `open_record` then panicked on the same invalid bytes.
+        value["state"] = serde_yaml::to_value(OperationState::Executing).unwrap();
     });
     fs::write(
         temp.path().join("docs/README.md"),
@@ -195,7 +206,13 @@ fn preserve_abort_rejects_pending_conflict_after_continue_reconciliation() {
         "op_preserve_pending_conflict_continue",
     )
     .unwrap_err();
-    assert_eq!(continue_error.code, ErrorCode::MergeRecordUnreadable);
+    // v0 said MergeDrift; v1 reaches the dedicated arm
+    // `prepare_pending` grew for exactly this shape -- a conflicted
+    // participant with no drift whose resolution is simply not staged
+    // (v1_lifecycle/authority/observe/forward.rs:131-139), reported as
+    // "conflict resolution is not ready; resolve and stage every conflict
+    // before continuing". Measured, not assumed.
+    assert_eq!(continue_error.code, ErrorCode::MergeValidationFailed);
     let reconciled = open_record(temp.path()).unwrap();
     let reconciled = reconciled.view();
     let docs = &reconciled.participants()["mem_docs"];

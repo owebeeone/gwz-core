@@ -12,18 +12,24 @@ use crate::workspace_ops::merge::{
     PendingMergeAction, PendingMergeActionKind,
 };
 
+/// `executed_here` says whether THIS process performed the participant's
+/// physical action before this observation — see `observe_participant_action`,
+/// which needs it to decide whether the live conflict bytes are the original
+/// ones. Reverse-lifecycle callers pass `false`: they never execute a forward
+/// participant action, so any conflict they observe predates them.
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_forward<B: MergeAuthorityBackend>(
     backend: &B,
     context: &OperationContext,
     current: &StoredV1Record,
     request: &BoundObservationRequest,
+    executed_here: bool,
 ) -> ModelResult<BoundExactObservation> {
     let fact = match request.kind() {
         ObservationKind::ParticipantPreparation { member_id } => {
             prepare_participant(backend, context, current, member_id)?
         }
         ObservationKind::ParticipantAction { member_id } => {
-            observe_participant_action(backend, current, member_id)?
+            observe_participant_action(backend, current, member_id, executed_here)?
         }
         ObservationKind::Recovery => observe_recovery(backend, current)?,
         _ => {
@@ -348,6 +354,7 @@ fn observe_participant_action<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
     member_id: &str,
+    executed_here: bool,
 ) -> ModelResult<ExactObservationFact> {
     let row = participant(current, member_id)?;
     let pending = row.pending_action.as_ref().ok_or_else(|| {
@@ -396,7 +403,7 @@ fn observe_participant_action<B: MergeAuthorityBackend>(
                 member_id,
                 row,
             )?;
-            let snapshot = match backend.merge_conflict_snapshot(
+            let observed = match backend.merge_conflict_snapshot(
                 &path,
                 &row.before_commit,
                 &row.source_commit,
@@ -408,12 +415,41 @@ fn observe_participant_action<B: MergeAuthorityBackend>(
                         path: file.path,
                         sha256: file.sha256,
                     })
-                    .collect(),
+                    .collect::<Vec<_>>(),
                 Err(error) if semantic_drift(&error) => {
                     return super::finalization::ambiguity(current);
                 }
                 Err(error) => return Err(member_error(error, member_id, &row.path)),
             };
+            // v0 parity, and a REAL safety rule, not a formality. v0's
+            // `continue_op::reconciliation::apply_reconciled_pending` recorded
+            // `conflict_snapshot: Vec::new()` on this exact arm, with the
+            // reason spelled out in the deleted source (recover with
+            // `git show 57502e4:src/workspace_ops/merge/continue_op/reconciliation.rs`):
+            //
+            //   Git mutated before the durable outcome was written, so the
+            //   original conflict-marker bytes are unavailable. Empty is the
+            //   durable "unverified original" sentinel: continue may still
+            //   resolve it, but preserve-abort must never treat later live
+            //   bytes as the original snapshot.
+            //
+            // v0 only ever snapshotted a conflict it had JUST produced itself
+            // (`continue_op::execution::retry_merge`). v1 funnels both cases
+            // through this one arm, because it always journals the pending
+            // action durably and then observes the result -- so `executed_here`
+            // is the discriminator: true means this process performed the merge
+            // and the live markers ARE the original; false means the action was
+            // durable before this process started and the working tree may have
+            // been edited since. Recording the live bytes in the false case
+            // fabricates an "original" that matches whatever the user last
+            // wrote, which made a later preserve-abort conclude the conflict
+            // was pristine and roll it back -- silently discarding that edit
+            // instead of refusing (see
+            // `g23::preserve::review_remediation::preserve_abort_rejects_pending_conflict_after_continue_reconciliation`).
+            //
+            // The probe itself still runs either way: its drift routing above
+            // is unchanged, and only the recorded bytes differ.
+            let snapshot = if executed_here { observed } else { Vec::new() };
             participant_outcome(
                 current,
                 member_id,

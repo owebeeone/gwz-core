@@ -162,6 +162,24 @@ fn preserve_abort_resumes_from_recorded_ref_and_native_stash_without_duplicates(
         .unwrap();
     patch_open_record(temp.path(), |value| {
         value["state"] = serde_yaml::to_value(OperationState::Preserving).unwrap();
+        // `preservation` is a SHARED field, but `state: Preserving` is a v1
+        // journal state, and v1 requires the durable publication handoff that
+        // entering preservation writes: `validate_durable_handoff`
+        // (model/v1/validate/preservation.rs:28-51) makes
+        // `preservation_publication_handoff` REQUIRED for `Preserving`, and
+        // without it decode refuses the whole record with
+        // PreservationEvidenceMismatch before the abort is even dispatched.
+        // `no_candidate` is what production would have written here:
+        // `install_preservation_handoff`
+        // (v1_lifecycle/transition/reduce/mod.rs:176-187) stores
+        // `model_handoff(...)` only if `preservation_handoff_is_compatible`
+        // accepts it, and with no `publication` on the record yet that
+        // predicate admits exactly `NoCandidate`
+        // (model/v1/validate/publication.rs:99-101).
+        // Written as literal YAML because `merge::model` is private to
+        // `merge`, so the enum cannot be named from this test module.
+        value["preservation_publication_handoff"] =
+            serde_yaml::from_str("kind: no_candidate").unwrap();
         value["participants"]["mem_lib"]["preservation"] = serde_yaml::to_value(vec![
             crate::workspace_ops::merge::PreservationEvidence {
                 backup_ref: Some(backup_ref),
