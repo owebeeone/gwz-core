@@ -539,11 +539,17 @@ def _fault_count(darwin: str, linux: str) -> str:
         (`cargo test --locked -p gwz-core --lib checked_artifact::`, 459 passed,
         2026-09-03) -- 458 + the one macOS row, the eight Linux rows being
         absent from a darwin build by cfg.
-      checked_artifact:: linux  468 -> 476: DERIVED (468 + the eight Linux-only
-        rows; the macOS row is absent from a Linux build by the same cfg, so the
-        darwin delta does NOT carry over), *not* measured, and therefore
-        FIRST-DISPATCH-EXPECTED at this step's platform-matrix dispatch and at
-        the landing. A measured number wins. NO test is removed by this step:
+      checked_artifact:: linux  468 -> 476: MEASURED at this step's own
+        platform-matrix dispatch, run 33701500498 job 100481582550
+        (ubuntu-24.04-arm, sha 9666303, whole suite 1863 passed / 0 failed /
+        1 ignored), by counting the lib binary's `test checked_artifact::…
+        ... ok` lines: 476, equal to the derivation (468 + the eight
+        Linux-only rows; the macOS row is absent from a Linux build by the
+        same cfg, so the darwin delta does NOT carry over). The macOS leg of
+        the same run (job 100481582818) independently re-measured darwin 459.
+        This driver is not itself wired into either matrix workflow, so what
+        is measured here is the partition count the pin asserts, not the
+        driver's own exit. NO test is removed by this step:
         the ext4 name test it deletes (`require_ext4`) had no test of its own
         anywhere in the tree (grep over `src/**` and `tests/**` for
         `require_ext4` / "only local ext4" at the base commit: the function
