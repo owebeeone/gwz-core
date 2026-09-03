@@ -31,6 +31,16 @@ impl DurableObjectIdentityV1 {
         }
     }
 
+    /// DR-1 W2, 2026-09-03 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.2): the
+    /// constructor's NAME and its `LinuxExt4` variant say `ext4`, and since
+    /// this step the Linux provider builds them for every filesystem that
+    /// answers `FS_IOC_GETFSUUID` with a nonzero 16-byte UUID and
+    /// `name_to_handle_at` with a persistent handle — xfs and f2fs included.
+    /// Both names stay because the variant is a PERSISTED catalog value (it
+    /// maps to `generated::CheckedDurableIdentityKind::LinuxExt4` below):
+    /// renaming it is a catalog-format change, which the charter parks. The
+    /// value contract below is unchanged and is about well-formedness, not
+    /// about which filesystem produced the bytes.
     pub(in crate::checked_artifact) fn linux_ext4(
         external_filesystem_uuid: [u8; 16],
         handle_type: i32,

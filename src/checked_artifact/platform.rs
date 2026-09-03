@@ -181,7 +181,8 @@ pub(super) struct LeafPublicationSourceV1<'a> {
 /// `capability/pre_catalog/provider/publication.rs::publish_verified_no_replace`
 /// and not a call into it, for one binding reason: that function's identity
 /// compare is `HostPlatform`-bound, and `HostPlatform` admits only the closed
-/// support table (`require_ext4` on Linux, `ATTR_CMN_OBJPERMANENTID` on macOS,
+/// support table (`FS_IOC_GETFSUUID` plus `name_to_handle_at` on Linux since
+/// DR-1 W2, `ATTR_CMN_OBJPERMANENTID` on macOS,
 /// NTFS `FileId128` on Windows). The legacy leaf writer is live on every
 /// filesystem that carries a persistent file handle, so routing these four
 /// edges through that function would narrow production merge and stash flows to

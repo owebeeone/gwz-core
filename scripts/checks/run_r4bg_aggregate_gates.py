@@ -514,6 +514,44 @@ def _fault_count(darwin: str, linux: str) -> str:
       v1_lifecycle:: 266 and the lib remainder 1119 / 1120: UNMOVED, both darwin
         values re-verified from the same --list snapshot.
 
+    DR-1 ship (1) Step W2 (2026-09-03) -- the Linux gate made identity-based
+    plus the volume description (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.2/§3.3)
+    -- moves the checked_artifact:: partition and ONLY it, by NINE rows, and it
+    is the FIRST block here whose two numbers move by DIFFERENT amounts, because
+    every row it adds is cfg-gated by the platform file it lives in:
+
+      ONE macOS-only row, `capability::pre_catalog::provider::platform::imp::
+      tests::describe_volume_names_a_local_apple_volume` -- `macos.rs` is
+      selected by `#[cfg(target_os = "macos")] #[path = "platform/macos.rs"]`
+      in `provider/platform.rs`, so it compiles on darwin and NOWHERE else.
+      EIGHT Linux-only rows in the correspondingly gated `linux.rs`: four
+      `mountinfo_*` parser rows (matching mount id, an octal-escaped mount
+      point, the optional fields before the `-` separator, the `fuse.` subtype),
+      the magic-table row, the remote/volatile classification row, the real
+      `/dev/shm` volatility refusal (self-skipping with a printed reason where
+      `/dev/shm` is absent or is not tmpfs) and the `describe_volume` positive
+      control on the crate's own directory.
+      ONE Windows-only row (the UNC-prefix rule on a `&[u16]` fixture) in the
+      `windows.rs` arm, which appears in NEITHER pin below and is measured for
+      the first time by this step's windows-matrix dispatch.
+
+      checked_artifact:: darwin 458 -> 459: MEASURED on this step's own tree
+        (`cargo test --locked -p gwz-core --lib checked_artifact::`, 459 passed,
+        2026-09-03) -- 458 + the one macOS row, the eight Linux rows being
+        absent from a darwin build by cfg.
+      checked_artifact:: linux  468 -> 476: DERIVED (468 + the eight Linux-only
+        rows; the macOS row is absent from a Linux build by the same cfg, so the
+        darwin delta does NOT carry over), *not* measured, and therefore
+        FIRST-DISPATCH-EXPECTED at this step's platform-matrix dispatch and at
+        the landing. A measured number wins. NO test is removed by this step:
+        the ext4 name test it deletes (`require_ext4`) had no test of its own
+        anywhere in the tree (grep over `src/**` and `tests/**` for
+        `require_ext4` / "only local ext4" at the base commit: the function
+        definition, its one call site and two comments, no assertion).
+      v1_lifecycle:: 266 and the lib remainder 1119 / 1120: UNMOVED -- W2 edits
+        only `checked_artifact/**`, and darwin 459 was measured with the other
+        partitions untouched.
+
     v0.13.0's ubuntu verify stays red: the verify checks out the tag, and a tag
     is immutable. The landing rule from this miss: a landing that adds or removes
     a #[test] re-measures this driver's pins, and every landing compares the
@@ -552,7 +590,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # first Windows compile of that code. Marked here beside the linux
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
-         lib("checked_artifact::"), _fault_count("458 passed", "468 passed")),
+         lib("checked_artifact::"), _fault_count("459 passed", "476 passed")),
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),

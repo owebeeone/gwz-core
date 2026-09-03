@@ -22,6 +22,15 @@ pub(super) use pre_catalog::*;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum SupportedFilesystemProfile {
+    /// DR-1 W2, 2026-09-03 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.2): the
+    /// NAME says `Ext4` and the admission it stands for no longer does. The
+    /// Linux provider's gate is identity-based since this step — a nonzero
+    /// `FS_IOC_GETFSUUID` UUID plus a persistent `name_to_handle_at` handle —
+    /// so this variant is what xfs and f2fs are admitted AS, not just ext4.
+    /// The name stays because this enum is a PERSISTED catalog value:
+    /// renaming it is a catalog-format change, which the charter parks
+    /// alongside the nonce and the dual-tuple migration (charter §0 "What
+    /// this is not"). Rename it only with that migration.
     LinuxExt4FsIocGetFsUuidV1,
     MacPersistentObjectIdV1,
     WindowsNtfsFileId128V1,
@@ -58,8 +67,19 @@ impl SupportedFilesystemProfile {
 /// persistent file handles and a mount identity. A dated residual, shipped with
 /// A1's v1 reverse path, cured only by DR-1's (C). Those doors take the LEGACY
 /// probe (`identity.rs:312-367`), which admits btrfs/xfs/zfs where the catalog's
-/// `require_ext4` refuses, so the string's "ext4 only" is the CATALOG's admission
-/// list, not the abort's. The capability-free half is pinned by E4.1(c)'s
+/// identity gate refuses, so the string's "ext4 only" was the CATALOG's
+/// admission list, not the abort's.
+///
+/// **DR-1 W2, 2026-09-03: the string's "ext4 only" is now STALE, and it stays
+/// for exactly one more step.** `GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.2
+/// removed the Linux provider's `require_ext4`, so the catalog now admits xfs
+/// and f2fs as well and the two probes' admission sets differ only on btrfs
+/// (the UUID ioctl still refuses it with `ENOTTY`) and on tmpfs/ramfs (the
+/// provider refuses those as volatile). Rewriting the sentence belongs to W3,
+/// with the strict refusal it is the remedy for (§3.6) and the contracts pin
+/// that carries it; W2 deliberately does not move it out from under that step.
+///
+/// The capability-free half is pinned by E4.1(c)'s
 /// `a_v1_resume_refuses_without_mutation_and_abort_still_clears_the_record`
 /// (`src/workspace_ops/tests/g23/a1_activation.rs`) — [P3-C1]'s carrier, discharged
 /// by name; and [P3-8] closes (nothing converts, no snapshot exclusion grows).

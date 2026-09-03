@@ -60,7 +60,7 @@ PROTECTED_SOURCE_DIGESTS = {
     # value, distinct from the identity VALUE contract that keeps
     # `DurableObjectIdentity`, and it is the one capability carrying an
     # actionable remedy sentence.
-    "checked_artifact/capability.rs": "dcb8d2b0f74fea8033db1eeba5523788ef0742077e2eca158789369709a22df7",
+    "checked_artifact/capability.rs": "346978be14298e230c1d0ba9fb39781cc0c8d17c1c6f21fbfbd52d3fec76ab7b",
     # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
     # `activate_workspace_catalog`, the first production catalog activation,
     # and the four ENTRY_* inventories below move with it.
@@ -275,9 +275,9 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "916d3df32df540443dba69f847d92c84d079ab9f630869137a4a0f48c854efa0",
+    "checked_artifact/capability/pre_catalog.rs": "b6791e9f126c7afa8a62ece2ef8426a364b0249a9c3896b87785fddd5c2fa08f",
     "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
-    "checked_artifact/platform.rs": "c464666735aae2028fa75f9d6063eb6122f95ea1e3f0a39b3e4f18cd9293d094",
+    "checked_artifact/platform.rs": "7cc428ded002a0ce549c306d0d4ea70e443e297f215d9ae64190f7b18b06025f",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
     "workspace_ops/merge/v1_lifecycle/mod.rs": "d4cbe25dc4e5f75c7af15a3aa330a4d2f0d4bf256b5774316cc9d0de353e6b4f",
 }

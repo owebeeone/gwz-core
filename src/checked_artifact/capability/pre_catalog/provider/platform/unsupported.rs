@@ -1,6 +1,7 @@
 use cap_std::fs::{Dir, File};
 
 use super::super::super::*;
+use super::VolumeDescription;
 use crate::checked_artifact::capability::{
     ObjectIdentityFact, PathComponentMode, PlatformCapability,
 };
@@ -42,6 +43,22 @@ pub(super) fn parent_mode(_parent: &Dir) -> Result<PathComponentMode, CheckedFsE
 
 pub(super) fn rename_domain(_directory: &Dir) -> Result<Vec<u8>, CheckedFsError> {
     Err(unsupported())
+}
+
+/// DR-1 W2 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.3, 2026-09-03): the one
+/// probe in this file that ANSWERS rather than refusing, and deliberately so.
+/// It is a wording aid, not a capability: every identity probe above still
+/// refuses, so this platform is always below the bar, and what this returns
+/// only decides whether the warning names a filesystem (`None` → `unknown`)
+/// and which parenthetical it takes (`no durable filesystem identity`).
+/// Refusing here would give the warning nothing to say and would make a
+/// wording input look like a gate.
+pub(super) fn describe_volume(_directory: &Dir) -> Result<VolumeDescription, CheckedFsError> {
+    Ok(VolumeDescription {
+        name: None,
+        remote: false,
+        volatile: false,
+    })
 }
 
 fn unsupported() -> CheckedFsError {

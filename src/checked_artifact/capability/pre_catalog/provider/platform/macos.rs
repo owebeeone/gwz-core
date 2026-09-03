@@ -5,6 +5,7 @@ use cap_fs_ext::MetadataExt;
 use cap_std::fs::{Dir, File};
 
 use super::super::super::*;
+use super::VolumeDescription;
 use crate::checked_artifact::capability::{
     ObjectIdentityFact, PathComponentMode, PlatformCapability,
 };
@@ -66,6 +67,42 @@ pub(super) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, CheckedFsError> 
     Ok(volume_attributes(directory.as_raw_fd())?
         .volume_uuid
         .to_vec())
+}
+
+/// The volume's name and its two classifications, as a WORDING AID only
+/// (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.3, 2026-09-03).
+///
+/// macOS names the filesystem directly (`statfs.f_fstypename`: `apfs`, `hfs`,
+/// `smbfs`, `nfs`, `msdos`) and states locality directly (`MNT_LOCAL`), so
+/// neither classification needs a name list here — which is why `remote` is
+/// read from the mount flag rather than from `f_fstypename`.
+///
+/// `volatile` is always `false`, and that is a LIMIT, not a claim: a macOS RAM
+/// disk (`hdiutil attach -nomount ram://…` newfs'd and mounted) reports `apfs`
+/// or `hfs` with `MNT_LOCAL` set and is indistinguishable from a disk-backed
+/// volume through this interface. The consequence is disclosed rather than
+/// hidden: a merge on such a volume takes the ABOVE-bar path and activates a
+/// catalog whose contents vanish on power loss, exactly as it does today. The
+/// identity gate on macOS is unchanged by this step; only Linux gained a
+/// volatility refusal (§3.2), because only there does an identity probe
+/// actively admit a volatile substrate.
+pub(super) fn describe_volume(directory: &Dir) -> Result<VolumeDescription, CheckedFsError> {
+    let stat = mounted_filesystem(directory.as_raw_fd())?;
+    let length = stat
+        .f_fstypename
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(stat.f_fstypename.len());
+    let bytes = stat.f_fstypename[..length]
+        .iter()
+        .map(|unit| *unit as u8)
+        .collect::<Vec<_>>();
+    let name = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(VolumeDescription {
+        name: (!name.is_empty()).then_some(name),
+        remote: stat.f_flags & libc::MNT_LOCAL as u32 == 0,
+        volatile: false,
+    })
 }
 
 fn identity(
@@ -155,6 +192,19 @@ fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, CheckedFsError> {
             "filesystem does not promise persistent object identities",
         ));
     }
+    if mounted_filesystem(fd)?.f_flags & libc::MNT_LOCAL as u32 == 0 {
+        return Err(CheckedFsError::unsupported(
+            PlatformCapability::PersistentFilesystemIdentity,
+            "remote macOS filesystems are not an admitted profile",
+        ));
+    }
+    Ok(attributes)
+}
+
+/// The one `fstatfs` both the admission gate and the volume description read.
+/// The gate consumes `f_flags & MNT_LOCAL`; the description also reads
+/// `f_fstypename`, so factoring it keeps one error string for one syscall.
+fn mounted_filesystem(fd: RawFd) -> Result<libc::statfs, CheckedFsError> {
     let mut stat = std::mem::MaybeUninit::<libc::statfs>::zeroed();
     if unsafe { libc::fstatfs(fd, stat.as_mut_ptr()) } != 0 {
         return Err(query_error(
@@ -162,14 +212,7 @@ fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, CheckedFsError> {
             "query macOS mounted filesystem",
         ));
     }
-    let stat = unsafe { stat.assume_init() };
-    if stat.f_flags & libc::MNT_LOCAL as u32 == 0 {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
-            "remote macOS filesystems are not an admitted profile",
-        ));
-    }
-    Ok(attributes)
+    Ok(unsafe { stat.assume_init() })
 }
 
 fn query_error(capability: PlatformCapability, operation: &'static str) -> CheckedFsError {
@@ -192,4 +235,28 @@ fn errno() -> i32 {
 
 fn set_errno(value: i32) {
     unsafe { *libc::__error() = value };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn describe_volume_names_a_local_apple_volume() {
+        // DR-1 W2 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.3, 2026-09-03):
+        // the positive control for the wording aid on the macOS CI host. A
+        // checked-out source tree is on the boot volume, so `f_fstypename` is
+        // one of the two Apple formats, `MNT_LOCAL` is set, and the platform
+        // reports no volatility at all.
+        let directory =
+            Dir::open_ambient_dir(env!("CARGO_MANIFEST_DIR"), cap_std::ambient_authority())
+                .unwrap();
+        let description = describe_volume(&directory).unwrap();
+        let name = description
+            .name
+            .expect("macOS always names the mounted filesystem");
+        assert!(matches!(name.as_str(), "apfs" | "hfs"), "got {name}");
+        assert!(!description.remote, "the crate's volume is local");
+        assert!(!description.volatile, "macOS never reports volatility");
+    }
 }
