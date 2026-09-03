@@ -42,12 +42,34 @@ fn preserve_abort_rejects_edited_or_staged_conflict_resolution_before_artifacts(
         let error =
             handle_merge(&backend, temp.path(), abort, "op_preserve_conflict_abort").unwrap_err();
 
+        // v1 already tells these two refusals apart, and NOT the way round a
+        // reader might guess -- measured, not assumed:
+        //
+        // staged=true  -> DirtyMember, "merge conflict index no longer matches
+        //   its original unresolved state". The staged resolution advanced the
+        //   whole index past the recorded unresolved snapshot, so
+        //   `merge_conflict_snapshot` (git/gitbackend/merge_recovery.rs:83)
+        //   refuses with `recovery_dirty` and that Err propagates out of
+        //   `observe_v1_participant_rollback`'s AbortConflict arm through
+        //   `preflight_non_preservation_participants`'s `map_err`
+        //   (v1_lifecycle/.../preservation/entry.rs:148) -- it never reaches
+        //   the Ambiguous check below it.
+        //
+        // staged=false -> MergeRecoveryRequired, "conflicted participant has no
+        //   exact preservable rollback form". Only the worktree file was edited,
+        //   so the index still matches and the snapshot check passes; the
+        //   rollback form is then Ambiguous and entry.rs:152 names it.
+        //
+        // v0 answered MergeRecoveryRequired for BOTH. The refusal itself is
+        // unchanged -- every other assertion in this loop (still in Merge state,
+        // no preservation evidence, no preserved ref) held on v0 and holds now --
+        // so v1 is strictly more specific about the staged case, not weaker.
         assert_eq!(
             error.code,
             if staged {
-                ErrorCode::MergeRecoveryRequired
-            } else {
                 ErrorCode::DirtyMember
+            } else {
+                ErrorCode::MergeRecoveryRequired
             }
         );
         assert_eq!(error.member_id.as_deref(), Some("mem_docs"));
