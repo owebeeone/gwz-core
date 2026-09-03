@@ -296,9 +296,12 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
     "checked_artifact/platform.rs": "7cc428ded002a0ce549c306d0d4ea70e443e297f215d9ae64190f7b18b06025f",
     # M5d close: parity events + the observe-tree re-homes from deleted
-    # abort files. Re-measured on the erasure tree.
-    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "ed054eb85f235d499f02761df33e549c7d98e0dadff7cf85ba129425e2e2b48a",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "dce8ae826401c209d0c4fe721e4eea1f7c92898c5b19d6c608065974f830c3a5",
+    # abort files. Re-measured on the erasure tree, then again for M5d(5)/(7):
+    # the whole-set continue preflight and the `executed_here` discriminator
+    # that stops a reconciled pending conflict fabricating its original
+    # snapshot both land inside these two trees.
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "8813160c5da15181598bade2a5fc942834eda25ae8b3a790e03d3d96ef61f655",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "326cc46fbab1641300dc09fcedbf357d5b69e4a681878bf6f75c7038e89c48d3",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
