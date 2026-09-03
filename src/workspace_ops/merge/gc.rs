@@ -5,7 +5,8 @@ use crate::git::{GitBackend, GitDirectRefObservation};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OperationContext, WorkspaceMutatorLock};
 
-use super::{MergeOperationRecord, MergeStore};
+use super::record_wire::MergeOperationRecordV0;
+use super::{MergeStore, classify_open_record};
 
 struct BackupArtifact {
     target_id: String,
@@ -183,7 +184,11 @@ pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
     context: &OperationContext,
 ) -> ModelResult<crate::MergeResponse> {
     let _guard = WorkspaceMutatorLock::acquire(root)?;
-    if let Some(open) = store.discover_open(root)? {
+    // By envelope. A v0 occupancy is refused by charter §2's own sentence
+    // before this one, because "cannot collect while merge X is open" invites
+    // a recovery this binary will not perform.
+    if let Some(open) = classify_open_record(root)? {
+        open.refuse_if_pre_014()?;
         return Err(ModelError::new(
             ErrorCode::OpenOperation,
             format!(
@@ -207,11 +212,23 @@ pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
         .map_err(|_| archived_record_unreadable(merge_id))?;
     let artifacts = preflight_backup_artifacts(backend, root, &record)?;
     let archived = super::record_wire::decode_archived(bytes.as_slice(), merge_id)?;
-    let response = super::response::attach_archived_record_projection(
-        post_gc_record(record).to_response(context)?,
-        merge_id,
-        archived.projection(),
+    // The GC answer is the archive projection PLUS this command's own
+    // post-collection preservation rows: the archive is about to be deleted,
+    // so the rows say which backup refs and stashes survive it.
+    let collected = post_gc_record(record);
+    let rows = super::response::record_rows(
+        &collected.selected_targets,
+        &collected.participants,
+        collected.publication.as_ref(),
+        &collected.source_ref,
     )?;
+    let mut response =
+        super::response::archived_status_response(merge_id, archived.projection(), context)?;
+    response.participant_counts = rows.participant_counts;
+    response.repos = rows.repos;
+    response.preservation = rows.preservation;
+    response.publication_step = rows.publication_step;
+    response.operation_drift = collected.operation_drift.iter().map(Into::into).collect();
     for artifact in artifacts {
         backend
             .delete_backup_ref_checked(&artifact.path, &artifact.name, &artifact.commit)
@@ -224,7 +241,7 @@ pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
 fn preflight_backup_artifacts<B: GitBackend>(
     backend: &B,
     root: &Path,
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
 ) -> ModelResult<Vec<BackupArtifact>> {
     if record.state.is_open() {
         return Err(ModelError::new(
@@ -275,7 +292,7 @@ fn preflight_backup_artifacts<B: GitBackend>(
 #[allow(clippy::too_many_arguments)]
 fn preflight_owner_evidence<B: GitBackend>(
     backend: &B,
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     target_id: &str,
     relative_path: &str,
     target_key: &str,
@@ -385,8 +402,8 @@ fn preflight_direct_ref<B: GitBackend>(
 /// Visibility is module-internal so the §8.6 acceptance pin can drive marker
 /// rows through it directly; no behavior changes.
 pub(in crate::workspace_ops::merge) fn post_gc_record(
-    mut record: MergeOperationRecord,
-) -> MergeOperationRecord {
+    mut record: MergeOperationRecordV0,
+) -> MergeOperationRecordV0 {
     for participant in record.participants.values_mut() {
         retain_remaining_stashes(&mut participant.preservation);
     }

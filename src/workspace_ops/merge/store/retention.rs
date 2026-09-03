@@ -17,7 +17,7 @@ pub(super) fn enforce(root: &Path) -> ModelResult<()> {
         // Both installed envelopes, for the reason `store::gc::collect` reads
         // them: under the v0-only reader every v1 archive fell to the `Err`
         // arm, which retains forever, so no v1 archive was ever classified.
-        let owns_backup_ref = match read_seam_record(&path, RecordLocation::Archived, true) {
+        let owns_backup_ref = match read_archived_record(&path) {
             Ok((_, record)) => record
                 .participants
                 .values()

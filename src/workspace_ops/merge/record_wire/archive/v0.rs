@@ -1,15 +1,16 @@
 use std::collections::BTreeSet;
 
 use super::super::super::model::archive_projection::*;
+use super::MergeOperationRecordV0;
 use super::super::super::{
-    MergeOperationRecord, OperationState, PublicationProgress, PublicationStep,
+    OperationState, PublicationProgress, PublicationStep,
 };
 use super::v0_audit::{complete_audit, legacy_members};
 use super::v0_evidence::{
     BaselineEvidence, project_root, validate_baseline, validate_candidate, validate_common,
 };
 
-pub(super) fn project(record: &MergeOperationRecord) -> Result<ArchivedMergeProjection, ()> {
+pub(super) fn project(record: &MergeOperationRecordV0) -> Result<ArchivedMergeProjection, ()> {
     validate_common(record)?;
     let baseline = validate_baseline(record)?;
     let terminal_outcome = match record.state {
@@ -37,14 +38,14 @@ pub(super) fn project(record: &MergeOperationRecord) -> Result<ArchivedMergeProj
 }
 
 fn project_candidate(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     baseline: &BaselineEvidence,
 ) -> Result<ArchivedAcceptanceProjection, ()> {
     let publication = record.publication.as_ref().ok_or(())?;
     let candidate = publication.candidate.as_ref().ok_or(())?;
     let source_required = match record.state {
         OperationState::Completed => {
-            crate::workspace_ops::merge::acceptance::publication_required(record)
+            crate::workspace_ops::merge::acceptance::publication_required(&record.participants)
         }
         OperationState::Aborted => record.participants.values().any(|participant| {
             participant.state == super::super::super::ParticipantState::RolledBack
@@ -102,7 +103,7 @@ fn project_candidate(
 }
 
 fn project_baseline(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     baseline: &BaselineEvidence,
 ) -> Result<ArchivedAcceptanceProjection, ()> {
     validate_no_publication_completion(record)?;
@@ -152,7 +153,7 @@ fn project_baseline(
 }
 
 fn validate_candidate_terminal(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     publication: &PublicationProgress,
     composition_complete: bool,
 ) -> Result<(), ()> {
@@ -189,7 +190,7 @@ fn validate_candidate_terminal(
     Ok(())
 }
 
-fn validate_no_publication_completion(record: &MergeOperationRecord) -> Result<(), ()> {
+fn validate_no_publication_completion(record: &MergeOperationRecordV0) -> Result<(), ()> {
     let publication = record.publication.as_ref().ok_or(())?;
     let has_output = publication.candidate_lock_sha256.is_some()
         || publication.candidate_marker_path.is_some()
@@ -202,7 +203,7 @@ fn validate_no_publication_completion(record: &MergeOperationRecord) -> Result<(
         || publication.preservation_prefix.is_some();
     if publication.step == PublicationStep::Complete
         && !has_output
-        && !crate::workspace_ops::merge::acceptance::publication_required(record)
+        && !crate::workspace_ops::merge::acceptance::publication_required(&record.participants)
         && record
             .participants
             .values()
@@ -214,7 +215,7 @@ fn validate_no_publication_completion(record: &MergeOperationRecord) -> Result<(
     }
 }
 
-fn validate_pre_acceptance(record: &MergeOperationRecord) -> Result<(), ()> {
+fn validate_pre_acceptance(record: &MergeOperationRecordV0) -> Result<(), ()> {
     let Some(publication) = record.publication.as_ref() else {
         return Ok(());
     };
@@ -242,7 +243,7 @@ fn validate_pre_acceptance(record: &MergeOperationRecord) -> Result<(), ()> {
 }
 
 fn evidence(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     lock_yaml: Option<&str>,
     lock_sha256: Option<&str>,
     lock: Option<&crate::artifact::LockArtifact>,

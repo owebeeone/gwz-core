@@ -7,7 +7,7 @@ use crate::workspace_ops::merge::record_wire::{
     StrictYamlError,
 };
 
-pub(super) fn decode_error(
+pub(in crate::workspace_ops::merge) fn decode_error(
     path: &Path,
     merge_id: &str,
     location: RecordLocation,
@@ -52,7 +52,7 @@ pub(super) fn decode_error(
     }
 }
 
-pub(super) fn location_unreadable(
+pub(in crate::workspace_ops::merge) fn location_unreadable(
     path: &Path,
     merge_id: &str,
     location: RecordLocation,
@@ -208,5 +208,31 @@ mod tests {
             assert_eq!(context.schema.as_deref(), Some("gwz.merge-operation/v1"));
             assert_eq!(context.record_schema_version, Some(1));
         }
+    }
+}
+
+/// The typed refusal for an OPEN record whose envelope no installed lifecycle
+/// owns — an allocated-but-uninstalled wave (v2-v4) or an unknown schema.
+///
+/// **M5d.** This is deliberately NOT the answer for an open **v0** envelope.
+/// v0 is installed, and 0.14 recognizes it perfectly well; what it refuses is
+/// to run its lifecycle. Telling that user to "use a compatible newer GWZ"
+/// would be the sharpest defect in the parity inventory (X-1) pointed the
+/// other way. Charter §2's `pre_014_merge_error` answers v0 instead.
+pub(super) fn unsupported_open_record(
+    merge_id: &str,
+    header: &MergeRecordHeader,
+) -> ModelError {
+    let required_wave = required_wave_for(header);
+    unsupported_record(merge_id, header.clone(), required_wave)
+}
+
+fn required_wave_for(header: &MergeRecordHeader) -> Option<crate::MergeRecordRequiredWave> {
+    match header.schema.as_str() {
+        "gwz.merge-operation/v1" => Some(crate::MergeRecordRequiredWave::A1),
+        "gwz.merge-operation/v2" => Some(crate::MergeRecordRequiredWave::A2),
+        "gwz.merge-operation/v3" => Some(crate::MergeRecordRequiredWave::A3),
+        "gwz.merge-operation/v4" => Some(crate::MergeRecordRequiredWave::A4),
+        _ => None,
     }
 }

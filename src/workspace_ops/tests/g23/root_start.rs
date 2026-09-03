@@ -116,7 +116,7 @@ fn explicit_root_dry_run_is_visible_and_does_not_mutate() {
         backend.head(temp.path()).unwrap().commit.as_deref(),
         Some(baseline.as_str())
     );
-    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+    assert!(no_open_record(temp.path()));
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn explicit_root_dry_run_predicts_conflict_without_mutation() {
         fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
         lock
     );
-    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+    assert!(no_open_record(temp.path()));
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn explicit_root_ff_only_rejects_true_merge_before_mutation() {
     );
     assert_eq!(fs::read(temp.path().join(".git/index")).unwrap(), index);
     assert_eq!(fs::read(temp.path().join("root.txt")).unwrap(), worktree);
-    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+    assert!(no_open_record(temp.path()));
 }
 
 #[test]
@@ -197,10 +197,9 @@ fn explicit_root_fast_forward_finalizes_on_top_of_root_result() {
     );
     let evidence = backend.head(temp.path()).unwrap().commit.unwrap();
     assert_ne!(evidence, source);
-    let record = FileMergeStore
-        .load(temp.path(), response.merge_id.as_deref().unwrap())
-        .unwrap();
-    let publication = record.publication.unwrap();
+    let record = archived_record(temp.path(), response.merge_id.as_deref().unwrap());
+    let record = record.view();
+    let publication = record.publication().unwrap();
     assert_eq!(
         publication.root_merge_commit.as_deref(),
         Some(source.as_str())
@@ -240,13 +239,11 @@ fn explicit_root_up_to_date_is_a_no_op_without_evidence() {
             .unwrap()
             .is_empty()
     );
-    let record = FileMergeStore
-        .load(temp.path(), response.merge_id.as_deref().unwrap())
-        .unwrap();
+    let record = archived_record(temp.path(), response.merge_id.as_deref().unwrap());
     assert!(
         record
-            .publication
-            .as_ref()
+            .view()
+            .publication()
             .unwrap()
             .composition_commit
             .is_none()
@@ -322,10 +319,9 @@ fn root_metadata_merge_uses_the_root_result_as_publication_baseline() {
         merge_repo(&response, "@root").resulting_commit.as_deref(),
         Some(source.as_str())
     );
-    let record = FileMergeStore
-        .load(temp.path(), response.merge_id.as_deref().unwrap())
-        .unwrap();
-    let publication = record.publication.unwrap();
+    let record = archived_record(temp.path(), response.merge_id.as_deref().unwrap());
+    let record = record.view();
+    let publication = record.publication().unwrap();
     assert_eq!(
         crate::artifact::LockArtifact::from_yaml(
             &publication.candidate.as_ref().unwrap().baseline_lock_yaml
@@ -370,8 +366,10 @@ fn member_conflict_does_not_prevent_root_last_execution() {
         backend.head(temp.path()).unwrap().commit.as_deref(),
         Some(root_source.as_str())
     );
-    let record = FileMergeStore.discover_open(temp.path()).unwrap().unwrap();
-    assert_eq!(record.selected_targets, ["mem_remote", "@root"]);
+    let record = open_record(temp.path()).unwrap();
+    let record = record.view();
+    assert_eq!(record
+.selected_targets(), ["mem_remote", "@root"]);
 }
 
 #[test]
@@ -391,5 +389,5 @@ fn unborn_explicit_root_rejects_before_member_mutation() {
         backend.head(&member).unwrap().commit.as_deref(),
         Some(member_before.as_str())
     );
-    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+    assert!(no_open_record(temp.path()));
 }

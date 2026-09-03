@@ -84,7 +84,7 @@ impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for PreservationEntryVi
                 "operation drift prevents coordinated preservation entry",
             ));
         }
-        crate::workspace_ops::merge::abort::preflight_v1_evidence(
+        crate::workspace_ops::merge::v1_rollback::preflight_v1_evidence(
             self.backend,
             current.location().root(),
             anticipated,
@@ -137,7 +137,7 @@ fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
         })?;
         match row.state {
             ParticipantState::Conflicted => {
-                let observed = crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
+                let observed = crate::workspace_ops::merge::v1_rollback::observe_v1_participant_rollback(
                     backend,
                     current.location().root(),
                     record,
@@ -147,7 +147,7 @@ fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
                 )
                 .map_err(|error| attach_member(error, member_id, &row.path))?;
                 if observed
-                    == crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::Ambiguous
+                    == crate::workspace_ops::merge::v1_rollback::V1ParticipantRollbackObservation::Ambiguous
                 {
                     return Err(ModelError::new(
                         ErrorCode::MergeRecoveryRequired,
@@ -159,7 +159,7 @@ fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
             ParticipantState::Planned
             | ParticipantState::Failed
             | ParticipantState::Unattempted => {
-                crate::workspace_ops::merge::abort::verify_v1_no_mutation_participant(
+                crate::workspace_ops::merge::v1_rollback::verify_v1_no_mutation_participant(
                     backend,
                     current.location().root(),
                     record,

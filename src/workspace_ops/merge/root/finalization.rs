@@ -8,7 +8,9 @@ use crate::git::{GitBackend, GitRepositoryState};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
 
-use super::super::MergeOperationRecord;
+use super::super::model::v1::MergeOperationRecordV1;
+use super::super::{MergeStatusRecordView, MergeTargetKind, OperationState, participant_semantics};
+use super::super::publication::{candidate_files_view, classify_candidate_publication_view, observe_root_evidence_view};
 use super::super::acceptance::{
     AcceptedRootBase, accepted_root_checkout_with_observation, selected_root_participant,
 };
@@ -25,7 +27,7 @@ pub(in crate::workspace_ops::merge) struct CandidateMetadata {
 pub(in crate::workspace_ops::merge) fn candidate_metadata<B: GitBackend>(
     backend: &B,
     root: &Path,
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
 ) -> ModelResult<CandidateMetadata> {
     candidate_metadata_inner(backend, root, record).map_err(root_context)
 }
@@ -33,7 +35,7 @@ pub(in crate::workspace_ops::merge) fn candidate_metadata<B: GitBackend>(
 fn candidate_metadata_inner<B: GitBackend>(
     backend: &B,
     root: &Path,
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
 ) -> ModelResult<CandidateMetadata> {
     let root_participant = selected_root_participant(record)?;
     let unselected_root_head = if root_participant.is_none() {
@@ -147,9 +149,9 @@ fn candidate_metadata_inner<B: GitBackend>(
 }
 
 pub(in crate::workspace_ops::merge) fn evidence_parent(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
 ) -> ModelResult<Option<&str>> {
-    evidence_parent_view(super::super::status::MergeStatusRecordView::from_v0(record))
+    evidence_parent_view(super::super::status::MergeStatusRecordView::from_v1(record))
 }
 
 pub(in crate::workspace_ops::merge) fn evidence_parent_view(
@@ -167,7 +169,7 @@ pub(in crate::workspace_ops::merge) fn evidence_parent_view(
 }
 
 pub(in crate::workspace_ops::merge) fn root_merge_commit(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
 ) -> ModelResult<Option<&str>> {
     selected_root_participant(record)?
         .map(|participant| {
@@ -182,12 +184,12 @@ pub(in crate::workspace_ops::merge) fn root_merge_commit(
 pub(in crate::workspace_ops::merge) fn root_finalization_is_exact<B: GitBackend>(
     backend: &B,
     root: &Path,
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
 ) -> ModelResult<bool> {
     root_finalization_is_exact_view(
         backend,
         root,
-        super::super::status::MergeStatusRecordView::from_v0(record),
+        super::super::status::MergeStatusRecordView::from_v1(record),
     )
 }
 
@@ -291,4 +293,58 @@ fn root_context(error: ModelError) -> ModelError {
     } else {
         error.with_member("@root", ".")
     }
+}
+
+/// Whether the workspace shows an interrupted root-evidence rollback exactly.
+///
+/// **M5d.** Relocated from `merge/root/abort.rs`, whose v0 abort surface is
+/// deleted. This is a status OBSERVATION, not a rollback step: it is what
+/// `status/snapshot.rs` asks before it lets `RollingBack` normalise, and it
+/// reads through the version-agnostic `MergeStatusRecordView`.
+pub(in crate::workspace_ops::merge) fn interrupted_evidence_rollback_is_exact_view<
+    B: GitBackend,
+>(
+    backend: &B,
+    root: &Path,
+    view: MergeStatusRecordView<'_>,
+) -> ModelResult<bool> {
+    let Some(publication) = view.publication() else {
+        return Ok(false);
+    };
+    let Some(participant) = view.participants().get("@root") else {
+        return Ok(false);
+    };
+    if view.state() != OperationState::RollingBack
+        || publication.candidate.is_none()
+        || publication.composition_commit.is_none()
+        || publication.evidence_rolled_back
+        || participant.target_kind != MergeTargetKind::Root
+        || participant.path != "."
+        || !view
+            .selected_targets()
+            .iter()
+            .any(|target| target == "@root")
+        || !participant_semantics::result::is_successful_result(participant.state)
+        || !matches!(
+            observe_root_evidence_view(backend, root, view)?,
+            Some(RootEvidenceObservation::Baseline)
+        )
+        || classify_candidate_publication_view(root, view)?.is_none()
+        || backend.repository_state(root)? != GitRepositoryState::Clean
+    {
+        return Ok(false);
+    }
+    let allowed = candidate_files_view(view)?
+        .into_iter()
+        .map(|file| file.path)
+        .collect::<Vec<_>>();
+    let status = backend.status(root)?;
+    Ok(status.unresolved == 0
+        && status.files.iter().all(|file| {
+            allowed.iter().any(|path| path == &file.path)
+                && file
+                    .original_path
+                    .as_ref()
+                    .is_none_or(|original| allowed.iter().any(|path| path == original))
+        }))
 }

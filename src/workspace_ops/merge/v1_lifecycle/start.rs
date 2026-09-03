@@ -25,42 +25,7 @@ use super::store::CheckedV1Store;
 use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, OperationContext};
-use crate::workspace_ops::merge::MergeOperationRecord;
 use crate::workspace_ops::merge::model::v1::MergeOperationRecordV1;
-
-/// Lift one freshly created record onto the v1 body.
-///
-/// The v1 body is a strict superset of v0's: every field the creation site
-/// fills is shared, and each v1-only field (accepted workspace, recovery
-/// context, the two pending journals, the preservation/publication handoff)
-/// is absent on a record that has not started executing. Migration — not
-/// creation — is where those fields are constructed from an existing v0 row
-/// (`record_wire::open_v0`), so creation states them absent.
-pub(super) fn created_v1_record(record: MergeOperationRecord) -> MergeOperationRecordV1 {
-    MergeOperationRecordV1 {
-        schema: record.schema,
-        record_schema_version: record.record_schema_version,
-        writer_version: record.writer_version,
-        workspace_id: record.workspace_id,
-        merge_id: record.merge_id,
-        operation_id: record.operation_id,
-        state: record.state,
-        source_ref: record.source_ref,
-        mode: record.mode,
-        created_at: record.created_at,
-        baseline: record.baseline,
-        selected_targets: record.selected_targets,
-        participants: record.participants,
-        publication: record.publication,
-        operation_drift: record.operation_drift,
-        accepted_workspace: None,
-        recovery_context: None,
-        pending_rollback: None,
-        pending_preservation: None,
-        preservation_publication_handoff: None,
-        extensions: record.extensions,
-    }
-}
 
 /// Create the v1 record for one accepted start and run it to its next durable
 /// stop under the v1 service.
@@ -76,12 +41,11 @@ pub(super) fn created_v1_record(record: MergeOperationRecord) -> MergeOperationR
 pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthorityBackend>(
     backend: &B,
     root: &Path,
-    record: MergeOperationRecord,
+    record: MergeOperationRecordV1,
     filesystem_strict: bool,
     context: &OperationContext,
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
-    let record = created_v1_record(record);
     let merge_id = record.merge_id.clone();
     let store = CheckedV1Store::default();
 
@@ -280,80 +244,5 @@ pub(in crate::workspace_ops::merge) fn handle_v1_command<B: MergeAuthorityBacken
             Ok(response)
         }
         crate::MergeOp::Start => unreachable!("start never routes through an open record"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::*;
-    use crate::workspace_ops::merge::model::v1::{
-        MERGE_RECORD_SCHEMA_V1, MERGE_RECORD_SCHEMA_VERSION_V1,
-    };
-    use crate::workspace_ops::merge::{MergeBaseline, MergeExecutionMode, OperationState};
-
-    /// A record shaped exactly as `start::create_record` leaves one: the
-    /// writer floor's envelope, `Executing`, no participants resolved yet.
-    fn created(mode: MergeExecutionMode) -> MergeOperationRecord {
-        MergeOperationRecord {
-            schema: MERGE_RECORD_SCHEMA_V1.to_owned(),
-            record_schema_version: MERGE_RECORD_SCHEMA_VERSION_V1,
-            writer_version: crate::VERSION.to_owned(),
-            workspace_id: "ws_default".to_owned(),
-            merge_id: "merge_1".to_owned(),
-            operation_id: "op_1".to_owned(),
-            state: OperationState::Executing,
-            source_ref: "feature/source".to_owned(),
-            mode,
-            created_at: "now".to_owned(),
-            baseline: MergeBaseline {
-                lock_sha256: "lock".to_owned(),
-                manifest_sha256: "manifest".to_owned(),
-                lock_yaml: None,
-                manifest_yaml: None,
-                lock_commit_sha256: None,
-                manifest_commit_sha256: None,
-                root_head: None,
-                root_branch: None,
-                extensions: BTreeMap::new(),
-            },
-            selected_targets: Vec::new(),
-            participants: BTreeMap::new(),
-            publication: None,
-            operation_drift: Vec::new(),
-            extensions: BTreeMap::new(),
-        }
-    }
-
-    /// Creation lifts the shared body onto v1 and states every v1-only field
-    /// absent. Those fields are constructed by migration, not by creation
-    /// (contract §4: "Migration constructs or recovers `AcceptedWorkspace` in
-    /// the migration write. It is not a later lifecycle action."), so a
-    /// freshly created record must carry none of them.
-    #[test]
-    fn creation_lifts_the_shared_body_and_states_v1_only_fields_absent() {
-        let v0 = created(MergeExecutionMode::NoFf);
-        let lifted = created_v1_record(v0.clone());
-
-        assert_eq!(lifted.schema, MERGE_RECORD_SCHEMA_V1);
-        assert_eq!(lifted.record_schema_version, MERGE_RECORD_SCHEMA_VERSION_V1);
-        assert_eq!(lifted.merge_id, v0.merge_id);
-        assert_eq!(lifted.operation_id, v0.operation_id);
-        assert_eq!(lifted.state, v0.state);
-        assert_eq!(lifted.source_ref, v0.source_ref);
-        assert_eq!(lifted.mode, v0.mode);
-        assert_eq!(lifted.baseline, v0.baseline);
-        assert_eq!(lifted.selected_targets, v0.selected_targets);
-        assert_eq!(lifted.participants, v0.participants);
-        assert_eq!(lifted.publication, v0.publication);
-        assert_eq!(lifted.operation_drift, v0.operation_drift);
-        assert_eq!(lifted.extensions, v0.extensions);
-
-        assert!(lifted.accepted_workspace.is_none());
-        assert!(lifted.recovery_context.is_none());
-        assert!(lifted.pending_rollback.is_none());
-        assert!(lifted.pending_preservation.is_none());
-        assert!(lifted.preservation_publication_handoff.is_none());
     }
 }

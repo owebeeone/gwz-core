@@ -32,11 +32,7 @@ fn open_finalizing_blocks_dry_run_and_real_starts_from_an_explicit_root() {
     let started = handle_merge(&backend, temp.path(), request(false), "op_merge").unwrap();
     assert_eq!(started.state, crate::MergeOperationState::Completed);
     let merge_id = started.merge_id.clone().unwrap();
-    let done = temp.path().join(format!(".gwz/merge/done/{merge_id}.yaml"));
-    let mut record: MergeOperationRecord =
-        serde_yaml::from_slice(&fs::read(&done).unwrap()).unwrap();
-    record.state = OperationState::Finalizing;
-    FileMergeStore.write_open(temp.path(), &record).unwrap();
+    reopen_archived_record(temp.path(), &merge_id, OperationState::Finalizing);
 
     assert_open_merge_blocks_all_starts_without_mutation(temp.path(), &backend, &merge_id);
 }

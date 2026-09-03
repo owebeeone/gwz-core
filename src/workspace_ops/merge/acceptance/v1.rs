@@ -7,9 +7,7 @@ use crate::workspace_ops::merge::model::v1::{
     AcceptedMetadataBaseV1, AcceptedMetadataSourceV1, AcceptedRootBaseV1, AcceptedWorkspaceV1,
     MemberAcceptanceV1, MergeOperationRecordV1, RootArtifactHashesV1, RootPublicationInputV1,
 };
-use crate::workspace_ops::merge::{
-    MergeBaseline, MergeOperationRecord, MergeParticipantRecord, MergeTargetKind,
-};
+use crate::workspace_ops::merge::{MergeBaseline, MergeParticipantRecord, MergeTargetKind};
 
 mod support;
 
@@ -17,7 +15,6 @@ use support::*;
 
 #[derive(Clone, Copy)]
 pub(in crate::workspace_ops::merge) enum V1AcceptanceRecord<'a> {
-    V0(&'a MergeOperationRecord),
     V1(&'a MergeOperationRecordV1),
 }
 
@@ -261,18 +258,6 @@ struct RecordView<'a> {
 impl<'a> From<V1AcceptanceRecord<'a>> for RecordView<'a> {
     fn from(value: V1AcceptanceRecord<'a>) -> Self {
         match value {
-            V1AcceptanceRecord::V0(record) => Self::new(
-                &record.workspace_id,
-                &record.merge_id,
-                &record.baseline,
-                &record.selected_targets,
-                &record.participants,
-                record
-                    .publication
-                    .as_ref()
-                    .and_then(|progress| progress.candidate.as_ref())
-                    .map(|candidate| candidate.lock_yaml.as_str()),
-            ),
             V1AcceptanceRecord::V1(record) => Self::new(
                 &record.workspace_id,
                 &record.merge_id,

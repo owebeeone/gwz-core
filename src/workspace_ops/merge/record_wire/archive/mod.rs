@@ -1,7 +1,7 @@
 use serde_yaml::Value;
 
-use super::super::model::MergeOperationRecord;
 use super::super::model::v1::{MergeOperationRecordV1, validate_v1_record};
+pub(in crate::workspace_ops::merge) use v0_record::MergeOperationRecordV0;
 use super::header::{
     HeaderClassificationError, HeaderMalformedReason, InstalledMergeRecordVersions,
     MergeRecordDispatch, MergeRecordHeader, classify_merge_record_header, read_merge_record_header,
@@ -12,6 +12,7 @@ use crate::{MergeRecordCompatibilityContext, MergeRecordRequiredWave};
 
 mod cleanup;
 mod v0;
+mod v0_record;
 mod v0_audit;
 mod v0_evidence;
 mod v1;
@@ -85,7 +86,7 @@ fn decode_v0(
     expected_merge_id: &str,
     header: &MergeRecordHeader,
 ) -> ModelResult<ValidatedArchivedRecord> {
-    let record: MergeOperationRecord = serde_yaml::from_value(raw)
+    let record: MergeOperationRecordV0 = serde_yaml::from_value(raw)
         .map_err(|_| archived_unreadable(expected_merge_id, Some(header)))?;
     validate_identity(&record.merge_id, expected_merge_id, header)?;
     let projection =

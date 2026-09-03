@@ -104,8 +104,7 @@ fn explicit_gc_checked_deletes_only_backup_refs_and_archive_record() {
     );
     assert!(crate::stash::bundle_path(temp.path(), &stash_id).is_file());
     assert_eq!(
-        FileMergeStore
-            .load(temp.path(), &merge_id)
+        crate::workspace_ops::merge::read_archived_record(temp.path(), &merge_id)
             .unwrap_err()
             .code,
         ErrorCode::OperationNotFound
@@ -430,8 +429,7 @@ fn explicit_gc_collects_a_completed_no_ff_archive() {
     );
     assert!(!archived_path(temp.path(), &merge_id).exists());
     assert_eq!(
-        FileMergeStore
-            .load(temp.path(), &merge_id)
+        crate::workspace_ops::merge::read_archived_record(temp.path(), &merge_id)
             .unwrap_err()
             .code,
         ErrorCode::OperationNotFound

@@ -1,15 +1,45 @@
+//! `--dry-run`: predict the merge, write nothing.
+//!
+//! **M5d (`GwzM5-8M5d-Charter.md` §4, "Dry-run"; parity inventory §1).** This
+//! code was `merge/start/response.rs`, inside the v0 start engine's own
+//! module. The engine is deleted; the dry run is not, and it is deliberately
+//! re-homed rather than deleted with its neighbours — the failure class this
+//! guards against is exactly the one that shipped in 0.8.0, where a behaviour
+//! present on the old path went silently missing on the new one.
+//!
+//! The guarantee is structural, and the structure is one early return:
+//! `handle_start_durable` returns here BEFORE `classify_open_record`, before
+//! id minting, before `create_record`, and before `select_record_version` —
+//! so raising `ACTIVE_WRITER_FLOOR` to `V1` changes nothing about a dry run.
+//! Everything reachable from here is an observer: `plan_merge` is
+//! parameterised over `PlanningBackend`, a trait with eight methods and no
+//! write verb, and `guarded_workspace_root`'s dry-run arm returns before it
+//! takes the workspace mutator lock. `merge/v1_lifecycle/` contains no
+//! mention of `dry_run` at all, because it is unreachable from one.
+//!
+//! A dry run answers `state: Completed`, `aggregate: Accepted`, `open: false`
+//! regardless of predicted conflicts, with `merge_id`, `record`,
+//! `preservation`, `publication_step` and `crash_recovery` all absent
+//! (`gwz-cli/docs/MachineOutput.md:238-239` pins `record: null`).
+
 use super::super::plan::plan_merge;
-use super::super::{MergeOperationRecord, MergeParticipantPlan};
-use super::prepared::Row;
+use super::super::MergeParticipantPlan;
 use crate::git::GitBackend;
-#[cfg(test)]
-use crate::model::ModelError;
 use crate::model::ModelResult;
 use crate::operation::{ActionKind, OperationContext};
 use crate::{AggregateStatus, MergeOperationState as OpState, MergeParticipantState as PState};
 use std::path::Path;
 
-pub(super) fn handle_dry_run<B: GitBackend>(
+/// One predicted participant row.
+///
+/// The v0 engine's `Row` carried an executed participant's outcome as well;
+/// the executed half left with the engine, so what remains is the planned
+/// half — which is all a dry run ever produced.
+struct PlannedRow<'a> {
+    plan: &'a MergeParticipantPlan,
+}
+
+pub(crate) fn handle_dry_run<B: GitBackend>(
     backend: &B,
     root: &Path,
     request: &crate::MergeRequest,
@@ -19,37 +49,19 @@ pub(super) fn handle_dry_run<B: GitBackend>(
     let repos = plan
         .participants
         .iter()
-        .map(|participant| summary(Row::new(participant, PState::Planned), &plan.source_ref))
+        .map(|participant| summary(PlannedRow { plan: participant }, &plan.source_ref))
         .collect();
     merge_response(context, repos, Vec::new())
 }
 
-pub(super) fn start_response(
-    record: &MergeOperationRecord,
-    plan: &[MergeParticipantPlan],
-    context: &OperationContext,
-) -> ModelResult<crate::MergeResponse> {
-    decorate_start_response(record.to_response(context)?, plan)
-}
-
-pub(super) fn decorate_start_response(
-    mut response: crate::MergeResponse,
-    plan: &[MergeParticipantPlan],
-) -> ModelResult<crate::MergeResponse> {
-    for (repo, participant) in response.repos.iter_mut().zip(plan) {
-        repo.predicted = participant.analysis;
-        repo.prediction_complete = Some(participant.prediction_complete);
-        repo.live_commit = match repo.state {
-            PState::UpToDate | PState::FastForwarded | PState::Merged => {
-                repo.resulting_commit.clone()
-            }
-            PState::Conflicted => Some(participant.before_commit.clone()),
-            _ => None,
-        };
-    }
-    Ok(response)
-}
-pub(super) fn summary(row: Row<'_>, source_ref: &str) -> crate::MergeRepoSummary {
+/// One planned row's protocol projection.
+///
+/// A dry run's rows are all `Planned`, so the executed-outcome fields the v0
+/// engine's `Row` carried — `oid`, `paths`, `err` — are constant here:
+/// `live_commit` is the participant's `before_commit` (a `Planned` row is
+/// neither `Failed` nor `Unattempted` and has no result yet),
+/// `resulting_commit` is absent, and `conflict_paths` is the PREDICTION.
+fn summary(row: PlannedRow<'_>, source_ref: &str) -> crate::MergeRepoSummary {
     let plan = row.plan;
     crate::MergeRepoSummary {
         target_id: plan.target_id.clone(),
@@ -59,28 +71,20 @@ pub(super) fn summary(row: Row<'_>, source_ref: &str) -> crate::MergeRepoSummary
         source_commit: plan.source_commit.clone(),
         target_branch: plan.target_branch.clone(),
         before_commit: plan.before_commit.clone(),
-        live_commit: (!matches!(row.state, PState::Failed | PState::Unattempted)).then(|| {
-            row.oid
-                .clone()
-                .unwrap_or_else(|| plan.before_commit.clone())
-        }),
-        resulting_commit: row.oid,
-        state: row.state,
+        live_commit: Some(plan.before_commit.clone()),
+        resulting_commit: None,
+        state: PState::Planned,
         predicted: plan.analysis,
         prediction_complete: Some(plan.prediction_complete),
-        conflict_paths: if row.state == PState::Planned {
-            plan.predicted_conflict_paths.clone()
-        } else {
-            row.paths
-        },
+        conflict_paths: plan.predicted_conflict_paths.clone(),
         continue_eligible: None,
         abort_eligible: None,
         drift: Vec::new(),
-        error: row.err,
+        error: None,
         pending_action: None,
     }
 }
-pub(super) fn merge_response(
+fn merge_response(
     context: &OperationContext,
     repos: Vec<crate::MergeRepoSummary>,
     errors: Vec<crate::GwzError>,
@@ -137,15 +141,4 @@ pub(super) fn merge_response(
         record: None,
         crash_recovery: None,
     })
-}
-#[cfg(test)]
-pub(super) fn participant_error(
-    plan: &MergeParticipantPlan,
-    error: &ModelError,
-) -> crate::GwzError {
-    let mut wire: crate::GwzError = error.into();
-    wire.member_id = Some(plan.target_id.clone());
-    wire.member_path = Some(plan.path.clone());
-    wire.target_kind = Some(plan.target_kind.into());
-    wire
 }

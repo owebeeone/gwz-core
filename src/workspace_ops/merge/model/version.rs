@@ -18,25 +18,20 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 
 /// The version floor this binary writes at.
 ///
-/// **A1 partial engagement — read this before changing the constant.**
+/// **M5d: v1 is the only merge.** Contract §2's creation matrix is `v1` for
+/// ordinary, `--ff-only`, custom-message and `--no-ff` starts alike, and
+/// `GwzM5-8M5d-Charter.md` §1 makes that the shipped fact: "One merge
+/// implementation: **v1**. … The v0 start / continue / abort / migrate /
+/// open-body / `adapt` **lifecycle engine** is **not in the binary**."
 ///
-/// Contract §2's A1 creation-matrix row is `v1` for ordinary/custom starts as
-/// well as no-ff, which makes the A1 floor `RecordVersion::V1`. It is `V0`
-/// here because raising it needs a production v1 owner for the *ordinary*
-/// start, and the reviewed tree has none: `v1_lifecycle` gained a creation
-/// owner and a start entry with this activation (`v1_lifecycle/start.rs`),
-/// and that entry drives the no-ff lifecycle, but the ordinary/fast-forward
-/// start's v1 equivalent — root participants, dry-run prediction, the drift
-/// and conflict response surfaces, and the event stream the v0 engine emits —
-/// is a separate milestone, not part of this package. Raising the constant
-/// without it routes every ordinary start into a lifecycle that does not yet
-/// reproduce those surfaces.
-///
-/// `RequestedSemantics::NoFf` already selects v1 through the `max`, so the
-/// public `--no-ff` surface this activation opens writes v1 records today.
-/// Raising the floor is a one-line change once the ordinary-start owner
-/// lands; nothing else in the selection needs to move.
-pub(crate) const ACTIVE_WRITER_FLOOR: RecordVersion = RecordVersion::V0;
+/// Selection is `max(floor, requested)`, so with the floor at `V1` every
+/// `RequestedSemantics` that this binary can serve selects `V1` and the
+/// version fork in `merge/start.rs` has one live arm. Lowering this constant
+/// does not restore a v0 writer — the engine that consumed v0 records is
+/// deleted, and an open v0 envelope is refused by `merge/open_v0_refusal.rs`
+/// without a body decode (charter §2). `RecordVersion::V0` survives only for
+/// the read-only archive projection of pre-0.14 `done/` records (charter §5).
+pub(crate) const ACTIVE_WRITER_FLOOR: RecordVersion = RecordVersion::V1;
 
 /// The semantic version a request's typed intent requires.
 ///
@@ -114,8 +109,8 @@ fn wave_display(wave: crate::MergeRecordRequiredWave) -> &'static str {
 pub(crate) fn creation_envelope(version: RecordVersion) -> (&'static str, u32) {
     match version {
         RecordVersion::V0 => (
-            super::v0::MERGE_RECORD_SCHEMA,
-            super::v0::MERGE_RECORD_SCHEMA_VERSION,
+            super::common::MERGE_RECORD_SCHEMA,
+            super::common::MERGE_RECORD_SCHEMA_VERSION,
         ),
         RecordVersion::V1 => (
             super::v1::MERGE_RECORD_SCHEMA_V1,

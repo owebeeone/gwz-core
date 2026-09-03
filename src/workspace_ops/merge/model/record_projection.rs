@@ -1,15 +1,3 @@
-use super::MergeOperationRecord;
-
-pub(crate) fn project_open_v0(_record: &MergeOperationRecord) -> crate::MergeRecordProjection {
-    crate::MergeRecordProjection {
-        source_version: crate::MergeRecordVersion::V0,
-        archived: false,
-        terminal_outcome: None,
-        acceptance: None,
-        recovery: None,
-    }
-}
-
 pub(crate) fn project_open_v1(
     record: &super::v1::MergeOperationRecordV1,
 ) -> crate::MergeRecordProjection {

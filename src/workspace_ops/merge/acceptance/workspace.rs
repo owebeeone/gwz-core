@@ -1,7 +1,8 @@
 use crate::artifact::{LockArtifact, ManifestArtifact};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-use super::super::{MergeOperationRecord, MergeParticipantRecord, MergeTargetKind};
+use super::super::model::v1::MergeOperationRecordV1;
+use super::super::{MergeParticipantRecord, MergeTargetKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::workspace_ops::merge) enum CompleteLockErrorKind {
@@ -32,7 +33,7 @@ impl CompleteLockError {
 }
 
 pub(in crate::workspace_ops::merge) fn construct_complete_lock(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
     manifest: &ManifestArtifact,
     mut lock: LockArtifact,
 ) -> Result<LockArtifact, CompleteLockError> {
@@ -133,13 +134,13 @@ impl AcceptedRootCheckout {
 
 #[cfg(test)]
 pub(crate) fn accepted_root_checkout(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
 ) -> ModelResult<AcceptedRootCheckout> {
     accepted_root_checkout_with_observation(record, None)
 }
 
 pub(in crate::workspace_ops::merge) fn accepted_root_checkout_with_observation(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
     observation: Option<&crate::git::GitHeadState>,
 ) -> ModelResult<AcceptedRootCheckout> {
     if let Some(participant) = selected_root_participant(record)? {
@@ -195,7 +196,7 @@ pub(in crate::workspace_ops::merge) fn accepted_root_checkout_with_observation(
 }
 
 pub(in crate::workspace_ops::merge) fn selected_root_participant(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
 ) -> ModelResult<Option<&MergeParticipantRecord>> {
     let participant = record.participants.get("@root");
     let selected = record
@@ -219,9 +220,16 @@ pub(in crate::workspace_ops::merge) fn selected_root_participant(
     }
 }
 
-pub(in crate::workspace_ops::merge) fn publication_required(record: &MergeOperationRecord) -> bool {
-    record
-        .participants
+/// Whether any participant's outcome changed, so the workspace root must
+/// publish evidence.
+///
+/// **M5d.** Taken over the participants map rather than a record, because the
+/// v0 ARCHIVE projection asks the same question of a `done/` record this
+/// binary can read but not run (charter §5).
+pub(in crate::workspace_ops::merge) fn publication_required(
+    participants: &std::collections::BTreeMap<String, MergeParticipantRecord>,
+) -> bool {
+    participants
         .values()
         .any(super::super::participant_semantics::result::has_changed_result)
 }

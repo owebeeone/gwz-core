@@ -95,10 +95,7 @@ pub fn acquire_workspace_mutation_guard(
     // states — the v0 store's decoder cannot read an open v1 record, and a
     // version error here replaced the open-merge remedy with misdirection.
     let open = classify_open_record(&root)?;
-    crate::operation::enforce_open_merge_gate(
-        open.as_ref().map(|envelope| envelope.merge_id.as_str()),
-        command,
-    )?;
+    super::open_gate::enforce_open_merge_gate_for_envelope(open.as_ref(), command)?;
     let guard = WorkspaceMutationGuard { root, _lock: lock };
     Ok(if dry_run {
         WorkspaceMutationAccess::PlanOnly(guard)

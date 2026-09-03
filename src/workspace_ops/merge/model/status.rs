@@ -1,9 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::{
-    MergeOperationRecord, OperationDrift, ParticipantDrift, ParticipantDriftKind,
-    PendingMergeActionKind,
-};
+use super::{OperationDrift, ParticipantDrift, ParticipantDriftKind, PendingMergeActionKind};
 
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub(crate) struct RetryEligibility {
@@ -47,11 +44,3 @@ pub(crate) struct MergeParticipantObservation {
     pub pending_action: Option<PendingActionObservation>,
 }
 
-/// Complete read-only status input. Participant observations are keyed by the
-/// durable target ids and must cover every id in `record.selected_targets`.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct MergeStatusSnapshot {
-    pub record: MergeOperationRecord,
-    pub participants: BTreeMap<String, MergeParticipantObservation>,
-    pub operation_drift: Vec<OperationDrift>,
-}

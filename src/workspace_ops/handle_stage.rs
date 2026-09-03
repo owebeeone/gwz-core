@@ -30,10 +30,11 @@ where
         request.meta.dry_run.unwrap_or(false),
     )?;
     let root = _access.root().to_path_buf();
-    // A1: an open record of EITHER version owns `add`'s routing. Reading it
-    // through the v0 store's decoder made a conflicted no-ff merge answer
-    // `UnsupportedRecordVersion` instead of staging its conflicts.
-    if let Some(open) = merge::discover_open_record(&root)? {
+    // An open merge owns staging: its member paths come from the FROZEN
+    // manifest at the root participant's `before_commit`, not the live one,
+    // and `@root` stages the workspace root. A pre-0.14 (v0) record refuses
+    // above, in the mutation guard, with the charter §2 sentence.
+    if let Some(open) = merge::discover_open_v1_record(&root)? {
         return handle_open_merge_stage(backend, &root, open.view(), &request, context);
     }
     let manifest = artifact::read_manifest(&root)?;
@@ -342,11 +343,11 @@ fn selected_open_merge_targets(
 mod tests {
     use super::*;
 
-    fn open_record() -> merge::MergeOperationRecord {
-        serde_yaml::from_str(
+    fn open_record() -> merge::OpenMergeRecord {
+        merge::OpenMergeRecord::from_yaml_for_test(
             r#"
-schema: gwz.merge-operation/v0
-record_schema_version: 0
+schema: gwz.merge-operation/v1
+record_schema_version: 1
 writer_version: test
 workspace_id: ws_test
 merge_id: merge_stage
@@ -375,11 +376,10 @@ participants:
     state: conflicted
 "#,
         )
-        .unwrap()
     }
 
-    fn view(record: &merge::MergeOperationRecord) -> merge::MergeStatusRecordView<'_> {
-        merge::MergeStatusRecordView::from_v0(record)
+    fn view(record: &merge::OpenMergeRecord) -> merge::MergeStatusRecordView<'_> {
+        record.view()
     }
 
     fn selected(targets: &[&str]) -> crate::Selection {

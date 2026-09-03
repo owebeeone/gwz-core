@@ -62,6 +62,5 @@ fn public_handler_exposes_the_frozen_service_entry() {
     assert_eq!(response.state, crate::MergeOperationState::Idle);
 }
 
-mod dispatch;
 mod mutation_guard;
 mod open_gate;

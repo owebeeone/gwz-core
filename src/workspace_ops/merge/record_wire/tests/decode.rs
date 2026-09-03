@@ -1,4 +1,4 @@
-use super::super::decode::{RecordDecodeError, decode_production_v0, decode_production_v1};
+use super::super::decode::{RecordDecodeError, decode_v0_parts, decode_production_v1};
 use super::super::decode_archived;
 use super::super::header::HeaderClassificationError;
 use super::super::raw_yaml::StrictYamlErrorKind;
@@ -27,24 +27,22 @@ fn indent(text: &str) -> String {
     text.lines().map(|line| format!("    {line}\n")).collect()
 }
 
+/// **M5d.** The v0 body decoder no longer serves OPEN records — an open v0
+/// envelope is the charter §2 refusal, classified from its header. What it
+/// still serves is the ARCHIVE (charter §5), so the strict-tree property is
+/// asserted through the archive decoder's own entry, which is the one a
+/// `done/` v0 record actually takes. The unknown-field manifest for a v0 body
+/// keeps its own suite at `record_wire/unknown_fields/tests/v0.rs`.
 #[test]
-fn production_decoder_uses_the_strict_tree_for_v0_body_decode() {
-    let decoded = decode_production_v0(
+fn the_archived_decoder_uses_the_strict_tree_for_v0_body_decode() {
+    let (raw, header, decoded) = super::super::decode_archived_common(
         record("schema: gwz.merge-operation/v0\nrecord_schema_version: 0").as_bytes(),
     )
     .unwrap();
-    assert_eq!(decoded.record().merge_id, "merge_1");
-    assert!(
-        decoded
-            .unknown_fields()
-            .entries()
-            .keys()
-            .any(|locator| locator.field == "future_record")
-    );
+    assert_eq!(header.record_schema_version, 0);
+    assert_eq!(decoded.merge_id, "merge_1");
     assert_eq!(
-        decoded
-            .raw()
-            .as_mapping()
+        raw.as_mapping()
             .unwrap()
             .get("future_record")
             .and_then(serde_yaml::Value::as_str),
@@ -53,8 +51,8 @@ fn production_decoder_uses_the_strict_tree_for_v0_body_decode() {
 }
 
 #[test]
-fn production_decoder_rejects_v1_before_body_decode() {
-    let error = decode_production_v0(
+fn the_v0_body_decoder_rejects_v1_before_body_decode() {
+    let error = decode_v0_parts(
         b"schema: gwz.merge-operation/v1\nrecord_schema_version: 1\nbody: invalid\n",
     )
     .unwrap_err();
@@ -69,7 +67,7 @@ fn production_decoder_rejects_v1_before_body_decode() {
 
 #[test]
 fn exact_v0_header_precedes_typed_body_failure() {
-    let error = decode_production_v0(
+    let error = decode_v0_parts(
         b"schema: gwz.merge-operation/v0\nrecord_schema_version: 0\nbody: invalid\n",
     )
     .unwrap_err();

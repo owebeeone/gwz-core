@@ -2,9 +2,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::workspace_ops::merge::{
-    MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeBaseline, MergeExecutionMode,
-    MergeOperationRecord, MergeTargetKind, OperationDrift, OperationState, PendingMergeAction,
-    PendingMergeActionKind,
+    MergeTargetKind, OperationState, PendingMergeAction, PendingMergeActionKind,
 };
 
 const STATES: [ParticipantState; 10] = [

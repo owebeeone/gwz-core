@@ -49,7 +49,7 @@ fn execute_checked<B: MergeAuthorityBackend>(
                 .ok_or_else(|| {
                     route_error("rollback participant is missing from the checked record")
                 })?;
-            crate::workspace_ops::merge::abort::execute_v1_participant_rollback(
+            crate::workspace_ops::merge::v1_rollback::execute_v1_participant_rollback(
                 backend,
                 current.location().root(),
                 current.record(),
@@ -59,7 +59,7 @@ fn execute_checked<B: MergeAuthorityBackend>(
             )
         }
         PendingRollbackActionV1::PublicationEvidence { next_step } => {
-            crate::workspace_ops::merge::abort::execute_v1_evidence_rollback(
+            crate::workspace_ops::merge::v1_rollback::execute_v1_evidence_rollback(
                 backend,
                 current.location().root(),
                 current.record(),

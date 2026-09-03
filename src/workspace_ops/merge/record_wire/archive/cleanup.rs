@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::super::super::model::v1::MergeOperationRecordV1;
-use super::super::super::{MergeOperationRecord, PreservationEvidence};
+use super::MergeOperationRecordV0;
+use super::super::super::{PreservationEvidence};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ArchivedCleanupWorklist {
@@ -83,7 +84,7 @@ pub(super) enum CleanupError {
 }
 
 pub(super) fn from_v0(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
 ) -> Result<ArchivedCleanupWorklist, CleanupError> {
     let mut owners = BTreeSet::new();
     let mut seen = BTreeSet::new();

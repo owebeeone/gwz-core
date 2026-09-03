@@ -445,12 +445,7 @@ fn a_below_bar_continue_decides_once_and_abort_stays_capability_free() {
         "abort never asks about crash recovery"
     );
     assert_eq!(catalog_entries(aborting.path()), Vec::<PathBuf>::new());
-    assert!(
-        FileMergeStore
-            .discover_open(aborting.path())
-            .unwrap()
-            .is_none()
-    );
+    assert!(no_open_record(aborting.path()));
 }
 
 /// **The warning's wording, unit-tested over the whole gap space**

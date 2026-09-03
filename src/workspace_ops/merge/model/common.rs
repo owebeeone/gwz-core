@@ -1,3 +1,15 @@
+//! The merge record's shared vocabulary.
+//!
+//! **M5d (`GwzM5-8M5d-Charter.md` §1).** This file was `model/v0.rs`, which
+//! read as "the v0 record" and was not: `MergeOperationRecordV1`
+//! (`model/v1/record.rs`) embeds `MergeBaseline`, `MergeParticipantRecord`,
+//! `PreservationEvidence`, `PublicationProgress` and `OperationDrift` from
+//! here field for field, and the v1 authority imports them by these names.
+//! The one thing here that really was the v0 record — the
+//! `MergeOperationRecordV0` serde struct — moved to
+//! `record_wire/archive/v0_record.rs`, where the archive decoder that is now
+//! its only reader owns it (charter §5). Everything else stayed.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -27,30 +39,6 @@ pub(crate) struct MergeBaseline {
     pub root_head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_branch: Option<String>,
-    #[serde(default, flatten)]
-    pub extensions: BTreeMap<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) struct MergeOperationRecordV0 {
-    pub schema: String,
-    pub record_schema_version: u32,
-    pub writer_version: String,
-    pub workspace_id: String,
-    pub merge_id: String,
-    pub operation_id: String,
-    pub state: OperationState,
-    pub source_ref: String,
-    #[serde(default, skip_serializing_if = "MergeExecutionMode::is_normal")]
-    pub mode: MergeExecutionMode,
-    pub created_at: String,
-    pub baseline: MergeBaseline,
-    pub selected_targets: Vec<String>,
-    pub participants: BTreeMap<String, MergeParticipantRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication: Option<PublicationProgress>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operation_drift: Vec<OperationDrift>,
     #[serde(default, flatten)]
     pub extensions: BTreeMap<String, Value>,
 }

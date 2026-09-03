@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::super::{
-    MergeBaseline, MergeOperationRecord, MergeParticipantRecord, MergeTargetKind, OperationDrift,
-    OperationState, PublicationProgress,
+    MergeBaseline, MergeParticipantRecord, MergeTargetKind, OperationDrift, OperationState,
+    PublicationProgress,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
@@ -11,9 +11,10 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 ///
 /// The view cannot be converted back into a durable record and deliberately
 /// excludes extensions and v1-only journals. It is the one place a
-/// version-agnostic reader names the half the v0 and v1 records hold
-/// IDENTICALLY, so the v0 engine's deletion removes [`Self::from_v0`] and
-/// nothing else.
+/// version-agnostic reader names the half the v0 and v1 records held
+/// IDENTICALLY. M5d deleted `from_v0` with the v0 engine and nothing else:
+/// the view is still the shape every non-merge consumer of merge state reads,
+/// it just has one constructor now.
 #[derive(Clone, Copy)]
 pub(in crate::workspace_ops) struct MergeStatusRecordView<'a> {
     workspace_id: &'a str,
@@ -29,7 +30,17 @@ pub(in crate::workspace_ops) struct MergeStatusRecordView<'a> {
 }
 
 impl<'a> MergeStatusRecordView<'a> {
-    pub(in crate::workspace_ops) fn from_v0(record: &'a MergeOperationRecord) -> Self {
+    /// The same view over an ARCHIVED record's common projection (I2 §7).
+    ///
+    /// **M5d.** `from_v0` left with the v0 engine; this is not it. An archived
+    /// `done/` record is decoded over both envelopes into the half they hold
+    /// identically (`record_wire::decode_archived_common`), and suites that
+    /// assert on a finished merge's durable body read it here rather than
+    /// through a store that no longer exists.
+    #[cfg(test)]
+    pub(in crate::workspace_ops) fn from_archived(
+        record: &'a super::super::record_wire::MergeOperationRecordV0,
+    ) -> Self {
         Self {
             workspace_id: &record.workspace_id,
             merge_id: &record.merge_id,

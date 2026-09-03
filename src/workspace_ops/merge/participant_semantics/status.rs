@@ -2,7 +2,7 @@ use crate::git::{GitNativeMergeState, GitRepositoryState, GitStatus};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::super::{
-    MergeParticipantObservation, MergeParticipantRecord, MergeStatusSnapshot, OperationDriftKind,
+    MergeParticipantObservation, MergeParticipantRecord, OperationDriftKind,
     ParticipantDrift, ParticipantDriftKind, ParticipantState, PendingActionObservation,
     PendingActionObservationState,
 };
@@ -484,37 +484,6 @@ pub(in crate::workspace_ops::merge) fn apply_exact_root_finalization_override(
     observation.abort_eligibility.blockers.clear();
 }
 
-pub(in crate::workspace_ops::merge) fn apply_interrupted_root_rollback_override(
-    snapshot: &mut MergeStatusSnapshot,
-) -> ModelResult<()> {
-    let participant = snapshot.record.participants.get("@root").ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::MergeRecordUnreadable,
-            "root evidence exists without a durable root participant",
-        )
-    })?;
-    if participant.target_kind != super::super::MergeTargetKind::Root || participant.path != "." {
-        return Err(ModelError::new(
-            ErrorCode::MergeRecordUnreadable,
-            "root evidence participant identity is inconsistent",
-        ));
-    }
-    let observation = snapshot.participants.get_mut("@root").ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::MergeRecordUnreadable,
-            "root evidence exists without a root status observation",
-        )
-    })?;
-    snapshot
-        .operation_drift
-        .retain(|drift| drift.kind != OperationDriftKind::RootCandidateStateChanged);
-    observation.live_commit = participant.resulting_commit.clone();
-    observation.conflict_paths.clear();
-    observation.drift.clear();
-    observation.abort_eligibility.eligible = true;
-    observation.abort_eligibility.blockers.clear();
-    Ok(())
-}
 
 #[cfg(test)]
 #[path = "status_tests/mod.rs"]

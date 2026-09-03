@@ -1,9 +1,8 @@
 use std::path::Path;
 
 use super::super::{
-    FileMergeStore, MergeStore, RecordVersion, abort, continue_op, discover_open_before_manifest,
-    discover_open_envelope_before_manifest, gc, start, status, v1_lifecycle,
-    validate_merge_request,
+    FileMergeStore, MergeStore, discover_open_envelope_before_manifest, gc, start, status,
+    v1_lifecycle, validate_merge_request,
 };
 use super::mutation_guard::guarded_workspace_root;
 use crate::git::{GitBackend, MergeAuthorityBackend};
@@ -40,20 +39,11 @@ pub(in crate::workspace_ops::merge) trait V1Router {
     fn start(
         &self,
         root: &Path,
-        record: super::super::MergeOperationRecord,
+        record: super::super::model::v1::MergeOperationRecordV1,
         filesystem_strict: bool,
         context: &crate::operation::OperationContext,
         emitter: &crate::operation::EventEmitter<'_>,
     ) -> ModelResult<crate::MergeResponse>;
-
-    /// Run the A1 adaptation preflight for a mutating command on an open v0
-    /// record, returning whether the record is now v1.
-    fn adapt(
-        &self,
-        root: &Path,
-        request: &crate::MergeRequest,
-        open: &super::super::OpenRecordEnvelope,
-    ) -> ModelResult<bool>;
 
     /// Serve one command whose open record is v1.
     ///
@@ -74,19 +64,10 @@ pub(in crate::workspace_ops::merge) struct AuthorityV1Router<'a, B> {
 }
 
 impl<B: MergeAuthorityBackend> V1Router for AuthorityV1Router<'_, B> {
-    fn adapt(
-        &self,
-        root: &Path,
-        request: &crate::MergeRequest,
-        open: &super::super::OpenRecordEnvelope,
-    ) -> ModelResult<bool> {
-        adapt_before_mutating(self.backend, root, request, open)
-    }
-
     fn start(
         &self,
         root: &Path,
-        record: super::super::MergeOperationRecord,
+        record: super::super::model::v1::MergeOperationRecordV1,
         filesystem_strict: bool,
         context: &crate::operation::OperationContext,
         emitter: &crate::operation::EventEmitter<'_>,
@@ -118,24 +99,10 @@ struct AbsentV1Router;
 
 #[cfg(test)]
 impl V1Router for AbsentV1Router {
-    /// The dependency-injected v0 seam supplies its own `MergeStore`, so a
-    /// filesystem-reading migration would bypass the very store the seam
-    /// exists to control — and there is no v1 route to continue onto. No
-    /// migration means the v0 lifecycle stays in command, which is the
-    /// [P1-1]-safe direction.
-    fn adapt(
-        &self,
-        _root: &Path,
-        _request: &crate::MergeRequest,
-        _open: &super::super::OpenRecordEnvelope,
-    ) -> ModelResult<bool> {
-        Ok(false)
-    }
-
     fn start(
         &self,
         _root: &Path,
-        _record: super::super::MergeOperationRecord,
+        _record: super::super::model::v1::MergeOperationRecordV1,
         _filesystem_strict: bool,
         _context: &crate::operation::OperationContext,
         _emitter: &crate::operation::EventEmitter<'_>,
@@ -339,46 +306,27 @@ where
         );
     }
     drop(start_guard);
-    let root = resolve_recovery_root(dependencies.store, start, &request)?;
-    // A1 (Safety review §2.2 R3 / §2.4): the envelope registry decides which
-    // lifecycle owns this record, before any lifecycle touches it. A v1 open
-    // record goes to the v1 service; a v0 open record stays on the v0
-    // lifecycle, which is exactly what keeps [P1-1]'s recoverable v0 crash
-    // prefixes recoverable — see `v0_route_owns_v0_records` in
-    // `start/../runtime/tests`.
+    let root = resolve_recovery_root(start, &request)?;
+    // **M5d (`GwzM5-8M5d-Charter.md` §2).** The envelope decides, and it is
+    // all that is read: a v0 envelope is not decoded, not continued, not
+    // aborted, not migrated and not projected as a merge. It is an open
+    // operation with exactly one answer, and the A1 adapter that used to
+    // stand here is deleted along with the lifecycle it fed.
     if let Some(open) = super::super::classify_open_record(&root)? {
-        if open.version == RecordVersion::V1 {
-            return v1.command(&root, &open.merge_id, &request, &context, emitter);
-        }
-        if v1.adapt(&root, &request, &open)? {
-            return v1.command(&root, &open.merge_id, &request, &context, emitter);
-        }
+        open.refuse_if_pre_014()?;
+        return v1.command(&root, &open.merge_id, &request, &context, emitter);
     }
+    // No open record. The three answers below used to live in the v0 engine
+    // (`continue_op/execution.rs`, `abort/mod.rs`) and were unreachable from
+    // `v1.command`, which only ran when a record existed — so deleting the
+    // engine would have deleted them (parity inventory F-13 / X-7 / X-8).
     match request.op {
         crate::MergeOp::Start => unreachable!("start returned above"),
-        crate::MergeOp::Status => status::handle_status(
-            dependencies.backend,
-            dependencies.store,
-            &root,
-            request.merge_id.as_deref(),
-            &context,
-        ),
-        crate::MergeOp::Resume => continue_op::handle_continue(
-            dependencies.backend,
-            dependencies.store,
-            &root,
-            &request,
-            &context,
-            emitter,
-        ),
-        crate::MergeOp::Abort => abort::handle_abort(
-            dependencies.backend,
-            dependencies.store,
-            &root,
-            &request,
-            &context,
-            emitter,
-        ),
+        crate::MergeOp::Status => {
+            status::handle_status(&root, request.merge_id.as_deref(), &context)
+        }
+        crate::MergeOp::Resume => no_open_merge(&request, "there is no open merge to continue"),
+        crate::MergeOp::Abort => no_open_merge(&request, "no coordinated merge is open"),
         crate::MergeOp::Gc => gc::handle_gc(
             dependencies.backend,
             dependencies.store,
@@ -389,107 +337,34 @@ where
     }
 }
 
-/// The A1 adaptation preflight for a mutating command on an open v0 record
-/// (Safety review §2.4). Returns whether the record is now v1 and the command
-/// belongs to the v1 lifecycle.
+/// `--continue` / `--abort` with nothing open.
 ///
-/// Two conditions of the review are load-bearing here.
-///
-/// **[P2-1]** — the preflight is gated on the cheap `Finalizing`/normal-mode
-/// state pre-classification (`AdaptationPrecheck`), so `B-NOT-STARTED` and
-/// `B-PREPARING-EMPTY` — open v0 progress shapes a pre-A1 binary's crash can
-/// leave on disk, with zero fixtures — never reach `validate_v0_structure`
-/// through this new path. Only one-member `Finalizing` normal-mode shapes are
-/// whitelisted at all, so nothing skipped here could have migrated.
-///
-/// **[P1-1]** — a typed adapter refusal is the *migration's* answer, never
-/// the *command's*. The C-1 dispositions make `adapt_open` refuse F-MARKER
-/// and F-LOCK with `PublicationPrefixMismatch`; those are exactly the crash
-/// prefixes the v0 lifecycle resumes to `Completed` today. Surfacing that
-/// refusal as the resume outcome would turn currently-recoverable states into
-/// permanent wedges, so every non-`Upgraded` answer — `ValidUnlisted` and
-/// every typed refusal alike — leaves the v0 lifecycle in command, which the
-/// contract's own text requires: "An existing mutating v0 command remains on
-/// the existing v0 lifecycle and may write v0 only when that path's existing
-/// preflight authorizes it."
-fn adapt_before_mutating<B: MergeAuthorityBackend>(
-    backend: &B,
-    root: &Path,
+/// The v0 engine answered this in two places, each with its own sentence, and
+/// each additionally served a named id that turned out to be already closed by
+/// loading it out of `done/`. Both sentences are kept verbatim. The
+/// archived-id arm is served by `--status <id>` instead: the v1 lifecycle's
+/// terminal answer for a named record already comes from the archived
+/// projection, and a `--continue` on a completed record is not a continue.
+fn no_open_merge(
     request: &crate::MergeRequest,
-    open: &super::super::OpenRecordEnvelope,
-) -> ModelResult<bool> {
-    if !matches!(request.op, crate::MergeOp::Resume | crate::MergeOp::Abort) {
-        return Ok(false);
-    }
-    if open.adaptation != super::super::AdaptationPrecheck::MayAdapt {
-        return Ok(false);
-    }
-    // R2-E E4.1 review [P1-1]: prove the destination lifecycle can serve this
-    // record BEFORE the upgrade writes anything, and hold the window open
-    // across the write. The guard drops when this function returns, before the
-    // command re-acquires it.
-    let _window = if request.op == crate::MergeOp::Resume {
-        match forward_lifecycle_viability_window(root) {
-            Some(guard) => Some(guard),
-            None => return Ok(false),
-        }
-    } else {
-        None
-    };
-    match super::super::upgrade_open_v0(
-        backend,
-        root,
-        &open.merge_id,
-        crate::VERSION,
-        super::super::AtomicUpgradeFault::None,
-    ) {
-        Ok(super::super::AtomicUpgradeOutcome::Upgraded { .. }) => Ok(true),
-        Ok(super::super::AtomicUpgradeOutcome::ValidUnlisted) | Err(_) => Ok(false),
-    }
+    sentence: &str,
+) -> ModelResult<crate::MergeResponse> {
+    let detail = request.merge_id.as_deref().map_or_else(
+        || sentence.to_owned(),
+        |merge_id| {
+            format!(
+                "{sentence}; merge '{merge_id}' is not open. \
+                 Use `gwz merge --status {merge_id}` to read it if it is archived"
+            )
+        },
+    );
+    Err(crate::model::ModelError::new(
+        crate::model::ErrorCode::OperationNotFound,
+        detail,
+    ))
 }
 
-/// Proves the v1 forward lifecycle can serve this record and holds the proof
-/// while the upgrade writes, or answers `None` — one more non-`Upgraded`
-/// answer, leaving the v0 lifecycle in command to complete the record.
-///
-/// **E4.1 review [P1-1]:** the upgrade is durable and one-way, so upgrading
-/// into a lifecycle that then refuses is what wedged an interrupted ORDINARY
-/// merge — the class the [P1-1] doctrine above rejects. **Only `Resume` asks:**
-/// abort routes to the reverse service and its capability-free lease, so that
-/// route cannot be made unviable here and an abort never creates a catalog.
-/// **Scoped by path** (2026-09-02, CapabilityFreeAmendment §6): an abort that
-/// re-verifies a checked artifact still takes the legacy identity probe there.
-/// **The lock:** a catalog lease is borrowable only from a held one, and the
-/// adapter runs after `drop(start_guard)`; the guard is held across
-/// `upgrade_open_v0`, which takes none of its own, and released before the
-/// command re-acquires it. A lock we cannot take is itself a `None` — the v0
-/// route takes the same lock and reports contention in its own voice.
-///
-/// **Residual, disclosed (review R4):** the forward service re-proves
-/// activation one layer down, so a catalog lost between the two — a race, not a
-/// capability — refuses after the upgrade. Not a wedge: `gwz merge --abort`
-/// clears it, and this abort is capability-free BY PATH (§6, 2026-09-02): it
-/// touches no checked artifact. Driven.
-/// **DR-1 ship (1) W3 leaves this UNTOUCHED** (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
-/// §3.1, 2026-09-03). The crash-recovery decision governs `--no-ff` starts and
-/// v1 continues; this is the v0->v1 ADAPTER's window, on the ordinary/`--ff-only`
-/// route that does not reach the decision point at all until M5c. Its answer is
-/// already "probe, do not refuse" — a failed activation keeps the v0 lifecycle
-/// in command — which is the precedent the decision point generalises, not a
-/// second place to make the same decision. Making it consult the decision would
-/// route an ordinary merge onto the v1 lifecycle on a volume the catalog cannot
-/// bind, which ship (1) explicitly does not do.
-fn forward_lifecycle_viability_window(
-    root: &Path,
-) -> Option<crate::operation::WorkspaceMutatorLock> {
-    let guard = crate::operation::WorkspaceMutatorLock::acquire(root).ok()?;
-    crate::checked_artifact::entry::activate_workspace_catalog(guard.catalog_mutation_lease())
-        .ok()?;
-    Some(guard)
-}
-
-fn resolve_recovery_root<S: MergeStore>(
-    store: &S,
+fn resolve_recovery_root(
     start: &Path,
     request: &crate::MergeRequest,
 ) -> ModelResult<std::path::PathBuf> {
@@ -501,14 +376,10 @@ fn resolve_recovery_root<S: MergeStore>(
     {
         return Ok(std::path::PathBuf::from(root));
     }
-    // A1: version-agnostic first. The v0 store's own decoder installs v0
-    // only, so an open v1 record must be discovered by its envelope or root
-    // resolution would fail before the dispatch could route it.
+    // By envelope, and only by envelope: root resolution must not depend on
+    // being able to decode the record it finds (charter §2).
     if let Some(found) = discover_open_envelope_before_manifest(start)? {
         return Ok(found.root);
-    }
-    if let Some(recovery) = discover_open_before_manifest(store, start)? {
-        return Ok(recovery.root);
     }
     crate::workspace_ops::resolve_workspace_root(start, request.meta.workspace.as_ref())
 }

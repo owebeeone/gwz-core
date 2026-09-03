@@ -244,52 +244,12 @@ macro_rules! impl_record_response {
 }
 
 impl_record_response!(
-    MergeOperationRecord,
-    to_response,
-    pub(crate),
-    project_open_v0,
-    from_state
-);
-impl_record_response!(
     super::model::v1::MergeOperationRecordV1,
     to_v1_response,
     pub(in crate::workspace_ops::merge),
     project_open_v1,
     always
 );
-
-impl MergeStatusSnapshot {
-    pub(crate) fn to_response(
-        &self,
-        context: &OperationContext,
-    ) -> ModelResult<crate::MergeResponse> {
-        let mut response = self.record.to_response(context)?;
-        // A snapshot is built from a record discovered in `.gwz/merge`, so it
-        // remains open to the workspace gate even when its terminal lifecycle
-        // state means only archive completion remains. The archived response
-        // returned after close continues to project `open = false`.
-        response.open = true;
-        for repo in &mut response.repos {
-            let observation = self.participants.get(&repo.target_id).ok_or_else(|| {
-                ModelError::new(
-                    ErrorCode::InternalError,
-                    format!(
-                        "merge status snapshot is missing participant '{}'",
-                        repo.target_id
-                    ),
-                )
-            })?;
-            repo.live_commit.clone_from(&observation.live_commit);
-            repo.conflict_paths.clone_from(&observation.conflict_paths);
-            repo.continue_eligible = Some(observation.continue_eligibility.eligible);
-            repo.abort_eligible = Some(observation.abort_eligibility.eligible);
-            repo.drift = observation.drift.iter().map(Into::into).collect();
-            repo.pending_action = observation.pending_action.as_ref().map(Into::into);
-        }
-        response.operation_drift = self.operation_drift.iter().map(Into::into).collect();
-        Ok(response)
-    }
-}
 
 fn context_meta(context: &OperationContext) -> crate::RequestMeta {
     crate::RequestMeta {
@@ -487,12 +447,18 @@ impl From<&OperationDrift> for crate::MergeOperationDrift {
 mod tests {
     use super::*;
     use crate::operation::{ActionKind, OperationContext};
-    use std::collections::BTreeMap;
 
+    /// A record found in `.gwz/merge` reads `open` even when its own state is
+    /// terminal: only the ARCHIVED answer says `open: false`.
+    ///
+    /// **M5d.** The v0 twin of this case paired `MergeOperationRecord`'s
+    /// `from_state` arm against `MergeStatusSnapshot`'s override. Both left
+    /// with the v0 engine, and the v1 record response uses the `always` arm,
+    /// which is the same property with no override to get wrong.
     #[test]
-    fn terminal_record_is_open_only_while_discovered_in_open_storage() {
-        let record: MergeOperationRecord = serde_yaml::from_str(
-            r#"{schema: gwz.merge-operation/v0, record_schema_version: 0, writer_version: test, workspace_id: ws_test, merge_id: merge_1, operation_id: op_start, state: aborted, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [], participants: {}}"#,
+    fn an_open_v1_record_reads_open_even_when_its_state_is_terminal() {
+        let record: crate::workspace_ops::merge::model::v1::MergeOperationRecordV1 = serde_yaml::from_str(
+            r#"{schema: gwz.merge-operation/v1, record_schema_version: 1, writer_version: test, workspace_id: ws_test, merge_id: merge_1, operation_id: op_start, state: aborted, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [], participants: {}}"#,
         )
         .unwrap();
         let context = OperationContext {
@@ -504,12 +470,6 @@ mod tests {
             attribution: None,
         };
 
-        assert!(!record.to_response(&context).unwrap().open);
-        let snapshot = MergeStatusSnapshot {
-            record,
-            participants: BTreeMap::new(),
-            operation_drift: Vec::new(),
-        };
-        assert!(snapshot.to_response(&context).unwrap().open);
+        assert!(record.to_v1_response(&context).unwrap().open);
     }
 }

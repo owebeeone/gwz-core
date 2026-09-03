@@ -80,16 +80,16 @@ pub(super) fn classify_rollback_aggregate<B: MergeAuthorityBackend>(
     });
     if publication_evidence_complete {
         let exact = if selected_root_checkout_supersedes_evidence {
-            crate::workspace_ops::merge::abort::v1_evidence_residue_after_selected_root_is_exact(
+            crate::workspace_ops::merge::v1_rollback::v1_evidence_residue_after_selected_root_is_exact(
                 root, record,
             )?
         } else {
-            crate::workspace_ops::merge::abort::observe_v1_evidence_rollback(
+            crate::workspace_ops::merge::v1_rollback::observe_v1_evidence_rollback(
                 backend,
                 root,
                 record,
                 EvidenceRollbackStepV1::Complete,
-            )? == crate::workspace_ops::merge::abort::V1EvidenceRollbackObservation::After
+            )? == crate::workspace_ops::merge::v1_rollback::V1EvidenceRollbackObservation::After
         };
         if !exact {
             return Ok(RollbackAggregateClassification::Mismatch);
@@ -128,7 +128,7 @@ pub(super) fn classify_rollback_aggregate<B: MergeAuthorityBackend>(
         } else {
             GitCheckoutOverlay::default()
         };
-        if !crate::workspace_ops::merge::abort::terminal_v1_participant_is_exact(
+        if !crate::workspace_ops::merge::v1_rollback::terminal_v1_participant_is_exact(
             backend, root, member_id, row, &overlay,
         )? {
             return Ok(RollbackAggregateClassification::Mismatch);
@@ -177,9 +177,9 @@ fn pending_selected_root_is_after<B: MergeAuthorityBackend>(
         .get("@root")
         .ok_or_else(|| prefix_error("selected-root rollback participant disappeared"))?;
     Ok(
-        crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
+        crate::workspace_ops::merge::v1_rollback::observe_v1_participant_rollback(
             backend, root, record, "@root", row, action,
-        )? == crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::After,
+        )? == crate::workspace_ops::merge::v1_rollback::V1ParticipantRollbackObservation::After,
     )
 }
 

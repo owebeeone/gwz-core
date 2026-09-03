@@ -1,5 +1,5 @@
 use super::*;
-use crate::workspace_ops::merge::abort::{
+use crate::workspace_ops::merge::v1_rollback::{
     V1EvidenceRollbackObservation as E, V1ParticipantRollbackObservation as O,
     execute_v1_evidence_rollback, observe_v1_evidence_rollback, observe_v1_participant_rollback,
 };

@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::super::model::archive_projection::*;
-use super::super::super::{MergeOperationRecord, MergeParticipantRecord};
+use super::MergeOperationRecordV0;
+use super::super::super::{MergeParticipantRecord};
 use crate::artifact::{LockArtifact, ManifestArtifact, ManifestMember, ResolvedMemberArtifact};
 
 pub(super) fn complete_audit(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     manifest: Option<&ManifestArtifact>,
     lock: &LockArtifact,
     metadata_base_lock: Option<&LockArtifact>,
@@ -88,7 +89,7 @@ pub(super) fn complete_audit(
 }
 
 pub(super) fn legacy_members(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     lock: Option<&LockArtifact>,
 ) -> Result<Vec<LegacyMemberEvidence>, ()> {
     let mut domain = record
@@ -124,7 +125,7 @@ pub(super) fn legacy_members(
 }
 
 fn validate_selected_rows(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     lock: &LockArtifact,
     metadata_base_lock: Option<&LockArtifact>,
     selected: &BTreeSet<String>,
@@ -214,7 +215,7 @@ fn validate_optional_equal<T: Eq>(actual: Option<T>, expected: Option<T>) -> Res
 }
 
 fn validate_selected_order(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     manifest: &ManifestArtifact,
     selected: &BTreeSet<String>,
 ) -> Result<(), ()> {
@@ -243,7 +244,7 @@ fn active_members(manifest: &ManifestArtifact) -> BTreeMap<&str, &ManifestMember
         .collect()
 }
 
-fn selected_members(record: &MergeOperationRecord) -> BTreeSet<String> {
+fn selected_members(record: &MergeOperationRecordV0) -> BTreeSet<String> {
     record
         .selected_targets
         .iter()

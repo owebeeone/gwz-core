@@ -112,7 +112,7 @@ fn mixed_member_root_dry_run_reports_clean_and_conflicted_predictions_without_mu
         fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
         lock
     );
-    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+    assert!(no_open_record(temp.path()));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn mixed_ff_only_rejects_later_root_true_merge_before_member_fast_forward() {
         fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
         lock
     );
-    assert!(FileMergeStore.discover_open(temp.path()).unwrap().is_none());
+    assert!(no_open_record(temp.path()));
 }
 
 #[test]
