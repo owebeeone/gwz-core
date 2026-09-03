@@ -15,7 +15,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) use finalization::{
     verify_finalization_action, verify_finalization_recovery_origin,
 };
 pub(in crate::workspace_ops::merge::v1_lifecycle) use forward::{
-    observe_forward, verify_participant_action,
+    observe_forward, preflight_continue_siblings, verify_participant_action,
 };
 pub(in crate::workspace_ops::merge::v1_lifecycle) use reverse::{
     prepare_direct_rollback_entry, prepare_exhausted_rollback_entry, prepare_preservation_entry,

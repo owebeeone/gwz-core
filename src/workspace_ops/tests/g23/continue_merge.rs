@@ -288,7 +288,14 @@ fn unrelated_staged_conflict_work_blocks_every_resolution_commit() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::RecoveryEvidenceMismatch);
+    // Restored to the v0 expectation deliberately, NOT re-pointed onto v1's
+    // taxonomy: the whole-set continue gate refuses at v0's exact point with
+    // v0's exact code and member attribution. The `RecoveryEvidenceMismatch`
+    // this asserted at 4717f3a was the SYMPTOM of the atomicity gap — the
+    // record had already been driven to RecoveryRequired by `app`'s completed
+    // mutation before `lib` was read — not a legitimate v0->v1 remap.
+    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
     assert_eq!(backend.head(&app).unwrap().commit, Some(app_before));
     assert!(backend.merge_state(&app).unwrap().is_some());
 }

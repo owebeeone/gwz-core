@@ -724,9 +724,9 @@ pub(super) use observe::{
     observe_finalization, observe_forward, observe_preservation,
     observe_reverse_publication_handoff, observe_rollback, prepare_direct_rollback_entry,
     prepare_exhausted_rollback_entry, prepare_preservation_entry,
-    preservation_execution_prefix_is_exact, preservation_reset_step, preservation_stash_guard,
-    preservation_stash_step, require_rollback_aggregate, verify_finalization_action,
-    verify_participant_action,
+    preflight_continue_siblings, preservation_execution_prefix_is_exact,
+    preservation_reset_step, preservation_stash_guard, preservation_stash_step,
+    require_rollback_aggregate, verify_finalization_action, verify_participant_action,
 };
 #[cfg(test)]
 pub(super) use observe::{
