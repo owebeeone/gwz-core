@@ -32,10 +32,16 @@ pub(crate) struct MergeDependencies<'a, B, S, C, I> {
 /// handing a v1 record to the v0 engine.
 pub(in crate::workspace_ops::merge) trait V1Router {
     /// Create and run one start whose selected record version is v1.
+    ///
+    /// DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1,
+    /// 2026-09-03): `filesystem_strict` is threaded from the request, not read
+    /// from it here — the v1 start owner is where the crash-recovery decision
+    /// is made and where the flag turns a warning back into a refusal.
     fn start(
         &self,
         root: &Path,
         record: super::super::MergeOperationRecord,
+        filesystem_strict: bool,
         context: &crate::operation::OperationContext,
         emitter: &crate::operation::EventEmitter<'_>,
     ) -> ModelResult<crate::MergeResponse>;
@@ -50,12 +56,16 @@ pub(in crate::workspace_ops::merge) trait V1Router {
     ) -> ModelResult<bool>;
 
     /// Serve one command whose open record is v1.
+    ///
+    /// DR-1 ship (1) W3: a continue decides crash recovery for its own process
+    /// and emits at most one diagnostic, so this arm needs the emitter.
     fn command(
         &self,
         root: &Path,
         merge_id: &str,
         request: &crate::MergeRequest,
         context: &crate::operation::OperationContext,
+        emitter: &crate::operation::EventEmitter<'_>,
     ) -> ModelResult<crate::MergeResponse>;
 }
 
@@ -77,10 +87,18 @@ impl<B: MergeAuthorityBackend> V1Router for AuthorityV1Router<'_, B> {
         &self,
         root: &Path,
         record: super::super::MergeOperationRecord,
+        filesystem_strict: bool,
         context: &crate::operation::OperationContext,
         emitter: &crate::operation::EventEmitter<'_>,
     ) -> ModelResult<crate::MergeResponse> {
-        v1_lifecycle::handle_start_durable_v1(self.backend, root, record, context, emitter)
+        v1_lifecycle::handle_start_durable_v1(
+            self.backend,
+            root,
+            record,
+            filesystem_strict,
+            context,
+            emitter,
+        )
     }
 
     fn command(
@@ -89,8 +107,9 @@ impl<B: MergeAuthorityBackend> V1Router for AuthorityV1Router<'_, B> {
         merge_id: &str,
         request: &crate::MergeRequest,
         context: &crate::operation::OperationContext,
+        emitter: &crate::operation::EventEmitter<'_>,
     ) -> ModelResult<crate::MergeResponse> {
-        v1_lifecycle::handle_v1_command(self.backend, root, merge_id, request, context)
+        v1_lifecycle::handle_v1_command(self.backend, root, merge_id, request, context, emitter)
     }
 }
 
@@ -117,6 +136,7 @@ impl V1Router for AbsentV1Router {
         &self,
         _root: &Path,
         _record: super::super::MergeOperationRecord,
+        _filesystem_strict: bool,
         _context: &crate::operation::OperationContext,
         _emitter: &crate::operation::EventEmitter<'_>,
     ) -> ModelResult<crate::MergeResponse> {
@@ -129,6 +149,7 @@ impl V1Router for AbsentV1Router {
         _merge_id: &str,
         _request: &crate::MergeRequest,
         _context: &crate::operation::OperationContext,
+        _emitter: &crate::operation::EventEmitter<'_>,
     ) -> ModelResult<crate::MergeResponse> {
         Err(no_authority("serve a v1 merge record"))
     }
@@ -327,10 +348,10 @@ where
     // `start/../runtime/tests`.
     if let Some(open) = super::super::classify_open_record(&root)? {
         if open.version == RecordVersion::V1 {
-            return v1.command(&root, &open.merge_id, &request, &context);
+            return v1.command(&root, &open.merge_id, &request, &context, emitter);
         }
         if v1.adapt(&root, &request, &open)? {
-            return v1.command(&root, &open.merge_id, &request, &context);
+            return v1.command(&root, &open.merge_id, &request, &context, emitter);
         }
     }
     match request.op {
@@ -449,6 +470,15 @@ fn adapt_before_mutating<B: MergeAuthorityBackend>(
 /// capability — refuses after the upgrade. Not a wedge: `gwz merge --abort`
 /// clears it, and this abort is capability-free BY PATH (§6, 2026-09-02): it
 /// touches no checked artifact. Driven.
+/// **DR-1 ship (1) W3 leaves this UNTOUCHED** (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
+/// §3.1, 2026-09-03). The crash-recovery decision governs `--no-ff` starts and
+/// v1 continues; this is the v0->v1 ADAPTER's window, on the ordinary/`--ff-only`
+/// route that does not reach the decision point at all until M5c. Its answer is
+/// already "probe, do not refuse" — a failed activation keeps the v0 lifecycle
+/// in command — which is the precedent the decision point generalises, not a
+/// second place to make the same decision. Making it consult the decision would
+/// route an ordinary merge onto the v1 lifecycle on a volume the catalog cannot
+/// bind, which ship (1) explicitly does not do.
 fn forward_lifecycle_viability_window(
     root: &Path,
 ) -> Option<crate::operation::WorkspaceMutatorLock> {

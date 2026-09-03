@@ -41,6 +41,16 @@ fn envelope_on_disk(root: &Path, merge_id: &str) -> (String, u64) {
 /// creation and the created record carries that version's envelope. Pre-A1
 /// `start/record.rs` hard-coded `gwz.merge-operation/v0` / `0` for every
 /// start; the activated no-ff surface writes `gwz.merge-operation/v1` / `1`.
+///
+/// **EXTENDED at DR-1 ship (1) W3** (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
+/// §3.1/§3.4, 2026-09-03) rather than duplicated: this is the ABOVE-bar start,
+/// on the CI host's own ext4/APFS volume and outside the §3.8 seam, and after
+/// W3 it must still activate the catalog and must now answer
+/// `crash_recovery = supported`. The `catalog-final` assertion is also the
+/// ANTI-VACUITY anchor for `crash_recovery.rs`'s "no catalog anywhere" rows: it
+/// proves the same no-ff start on the same host DOES create that directory when
+/// the decision is `Supported`, so their absence there is a measured difference
+/// and not a walk that never finds anything.
 #[test]
 fn the_production_writer_floor_writes_a_v1_record_for_no_ff() {
     let temp = TempDir::new("a1-writer-floor-v1");
@@ -64,6 +74,19 @@ fn the_production_writer_floor_writes_a_v1_record_for_no_ff() {
     assert_eq!(
         select_record_version(RequestedSemantics::NoFf).unwrap(),
         RecordVersion::V1
+    );
+    assert!(
+        temp.path().join(".gwz/catalog-final").is_dir(),
+        "an above-bar no-ff start still activates the catalog"
+    );
+    assert_eq!(
+        response.crash_recovery,
+        Some(crate::MergeCrashRecovery {
+            supported: true,
+            filesystem: None,
+            gap: None,
+        }),
+        "an above-bar start reports crash recovery as supported, and names no gap"
     );
 }
 

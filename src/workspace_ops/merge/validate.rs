@@ -3,6 +3,7 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResult<()> {
     validate_common_meta(request)?;
     validate_optional_id(request.merge_id.as_deref())?;
+    validate_filesystem_strict(request)?;
 
     match request.op {
         crate::MergeOp::Start => {
@@ -41,6 +42,31 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
         crate::MergeOp::Gc => {
             reject_recovery_fields(request)?;
         }
+    }
+    Ok(())
+}
+
+/// `--filesystem-strict` is accepted only when STARTING a merge.
+///
+/// DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1, 2026-09-03).
+/// The operator's rule is that a later continue or abort of an attempt "does
+/// not consult the flag again": the flag turns the crash-recovery WARNING into
+/// a refusal at the one decision that opens an attempt, and there is nothing
+/// for it to refuse afterwards. Core is the authority — the drivers mirror this
+/// refusal for a better message, they do not implement it.
+///
+/// **On a v0 start it is accepted and has no effect.** An ordinary or
+/// `--ff-only` start writes v0 and never reaches the decision point in ship (1)
+/// (charter §3.1, "untouched in ship (1) — they write v0 and never reach this
+/// door until M5c"). Refusing it there would make the flag mode-dependent for
+/// no gain; accepting it keeps `--filesystem-strict` a property of "starting a
+/// merge" that M5c can honour without a protocol or CLI change.
+fn validate_filesystem_strict(request: &crate::MergeRequest) -> ModelResult<()> {
+    if request.filesystem_strict == Some(true) && request.op != crate::MergeOp::Start {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "--filesystem-strict is accepted only when starting a merge",
+        ));
     }
     Ok(())
 }
@@ -264,6 +290,46 @@ mod tests {
                 .code,
             ErrorCode::MergeIdMismatch
         );
+    }
+
+    /// DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1,
+    /// 2026-09-03): `--filesystem-strict` is a START-only flag, refused as
+    /// `InvalidRequest` on every other operation, and CORE is the authority for
+    /// that — the drivers mirror it in W4. `Some(false)` is not the flag being
+    /// set, so it is accepted everywhere, as is its absence.
+    #[test]
+    fn filesystem_strict_is_accepted_only_when_starting_a_merge() {
+        for op in [
+            crate::MergeOp::Resume,
+            crate::MergeOp::Abort,
+            crate::MergeOp::Status,
+            crate::MergeOp::Gc,
+        ] {
+            let mut refused = request(op);
+            refused.filesystem_strict = Some(true);
+            let error = validate_merge_request(&refused).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "{op:?}");
+            assert!(
+                error.message.contains("--filesystem-strict")
+                    && error.message.contains("starting a merge"),
+                "{op:?}: {}",
+                error.message
+            );
+
+            let mut unset = request(op);
+            unset.filesystem_strict = Some(false);
+            assert!(validate_merge_request(&unset).is_ok(), "{op:?}");
+        }
+
+        let mut start = request(crate::MergeOp::Start);
+        start.filesystem_strict = Some(true);
+        assert!(validate_merge_request(&start).is_ok());
+        // Ship (1) accepts it on a v0 start too, where it has no effect until
+        // M5c: the flag is a property of starting a merge, not of `--no-ff`.
+        start.mode = Some(crate::MergeMode::Normal);
+        assert!(validate_merge_request(&start).is_ok());
+        start.mode = Some(crate::MergeMode::NoFf);
+        assert!(validate_merge_request(&start).is_ok());
     }
 
     #[test]

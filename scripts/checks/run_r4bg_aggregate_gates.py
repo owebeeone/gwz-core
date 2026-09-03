@@ -558,6 +558,47 @@ def _fault_count(darwin: str, linux: str) -> str:
         only `checked_artifact/**`, and darwin 459 was measured with the other
         partitions untouched.
 
+    DR-1 ship (1) Step W3 (2026-09-03) -- the crash-recovery decision point
+    (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2/§3.1/§3.4/§3.6/§3.8) -- moves the
+    LIB REMAINDER and the g23 marker below, by SIX rows and nothing else:
+
+      * FIVE in the new `workspace_ops::tests::g23::crash_recovery` (the
+        default below-bar `--no-ff` start; the same under `--filesystem-strict`;
+        the gap/parenthetical/`unknown` table; a below-bar continue and abort;
+        the warning's own wording). All five arm the charter's §3.8 `cfg(test)`
+        seam, so all five are cfg-FREE across darwin/linux/windows alike -- the
+        seam replaces the volume, not the platform.
+      * ONE in `workspace_ops::merge::validate` (`--filesystem-strict` is
+        accepted only when starting a merge), also cfg-free.
+
+    Two existing rows are EXTENDED rather than added, so they move no count:
+    `g23::a1_activation::the_production_writer_floor_writes_a_v1_record_for_no_ff`
+    (gains the above-bar `catalog-final` and `crash_recovery = supported`
+    assertions -- also the anti-vacuity anchor for the new file's "no catalog"
+    rows) and `interface_tests::contracts::
+    only_the_substrate_identity_capability_carries_an_actionable_remedy` (the
+    remedy's rewritten terms). NO test is removed.
+
+      checked_artifact:: darwin 459 / linux 476: UNMOVED -- W3 adds no
+        `checked_artifact::` row; the contracts pin it does touch was already
+        counted. darwin 459 re-MEASURED on this step's own tree
+        (`cargo test --locked -p gwz-core --lib checked_artifact::`, 459 passed,
+        2026-09-03).
+      v1_lifecycle:: 266: UNMOVED -- W3 adds no row under that namespace.
+        re-MEASURED on this step's own tree (266 passed, 2026-09-03).
+      g23 marker 130 -> 135: MEASURED on this step's own tree
+        (`cargo test --locked -p gwz-core --lib workspace_ops::tests::g23::`,
+        135 passed, 2026-09-03). No per-OS split: the five rows are cfg-free,
+        exactly as the marker's existing comment requires of anything counted
+        here.
+      lib remainder darwin 1119 -> 1125: MEASURED from a `--list` partition
+        count on this step's own tree (`check_pins.py`, 2026-09-03) -- the five
+        g23 rows plus the one `validate` row, both partitions inside the
+        remainder.
+      lib remainder linux  1120 -> 1126: DERIVED (+6, every added row cfg-free
+        and seam-driven rather than filesystem-driven), FIRST-DISPATCH-EXPECTED
+        at this step's platform-matrix dispatch; a measured number wins.
+
     v0.13.0's ubuntu verify stays red: the verify checks out the tag, and a tag
     is immutable. The landing rule from this miss: a landing that adds or removes
     a #[test] re-measures this driver's pins, and every landing compares the
@@ -600,7 +641,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1119 passed", "1120 passed")),
+         _fault_count("1125 passed", "1126 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
@@ -653,8 +694,10 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # that it "moves the LIB REMAINDER and only it" -- that attribution is
         # an erratum, and those two rows are counted here for the first time.
         # 124 -> 130, MEASURED on each step's own snapshot binary.
+        # DR-1 ship (1) W3 (2026-09-03): 130 -> 135, the five
+        # `g23::crash_recovery` rows. MEASURED on that step's own tree.
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "130 passed"),
+         lib("workspace_ops::tests::g23::"), "135 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),

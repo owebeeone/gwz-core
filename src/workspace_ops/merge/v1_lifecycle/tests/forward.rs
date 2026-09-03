@@ -943,6 +943,10 @@ pub(super) fn run_production<R: super::super::service::V1Runtime>(
         &fixture.root.path,
         &fixture.model.merge_id,
         request,
+        // DR-1 ship (1) W3: these fixtures run on the CI host's own volume,
+        // which is above the bar, and `None` is what an undecided invocation
+        // passes — the forward arms activate, exactly as before this step.
+        None,
         runtime,
     )
 }

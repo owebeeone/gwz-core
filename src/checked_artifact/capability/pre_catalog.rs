@@ -22,7 +22,6 @@ use crate::checked_artifact::protocol::{
 
 mod provider;
 
-pub(in crate::checked_artifact) use provider::HostPlatform;
 #[cfg(test)]
 pub(in crate::checked_artifact) use provider::retain_managed_parent_at_for_test;
 /// R2-D Phase 2 Step 2.2 — the retained action-namespace capability and the
@@ -48,6 +47,9 @@ pub(in crate::checked_artifact) use provider::{
     create_target_anchor_alias, observe_barrier_completion, observe_barrier_intent_row,
     retire_target_anchor_alias, write_barrier_intent_scratch,
 };
+pub(in crate::checked_artifact) use provider::{HostPlatform, VolumeDescription};
+#[cfg(test)]
+pub(crate) use provider::{InjectedVolumeDescription, with_identity_unavailable};
 /// R2-D Phase 2 Step 2.3 — the retained managed-parent capability the
 /// `namespace` owner drives edges E15 and E16 with, plus R2-D Phase 3 Step
 /// 3.1's managed-prefix observation.

@@ -229,6 +229,13 @@ fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
             "workspace_ops/tests/g23/compatibility_v0.rs",
             "workspace_ops/tests/g23/compatibility_v0_edges.rs",
             "workspace_ops/tests/g23/continue_v0_gate.rs",
+            // JOINED 2026-09-03 by DR-1 ship (1) W3
+            // (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §5 row W3): the
+            // crash-recovery decision point's own suite. Every row it holds is
+            // a `--no-ff` START, because the decision point is only reached
+            // from the v1 start owner and the v1 continue — an ordinary or
+            // `--ff-only` start does not reach it until M5c.
+            "workspace_ops/tests/g23/crash_recovery.rs",
             // JOINED 2026-09-02 by the v1-archive GC fix: `--no-ff` is the only
             // door a FRESH START has to a v1 archive, so the GC rows must start
             // one. E4.1(c)'s `adapt_open` upgrade is the second door, and it

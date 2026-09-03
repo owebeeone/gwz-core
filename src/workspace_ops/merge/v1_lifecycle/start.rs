@@ -63,10 +63,20 @@ pub(super) fn created_v1_record(record: MergeOperationRecord) -> MergeOperationR
 
 /// Create the v1 record for one accepted start and run it to its next durable
 /// stop under the v1 service.
+///
+/// **DR-1 ship (1) W3** (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1, 2026-09-03):
+/// the crash-recovery decision is made HERE, before any lease is taken, and it
+/// is made exactly once for this process. Above the bar nothing changes. Below
+/// it, `filesystem_strict` refuses before any lease, any record and any Git
+/// work; by default one `Diagnostic`/`Warn` event carries the operator's
+/// sentence and the start proceeds on the catalog-free creation lease. The
+/// decision is then PASSED to `service::run` rather than re-taken, so the
+/// `ResumeStart` invocation inside this start neither re-probes nor re-warns.
 pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthorityBackend>(
     backend: &B,
     root: &Path,
     record: MergeOperationRecord,
+    filesystem_strict: bool,
     context: &OperationContext,
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
@@ -74,14 +84,31 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
     let merge_id = record.merge_id.clone();
     let store = CheckedV1Store::default();
 
+    let decision = crate::checked_artifact::entry::crash_recovery_decision(root)?;
+    let below_bar = matches!(
+        decision,
+        crate::checked_artifact::entry::CrashRecoveryDecision::Unsupported { .. }
+    );
+    if below_bar {
+        if filesystem_strict {
+            return Err(decision.crash_recovery_strict_refusal());
+        }
+        warn_once(emitter, &decision);
+    }
+
     // Scoped: `service::run` takes its own `V1MutationLease`, and the
     // workspace mutator lock is not re-entrant, so the creation lease must be
     // released before the service starts.
     let created_state = {
         // E4.2: the creation lease activates AND bootstraps §10 row `:273`'s two
         // managed parents, so both are durable before this record is written.
-        let lease =
-            super::checked::V1MutationLease::acquire_for_merge_start(root, &record.workspace_id)?;
+        // W3: below the bar there is no catalog to activate, so the same two
+        // parents are prepared through the legacy checked boundary instead.
+        let lease = if below_bar {
+            super::checked::V1MutationLease::acquire_for_merge_start_uncatalogued(root)?
+        } else {
+            super::checked::V1MutationLease::acquire_for_merge_start(root, &record.workspace_id)?
+        };
         store.create_open(&lease, root, &record)?.record().state
     };
     emitter.operation_state_changed(created_state.into());
@@ -92,10 +119,34 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
         root,
         &merge_id,
         V1LifecycleRequest::ResumeStart,
+        Some(&decision),
         &mut runtime,
     )?
     .disposition();
-    respond(backend, &store, root, &merge_id, disposition, context)
+    let mut response = respond(backend, &store, root, &merge_id, disposition, context)?;
+    response.crash_recovery = Some(decision.crash_recovery_protocol());
+    Ok(response)
+}
+
+/// The one diagnostic a below-bar invocation emits (charter §3.4, channel 1).
+///
+/// `EventKind::Diagnostic` with `Severity::Warn`, no member, the operator's
+/// exact sentence as `message`. Called from exactly two places — a start's
+/// decision and a continue's — and each of those decides once, so the "at most
+/// one diagnostic per process" invariant is a property of the call sites, not
+/// of a counter.
+fn warn_once(
+    emitter: &EventEmitter<'_>,
+    decision: &crate::checked_artifact::entry::CrashRecoveryDecision,
+) {
+    emitter.emit(
+        crate::EventKind::Diagnostic,
+        crate::Severity::Warn,
+        None,
+        None,
+        Some(decision.crash_recovery_warning()),
+        None,
+    );
 }
 
 /// Project one v1 service disposition into the merge response.
@@ -131,12 +182,22 @@ pub(in crate::workspace_ops::merge) fn respond<B: MergeAuthorityBackend>(
 /// and `Abort` enter the service with their own request kinds; `Status` is
 /// read-only and never mutates; `Gc` refuses while a record is open, exactly
 /// as the v0 lifecycle does.
+///
+/// **DR-1 ship (1) W3** (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1, 2026-09-03):
+/// a continue is a NEW PROCESS, so it decides for itself — once — and, below the
+/// bar, warns once for this invocation before proceeding catalog-free. It never
+/// consults `filesystem_strict`: that flag is accepted only on a start
+/// (`validate.rs`), and the operator's rule is that a later continue or abort of
+/// an attempt "does not consult the flag again". `Abort`, `Preserve`, `Status`
+/// and `Gc` are untouched and answer `crash_recovery = None`: they decide
+/// nothing, and abort in particular must stay capability-free by path.
 pub(in crate::workspace_ops::merge) fn handle_v1_command<B: MergeAuthorityBackend>(
     backend: &B,
     root: &Path,
     merge_id: &str,
     request: &crate::MergeRequest,
     context: &OperationContext,
+    emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
     let store = CheckedV1Store::default();
     super::super::validate_open_merge_id(request.merge_id.as_deref(), merge_id)?;
@@ -155,18 +216,36 @@ pub(in crate::workspace_ops::merge) fn handle_v1_command<B: MergeAuthorityBacken
                 (crate::MergeOp::Abort, _) => V1LifecycleRequest::Abort,
                 _ => unreachable!("only resume and abort reach this arm"),
             };
+            let mut decision = None;
             let disposition = match lifecycle {
                 V1LifecycleRequest::Continue => {
+                    let made = crate::checked_artifact::entry::crash_recovery_decision(root)?;
+                    if matches!(
+                        made,
+                        crate::checked_artifact::entry::CrashRecoveryDecision::Unsupported { .. }
+                    ) {
+                        warn_once(emitter, &made);
+                    }
+                    let decided = decision.insert(made);
                     let mut runtime = ForwardRuntime::new(backend, context);
-                    super::service::run(&store, root, merge_id, lifecycle, &mut runtime)?
+                    super::service::run(
+                        &store,
+                        root,
+                        merge_id,
+                        lifecycle,
+                        Some(decided),
+                        &mut runtime,
+                    )?
                 }
                 _ => {
                     let mut runtime = super::reverse::ReverseRuntime::new(backend, context);
-                    super::service::run(&store, root, merge_id, lifecycle, &mut runtime)?
+                    super::service::run(&store, root, merge_id, lifecycle, None, &mut runtime)?
                 }
             }
             .disposition();
-            respond(backend, &store, root, merge_id, disposition, context)
+            let mut response = respond(backend, &store, root, merge_id, disposition, context)?;
+            response.crash_recovery = decision.map(|decision| decision.crash_recovery_protocol());
+            Ok(response)
         }
         crate::MergeOp::Start => unreachable!("start never routes through an open record"),
     }

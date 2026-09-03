@@ -47,20 +47,41 @@ PROTECTED_COMPILER_MODULES = {
 # `catalog_mutation_lease` has four production callers, so it suppressed
 # nothing). Every other flat and tree digest was recomputed in the same pass and
 # is unchanged.
+#
+# DR-1 ship (1) W3 (2026-09-03, `GwzM5-8DR1-WarnOrRefuse-Charter.md`
+# §2/§3.1/§3.6/§3.8) re-pins FIVE flat entries and THREE trees, each for one
+# named reason:
+#   entry.rs                   -- the decision point (§2), the catalog-free
+#                                 parent door (§3.1) and the six visible names
+#                                 the four ENTRY_* inventories move with.
+#   capability.rs              -- PERSISTENT_FILESYSTEM_IDENTITY_REMEDY rewritten
+#                                 identity-based (§3.6); the "ext4 only" clause
+#                                 W2 dated STALE is gone.
+#   bootstrap.rs,
+#   bootstrap/runtime/mod.rs,
+#   .../catalog_lease.rs (tree) -- the re-export chain for the READ-ONLY
+#                                 admission probe `probe_workspace_admission`
+#                                 (§2): it creates, recovers and leases nothing.
+#   capability/pre_catalog.rs (tree)
+#                              -- the §3.8 `cfg(test)` seam on `platform.rs` and
+#                                 its re-export; production code is untouched.
+#   mod.rs                     -- the seam's crate-visible `cfg(test)` re-export,
+#                                 beside `fail_next_checked_artifact_at`.
+#   v1_lifecycle/mod.rs (tree) -- start/service/checked plumbing (§3.1).
 PROTECTED_SOURCE_DIGESTS = {
     # R2-E E4.4-6-B (2026-09-02) pins the `write_atomic` family's own implementation:
     # the capability-free inventory counts its CALLERS, so converting THIS file would
     # convert every carved `:277`/`:278`/`:279` writer while moving no count there
     # (round 1 [P3-5]). Not a boundary module -- pinned solely as that backstop.
     "artifact/mod.rs": "22bce8182daf6865512c639957dcb16d3c91af15972bb34b25e9fdd9ae546d11",
-    "checked_artifact/bootstrap.rs": "d85d894032512125ee5ad0cab770db25dd37cee32096ad84be3061eaab94b2aa",
-    "checked_artifact/bootstrap/runtime/mod.rs": "1bddf4b40e4bd6454300e7b08b54119875ec19daacb819a14dbd0c483784230d",
+    "checked_artifact/bootstrap.rs": "f098ff7a655f7506d47b7e9088c21354f6b918e3bd96e75b301e205189e618f5",
+    "checked_artifact/bootstrap/runtime/mod.rs": "7fd727db2ff621f525e232e3e43ad15a020c07fcf6be8f8ab6048a882cc05c92",
     # R2-E E4.1 commit (b) re-pins this entry for precondition 1: the SUBSTRATE
     # that answers a durable-identity probe gains its own `PlatformCapability`
     # value, distinct from the identity VALUE contract that keeps
     # `DurableObjectIdentity`, and it is the one capability carrying an
     # actionable remedy sentence.
-    "checked_artifact/capability.rs": "346978be14298e230c1d0ba9fb39781cc0c8d17c1c6f21fbfbd52d3fec76ab7b",
+    "checked_artifact/capability.rs": "d06967fe3480b77b550b98f7e7533bb7f059b88e03d2dd1ece86b32235e650ed",
     # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
     # `activate_workspace_catalog`, the first production catalog activation,
     # and the four ENTRY_* inventories below move with it.
@@ -68,9 +89,9 @@ PROTECTED_SOURCE_DIGESTS = {
     # `bootstrap_merge_start_parents` and `create_merge_store_record` join the
     # door above, and [P3-2]'s renderer is extracted to a named `pub(super)` fn
     # so its three arms take an in-suite guard.
-    "checked_artifact/entry.rs": "272675b6163641a2186d964aee46fa75926781644ff3e8f925f058c91b39f845",
+    "checked_artifact/entry.rs": "94041be3c0d48148262438b77c6f521749923eabe68212b3388288d27834e002",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
-    "checked_artifact/mod.rs": "cffba4530283bb2e1a99cb3b1947e8d43a4a705d70e2c58b347929e06db98933",
+    "checked_artifact/mod.rs": "b10313ec4b809b597873dda15adaf8b281c60d3858f27d5ba865d5083c5f4ed9",
     # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
     # `inspect_family`'s 1 MiB budget now charges `DirEntry::metadata().len()`
     # in the enumeration loop, before any leaf is read, and the post-read
@@ -273,13 +294,13 @@ APPROVED_RUST_PATH_EDGES = {
 # `CAPABILITY_FREE_RAW_WRITER_INVENTORY` moves. The other six tree digests and every
 # flat digest were recomputed in the same pass and are unchanged.
 PROTECTED_SOURCE_TREE_DIGESTS = {
-    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "91ac3dfada76860dda1d41a0c3cad66f6836229680773b1b1644e4aabe20b0b2",
+    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "992edeb31fbf28aaa7bc8c9ba434097f3b8bf6b0e35e4bd9fb1c80f291425c48",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "b6791e9f126c7afa8a62ece2ef8426a364b0249a9c3896b87785fddd5c2fa08f",
+    "checked_artifact/capability/pre_catalog.rs": "89c236e8ed79fee74d9db317fb114086abdb58eab908dc0ffded59fa0d602098",
     "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
     "checked_artifact/platform.rs": "7cc428ded002a0ce549c306d0d4ea70e443e297f215d9ae64190f7b18b06025f",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "d16fa8bf67f8656c56b3c51d6625712efcc970dfd51afefa77557df5b3fcae38",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "d4cbe25dc4e5f75c7af15a3aa330a4d2f0d4bf256b5774316cc9d0de353e6b4f",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "0e8697cd0e495fec7678c752937f689a5310ba73efb287d6668f57e32a67eaf7",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -606,6 +627,26 @@ ENTRY_REFERENCES = {
         "workspace_ops/merge/v1_lifecycle/store/rewrite.rs"
     },
 
+    # DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2/§3.1,
+    # 2026-09-03): the crash-recovery decision point and the catalog-free
+    # creation lease's parent half. Six new visible names, and the reason each
+    # is spelled long is THIS inventory -- a bare `warning` or `to_protocol`
+    # matches nine unrelated production files between them, so the equality
+    # would be unprovable. `CrashRecoveryDecision` is the only one with two
+    # consumers: `start.rs` makes the decision and `service.rs` reads it as a
+    # parameter, which is what "decide once per process" means in code.
+    "CrashRecoveryDecision": {
+        "workspace_ops/merge/v1_lifecycle/service.rs",
+        "workspace_ops/merge/v1_lifecycle/start.rs",
+    },
+    "crash_recovery_decision": {"workspace_ops/merge/v1_lifecycle/start.rs"},
+    "crash_recovery_protocol": {"workspace_ops/merge/v1_lifecycle/start.rs"},
+    "crash_recovery_strict_refusal": {"workspace_ops/merge/v1_lifecycle/start.rs"},
+    "crash_recovery_warning": {"workspace_ops/merge/v1_lifecycle/start.rs"},
+    "prepare_merge_start_parents_uncatalogued": {
+        "workspace_ops/merge/v1_lifecycle/checked.rs"
+    },
+
     "MergeArtifactFact": {"workspace_ops/merge/root/artifact_facts.rs"},
     "MergeArtifactTransition": {
         "git/gitbackend/preservation_root.rs",
@@ -648,6 +689,18 @@ ENTRY_REFERENCES = {
 
 ENTRY_ITEMS = {
     "activate_workspace_catalog",
+    # DR-1 ship (1) W3's eight: the decision type and its three renderings, the
+    # decision function, the catalog-free parent door, and the two privates the
+    # last two share (the record prefix and the gap sentence both renderings
+    # word, spelled once so warning and refusal cannot drift).
+    "CrashRecoveryDecision",
+    "MERGE_RECORD_PARENT",
+    "crash_recovery_decision",
+    "crash_recovery_protocol",
+    "crash_recovery_strict_refusal",
+    "crash_recovery_warning",
+    "gap_sentence",
+    "prepare_merge_start_parents_uncatalogued",
     # E4.2's four: rows `:273`/`:280`'s doors and [P3-2]'s renderer and label.
     "CATALOG_LABEL",
     "bootstrap_merge_start_parents",
@@ -688,7 +741,10 @@ ENTRY_USES = {
     "std::path::Path",
     # E4.1's three: the lease the door takes, the subsystem error it renders,
     # and the sealed catalog entry point it calls.
-    "super::bootstrap::CatalogMutationLeaseV1",
+    # W3 widens E4.1's lease import with the read-only admission probe the
+    # decision point runs (charter §2): the same `dir_identity` calls
+    # `catalog_lease/target.rs::finish` makes, creating and leasing nothing.
+    "super::bootstrap::{CatalogMutationLeaseV1, probe_workspace_admission}",
     "super::capability::CheckedFsError",
     "super::catalog::recover_or_create",
     # E4.2's one: the coordinator's two merge-start bootstrap sessions.
@@ -698,6 +754,16 @@ ENTRY_USES = {
 
 ENTRY_CALLS = {
     "Bytes",
+    # DR-1 ship (1) W3's seven: the probe the decision calls, the shared gap
+    # sentence, the parent door's reuse of its v0 sibling, and the four
+    # combinators the three renderings use.
+    "as_deref",
+    "clone",
+    "gap_sentence",
+    "let",
+    "prepare_merge_store_parents",
+    "probe_workspace_admission",
+    "unwrap_or",
     "CheckedArtifact::acquire",
     "CheckedArtifact::prepare_parent",
     "CheckedArtifactFact::Bytes",

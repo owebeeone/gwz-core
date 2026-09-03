@@ -19,6 +19,12 @@ pub(super) use collision::*;
 pub(super) use durable_identity::DurableObjectIdentityV1;
 pub(super) use path::*;
 pub(super) use pre_catalog::*;
+/// DR-1 ship (1) W3's test-only seam (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
+/// §3.8, 2026-09-03). Named rather than glob-carried: the glob above
+/// narrows every item to `pub(in crate::checked_artifact)`, and the merge
+/// rows that arm this seam live in `crate::workspace_ops::tests`.
+#[cfg(test)]
+pub(crate) use pre_catalog::{InjectedVolumeDescription, with_identity_unavailable};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum SupportedFilesystemProfile {
@@ -51,13 +57,18 @@ impl SupportedFilesystemProfile {
 /// substrate, the admitted filesystems, and TWO escapes, because one of them
 /// is wrong for a merge already open.
 ///
-/// **Scope, corrected by the E4.1 review's [P1-1]/[P2-1].** The earlier claim
-/// here — "the blast radius is exactly the checked `--no-ff` v1 path" — was
-/// true of STARTS and false of records already on disk:
+/// **Scope, corrected by the E4.1 review's [P1-1]/[P2-1], then NARROWED by
+/// DR-1 W3.** The earlier claim here — "the blast radius is exactly the checked
+/// `--no-ff` v1 path" — was true of STARTS and false of records already on disk:
 /// `workspace_ops/merge/model/version.rs`'s `ACTIVE_WRITER_FLOOR` governs which
-/// version a start writes, not which lifecycle an existing record routes to. A
-/// `--no-ff` start and the resume of a v1 record refuse; an ordinary merge falls
-/// back to the v0 lifecycle instead of refusing.
+/// version a start writes, not which lifecycle an existing record routes to. As
+/// of DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1/§3.6,
+/// 2026-09-03) a below-bar `--no-ff` start and a below-bar continue no longer
+/// refuse AT ALL by default: they warn once and run catalog-free
+/// (`entry.rs::crash_recovery_decision`). This sentence is what
+/// `--filesystem-strict` shows, plus what activation's OTHER refusals — an `Io`
+/// after the probe, an `Ambiguous` — keep rendering through
+/// `render_catalog_refusal`. Those are errors, not the bar.
 ///
 /// **The `--abort` clause, SCOPED BY PATH** (2026-09-02,
 /// `GwzM5-8R2E-CapabilityFreeAmendment.md` §6): an abort that touches no checked
@@ -67,28 +78,36 @@ impl SupportedFilesystemProfile {
 /// persistent file handles and a mount identity. A dated residual, shipped with
 /// A1's v1 reverse path, cured only by DR-1's (C). Those doors take the LEGACY
 /// probe (`identity.rs:312-367`), which admits btrfs/xfs/zfs where the catalog's
-/// identity gate refuses, so the string's "ext4 only" was the CATALOG's
-/// admission list, not the abort's.
+/// identity gate refuses — so the filesystems the sentence below names are the
+/// CATALOG's admission contract, never the abort's, and an abort on a volume
+/// this sentence refuses still clears the record.
 ///
-/// **DR-1 W2, 2026-09-03: the string's "ext4 only" is now STALE, and it stays
-/// for exactly one more step.** `GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.2
-/// removed the Linux provider's `require_ext4`, so the catalog now admits xfs
-/// and f2fs as well and the two probes' admission sets differ only on btrfs
-/// (the UUID ioctl still refuses it with `ENOTTY`) and on tmpfs/ramfs (the
-/// provider refuses those as volatile). Rewriting the sentence belongs to W3,
-/// with the strict refusal it is the remedy for (§3.6) and the contracts pin
-/// that carries it; W2 deliberately does not move it out from under that step.
+/// **DR-1 W3, 2026-09-03: the "ext4 only" clause W2 dated STALE is GONE, and
+/// the sentence is identity-based** (charter §3.6). The bar the string now
+/// describes is the one `platform/linux.rs::identity` actually applies since W2
+/// §3.2 removed `require_ext4`: a filesystem that answers `FS_IOC_GETFSUUID`
+/// with a nonzero UUID and `name_to_handle_at` with a persistent handle. ext4,
+/// xfs and f2fs clear it; btrfs (`ENOTTY`), kernels before 6.9, tmpfs/ramfs
+/// (refused as volatile) and network mounts do not. The named filesystems are
+/// EXAMPLES of that contract, not a name list — the gate tests the capability.
+/// The escapes are the two the charter names: run without `--filesystem-strict`
+/// to proceed without crash recovery, and `gwz merge --abort` for a merge
+/// already open. `--no-ff` is deliberately no longer named: dropping it is no
+/// longer an escape, because an ordinary start does not reach this door at all
+/// until M5c and a `--no-ff` start below the bar now warns rather than refuses.
 ///
 /// The capability-free half is pinned by E4.1(c)'s
 /// `a_v1_resume_refuses_without_mutation_and_abort_still_clears_the_record`
 /// (`src/workspace_ops/tests/g23/a1_activation.rs`) — [P3-C1]'s carrier, discharged
 /// by name; and [P3-8] closes (nothing converts, no snapshot exclusion grows).
-pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem does not expose the persistent file handles and mount identity that checked \
-     merge artifacts require; run the workspace on a filesystem that does (on Linux the checked \
-     catalog admits ext4 only; APFS or HFS+ on macOS; NTFS on Windows). An open merge can be \
-     cleared with `gwz merge --abort`, which needs no such filesystem unless it must re-verify \
-     checked artifacts — a preservation bundle, a selected root's manifest and lock, or the \
-     merge's published evidence; a new merge can be started without --no-ff";
+pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem does not expose the persistent file handles and durable filesystem identity \
+     that crash recovery for checked merge artifacts requires; run the workspace on one that does \
+     (on Linux any filesystem answering FS_IOC_GETFSUUID — ext4, xfs and f2fs do, btrfs, tmpfs and \
+     network mounts do not; a local APFS or HFS+ volume on macOS; NTFS on Windows). Run without \
+     --filesystem-strict to proceed without crash recovery, or clear a merge already open with \
+     `gwz merge --abort`, which needs no such filesystem unless it must re-verify checked \
+     artifacts — a preservation bundle, a selected root's manifest and lock, or the merge's \
+     published evidence";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlatformCapability {

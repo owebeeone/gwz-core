@@ -32,6 +32,7 @@ mod compatibility_v0;
 mod compatibility_v0_edges;
 mod continue_merge;
 mod continue_v0_gate;
+mod crash_recovery;
 mod drift;
 mod finalization;
 mod fixtures;

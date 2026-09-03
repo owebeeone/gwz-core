@@ -104,7 +104,16 @@ where
         // hold the lock. `create_open` re-checks that no record exists, so the
         // handoff cannot publish a second record.
         drop(start_guard);
-        return v1.start(root, record, context, emitter);
+        // DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1,
+        // 2026-09-03): `--filesystem-strict` is a START-only flag, and this is
+        // the only place a start's request meets the v1 owner that decides.
+        return v1.start(
+            root,
+            record,
+            request.filesystem_strict.unwrap_or(false),
+            context,
+            emitter,
+        );
     }
     let _start_guard = start_guard;
     super::persist_merge_record(store, root, &record, emitter)?;

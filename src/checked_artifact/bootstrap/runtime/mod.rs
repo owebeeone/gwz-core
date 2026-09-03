@@ -17,6 +17,7 @@ mod fault;
 mod tests;
 
 use advisory::AdvisoryLock;
+pub(in crate::checked_artifact) use catalog_lease::probe_workspace_admission;
 pub(in crate::checked_artifact) use catalog_lease::{
     CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
 };

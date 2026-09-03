@@ -145,22 +145,43 @@ fn supported_profiles_and_typed_errors_are_closed() {
 /// is the only platform gap a user meets on a supported OS and can do something
 /// about. The value-shape contract keeps `DurableObjectIdentity`; the substrate
 /// gap is `PersistentFilesystemIdentity`, and its refusal names persistent file
-/// handles, the admitted filesystems, and the escape.
+/// handles, the admitted filesystems, and the escapes.
+///
+/// **MOVED at DR-1 ship (1) W3** (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.6,
+/// 2026-09-03), three terms at once and each for a stated reason:
+/// - `--no-ff` is DROPPED. It was the escape "a new merge can be started
+///   without --no-ff", and it is no longer one: a below-bar `--no-ff` start now
+///   warns and runs rather than refusing, so there is nothing to escape from.
+/// - `--filesystem-strict` is ADDED. It is the flag that produces this sentence
+///   at all now, so the sentence must name the way back off it. This term is
+///   what keeps the remedy and the decision point from drifting apart: delete
+///   the flag's handling and this pin fails.
+/// - `mount identity` becomes `durable filesystem identity`. §3.6 requires
+///   identity-based wording; "mount identity" named the LEGACY probe's second
+///   half (`statx MNT_ID`), which is not the catalog's bar and never was.
+///
+/// `persistent file handles` and `--abort` are unchanged — the first is the
+/// substrate the sentence exists to name, the second is [P2-1]'s cure, the exit
+/// that does exist for a merge already open.
 #[test]
 fn only_the_substrate_identity_capability_carries_an_actionable_remedy() {
     let remedy = PlatformCapability::PersistentFilesystemIdentity
         .remedy()
         .expect("the substrate identity gap is actionable");
-    // `--abort` is named because the review's [P2-1] found the sentence advising
-    // an exit that does not exist for a merge already open.
     for named in [
         "persistent file handles",
-        "mount identity",
+        "durable filesystem identity",
         "--abort",
-        "--no-ff",
+        "--filesystem-strict",
     ] {
         assert!(remedy.contains(named), "the remedy never names {named}");
     }
+    // The identity-based bar is a CONTRACT, not a name list: the filesystems
+    // are named as examples of answering `FS_IOC_GETFSUUID`, and the "ext4
+    // only" clause W2 dated stale is gone.
+    assert!(remedy.contains("FS_IOC_GETFSUUID"), "{remedy}");
+    assert!(!remedy.contains("ext4 only"), "{remedy}");
+    assert!(!remedy.contains("--no-ff"), "{remedy}");
     assert_eq!(PlatformCapability::DurableObjectIdentity.remedy(), None);
     assert_eq!(PlatformCapability::RuntimeAdvisoryLock.remedy(), None);
 }
@@ -170,6 +191,16 @@ fn only_the_substrate_identity_capability_carries_an_actionable_remedy() {
 /// The sentence a user reads on a substrate without persistent file handles was
 /// verified by hand on a real FAT32 volume and by nothing in-suite, the renderer
 /// being inline. Named, every arm takes a direct-constructor row here.
+///
+/// **DR-1 ship (1) W3 (charter §3.6, 2026-09-03) keeps this pin as written and
+/// re-reasons WHAT it now covers.** The decision point (§2) takes the
+/// `Unsupported` arm off the default `--no-ff` path — it warns instead — so
+/// this renderer is no longer how a below-bar user meets the bar. It still
+/// renders every activation refusal that happens AFTER a `Supported` decision:
+/// a race, an `Io`, an `Ambiguous`. The rows below are unchanged because the
+/// renderer is: only the remedy STRING it carries was rewritten, and the terms
+/// asserted here (`persistent file handles`, `--abort`) survived that rewrite
+/// deliberately — see the pin above.
 #[test]
 fn the_catalog_refusal_renderer_carries_the_remedy_into_every_arm() {
     let identity = PlatformCapability::PersistentFilesystemIdentity;

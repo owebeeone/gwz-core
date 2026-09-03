@@ -81,6 +81,9 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
             root,
             merge_id,
             V1LifecycleRequest::Archive,
+            // DR-1 ship (1) W3: the terminal archive is a REVERSE arm and takes
+            // the plain lease regardless, so it makes and needs no decision.
+            None,
             &mut runtime,
         )?;
         if response.disposition() != V1ResponseDisposition::ArchiveReady {

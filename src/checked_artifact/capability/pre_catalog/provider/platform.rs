@@ -1,6 +1,8 @@
 use cap_std::fs::{Dir, File};
 
 use super::super::*;
+#[cfg(test)]
+use crate::checked_artifact::capability::PlatformCapability;
 use crate::checked_artifact::capability::{
     DurableIdentityProvider, ObjectIdentityFact, PathComponentMode, PathEquivalenceProvider,
 };
@@ -19,6 +21,54 @@ mod imp;
 mod imp;
 
 pub(in crate::checked_artifact) struct HostPlatform;
+
+/// DR-1 ship (1) W3's test-only seam (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
+/// §3.8, 2026-09-03).
+///
+/// The merge-level rows of §5 W3 reach `HostPlatform` through `entry.rs`, not
+/// through `filesystem.rs`'s injected providers, so a below-bar volume cannot
+/// be presented to them any other way: the CI hosts are ext4 and APFS, both
+/// ABOVE the bar. Armed, `dir_identity` answers the same
+/// `Unsupported(PersistentFilesystemIdentity, …)` a btrfs or tmpfs volume
+/// answers, and `describe_volume` answers the injected description, so the
+/// decision point (§2) sees exactly the shape it sees on such a volume.
+///
+/// **Scoped, not armed-once.** The probe calls `dir_identity` more than once
+/// (`catalog_lease/target.rs::finish` asks the workspace target AND its related
+/// Git directory), so a `fail_next`-style single-shot arm would answer the
+/// first and admit the second. It stays armed for the whole closure and
+/// disarms on the way out, panic included.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct InjectedVolumeDescription {
+    pub(crate) name: Option<String>,
+    pub(crate) remote: bool,
+    pub(crate) volatile: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static IDENTITY_UNAVAILABLE: std::cell::RefCell<Option<InjectedVolumeDescription>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `body` with the host's durable-identity probe answering `Unsupported`
+/// and its volume description answering `injected`.
+#[cfg(test)]
+pub(crate) fn with_identity_unavailable<T>(
+    injected: InjectedVolumeDescription,
+    body: impl FnOnce() -> T,
+) -> T {
+    struct Disarm;
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            IDENTITY_UNAVAILABLE.with_borrow_mut(|slot| *slot = None);
+        }
+    }
+    IDENTITY_UNAVAILABLE.with_borrow_mut(|slot| *slot = Some(injected));
+    let _disarm = Disarm;
+    body()
+}
 
 /// The volume a checked directory lives on, as a WORDING AID
 /// (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.3, 2026-09-03).
@@ -53,6 +103,14 @@ impl HostPlatform {
         &self,
         directory: &Dir,
     ) -> Result<VolumeDescription, CheckedFsError> {
+        #[cfg(test)]
+        if let Some(injected) = IDENTITY_UNAVAILABLE.with_borrow(Clone::clone) {
+            return Ok(VolumeDescription {
+                name: injected.name,
+                remote: injected.remote,
+                volatile: injected.volatile,
+            });
+        }
         imp::describe_volume(directory)
     }
 }
@@ -75,6 +133,13 @@ impl DurableIdentityProvider<Dir, File> for HostPlatform {
         &self,
         directory: &Dir,
     ) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+        #[cfg(test)]
+        if IDENTITY_UNAVAILABLE.with_borrow(Option::is_some) {
+            return Err(CheckedFsError::unsupported(
+                PlatformCapability::PersistentFilesystemIdentity,
+                "injected: identity unavailable",
+            ));
+        }
         imp::dir_identity(directory)
     }
 

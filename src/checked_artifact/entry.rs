@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use super::bootstrap::CatalogMutationLeaseV1;
+use super::bootstrap::{CatalogMutationLeaseV1, probe_workspace_admission};
 use super::capability::CheckedFsError;
 use super::catalog::recover_or_create;
 use super::coordinator::execution::{
@@ -154,6 +154,172 @@ pub(crate) fn prepare_merge_store_parents(root: &Path) -> ModelResult<()> {
         ErrorCode::MergeRecoveryRequired,
         "preservation bundle parent",
     )
+}
+
+/// The merge record's own parent prefix, spelled where the checked boundary can
+/// see it. `bootstrap/managed.rs`'s `ManagedParentPurpose::MergeStore` declares
+/// the same two components (`.gwz`, `merge`) and is the authority for the
+/// ABOVE-bar route; this literal is the below-bar route's, and the two must not
+/// drift.
+const MERGE_RECORD_PARENT: &str = ".gwz/merge";
+
+/// DR-1 ship (1) W3 — the CATALOG-FREE creation lease's parent half
+/// (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1, 2026-09-03).
+///
+/// Below the bar there is no catalog, so `bootstrap_merge_start_parents`'
+/// managed-parent provider cannot install `.gwz/merge` and the preservation
+/// bundle prefix. Both are still made through the LEGACY checked boundary's own
+/// `prepare_parent` — the v0 store's route — and never by a raw `create_dir_all`
+/// and never inside the managed-parent provider seam that
+/// `interface_tests/r2d_seam_freeze.rs` freezes. `create_open` still refuses a
+/// missing parent (charter §4.1), so this is the step that makes its refusal
+/// unreachable on the warned path exactly as the bootstrap does on the other.
+pub(crate) fn prepare_merge_start_parents_uncatalogued(root: &Path) -> ModelResult<()> {
+    CheckedArtifact::prepare_parent(
+        root,
+        Path::new(MERGE_RECORD_PARENT),
+        ErrorCode::MergeRecoveryRequired,
+        "merge record parent",
+    )?;
+    prepare_merge_store_parents(root)
+}
+
+/// Whether this workspace's volume can prove the durable identity the checked
+/// catalog needs for crash recovery.
+///
+/// DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2, 2026-09-03).
+/// Crash recovery is a CAPABILITY, not a gate: below the bar the merge still
+/// runs, warns once and activates no catalog; `--filesystem-strict` is the only
+/// way to turn the absence back into a refusal.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CrashRecoveryDecision {
+    /// Identity proved; the catalog is activated exactly as it is today.
+    Supported,
+    /// Identity absent. `filesystem` is the volume's own name where the
+    /// platform can give one, rendered `unknown` where it cannot.
+    Unsupported {
+        filesystem: Option<String>,
+        gap: crate::MergeCrashRecoveryGap,
+    },
+}
+
+/// **On these three names.** The charter's own shorthand for them is
+/// `to_protocol`, `warning` and the strict sentence; they are spelled with the
+/// `crash_recovery_` prefix here because this module's `pub(crate)` surface is
+/// an equality-pinned INVENTORY —
+/// `check_checked_artifact_boundaries.py`'s `ENTRY_REFERENCES` scans every
+/// production file for each visible name and requires the reference set to be
+/// exactly the boundary's consumers. A bare `warning` or `to_protocol` matches
+/// nine unrelated files between them, which is why every door in this file
+/// already carries a long distinctive name. Same items, checkable names.
+impl CrashRecoveryDecision {
+    /// The response's machine truth (charter §3.4 channel 2): every consumer
+    /// that must not depend on stderr reads this, not the diagnostic.
+    pub(crate) fn crash_recovery_protocol(&self) -> crate::MergeCrashRecovery {
+        match self {
+            Self::Supported => crate::MergeCrashRecovery {
+                supported: true,
+                filesystem: None,
+                gap: None,
+            },
+            Self::Unsupported { filesystem, gap } => crate::MergeCrashRecovery {
+                supported: false,
+                filesystem: filesystem.clone(),
+                gap: Some(*gap),
+            },
+        }
+    }
+
+    /// The operator's exact sentence (charter §3.4). Drivers print `warning: `
+    /// + this string on stderr; the `warning: ` prefix is theirs, not core's.
+    pub(crate) fn crash_recovery_warning(&self) -> String {
+        format!(
+            "{}. Merge will continue. Use --filesystem-strict to refuse.",
+            self.gap_sentence()
+        )
+    }
+
+    /// The `--filesystem-strict` refusal (charter §3.6): the same sentence,
+    /// then the one remedy a user can act on.
+    pub(crate) fn crash_recovery_strict_refusal(&self) -> ModelError {
+        ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            format!(
+                "checked catalog: {}; {}",
+                self.gap_sentence(),
+                super::capability::PERSISTENT_FILESYSTEM_IDENTITY_REMEDY
+            ),
+        )
+    }
+
+    /// `crash recovery is unsupported on <fs> (<parenthetical>)`, shared by the
+    /// warning and the strict refusal so the two can never word the gap
+    /// differently. `Supported` has no gap and never reaches either caller.
+    fn gap_sentence(&self) -> String {
+        let (filesystem, gap) = match self {
+            Self::Supported => (None, None),
+            Self::Unsupported { filesystem, gap } => (filesystem.as_deref(), Some(*gap)),
+        };
+        let parenthetical = match gap {
+            Some(crate::MergeCrashRecoveryGap::RemoteFilesystem) => "remote filesystem",
+            Some(crate::MergeCrashRecoveryGap::VolatileFilesystem) => "volatile filesystem",
+            Some(crate::MergeCrashRecoveryGap::NoDurableIdentity) | None => {
+                "no durable filesystem identity"
+            }
+        };
+        format!(
+            "crash recovery is unsupported on {} ({parenthetical})",
+            filesystem.unwrap_or("unknown")
+        )
+    }
+}
+
+/// The decision, made ONCE per process, before any lease is taken.
+///
+/// DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2/§3.1, 2026-09-03).
+/// It runs the catalog's OWN admission probe — `dir_identity` on the retained
+/// workspace target and its related Git directory, the same calls
+/// `catalog_lease/target.rs::finish` makes — and creates, recovers and leases
+/// nothing; in particular it never makes a `catalog-final` directory and never
+/// touches the final slot.
+///
+/// **Which errors are an absent identity, and which are errors.** Every refusal
+/// raised BY THE PROBE maps onto the warning path: `Unsupported` because that is
+/// the bar, and `Io` because a probe that cannot answer is an absent identity,
+/// not a reason to stop a merge that never needed the catalog. That includes the
+/// Linux provider's volatile refusal (§3.2), which is a CATALOG-ADMISSION
+/// refusal and not a merge refusal — the operator's ruling of 2026-09-03 (§0.1)
+/// is explicit that tmpfs/ramfs warn with gap `volatile_filesystem` rather than
+/// stopping the merge. An `Ambiguous` stays an error: it says the workspace is
+/// not what it claims — a bare repository, a path that is not the worktree root,
+/// an identity that changed under the probe — and none of those is a filesystem
+/// capability the user can act on by dropping crash recovery.
+///
+/// **The gap comes from the description, never from a name list** (§0.1):
+/// volatile wins over remote, remote over the bare absence, and `remote` is a
+/// wording REASON, never a denylist. A description that cannot be taken at all
+/// leaves `NoDurableIdentity` and an unnamed filesystem.
+pub(crate) fn crash_recovery_decision(root: &Path) -> ModelResult<CrashRecoveryDecision> {
+    let probe = probe_workspace_admission(root);
+    let cause = match probe.admitted {
+        Ok(()) => return Ok(CrashRecoveryDecision::Supported),
+        Err(cause) => cause,
+    };
+    if let CheckedFsError::Ambiguous { .. } = cause {
+        return Err(render_catalog_refusal(CATALOG_LABEL, cause));
+    }
+    let (filesystem, gap) = match probe.volume {
+        Some(volume) if volume.volatile => (
+            volume.name,
+            crate::MergeCrashRecoveryGap::VolatileFilesystem,
+        ),
+        Some(volume) if volume.remote => {
+            (volume.name, crate::MergeCrashRecoveryGap::RemoteFilesystem)
+        }
+        Some(volume) => (volume.name, crate::MergeCrashRecoveryGap::NoDurableIdentity),
+        None => (None, crate::MergeCrashRecoveryGap::NoDurableIdentity),
+    };
+    Ok(CrashRecoveryDecision::Unsupported { filesystem, gap })
 }
 
 fn root_artifact(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {

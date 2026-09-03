@@ -100,6 +100,12 @@ pub(crate) use fault::{
     run_next_checked_artifact_at,
 };
 
+/// DR-1 ship (1) W3's test-only seam (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
+/// §3.8, 2026-09-03): the merge-level rows arm it here, exactly as they arm
+/// `fail_next_checked_artifact_at` above.
+#[cfg(test)]
+pub(crate) use capability::{InjectedVolumeDescription, with_identity_unavailable};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CheckedArtifactFact {
     Missing,

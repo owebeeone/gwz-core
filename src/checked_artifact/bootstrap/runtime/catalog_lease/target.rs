@@ -16,9 +16,59 @@ use super::association::{CatalogGitAssociationBindingV1, RetainedCatalogGitAssoc
 use crate::checked_artifact::capability::{
     CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1, HostPlatform,
     PathComponentMode, PathEquivalenceProvider, PreCatalogRootKindV1, SupportedFilesystemProfile,
+    VolumeDescription,
 };
 
 pub(super) const GIT_CATALOG_MUTATOR_LOCK_NAME: &str = "gwz-catalog-mutator-v1.lock";
+
+/// The catalog's own admission answer for one workspace root, taken WITHOUT
+/// creating, recovering or leasing anything
+/// (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2, 2026-09-03).
+pub(in crate::checked_artifact) struct WorkspaceAdmissionProbeV1 {
+    /// `Ok` exactly when [`RetainedCatalogTargetV1::retain`] answers — i.e.
+    /// when the workspace target and its related Git directory both prove a
+    /// durable identity for this host's support profile.
+    pub(in crate::checked_artifact) admitted: Result<(), CheckedFsError>,
+    /// The wording aid (§3.3), read only when `admitted` is an error and
+    /// `None` when the description itself cannot be taken.
+    pub(in crate::checked_artifact) volume: Option<VolumeDescription>,
+}
+
+/// Run the catalog's admission probe on `root` read-only.
+///
+/// DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2, 2026-09-03).
+/// The decision point needs the answer `finish` below computes and nothing
+/// else, so this runs exactly [`RetainedCatalogTargetV1::retain`] — resolve the
+/// workspace paths, retain the two ambient directories, revalidate the
+/// repository binding, then `dir_identity` on both — and drops the retained
+/// target. **It creates nothing.** `resolve_workspace_paths` and
+/// `retain_ambient_directory` only canonicalize, `open`(2) and re-observe;
+/// every creation on this file's paths lives in `prepare_final_slot` and
+/// `acquire_final`, which recover or create the runtime, locks and lease
+/// objects — and neither is on this path. In particular no `catalog-final`
+/// directory is made: that is `catalog::recover_or_create`'s work, one layer
+/// above, and this function never reaches it.
+pub(in crate::checked_artifact) fn probe_workspace_admission(
+    root: &Path,
+) -> WorkspaceAdmissionProbeV1 {
+    let admitted =
+        RetainedCatalogTargetV1::retain(&CatalogLeaseTargetRequestV1::workspace(root)).map(drop);
+    let volume = admitted
+        .is_err()
+        .then(|| describe_workspace_volume(root).ok());
+    WorkspaceAdmissionProbeV1 {
+        admitted,
+        volume: volume.flatten(),
+    }
+}
+
+/// The volume description of the workspace root itself, on the same ambient
+/// retention the probe above uses. Independent of `resolve_workspace_paths` so
+/// a root the catalog cannot bind at all can still be NAMED in the warning.
+fn describe_workspace_volume(root: &Path) -> Result<VolumeDescription, CheckedFsError> {
+    let target = retain_ambient_directory(root, "catalog workspace target")?;
+    HostPlatform.describe_volume(target.handle())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::checked_artifact) struct CatalogLeaseTargetRequestV1 {

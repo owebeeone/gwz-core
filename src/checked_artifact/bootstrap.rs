@@ -10,6 +10,9 @@ mod runtime;
 pub(super) use managed::*;
 pub(super) use runtime::CatalogLeaseTargetWitnessV1;
 pub(crate) use runtime::CatalogMutationLeaseV1;
+/// DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2,
+/// 2026-09-03): the catalog's admission answer without its lease.
+pub(super) use runtime::probe_workspace_admission;
 #[allow(
     unused_imports,
     reason = "R2-C0 freezes catalog lease interfaces before the C1 owner consumes them"

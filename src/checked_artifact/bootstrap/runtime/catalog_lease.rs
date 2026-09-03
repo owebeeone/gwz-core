@@ -23,6 +23,10 @@ use association::CatalogGitAssociationBindingV1;
 pub(in crate::checked_artifact) use target::CatalogLeaseTargetRequestV1;
 #[cfg(test)]
 use target::GIT_CATALOG_MUTATOR_LOCK_NAME;
+/// DR-1 ship (1) W3's read-only admission probe
+/// (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2, 2026-09-03): the decision
+/// point's door into the same `dir_identity` calls `finish` makes.
+pub(in crate::checked_artifact) use target::probe_workspace_admission;
 use target::{CatalogTargetBindingV1, HeldCatalogTargetV1, RetainedCatalogTargetV1};
 pub(crate) use witness::CatalogLeaseTargetWitnessV1;
 

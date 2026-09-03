@@ -187,6 +187,31 @@ impl V1MutationLease {
         Ok(lease)
     }
 
+    /// DR-1 ship (1) W3 — the CATALOG-FREE creation lease
+    /// (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1, 2026-09-03).
+    ///
+    /// Taken when `entry.rs::crash_recovery_decision` answered `Unsupported`
+    /// and `--filesystem-strict` was absent: crash recovery is a capability, not
+    /// a gate, so the merge runs — but on a volume whose identity the catalog
+    /// cannot bind there is no catalog to activate, and asking for one is the
+    /// refusal this ship removes.
+    ///
+    /// It is `acquire` plus row `:273`'s two parents, and nothing else. The
+    /// parents still go through the CHECKED boundary — `entry.rs`'s
+    /// `prepare_merge_start_parents_uncatalogued`, itself two
+    /// `CheckedArtifact::prepare_parent` calls — so "both parents durable before
+    /// record" holds on this path exactly as it does on
+    /// `acquire_for_merge_start`'s; only the managed-parent PROVIDER, which
+    /// needs the catalog, is out of the picture. No `create_dir_all` anywhere,
+    /// and nothing inside the seam `r2d_seam_freeze.rs` freezes. `create_open`
+    /// is unchanged and still publishes the record through the checked boundary
+    /// (charter §4.1).
+    pub(super) fn acquire_for_merge_start_uncatalogued(root: &Path) -> ModelResult<Self> {
+        let lease = Self::acquire(root)?;
+        crate::checked_artifact::entry::prepare_merge_start_parents_uncatalogued(root)?;
+        Ok(lease)
+    }
+
     pub(super) fn covers(&self, location: &OpenRecordLocation) -> bool {
         self.workspace_root == location.root && location.path.starts_with(&self.workspace_root)
     }

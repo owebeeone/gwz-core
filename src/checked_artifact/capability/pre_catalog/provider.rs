@@ -153,7 +153,12 @@ pub(in crate::checked_artifact) use namespace_mutation::{
     observe_cleanup_completion, observe_cleanup_retirement, observe_cleanup_row_facts,
     observe_cleanup_worklist_row, write_cleanup_worklist_scratch,
 };
-pub(in crate::checked_artifact) use platform::HostPlatform;
+pub(in crate::checked_artifact) use platform::{HostPlatform, VolumeDescription};
+/// DR-1 ship (1) W3's test-only seam (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
+/// §3.8, 2026-09-03), carried to the merge-level suites that reach
+/// `HostPlatform` only through `entry.rs`.
+#[cfg(test)]
+pub(crate) use platform::{InjectedVolumeDescription, with_identity_unavailable};
 pub(in crate::checked_artifact::capability::pre_catalog) use retained::RetainedPlatformRoot;
 
 pub(super) struct RawPreCatalogObservationV1<RetainedRoot> {
