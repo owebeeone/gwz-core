@@ -296,12 +296,32 @@
       "forbidden": []
     },
     {
+      "id": "operation_model",
+      "path": "gwz-core/docs/OperationModel.md",
+      "required": [
+        {
+          "id": "operation_model_merge_runs_everywhere",
+          "value": "A merge runs on every filesystem. Crash recovery is a capability, not a gate."
+        },
+        {
+          "id": "operation_model_crash_recovery_warning_sentence",
+          "match": "regex",
+          "value": "crash recovery is unsupported on \\S+ \\((?:no durable filesystem identity|remote filesystem|volatile filesystem)\\)\\. Merge will continue\\. Use --filesystem-strict to refuse\\."
+        }
+      ],
+      "forbidden": []
+    },
+    {
       "id": "merge_command",
       "path": "gwz-cli/docs/commands/merge.md",
       "required": [
         {
           "id": "merge_command_synopsis_lists_no_ff",
-          "value": "gwz merge <source> [--dry-run] [--ff-only] [--no-ff] [-m <message>]"
+          "value": "gwz merge <source> [--dry-run] [--ff-only] [--no-ff] [--filesystem-strict] [-m <message>]"
+        },
+        {
+          "id": "merge_command_synopsis_lists_filesystem_strict",
+          "value": "[--ff-only] [--no-ff] [--filesystem-strict]"
         },
         {
           "id": "merge_command_no_ff_creates_a_merge_commit",

@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Fail-not-skip native ext4 probe for the R4b Linux identity provider."""
+"""Fail-not-skip native probe for the Linux durable-identity provider.
+
+The gate is the identity contract, not a filesystem name. ext4 remains the
+REFERENCE positive row — it is the one built with a fixed external UUID and
+carried through remount, descriptor substitution and the whole negative
+table — and every other strong-table filesystem the runner can build is
+proved to satisfy the same contract (`strong_table`). The negative rows for
+tmpfs and overlay are taken from REAL mounts by attempting the contract for
+real, so their verdicts rest on what the kernel answered rather than on the
+name the mount reports.
+"""
 
 from __future__ import annotations
 
@@ -20,11 +30,26 @@ import uuid
 import provider
 
 EXT4_SUPER_MAGIC = 0xEF53
+XFS_SUPER_MAGIC = 0x58465342
 OVERLAYFS_SUPER_MAGIC = 0x794C7630
 TMPFS_MAGIC = 0x01021994
+RAMFS_MAGIC = 0x858458F6
 FS_CASEFOLD_FL = 0x40000000
 FIXED_UUID = uuid.UUID("718c918e-3cc3-43c9-ae9e-27f5cecc8a17")
 MAX_HANDLE_BYTES = 128
+
+# How each strong-table filesystem is built on a loop device. `casefold` says
+# whether the fixture can carry an `FS_CASEFOLD_FL` directory; xfs cannot, and
+# `provider.expected_path_modes` expects two `Sensitive` rows there.
+STRONG_TABLE_BUILDS = {
+    "xfs": {
+        "tools": ("mkfs.xfs",),
+        # xfsprogs refuses to format anything smaller than 300MB.
+        "size": "512M",
+        "mkfs": ("mkfs.xfs", "-q", "-f"),
+        "casefold": False,
+    },
+}
 
 
 def _ior(type_value: int, number: int, size: int) -> int:
@@ -89,10 +114,20 @@ def filesystem_magic(fd: int) -> int:
 
 
 def filesystem_name(magic: int) -> str:
+    """Name the substrate from its superblock magic, one to one.
+
+    `provider.validate_facts` mirrors the production provider's volatility
+    refusal by NAME; this map is what makes that mirror faithful, because the
+    name a fact set carries is always derived from the magic the kernel
+    reported for that mount.
+    """
+
     return {
         EXT4_SUPER_MAGIC: "ext4",
+        XFS_SUPER_MAGIC: "xfs",
         OVERLAYFS_SUPER_MAGIC: "overlay",
         TMPFS_MAGIC: "tmpfs",
+        RAMFS_MAGIC: "ramfs",
     }.get(magic, f"unknown-{magic:08x}")
 
 
@@ -202,37 +237,81 @@ def descriptor_substitution(root: pathlib.Path) -> dict[str, object]:
     }
 
 
-def create_fixture(root: pathlib.Path) -> None:
+def create_fixture(root: pathlib.Path, *, casefold: bool = True) -> None:
     (root / "sensitive").mkdir()
     (root / "casefold").mkdir()
-    command("chattr", "+F", str(root / "casefold"))
+    if casefold:
+        command("chattr", "+F", str(root / "casefold"))
     (root / "sensitive" / "stable").write_bytes(b"gwz-r4b-linux-probe\n")
 
 
-def reject_filesystem(path: pathlib.Path, expected: str) -> str:
-    fd = open_nofollow(path, directory=True)
+def observed_facts(sample: pathlib.Path, modes_root: pathlib.Path) -> dict[str, object]:
+    """Ask a real mount for the identity contract, in the provider's order.
+
+    Raises `provider.ProbeError` at the first step the substrate cannot
+    answer, exactly as `platform/linux.rs::identity` fails at the first
+    syscall that refuses.
+    """
+
+    fd = open_nofollow(sample)
+    try:
+        name = filesystem_name(filesystem_magic(fd))
+        try:
+            uuid_length, uuid_bytes = filesystem_uuid(fd)
+        except OSError as error:
+            raise provider.unsupported(
+                f"FS_IOC_GETFSUUID refused with errno {error.errno}"
+            ) from error
+        handle_type, handle, _ = retained_handle(fd)
+    finally:
+        os.close(fd)
+    try:
+        modes = {
+            "sensitive": path_mode(modes_root / "sensitive"),
+            "casefold": path_mode(modes_root / "casefold"),
+        }
+        mode_query_succeeded = True
+    except OSError:
+        modes = {}
+        mode_query_succeeded = False
+    return {
+        "filesystem": name,
+        "filesystem_uuid": uuid_bytes.hex(),
+        "filesystem_uuid_length": uuid_length,
+        "handle_provider": "name_to_handle_at-empty-path",
+        "handle_type": handle_type,
+        "handle": handle.hex(),
+        "handle_length": len(handle),
+        "path_modes": modes,
+        "mode_query_succeeded": mode_query_succeeded,
+    }
+
+
+def reject_real_mount(sample: pathlib.Path, modes_root: pathlib.Path, expected: str) -> str:
+    """Prove a real mount is below the identity bar, and return its typed code.
+
+    Nothing here consults a name list. tmpfs answers the UUID ioctl and the
+    handle query on every kernel that has the ioctl at all, and is refused
+    for being VOLATILE; overlay without `nfs_export` is refused by
+    `name_to_handle_at` itself.
+    """
+
+    fd = open_nofollow(modes_root, directory=True)
     try:
         observed = filesystem_name(filesystem_magic(fd))
     finally:
         os.close(fd)
     if observed != expected:
         raise RuntimeError(f"expected {expected}, observed {observed}")
-    facts = {
-        "filesystem": observed,
-        "filesystem_uuid": FIXED_UUID.hex,
-        "filesystem_uuid_length": 16,
-        "handle_provider": "name_to_handle_at-empty-path",
-        "handle_type": 1,
-        "handle": "aa",
-        "handle_length": 1,
-        "path_modes": {"sensitive": "Sensitive", "casefold": "AsciiCaseFold"},
-        "mode_query_succeeded": True,
-    }
+    try:
+        facts = observed_facts(sample, modes_root)
+    except provider.ProbeError as error:
+        return error.code
     try:
         provider.validate_facts(facts)
     except provider.ProbeError as error:
         return error.code
-    raise RuntimeError(f"{expected} unexpectedly passed the ext4 support table")
+    raise RuntimeError(f"{expected} unexpectedly satisfied the identity contract")
 
 
 def synthetic_negative_rows(valid: dict[str, object]) -> dict[str, str]:
@@ -241,7 +320,15 @@ def synthetic_negative_rows(valid: dict[str, object]) -> dict[str, str]:
         "tmpfs": "pending-real",
     }
     variants = {
-        "network": {"filesystem": "nfs"},
+        # A remote volume publishes no filesystem UUID: NFS never calls
+        # `super_set_uuid`, so `FS_IOC_GETFSUUID` cannot answer for it. The
+        # name is carried to say which substrate the evidence describes; it is
+        # a warning REASON, not a denylist entry.
+        "network": {
+            "filesystem": "nfs",
+            "filesystem_uuid": "",
+            "filesystem_uuid_length": 0,
+        },
         "zero_uuid": {"filesystem_uuid": "00" * 16},
         "no_uuid": {"filesystem_uuid": "", "filesystem_uuid_length": 0},
         "malformed_uuid_length": {
@@ -283,6 +370,42 @@ def synthetic_negative_rows(valid: dict[str, object]) -> dict[str, str]:
     return rows
 
 
+def strong_table_row(
+    temporary: pathlib.Path, filesystem: str, mounted: list[pathlib.Path]
+) -> dict[str, object]:
+    """Build one strong-table filesystem on a loop device and prove the contract.
+
+    This is the evidence that `--filesystem-strict` is identity-based rather
+    than an ext4 name test: the UUID comes through the same
+    `FS_IOC_GETFSUUID`, the handle through the same retained-descriptor query,
+    and both survive an unmount/remount cycle.
+    """
+
+    build = STRONG_TABLE_BUILDS[filesystem]
+    image = temporary / f"{filesystem}.img"
+    mountpoint = temporary / filesystem
+    image.touch()
+    command("truncate", "-s", build["size"], str(image))
+    command(*build["mkfs"], str(image))
+    mountpoint.mkdir()
+    command("mount", "-o", "loop", str(image), str(mountpoint))
+    mounted.append(mountpoint)
+    create_fixture(mountpoint, casefold=build["casefold"])
+    before = snapshot(mountpoint)
+    if before["filesystem"] != filesystem:
+        raise RuntimeError(f"expected {filesystem}, observed {before['filesystem']}")
+    command("sync")
+    command("umount", str(mountpoint))
+    mounted.remove(mountpoint)
+    command("mount", "-o", "loop", str(image), str(mountpoint))
+    mounted.append(mountpoint)
+    after = snapshot(mountpoint)
+    return {
+        "tuple": provider.validate_facts(before),
+        "remount": provider.compare_remount(before, after),
+    }
+
+
 def raw_missing_empty_path_error(fd: int) -> int:
     handle = FileHandle(handle_bytes=MAX_HANDLE_BYTES)
     value = ctypes.c_int()
@@ -295,7 +418,10 @@ def raw_missing_empty_path_error(fd: int) -> int:
 def run(args: argparse.Namespace) -> dict[str, object]:
     if platform.system() != "Linux":
         raise RuntimeError("native Linux identity probe cannot run on this host")
-    for executable in ("mkfs.ext4", "mount", "umount", "chattr"):
+    required = ["mkfs.ext4", "mount", "umount", "chattr"]
+    for filesystem in provider.STRONG_TABLE_ROWS:
+        required.extend(STRONG_TABLE_BUILDS[filesystem]["tools"])
+    for executable in required:
         if shutil.which(executable) is None:
             raise RuntimeError(f"required executable is unavailable: {executable}")
     native_machine = platform.machine()
@@ -337,9 +463,15 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         after = snapshot(mountpoint)
         remount = provider.compare_remount(before, after)
 
+        strong_table = {
+            filesystem: strong_table_row(temporary, filesystem, mounted)
+            for filesystem in provider.STRONG_TABLE_ROWS
+        }
+
         tmpfs.mkdir()
         command("mount", "-t", "tmpfs", "tmpfs", str(tmpfs))
         mounted.append(tmpfs)
+        create_fixture(tmpfs, casefold=False)
 
         for name in ("lower", "upper", "work", "merged"):
             (overlay / name).mkdir(parents=True, exist_ok=True)
@@ -349,10 +481,15 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         )
         command("mount", "-t", "overlay", "overlay", "-o", options, str(overlay / "merged"))
         mounted.append(overlay / "merged")
+        create_fixture(overlay / "merged", casefold=False)
 
         negative_rows = synthetic_negative_rows(before)
-        negative_rows["tmpfs"] = reject_filesystem(tmpfs, "tmpfs")
-        negative_rows["overlay"] = reject_filesystem(overlay / "merged", "overlay")
+        negative_rows["tmpfs"] = reject_real_mount(
+            tmpfs / "sensitive" / "stable", tmpfs, "tmpfs"
+        )
+        negative_rows["overlay"] = reject_real_mount(
+            overlay / "merged" / "sensitive" / "stable", overlay / "merged", "overlay"
+        )
         provider.validate_negative_rows(negative_rows)
         query_contract = {
             "missing_at_empty_path_errno": errno.errorcode[missing_empty_path_errno],
@@ -371,7 +508,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
         source_directory = pathlib.Path(__file__).resolve().parent
         return {
-            "schema_version": 1,
+            "schema_version": provider.EVIDENCE_SCHEMA_VERSION,
             "core_commit": args.core_commit,
             "workflow_run": args.workflow_run,
             "architecture": args.architecture,
@@ -380,6 +517,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "probe_source_sha256": provider.probe_source_digest(source_directory),
             "provider_table_sha256": provider.provider_table_digest(),
             "tuple": provider.validate_facts(before),
+            "strong_table": strong_table,
             "remount": remount,
             "substitution": substitution,
             "query_contract": query_contract,

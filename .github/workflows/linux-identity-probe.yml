@@ -51,8 +51,8 @@ jobs:
       - name: Install native probe tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes e2fsprogs util-linux
-      - name: Run fail-not-skip ext4 remount probe
+          sudo apt-get install --yes e2fsprogs xfsprogs util-linux
+      - name: Run fail-not-skip identity-contract probe
         run: |
           sudo python scripts/linux_identity_probe/run_probe.py \
             --architecture "${{ matrix.architecture }}" \

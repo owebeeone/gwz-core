@@ -122,49 +122,134 @@ mutations; run branch and stash mutators serially there.
 
 ## Checked Merge Artifacts And Filesystem Identity
 
-`gwz merge --no-ff` records its operation through the checked merge artifact
+**A merge runs on every filesystem. Crash recovery is a capability, not a
+gate.**
+
+`gwz merge --no-ff` can record its operation through the checked merge artifact
 catalog under `.gwz/catalog-final`. The catalog identifies its own files and
 directories by a *durable* identity that survives renames and process exits, so
 that an interrupted merge can prove on restart which objects it created. That
-needs two things from the filesystem, and it asks for them when the operation
-moves FORWARD under its lock — at a checked start or resume, and before an
-interrupted ordinary merge is migrated to the checked record form. An abort asks
-only when it must re-verify a checked artifact, and then of a weaker probe (see
-*What never refuses* below):
+is what "crash recovery" means here, and it needs two things from the volume:
 
 * **Persistent file handles** — `name_to_handle_at` on Linux,
   `ATTR_CMN_OBJPERMANENTID` on macOS, 128-bit file ids on NTFS.
-* **A mount identity**, so a rename can be proved to stay on one filesystem.
+* **A durable filesystem identity**, so the volume itself can be named across
+  a reboot and a rename can be proved to stay on one filesystem.
 
-Filesystems that do not expose both are refused with a message naming the
-capability. **On Linux the CATALOG admits `ext4` and nothing else**: btrfs, xfs
-and zfs are refused by the catalog, as are `tmpfs`, overlay and container
-filesystems and every network mount (NFS, SMB/CIFS, SSHFS and other FUSE
-mounts). An abort's checked doors go through the weaker legacy identity probe,
-which admits btrfs, xfs and zfs as well — the two regimes disagree, and closing
-that gap is DR-1's lead item (`GwzM5-8DR1-FilesystemIdentity-Design.md`). On
-macOS: local APFS or HFS+. On Windows: NTFS.
+### The decision, made once
 
-**What refuses:** `gwz merge --no-ff`, and `gwz merge --resume` of a merge
-record already at v1.
+At merge start GWZ probes the workspace volume for exactly that, before it
+takes any lease, writes any record, or runs any Git work. The answer is decided
+**once per invocation** and used for the whole invocation:
 
-**What never refuses:** an abort that touches no checked artifact needs no such
-filesystem, on a record of either version. Aborts that must re-verify checked
-artifacts — preservation bundles, a selected root's manifest and lock, or the
-merge's published evidence, re-verified through the checked boundary — need
-persistent file handles and a mount identity, of the weaker legacy probe above
-(2026-09-02, `GwzM5-8R2E-CapabilityFreeAmendment.md` §6). Nor does an ordinary or
-`--ff-only` merge, including resuming one interrupted during finalization: such
-a record is eligible for an automatic upgrade to the v1 lifecycle, and when the
-catalog is unavailable that upgrade is declined before it writes anything and
-the v0 lifecycle completes the merge itself. Nor do `gwz repo create`,
-`init-from-sources`, `gwz merge --status`, GC, or the workspace mutation guard,
-none of which reaches the catalog.
+* **Above the bar** — the catalog is activated exactly as before. Nothing is
+  printed.
+* **Below the bar, by default** — GWZ prints **one** warning and the merge
+  continues, without activating the catalog:
 
-**Workaround:** run the workspace on a filesystem that exposes persistent
-handles. A merge already open can be cleared with `gwz merge --abort`, which
-needs no such filesystem unless it must re-verify checked artifacts; a new one
-can be started without `--no-ff`.
+  ```text
+  warning: crash recovery is unsupported on btrfs (no durable filesystem identity). Merge will continue. Use --filesystem-strict to refuse.
+  ```
+
+  The filesystem is named, or `unknown` when it cannot be named. The
+  parenthetical is exactly one of `no durable filesystem identity`,
+  `remote filesystem`, or `volatile filesystem`.
+* **Below the bar, with `--filesystem-strict`** — the merge is refused before
+  any lease, record, or Git mutation, with a typed `UnsupportedOperation`
+  naming the capability and the two ways forward: run without
+  `--filesystem-strict` to proceed without crash recovery, or clear an open
+  merge with `gwz merge --abort`.
+
+Below the bar, crash recovery is **absent, not degraded**. The merge itself is
+not weakened: the same participants, the same order, the same verification, the
+same published composition evidence. What is missing is the catalog's evidence
+that an interrupted *start* would have used to prove on restart which objects
+it created.
+
+`--filesystem-strict` is accepted only on a merge start. On `--continue`,
+`--abort`, `--status` or `--gc` it is refused as an invalid request. There is
+no environment variable and no configuration key: the flag is the whole
+control surface.
+
+### What "below the bar" means, per platform
+
+The bar is identity-based. It is not a filesystem-name test, and
+`--filesystem-strict` does not restore one.
+
+* **Linux.** A volume is above the bar when `FS_IOC_GETFSUUID` answers with a
+  nonzero 16-byte volume UUID and `name_to_handle_at` returns a persistent
+  handle. **ext4, xfs and f2fs are admitted alike** — they publish their UUID
+  to the VFS. **btrfs is below the bar** because it never publishes its UUID to
+  the VFS, so the ioctl answers `ENOTTY`; the gap is
+  `no durable filesystem identity`. Kernels before 6.9 have no such ioctl at
+  all, so every volume is below the bar there. `tmpfs` and `ramfs` are refused
+  as `volatile filesystem`: their contents do not survive power loss, so
+  recovery evidence written on them cannot be trusted after a crash — even
+  though they do answer both syscalls. Network mounts (NFS, SMB/CIFS, SSHFS
+  and other FUSE mounts) fail the identity probe and are named as
+  `remote filesystem`.
+* **macOS.** Local APFS or HFS+ is above the bar. A volume without
+  `VOL_CAP_FMT_PERSISTENTOBJECTIDS` is below it; a non-local volume is named as
+  `remote filesystem`.
+* **Windows.** NTFS is above the bar. Replacing that name test with the
+  capability flag `FILE_SUPPORTS_OPEN_BY_FILE_ID` is a named follow-up, not
+  yet built.
+
+### What never depended on this
+
+* **Interrupting a live merge.** Ctrl-C, `gwz merge --abort` and
+  `gwz merge --continue` of a merge already open work the same below the bar as
+  above it. They never needed the catalog.
+* **A later continue or abort** uses what its start opened — a catalog, or
+  none — and does not consult `--filesystem-strict` again.
+* **Abort is capability-free by path** on a record of either version when it
+  touches no checked artifact. An abort that must re-verify checked artifacts —
+  preservation bundles, a selected root's manifest and lock, or the merge's
+  published evidence — still goes through the checked boundary and its weaker
+  legacy identity probe (2026-09-02,
+  `GwzM5-8R2E-CapabilityFreeAmendment.md` §6).
+* **Ordinary and `--ff-only` merges** write v0 records and never reach this
+  door, including a merge interrupted during finalization: such a record is
+  eligible for an automatic upgrade to the v1 lifecycle, and when the catalog
+  is unavailable that upgrade is declined before it writes anything and the v0
+  lifecycle completes the merge itself.
+* `gwz repo create`, `init-from-sources`, `gwz merge --status`, GC, and the
+  workspace mutation guard never reach the catalog.
+
+### Stated limits
+
+* **The record boundary keeps its own, weaker requirement.** A `--no-ff` merge
+  record is published through the checked artifact boundary, which asks for
+  persistent file handles and a mount identity but for no filesystem UUID. A
+  volume that cannot answer *that* — overlayfs without `nfs_export`, sshfs and
+  other FUSE mounts without export support — still refuses a `--no-ff` merge at
+  the record write, with the boundary's own message rather than the warning
+  above. That set is much smaller than the catalog's bar — it is not "every
+  filesystem below the bar", it is "every filesystem with no persistent file
+  handles at all" — but it is not empty, and the sentence at the top of this
+  section is qualified by it. Ordinary and `--ff-only` merges are unaffected.
+  Lifting it is ship (2) of DR-1, not this change.
+* **A workspace moved between volumes mid-merge re-decides.** The decision is
+  not recorded in the catalog or in the merge record, so a `--continue` decides
+  again, on the volume it finds. Same volume, same answer. Moved onto an
+  above-bar volume, a catalog is bootstrapped mid-attempt, which is harmless
+  because the catalog tracks only its own publications. Moved onto a below-bar
+  volume, the continue proceeds without one and warns.
+* **The warning is per invocation.** A workspace on btrfs sees one line per
+  start and one per continue. There is no cross-invocation suppression; adding
+  one would need persistent state or configuration.
+* Reconciling the catalog's identity regime with the checked boundary's weaker
+  legacy probe remains DR-1's parked item
+  (`GwzM5-8DR1-FilesystemIdentity-Design.md`,
+  `GwzM5-8DR1-Reconciliation-Design.md`).
+
+### Machine consumers
+
+Every merge response that made this decision carries a `crash_recovery` object
+— `supported`, the `filesystem` name when it can be named, and the `gap` when
+it is not supported. JSON, porcelain and `--jsonl` consumers read it there and
+never need to parse stderr; the CLI's `docs/MachineOutput.md` carries the
+rendered shape.
 
 ## Branch And Stash Outcomes
 

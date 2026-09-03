@@ -11,28 +11,39 @@ sys.path.insert(0, str(HERE))
 import provider  # noqa: E402
 
 
-def valid_facts():
+def valid_facts(filesystem="ext4"):
     return {
-        "filesystem": "ext4",
+        "filesystem": filesystem,
         "filesystem_uuid": "12345678123456781234567812345678",
         "filesystem_uuid_length": 16,
         "handle_provider": "name_to_handle_at-empty-path",
         "handle_type": 1,
         "handle": "ab" * 32,
         "handle_length": 32,
-        "path_modes": {
-            "sensitive": "Sensitive",
-            "casefold": "AsciiCaseFold",
-        },
+        "path_modes": provider.expected_path_modes(filesystem),
         "mode_query_succeeded": True,
         "mount_id": 101,
+    }
+
+
+def strong_table_evidence():
+    return {
+        filesystem: {
+            "tuple": provider.validate_facts(valid_facts(filesystem)),
+            "remount": {
+                "identity_equal": True,
+                "mount_ids": [303, 404],
+                "mount_id_is_non_authoritative": True,
+            },
+        }
+        for filesystem in provider.STRONG_TABLE_ROWS
     }
 
 
 def evidence_row(architecture, machine):
     source_digest = provider.probe_source_digest(HERE)
     return {
-        "schema_version": 1,
+        "schema_version": provider.EVIDENCE_SCHEMA_VERSION,
         "core_commit": "a" * 40,
         "workflow_run": "123",
         "architecture": architecture,
@@ -41,6 +52,7 @@ def evidence_row(architecture, machine):
         "probe_source_sha256": source_digest,
         "provider_table_sha256": provider.provider_table_digest(),
         "tuple": provider.validate_facts(valid_facts()),
+        "strong_table": strong_table_evidence(),
         "remount": {
             "identity_equal": True,
             "mount_ids": [101, 202],
@@ -63,28 +75,76 @@ def evidence_row(architecture, machine):
 
 
 class ProviderContractTests(unittest.TestCase):
-    def test_support_table_is_ext4_only(self):
+    def test_support_table_states_the_identity_contract(self):
         self.assertEqual(
             provider.SUPPORT_TABLE,
             {
-                "schema_version": 1,
-                "providers": [
-                    {
-                        "filesystem": "ext4",
-                        "provider": "FsIocGetFsUuid",
-                        "uuid_bytes": 16,
-                        "max_handle_bytes": 128,
-                        "handle_query": "retained-fd-empty-path",
-                    }
-                ],
+                "schema_version": 2,
+                "identity_contract": {
+                    "provider": "FsIocGetFsUuid",
+                    "uuid_bytes": 16,
+                    "max_handle_bytes": 128,
+                    "handle_query": "retained-fd-empty-path",
+                    "volatile_filesystems_refused": ["ramfs", "tmpfs"],
+                },
+                "reference_positive": "ext4",
+                "strong_table": ["ext4", "f2fs", "xfs"],
+                "strong_table_is_a_denylist": False,
             },
         )
 
     def test_valid_tuple_is_normalized(self):
         normalized = provider.validate_facts(valid_facts())
         self.assertEqual(normalized["provider"], "FsIocGetFsUuid")
+        self.assertEqual(normalized["filesystem"], "ext4")
         self.assertEqual(normalized["handle_length"], 32)
         self.assertNotIn("mount_id", normalized)
+
+    def test_admission_is_evidence_based_not_a_name_list(self):
+        """The gate admits what answers the contract and records the name.
+
+        The strong table is documentation of what `--filesystem-strict`
+        admits today; it is never consulted to refuse. A filesystem outside
+        it that answers the contract is admitted, exactly as the production
+        provider admits it.
+        """
+
+        self.assertEqual(provider.STRONG_TABLE, ("ext4", "f2fs", "xfs"))
+        for filesystem in (*provider.STRONG_TABLE, "zfs", "somefs"):
+            with self.subTest(filesystem=filesystem):
+                normalized = provider.validate_facts(valid_facts(filesystem))
+                self.assertEqual(normalized["filesystem"], filesystem)
+
+    def test_volatile_filesystems_are_refused_before_identity(self):
+        """tmpfs and ramfs answer the ioctl; they are refused for volatility.
+
+        The refusal is checked ahead of the UUID and handle steps, mirroring
+        `platform/linux.rs::identity`, so a volume that could prove identity
+        is still refused when its contents do not survive power loss.
+        """
+
+        self.assertEqual(provider.VOLATILE_FILESYSTEM_NAMES, ("ramfs", "tmpfs"))
+        for filesystem in provider.VOLATILE_FILESYSTEM_NAMES:
+            with self.subTest(filesystem=filesystem):
+                with self.assertRaises(provider.ProbeError) as caught:
+                    provider.validate_facts(valid_facts(filesystem))
+                self.assertEqual(caught.exception.code, "UnsupportedOperation")
+                self.assertIn("volatile", caught.exception.reason)
+
+    def test_xfs_path_modes_do_not_require_casefold(self):
+        self.assertEqual(
+            provider.expected_path_modes("ext4"),
+            {"sensitive": "Sensitive", "casefold": "AsciiCaseFold"},
+        )
+        self.assertEqual(
+            provider.expected_path_modes("xfs"),
+            {"sensitive": "Sensitive", "casefold": "Sensitive"},
+        )
+        incomplete = valid_facts("xfs")
+        incomplete["path_modes"] = {"sensitive": "Sensitive"}
+        with self.assertRaises(provider.ProbeError) as caught:
+            provider.validate_facts(incomplete)
+        self.assertEqual(caught.exception.code, "UnsupportedOperation")
 
     def test_negative_table_is_exact_and_typed(self):
         expected = {
@@ -124,12 +184,20 @@ class ProviderContractTests(unittest.TestCase):
             elif name == "mode_query_failure":
                 facts["mode_query_succeeded"] = False
             elif name == "network":
+                # A remote volume publishes no filesystem UUID; the name is
+                # the warning's reason, never a denylist entry.
                 facts["filesystem"] = "nfs"
+                facts["filesystem_uuid_length"] = 0
+                facts["filesystem_uuid"] = ""
             elif name == "no_uuid":
                 facts["filesystem_uuid_length"] = 0
                 facts["filesystem_uuid"] = ""
             elif name == "overlay":
-                facts["filesystem"] = "overlay"
+                # An overlay without `nfs_export` has no `export_operations`,
+                # so `name_to_handle_at` answers EOPNOTSUPP. `run_probe.py`
+                # takes this verdict from a real overlay mount.
+                cases[name] = provider.handle_query_error(errno.EOPNOTSUPP).code
+                continue
             elif name == "pathname_fallback":
                 cases[name] = self.query_rejection(b"object", provider.AT_EMPTY_PATH)
                 continue
@@ -142,6 +210,8 @@ class ProviderContractTests(unittest.TestCase):
                 )
                 continue
             elif name == "tmpfs":
+                # Refused as VOLATILE, not as "not ext4": tmpfs answers both
+                # the UUID ioctl and the handle query.
                 facts["filesystem"] = "tmpfs"
             elif name == "unknown_handle_provider":
                 facts["handle_provider"] = "pathname"
@@ -241,7 +311,14 @@ class ProviderContractTests(unittest.TestCase):
                 with self.assertRaises(provider.ProbeError):
                     provider.aggregate_evidence(changed, **arguments)
 
-        nested_fields = ("tuple", "substitution", "query_contract", "remount", "diagnostics")
+        nested_fields = (
+            "tuple",
+            "strong_table",
+            "substitution",
+            "query_contract",
+            "remount",
+            "diagnostics",
+        )
         for section in nested_fields:
             for field in rows[0][section]:
                 changed = copy.deepcopy(rows)
@@ -296,7 +373,7 @@ class ProviderContractTests(unittest.TestCase):
             "expected_source_sha256": provider.probe_source_digest(HERE),
         }
         invalid_values = {
-            "schema_version": 2,
+            "schema_version": 1,
             "core_commit": "b" * 40,
             "workflow_run": "456",
             "architecture": "linux-mips64",
@@ -305,12 +382,15 @@ class ProviderContractTests(unittest.TestCase):
             "probe_source_sha256": "b" * 64,
             "provider_table_sha256": "b" * 64,
             "tuple.provider": "PathLookup",
+            # The reference row must be the ext4 row, and no admitted tuple
+            # may ever name a volatile filesystem.
             "tuple.filesystem": "xfs",
             "tuple.filesystem_uuid": "0" * 32,
             "tuple.handle_type": 0,
             "tuple.handle": "zz" * 32,
             "tuple.handle_length": 0,
             "tuple.path_modes": {},
+            "strong_table.xfs": {},
             "remount.identity_equal": False,
             "remount.mount_ids": [101, "202"],
             "remount.mount_id_is_non_authoritative": False,
@@ -352,6 +432,49 @@ class ProviderContractTests(unittest.TestCase):
             with self.subTest(invalid_argument=field):
                 with self.assertRaises(provider.ProbeError):
                     provider.aggregate_evidence(rows, **changed_arguments)
+
+    def test_aggregate_pins_the_reference_row_and_the_strong_table_rows(self):
+        rows = [
+            evidence_row("linux-x86_64", "x86_64"),
+            evidence_row("linux-aarch64", "aarch64"),
+        ]
+        arguments = {
+            "expected_core_commit": "a" * 40,
+            "expected_workflow_run": "123",
+            "expected_source_sha256": provider.probe_source_digest(HERE),
+        }
+        self.assertEqual(provider.STRONG_TABLE_ROWS, ("xfs",))
+        aggregate = provider.aggregate_evidence(rows, **arguments)
+        for row in aggregate["architectures"]:
+            self.assertEqual(row["tuple"]["filesystem"], "ext4")
+            self.assertEqual(sorted(row["strong_table"]), ["xfs"])
+            self.assertEqual(row["strong_table"]["xfs"]["tuple"]["filesystem"], "xfs")
+
+        # No admitted tuple may name a volatile filesystem, anywhere.
+        for path in ("tuple.filesystem", "strong_table.xfs.tuple.filesystem"):
+            changed = copy.deepcopy(rows)
+            target = changed[0]
+            components = path.split(".")
+            for component in components[:-1]:
+                target = target[component]
+            target[components[-1]] = "tmpfs"
+            with self.subTest(volatile=path):
+                with self.assertRaises(provider.ProbeError):
+                    provider.aggregate_evidence(changed, **arguments)
+
+        # A strong-table row must be the filesystem it is filed under.
+        changed = copy.deepcopy(rows)
+        changed[0]["strong_table"]["xfs"]["tuple"]["filesystem"] = "ext4"
+        with self.assertRaises(provider.ProbeError):
+            provider.aggregate_evidence(changed, **arguments)
+
+        # And the strong-table row set is closed.
+        changed = copy.deepcopy(rows)
+        changed[0]["strong_table"]["btrfs"] = copy.deepcopy(
+            changed[0]["strong_table"]["xfs"]
+        )
+        with self.assertRaises(provider.ProbeError):
+            provider.aggregate_evidence(changed, **arguments)
 
     def test_canonical_json_is_byte_stable(self):
         value = {"b": 2, "a": [3, 1]}
