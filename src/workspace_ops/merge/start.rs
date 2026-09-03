@@ -107,13 +107,24 @@ where
         // DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.1,
         // 2026-09-03): `--filesystem-strict` is a START-only flag, and this is
         // the only place a start's request meets the v1 owner that decides.
-        return v1.start(
+        //
+        // M5d charter §4 ("Responses"): "Start decorations (`predicted`,
+        // `prediction_complete`, `live_commit` for a conflicted row) apply to
+        // the v1 start response as `decorate_start_response` applies them to
+        // v0." The prediction is the PLAN's, not the record's — no record
+        // version stores it — so the decoration is applied here, where the plan
+        // is still in hand, rather than inside `v1_lifecycle/`, which never
+        // sees a plan. `selected_targets` is built from `plan.participants` in
+        // creation order (`start/record.rs:98-102`), and every response arm
+        // orders its rows by `selected_targets`, so the zip is exact.
+        let response = v1.start(
             root,
             record,
             request.filesystem_strict.unwrap_or(false),
             context,
             emitter,
-        );
+        )?;
+        return decorate_start_response(response, &plan.participants);
     }
     let _start_guard = start_guard;
     super::persist_merge_record(store, root, &record, emitter)?;

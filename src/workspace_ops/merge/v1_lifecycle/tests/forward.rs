@@ -948,6 +948,7 @@ pub(super) fn run_production<R: super::super::service::V1Runtime>(
         // passes — the forward arms activate, exactly as before this step.
         None,
         runtime,
+        &mut super::super::events::LifecycleEvents::silent(),
     )
 }
 

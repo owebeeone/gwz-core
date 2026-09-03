@@ -34,6 +34,7 @@ mod continue_merge;
 mod continue_v0_gate;
 mod crash_recovery;
 mod drift;
+mod engine_parity;
 mod finalization;
 mod fixtures;
 mod gc;

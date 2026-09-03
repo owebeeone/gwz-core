@@ -9,6 +9,7 @@ mod archive;
 mod archive_result;
 mod authority;
 mod checked;
+mod events;
 mod finalization;
 mod forward;
 mod reverse;

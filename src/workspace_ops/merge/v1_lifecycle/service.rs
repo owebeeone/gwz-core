@@ -6,6 +6,7 @@ use super::authority::{
     next_action, resolve_observation,
 };
 use super::checked::{StoredV1Record, V1MutationLease};
+use super::events::{LifecycleEvents, observation_member};
 use super::finalization::FinalizationRuntime;
 use super::forward::ForwardRuntime;
 use super::reverse::ReverseRuntime;
@@ -87,8 +88,9 @@ pub(super) fn run<R: V1Runtime>(
     request: V1LifecycleRequest,
     crash_recovery: Option<&CrashRecoveryDecision>,
     runtime: &mut R,
+    events: &mut LifecycleEvents<'_>,
 ) -> ModelResult<V1ServiceResponse> {
-    run_with_runtime(store, root, merge_id, request, crash_recovery, runtime)
+    run_with_runtime(store, root, merge_id, request, crash_recovery, runtime, events)
 }
 
 #[cfg(test)]
@@ -99,7 +101,15 @@ pub(super) fn run_test<R: ExactObserver + PhysicalExecutor>(
     request: V1LifecycleRequest,
     runtime: &mut R,
 ) -> ModelResult<V1ServiceResponse> {
-    run_with_runtime(store, root, merge_id, request, None, runtime)
+    run_with_runtime(
+        store,
+        root,
+        merge_id,
+        request,
+        None,
+        runtime,
+        &mut LifecycleEvents::silent(),
+    )
 }
 
 fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
@@ -109,6 +119,7 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
     request: V1LifecycleRequest,
     crash_recovery: Option<&CrashRecoveryDecision>,
     runtime: &mut R,
+    events: &mut LifecycleEvents<'_>,
 ) -> ModelResult<V1ServiceResponse> {
     let initial = store.load_open(root, merge_id)?;
     match next_action(&initial, request)? {
@@ -151,6 +162,12 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
     loop {
         match invocation.next_action(&current, request)? {
             V1NextAction::Observe(observation_request) => {
+                // M5d charter §4: `member_started` belongs to the participant
+                // this observation selects, and lands at the first moment that
+                // participant's work becomes visible — see `events.rs`.
+                if let Some(member_id) = observation_member(observation_request.kind()) {
+                    events.selected(member_id);
+                }
                 invocation.observe(&current, &observation_request)?;
                 let observation = runtime.observe(&current, &observation_request)?;
                 match resolve_observation(
@@ -162,7 +179,10 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
                 )? {
                     ResolvedV1Action::Apply(transition) => {
                         let rewrite = prepare(&lease, &current, transition)?;
-                        current = store.commit(&lease, &current, rewrite)?;
+                        events.before_commit(current.record(), rewrite.next());
+                        let previous = current;
+                        current = store.commit(&lease, &previous, rewrite)?;
+                        events.committed(previous.record(), current.record());
                         if let Some(disposition) = invocation.after_commit(&current) {
                             return Ok(V1ServiceResponse {
                                 current,
@@ -178,6 +198,7 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
                             action,
                             &mut invocation,
                             runtime,
+                            events,
                         )? {
                             ExecutionOutcome::Attempt(value) => {
                                 attempt = Some(*value);
@@ -192,7 +213,7 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
                         }
                     }
                     ResolvedV1Action::Respond(disposition) => {
-                        complete_response(&lease, store, &current, disposition)?;
+                        complete_response(&lease, store, &current, disposition, events)?;
                         return Ok(V1ServiceResponse {
                             current,
                             disposition,
@@ -203,7 +224,10 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
             }
             V1NextAction::Apply(transition) => {
                 let rewrite = prepare(&lease, &current, transition)?;
-                current = store.commit(&lease, &current, rewrite)?;
+                events.before_commit(current.record(), rewrite.next());
+                let previous = current;
+                current = store.commit(&lease, &previous, rewrite)?;
+                events.committed(previous.record(), current.record());
                 if let Some(disposition) = invocation.after_commit(&current) {
                     return Ok(V1ServiceResponse {
                         current,

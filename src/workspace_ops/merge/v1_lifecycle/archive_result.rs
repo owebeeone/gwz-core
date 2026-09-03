@@ -46,6 +46,12 @@ impl ValidatedArchivedMerge {
         self.decoded.projection()
     }
 
+    /// The validated archive itself, for the terminal response's rows (M5d
+    /// charter §4). Still one decode of one exact byte string.
+    pub(super) fn decoded(&self) -> &ValidatedArchivedRecord {
+        &self.decoded
+    }
+
     pub(super) fn cleanup(&self) -> &ArchivedCleanupWorklist {
         self.decoded.cleanup()
     }

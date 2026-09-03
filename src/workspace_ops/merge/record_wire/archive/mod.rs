@@ -22,6 +22,8 @@ pub(crate) use cleanup::ArchivedCleanupWorklist;
 pub(crate) struct ValidatedArchivedRecord {
     projection: super::super::model::archive_projection::ArchivedMergeProjection,
     cleanup: ArchivedCleanupWorklist,
+    rows: super::super::response::MergeRecordRows,
+    operation_drift: Vec<crate::MergeOperationDrift>,
 }
 
 impl ValidatedArchivedRecord {
@@ -29,6 +31,19 @@ impl ValidatedArchivedRecord {
         &self,
     ) -> &super::super::model::archive_projection::ArchivedMergeProjection {
         &self.projection
+    }
+
+    /// The participant rows this archive reports, projected from the same
+    /// exact done-record bytes as `projection` (M5d charter §4).
+    pub(in crate::workspace_ops::merge) fn rows(
+        &self,
+    ) -> &super::super::response::MergeRecordRows {
+        &self.rows
+    }
+
+    /// The operation-level drift the archived body recorded.
+    pub(in crate::workspace_ops::merge) fn operation_drift(&self) -> &[crate::MergeOperationDrift] {
+        &self.operation_drift
     }
 
     #[allow(
@@ -77,9 +92,17 @@ fn decode_v0(
         v0::project(&record).map_err(|_| archived_unreadable(expected_merge_id, Some(header)))?;
     let cleanup = cleanup::from_v0(&record)
         .map_err(|error| cleanup_unreadable(expected_merge_id, header, error))?;
+    let rows = super::super::response::record_rows(
+        &record.selected_targets,
+        &record.participants,
+        record.publication.as_ref(),
+        &record.source_ref,
+    )?;
     Ok(ValidatedArchivedRecord {
         projection,
         cleanup,
+        rows,
+        operation_drift: record.operation_drift.iter().map(Into::into).collect(),
     })
 }
 
@@ -98,9 +121,17 @@ fn decode_v1(
         v1::project(&record).map_err(|_| archived_unreadable(expected_merge_id, Some(header)))?;
     let cleanup = cleanup::from_v1(&record)
         .map_err(|error| cleanup_unreadable(expected_merge_id, header, error))?;
+    let rows = super::super::response::record_rows(
+        &record.selected_targets,
+        &record.participants,
+        record.publication.as_ref(),
+        &record.source_ref,
+    )?;
     Ok(ValidatedArchivedRecord {
         projection,
         cleanup,
+        rows,
+        operation_drift: record.operation_drift.iter().map(Into::into).collect(),
     })
 }
 

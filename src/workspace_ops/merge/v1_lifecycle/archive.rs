@@ -73,6 +73,7 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
     root: &Path,
     merge_id: &str,
     context: &OperationContext,
+    events: &mut super::events::LifecycleEvents<'_>,
 ) -> ModelResult<ValidatedArchivedMerge> {
     if open_record_present(root, merge_id)? {
         let mut runtime = ReverseRuntime::new(backend, context);
@@ -85,6 +86,7 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
             // the plain lease regardless, so it makes and needs no decision.
             None,
             &mut runtime,
+            events,
         )?;
         if response.disposition() != V1ResponseDisposition::ArchiveReady {
             return Err(route_error(

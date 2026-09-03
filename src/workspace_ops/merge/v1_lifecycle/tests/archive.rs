@@ -7,6 +7,12 @@ use crate::workspace_ops::merge::model::v1::{RecordVersion, test_record};
 use crate::workspace_ops::merge::record_wire::archived_fixture_for_test;
 use crate::workspace_ops::tests::TempDir;
 
+/// The archive suite drives the terminal action directly, with no operation
+/// stream behind it.
+fn silent_events() -> super::super::events::LifecycleEvents<'static> {
+    super::super::events::LifecycleEvents::silent()
+}
+
 #[test]
 fn terminal_archive_restarts_from_source_both_and_destination_only() {
     let backend = Git2Backend::new();
@@ -16,7 +22,14 @@ fn terminal_archive_restarts_from_source_both_and_destination_only() {
 
     let source_only = TempDir::new_git("merge-v1-archive-source-only");
     write_open(&source_only, merge_id, &bytes);
-    let result = archive_terminal(&backend, &store, &source_only.path, merge_id, &context).unwrap();
+    let result = archive_terminal(
+        &backend,
+        &store,
+        &source_only.path,
+        merge_id,
+        &context,
+        &mut silent_events(),
+    ).unwrap();
     assert_eq!(result.destination_bytes(), bytes);
     assert!(!open_path(&source_only, merge_id).exists());
     assert_eq!(fs::read(done_path(&source_only, merge_id)).unwrap(), bytes);
@@ -24,7 +37,14 @@ fn terminal_archive_restarts_from_source_both_and_destination_only() {
     let both = TempDir::new_git("merge-v1-archive-both");
     write_open(&both, merge_id, &bytes);
     write_done(&both, merge_id, &bytes);
-    let result = archive_terminal(&backend, &store, &both.path, merge_id, &context).unwrap();
+    let result = archive_terminal(
+        &backend,
+        &store,
+        &both.path,
+        merge_id,
+        &context,
+        &mut silent_events(),
+    ).unwrap();
     assert_eq!(result.destination_bytes(), bytes);
     assert!(!open_path(&both, merge_id).exists());
 
@@ -33,7 +53,14 @@ fn terminal_archive_restarts_from_source_both_and_destination_only() {
         let destination_only = TempDir::new_git(&format!("merge-archive-destination-{version:?}"));
         write_done(&destination_only, merge_id, &bytes);
         let result =
-            archive_terminal(&backend, &store, &destination_only.path, merge_id, &context).unwrap();
+            archive_terminal(
+            &backend,
+            &store,
+            &destination_only.path,
+            merge_id,
+            &context,
+            &mut silent_events(),
+        ).unwrap();
         assert_eq!(result.source_version(), version);
         assert_eq!(result.destination_bytes(), bytes);
     }
@@ -57,6 +84,7 @@ fn archive_rejects_mismatch_malformed_and_nonterminal_without_deletion() {
         &mismatch.path,
         merge_id,
         &context,
+        &mut silent_events(),
     ));
     assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert!(open_path(&mismatch, merge_id).is_file());
@@ -71,6 +99,7 @@ fn archive_rejects_mismatch_malformed_and_nonterminal_without_deletion() {
         &malformed.path,
         merge_id,
         &context,
+        &mut silent_events(),
     ));
     assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
     assert!(open_path(&malformed, merge_id).is_file());
@@ -89,6 +118,7 @@ fn archive_rejects_mismatch_malformed_and_nonterminal_without_deletion() {
         &nonterminal.path,
         &model.merge_id,
         &context,
+        &mut silent_events(),
     ));
     assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert!(open_path(&nonterminal, &model.merge_id).is_file());
@@ -115,6 +145,7 @@ fn archive_rejects_symlinked_destination_parent_and_leaf() {
         &parent.path,
         merge_id,
         &context,
+        &mut silent_events(),
     ));
     assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
     assert!(open_path(&parent, merge_id).is_file());
@@ -126,7 +157,12 @@ fn archive_rejects_symlinked_destination_parent_and_leaf() {
     fs::create_dir_all(leaf.path.join(".gwz/merge/done")).unwrap();
     symlink(&outside_file, done_path(&leaf, merge_id)).unwrap();
     let error = expect_error(archive_terminal(
-        &backend, &store, &leaf.path, merge_id, &context,
+        &backend,
+        &store,
+        &leaf.path,
+        merge_id,
+        &context,
+        &mut silent_events(),
     ));
     assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
     assert_eq!(fs::read(outside_file).unwrap(), bytes);

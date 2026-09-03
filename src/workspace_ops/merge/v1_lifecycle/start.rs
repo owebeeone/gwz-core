@@ -19,6 +19,7 @@
 use std::path::Path;
 
 use super::authority::{V1LifecycleRequest, V1ResponseDisposition};
+use super::events::LifecycleEvents;
 use super::forward::ForwardRuntime;
 use super::store::CheckedV1Store;
 use crate::git::MergeAuthorityBackend;
@@ -109,9 +110,12 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
         } else {
             super::checked::V1MutationLease::acquire_for_merge_start(root, &record.workspace_id)?
         };
-        store.create_open(&lease, root, &record)?.record().state
+        store.create_open(&lease, root, &record)?.record().clone()
     };
-    emitter.operation_state_changed(created_state.into());
+    // M5d charter §4: the creation write is one `artifact_written`, then the
+    // state the store committed — `merge/start.rs:119-120` on the v0 path.
+    let mut events = LifecycleEvents::new(emitter);
+    events.created(&created_state);
 
     let mut runtime = ForwardRuntime::new(backend, context);
     let disposition = super::service::run(
@@ -121,9 +125,18 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
         V1LifecycleRequest::ResumeStart,
         Some(&decision),
         &mut runtime,
+        &mut events,
     )?
     .disposition();
-    let mut response = respond(backend, &store, root, &merge_id, disposition, context)?;
+    let mut response = respond(
+        backend,
+        &store,
+        root,
+        &merge_id,
+        disposition,
+        context,
+        &mut events,
+    )?;
     response.crash_recovery = Some(decision.crash_recovery_protocol());
     Ok(response)
 }
@@ -162,11 +175,12 @@ pub(in crate::workspace_ops::merge) fn respond<B: MergeAuthorityBackend>(
     merge_id: &str,
     disposition: V1ResponseDisposition,
     context: &OperationContext,
+    events: &mut LifecycleEvents<'_>,
 ) -> ModelResult<crate::MergeResponse> {
     match disposition {
         V1ResponseDisposition::Terminal(_) | V1ResponseDisposition::ArchiveReady => {
             let archived =
-                super::archive::archive_terminal(backend, store, root, merge_id, context)?;
+                super::archive::archive_terminal(backend, store, root, merge_id, context, events)?;
             super::status::archived_status(merge_id, &archived, context)
         }
         V1ResponseDisposition::Status | V1ResponseDisposition::Stopped(_) => {
@@ -217,6 +231,7 @@ pub(in crate::workspace_ops::merge) fn handle_v1_command<B: MergeAuthorityBacken
                 _ => unreachable!("only resume and abort reach this arm"),
             };
             let mut decision = None;
+            let mut events = LifecycleEvents::new(emitter);
             let disposition = match lifecycle {
                 V1LifecycleRequest::Continue => {
                     let made = crate::checked_artifact::entry::crash_recovery_decision(root)?;
@@ -235,15 +250,32 @@ pub(in crate::workspace_ops::merge) fn handle_v1_command<B: MergeAuthorityBacken
                         lifecycle,
                         Some(decided),
                         &mut runtime,
+                        &mut events,
                     )?
                 }
                 _ => {
                     let mut runtime = super::reverse::ReverseRuntime::new(backend, context);
-                    super::service::run(&store, root, merge_id, lifecycle, None, &mut runtime)?
+                    super::service::run(
+                        &store,
+                        root,
+                        merge_id,
+                        lifecycle,
+                        None,
+                        &mut runtime,
+                        &mut events,
+                    )?
                 }
             }
             .disposition();
-            let mut response = respond(backend, &store, root, merge_id, disposition, context)?;
+            let mut response = respond(
+                backend,
+                &store,
+                root,
+                merge_id,
+                disposition,
+                context,
+                &mut events,
+            )?;
             response.crash_recovery = decision.map(|decision| decision.crash_recovery_protocol());
             Ok(response)
         }
