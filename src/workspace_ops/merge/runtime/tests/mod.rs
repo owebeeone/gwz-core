@@ -18,6 +18,7 @@ fn request() -> crate::MergeRequest {
         mode: None,
         message: None,
         preserve: None,
+        filesystem_strict: None,
     }
 }
 

@@ -14,7 +14,14 @@ from taut.ir.export import schema_json
 from taut.ir.load import load_schema
 
 
-PRE_LOG_WIRE_SHA256 = "d0c205c8767f8d54d32ead2f676a05077d849f6a12278d9de52b3c132c3c9372"
+# Moved deliberately on 2026-09-03 by DR-1 ship (1) W1
+# (dev-docs/GwzM5-8DR1-WarnOrRefuse-Charter.md §3.7): the charter adds
+# MergeRequest.filesystem_strict (slot 8), MergeResponse.crash_recovery
+# (slot 11), MergeCrashRecovery/MergeCrashRecoveryGap and EventKind.diagnostic
+# (slot 8). All additive; no pre-existing slot changed. This pin still guards
+# gwz-log against reshaping older messages.
+#   was: d0c205c8767f8d54d32ead2f676a05077d849f6a12278d9de52b3c132c3c9372
+PRE_LOG_WIRE_SHA256 = "7a66e301c5c0147a12c59b2cddb6f2ebc1515ef4d65297ec53c3b312a3769697"
 LOG_METHODS = {"log", "log.output"}
 
 

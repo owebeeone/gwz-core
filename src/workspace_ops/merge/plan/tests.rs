@@ -146,6 +146,7 @@ fn request(selection: Option<crate::Selection>, dry_run: bool) -> crate::MergeRe
         mode: None,
         message: None,
         preserve: None,
+        filesystem_strict: None,
     }
 }
 

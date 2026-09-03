@@ -841,6 +841,26 @@ impl MergeCompatibilityNextAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum MergeCrashRecoveryGap {
+    #[default] NoDurableIdentity,
+    RemoteFilesystem,
+    VolatileFilesystem,
+}
+impl MergeCrashRecoveryGap {
+    pub fn wire(self) -> i64 { match self {
+        Self::NoDurableIdentity => 0,
+        Self::RemoteFilesystem => 1,
+        Self::VolatileFilesystem => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::NoDurableIdentity,
+        1 => Self::RemoteFilesystem,
+        2 => Self::VolatileFilesystem,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeCrashRecoveryGap", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum BranchActionResult {
     #[default] Listed,
     Created,
@@ -1292,6 +1312,7 @@ pub enum EventKind {
     OperationFinished,
     Reset,
     OperationStateChanged,
+    Diagnostic,
 }
 impl EventKind {
     pub fn wire(self) -> i64 { match self {
@@ -1303,6 +1324,7 @@ impl EventKind {
         Self::OperationFinished => 5,
         Self::Reset => 6,
         Self::OperationStateChanged => 7,
+        Self::Diagnostic => 8,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::OperationStarted,
@@ -1313,6 +1335,7 @@ impl EventKind {
         5 => Self::OperationFinished,
         6 => Self::Reset,
         7 => Self::OperationStateChanged,
+        8 => Self::Diagnostic,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "EventKind", value: v }),
     }) }
 }
@@ -3521,6 +3544,29 @@ impl MergeAcceptedCandidateHashProjection {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct MergeCrashRecovery {
+    pub supported: bool,
+    pub filesystem: Option<String>,
+    pub gap: Option<MergeCrashRecoveryGap>,
+}
+impl MergeCrashRecovery {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Bool(self.supported)),
+            (2, match &self.filesystem { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (3, match &self.gap { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            supported: c.try_get(1)?.try_bool()?,
+            filesystem: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            gap: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(MergeCrashRecoveryGap::from_wire(v.try_int()?)?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct MergeRepoSummary {
     pub target_id: String,
     pub target_kind: TargetKind,
@@ -4473,6 +4519,7 @@ pub struct MergeRequest {
     pub mode: Option<MergeMode>,
     pub message: Option<String>,
     pub preserve: Option<bool>,
+    pub filesystem_strict: Option<bool>,
 }
 impl MergeRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -4484,6 +4531,7 @@ impl MergeRequest {
             (5, match &self.mode { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
             (6, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (7, match &self.preserve { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (8, match &self.filesystem_strict { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4495,6 +4543,7 @@ impl MergeRequest {
             mode: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(MergeMode::from_wire(v.try_int()?)?) } },
             message: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             preserve: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            filesystem_strict: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
         })
     }
 }
@@ -4946,6 +4995,7 @@ pub struct MergeResponse {
     pub preservation: Option<Vec<MergePreservation>>,
     pub publication_step: Option<MergePublicationStep>,
     pub record: Option<MergeRecordProjection>,
+    pub crash_recovery: Option<MergeCrashRecovery>,
 }
 impl MergeResponse {
     pub fn to_cbor(&self) -> Cbor {
@@ -4960,6 +5010,7 @@ impl MergeResponse {
             (8, match &self.preservation { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
             (9, match &self.publication_step { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
             (10, match &self.record { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (11, match &self.crash_recovery { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4974,6 +5025,7 @@ impl MergeResponse {
             preservation: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| MergePreservation::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
             publication_step: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(MergePublicationStep::from_wire(v.try_int()?)?) } },
             record: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(MergeRecordProjection::from_cbor(v)?) } },
+            crash_recovery: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(MergeCrashRecovery::from_cbor(v)?) } },
         })
     }
 }

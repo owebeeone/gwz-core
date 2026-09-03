@@ -135,6 +135,7 @@ pub(super) fn merge_response(
         preservation: None,
         publication_step: None,
         record: None,
+        crash_recovery: None,
     })
 }
 #[cfg(test)]

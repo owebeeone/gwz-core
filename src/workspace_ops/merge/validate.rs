@@ -140,6 +140,7 @@ mod tests {
             mode: None,
             message: None,
             preserve: None,
+            filesystem_strict: None,
         }
     }
 

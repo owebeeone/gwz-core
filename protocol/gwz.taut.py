@@ -399,6 +399,13 @@ SCHEMA = schema(
          archive_aborted=13,
          report_recovery_required=14),
 
+    # Why a volume cannot prove the durable identity crash recovery needs.
+    # Added 2026-09-03 for DR-1 ship (1) (charter §2/§3.7).
+    MergeCrashRecoveryGap=Enum(
+         no_durable_identity=0,
+         remote_filesystem=1,
+         volatile_filesystem=2),
+
     # Per-repository branch action result. Merge-only values are appended by B5a.
     BranchActionResult=Enum(
          listed=0,
@@ -544,7 +551,10 @@ SCHEMA = schema(
          artifact_written=4,
          operation_finished=5,
          reset=6,
-         operation_state_changed=7),
+         operation_state_changed=7,
+         # Free-standing message with no member; carried by `message`.
+         # Added 2026-09-03 for DR-1 ship (1) (charter §3.4).
+         diagnostic=8),
 
     # Event severity.
     Severity=Enum(
@@ -1300,6 +1310,17 @@ SCHEMA = schema(
         path=F(1, STR),
         sha256=F(2, STR)),
 
+    # The start-time crash-recovery decision, made once per merge invocation.
+    # Added 2026-09-03 for DR-1 ship (1) (charter §2/§3.7).
+    MergeCrashRecovery=Msg(
+        # True when the volume proved durable identity and the catalog was
+        # activated as before; false when the merge proceeds without it.
+        supported=F(1, BOOL),
+        # Filesystem name behind the decision; absent when it cannot be named.
+        filesystem=F(2, STR, optional=True),
+        # Why identity could not be proved; absent when supported.
+        gap=F(3, Ref.MergeCrashRecoveryGap, optional=True)),
+
     # Plan, result, and live recovery projection for one merge participant.
     MergeRepoSummary=Msg(
         target_id=F(1, STR),
@@ -1642,7 +1663,11 @@ SCHEMA = schema(
         # Reserved until the custom-message delivery phase.
         message=F(6, STR, optional=True),
         # Accepted only for abort; true is reserved until preserve-abort lands.
-        preserve=F(7, BOOL, optional=True)),
+        preserve=F(7, BOOL, optional=True),
+        # Refuse the merge when crash recovery is unsupported on this volume.
+        # Start only; refused on every other op. Added 2026-09-03 for DR-1
+        # ship (1) (charter §3.1/§3.7).
+        filesystem_strict=F(8, BOOL, optional=True)),
 
     # ---- action responses -------------------------------------------------
     # Response wrapper for create_workspace.
@@ -1739,7 +1764,11 @@ SCHEMA = schema(
         operation_drift=F(7, List(Ref.MergeOperationDrift)),
         preservation=F(8, List(Ref.MergePreservation), optional=True),
         publication_step=F(9, Ref.MergePublicationStep, optional=True),
-        record=F(10, Ref.MergeRecordProjection, optional=True)),
+        record=F(10, Ref.MergeRecordProjection, optional=True),
+        # Populated on every op that made the start-time decision (start,
+        # resume/continue); absent otherwise. Added 2026-09-03 for DR-1
+        # ship (1) (charter §3.4/§3.7).
+        crash_recovery=F(11, Ref.MergeCrashRecovery, optional=True)),
 
     # ---- diff request messages --------------------------------------------
     # One resolved comparison for one target repo: kind + resolved endpoints.

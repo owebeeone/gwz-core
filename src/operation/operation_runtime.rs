@@ -426,6 +426,7 @@ mod tests {
                 mode: None,
                 message: None,
                 preserve: None,
+                filesystem_strict: None,
             };
 
             let error = OperationRequest::Merge(request)

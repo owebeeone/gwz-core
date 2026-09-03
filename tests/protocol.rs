@@ -402,6 +402,7 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
         mode: Some(gwz_core::MergeMode::Normal),
         message: None,
         preserve: None,
+        filesystem_strict: None,
     };
     assert_eq!(
         round_trip(
@@ -422,9 +423,15 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
+    // Moved 2026-09-03 by DR-1 ship (1) W1
+    // (dev-docs/GwzM5-8DR1-WarnOrRefuse-Charter.md §3.7): MergeRequest gained
+    // the optional `filesystem_strict` in slot 8, so the map header grows from
+    // a7 to a8 and a trailing `08 f6` (slot 8 = null) is appended. Every
+    // pre-existing slot is byte-identical.
+    //   was: a701a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f6
     assert_eq!(
         hex,
-        "a701a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f6"
+        "a801a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f608f6"
     );
 
     let response = gwz_core::MergeResponse {
@@ -472,6 +479,7 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
                 resume_action: gwz_core::MergeCompatibilityNextAction::ReconcilePendingParticipant,
             }),
         }),
+        crash_recovery: None,
     };
     assert_eq!(
         round_trip(
@@ -480,6 +488,112 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
             gwz_core::MergeResponse::from_cbor,
         ),
         response
+    );
+}
+
+/// DR-1 ship (1) §3.7: the start-only refusal flag survives the wire, and an
+/// unaware peer's request (slot 8 absent) still decodes to `None`.
+#[test]
+fn merge_request_round_trips_filesystem_strict() {
+    let request = gwz_core::MergeRequest {
+        meta: request_meta("req-merge-strict"),
+        op: gwz_core::MergeOp::Start,
+        source_ref: Some("feature/protocol".to_owned()),
+        merge_id: None,
+        mode: Some(gwz_core::MergeMode::NoFf),
+        message: None,
+        preserve: None,
+        filesystem_strict: Some(true),
+    };
+    assert_eq!(
+        round_trip(
+            &request,
+            gwz_core::MergeRequest::to_cbor,
+            gwz_core::MergeRequest::from_cbor,
+        ),
+        request
+    );
+
+    let absent = gwz_core::MergeRequest {
+        filesystem_strict: None,
+        ..request.clone()
+    };
+    assert_eq!(
+        round_trip(
+            &absent,
+            gwz_core::MergeRequest::to_cbor,
+            gwz_core::MergeRequest::from_cbor,
+        )
+        .filesystem_strict,
+        None
+    );
+}
+
+/// DR-1 ship (1) §3.4: the decision travels on the response as machine truth,
+/// and a response without it (every op that did not decide) decodes to `None`.
+#[test]
+fn merge_response_round_trips_crash_recovery_decision() {
+    let mut response = gwz_core::MergeResponse {
+        response: response_envelope("req-merge-crash", ActionKind::Merge),
+        merge_id: Some("merge_0002".to_owned()),
+        state: gwz_core::MergeOperationState::Executing,
+        open: true,
+        participant_counts: gwz_core::MergeParticipantCounts::default(),
+        repos: Vec::new(),
+        operation_drift: Vec::new(),
+        preservation: None,
+        publication_step: None,
+        record: None,
+        crash_recovery: Some(gwz_core::MergeCrashRecovery {
+            supported: false,
+            filesystem: Some("btrfs".to_owned()),
+            gap: Some(gwz_core::MergeCrashRecoveryGap::VolatileFilesystem),
+        }),
+    };
+    assert_eq!(
+        round_trip(
+            &response,
+            gwz_core::MergeResponse::to_cbor,
+            gwz_core::MergeResponse::from_cbor,
+        ),
+        response
+    );
+
+    response.crash_recovery = None;
+    assert_eq!(
+        round_trip(
+            &response,
+            gwz_core::MergeResponse::to_cbor,
+            gwz_core::MergeResponse::from_cbor,
+        )
+        .crash_recovery,
+        None
+    );
+}
+
+/// DR-1 ship (1) §3.4 channel 1: a member-less warning event.
+#[test]
+fn diagnostic_event_round_trips_a_member_less_warning() {
+    let event = OperationEvent {
+        operation_id: "op-2".to_owned(),
+        request_id: "req-2".to_owned(),
+        sequence: 1,
+        timestamp_ms: 1_727_000_000_001,
+        kind: EventKind::Diagnostic,
+        severity: Severity::Warn,
+        member_id: None,
+        member_path: None,
+        message: Some(
+            "crash recovery is unsupported on btrfs (no durable filesystem identity). \
+             Merge will continue. Use --filesystem-strict to refuse."
+                .to_owned(),
+        ),
+        ..OperationEvent::default()
+    };
+
+    assert_eq!(
+        round_trip(&event, OperationEvent::to_cbor, OperationEvent::from_cbor),
+        event
     );
 }
 
@@ -1018,6 +1132,14 @@ fn merge_protocol_wire_values_are_pinned() {
     assert_eq!(gwz_core::MergeOperationState::RecoveryRequired.wire(), 8);
     assert_eq!(gwz_core::MergeOperationState::Idle.wire(), 9);
     assert_eq!(EventKind::OperationStateChanged.wire(), 7);
+    // DR-1 ship (1) additions, 2026-09-03 (charter §3.7).
+    assert_eq!(EventKind::Diagnostic.wire(), 8);
+    assert_eq!(gwz_core::MergeCrashRecoveryGap::NoDurableIdentity.wire(), 0);
+    assert_eq!(gwz_core::MergeCrashRecoveryGap::RemoteFilesystem.wire(), 1);
+    assert_eq!(
+        gwz_core::MergeCrashRecoveryGap::VolatileFilesystem.wire(),
+        2
+    );
 }
 
 #[test]

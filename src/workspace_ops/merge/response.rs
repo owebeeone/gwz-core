@@ -24,6 +24,7 @@ pub(crate) fn idle_status_response(
         preservation: None,
         publication_step: None,
         record: None,
+        crash_recovery: None,
     })
 }
 
@@ -66,6 +67,7 @@ pub(in crate::workspace_ops::merge) fn archived_status_response(
             preservation: None,
             publication_step: None,
             record: None,
+            crash_recovery: None,
         },
         merge_id,
         archived,
@@ -166,6 +168,7 @@ macro_rules! impl_record_response {
                     preservation: (!preservation.is_empty()).then_some(preservation),
                     publication_step: self.publication.as_ref().map(|value| value.step.into()),
                     record: Some($projector(self)),
+                    crash_recovery: None,
                 })
             }
         }
