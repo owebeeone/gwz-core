@@ -723,3 +723,128 @@ fn a_v1_resume_refuses_without_mutation_and_abort_still_clears_the_record() {
         "abort must not have touched the catalog it never needed"
     );
 }
+
+/// **A conflicted `--no-ff` merge, driven to completion — the defect this
+/// package fixes, end to end.**
+///
+/// On 0.13.0 this workspace was a trap. The start left an open v1 record; every
+/// blocked verb (`commit`, `capture`, `push`, `pull`, ...) answered
+/// `UnsupportedRecordVersion: ... requires A1 ...` because discovery ran
+/// through the v0 store's v0-only decoder and the version error propagated
+/// before the open-merge gate could speak; `add` failed the same way, so
+/// nothing could be staged; and `merge --continue` then refused with
+/// `conflict resolution is not ready`. The only exit was `merge --abort`,
+/// which threw the merge away. The identical fixture with an ORDINARY merge —
+/// which writes v0 — worked, which is what made the version, not the merge,
+/// the cause.
+///
+/// The three claims, in order: a blocked verb names the open merge and its
+/// remedy, `add` routes to the conflicted participant and stages it, and
+/// `--continue` then completes with a real two-parent integration commit.
+#[test]
+fn a_conflicted_no_ff_merge_blocks_mutators_stages_its_conflicts_and_continues() {
+    let temp = TempDir::new("a1-no-ff-conflict-stage");
+    let backend = crate::git::Git2Backend::new();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "a1-no-ff-conflict-stage-src");
+    let member = temp.path().join("remote");
+    let (base, source) = feature_commit(&backend, &member, "README.md", "source\n");
+    let local = commit_file(
+        &member,
+        "README.md",
+        "local\n",
+        "local",
+        &[git2::Oid::from_str(&base).unwrap()],
+    )
+    .unwrap();
+
+    let started = handle_merge(&backend, temp.path(), no_ff_request(), "op_a1_conflict").unwrap();
+    let merge_id = started.merge_id.clone().unwrap();
+    assert_eq!(
+        started.state,
+        crate::MergeOperationState::AwaitingResolution,
+        "{started:?}"
+    );
+    assert_eq!(
+        merge_repo(&started, "mem_remote").state,
+        crate::MergeParticipantState::Conflicted
+    );
+    assert_eq!(
+        envelope_on_disk(temp.path(), &merge_id),
+        ("gwz.merge-operation/v1".to_owned(), 1),
+        "the conflicted no-ff record is the v1 one the gates could not read"
+    );
+
+    // (1) A `Block` verb refuses with the open-merge remedy, not a version error.
+    let blocked = handle_commit(
+        &backend,
+        temp.path(),
+        crate::CommitRequest {
+            meta: request_meta(),
+            message: "blocked during merge".to_owned(),
+            all: None,
+            commit_marker: None,
+        },
+        "op_a1_blocked_commit",
+    )
+    .unwrap_err();
+    assert_eq!(blocked.code, ErrorCode::OpenOperation, "{blocked:?}");
+    for named in [
+        merge_id.as_str(),
+        "is open",
+        "merge status",
+        "merge continue",
+        "merge abort",
+    ] {
+        assert!(blocked.message.contains(named), "{}", blocked.message);
+    }
+
+    // (2) `add` routes the pathspec to the conflicted participant and stages it.
+    fs::write(member.join("README.md"), "resolved\n").unwrap();
+    let staged = handle_stage(
+        &backend,
+        temp.path(),
+        crate::StageRequest {
+            meta: request_meta(),
+            cwd: temp.path().to_string_lossy().into_owned(),
+            pathspecs: vec!["remote/README.md".to_owned()],
+            all: None,
+        },
+        "op_a1_stage",
+    )
+    .unwrap();
+    assert_eq!(
+        staged.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert!(
+        backend
+            .merge_state(&member)
+            .unwrap()
+            .is_none_or(|state| state.conflict_paths.is_empty()),
+        "staging must have resolved the member's conflict"
+    );
+
+    // (3) `--continue` completes, and the integration commit really has two parents.
+    let continued = handle_merge(
+        &backend,
+        temp.path(),
+        recovery_request(crate::MergeOp::Resume, Some(merge_id)),
+        "op_a1_continue",
+    )
+    .unwrap();
+    assert_eq!(continued.state, crate::MergeOperationState::Completed);
+    assert!(!continued.open);
+    let head = backend.head(&member).unwrap().commit.unwrap();
+    let repository = git2::Repository::open(&member).unwrap();
+    let commit = repository
+        .find_commit(git2::Oid::from_str(&head).unwrap())
+        .unwrap();
+    assert_eq!(
+        commit
+            .parent_ids()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>(),
+        vec![local, source],
+        "{continued:?}"
+    );
+}

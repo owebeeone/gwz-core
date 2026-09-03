@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::git::GitBackend;
 use crate::model::ModelResult;
 
-use super::MergeOperationRecord;
+use super::MergeStatusRecordView;
 
 pub(in crate::workspace_ops::merge) use abort::{
     V1RootRollbackObservation, execute_v1_root_metadata_rollback,
@@ -28,10 +28,10 @@ pub(in crate::workspace_ops::merge) use finalization::{
 pub(super) use planning::preflight_root;
 pub(in crate::workspace_ops::merge) use reconciliation::frozen_manifest;
 
-pub(crate) fn open_merge_stage_member_paths<B: GitBackend>(
+pub(in crate::workspace_ops) fn open_merge_stage_member_paths<B: GitBackend>(
     backend: &B,
     root: &Path,
-    record: &MergeOperationRecord,
+    record: MergeStatusRecordView<'_>,
 ) -> ModelResult<Vec<String>> {
     Ok(frozen_manifest(backend, root, record)?
         .members

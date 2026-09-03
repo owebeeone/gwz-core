@@ -8,14 +8,16 @@ use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
 
-use super::super::{MergeOperationRecord, MergeTargetKind};
+use super::super::{MergeStatusRecordView, MergeTargetKind};
 
+/// The manifest the open merge froze, read through the version-agnostic
+/// common view so an open v1 record reaches it too.
 pub(in crate::workspace_ops::merge) fn frozen_manifest<B: GitBackend>(
     backend: &B,
     root: &Path,
-    record: &MergeOperationRecord,
+    record: MergeStatusRecordView<'_>,
 ) -> ModelResult<ManifestArtifact> {
-    let bytes = match record.participants.get("@root") {
+    let bytes = match record.participants().get("@root") {
         Some(participant)
             if participant.target_kind == MergeTargetKind::Root && participant.path == "." =>
         {
@@ -34,7 +36,7 @@ pub(in crate::workspace_ops::merge) fn frozen_manifest<B: GitBackend>(
         })?,
     };
     if record
-        .baseline
+        .baseline()
         .manifest_commit_sha256
         .as_deref()
         .is_some_and(|expected| format!("{:x}", Sha256::digest(&bytes)) != expected)
@@ -51,7 +53,7 @@ pub(in crate::workspace_ops::merge) fn frozen_manifest<B: GitBackend>(
         )
     })?;
     let manifest = ManifestArtifact::from_yaml(&yaml)?;
-    if manifest.workspace.id != record.workspace_id {
+    if manifest.workspace.id != record.workspace_id() {
         return Err(ModelError::new(
             ErrorCode::SourceIdentityMismatch,
             "frozen workspace manifest identifies a different workspace",

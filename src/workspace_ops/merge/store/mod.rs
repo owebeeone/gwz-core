@@ -297,6 +297,107 @@ pub(crate) fn discover_open_envelope_before_manifest(
     }
 }
 
+/// The single open record under a root, decoded by whichever installed
+/// lifecycle owns its envelope.
+///
+/// The version-agnostic twin of [`FileMergeStore::discover_open`]. That method
+/// reads through `decode_production_v0`, whose v0-only installed set answers
+/// `UnsupportedRecordVersion` for an open v1 record, so a caller that only
+/// wants to READ the open record — the open-merge gates, and `add`'s conflict
+/// routing — failed on the version before it could say anything about the
+/// merge. Here the A1 envelope registry picks the body decoder instead
+/// (compatibility contract §1), exactly as [`classify_open_record`] does, and
+/// the caller reads the half both envelopes hold IDENTICALLY through
+/// [`MergeStatusRecordView`](super::status::MergeStatusRecordView).
+///
+/// This is a read-only projection: it hands back no durable-record authority,
+/// and neither lifecycle's writer is reachable from it.
+pub(crate) enum OpenMergeRecord {
+    V0(Box<MergeOperationRecord>),
+    V1(Box<super::model::v1::MergeOperationRecordV1>),
+}
+
+impl OpenMergeRecord {
+    /// The common view of the fields both record versions carry, field for
+    /// field and type for type.
+    pub(in crate::workspace_ops) fn view(&self) -> super::status::MergeStatusRecordView<'_> {
+        match self {
+            Self::V0(record) => super::status::MergeStatusRecordView::from_v0(record),
+            Self::V1(record) => super::status::MergeStatusRecordView::from_v1(record),
+        }
+    }
+}
+
+/// Read the one open record under `root`, of either installed version.
+///
+/// The refusals are the v0 store's own, position for position: the same
+/// "multiple merge records" recovery error, the same location and decode
+/// error mapping, and the same `validate_record` on the v0 arm — so an open
+/// v0 workspace cannot tell this apart from `discover_open`.
+pub(crate) fn discover_open_record(root: &Path) -> ModelResult<Option<OpenMergeRecord>> {
+    let directory = root.join(MERGE_DIR);
+    let paths = record_files(&directory)?;
+    let mut found = Vec::with_capacity(paths.len());
+    for path in paths {
+        found.push(read_open_record_any(&path)?);
+    }
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err(ModelError::new(
+            ErrorCode::MergeRecoveryRequired,
+            format!(
+                "multiple merge records exist under '{}'",
+                directory.display()
+            ),
+        )),
+    }
+}
+
+fn read_open_record_any(path: &Path) -> ModelResult<OpenMergeRecord> {
+    let merge_id = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| unreadable(Some(path), "record file name is not valid UTF-8"))?;
+    if !fs::symlink_metadata(path)
+        .map_err(|error| location_unreadable(path, merge_id, RecordLocation::Open, error))?
+        .file_type()
+        .is_file()
+    {
+        return Err(location_unreadable(
+            path,
+            merge_id,
+            RecordLocation::Open,
+            "record path is not a regular file",
+        ));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| location_unreadable(path, merge_id, RecordLocation::Open, error))?;
+    match super::record_wire::decode_production(&bytes)
+        .map_err(|error| decode_error(path, merge_id, RecordLocation::Open, error))?
+    {
+        super::record_wire::DecodedRecord::V0(decoded) => {
+            let (_, header, record) = decoded.into_production_parts();
+            if let Err(error) = validate_record(&record, Some(path), false) {
+                return Err(error.with_record_context(record_context(merge_id, &header, None)));
+            }
+            Ok(OpenMergeRecord::V0(Box::new(record)))
+        }
+        super::record_wire::DecodedRecord::V1(decoded) => {
+            let context = || record_context(merge_id, &decoded.header, None);
+            validate_merge_id(&decoded.record.merge_id)
+                .map_err(|error| error.with_record_context(context()))?;
+            if decoded.record.merge_id != merge_id {
+                return Err(
+                    unreadable(Some(path), "record id does not match its file name")
+                        .with_record_context(context()),
+                );
+            }
+            Ok(OpenMergeRecord::V1(Box::new(decoded.record)))
+        }
+    }
+}
+
 fn ensure_terminal_for_archive(record: &MergeOperationRecord) -> ModelResult<()> {
     if record.state.is_open() {
         return Err(recovery_error(format!(

@@ -83,10 +83,11 @@ pub use runtime::{
     WorkspaceMutationGuard, acquire_workspace_mutation_guard, enforce_workspace_open_merge_gate,
     handle_merge, handle_merge_with_events,
 };
+pub(in crate::workspace_ops) use status::MergeStatusRecordView;
 pub(crate) use store::{
     AdaptationPrecheck, FileMergeStore, MergeStore, OpenRecordEnvelope, archive_merge_record,
-    classify_open_record, discover_open_envelope_before_manifest, enter_finalizing,
-    persist_merge_record, persist_operation_transition,
+    classify_open_record, discover_open_envelope_before_manifest, discover_open_record,
+    enter_finalizing, persist_merge_record, persist_operation_transition,
 };
 pub(crate) use validate::{validate_merge_request, validate_open_merge_id};
 

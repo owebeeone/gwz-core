@@ -23,4 +23,4 @@ pub(in crate::workspace_ops::merge) use snapshot::{
     select_canonical_status_source,
 };
 pub(crate) use snapshot::{handle_status, snapshot_status};
-pub(in crate::workspace_ops::merge) use view::MergeStatusRecordView;
+pub(in crate::workspace_ops) use view::MergeStatusRecordView;
