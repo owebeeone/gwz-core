@@ -220,6 +220,19 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
                         });
                     }
                     ResolvedV1Action::Reject(error) => return Err(error),
+                    // v0's `finalize_dispatch.rs:222-225`: persist the
+                    // diagnostic, then re-raise the error that produced it. The
+                    // record stays exactly where it was -- only
+                    // `operation_drift` moves -- so the merge remains durably
+                    // `Finalizing`, retryable and abortable.
+                    ResolvedV1Action::RecordAndReject(transition, error) => {
+                        let rewrite = prepare(&lease, &current, transition)?;
+                        events.before_commit(current.record(), rewrite.next());
+                        let previous = current;
+                        current = store.commit(&lease, &previous, rewrite)?;
+                        events.committed(previous.record(), current.record());
+                        return Err(*error);
+                    }
                 }
             }
             V1NextAction::Apply(transition) => {

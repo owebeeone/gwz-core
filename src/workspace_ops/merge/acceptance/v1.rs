@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::{LockArtifact, ManifestArtifact};
-use crate::model::ModelResult;
+use crate::model::{ModelError, ModelResult};
 use crate::workspace_ops::merge::model::v1::{
     AcceptedAttachedCheckoutV1, AcceptedIntegrationRefV1, AcceptedLockMemberV1, AcceptedLockV1,
     AcceptedMetadataBaseV1, AcceptedMetadataSourceV1, AcceptedRootBaseV1, AcceptedWorkspaceV1,
@@ -50,10 +50,59 @@ impl BuiltV1Acceptance {
     }
 }
 
+/// Why a v1 acceptance was rejected, split the way v0 split it.
+///
+/// v0's `CandidatePreparationError`
+/// (`git show 57502e4:src/workspace_ops/merge/finalize.rs`, lines 54-57) drew
+/// exactly this line, and `finalize_dispatch.rs:222` is what it was for: a
+/// `Metadata` rejection -- a defect in the merged root's own manifest and lock,
+/// or in the member identities they declare -- earned a durable
+/// `RootCandidateMetadataInvalid` operation-drift row before the error was
+/// re-raised, so `status` could name the problem while the merge stayed
+/// `Finalizing` and abortable. A `Record` rejection is an internally
+/// inconsistent record and earns no such row.
+///
+/// The v0 engine deleted in 8603b58 took the writer with it; the surviving
+/// `acceptance/workspace.rs::CompleteLockError` is the same shape, now orphaned
+/// (`construct_complete_lock` is dead code on this tree). This is that
+/// classification restored on the v1 acceptance path.
+#[derive(Debug)]
+pub(in crate::workspace_ops::merge) struct V1AcceptanceRejection {
+    pub(in crate::workspace_ops::merge) error: ModelError,
+    pub(in crate::workspace_ops::merge) root_metadata_invalid: bool,
+}
+
+impl V1AcceptanceRejection {
+    fn root_metadata(error: ModelError) -> Self {
+        Self {
+            error,
+            root_metadata_invalid: true,
+        }
+    }
+}
+
+/// Every plain `?` inside `build_v1_acceptance` is a record rejection. The
+/// metadata region names itself explicitly instead.
+impl From<ModelError> for V1AcceptanceRejection {
+    fn from(error: ModelError) -> Self {
+        Self {
+            error,
+            root_metadata_invalid: false,
+        }
+    }
+}
+
+/// Callers that only want the error keep using `?` unchanged.
+impl From<V1AcceptanceRejection> for ModelError {
+    fn from(value: V1AcceptanceRejection) -> Self {
+        value.error
+    }
+}
+
 pub(in crate::workspace_ops::merge) fn build_v1_acceptance(
     source: V1AcceptanceRecord<'_>,
     metadata: V1AcceptanceMetadata<'_>,
-) -> ModelResult<BuiltV1Acceptance> {
+) -> Result<BuiltV1Acceptance, V1AcceptanceRejection> {
     let record = RecordView::from(source);
     let baseline_manifest_yaml = required(
         record.baseline.manifest_yaml.as_deref(),
@@ -109,18 +158,37 @@ pub(in crate::workspace_ops::merge) fn build_v1_acceptance(
             return Err(input_error(
                 record.merge_id,
                 "metadata source does not match selected-root participation",
-            ));
+            )
+            .into());
         }
     };
-    let manifest = parse_manifest(record.merge_id, manifest_yaml)?;
-    let metadata_lock = parse_lock(record.merge_id, lock_yaml)?;
-    require_workspace(
-        record.workspace_id,
-        &manifest,
-        &metadata_lock,
-        record.merge_id,
-    )?;
-
+    let selected_members = record
+        .selected_targets
+        .iter()
+        .filter(|target| target.as_str() != "@root")
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    // The metadata region: everything that reads the chosen metadata source --
+    // for a selected root, the merged root's own manifest and lock -- and turns
+    // it into a complete accepted lock. v0 classified exactly this region
+    // `CandidatePreparationError::Metadata` (`root::candidate_metadata` plus
+    // `construct_complete_lock`'s `CompleteLockErrorKind::Metadata` arms), and
+    // a failure here is what earns the `RootCandidateMetadataInvalid` row.
+    let (manifest, metadata_lock) = (|| {
+        let manifest = parse_root_manifest(manifest_yaml)?;
+        let metadata_lock = parse_root_lock(lock_yaml)?;
+        require_workspace(
+            record.workspace_id,
+            &manifest,
+            &metadata_lock,
+            record.merge_id,
+        )
+        .map_err(root_metadata)?;
+        Ok::<_, ModelError>((manifest, metadata_lock))
+    })()
+    .map_err(V1AcceptanceRejection::root_metadata)?;
+    // `complete_lock` straddles the line and classifies per site, exactly as
+    // v0's `construct_complete_lock` did.
     let completed_lock = complete_lock(
         &record,
         &manifest,
@@ -128,25 +196,21 @@ pub(in crate::workspace_ops::merge) fn build_v1_acceptance(
         &baseline_manifest,
         &baseline_lock,
     )?;
-    let selected_members = record
-        .selected_targets
-        .iter()
-        .filter(|target| target.as_str() != "@root")
-        .cloned()
-        .collect::<BTreeSet<_>>();
     let canonical_lock_yaml = render_complete_lock(
         record.merge_id,
         lock_yaml,
         baseline_lock_yaml,
         &completed_lock,
         &selected_members,
-    )?;
+    )
+    .map_err(|error| V1AcceptanceRejection::root_metadata(root_metadata(error)))?;
     let accepted_lock_yaml = if let Some(candidate) = record.candidate_lock_yaml {
         if parse_lock(record.merge_id, candidate)? != completed_lock {
             return Err(input_error(
                 record.merge_id,
                 "persisted candidate lock differs from the complete accepted lock",
-            ));
+            )
+            .into());
         }
         candidate.to_owned()
     } else {
@@ -165,7 +229,8 @@ pub(in crate::workspace_ops::merge) fn build_v1_acceptance(
         return Err(input_error(
             record.merge_id,
             "publication-required acceptance has no attached root branch",
-        ));
+        )
+        .into());
     }
     let accepted_workspace = AcceptedWorkspaceV1 {
         operation_baseline_lock_sha256: record.baseline.lock_sha256.clone(),
@@ -300,12 +365,15 @@ fn complete_lock(
     mut lock: LockArtifact,
     baseline_manifest: &ManifestArtifact,
     baseline_lock: &LockArtifact,
-) -> ModelResult<LockArtifact> {
+) -> Result<LockArtifact, V1AcceptanceRejection> {
     for target_id in record
         .selected_targets
         .iter()
         .filter(|target| target.as_str() != "@root")
     {
+        // These three are `Record` rejections in v0's split: the record
+        // contradicts itself, and no amount of fixing the merged root's
+        // manifest would change that, so no metadata diagnostic is earned.
         let participant = record
             .participants
             .get(target_id)
@@ -319,8 +387,10 @@ fn complete_lock(
             return Err(input_error(
                 record.merge_id,
                 "selected participant result is not acceptance-ready",
-            ));
+            )
+            .into());
         }
+        // This one is `Metadata`: the merged root redefined the member.
         let identity = selected_identity(
             target_id,
             participant,
@@ -329,7 +399,8 @@ fn complete_lock(
             baseline_manifest,
             baseline_lock,
             record.merge_id,
-        )?;
+        )
+        .map_err(V1AcceptanceRejection::root_metadata)?;
         let mut row = lock
             .members
             .remove(target_id)

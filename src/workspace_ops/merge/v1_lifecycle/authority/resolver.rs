@@ -5,24 +5,25 @@ use super::super::super::model::v1::{
     PreservationOwnerV1,
 };
 use super::super::super::{
-    MergeParticipantRecord, MergeRecordError, OperationState, ParticipantState, PendingMergeAction,
-    PendingMergeActionKind, PublicationStep,
+    MergeParticipantRecord, MergeRecordError, OperationDriftKind, OperationState, ParticipantState,
+    PendingMergeAction, PendingMergeActionKind, PublicationStep,
 };
 use super::super::checked::StoredV1Record;
 use super::super::transition::*;
 use super::binding::{AuthorityIssuer, BoundValue};
 use super::dispatcher::*;
 use super::{
-    BoundAmbiguityEvidence, BoundAuthority, BoundOwnedResolutionFailureHaltBatch,
-    BoundOwnedRetryFailureHaltBatch, BoundPublicationDecision, ParticipantActionPayload,
-    ParticipantFailurePayload, PreparedAcceptedWorkspace, PreparedArtifactNoop,
-    PreparedBackupRefIntent, PreparedCandidate, PreparedEvidenceIntent, PreparedEvidenceRollback,
-    PreparedFailureHaltBatch, PreparedParticipantAction, PreparedParticipantRollback,
-    PreparedPreservationEntry, PreparedPublicationIntent, PreparedRefResetIntent,
-    PreparedResetNoop, PreparedRollbackEntry, PreparedRootMetadataRollback, PreparedStashIntent,
-    PreservationCursorPosition, VerifiedBackupRef, VerifiedCandidatePublicationCompletion,
-    VerifiedEvidenceResult, VerifiedEvidenceRollbackCompletion, VerifiedEvidenceRollbackStep,
-    VerifiedNoMutationAbort, VerifiedParticipantNotStarted, VerifiedParticipantOutcome,
+    BoundAmbiguityEvidence, BoundAuthority, BoundOperationDrift,
+    BoundOwnedResolutionFailureHaltBatch, BoundOwnedRetryFailureHaltBatch,
+    BoundPublicationDecision, ParticipantActionPayload, ParticipantFailurePayload,
+    PreparedAcceptedWorkspace, PreparedArtifactNoop, PreparedBackupRefIntent, PreparedCandidate,
+    PreparedEvidenceIntent, PreparedEvidenceRollback, PreparedFailureHaltBatch,
+    PreparedParticipantAction, PreparedParticipantRollback, PreparedPreservationEntry,
+    PreparedPublicationIntent, PreparedRefResetIntent, PreparedResetNoop, PreparedRollbackEntry,
+    PreparedRootMetadataRollback, PreparedStashIntent, PreservationCursorPosition,
+    VerifiedBackupRef, VerifiedCandidatePublicationCompletion, VerifiedEvidenceResult,
+    VerifiedEvidenceRollbackCompletion, VerifiedEvidenceRollbackStep, VerifiedNoMutationAbort,
+    VerifiedOperationDriftClear, VerifiedParticipantNotStarted, VerifiedParticipantOutcome,
     VerifiedParticipantRollback, VerifiedParticipants, VerifiedPreservationCursorPrefix,
     VerifiedPublicationAction, VerifiedPublicationCompletion, VerifiedRecoveryOrigin,
     VerifiedRefResetCompletion, VerifiedRefResetPhase, VerifiedResults, VerifiedRollbackExhausted,
@@ -46,6 +47,9 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum ResolvedV1Action {
     Execute(Box<BoundPhysicalAction>),
     Respond(V1ResponseDisposition),
     Reject(ModelError),
+    /// Commit `0`, then answer `1`. The only shape that writes a durable
+    /// diagnostic on a refusal -- see [`ExactObservationFact::DriftRejection`].
+    RecordAndReject(V1Transition, Box<ModelError>),
 }
 
 pub(in crate::workspace_ops::merge::v1_lifecycle) fn resolve_observation(
@@ -126,6 +130,12 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn resolve_observation(
                 return Ok(result);
             }
             ambiguous(current, proof)
+        }
+        ExactObservationFact::DriftRejection { drift, error } => {
+            Ok(ResolvedV1Action::RecordAndReject(
+                V1Transition::Drift(B::new(DriftTransition::RecordOperation(drift))),
+                error,
+            ))
         }
         ExactObservationFact::NotStarted(observed) => {
             not_started(current, request, observation_request, observed, attempt)
@@ -369,9 +379,7 @@ fn completed(
         (K::ParticipantsComplete, C::Participants(value)) => {
             op(OperationTransition::EnterFinalizing(value))
         }
-        (K::Acceptance, C::Acceptance(value)) => tr(V1Transition::Acceptance(B::new(
-            AcceptanceTransition::Freeze(value),
-        ))),
+        (K::Acceptance, C::Acceptance(value)) => acceptance_completed(current, value),
         (K::Publication, C::Publication(value)) => publication(value),
         (K::PreservationEntry, C::Publication(PublicationObservation::EvidenceResult(value)))
         | (K::RollbackEntry, C::Publication(PublicationObservation::EvidenceResult(value))) => {
@@ -395,6 +403,45 @@ fn completed(
         ),
         _ => reject("completed fact does not match the bound request and observation"),
     }
+}
+
+/// Freeze acceptance -- but self-heal the root-metadata diagnostic first.
+///
+/// v0 cleared this row the moment root candidate preparation next succeeded:
+/// `git show 57502e4:src/workspace_ops/merge/finalize_dispatch.rs` calls
+/// `super::finalize_support::clear_root_metadata_drift(record)` on the line
+/// immediately after the `prepare_candidate` match. Without it the row outlives
+/// the condition it describes -- and on this tree that is not merely untidy,
+/// because `observe/reverse/preservation/entry.rs` refuses a coordinated
+/// preservation entry while any operation drift stands.
+///
+/// The clear is committed on its own; the next dispatch re-observes acceptance
+/// against a clean record and freezes it. Acceptance is a pure re-derivation
+/// from the same durable inputs, so the extra round is idempotent.
+fn acceptance_completed(
+    current: &StoredV1Record,
+    value: B<PreparedAcceptedWorkspace>,
+) -> ModelResult<ResolvedV1Action> {
+    if let Some(stale) = current
+        .record()
+        .operation_drift
+        .iter()
+        .find(|drift| drift.kind == OperationDriftKind::RootCandidateMetadataInvalid)
+    {
+        let clear = VerifiedOperationDriftClear::issue(
+            &AuthorityIssuer::for_observer(current),
+            "@operation",
+            "clear_drift",
+            "verified",
+            stale.clone(),
+        )?;
+        return tr(V1Transition::Drift(B::new(
+            DriftTransition::ClearOperation(clear),
+        )));
+    }
+    tr(V1Transition::Acceptance(B::new(
+        AcceptanceTransition::Freeze(value),
+    )))
 }
 
 fn prepared(

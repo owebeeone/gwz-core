@@ -299,9 +299,16 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     # abort files. Re-measured on the erasure tree, then again for M5d(5)/(7):
     # the whole-set continue preflight and the `executed_here` discriminator
     # that stops a reconciled pending conflict fabricating its original
-    # snapshot both land inside these two trees.
-    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "8813160c5da15181598bade2a5fc942834eda25ae8b3a790e03d3d96ef61f655",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "326cc46fbab1641300dc09fcedbf357d5b69e4a681878bf6f75c7038e89c48d3",
+    # snapshot both land inside these two trees. Re-measured again for M5d(9),
+    # which restores the `RootCandidateMetadataInvalid` writer and clearer --
+    # the acceptance observer's rejection arm, the `DriftRejection` fact, the
+    # resolver's record-and-reject and self-heal, the service arm and the
+    # pre-acceptance reverse handoff all land inside both trees. Verified a
+    # re-measure and not a cover-up: the 2022cdf tree was materialised from git
+    # and digested with the checker's own `source_tree_digest`, and BOTH pins
+    # matched it exactly.
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "68397e5f088e30be069cccc523d2b5411892c00ada39cb5d7f3abfee72bf471c",
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "0d25a9bc6abdf0df2441019638793d56d5d8801dfab164c99c7bde79d5cc45ee",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,

@@ -56,12 +56,51 @@ pub(super) fn selected_identity(
         .flatten()
         .any(|identity| identity != &baseline || identity.path != participant.path)
     {
-        return Err(input_error(
-            merge_id,
-            "selected member identity changed before acceptance",
-        ));
+        // v0 raised this from `construct_complete_lock`
+        // (`git show 57502e4:src/workspace_ops/merge/acceptance/workspace.rs`,
+        // lines 70-77) as `ManifestInvalid` carrying the member's own id and
+        // path. Both halves matter and neither is decoration: the code is an
+        // artifact-validity code (wire 6), so `GwzM5-8I2ProtocolContract.md`
+        // §1's "Codes 46-65 have absent member/detail/target fields" does not
+        // reach it, and the operator needs the member named to know which
+        // `path:` in the merged root's manifest to put back.
+        return Err(ModelError::new(
+            ErrorCode::ManifestInvalid,
+            format!("merge record '{merge_id}' selected member identity changed before acceptance"),
+        )
+        .with_member(member_id, &participant.path));
     }
     Ok(baseline)
+}
+
+/// Parse the merged root's own manifest, keeping the artifact layer's typed
+/// code instead of laundering it into `AcceptanceInputDrift`.
+///
+/// `AcceptanceInputDrift` is wire code 50 and
+/// `dev-docs/GwzM5-8I2ProtocolContract.md` §1 (as amended, accepted GO/GO)
+/// says "Codes 46-65 have absent member/detail/target fields" and restricts
+/// their message bodies to the reasons registered in
+/// `GwzM5-8I2CompatibilityPredicates.json`. An unsupported schema or an
+/// escaping member path in the merged root's manifest is neither: it is an
+/// artifact-validity defect whose typed codes (`ManifestInvalid` 6,
+/// `SchemaUnsupported` 7, `PathEscape` 10) sit outside that range, are free to
+/// carry `@root` / `.`, and tell the operator what to fix. This is what v0
+/// raised through `root::candidate_metadata`.
+pub(super) fn parse_root_manifest(yaml: &str) -> ModelResult<ManifestArtifact> {
+    ManifestArtifact::from_yaml(yaml).map_err(root_metadata)
+}
+
+/// The lock half of [`parse_root_manifest`], with the same reasoning.
+pub(super) fn parse_root_lock(yaml: &str) -> ModelResult<LockArtifact> {
+    LockArtifact::from_yaml(yaml).map_err(root_metadata)
+}
+
+pub(super) fn root_metadata(error: ModelError) -> ModelError {
+    if error.member_id.is_none() {
+        error.with_member("@root", ".")
+    } else {
+        error
+    }
 }
 
 fn manifest_identity(manifest: &ManifestArtifact, member_id: &str) -> Option<MemberIdentity> {

@@ -9,8 +9,8 @@ use crate::artifact;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
-use crate::workspace_ops::merge::ParticipantState;
 use crate::workspace_ops::merge::model::v1::{MergeOperationRecordV1, ParticipantRollbackKindV1};
+use crate::workspace_ops::merge::{OperationDriftKind, ParticipantState};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,7 +23,23 @@ pub(in crate::workspace_ops::merge) fn preflight_v1_rollback<B: GitBackend>(
     root: &Path,
     record: &MergeOperationRecordV1,
 ) -> ModelResult<()> {
-    if !record.operation_drift.is_empty() {
+    // The two root-candidate rows are diagnostics about the workspace root's
+    // *future* metadata; they say nothing about whether this operation can be
+    // reversed, so they must never be able to block or complicate an abort.
+    // v0 encoded that by stripping both kinds unconditionally at the top of
+    // abort, ahead of the evidence preflight, and again if the record passed
+    // through `RollingBack` with evidence present
+    // (`git show 57502e4:src/workspace_ops/merge/abort/mod.rs`, lines 116-137).
+    // v1 keeps the diagnostic in the record rather than erasing it -- an
+    // aborted merge should still be able to say why -- so the exemption lives
+    // at the gates, here and in the preservation entry's twin.
+    if record.operation_drift.iter().any(|drift| {
+        !matches!(
+            drift.kind,
+            OperationDriftKind::RootCandidateMetadataInvalid
+                | OperationDriftKind::RootCandidateStateChanged
+        )
+    }) {
         return Err(ModelError::new(
             ErrorCode::MergeDrift,
             "operation drift prevents coordinated rollback entry",

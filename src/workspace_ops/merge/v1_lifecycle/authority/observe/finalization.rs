@@ -13,7 +13,9 @@ use crate::workspace_ops::merge::acceptance::{
 use crate::workspace_ops::merge::model::v1::{
     AcceptedRootBaseV1, MergeOperationRecordV1, RecoveryOriginStateV1,
 };
-use crate::workspace_ops::merge::{MergeTargetKind, OperationState, ParticipantState};
+use crate::workspace_ops::merge::{
+    MergeTargetKind, OperationDrift, OperationDriftKind, OperationState, ParticipantState,
+};
 
 mod handoff;
 mod publication;
@@ -122,14 +124,25 @@ fn acceptance<B: MergeAuthorityBackend>(
             WORKSPACE_MANIFEST,
         )?;
         let lock = committed_text(backend, current.location().root(), commit, LOCK_PATH)?;
-        build_v1_acceptance(
+        match build_v1_acceptance(
             V1AcceptanceRecord::V1(record),
             V1AcceptanceMetadata::SelectedRootResult {
                 commit,
                 manifest_exact_yaml: &manifest,
                 lock_exact_yaml: &lock,
             },
-        )?
+        ) {
+            Ok(built) => built,
+            // The merged root's own metadata is unusable. v0 recorded this
+            // diagnostic and re-raised
+            // (`git show 57502e4:src/workspace_ops/merge/finalize_support.rs`,
+            // `record_root_metadata_invalid`); the row is what makes `status`
+            // able to name the problem while the merge stays `Finalizing`.
+            Err(rejection) if rejection.root_metadata_invalid => {
+                return root_metadata_invalid(current, rejection.error);
+            }
+            Err(rejection) => return Err(rejection.error),
+        }
     } else {
         verify_unselected_root_baseline(backend, current)?;
         build_v1_acceptance(
@@ -483,6 +496,45 @@ pub(super) fn ambiguity(current: &StoredV1Record) -> ModelResult<ExactObservatio
         origin,
     )?;
     Ok(ExactObservationFact::Ambiguous(proof))
+}
+
+/// Bind the `RootCandidateMetadataInvalid` row this refusal earns, so the
+/// resolver can commit it before the error is answered.
+///
+/// v0 wrote the row by hand -- `clear_root_metadata_drift(record); record
+/// .operation_drift.push(...); persist_merge_record(...)`. On v1 the row is a
+/// bound fact carrying the same message, and `reduce`'s
+/// `DriftTransition::RecordOperation` arm does the replace-or-push under the
+/// usual `bound(...)` authority check, so the clear-then-push v0 open-coded is
+/// the reducer's `replace_or_push` instead.
+fn root_metadata_invalid(
+    current: &StoredV1Record,
+    error: ModelError,
+) -> ModelResult<ExactObservationFact> {
+    let row = OperationDrift {
+        kind: OperationDriftKind::RootCandidateMetadataInvalid,
+        message: error.message.clone(),
+    };
+    // A retry against an unchanged root re-derives the same refusal. The row it
+    // would write already stands, so there is nothing to transition: v1 rejects
+    // a transition whose declared effect does not actually move the record
+    // (`transition/footprint/diff.rs:58`), and the caller is owed the error
+    // either way. v0 reached the same durable state by clearing and re-pushing
+    // an identical row.
+    if current.record().operation_drift.contains(&row) {
+        return Err(error);
+    }
+    let drift = BoundOperationDrift::issue(
+        &AuthorityIssuer::for_observer(current),
+        "@operation",
+        "record_drift",
+        "observed",
+        row,
+    )?;
+    Ok(ExactObservationFact::DriftRejection {
+        drift,
+        error: Box::new(error),
+    })
 }
 
 fn acceptance_error(record: &MergeOperationRecordV1, detail: &str) -> ModelError {

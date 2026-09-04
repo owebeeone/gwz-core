@@ -7,7 +7,7 @@ use crate::workspace_ops::merge::v1_lifecycle::transition::{
     PreparedReverseEntryView, ReverseEntryKind, ReverseEntryPredecessor, preview_reverse_entry,
     visit_reverse_entry,
 };
-use crate::workspace_ops::merge::{OperationState, ParticipantState};
+use crate::workspace_ops::merge::{OperationDriftKind, OperationState, ParticipantState};
 
 pub(super) fn observe_entry<B: MergeAuthorityBackend>(
     backend: &B,
@@ -78,7 +78,23 @@ impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for PreservationEntryVi
             ));
         }
 
-        if !anticipated.operation_drift.is_empty() {
+        // The two root-candidate rows are diagnostics about the workspace
+        // root's *future* metadata, not statements about whether this operation
+        // can be reversed -- so they must never be able to block or complicate
+        // an abort. v0 encoded that intent by stripping both kinds at the top
+        // of abort, before the evidence preflight, and again if the record
+        // passed through `RollingBack` with evidence present
+        // (`git show 57502e4:src/workspace_ops/merge/abort/mod.rs`, lines
+        // 116-137). v1 keeps the diagnostic in the record instead of erasing
+        // it -- an aborted merge should still say why it was aborted -- so the
+        // exemption lives here, at the one gate that would otherwise refuse.
+        if anticipated.operation_drift.iter().any(|drift| {
+            !matches!(
+                drift.kind,
+                OperationDriftKind::RootCandidateMetadataInvalid
+                    | OperationDriftKind::RootCandidateStateChanged
+            )
+        }) {
             return Err(ModelError::new(
                 ErrorCode::MergeDrift,
                 "operation drift prevents coordinated preservation entry",
