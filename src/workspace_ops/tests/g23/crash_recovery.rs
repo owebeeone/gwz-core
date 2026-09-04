@@ -887,8 +887,15 @@ fn a_reverse_checked_door_on_a_handle_fail_volume_names_the_one_escape() {
 /// and does NOT warn. It fails at the create door with today's unchanged
 /// substrate text, because that combination is not a filesystem the charter
 /// plans around; it is a volume behaving inconsistently.
+///
+/// **Seam-only, and named so it cannot be selected by mistake.** This row needs
+/// a host ABOVE the identity bar, so it is meaningless on the workflow's real
+/// overlay, which is below both bars. Its name deliberately does not begin
+/// `a_handle_fail`, which is the prefix
+/// `.github/workflows/linux-identity-probe.yml` selects the real-volume rows
+/// with; run 33848859741 measured exactly that collision, and this is the cure.
 #[test]
-fn a_handle_failure_above_the_bar_is_still_an_error_with_todays_text() {
+fn an_above_bar_handle_failure_is_still_an_error_with_todays_text() {
     let (temp, backend, _fixture) = workspace("m5d-above-bar-anomaly");
     let sink = CollectingSink::default();
 

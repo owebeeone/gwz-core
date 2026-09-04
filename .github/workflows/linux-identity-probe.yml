@@ -150,11 +150,23 @@ jobs:
           TMPDIR: /mnt/gwz-overlay/merged
           GWZ_M5D_REAL_HANDLE_FAIL: "1"
         run: |
+          set -euo pipefail
           git config --global user.email "ci@example.invalid"
           git config --global user.name "gwz ci"
           git config --global init.defaultBranch main
-          cargo test --locked --lib \
-            workspace_ops::tests::g23::crash_recovery::a_handle_fail -- --nocapture
+          # Exact names, not a prefix. Run 33848859741 measured why: the prefix
+          # `a_handle_fail` also selected `a_handle_failure_above_the_bar_...`,
+          # a SEAM-ONLY row that needs a host above the identity bar and so
+          # cannot hold on this volume. That row is renamed out of the prefix
+          # and these three are named outright.
+          cargo test --locked --lib -- --exact --nocapture \
+            workspace_ops::tests::g23::crash_recovery::a_handle_fail_ordinary_start_writes_its_record_raw_and_completes \
+            workspace_ops::tests::g23::crash_recovery::a_handle_fail_no_ff_start_writes_its_record_raw_and_completes \
+            workspace_ops::tests::g23::crash_recovery::a_handle_fail_attempt_continues_after_resolution \
+            2>&1 | tee /tmp/handle-fail.log
+          # Anti-vacuity: libtest exits 0 when a filter matches NOTHING, so a
+          # renamed row would silently turn this job into a no-op.
+          grep -q "^test result: ok. 3 passed; 0 failed" /tmp/handle-fail.log
       - name: Unmount
         if: always()
         run: sudo umount /mnt/gwz-overlay/merged || true
