@@ -192,6 +192,22 @@ fn preserve_abort_resumes_from_recorded_ref_and_native_stash_without_duplicates(
         ])
         .unwrap();
     });
+    // The durable evidence above is only half of `mem_lib`'s stash step. A
+    // member's owner step writes its `PreservationEvidence` and THEN its bundle
+    // entry (`PreservationStashPhaseV1::WriteBundle`), so evidence without a
+    // bundle is a state no interrupted run can leave behind, and the entry
+    // preflight says so: `v1_bundle_cursor_is_exact`
+    // (preserve/checked_bundle.rs:48) derives the expected bundle from every
+    // owner whose evidence carries a `stash_object_id`, finds nothing on disk,
+    // and `cursor.rs:185` refuses with "preservation bundle does not match the
+    // exact durable cursor prefix". Running the production writer completes the
+    // interrupted step exactly as production would have.
+    crate::workspace_ops::merge::v1_write_preservation_bundle_for_test(
+        &backend,
+        temp.path(),
+        "mem_lib",
+    )
+    .unwrap();
     let mut abort = recovery_request(crate::MergeOp::Abort, Some(merge_id));
     abort.preserve = Some(true);
 

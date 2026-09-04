@@ -60,6 +60,8 @@ pub(crate) use open_record::{
 };
 #[cfg(test)]
 pub(crate) use open_record::{ArchivedMergeRecord, read_archived_record};
+#[cfg(test)]
+pub(crate) use preserve::v1_write_preservation_bundle_for_test;
 pub(crate) use store::{FileMergeStore, MergeStore};
 pub(crate) use validate::{validate_merge_request, validate_open_merge_id};
 

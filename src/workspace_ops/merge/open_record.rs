@@ -199,6 +199,14 @@ impl OpenMergeRecord {
     pub(in crate::workspace_ops) fn from_yaml_for_test(yaml: &str) -> Self {
         Self(Box::new(serde_yaml::from_str(yaml).expect("a v1 record")))
     }
+
+    /// The decoded body, for `merge`'s own test-only fixture builders. The
+    /// view above is what suites outside `merge` read; this is narrower on
+    /// purpose.
+    #[cfg(test)]
+    pub(in crate::workspace_ops::merge) fn record_for_test(&self) -> &MergeOperationRecordV1 {
+        &self.0
+    }
 }
 
 /// Read the one open record under `root` as a v1 body.

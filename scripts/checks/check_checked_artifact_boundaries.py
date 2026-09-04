@@ -22,7 +22,12 @@ PROTECTED_COMPILER_ROOT_DIGESTS = {
     "src/workspace_ops/mod.rs": "663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124",
     # M5d close (2026-09-03): the v0 lifecycle re-exports left; open-record
     # occupancy and the retained archive/GC store are what remain.
-    "src/workspace_ops/merge/mod.rs": "8e33d1d7d0b3f86cea3d24bfcabbc5c5f4f2e03c01f765a25a14d1fc388da463",
+    # M5d(10): one added row, `#[cfg(test)] pub(crate) use
+    # preserve::v1_write_preservation_bundle_for_test`, alongside the
+    # `discover_open_v1_record` / `read_archived_record` rows that already carry
+    # merge-private fixture surface out to the g23 suites. Verified a re-measure
+    # and not a cover-up: the 2022cdf file hashed to the pinned value exactly.
+    "src/workspace_ops/merge/mod.rs": "f419bc0c4e846300ec59e34c87e9e072b954a97060b942a386bdb2e74a78d986",
 }
 
 PROTECTED_COMPILER_MODULES = {
