@@ -20,6 +20,17 @@ that finds an uncommitted hand edit.
 - Note that `--force` there authorizes two things at once: overwriting a locally edited `AGENTS_GWZ.md` and accepting the current `gwz.conf` state. Use it deliberately.
 - **Never manually edit this file.** It is system-managed. Change agent instructions via the `gwz` template and `gwz init --update`.
 
+## Searching a Workspace
+
+Member repositories are listed in the root repository's `.git/info/exclude`, so
+any tool that honours git ignore rules walks past every member when run from the
+workspace root. `rg pattern .` reports no matches and does not say that members
+were skipped.
+
+- **Treat a zero-hit search from the workspace root as inconclusive** until it is repeated with `rg -uu` or run inside a member. A silent skip reads exactly like an absent symbol.
+- Search with `rg -uu` from the root, or `cd` into a member and search there.
+- `gwz forall -- <cmd>` runs the search once per member, each under its own repository's ignore rules.
+
 Install `gwz` from the latest release:
 
 ```sh
