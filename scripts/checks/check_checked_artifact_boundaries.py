@@ -18,7 +18,14 @@ ROOT = Path(__file__).resolve().parents[2]
 # canonical module. Hashing only the descendant tree would prove resident
 # bytes without proving that rustc actually loads them.
 PROTECTED_COMPILER_ROOT_DIGESTS = {
-    "src/lib.rs": "e035f8a53ddb589362972c85593cc0dff4b590129de38fe0fdb72ca1880f544e",
+    # M5d step (3) (2026-09-03): one added line, `mod verified_write;` -- the
+    # NEUTRAL home of the merge record's raw publication primitive on a
+    # handle-fail volume (GwzM5-8M5d-Charter.md §3/§4). This root is what
+    # proves rustc actually LOADS that module, which is the anti-vacuity
+    # anchor under F-3's redefined floor below. Verified a re-measure and not
+    # a cover-up: the 69ee990 file hashed to the pinned value exactly.
+    #   was: e035f8a53ddb589362972c85593cc0dff4b590129de38fe0fdb72ca1880f544e
+    "src/lib.rs": "6928a62dfe4ab90eb8f7e69b60544b7be9942afb184233f8277af73c7896e423",
     "src/workspace_ops/mod.rs": "663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124",
     # M5d close (2026-09-03): the v0 lifecycle re-exports left; open-record
     # occupancy and the retained archive/GC store are what remain.
@@ -88,7 +95,13 @@ PROTECTED_SOURCE_DIGESTS = {
     # value, distinct from the identity VALUE contract that keeps
     # `DurableObjectIdentity`, and it is the one capability carrying an
     # actionable remedy sentence.
-    "checked_artifact/capability.rs": "d06967fe3480b77b550b98f7e7533bb7f059b88e03d2dd1ece86b32235e650ed",
+    # M5d step (3): HANDLE_FAIL_REVERSE_DOOR_ESCAPE -- the reverse doors' own
+    # refusal on a handle-fail volume, which may not be the substrate remedy
+    # above it (charter §3(b): that remedy advertises `gwz merge --abort`,
+    # the very door refusing) -- plus the seam re-export chain's handle half.
+    # The 69ee990 file hashed to the pinned value exactly.
+    #   was: d06967fe3480b77b550b98f7e7533bb7f059b88e03d2dd1ece86b32235e650ed
+    "checked_artifact/capability.rs": "1d1f1c7579c451464704bfbff742a15e042db2fc251bc69c812a5f0901813f87",
     # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
     # `activate_workspace_catalog`, the first production catalog activation,
     # and the four ENTRY_* inventories below move with it.
@@ -96,9 +109,22 @@ PROTECTED_SOURCE_DIGESTS = {
     # `bootstrap_merge_start_parents` and `create_merge_store_record` join the
     # door above, and [P3-2]'s renderer is extracted to a named `pub(super)` fn
     # so its three arms take an in-suite guard.
-    "checked_artifact/entry.rs": "94041be3c0d48148262438b77c6f521749923eabe68212b3388288d27834e002",
+    # M5d step (3) re-pins it for charter §3: `CrashRecoveryDecision` gains
+    # `handles_ok` and the decision runs the create door's own probe on the
+    # workspace root; the one diagnostic gains REVERSE_DOOR_LIMIT; the create
+    # door gains its RAW arm (`create_merge_store_record_raw`, the entering
+    # capability-free row and F-3's single permitted caller); and the four
+    # REVERSE doors acquire with IdentityGapEscape::ReverseMergeDoor. All four
+    # ENTRY_* inventories move with it. The 69ee990 file hashed to the pinned
+    # value exactly.
+    #   was: 94041be3c0d48148262438b77c6f521749923eabe68212b3388288d27834e002
+    "checked_artifact/entry.rs": "44c4dcc60206039486302abadc5f59c784e0aeb2a020d77814066e8a5acfce95",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
-    "checked_artifact/mod.rs": "b10313ec4b809b597873dda15adaf8b281c60d3858f27d5ba865d5083c5f4ed9",
+    # M5d step (3): the crate-visible `cfg(test)` re-export of the seam's
+    # handle-probe half, beside `with_identity_unavailable`. Production code
+    # is untouched. The 69ee990 file hashed to the pinned value exactly.
+    #   was: b10313ec4b809b597873dda15adaf8b281c60d3858f27d5ba865d5083c5f4ed9
+    "checked_artifact/mod.rs": "f59f5ec60a91a9213222c3ace7bd53762a99ea4e617983b764fb7ebe364fb61d",
     # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
     # `inspect_family`'s 1 MiB budget now charges `DirEntry::metadata().len()`
     # in the enumeration loop, before any leaf is read, and the post-read
@@ -297,7 +323,12 @@ APPROVED_RUST_PATH_EDGES = {
 PROTECTED_SOURCE_TREE_DIGESTS = {
     "checked_artifact/bootstrap/runtime/catalog_lease.rs": "992edeb31fbf28aaa7bc8c9ba434097f3b8bf6b0e35e4bd9fb1c80f291425c48",
     "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    "checked_artifact/capability/pre_catalog.rs": "89c236e8ed79fee74d9db317fb114086abdb58eab908dc0ffded59fa0d602098",
+    # M5d step (3): the `cfg(test)` seam on `provider/platform.rs` gains its
+    # HANDLE-PROBE half (charter §3) and the re-export chain carries it out;
+    # production code in this tree is untouched. The 69ee990 tree digested to
+    # the pinned value exactly.
+    #   was: 89c236e8ed79fee74d9db317fb114086abdb58eab908dc0ffded59fa0d602098
+    "checked_artifact/capability/pre_catalog.rs": "2bef3d4f112b46131d28854f4c16da6036fb275eaef3b68b0e30143db3b875ff",
     "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
     "checked_artifact/platform.rs": "7cc428ded002a0ce549c306d0d4ea70e443e297f215d9ae64190f7b18b06025f",
     # M5d close: parity events + the observe-tree re-homes from deleted
@@ -313,7 +344,13 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     # and digested with the checker's own `source_tree_digest`, and BOTH pins
     # matched it exactly.
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "68397e5f088e30be069cccc523d2b5411892c00ada39cb5d7f3abfee72bf471c",
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "0d25a9bc6abdf0df2441019638793d56d5d8801dfab164c99c7bde79d5cc45ee",
+    # M5d step (3) re-pins the v1_lifecycle tree: `start.rs` threads its
+    # decision to the create door, `store/mod.rs` and `store/rewrite.rs` pass
+    # it through (naming no raw primitive -- F-3 half (1)), and
+    # `tests/capability_free_exception.rs` gains the entering carved row's
+    # negative scan. The 69ee990 tree digested to the pinned value exactly.
+    #   was: 0d25a9bc6abdf0df2441019638793d56d5d8801dfab164c99c7bde79d5cc45ee
+    "workspace_ops/merge/v1_lifecycle/mod.rs": "f5bb201e6221f83d906d4cfaf016eab64d69121a6ed3c9ac1ed7983666a5b9e0",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -406,6 +443,52 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
         "MergeStore",
     }
 )
+
+# --- M5d step (3): F-3's REDEFINED seam floor, the neutral raw primitive -----
+#
+# `GwzM5-8M5d-Charter.md` §4/§7 redefine F-3's floor for a tree whose v0
+# persistence engine is gone: the floor BECOMES the neutral raw primitive's
+# module, and the property stays the same masked-identifier scan --
+# `v1_lifecycle/` names that module nowhere; only `entry.rs` calls it. The
+# drafted shape is `GwzM5-8M5d-GateRevisions.md` §B.3; charter §9 step (3) chose
+# the module's real path, `src/verified_write.rs`, satisfying §A.4.4's one
+# constraint (its leaf identifier must not be one `v1_lifecycle/` already names,
+# which ruled out `durable_fs`).
+#
+# STILL LOAD-BEARING FOR JUDGMENT CALL J-1, by SUCCESSION. The J-1 succession
+# ruling of 2026-09-03 (`GwzM5-8M5d-GateRevisions.md` Part B §B.5.2, R4b-G lane
+# owner) retires the DERIVED v0-persistence scan when its subject is deleted and
+# names THIS property its successor. Removing or weakening THIS scan re-opens
+# J-1 exactly as removing its predecessor would, and must not be done without
+# the R4b-G lane owner's ruling.
+#
+# THIS TREE KEEPS BOTH HALVES, which is more than the ruling requires and is
+# stated so a reviewer is not misled: the derivation above was RE-POINTED at the
+# M5d close onto the two store names that survive as envelope discovery / GC
+# rather than retired -- that is §B.4's Q12 mitigation, which restores the
+# retired scan's coverage losses L1/L2 -- and the property below is ADDED on top
+# of it, supplying §B.4's G1 and G2. The ruling neither requires nor forbids
+# that combination.
+#
+# The property, in two halves:
+#   (1) no file under `v1_lifecycle/` -- production or test -- names the
+#       neutral raw primitive or the module it lives in; and
+#   (2) among production files crate-wide, `checked_artifact/entry.rs` is the
+#       ONLY one that names the primitive, and it names it an EXACT number of
+#       times, so a conversion of the raw-create arm to the checked door fails
+#       closed here rather than passing silently.
+#
+# Bare-identifier counting on MASKED source is what keeps this exact, for the
+# same reason it did before. `mask_non_code` blanks string and comment contents,
+# so an action-name literal or a doc comment naming the primitive is not a call
+# -- measured on this tree, `entry.rs` names `write_atomic_verified` TWICE by
+# grep and ONCE under the mask, the extra being the raw arm's own doc comment,
+# and it names `create_dir_all` twice by grep and ZERO times masked. `fn <name>`
+# definitions are excluded the same way, so the primitive's own definition in
+# the neutral module is not counted as a call to it.
+NEUTRAL_RAW_WRITE_FLOOR = frozenset({"verified_write", "write_atomic_verified"})
+NEUTRAL_RAW_WRITE_MODULE = "verified_write.rs"
+NEUTRAL_RAW_WRITE_CALLERS = {"checked_artifact/entry.rs": 1}
 
 # The authority both exception maps cite for the `:275`-`:279` carve-out (E4.4-6-B).
 CAPABILITY_FREE_EXCEPTION = "the capability-free exception, dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md §3"
@@ -546,6 +629,19 @@ CAPABILITY_FREE_WRITER_TOKENS = (
     "write_atomic", "write_marker", "write_lock", "write_manifest_and_lock",  # the
     "write_bundle", "publish_workspace_exclude_candidate",  # `write_atomic` family
     "sync_workspace_boundary", "ensure_workspace_exclude",
+    # M5d step (3), 2026-09-03: the relocated verified record writer. It is the
+    # raw publication primitive of the ordinary merge start's record create on a
+    # handle-fail volume (GwzM5-8M5d-Charter.md §3), so the arm that names it is
+    # carved by the same ground as the rest of this vocabulary. ADDED because
+    # the arm's own file names NO other token: measured under the masker,
+    # `checked_artifact/entry.rs` reads `create_dir_all` ZERO times (both its
+    # occurrences, :172 and :491 pre-change, are doc comments) and reaches the
+    # primitive through this one name and nothing else. Charter §7 authorises
+    # the addition on exactly this measurement. Safe against every unchanged
+    # row: measured, `write_atomic_verified` appears in exactly two files in the
+    # tree -- `verified_write.rs`, which defines it, and `entry.rs`, which is
+    # the entering row -- so no existing row's count moves.
+    "write_atomic_verified",
 )
 
 # Per carved file: its §10 row and reached operation, then the primitives and their
@@ -563,6 +659,21 @@ CAPABILITY_FREE_WRITER_TOKENS = (
 # file. That cheapest defeat is closed by the flat `PROTECTED_SOURCE_DIGESTS` row on
 # `artifact/mod.rs`, which this package adds for exactly this reason.
 CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
+    # M5d step (3) ENTERS one row (GwzM5-8M5d-Charter.md §3/§7, drafted at S1 in
+    # GwzM5-8M5d-GateRevisions.md Part A.4 as its recommended shape (B)). The
+    # ordinary merge start's record create publishes RAW on a volume whose
+    # persistent-handle probe refuses, through the relocated primitive in
+    # `src/verified_write.rs`; `create_merge_store_record_raw` is the whole arm
+    # and `entry.rs` is its only production caller. The row is fail-closed both
+    # ways on this map's usual ground: a SHRINK is a conversion of the carved arm
+    # to the checked door -- which would put an ordinary merge start, on E0.2
+    # §5.2's capability-free list, onto the durable-identity probe on the one
+    # class of volume the arm exists for -- and a GROWTH is a second raw writer
+    # in the boundary module, which nothing blesses. Its negative twin is
+    # `v1_lifecycle/tests/capability_free_exception.rs`'s boundary-arm scan.
+    # The arm was previously unpinned by this inventory in EITHER home: the
+    # primitive's old home, `merge/store/mod.rs`, was never a row of this map.
+    "checked_artifact/entry.rs": (":275 the ordinary merge start's RAW record create on a handle-fail volume", {"write_atomic_verified": 1}),
     "stash/mod.rs": (":276 the `gwz stash` bundle writer, mutation guard", {"write_atomic": 2, "write_bundle": 1}),
     "workspace_ops/handle_branch.rs": (":278/:279 `gwz branch`, BranchMutate guard", {"write_lock": 1, "sync_workspace_boundary": 1}),
     "workspace_ops/handle_commit.rs": (":277/:278/:279 `gwz commit`, mutation guard", {"create_dir_all": 1, "write_marker": 1, "write_lock": 1, "sync_workspace_boundary": 2}),
@@ -585,7 +696,15 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
 }
 if hashlib.sha256(
     "\n".join(sorted(CAPABILITY_FREE_RAW_WRITER_INVENTORY)).encode("utf-8")
-).hexdigest() != "3db5d529b0a9afb0a1744d8535128108ad2623305a3a0dede8e05b227f2ff8b3":
+).hexdigest() != "8fb45d6f48f65c928cd6a0d7130c637ea59965f360755a526de7fc7a74567131":
+    # M5d step (3), 2026-09-03: 15 -> 16 keys, one row ENTERS
+    # (`checked_artifact/entry.rs`, above). RE-MEASURED, not copied on trust:
+    # the outgoing 15-key set reproduced `3db5d529b0a9afb0a1744d8535128108
+    # ad2623305a3a0dede8e05b227f2ff8b3` exactly before the row was added, and
+    # the value above is this tree's own key set hashed the way the line below
+    # hashes it. It coincides with GwzM5-8M5d-GateRevisions.md §A.5's
+    # PROVISIONAL shape-(B) pin, which is how a reviewer can tell at a glance
+    # that the close took the shape S1 recommended.
     raise SystemExit(
         "check_checked_artifact_boundaries: the capability-free carved SET moved -- a row "
         "added, DELETED or swapped. It is the amendment's, not a checker edit: revise "
@@ -654,9 +773,17 @@ ENTRY_REFERENCES = {
     # would be unprovable. `CrashRecoveryDecision` is the only one with two
     # consumers: `start.rs` makes the decision and `service.rs` reads it as a
     # parameter, which is what "decide once per process" means in code.
+    # M5d step (3), 2026-09-03 (GwzM5-8M5d-Charter.md §3): the decision now
+    # reaches the CREATE DOOR as well, because it -- not a second probe --
+    # chooses raw versus checked publication for the record. `start.rs` makes
+    # it, `service.rs` reads it for the lease, and the two store files thread it
+    # to `entry::create_merge_store_record`. Four consumers is the honest
+    # picture of "decide once, per process".
     "CrashRecoveryDecision": {
         "workspace_ops/merge/v1_lifecycle/service.rs",
         "workspace_ops/merge/v1_lifecycle/start.rs",
+        "workspace_ops/merge/v1_lifecycle/store/mod.rs",
+        "workspace_ops/merge/v1_lifecycle/store/rewrite.rs",
     },
     "crash_recovery_decision": {"workspace_ops/merge/v1_lifecycle/start.rs"},
     "crash_recovery_protocol": {"workspace_ops/merge/v1_lifecycle/start.rs"},
@@ -714,6 +841,11 @@ ENTRY_ITEMS = {
     # word, spelled once so warning and refusal cannot drift).
     "CrashRecoveryDecision",
     "MERGE_RECORD_PARENT",
+    # M5d step (3)'s two (GwzM5-8M5d-Charter.md §3): the clause the ONE
+    # diagnostic gains on a handle-fail volume, and the raw-create arm that the
+    # capability-free inventory row and its negative twin both name.
+    "REVERSE_DOOR_LIMIT",
+    "create_merge_store_record_raw",
     "crash_recovery_decision",
     "crash_recovery_protocol",
     "crash_recovery_strict_refusal",
@@ -768,11 +900,29 @@ ENTRY_USES = {
     "super::catalog::recover_or_create",
     # E4.2's one: the coordinator's two merge-start bootstrap sessions.
     "super::coordinator::execution::{ admit_merge_start_managed_parents, execute_merge_start_managed_parents, }",
+    # M5d step (3)'s one: the decision's handle probe (the create door's own,
+    # applied to the workspace root) and the escape selector the four REVERSE
+    # doors acquire with. Both live in `observation.rs`, beside the door they
+    # describe, so neither can drift from it.
+    "super::observation::{IdentityGapEscape, directory_handles_ok}",
     "super::{ CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition, }",
 }
 
 ENTRY_CALLS = {
     "Bytes",
+    # M5d step (3)'s seven (GwzM5-8M5d-Charter.md §3): the REVERSE doors'
+    # escape-carrying acquire, the decision's handle probe, the neutral raw
+    # primitive -- this is the ONE production call to it in the crate, and the
+    # F-3 floor below pins that it stays one -- and the four std combinators
+    # the raw arm's no-replace guard and the decision's `matches!` use.
+    "CheckedArtifact::acquire_with_escape",
+    "crate::verified_write::write_atomic_verified",
+    "create_merge_store_record_raw",
+    "directory_handles_ok",
+    "is_ok",
+    "join",
+    "matches!",
+    "std::fs::symlink_metadata",
     # DR-1 ship (1) W3's seven: the probe the decision calls, the shared gap
     # sentence, the parent door's reuse of its v0 sibling, and the four
     # combinators the three renderings use.
@@ -1521,6 +1671,51 @@ def check(source: Path) -> list[str]:
                     "v1 lifecycle names the v0 persistence seam: "
                     f"{relative} ({token})"
                 )
+    # M5d step (3): F-3's redefined floor, the neutral raw primitive.
+    # (0) anti-vacuity: the floor must still exist, or every absence below is
+    # an artefact of a moved file rather than a property of the tree.
+    if not (source / NEUTRAL_RAW_WRITE_MODULE).is_file():
+        findings.append(
+            "the neutral raw-write primitive's module is GONE: "
+            f"{NEUTRAL_RAW_WRITE_MODULE}. GwzM5-8M5d-Charter.md §4 puts the merge "
+            "record's raw create there; relocating it again moves this floor"
+        )
+    # (1) `v1_lifecycle/` names the floor nowhere -- test files included, as
+    # the derived scan above does (rglob, not production_rust_files).
+    for path in sorted((source / V1_LIFECYCLE_TREE).rglob("*.rs")):
+        relative = path.relative_to(source).as_posix()
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        for token in sorted(NEUTRAL_RAW_WRITE_FLOOR):
+            if any(
+                text[max(0, match.start() - 3) : match.start()] != "fn "
+                for match in re.finditer(r"\b" + re.escape(token) + r"\b", text)
+            ):
+                findings.append(
+                    "v1 lifecycle names the neutral raw write primitive: "
+                    f"{relative} ({token})"
+                )
+    # (2) only `entry.rs` calls it, an exact number of times.
+    for path in production_rust_files(source):
+        relative = path.relative_to(source).as_posix()
+        if relative == NEUTRAL_RAW_WRITE_MODULE:
+            continue
+        text = mask_non_code(path.read_text(encoding="utf-8"))
+        actual = len(
+            [
+                match
+                for match in re.finditer(r"\bwrite_atomic_verified\b", text)
+                if text[max(0, match.start() - 3) : match.start()] != "fn "
+            ]
+        )
+        expected = NEUTRAL_RAW_WRITE_CALLERS.get(relative, 0)
+        if actual != expected:
+            findings.append(
+                "raw record-write caller outside the single permitted door: "
+                f"{relative} (expected={expected} actual={actual}). Only "
+                "checked_artifact/entry.rs may call it (GwzM5-8M5d-Charter.md §4); a "
+                "count that SHRANK is a conversion of the carved raw-create arm and "
+                "belongs in GwzM5-8R2E-CapabilityFreeAmendment.md §3, not in a commit"
+            )
     raw_writer_files: dict[str, dict[str, int]] = {}
     for path in production_rust_files(source / V1_LIFECYCLE_TREE):
         relative = path.relative_to(source).as_posix()

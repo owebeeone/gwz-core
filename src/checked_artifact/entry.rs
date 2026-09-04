@@ -13,6 +13,7 @@ use super::catalog::recover_or_create;
 use super::coordinator::execution::{
     admit_merge_start_managed_parents, execute_merge_start_managed_parents,
 };
+use super::observation::{IdentityGapEscape, directory_handles_ok};
 use super::{
     CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition,
 };
@@ -200,8 +201,38 @@ pub(crate) enum CrashRecoveryDecision {
     Unsupported {
         filesystem: Option<String>,
         gap: crate::MergeCrashRecoveryGap,
+        /// M5d (`GwzM5-8M5d-Charter.md` §3, 2026-09-03): whether this volume
+        /// proves the PERSISTENT FILE HANDLES the checked boundary's doors
+        /// need — a second, independent question from the catalog's identity
+        /// bar above it.
+        ///
+        /// The gap does not settle it, which is the whole reason this field
+        /// exists: on Linux `no_durable_identity` implies the handle probe
+        /// already failed, but `remote` and `volatile` do not — NFS and tmpfs
+        /// answer `name_to_handle_at` — and those volumes must NOT carry the
+        /// reverse-door limit. `false` means the record create publishes raw
+        /// and the reverse doors may refuse; `true` is today's behaviour
+        /// unchanged. It is carried only BELOW the bar: above it a handle
+        /// failure is an anomaly at the door, not a capability the merge
+        /// plans around.
+        handles_ok: bool,
     },
 }
+
+/// The clause the ONE diagnostic gains on a handle-fail volume
+/// (`GwzM5-8M5d-Charter.md` §3, "Reverse doors on handle-fail volumes",
+/// third bullet: "Start on those volumes states this limit in the same
+/// diagnostic (not a second unrelated warning class)").
+///
+/// It states the limit and stops. The escape itself is not repeated here:
+/// the door that actually refuses renders it in full
+/// (`capability::HANDLE_FAIL_REVERSE_DOOR_ESCAPE`), and a start that may
+/// never abort at all should not be handed an abort procedure.
+///
+/// It begins with a space and is APPENDED, so ship (1)'s sentence stays
+/// byte-identical at the head of the message for every pin that matches it.
+const REVERSE_DOOR_LIMIT: &str = " Selected-root and --preserve abort may refuse until the workspace is on a handle-capable \
+     volume.";
 
 /// **On these three names.** The charter's own shorthand for them is
 /// `to_protocol`, `warning` and the strict sentence; they are spelled with the
@@ -221,22 +252,45 @@ impl CrashRecoveryDecision {
                 supported: true,
                 filesystem: None,
                 gap: None,
+                // M5d charter §3: ABSENT above the bar. The field says how a
+                // below-bar merge behaves; above the bar there is nothing for
+                // a consumer to plan around.
+                handles_ok: None,
             },
-            Self::Unsupported { filesystem, gap } => crate::MergeCrashRecovery {
+            Self::Unsupported {
+                filesystem,
+                gap,
+                handles_ok,
+            } => crate::MergeCrashRecovery {
                 supported: false,
                 filesystem: filesystem.clone(),
                 gap: Some(*gap),
+                handles_ok: Some(*handles_ok),
             },
         }
     }
 
     /// The operator's exact sentence (charter §3.4). Drivers print `warning: `
     /// + this string on stderr; the `warning: ` prefix is theirs, not core's.
+    ///
+    /// **M5d (`GwzM5-8M5d-Charter.md` §3, 2026-09-03): ONE diagnostic, not
+    /// two.** When the volume also fails the handle probe, this SAME string
+    /// gains the reverse-door limit as an appended clause. Ship (1)'s sentence
+    /// is byte-identical in front of it — the docs-manifest regex and the
+    /// gwz-cli / gwz-py echo pins all match the first sentence — because a
+    /// second Diagnostic would be a second warning class, which the charter
+    /// forbids ("No second warning for the raw write itself").
     pub(crate) fn crash_recovery_warning(&self) -> String {
-        format!(
+        let warning = format!(
             "{}. Merge will continue. Use --filesystem-strict to refuse.",
             self.gap_sentence()
-        )
+        );
+        match self {
+            Self::Unsupported {
+                handles_ok: false, ..
+            } => format!("{warning}{REVERSE_DOOR_LIMIT}"),
+            Self::Supported | Self::Unsupported { .. } => warning,
+        }
     }
 
     /// The `--filesystem-strict` refusal (charter §3.6): the same sentence,
@@ -258,7 +312,9 @@ impl CrashRecoveryDecision {
     fn gap_sentence(&self) -> String {
         let (filesystem, gap) = match self {
             Self::Supported => (None, None),
-            Self::Unsupported { filesystem, gap } => (filesystem.as_deref(), Some(*gap)),
+            Self::Unsupported {
+                filesystem, gap, ..
+            } => (filesystem.as_deref(), Some(*gap)),
         };
         let parenthetical = match gap {
             Some(crate::MergeCrashRecoveryGap::RemoteFilesystem) => "remote filesystem",
@@ -299,6 +355,20 @@ impl CrashRecoveryDecision {
 /// volatile wins over remote, remote over the bare absence, and `remote` is a
 /// wording REASON, never a denylist. A description that cannot be taken at all
 /// leaves `NoDurableIdentity` and an unnamed filesystem.
+///
+/// **M5d (`GwzM5-8M5d-Charter.md` §3, "Where handle capability is learned",
+/// 2026-09-03): the decision also learns HANDLE capability.** Ship (1)'s
+/// decision learned identity, remoteness and volatility, and the handle probe
+/// was met later, at the create door — where its failure killed a start that
+/// had already warned. So the decision now runs the create door's own probe
+/// against the WORKSPACE ROOT (`directory_handles_ok`) and carries the answer
+/// beside the gap. Three consequences the charter states explicitly, all
+/// visible here: it is the workspace root and never `.gwz` (a first merge has
+/// no `.gwz`, and a missing private directory is not a capability gap); NFS
+/// and tmpfs, which answer `name_to_handle_at`, come out `handles_ok = true`
+/// and carry no reverse-door limit; and the probe runs ONLY below the bar,
+/// because above it a handle failure remains an anomaly at the door rather
+/// than a capability the merge plans around.
 pub(crate) fn crash_recovery_decision(root: &Path) -> ModelResult<CrashRecoveryDecision> {
     let probe = probe_workspace_admission(root);
     let cause = match probe.admitted {
@@ -319,42 +389,65 @@ pub(crate) fn crash_recovery_decision(root: &Path) -> ModelResult<CrashRecoveryD
         Some(volume) => (volume.name, crate::MergeCrashRecoveryGap::NoDurableIdentity),
         None => (None, crate::MergeCrashRecoveryGap::NoDurableIdentity),
     };
-    Ok(CrashRecoveryDecision::Unsupported { filesystem, gap })
+    Ok(CrashRecoveryDecision::Unsupported {
+        filesystem,
+        gap,
+        handles_ok: directory_handles_ok(root),
+    })
 }
 
+/// **The four REVERSE doors** below all acquire with
+/// [`IdentityGapEscape::ReverseMergeDoor`] (`GwzM5-8M5d-Charter.md` §3(b),
+/// 2026-09-03).
+///
+/// They are the doors a selected-root, `--preserve` or published-evidence
+/// abort takes, and the only production consumers of any of them are the
+/// reverse path's: `merge/root/artifact_facts.rs` (reached solely from
+/// `merge/v1_rollback/evidence.rs`), `merge/preserve/checked_bundle.rs` and
+/// `git/gitbackend/preservation_root/files.rs`. On a volume without
+/// persistent handles they still REFUSE — the charter forbids reverse-path
+/// raw — but they refuse with an escape that is true here instead of the
+/// substrate remedy's `gwz merge --abort`, which is this very door.
+///
+/// The forward create door below does NOT take this treatment: it does not
+/// refuse at all on such a volume, it publishes raw.
 fn root_artifact(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire(
+    CheckedArtifact::acquire_with_escape(
         CheckedArtifactPolicy::workspace(root),
         relative,
         ErrorCode::MergeRecoveryRequired,
         format!("workspace artifact '{}'", relative.display()),
+        IdentityGapEscape::ReverseMergeDoor,
     )
 }
 
 fn preservation_bundle(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire(
+    CheckedArtifact::acquire_with_escape(
         CheckedArtifactPolicy::workspace(root),
         relative,
         ErrorCode::PreservationEvidenceMismatch,
         "preservation bundle",
+        IdentityGapEscape::ReverseMergeDoor,
     )
 }
 
 fn preservation_workspace(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire(
+    CheckedArtifact::acquire_with_escape(
         CheckedArtifactPolicy::workspace(root),
         relative,
         ErrorCode::PreservationEvidenceMismatch,
         "root preservation artifact",
+        IdentityGapEscape::ReverseMergeDoor,
     )
 }
 
 fn preservation_git_directory(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire(
+    CheckedArtifact::acquire_with_escape(
         CheckedArtifactPolicy::git_directory(root),
         relative,
         ErrorCode::PreservationEvidenceMismatch,
         "root preservation artifact",
+        IdentityGapEscape::ReverseMergeDoor,
     )
 }
 
@@ -538,11 +631,46 @@ pub(crate) fn bootstrap_merge_start_parents(
 /// actions" its converted siblings use; this is the creation verb — a checked
 /// replacement whose expected fact is `Missing`, publishing onto an absent leaf
 /// inside an already-retained parent.
+///
+/// **M5d step (3) — the RAW arm (`GwzM5-8M5d-Charter.md` §3, 2026-09-03).**
+/// This door is the merge's ONLY forward checked door: `commit` is the
+/// record-root exception's raw rewrite and the archive and publications are
+/// raw already, so it is the one place a handle-fail volume could stop a
+/// merge that has already been told it may continue. Below the handle bar it
+/// therefore publishes through the neutral raw primitive instead of the
+/// boundary, and the charter's table says so in one line: *record create =
+/// raw (`write_atomic_verified`)*.
+///
+/// **Gated by the DECISION, not by a re-probe.** The caller threads the
+/// decision `crash_recovery_decision` already made for this process (charter
+/// §3.1's "decide once", extended to this door), so the door and the
+/// diagnostic can never disagree about which volume this is. Exactly one
+/// shape takes the raw arm — `Unsupported { handles_ok: false }`. `Supported`,
+/// `Unsupported { handles_ok: true }` and `None` all keep the checked
+/// publication, so a create-door handle failure while the decision said
+/// handles were fine stays what it is today: an anomaly error, unchanged text.
+///
+/// The raw arm keeps the checked arm's two guarantees that a user can
+/// observe: the same NO-REPLACE semantics (an existing record is refused, not
+/// overwritten) and the same re-read verification (the primitive compares the
+/// published bytes back). What it does not keep is the catalog, which does
+/// not exist on this volume, and crash recovery, which the charter states is
+/// absent rather than degraded here.
 pub(crate) fn create_merge_store_record(
     root: &Path,
     relative: &Path,
     goal: &[u8],
+    crash_recovery: Option<&CrashRecoveryDecision>,
 ) -> ModelResult<()> {
+    if matches!(
+        crash_recovery,
+        Some(CrashRecoveryDecision::Unsupported {
+            handles_ok: false,
+            ..
+        })
+    ) {
+        return create_merge_store_record_raw(root, relative, goal);
+    }
     let artifact = CheckedArtifact::acquire(
         CheckedArtifactPolicy::workspace(root),
         relative,
@@ -558,6 +686,35 @@ pub(crate) fn create_merge_store_record(
         ));
     }
     artifact.replace_exact(&CheckedArtifactFact::Missing, goal)
+}
+
+/// The record create's RAW arm, on a volume without persistent file handles
+/// (`GwzM5-8M5d-Charter.md` §3; `GwzM5-8R2E-CapabilityFreeAmendment.md` §3 as
+/// revised at this step — this function is the carved arm the entering
+/// inventory row names, and `tests/capability_free_exception.rs` scans exactly
+/// this region for boundary-door vocabulary).
+///
+/// A named function rather than an inline block for that reason and one more:
+/// the arm is the thing the two gates pin, and a region a scan can extract by
+/// signature is a region a reviewer can read whole. It is the ONLY production
+/// site in the crate that names the neutral raw primitive.
+///
+/// **No-replace, kept.** The checked arm publishes with an expected fact of
+/// `Missing`, so an existing record is a refusal and never an overwrite.
+/// `rename_durable(replace = true)` inside the primitive would not refuse by
+/// itself, so the guard is spelled here instead, with the same
+/// `MergeRecoveryRequired` code and the same sentence `create_open`'s own
+/// pre-flight uses. `symlink_metadata` and not `exists`: a symlink standing
+/// where the record belongs must refuse, not be followed.
+fn create_merge_store_record_raw(root: &Path, relative: &Path, goal: &[u8]) -> ModelResult<()> {
+    let path = root.join(relative);
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Err(ModelError::new(
+            ErrorCode::MergeRecoveryRequired,
+            format!("merge record '{}' already exists", relative.display()),
+        ));
+    }
+    crate::verified_write::write_atomic_verified(&path, goal)
 }
 
 /// The catalog doors' error rendering, as a named function.

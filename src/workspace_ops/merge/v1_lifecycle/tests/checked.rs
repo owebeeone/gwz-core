@@ -40,7 +40,7 @@ fn the_creation_lease_bootstraps_both_managed_parents_before_any_record_exists()
     );
 
     let created = CheckedV1Store::default()
-        .create_open(&lease, &root.path, &model)
+        .create_open(&lease, &root.path, &model, None)
         .unwrap();
 
     let durable = std::fs::read(root.path.join(RECORD_LEAF)).unwrap();
@@ -68,7 +68,8 @@ fn the_converted_creation_path_refuses_a_record_whose_parent_was_never_bootstrap
     let lease = V1MutationLease::acquire_for_test(&root.path).unwrap();
     assert!(!root.path.join(MERGE_STORE).exists());
 
-    let Err(refused) = CheckedV1Store::default().create_open(&lease, &root.path, &model) else {
+    let Err(refused) = CheckedV1Store::default().create_open(&lease, &root.path, &model, None)
+    else {
         panic!("a record was published into an unbootstrapped parent");
     };
 
@@ -96,7 +97,8 @@ fn a_faulted_record_publication_leaves_the_parents_installed_and_no_record() {
         V1MutationLease::acquire_for_merge_start_for_test(&root.path, &model.workspace_id).unwrap();
 
     fail_next_checked_artifact_at(CheckedArtifactFault::BeforeManagedPublication);
-    let Err(refused) = CheckedV1Store::default().create_open(&lease, &root.path, &model) else {
+    let Err(refused) = CheckedV1Store::default().create_open(&lease, &root.path, &model, None)
+    else {
         panic!("the injected publication fault did not refuse");
     };
 

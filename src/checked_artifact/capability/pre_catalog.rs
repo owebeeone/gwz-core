@@ -23,7 +23,11 @@ use crate::checked_artifact::protocol::{
 mod provider;
 
 #[cfg(test)]
+pub(in crate::checked_artifact) use provider::handle_probe_is_unavailable;
+#[cfg(test)]
 pub(in crate::checked_artifact) use provider::retain_managed_parent_at_for_test;
+#[cfg(test)]
+pub(crate) use provider::with_handle_probe_unavailable;
 /// R2-D Phase 2 Step 2.2 — the retained action-namespace capability and the
 /// role-typed edge selector the `namespace` owner drives it with.
 ///

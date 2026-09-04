@@ -18,6 +18,14 @@ mod pre_catalog;
 pub(super) use collision::*;
 pub(super) use durable_identity::DurableObjectIdentityV1;
 pub(super) use path::*;
+/// M5d step (3)'s handle-probe half of the same seam
+/// (`GwzM5-8M5d-Charter.md` §3, 2026-09-03): the legacy per-leaf probe the
+/// record create and every reverse checked door take, which no CI host can be
+/// made to refuse.
+#[cfg(test)]
+pub(super) use pre_catalog::handle_probe_is_unavailable;
+#[cfg(test)]
+pub(crate) use pre_catalog::with_handle_probe_unavailable;
 pub(super) use pre_catalog::*;
 /// DR-1 ship (1) W3's test-only seam (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
 /// §3.8, 2026-09-03). Named rather than glob-carried: the glob above
@@ -108,6 +116,35 @@ pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem 
      `gwz merge --abort`, which needs no such filesystem unless it must re-verify checked \
      artifacts — a preservation bundle, a selected root's manifest and lock, or the merge's \
      published evidence";
+
+/// M5d step (3) — the REVERSE door's refusal on a handle-fail volume
+/// (`GwzM5-8M5d-Charter.md` §3(b), 2026-09-03, operator-chartered product).
+///
+/// **Why it is not [`PERSISTENT_FILESYSTEM_IDENTITY_REMEDY`].** That sentence
+/// offers two escapes, and one of them — "clear a merge already open with
+/// `gwz merge --abort`" — is CIRCULAR at this door: a selected-root or
+/// `--preserve` abort IS the thing refusing, because it must re-verify a
+/// checked artifact and this volume exposes no persistent handles to bind one
+/// with. The charter's answer is a new sentence naming exactly ONE escape,
+/// and one that needs neither handles on this volume nor an old binary: move
+/// the workspace to a volume that proves handles and abort there.
+///
+/// **What it deliberately does not say.** Not `git merge --abort` — it rolls
+/// back none of the three things this door protects (a selected root's
+/// manifest and lock, a preservation bundle, the merge's published evidence).
+/// Not "delete the record" — that leaves exactly those three unrolled-back.
+/// Not `gwz 0.13.0` — the charter is explicit (§3(b), last bullet) that an
+/// old binary is not an accepted escape for an open v1 record.
+///
+/// Participant-only abort is unaffected and still clears the record: it
+/// touches no checked artifact and so never reaches this door (charter
+/// §3(a); `GwzM5-8R2E-CapabilityFreeAmendment.md` §6, capability-free by
+/// path).
+pub(super) const HANDLE_FAIL_REVERSE_DOOR_ESCAPE: &str = "this filesystem does not expose the persistent file handles that reversing a merge through the \
+     checked boundary requires. One escape works from here: copy the whole workspace onto a volume \
+     that proves them (a local APFS or HFS+ volume on macOS; ext4, xfs or f2fs on Linux; NTFS on \
+     Windows) and run `gwz merge --abort` there, adding `--preserve` if that was the door that \
+     refused";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlatformCapability {

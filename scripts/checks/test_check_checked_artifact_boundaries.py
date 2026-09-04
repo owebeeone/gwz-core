@@ -1236,6 +1236,75 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotIn("v0 persistence seam", result.stderr)
         self.assertIn("protected source tree changed", result.stderr)
 
+    # --- M5d step (3): F-3's redefined floor, the neutral raw primitive -----
+    # The successor property named by the J-1 succession ruling of 2026-09-03
+    # (GwzM5-8M5d-GateRevisions.md Part B §B.5.2). Its two halves and its
+    # anti-vacuity anchor each get a row, plus the masking proof the exact
+    # caller count depends on.
+    def test_v1_lifecycle_naming_the_neutral_raw_primitive_is_rejected(self) -> None:
+        result = self.append(
+            "workspace_ops/merge/v1_lifecycle/tests/fixtures.rs",
+            "\nfn probe_raw_write(path: &std::path::Path, bytes: &[u8]) {\n"
+            "    let _ = crate::verified_write::write_atomic_verified(path, bytes);\n"
+            "}\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "v1 lifecycle names the neutral raw write primitive", result.stderr
+        )
+        self.assertIn("verified_write", result.stderr)
+
+    def test_a_second_caller_of_the_neutral_raw_primitive_is_rejected(self) -> None:
+        result = self.append(
+            "workspace_ops/handle_stash/shared.rs",
+            "\nfn bypass(path: &std::path::Path, bytes: &[u8]) {\n"
+            "    let _ = crate::verified_write::write_atomic_verified(path, bytes);\n"
+            "}\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "raw record-write caller outside the single permitted door", result.stderr
+        )
+        self.assertIn("expected=0 actual=1", result.stderr)
+
+    def test_converting_the_carved_raw_create_arm_is_rejected(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/entry.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "crate::verified_write::write_atomic_verified(&path, goal)",
+                "Ok(())",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "raw record-write caller outside the single permitted door", result.stderr
+        )
+        self.assertIn("expected=1 actual=0", result.stderr)
+        self.assertIn("capability-free raw writer inventory moved", result.stderr)
+
+    def test_the_neutral_raw_primitives_module_must_exist(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        (source / "verified_write.rs").unlink()
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "the neutral raw-write primitive's module is GONE", result.stderr
+        )
+
+    def test_a_comment_naming_the_neutral_raw_primitive_is_not_a_call(self) -> None:
+        result = self.append(
+            "workspace_ops/handle_stash/shared.rs",
+            "\n// crate::verified_write::write_atomic_verified(path, bytes)\n"
+            "const RAW: &str = \"write_atomic_verified\";\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_comments_and_strings_do_not_create_false_references(self) -> None:
         result = self.append(
             "workspace_ops/handle_stash/shared.rs",

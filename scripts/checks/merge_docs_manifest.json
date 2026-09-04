@@ -306,7 +306,16 @@
         {
           "id": "operation_model_crash_recovery_warning_sentence",
           "match": "regex",
-          "value": "crash recovery is unsupported on \\S+ \\((?:no durable filesystem identity|remote filesystem|volatile filesystem)\\)\\. Merge will continue\\. Use --filesystem-strict to refuse\\."
+          "comment": "M5d step (3): the sentence is unchanged and still pinned whole. On a volume without persistent file handles the SAME diagnostic gains an appended clause (charter §3, one Diagnostic and not two), so the pattern now states explicitly that the clause may follow -- matching is `re.search`, so this admitted both forms before and after; the alternation is here so a reader of the pin knows which two forms are the product, and the clause itself is pinned by the row below.",
+          "value": "crash recovery is unsupported on \\S+ \\((?:no durable filesystem identity|remote filesystem|volatile filesystem)\\)\\. Merge will continue\\. Use --filesystem-strict to refuse\\.(?: Selected-root and --preserve abort may refuse until the workspace is on a handle-capable volume\\.)?"
+        },
+        {
+          "id": "operation_model_handle_fail_reverse_door_limit",
+          "value": "Selected-root and --preserve abort may refuse until the workspace is on a handle-capable volume."
+        },
+        {
+          "id": "operation_model_handle_fail_escape",
+          "value": "run `gwz merge --abort` there, adding\n`--preserve` if that was the door that refused"
         }
       ],
       "forbidden": []

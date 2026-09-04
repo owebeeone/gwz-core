@@ -85,6 +85,31 @@ impl CheckedArtifact {
         code: ErrorCode,
         label: impl Into<String>,
     ) -> ModelResult<Self> {
+        Self::acquire_with_escape(policy, relative, code, label, IdentityGapEscape::Substrate)
+    }
+
+    /// [`Self::acquire`], with the sentence a HANDLE-PROBE refusal renders
+    /// chosen by the caller (`GwzM5-8M5d-Charter.md` §3(b), 2026-09-03).
+    ///
+    /// Only the door knows which escape is true for it, and on a handle-fail
+    /// volume the substrate's own remedy is CIRCULAR for a reverse door: it
+    /// advertises `gwz merge --abort`, which is the very door that just
+    /// refused. `entry.rs`'s four reverse helpers pass
+    /// [`IdentityGapEscape::ReverseMergeDoor`] instead; every other caller
+    /// keeps today's rendering through [`Self::acquire`].
+    ///
+    /// The escape is not retained on the artifact because it cannot matter
+    /// later: the FIRST thing this function does after opening the root is
+    /// probe it, so a volume that refuses handles never yields a
+    /// `CheckedArtifact` at all, and `parent_is_current`'s own probe below is
+    /// unreachable there.
+    pub(super) fn acquire_with_escape(
+        policy: CheckedArtifactPolicy,
+        relative: &Path,
+        code: ErrorCode,
+        label: impl Into<String>,
+        escape: IdentityGapEscape,
+    ) -> ModelResult<Self> {
         let label = label.into();
         let relative = relative.to_path_buf();
         let (parent_relative, leaf) =
@@ -93,7 +118,7 @@ impl CheckedArtifact {
         let quarantine_parent = policy.private_parent();
         let root = Dir::open_ambient_dir(policy.artifact_root(), ambient_authority())
             .map_err(|cause| io_op_error(code, &label, "open ambient artifact root", cause))?;
-        let root_identity = durable_identity(&root, &label)?;
+        let root_identity = durable_identity(&root, &label, escape)?;
         let canonical_path_identity = identity::canonical_path_identity(&root, &relative)
             .map_err(|cause| unsupported(&label, cause))?;
         let parent = match traverse(&root, &parent_relative)
@@ -102,7 +127,7 @@ impl CheckedArtifact {
             Traversal::Missing => ParentState::Missing,
             Traversal::Invalid => ParentState::Invalid,
             Traversal::Open(dir) => {
-                let identity = durable_identity(&dir, &label)?;
+                let identity = durable_identity(&dir, &label, escape)?;
                 ParentState::Open { dir, identity }
             }
         };
@@ -356,8 +381,50 @@ fn traverse(root: &Dir, relative: &Path) -> std::io::Result<Traversal> {
     Ok(Traversal::Open(current))
 }
 
-fn durable_identity(dir: &Dir, label: &str) -> ModelResult<ObjectIdentity> {
-    identity::object_identity(dir).map_err(|cause| unsupported(label, cause))
+/// Which sentence a refusal of the LEGACY persistent-handle probe renders.
+///
+/// M5d step (3) (`GwzM5-8M5d-Charter.md` §3(b), 2026-09-03). The probe is the
+/// same either way; only the escape offered differs, because the escape that
+/// is true for a door depends on which door it is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum IdentityGapEscape {
+    /// The substrate's own remedy, verbatim — today's rendering, kept for
+    /// every door but the four reverse merge doors.
+    Substrate,
+    /// A reverse merge door (a selected root's artifacts, a preservation
+    /// bundle, published evidence) on a volume without persistent handles.
+    ReverseMergeDoor,
+}
+
+/// The create door's own handle probe, applied to one directory.
+///
+/// M5d step (3) (`GwzM5-8M5d-Charter.md` §3, "Where handle capability is
+/// learned"). `crash_recovery_decision` runs THIS against the workspace root —
+/// the directory whose identity [`CheckedArtifact::acquire`] takes first, and
+/// which exists before any write — so the decision point learns handle
+/// capability at the decision point rather than meeting it later at the door.
+/// It is deliberately not applied to `.gwz`: a first merge has no `.gwz` yet,
+/// and a missing private directory is not a filesystem capability gap
+/// (charter revision 5, S-P2-3).
+///
+/// Read-only and total: it opens a directory and asks the host one question,
+/// creating nothing. Any failure — the open, or the probe — answers `false`,
+/// because every one of them means the door cannot bind this directory's
+/// durable identity.
+pub(super) fn directory_handles_ok(directory: &Path) -> bool {
+    Dir::open_ambient_dir(directory, ambient_authority())
+        .is_ok_and(|dir| identity::object_identity(&dir).is_ok())
+}
+
+fn durable_identity(
+    dir: &Dir,
+    label: &str,
+    escape: IdentityGapEscape,
+) -> ModelResult<ObjectIdentity> {
+    identity::object_identity(dir).map_err(|cause| match escape {
+        IdentityGapEscape::Substrate => unsupported(label, cause),
+        IdentityGapEscape::ReverseMergeDoor => reverse_door_unsupported(label),
+    })
 }
 
 pub(super) fn io_op_error(
@@ -373,6 +440,24 @@ fn unsupported(label: &str, cause: std::io::Error) -> ModelError {
     ModelError::new(
         ErrorCode::UnsupportedOperation,
         format!("checked {label}: durable filesystem identity is unsupported: {cause}"),
+    )
+}
+
+/// The refusal a REVERSE merge door renders on a handle-fail volume
+/// (`GwzM5-8M5d-Charter.md` §3(b), 2026-09-03).
+///
+/// Not [`unsupported`]: that renders the substrate's own remedy, which names
+/// `gwz merge --abort` as the escape — circular here, because this IS that
+/// door refusing. The cause is not interpolated either; it is always the same
+/// gap (this probe has exactly one failure meaning) and the charter asks for
+/// ONE escape stated plainly, not an `errno` the user cannot act on.
+fn reverse_door_unsupported(label: &str) -> ModelError {
+    ModelError::new(
+        ErrorCode::UnsupportedOperation,
+        format!(
+            "checked {label}: {}",
+            super::capability::HANDLE_FAIL_REVERSE_DOOR_ESCAPE
+        ),
     )
 }
 

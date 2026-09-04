@@ -102,8 +102,12 @@ fn the_production_writer_floor_writes_a_v1_record_for_no_ff() {
             supported: true,
             filesystem: None,
             gap: None,
+            // M5d charter §3: `handles_ok` is ABSENT above the bar. A handle
+            // failure there is an anomaly at the door, not a capability the
+            // merge plans around, so there is nothing to report.
+            handles_ok: None,
         }),
-        "an above-bar start reports crash recovery as supported, and names no gap"
+        "an above-bar start reports crash recovery as supported, and names no gap or handle limit"
     );
 }
 

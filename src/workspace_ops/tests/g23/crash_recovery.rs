@@ -11,8 +11,10 @@
 
 use super::*;
 
-use crate::checked_artifact::entry::CrashRecoveryDecision;
-use crate::checked_artifact::{InjectedVolumeDescription, with_identity_unavailable};
+use crate::checked_artifact::entry::{CrashRecoveryDecision, crash_recovery_decision};
+use crate::checked_artifact::{
+    InjectedVolumeDescription, with_handle_probe_unavailable, with_identity_unavailable,
+};
 
 /// A `--no-ff` start request, otherwise the ordinary one.
 fn no_ff_request() -> crate::MergeRequest {
@@ -119,6 +121,99 @@ fn workspace(label: &str) -> (TempDir, crate::git::Git2Backend, RemoteFixture) {
     (temp, backend, fixture)
 }
 
+/// Run `body` on a volume that proves NEITHER durable identity NOR persistent
+/// file handles — the overlay-without-`nfs_export` shape.
+///
+/// **Two substrates, one row** (`GwzM5-8M5d-Charter.md` §3; the seam is ship
+/// (1) §3.8's, extended at this step). The CI hosts are APFS and ext4, both of
+/// which answer the handle probe, so by default the seam presents the refusal a
+/// real overlay gives — byte-identical, because the injected error IS
+/// `persistent_identity_unsupported()`. When the workflow has actually mounted
+/// such a volume and put the fixture on it (`.github/workflows/
+/// linux-identity-probe.yml`'s `handle-fail merge` job, which sets `TMPDIR` to
+/// the overlay and `GWZ_M5D_REAL_HANDLE_FAIL=1`), the seam is NOT armed and the
+/// same assertions run against the real kernel. Not a skip either way: the row
+/// runs on every host, and the workflow's job fails if the real volume does not
+/// reproduce it.
+fn on_a_handle_fail_volume<T>(body: impl FnOnce() -> T) -> T {
+    if std::env::var_os("GWZ_M5D_REAL_HANDLE_FAIL").is_some() {
+        return body();
+    }
+    with_identity_unavailable(below_bar(Some("overlay")), || {
+        with_handle_probe_unavailable(body)
+    })
+}
+
+/// The ONE diagnostic a handle-fail invocation emits, asserted in the form both
+/// substrates share: ship (1)'s sentence in front, the M5d clause appended.
+///
+/// The volume's NAME is deliberately not pinned here — the seam injects
+/// `overlay`, and a real mount is named by `/proc/self/mountinfo`, which may
+/// answer `unknown` on a kernel that does not resolve it. The exact text over
+/// the whole gap space is pinned by the unit rows below, which are seam-only.
+fn assert_one_handle_fail_diagnostic(sink: &CollectingSink) {
+    let emitted = diagnostics(sink);
+    assert_eq!(
+        emitted.len(),
+        1,
+        "one diagnostic, not two: the raw write itself never warns -- {emitted:?}"
+    );
+    assert!(
+        emitted[0].starts_with("crash recovery is unsupported on "),
+        "{}",
+        emitted[0]
+    );
+    assert!(
+        emitted[0].contains(". Merge will continue. Use --filesystem-strict to refuse."),
+        "ship (1)'s sentence must survive byte-identical in front: {}",
+        emitted[0]
+    );
+    assert!(
+        emitted[0].ends_with(
+            "Selected-root and --preserve abort may refuse until the workspace is on a \
+             handle-capable volume."
+        ),
+        "{}",
+        emitted[0]
+    );
+}
+
+/// Everything a handle-fail start must leave behind, asserted once.
+fn assert_raw_record_completed(root: &Path, response: &crate::MergeResponse) {
+    assert!(
+        !response.crash_recovery.as_ref().unwrap().supported,
+        "a handle-fail volume is below the identity bar too"
+    );
+    assert_eq!(
+        response.crash_recovery.as_ref().unwrap().handles_ok,
+        Some(false),
+        "the machine truth a JSON consumer reads instead of stderr"
+    );
+    assert_eq!(catalog_entries(root), Vec::<PathBuf>::new());
+    assert_eq!(response.state, crate::MergeOperationState::Completed);
+    assert!(!response.open, "{response:?}");
+    let merge_id = response.merge_id.as_deref().unwrap();
+    let archived = root.join(format!(".gwz/merge/done/{merge_id}.yaml"));
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(&fs::read_to_string(&archived).unwrap()).unwrap();
+    assert_eq!(
+        value["schema"].as_str(),
+        Some("gwz.merge-operation/v1"),
+        "the handle-fail start still writes the v1 envelope"
+    );
+    let leftovers: Vec<PathBuf> = fs::read_dir(root.join(".gwz/merge"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|value| value == "tmp"))
+        .collect();
+    assert_eq!(
+        leftovers,
+        Vec::<PathBuf>::new(),
+        "the raw writer publishes by rename and leaves no staged temporary behind"
+    );
+}
+
 /// **The default, executed end to end** (charter §0's second bullet, §3.1's
 /// start arm, §3.4's two channels).
 ///
@@ -158,6 +253,10 @@ fn a_below_bar_no_ff_start_warns_once_creates_no_catalog_and_completes() {
             supported: false,
             filesystem: Some("btrfs".to_owned()),
             gap: Some(crate::MergeCrashRecoveryGap::NoDurableIdentity),
+            // M5d charter §3: below the bar but the HANDLE probe still
+            // answers, which is the btrfs / NFS / tmpfs shape. Checked
+            // create, and no reverse-door clause on the diagnostic above.
+            handles_ok: Some(true),
         })
     );
     assert_eq!(
@@ -320,6 +419,7 @@ fn every_gap_and_an_unnamed_volume_word_the_warning_and_the_response() {
                 supported: false,
                 filesystem: expected_name,
                 gap: Some(gap),
+                handles_ok: Some(true),
             }),
             "{label}"
         );
@@ -400,6 +500,7 @@ fn a_below_bar_continue_decides_once_and_abort_stays_capability_free() {
             supported: false,
             filesystem: Some("btrfs".to_owned()),
             gap: Some(crate::MergeCrashRecoveryGap::NoDurableIdentity),
+            handles_ok: Some(true),
         })
     );
     assert_eq!(continued.state, crate::MergeOperationState::Completed);
@@ -486,6 +587,7 @@ fn the_warning_renders_the_operators_exact_sentence() {
         let decision = CrashRecoveryDecision::Unsupported {
             filesystem: filesystem.map(str::to_owned),
             gap,
+            handles_ok: true,
         };
         assert_eq!(decision.crash_recovery_warning(), expected);
         assert!(
@@ -498,6 +600,7 @@ fn the_warning_renders_the_operators_exact_sentence() {
                 supported: false,
                 filesystem: filesystem.map(str::to_owned),
                 gap: Some(gap),
+                handles_ok: Some(true),
             }
         );
     }
@@ -508,6 +611,309 @@ fn the_warning_renders_the_operators_exact_sentence() {
             supported: true,
             filesystem: None,
             gap: None,
+            handles_ok: None,
         }
     );
+}
+
+/// **M5d step (3): the decision learns HANDLE capability, and says so once**
+/// (`GwzM5-8M5d-Charter.md` §3, "Where handle capability is learned").
+///
+/// Three shapes, one function. Below the bar with the handle probe answering —
+/// the btrfs / NFS / tmpfs shape, and the shape a first merge takes on APFS or
+/// ext4 with no `.gwz` yet — is `handles_ok = true` and ship (1)'s sentence
+/// unchanged. Below the bar with the probe refusing is `handles_ok = false` and
+/// the SAME diagnostic with the reverse-door limit appended, never a second
+/// one. Above the bar the field is ABSENT.
+///
+/// The `.gwz`-absence row is the charter's revision-5 ruling (S-P2-3) executed:
+/// the probe is the workspace root's, so a workspace that has never merged
+/// reads `true` rather than being punished for a private directory that does
+/// not exist yet.
+#[test]
+fn the_decision_learns_handle_capability_at_the_decision_point() {
+    let (temp, _backend, _fixture) = workspace("m5d-handle-decision");
+    assert!(
+        !temp.path().join(".gwz/merge").exists(),
+        "the row below is about a workspace with no merge directory yet"
+    );
+
+    let handles = with_identity_unavailable(below_bar(Some("btrfs")), || {
+        crash_recovery_decision(temp.path())
+    })
+    .unwrap();
+    assert_eq!(
+        handles,
+        CrashRecoveryDecision::Unsupported {
+            filesystem: Some("btrfs".to_owned()),
+            gap: crate::MergeCrashRecoveryGap::NoDurableIdentity,
+            handles_ok: true,
+        },
+        "a missing .gwz on a handle-capable volume is not a capability gap"
+    );
+    assert_eq!(
+        handles.crash_recovery_warning(),
+        "crash recovery is unsupported on btrfs (no durable filesystem identity). Merge will \
+         continue. Use --filesystem-strict to refuse.",
+        "handles intact: ship (1)'s sentence, and nothing appended"
+    );
+
+    let handle_fail = with_identity_unavailable(below_bar(Some("overlay")), || {
+        with_handle_probe_unavailable(|| crash_recovery_decision(temp.path()))
+    })
+    .unwrap();
+    assert_eq!(
+        handle_fail,
+        CrashRecoveryDecision::Unsupported {
+            filesystem: Some("overlay".to_owned()),
+            gap: crate::MergeCrashRecoveryGap::NoDurableIdentity,
+            handles_ok: false,
+        }
+    );
+    assert_eq!(
+        handle_fail.crash_recovery_warning(),
+        "crash recovery is unsupported on overlay (no durable filesystem identity). Merge will \
+         continue. Use --filesystem-strict to refuse. Selected-root and --preserve abort may \
+         refuse until the workspace is on a handle-capable volume.",
+        "ONE diagnostic: ship (1)'s sentence byte-identical, then the appended limit"
+    );
+    let same_volume_with_handles = CrashRecoveryDecision::Unsupported {
+        filesystem: Some("overlay".to_owned()),
+        gap: crate::MergeCrashRecoveryGap::NoDurableIdentity,
+        handles_ok: true,
+    };
+    assert!(
+        handle_fail
+            .crash_recovery_warning()
+            .starts_with(&same_volume_with_handles.crash_recovery_warning()),
+        "the appended clause must not disturb the sentence every doc and driver pin matches"
+    );
+    assert_eq!(
+        handle_fail.crash_recovery_protocol(),
+        crate::MergeCrashRecovery {
+            supported: false,
+            filesystem: Some("overlay".to_owned()),
+            gap: Some(crate::MergeCrashRecoveryGap::NoDurableIdentity),
+            handles_ok: Some(false),
+        }
+    );
+
+    // Above the bar the host answers for itself, and the field is absent.
+    let above = crash_recovery_decision(temp.path()).unwrap();
+    assert_eq!(above, CrashRecoveryDecision::Supported);
+    assert_eq!(above.crash_recovery_protocol().handles_ok, None);
+}
+
+/// **The raw record create, executed end to end** (charter §3's table row
+/// "Handle probe fails … record create: **raw**", and §8's acceptance).
+///
+/// On a volume that can prove neither durable identity nor persistent file
+/// handles, a `--no-ff` start still runs: it warns ONCE with the appended
+/// clause, activates no catalog, publishes its v1 record through the raw
+/// verified writer instead of the checked boundary, and completes. Before M5d
+/// this start died at `create_merge_store_record` AFTER its warning had been
+/// printed — ship (1) charter §4.1's recorded limit — which is the regression
+/// this row exists to keep closed.
+#[test]
+fn a_handle_fail_no_ff_start_writes_its_record_raw_and_completes() {
+    let (temp, backend, _fixture) = workspace("m5d-handle-fail-start");
+    let sink = CollectingSink::default();
+
+    let response = on_a_handle_fail_volume(|| {
+        crate::workspace_ops::handle_merge_with_events(
+            &backend,
+            temp.path(),
+            no_ff_request(),
+            "op_m5d_handle_fail",
+            &sink,
+        )
+    })
+    .unwrap();
+
+    assert_one_handle_fail_diagnostic(&sink);
+    assert_raw_record_completed(temp.path(), &response);
+}
+
+/// **The same on an ORDINARY `gwz merge`** — charter §8's acceptance sentence,
+/// which is about `gwz merge <source>` and not only `--no-ff`.
+///
+/// `ACTIVE_WRITER_FLOOR` is `V1` on this tree, so an ordinary start writes a v1
+/// record and takes exactly the door this step widened. This is the row the
+/// workflow's real-overlay job runs first: it is the shape a user actually
+/// types.
+#[test]
+fn a_handle_fail_ordinary_start_writes_its_record_raw_and_completes() {
+    let (temp, backend, _fixture) = workspace("m5d-handle-fail-ordinary");
+    let sink = CollectingSink::default();
+
+    let response = on_a_handle_fail_volume(|| {
+        crate::workspace_ops::handle_merge_with_events(
+            &backend,
+            temp.path(),
+            request(false),
+            "op_m5d_handle_fail_ordinary",
+            &sink,
+        )
+    })
+    .unwrap();
+
+    assert_one_handle_fail_diagnostic(&sink);
+    assert_raw_record_completed(temp.path(), &response);
+}
+
+/// **A conflicted handle-fail attempt, resolved and continued** (charter §8:
+/// the forward path still runs; §3.1's "a continue is a NEW PROCESS").
+///
+/// The continue decides for itself on the same volume, reaches the same answer,
+/// warns once with the same appended clause, and finishes the merge — all on a
+/// record that was created raw.
+#[test]
+fn a_handle_fail_attempt_continues_after_resolution() {
+    let (temp, backend) = conflicting_workspace("m5d-handle-fail-continue");
+    let app = temp.path().join("app");
+    let start_sink = CollectingSink::default();
+    let started = on_a_handle_fail_volume(|| {
+        crate::workspace_ops::handle_merge_with_events(
+            &backend,
+            temp.path(),
+            no_ff_request(),
+            "op_m5d_hf_start",
+            &start_sink,
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        started.state,
+        crate::MergeOperationState::AwaitingResolution
+    );
+    assert!(started.open);
+    assert_one_handle_fail_diagnostic(&start_sink);
+    assert_eq!(
+        started.crash_recovery.as_ref().unwrap().handles_ok,
+        Some(false)
+    );
+
+    fs::write(app.join("README.md"), "resolved\n").unwrap();
+    backend
+        .stage_paths_allowing_other_conflicts(&app, &["README.md"])
+        .unwrap();
+
+    let sink = CollectingSink::default();
+    let continued = on_a_handle_fail_volume(|| {
+        crate::workspace_ops::handle_merge_with_events(
+            &backend,
+            temp.path(),
+            recovery_request(crate::MergeOp::Resume, started.merge_id.clone()),
+            "op_m5d_hf_continue",
+            &sink,
+        )
+    })
+    .unwrap();
+
+    assert_one_handle_fail_diagnostic(&sink);
+    assert_raw_record_completed(temp.path(), &continued);
+}
+
+/// **The reverse doors' refusal names ONE escape, and it is not this door**
+/// (charter §3(b)).
+///
+/// Every reverse checked door — a selected root's artifacts, a preservation
+/// bundle, the root preservation image on either root kind — refuses on a
+/// handle-fail volume, because the charter forbids reverse-path raw. What
+/// changes is the sentence: the substrate remedy advertises `gwz merge
+/// --abort`, which IS the door refusing, so the escape offered here is the one
+/// that needs neither handles on this volume nor an old binary.
+#[test]
+fn a_reverse_checked_door_on_a_handle_fail_volume_names_the_one_escape() {
+    let (temp, _backend, _fixture) = workspace("m5d-reverse-door");
+    let root = temp.path();
+    let relative = Path::new("gwz.lock");
+
+    let refusals = with_handle_probe_unavailable(|| {
+        vec![
+            crate::checked_artifact::entry::observe_merge_root_artifact(root, relative)
+                .map(|_| ())
+                .unwrap_err(),
+            crate::checked_artifact::entry::remove_merge_root_artifact(root, relative, b"x")
+                .unwrap_err(),
+            crate::checked_artifact::entry::replace_merge_root_artifact(root, relative, b"x", b"y")
+                .unwrap_err(),
+            crate::checked_artifact::entry::observe_merge_preservation_bundle(
+                root,
+                Path::new(".gwz/stash/bundle"),
+                None,
+            )
+            .map(|_| ())
+            .unwrap_err(),
+            crate::checked_artifact::entry::observe_merge_preservation_workspace(
+                root, relative, None,
+            )
+            .map(|_| ())
+            .unwrap_err(),
+        ]
+    });
+
+    for refusal in &refusals {
+        assert_eq!(refusal.code, ErrorCode::UnsupportedOperation, "{refusal:?}");
+        for named in [
+            "does not expose the persistent file handles",
+            "copy the whole workspace onto a volume that proves them",
+            "`gwz merge --abort` there",
+            "--preserve",
+            "APFS",
+            "ext4",
+            "NTFS",
+        ] {
+            assert!(refusal.message.contains(named), "{}", refusal.message);
+        }
+        assert!(
+            !refusal.message.contains("--filesystem-strict"),
+            "the substrate remedy's escapes are circular at this door: {}",
+            refusal.message
+        );
+        assert!(
+            !refusal.message.contains("0.13"),
+            "an old binary is not an accepted escape for an open v1 record: {}",
+            refusal.message
+        );
+    }
+}
+
+/// **Above the bar a handle failure stays an ANOMALY** (charter §3: "Above the
+/// bar, a boundary `Unsupported` is still an error").
+///
+/// With only the handle probe refusing — the catalog's identity bar untouched,
+/// so the decision answers `Supported` — the start does NOT take the raw arm
+/// and does NOT warn. It fails at the create door with today's unchanged
+/// substrate text, because that combination is not a filesystem the charter
+/// plans around; it is a volume behaving inconsistently.
+#[test]
+fn a_handle_failure_above_the_bar_is_still_an_error_with_todays_text() {
+    let (temp, backend, _fixture) = workspace("m5d-above-bar-anomaly");
+    let sink = CollectingSink::default();
+
+    let error = with_handle_probe_unavailable(|| {
+        crate::workspace_ops::handle_merge_with_events(
+            &backend,
+            temp.path(),
+            no_ff_request(),
+            "op_m5d_above_bar_anomaly",
+            &sink,
+        )
+    })
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::UnsupportedOperation);
+    assert!(
+        error
+            .message
+            .contains("durable filesystem identity is unsupported"),
+        "{}",
+        error.message
+    );
+    assert!(
+        diagnostics(&sink).is_empty(),
+        "an above-bar start decides `Supported` and warns nobody"
+    );
+    assert_eq!(open_records(temp.path()), Vec::<PathBuf>::new());
 }

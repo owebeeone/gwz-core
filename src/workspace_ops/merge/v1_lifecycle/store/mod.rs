@@ -32,14 +32,17 @@ impl CheckedV1Store {
     }
 
     /// A1's creation owner for the contract-§2 writer floor. See
-    /// `rewrite::create_open`.
+    /// `rewrite::create_open`. `crash_recovery` is the start's own decision,
+    /// threaded to the boundary door (M5d charter §3); `None` on every path
+    /// that made no decision, which keeps today's checked publication.
     pub(super) fn create_open(
         &self,
         lease: &V1MutationLease,
         root: &Path,
         record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+        crash_recovery: Option<&crate::checked_artifact::entry::CrashRecoveryDecision>,
     ) -> ModelResult<StoredV1Record> {
-        rewrite::create_open(lease, root, record)
+        rewrite::create_open(lease, root, record, crash_recovery)
     }
 
     pub(super) fn reload_unchanged(&self, current: &StoredV1Record) -> ModelResult<StoredV1Record> {

@@ -548,6 +548,7 @@ fn merge_response_round_trips_crash_recovery_decision() {
             supported: false,
             filesystem: Some("btrfs".to_owned()),
             gap: Some(gwz_core::MergeCrashRecoveryGap::VolatileFilesystem),
+            handles_ok: Some(true),
         }),
     };
     assert_eq!(
@@ -558,6 +559,23 @@ fn merge_response_round_trips_crash_recovery_decision() {
         ),
         response
     );
+
+    // M5d charter §3: the one additive slot this close allocates. All three of
+    // its states must survive the wire — present-and-false is the handle-fail
+    // volume's whole machine truth, and ABSENT is what an above-bar decision
+    // sends, so a consumer can tell "handles are fine" from "nobody asked".
+    for handles_ok in [Some(false), None] {
+        let mut below = response.clone();
+        below.crash_recovery.as_mut().unwrap().handles_ok = handles_ok;
+        assert_eq!(
+            round_trip(
+                &below,
+                gwz_core::MergeResponse::to_cbor,
+                gwz_core::MergeResponse::from_cbor,
+            ),
+            below
+        );
+    }
 
     response.crash_recovery = None;
     assert_eq!(

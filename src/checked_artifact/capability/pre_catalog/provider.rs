@@ -153,6 +153,13 @@ pub(in crate::checked_artifact) use namespace_mutation::{
     observe_cleanup_completion, observe_cleanup_retirement, observe_cleanup_row_facts,
     observe_cleanup_worklist_row, write_cleanup_worklist_scratch,
 };
+/// M5d step (3): the same seam's handle-probe half (charter §3). The reader is
+/// `pub(in crate::checked_artifact)` because `identity.rs` consults it; the
+/// armer is `pub(crate)` because the g23 rows arm it.
+#[cfg(test)]
+pub(in crate::checked_artifact) use platform::handle_probe_is_unavailable;
+#[cfg(test)]
+pub(crate) use platform::with_handle_probe_unavailable;
 pub(in crate::checked_artifact) use platform::{HostPlatform, VolumeDescription};
 /// DR-1 ship (1) W3's test-only seam (`GwzM5-8DR1-WarnOrRefuse-Charter.md`
 /// §3.8, 2026-09-03), carried to the merge-level suites that reach

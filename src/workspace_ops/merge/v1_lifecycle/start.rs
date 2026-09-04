@@ -74,7 +74,14 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
         } else {
             super::checked::V1MutationLease::acquire_for_merge_start(root, &record.workspace_id)?
         };
-        store.create_open(&lease, root, &record)?.record().clone()
+        // M5d charter §3: the decision this process already made chooses the
+        // record's publication too — checked above the handle bar, raw below
+        // it — so the door and the diagnostic cannot disagree, and no second
+        // probe runs.
+        store
+            .create_open(&lease, root, &record, Some(&decision))?
+            .record()
+            .clone()
     };
     // M5d charter §4: the creation write is one `artifact_written`, then the
     // state the store committed — `merge/start.rs:119-120` on the v0 path.

@@ -166,6 +166,41 @@ same published composition evidence. What is missing is the catalog's evidence
 that an interrupted *start* would have used to prove on restart which objects
 it created.
 
+### Volumes without persistent file handles
+
+Persistent file handles are the second of the two requirements above, and some
+volumes lack them while the merge still needs to run there — overlayfs mounted
+without `nfs_export`, and some FUSE mounts. Those volumes are below the bar
+already, so they warn; the same probe that decides the bar also answers this
+question, and the answer changes two things.
+
+The **merge record is written directly** rather than through the checked
+artifact boundary. The write is still staged, renamed, flushed and read back to
+verify its bytes; what it does not carry is the catalog, which this volume
+cannot host at all. There is **no second warning** for it — the one diagnostic
+above gains a clause instead:
+
+```text
+Selected-root and --preserve abort may refuse until the workspace is on a handle-capable volume.
+```
+
+Machine consumers read the same fact from the response rather than from stderr:
+`crash_recovery.handles_ok` is `false` on such a volume, `true` on a below-bar
+volume whose handles work, and absent above the bar.
+
+That clause is the second change. A plain abort still clears the record — it
+touches no checked artifact. An abort that must **re-verify** one, though —
+a selected root's manifest and lock, a preservation bundle under `--preserve`,
+or the merge's published evidence — needs handles this volume does not have,
+and refuses. One escape works from there: copy the whole workspace onto a
+volume that proves handles (a local APFS or HFS+ volume on macOS; ext4, xfs or
+f2fs on Linux; NTFS on Windows) and run `gwz merge --abort` there, adding
+`--preserve` if that was the door that refused.
+
+A power loss mid-merge on such a volume is operator cleanup rather than a
+recovery GWZ performs: nothing on that volume can prove after a reboot which
+objects the interrupted attempt created.
+
 `--filesystem-strict` is accepted only on a merge start. On `--continue`,
 `--abort`, `--status` or `--gc` it is refused as an invalid request. There is
 no environment variable and no configuration key: the flag is the whole

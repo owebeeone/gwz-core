@@ -21,7 +21,16 @@ from taut.ir.load import load_schema
 # (slot 8). All additive; no pre-existing slot changed. This pin still guards
 # gwz-log against reshaping older messages.
 #   was: d0c205c8767f8d54d32ead2f676a05077d849f6a12278d9de52b3c132c3c9372
-PRE_LOG_WIRE_SHA256 = "7a66e301c5c0147a12c59b2cddb6f2ebc1515ef4d65297ec53c3b312a3769697"
+#
+# Moved deliberately again on 2026-09-03 by M5d step (3)
+# (dev-docs/GwzM5-8M5d-Charter.md §3/§10.2): the charter allocates exactly one
+# more optional response field, MergeCrashRecovery.handles_ok (slot 4). No
+# version bump, no record or catalog format change. MEASURED additive, not
+# assumed: the projection was rendered on both trees and diffed -- the only
+# delta is the one new `handles_ok` field object, and the previous pin below
+# reproduced exactly on the pre-change tree.
+#   was: 7a66e301c5c0147a12c59b2cddb6f2ebc1515ef4d65297ec53c3b312a3769697
+PRE_LOG_WIRE_SHA256 = "71bf6b9223ba6d2b4d12049e425e567254ca79396d67922be737c86c6dd97a40"
 LOG_METHODS = {"log", "log.output"}
 
 
