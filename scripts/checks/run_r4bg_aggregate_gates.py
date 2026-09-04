@@ -618,7 +618,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
     "fault": ("aggregate fault/restart matrices (TransitionDesign:1469-1475)", [
         ("v1 lifecycle fault and restart matrices",
          lib("workspace_ops::merge::v1_lifecycle::", "--", "--skip", "root_fault_matrix"),
-         "266 passed"),
+         "265 passed"),
         ("root physical/successor boundary matrix (release profile)",
          ["cargo", "test", "--release", "--lib", "-p", "gwz-core", "root_fault_matrix"], "1 passed"),
         # LINUX-COUNT-OWED (R2-E E2): the darwin value is measured on this
@@ -641,7 +641,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1125 passed", "1126 passed")),
+         _fault_count("1004 passed", "1005 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
@@ -664,7 +664,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # `gwz-core/docs/OperationModel.md`: the reverse-door limit the one
         # diagnostic gains on a handle-fail volume, and the one escape that
         # volume's reverse doors name (GwzM5-8M5d-Charter.md §3/§3(b)).
-        ("merge-doc assertions", check("check_merge_docs.py"), "ok (13 sources, 167 assertions)"),
+        ("merge-doc assertions", check("check_merge_docs.py"), "ok (13 sources, 183 assertions)"),
         ("merge-doc checker suite", suite("test_check_merge_docs.py"), "OK"),
     ]),
     "byte-equivalence": ("byte-equivalence gate, both halves of O8 (rows 2.3a/2.3b, §12)", [
@@ -684,10 +684,16 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # checkout, per this script's own J-7 scope disclosure), which is
         # why the marker was forward-stated between the E5.1 commit and
         # this landing.
-        ("M4 scenario map",
-         check("check_m4_scenario_map.py"),
-         "M4 scenario map: ok (39 scenario rows, 43 named tests, "
-         "22 registry rows all claimed)"),
+        # RETIRED at the M5d landing (2026-09-05), operator ruling "delete
+        # fragile tests". `check_m4_scenario_map.py` mapped v0 durable
+        # progress shapes to the tests that pinned them, and most rows cited
+        # `characterization_v0::` / `compatibility_unbound_v0::` as their
+        # adaptation drive. M5d deleted the v0 engine and those suites, so
+        # the map's SUBJECT is gone: 37 named tests no longer exist, 35 of
+        # them deleted deliberately -- a 2-in-37 signal rate. It is also
+        # name-coupled, so it breaks on rename as readily as on deletion.
+        # The g23 partition count below still guards this suite's size, and
+        # the checker and its `m4-map` region are left in the tree unused.
         # R2-E Phase E5.1 (2026-08-28): 119 -> 120, the one parametric
         # `adapt_open` refusal test. E5.2: 120 -> 122, the archive-equivalence
         # tier-1 battery and its denominators test. E6.1: 122 -> 124, O9's
@@ -707,7 +713,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # DR-1 ship (1) W3 (2026-09-03): 130 -> 135, the five
         # `g23::crash_recovery` rows. MEASURED on that step's own tree.
         ("g23 adapted-v0, characterization and upgrade suites",
-         lib("workspace_ops::tests::g23::"), "135 passed"),
+         lib("workspace_ops::tests::g23::"), "85 passed"),
     ]),
     "unknown-field": ("unknown-field gate (evidence row 2.4)", [
         ("record wire unknown/archive/decode", lib("workspace_ops::merge::record_wire::"), "75 passed"),

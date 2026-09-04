@@ -161,18 +161,14 @@ jobs:
         # run 32749441874 is the price of skipping it). This job checks out
         # gwz-core alone, on both OS legs — the same single-repo topology that
         # failed there. Per selected command:
-        #   * fault, unknown-field, byte-equivalence:2 — cargo test over this
+        #   * fault, unknown-field, byte-equivalence — cargo test over this
         #     repo's own lib; no path leaves the checkout.
         #   * privacy — a python checker whose ROOT is the repo
         #     (run_r4bg_aggregate_gates.py:47; REGISTRY is in-repo dev-docs).
         #     §17 already verified it has no workspace-root reads.
-        #   * byte-equivalence is selected as `:2`, NOT whole. Its FIRST
-        #     command is check_m4_scenario_map.py, whose MAP_DOC resolves ONE
-        #     LEVEL ABOVE the checkout by design (check_m4_scenario_map.py:59,
-        #     `ROOT.parent`). That is exactly the §17 un-wiring, and it binds
-        #     here identically. The runner prints PARTIAL for a partitioned
-        #     selector and withholds its aggregate pass line, so the gap stays
-        #     legible in the log instead of reading as a full battery pass.
+        #   * byte-equivalence runs WHOLE. It was selected as `:2` to skip
+#     check_m4_scenario_map.py, whose MAP_DOC resolved above the
+#     checkout; M5d deleted that checker, so the carve-out is gone.
         #   * call-graph is deliberately NOT selected — not on topology (it is
         #     topology-clean, and §17 verified it) but on redundancy. The
         #     "Checked-artifact boundary" step above already runs all three of
@@ -221,12 +217,12 @@ jobs:
           # skip-loudly convention as the presence guard above: the fault
           # battery is withheld for such tags with the reason stated; the
           # remaining selection still runs and counts.
-          SELECTION="fault byte-equivalence:2 unknown-field privacy"
+          SELECTION="fault byte-equivalence unknown-field privacy"
           if ! grep -q "_fault_count" scripts/checks/run_r4bg_aggregate_gates.py; then
             echo "this tag's driver predates per-OS fault-battery count pins (no _fault_count);"
             echo "its Darwin-measured counts cannot match a Linux runner. Skipping the fault"
             echo "battery for this tag; the Test step above already ran the full suite green."
-            SELECTION="byte-equivalence:2 unknown-field privacy"
+            SELECTION="byte-equivalence unknown-field privacy"
           fi
           python scripts/checks/run_r4bg_aggregate_gates.py $SELECTION
       # NOT WIRED HERE, deliberately — the two workspace-root-reading checkers,
@@ -238,7 +234,7 @@ jobs:
       #     2026-08-25 corrective (`8e40fa8`) after the landing-commit run
       #     32749441874 failed on precisely this; the release job has the same
       #     checkout, so it stays un-wired here too — and that is why
-      #     byte-equivalence runs above as `:2`.
+      #     byte-equivalence runs above whole (its map checker is deleted).
       #   * check_merge_docs.py / test_check_merge_docs.py (L2-05) — its
       #     manifest asserts against `gwz-cli/docs/*` and `dev-docs/*` resolved
       #     from `DEFAULT_WORKSPACE_ROOT = parents[3]` (check_merge_docs.py:20),
