@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::super::super::super::model::v1::*;
 use super::super::super::super::*;
+use super::super::MergeOperationRecordV0;
 use crate::artifact::{
     ArtifactSourceKind, CreatedByArtifact, LOCK_PATH, LOCK_SCHEMA, LockArtifact, MARKER_DIR,
     MARKER_SCHEMA, ManifestArtifact, ManifestMember, MarkerArtifact, MarkerMergeArtifact,
@@ -103,7 +104,7 @@ fn participant(state: ParticipantState, result: Option<String>) -> MergeParticip
     }
 }
 
-fn candidate(record: &MergeOperationRecord, accepted_lock: &str) -> PublicationCandidate {
+fn candidate(record: &MergeOperationRecordV0, accepted_lock: &str) -> PublicationCandidate {
     let members = LockArtifact::from_yaml(accepted_lock).unwrap().members;
     let merge_participants = record
         .participants
@@ -173,7 +174,7 @@ fn candidate(record: &MergeOperationRecord, accepted_lock: &str) -> PublicationC
 }
 
 fn candidate_publication(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     partial: bool,
     rolled_back: bool,
 ) -> PublicationProgress {
@@ -214,7 +215,7 @@ fn candidate_publication(
 
 pub(in crate::workspace_ops::merge::record_wire::archive) fn v0_record(
     shape: Shape,
-) -> MergeOperationRecord {
+) -> MergeOperationRecordV0 {
     let manifest = manifest_yaml();
     let baseline_lock = lock_yaml(&oid('a'));
     let (state, participant_state, result) = match shape {
@@ -239,7 +240,7 @@ pub(in crate::workspace_ops::merge::record_wire::archive) fn v0_record(
             Some(oid('d')),
         ),
     };
-    let mut record = MergeOperationRecord {
+    let mut record = MergeOperationRecordV0 {
         schema: MERGE_RECORD_SCHEMA.to_owned(),
         record_schema_version: MERGE_RECORD_SCHEMA_VERSION,
         writer_version: "0.10.3".to_owned(),
@@ -292,11 +293,11 @@ pub(in crate::workspace_ops::merge::record_wire::archive) fn v0_record(
     record
 }
 
-pub(super) fn bytes(record: &MergeOperationRecord) -> Vec<u8> {
+pub(super) fn bytes(record: &MergeOperationRecordV0) -> Vec<u8> {
     serde_yaml::to_string(record).unwrap().into_bytes()
 }
 
-pub(super) fn add_unselected_member(record: &mut MergeOperationRecord) {
+pub(super) fn add_unselected_member(record: &mut MergeOperationRecordV0) {
     let mut manifest =
         ManifestArtifact::from_yaml(record.baseline.manifest_yaml.as_deref().unwrap()).unwrap();
     manifest.members.push(ManifestMember {
@@ -346,7 +347,7 @@ pub(super) fn add_unselected_member(record: &mut MergeOperationRecord) {
 }
 
 pub(super) fn rewrite_candidate_lock(
-    record: &mut MergeOperationRecord,
+    record: &mut MergeOperationRecordV0,
     update: impl FnOnce(&mut LockArtifact),
 ) {
     let publication = record.publication.as_mut().unwrap();

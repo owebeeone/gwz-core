@@ -61,6 +61,10 @@ impl UnknownFieldManifest {
         overlay::apply_surviving(self, next)
     }
 
+    #[allow(
+        dead_code,
+        reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+    )]
     pub(crate) fn map_v0_to_v1(&self) -> Result<Self, UnknownFieldManifestError> {
         const V1_TOP_LEVEL: [&str; 5] = [
             "accepted_workspace",

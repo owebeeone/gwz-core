@@ -27,7 +27,16 @@ class MergeDocumentConsistencyTests(unittest.TestCase):
         # aggregate driver's marker, but missed this pin. Latent until now
         # because this suite runs only from the real workspace (the J-7
         # blind spot) -- the first real-workspace battery run since exposed it.
-        self.assertEqual(12, result.source_count)
+        # 12 -> 13 (2026-09-03, M5d step (3)): the SAME miss, one release
+        # later. Measured, this pin was already false at gwz-core `57502e4`
+        # (ship (1) W5's landing) and at this step's base `69ee990` -- the real
+        # workspace has read 13 sources since W5 added one, and neither this
+        # pin nor the aggregate driver's marker moved with it. Corrected here
+        # rather than left red, because this step touches the manifest and a
+        # gate that is red for someone else's reason hides its own findings.
+        # This step's own doc delta is two ASSERTIONS on an existing source,
+        # not a source: see run_r4bg_aggregate_gates.py's marker.
+        self.assertEqual(13, result.source_count)
         self.assertGreaterEqual(result.assertion_count, 30)
 
     def test_deliberate_v0_no_ff_claim_fails_the_real_gate(self) -> None:

@@ -108,12 +108,19 @@ fn status_contention(merge_id: &str) -> ModelError {
     )
 }
 
+/// The terminal answer for a v1 start, continue or abort that reached its
+/// archive.
+///
+/// **M5d charter §4 ("Responses").** The per-repo rows, `participant_counts`,
+/// `publication_step`, `preservation` and `operation_drift` are projected from
+/// the archived record, so a completed `--no-ff` merge reports the participants
+/// it merged instead of `participants: total 0`.
 pub(super) fn archived_status(
     merge_id: &str,
     archived: &ValidatedArchivedMerge,
     context: &OperationContext,
 ) -> ModelResult<crate::MergeResponse> {
-    super::super::response::archived_status_response(merge_id, archived.projection(), context)
+    super::super::response::archived_terminal_response(merge_id, archived.decoded(), context)
 }
 
 fn unreadable(detail: &str) -> ModelError {

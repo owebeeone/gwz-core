@@ -654,7 +654,17 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
          check("check_merge_compatibility_predicates.py", REGISTRY, "--core", "."),
          "validated 7 migration rules, 7 runtime bindings, and 10 archive shapes"),
         ("registry checker suite", suite("test_merge_compatibility_predicates.py"), "OK"),
-        ("merge-doc assertions", check("check_merge_docs.py"), "ok (12 sources, 155 assertions)"),
+        # M5d step (3), 2026-09-03. MEASURED "12 sources, 155 assertions" ->
+        # "13 sources, 167 assertions", and the drift is attributed rather than
+        # absorbed: measured at gwz-core `57502e4` (ship (1) W5's landing) the
+        # checker ALREADY read 13/165, so 12/155 was stale before this branch
+        # existed -- `merge_docs_manifest.json` and `docs/` are byte-identical
+        # between `57502e4` and this step's base `69ee990`, so no M5d commit
+        # moved it either. THIS step adds exactly two assertions, both on
+        # `gwz-core/docs/OperationModel.md`: the reverse-door limit the one
+        # diagnostic gains on a handle-fail volume, and the one escape that
+        # volume's reverse doors name (GwzM5-8M5d-Charter.md §3/§3(b)).
+        ("merge-doc assertions", check("check_merge_docs.py"), "ok (13 sources, 167 assertions)"),
         ("merge-doc checker suite", suite("test_check_merge_docs.py"), "OK"),
     ]),
     "byte-equivalence": ("byte-equivalence gate, both halves of O8 (rows 2.3a/2.3b, §12)", [

@@ -12,10 +12,6 @@ pub(crate) fn validate_v1_preservation(record: &MergeOperationRecordV1) -> Model
     validate_preservation_evidence_and_action(record)
 }
 
-pub(crate) fn validate_v0_preservation_view(record: &MergeOperationRecordV1) -> ModelResult<()> {
-    validate_preservation_evidence_and_action(record)
-}
-
 fn validate_preservation_evidence_and_action(record: &MergeOperationRecordV1) -> ModelResult<()> {
     validate_all_evidence(record)?;
     if let Some(action) = record.pending_preservation.as_ref() {

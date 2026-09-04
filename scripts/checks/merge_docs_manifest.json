@@ -1,26 +1,30 @@
 {
   "manifest_version": 1,
-  "description": "R0 canonical merge milestone and public-capability assertions. Update this reviewed manifest at each M5a-A4 gate when the active capability changes.",
+  "description": "R0 canonical merge assertions. Every row pins a statement a user-facing or historical document must (or must not) make about the merge surface. Rows naming M5a-A4 milestones survive only where they pin a HISTORICAL document that accurately records what was true at its own date; a row that pins user-facing prose states what the tool does today.",
   "global_forbidden": [
     {
       "id": "m5a_must_not_release_no_ff",
       "match": "regex",
-      "value": "(?i)\\bM5a\\b\\s+(?:ships|releases|adds|activates|includes|advertises|writes)\\s+(?:`?--no-ff`?|no-ff)\\b"
+      "value": "(?i)\\bM5a\\b\\s+(?:ships|releases|adds|activates|includes|advertises|writes)\\s+(?:`?--no-ff`?|no-ff)\\b",
+      "comment": "M5d 2026-09-05 review: KEPT, not retired. The test applied was whether the row can fire on a sentence that is now TRUE -- that is what made `releases_must_not_claim_no_ff_yet` stale (see `retired` below). This row cannot: `--no-ff` was never released at M5a and never had a writable path under record v0, so no correct document, historical or user-facing, can say so. It is narrow, not stale, and it is also part of what keeps milestone vocabulary out of shipped prose. This row additionally backs the gate's own negative control (`test_check_merge_docs.py::test_deliberate_v0_no_ff_claim_fails_the_real_gate`), which is the only proof the checker catches anything at all."
     },
     {
       "id": "no_ff_must_not_be_available_at_m5a",
       "match": "regex",
-      "value": "(?i)(?:`?--no-ff`?|no-ff)\\s+is\\s+(?:now\\s+)?(?:available|supported|released|writable)\\s+(?:in|at|under)\\s+M5a\\b"
+      "value": "(?i)(?:`?--no-ff`?|no-ff)\\s+is\\s+(?:now\\s+)?(?:available|supported|released|writable)\\s+(?:in|at|under)\\s+M5a\\b",
+      "comment": "M5d 2026-09-05 review: KEPT, not retired. The test applied was whether the row can fire on a sentence that is now TRUE -- that is what made `releases_must_not_claim_no_ff_yet` stale (see `retired` below). This row cannot: `--no-ff` was never released at M5a and never had a writable path under record v0, so no correct document, historical or user-facing, can say so. It is narrow, not stale, and it is also part of what keeps milestone vocabulary out of shipped prose."
     },
     {
       "id": "no_ff_must_not_be_available_in_v0",
       "match": "regex",
-      "value": "(?i)(?:`?--no-ff`?|no-ff)\\s+is\\s+(?:now\\s+)?(?:available|supported|released|writable)\\s+(?:in|at|under)\\s+(?:record\\s+)?v0\\b"
+      "value": "(?i)(?:`?--no-ff`?|no-ff)\\s+is\\s+(?:now\\s+)?(?:available|supported|released|writable)\\s+(?:in|at|under)\\s+(?:record\\s+)?v0\\b",
+      "comment": "M5d 2026-09-05 review: KEPT, not retired. The test applied was whether the row can fire on a sentence that is now TRUE -- that is what made `releases_must_not_claim_no_ff_yet` stale (see `retired` below). This row cannot: `--no-ff` was never released at M5a and never had a writable path under record v0, so no correct document, historical or user-facing, can say so. It is narrow, not stale, and it is also part of what keeps milestone vocabulary out of shipped prose."
     },
     {
       "id": "m5b_must_not_release_v0",
       "match": "regex",
-      "value": "(?i)\\bM5b\\b\\s+(?:ships|releases|activates|writes)\\s+(?:`?--no-ff`?|no-ff)[^.\\n]{0,80}\\bv0\\b"
+      "value": "(?i)\\bM5b\\b\\s+(?:ships|releases|activates|writes)\\s+(?:`?--no-ff`?|no-ff)[^.\\n]{0,80}\\bv0\\b",
+      "comment": "M5d 2026-09-05 review: KEPT, not retired. The test applied was whether the row can fire on a sentence that is now TRUE -- that is what made `releases_must_not_claim_no_ff_yet` stale (see `retired` below). This row cannot: `--no-ff` was never released at M5a and never had a writable path under record v0, so no correct document, historical or user-facing, can say so. It is narrow, not stale, and it is also part of what keeps milestone vocabulary out of shipped prose."
     },
     {
       "id": "retired_compound_stash_phase",
@@ -306,10 +310,36 @@
         {
           "id": "operation_model_crash_recovery_warning_sentence",
           "match": "regex",
-          "value": "crash recovery is unsupported on \\S+ \\((?:no durable filesystem identity|remote filesystem|volatile filesystem)\\)\\. Merge will continue\\. Use --filesystem-strict to refuse\\."
+          "comment": "M5d step (3): the sentence is unchanged and still pinned whole. On a volume without persistent file handles the SAME diagnostic gains an appended clause (charter §3, one Diagnostic and not two), so the pattern now states explicitly that the clause may follow -- matching is `re.search`, so this admitted both forms before and after; the alternation is here so a reader of the pin knows which two forms are the product, and the clause itself is pinned by the row below.",
+          "value": "crash recovery is unsupported on \\S+ \\((?:no durable filesystem identity|remote filesystem|volatile filesystem)\\)\\. Merge will continue\\. Use --filesystem-strict to refuse\\.(?: Selected-root and --preserve abort may refuse until the workspace is on a handle-capable volume\\.)?"
+        },
+        {
+          "id": "operation_model_handle_fail_reverse_door_limit",
+          "value": "Selected-root and --preserve abort may refuse until the workspace is on a handle-capable volume."
+        },
+        {
+          "id": "operation_model_handle_fail_escape",
+          "value": "run `gwz merge --abort` there, adding\n`--preserve` if that was the door that refused"
+        },
+        {
+          "id": "operation_model_one_record_for_every_start",
+          "value": "Ordinary, `--ff-only`, custom-message and `--no-ff` starts all write the same merge record and reach this door alike"
         }
       ],
-      "forbidden": []
+      "forbidden": [
+        {
+          "id": "must_not_claim_ordinary_starts_write_v0",
+          "match": "regex",
+          "comment": "Replaces the milestone-era guards for user-facing prose. The claim this package removed was that an ordinary, `--ff-only` or custom-message start writes a v0 record; both orderings of that sentence are caught. Scoped per source rather than globally, because the historical proposal/plan/design documents say exactly this about their own date and are correct to. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:246`, merge.md `:383`, MachineOutput `:336`) and on nothing in the current tree.",
+          "value": "(?i)(?:(?:ordinary|custom-message|`?--ff-only`?)[^.\\n]{0,140}?\\bwrit\\w*[^.\\n]{0,40}?\\bv0\\b|\\bwrit\\w*[^.\\n]{0,20}\\bv0\\s+record[^.\\n]{0,80}(?:ordinary|custom-message|`?--ff-only`?))"
+        },
+        {
+          "id": "must_not_claim_a_merge_record_is_migrated",
+          "match": "regex",
+          "comment": "There is no migration, upgrade, conversion or adapter for a merge record: an open pre-0.14 record is refused and an archived one projects read-only. Same per-source scoping and reason as the row above. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:248`, MachineOutput `:245`, MergeRecovery `:316`) and on nothing in the current tree.",
+          "value": "(?i)(?:\\b(?:record|records|evidence)\\b[^.\\n]{0,140}?\\b(?:is|are|was|were|been|be|gets?)\\s+(?:automatically\\s+|not\\s+)*(?:migrat|upgrad|convert|adapt)\\w*|\\bupgrade\\s+to\\s+the\\s+v1\\b)"
+        }
+      ]
     },
     {
       "id": "merge_command",
@@ -328,8 +358,17 @@
           "value": "`--no-ff` always creates a merge commit, even where a fast-forward is possible. It is the counterpart to `--ff-only`; supplying both together is rejected."
         },
         {
-          "id": "merge_command_no_ff_writes_v1_while_ordinary_stays_v0",
-          "value": "A `--no-ff` start writes a v1 coordinated merge record and publishes a two-parent integration commit. Ordinary and custom-message starts continue to write v0 records."
+          "id": "merge_command_every_start_writes_one_record",
+          "value": "Every start writes the same coordinated merge record — ordinary, `--ff-only`, custom-message and `--no-ff` alike — so status, continue, abort and recovery behave identically whichever way the merge was started."
+        },
+        {
+          "id": "merge_command_pre_014_refusal_sentence",
+          "comment": "The refusal is frozen verbatim in gwz-core (`workspace_ops/merge/open_record.rs::pre_014_merge_error`). The command page must print the same sentence a user actually sees.",
+          "value": "this is a pre-0.14 merge; use gwz 0.13.0 (the last release before 0.14) to continue or abort"
+        },
+        {
+          "id": "merge_command_handles_ok_documented",
+          "value": "Its `handles_ok` field is `false` on such a volume, `true` on a below-bar volume whose handles work, and `null` above the bar"
         }
       ],
       "forbidden": [
@@ -337,6 +376,18 @@
           "id": "merge_command_no_ff_must_not_be_deferred_again",
           "match": "regex",
           "value": "(?i)(?:`?--no-ff`?|no-ff)\\s+(?:is|remains)\\s+(?:not\\s+yet\\s+(?:available|supported|implemented|released)|hidden)"
+        },
+        {
+          "id": "must_not_claim_ordinary_starts_write_v0",
+          "match": "regex",
+          "comment": "Replaces the milestone-era guards for user-facing prose. The claim this package removed was that an ordinary, `--ff-only` or custom-message start writes a v0 record; both orderings of that sentence are caught. Scoped per source rather than globally, because the historical proposal/plan/design documents say exactly this about their own date and are correct to. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:246`, merge.md `:383`, MachineOutput `:336`) and on nothing in the current tree.",
+          "value": "(?i)(?:(?:ordinary|custom-message|`?--ff-only`?)[^.\\n]{0,140}?\\bwrit\\w*[^.\\n]{0,40}?\\bv0\\b|\\bwrit\\w*[^.\\n]{0,20}\\bv0\\s+record[^.\\n]{0,80}(?:ordinary|custom-message|`?--ff-only`?))"
+        },
+        {
+          "id": "must_not_claim_a_merge_record_is_migrated",
+          "match": "regex",
+          "comment": "There is no migration, upgrade, conversion or adapter for a merge record: an open pre-0.14 record is refused and an archived one projects read-only. Same per-source scoping and reason as the row above. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:248`, MachineOutput `:245`, MergeRecovery `:316`) and on nothing in the current tree.",
+          "value": "(?i)(?:\\b(?:record|records|evidence)\\b[^.\\n]{0,140}?\\b(?:is|are|was|were|been|be|gets?)\\s+(?:automatically\\s+|not\\s+)*(?:migrat|upgrad|convert|adapt)\\w*|\\bupgrade\\s+to\\s+the\\s+v1\\b)"
         }
       ]
     },
@@ -359,12 +410,28 @@
         {
           "id": "releases_custom_message_current",
           "value": "or the body supplied with `-m`"
+        },
+        {
+          "id": "releases_close_open_merge_before_upgrading",
+          "value": "**Close any open coordinated merge before you upgrade.**"
+        },
+        {
+          "id": "releases_pre_014_refusal_sentence",
+          "value": "this is a pre-0.14 merge; use gwz 0.13.0 (the last release before 0.14) to continue or abort"
         }
       ],
       "forbidden": [
         {
-          "id": "releases_must_not_claim_no_ff_yet",
-          "value": "`--no-ff` is available"
+          "id": "must_not_claim_ordinary_starts_write_v0",
+          "match": "regex",
+          "comment": "Replaces the milestone-era guards for user-facing prose. The claim this package removed was that an ordinary, `--ff-only` or custom-message start writes a v0 record; both orderings of that sentence are caught. Scoped per source rather than globally, because the historical proposal/plan/design documents say exactly this about their own date and are correct to. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:246`, merge.md `:383`, MachineOutput `:336`) and on nothing in the current tree.",
+          "value": "(?i)(?:(?:ordinary|custom-message|`?--ff-only`?)[^.\\n]{0,140}?\\bwrit\\w*[^.\\n]{0,40}?\\bv0\\b|\\bwrit\\w*[^.\\n]{0,20}\\bv0\\s+record[^.\\n]{0,80}(?:ordinary|custom-message|`?--ff-only`?))"
+        },
+        {
+          "id": "must_not_claim_a_merge_record_is_migrated",
+          "match": "regex",
+          "comment": "There is no migration, upgrade, conversion or adapter for a merge record: an open pre-0.14 record is refused and an archived one projects read-only. Same per-source scoping and reason as the row above. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:248`, MachineOutput `:245`, MergeRecovery `:316`) and on nothing in the current tree.",
+          "value": "(?i)(?:\\b(?:record|records|evidence)\\b[^.\\n]{0,140}?\\b(?:is|are|was|were|been|be|gets?)\\s+(?:automatically\\s+|not\\s+)*(?:migrat|upgrad|convert|adapt)\\w*|\\bupgrade\\s+to\\s+the\\s+v1\\b)"
         }
       ]
     },
@@ -383,12 +450,29 @@
         {
           "id": "machine_output_additive_keys",
           "value": "GWZ is pre-1.0, so strict consumers must tolerate additive keys"
+        },
+        {
+          "id": "machine_output_open_pre_014_never_projects",
+          "value": "a pre-0.14 record that is still **open** is refused rather than projected, and no response carries it"
+        },
+        {
+          "id": "machine_output_crash_recovery_fields_are_explicit_nulls",
+          "comment": "Measured against `gwz-cli/src/merge_render.rs::merge_crash_recovery_json`: all three optional fields are emitted as keys and carry `null`. Only the `crash_recovery` object itself is omitted. A consumer told otherwise would branch on key presence and be wrong.",
+          "value": "`filesystem`, `gap` and `handles_ok` are always **present as keys** and carry an explicit `null` when the decision has no value for them."
         }
       ],
       "forbidden": [
         {
-          "id": "machine_output_must_not_claim_no_ff_yet",
-          "value": "`--no-ff` is available"
+          "id": "must_not_claim_ordinary_starts_write_v0",
+          "match": "regex",
+          "comment": "Replaces the milestone-era guards for user-facing prose. The claim this package removed was that an ordinary, `--ff-only` or custom-message start writes a v0 record; both orderings of that sentence are caught. Scoped per source rather than globally, because the historical proposal/plan/design documents say exactly this about their own date and are correct to. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:246`, merge.md `:383`, MachineOutput `:336`) and on nothing in the current tree.",
+          "value": "(?i)(?:(?:ordinary|custom-message|`?--ff-only`?)[^.\\n]{0,140}?\\bwrit\\w*[^.\\n]{0,40}?\\bv0\\b|\\bwrit\\w*[^.\\n]{0,20}\\bv0\\s+record[^.\\n]{0,80}(?:ordinary|custom-message|`?--ff-only`?))"
+        },
+        {
+          "id": "must_not_claim_a_merge_record_is_migrated",
+          "match": "regex",
+          "comment": "There is no migration, upgrade, conversion or adapter for a merge record: an open pre-0.14 record is refused and an archived one projects read-only. Same per-source scoping and reason as the row above. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:248`, MachineOutput `:245`, MergeRecovery `:316`) and on nothing in the current tree.",
+          "value": "(?i)(?:\\b(?:record|records|evidence)\\b[^.\\n]{0,140}?\\b(?:is|are|was|were|been|be|gets?)\\s+(?:automatically\\s+|not\\s+)*(?:migrat|upgrad|convert|adapt)\\w*|\\bupgrade\\s+to\\s+the\\s+v1\\b)"
         }
       ]
     },
@@ -402,7 +486,8 @@
         },
         {
           "id": "generated_cli_current_usage",
-          "value": "Usage: gwz merge [source] [--dry-run] [--ff-only] [-m <message>]"
+          "value": "Usage: gwz merge [source] [--dry-run] [--ff-only] [--no-ff] [--filesystem-strict] [-m <message>]",
+          "comment": "Generated from the clap `override_usage` in `gwz-cli/src/globalargs/parser.rs`; regenerate with `python scripts/generate_cli_reference.py --write` rather than editing `docs/CLI.md`. Until 2026-09-05 this row pinned a usage line that omitted `--no-ff` and `--filesystem-strict` while the Options block below it listed both."
         },
         {
           "id": "generated_cli_ff_only",
@@ -424,11 +509,59 @@
       "path": "gwz-cli/docs/MergeRecovery.md",
       "required": [
         {
-          "id": "merge_recovery_guide_no_ff_recovery_path_bound",
-          "value": "**This is the `--no-ff` recovery path.** `--no-ff` starts always use it; an ordinary start can also reach it once its record is migrated during abort. Match on the message, not on how you started the merge."
+          "id": "merge_recovery_guide_recovery_path_is_start_independent",
+          "value": "Ordinary, `--ff-only`, custom-message and `--no-ff` starts all use the same coordinated rollback, so this case never depends on how the merge was started."
+        },
+        {
+          "id": "merge_recovery_guide_pre_014_is_not_a_wedge",
+          "comment": "A pre-0.14 record is refused, not wedged. The runbook must send that reader to a 0.13.x build rather than to the parking procedure, which would strand a record that closes normally.",
+          "value": "Install a 0.13.x build, close the merge with it — `gwz merge --status`, then `gwz merge --continue` or `gwz merge --abort` — and return to 0.14."
         }
       ],
-      "forbidden": []
+      "forbidden": [
+        {
+          "id": "must_not_claim_ordinary_starts_write_v0",
+          "match": "regex",
+          "comment": "Replaces the milestone-era guards for user-facing prose. The claim this package removed was that an ordinary, `--ff-only` or custom-message start writes a v0 record; both orderings of that sentence are caught. Scoped per source rather than globally, because the historical proposal/plan/design documents say exactly this about their own date and are correct to. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:246`, merge.md `:383`, MachineOutput `:336`) and on nothing in the current tree.",
+          "value": "(?i)(?:(?:ordinary|custom-message|`?--ff-only`?)[^.\\n]{0,140}?\\bwrit\\w*[^.\\n]{0,40}?\\bv0\\b|\\bwrit\\w*[^.\\n]{0,20}\\bv0\\s+record[^.\\n]{0,80}(?:ordinary|custom-message|`?--ff-only`?))"
+        },
+        {
+          "id": "must_not_claim_a_merge_record_is_migrated",
+          "match": "regex",
+          "comment": "There is no migration, upgrade, conversion or adapter for a merge record: an open pre-0.14 record is refused and an archived one projects read-only. Same per-source scoping and reason as the row above. Verified non-vacuous: it fires on the three sentences this package deleted (OperationModel `:248`, MachineOutput `:245`, MergeRecovery `:316`) and on nothing in the current tree.",
+          "value": "(?i)(?:\\b(?:record|records|evidence)\\b[^.\\n]{0,140}?\\b(?:is|are|was|were|been|be|gets?)\\s+(?:automatically\\s+|not\\s+)*(?:migrat|upgrad|convert|adapt)\\w*|\\bupgrade\\s+to\\s+the\\s+v1\\b)"
+        }
+      ]
+    }
+  ],
+  "retired": [
+    {
+      "id": "releases_must_not_claim_no_ff_yet",
+      "source": "releases",
+      "was": "forbidden: \"`--no-ff` is available\"",
+      "retired": "2026-09-05, M5d documentation package",
+      "why": "Stale by the one test that matters: the row forbade a sentence that is now TRUE. `--no-ff` has been available since v0.11.0, so the milestone-era guard against announcing it early could only fire on correct release prose. Retired rather than loosened -- there is no narrower form of it that has a true subject."
+    },
+    {
+      "id": "machine_output_must_not_claim_no_ff_yet",
+      "source": "machine_output",
+      "was": "forbidden: \"`--no-ff` is available\"",
+      "retired": "2026-09-05, M5d documentation package",
+      "why": "The identical stale guard on a second source, retired for the identical reason. Listed separately so neither disappears silently."
+    },
+    {
+      "id": "merge_command_no_ff_writes_v1_while_ordinary_stays_v0",
+      "source": "merge_command",
+      "was": "required: \"A `--no-ff` start writes a v1 coordinated merge record and publishes a two-parent integration commit. Ordinary and custom-message starts continue to write v0 records.\"",
+      "retired": "2026-09-05, M5d documentation package",
+      "why": "The row id and its assertion both became false: v1 is the only merge, so ordinary, `--ff-only`, custom-message and `--no-ff` starts all write the same record. Replaced by `merge_command_every_start_writes_one_record`, which pins the statement that is true instead."
+    },
+    {
+      "id": "merge_recovery_guide_no_ff_recovery_path_bound",
+      "source": "merge_recovery_guide",
+      "was": "required: \"**This is the `--no-ff` recovery path.** `--no-ff` starts always use it; an ordinary start can also reach it once its record is migrated during abort. Match on the message, not on how you started the merge.\"",
+      "retired": "2026-09-05, M5d documentation package",
+      "why": "There is no migration: no record is converted during abort, because there is only one record format. Replaced by `merge_recovery_guide_recovery_path_is_start_independent`, which keeps the row's real purpose -- match on the message, not on how the merge was started -- with a true reason under it."
     }
   ]
 }

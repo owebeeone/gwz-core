@@ -173,8 +173,6 @@ fn mixed_merge_continue_resolves_conflict_and_preserves_prior_result() {
 
 #[test]
 fn custom_message_is_frozen_across_immediate_merge_restart_and_resolution() {
-    use crate::workspace_ops::merge::{FileMergeStore, MergeStore};
-
     let temp = TempDir::new("merge-custom-message-recovery");
     let backend = crate::git::Git2Backend::new();
     let _fixture = init_mixed_merge_workspace(temp.path(), &backend);
@@ -224,12 +222,11 @@ fn custom_message_is_frozen_across_immediate_merge_restart_and_resolution() {
         Ok(expected.as_str())
     );
 
-    let archived = FileMergeStore
-        .load_archived(temp.path(), &merge_id)
-        .unwrap();
+    let archived = archived_record(temp.path(), &merge_id);
     assert!(
         archived
-            .participants
+            .view()
+            .participants()
             .values()
             .all(|participant| participant.commit_message == expected)
     );
@@ -237,123 +234,6 @@ fn custom_message_is_frozen_across_immediate_merge_restart_and_resolution() {
     let root_message = root_repo.head().unwrap().peel_to_commit().unwrap();
     assert!(root_message.message().unwrap().starts_with("gwz merge: "));
     assert_ne!(root_message.message(), Ok(expected.as_str()));
-}
-
-#[test]
-fn failed_and_unattempted_rows_retry_only_after_whole_operation_preflight() {
-    use crate::workspace_ops::merge::{
-        FileMergeStore, MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeBaseline,
-        MergeOperationRecord, MergeParticipantRecord, MergeStore, MergeTargetKind, OperationState,
-        ParticipantState,
-    };
-
-    let temp = TempDir::new("merge-retry-recorded-rows");
-    let backend = crate::git::Git2Backend::new();
-    let (_app_fixture, _lib_fixture) = init_two_member_workspace(temp.path(), &backend);
-    let app = temp.path().join("app");
-    let lib = temp.path().join("lib");
-    let (app_before, app_source) = feature_commit(&backend, &app, "source.txt", "app\n");
-    let (lib_before, lib_source) = feature_commit(&backend, &lib, "source.txt", "lib\n");
-    let participant = |path: &str, before: String, source: String, state| MergeParticipantRecord {
-        path: path.to_owned(),
-        target_kind: MergeTargetKind::Member,
-        target_branch: "main".to_owned(),
-        before_commit: before,
-        source_commit: source,
-        commit_message: format!("Retry recorded merge for {path}"),
-        state,
-        resulting_commit: None,
-        expected_merge_head: None,
-        conflict_paths: Vec::new(),
-        conflict_snapshot: Vec::new(),
-        error: None,
-        pending_action: None,
-        preservation: Vec::new(),
-        drift: Vec::new(),
-        extensions: BTreeMap::new(),
-    };
-    let digest = |path| format!("{:x}", Sha256::digest(fs::read(path).unwrap()));
-    let merge_id = "merge_retry_rows".to_owned();
-    let record = MergeOperationRecord {
-        schema: MERGE_RECORD_SCHEMA.to_owned(),
-        record_schema_version: MERGE_RECORD_SCHEMA_VERSION,
-        writer_version: crate::VERSION.to_owned(),
-        workspace_id: "ws_ops".to_owned(),
-        merge_id: merge_id.clone(),
-        operation_id: "op_start".to_owned(),
-        state: OperationState::Halted,
-        source_ref: "feature/source".to_owned(),
-        mode: crate::workspace_ops::merge::MergeExecutionMode::Normal,
-        created_at: "now".to_owned(),
-        baseline: MergeBaseline {
-            lock_sha256: digest(temp.path().join(crate::artifact::LOCK_PATH)),
-            manifest_sha256: digest(temp.path().join(crate::workspace::WORKSPACE_MANIFEST)),
-            lock_yaml: None,
-            manifest_yaml: None,
-            lock_commit_sha256: None,
-            manifest_commit_sha256: None,
-            root_head: None,
-            root_branch: None,
-            extensions: BTreeMap::new(),
-        },
-        selected_targets: vec!["mem_app".to_owned(), "mem_lib".to_owned()],
-        participants: BTreeMap::from([
-            (
-                "mem_app".to_owned(),
-                participant(
-                    "app",
-                    app_before.clone(),
-                    app_source.clone(),
-                    ParticipantState::Failed,
-                ),
-            ),
-            (
-                "mem_lib".to_owned(),
-                participant(
-                    "lib",
-                    lib_before.clone(),
-                    lib_source.clone(),
-                    ParticipantState::Unattempted,
-                ),
-            ),
-        ]),
-        publication: None,
-        operation_drift: Vec::new(),
-        extensions: BTreeMap::new(),
-    };
-    FileMergeStore.write_open(temp.path(), &record).unwrap();
-
-    fs::write(lib.join("untracked.txt"), "blocks whole preflight\n").unwrap();
-    let error = handle_merge(
-        &backend,
-        temp.path(),
-        recovery_request(crate::MergeOp::Resume, Some(merge_id.clone())),
-        "op_continue_blocked",
-    )
-    .unwrap_err();
-    assert_eq!(error.code, ErrorCode::MergeDrift);
-    assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
-    assert_eq!(backend.head(&app).unwrap().commit, Some(app_before));
-
-    fs::remove_file(lib.join("untracked.txt")).unwrap();
-    let response = handle_merge(
-        &backend,
-        temp.path(),
-        recovery_request(crate::MergeOp::Resume, Some(merge_id)),
-        "op_continue_retry",
-    )
-    .unwrap();
-    assert_eq!(response.state, crate::MergeOperationState::Completed);
-    assert_eq!(
-        merge_repo(&response, "mem_app").state,
-        crate::MergeParticipantState::FastForwarded
-    );
-    assert_eq!(
-        merge_repo(&response, "mem_lib").state,
-        crate::MergeParticipantState::FastForwarded
-    );
-    assert_eq!(backend.head(&app).unwrap().commit, Some(app_source));
-    assert_eq!(backend.head(&lib).unwrap().commit, Some(lib_source));
 }
 
 #[test]
@@ -408,6 +288,12 @@ fn unrelated_staged_conflict_work_blocks_every_resolution_commit() {
     )
     .unwrap_err();
 
+    // Restored to the v0 expectation deliberately, NOT re-pointed onto v1's
+    // taxonomy: the whole-set continue gate refuses at v0's exact point with
+    // v0's exact code and member attribution. The `RecoveryEvidenceMismatch`
+    // this asserted at 4717f3a was the SYMPTOM of the atomicity gap — the
+    // record had already been driven to RecoveryRequired by `app`'s completed
+    // mutation before `lib` was read — not a legitimate v0->v1 remap.
     assert_eq!(error.code, ErrorCode::MergeDrift);
     assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
     assert_eq!(backend.head(&app).unwrap().commit, Some(app_before));

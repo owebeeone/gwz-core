@@ -70,6 +70,54 @@ pub(crate) fn with_identity_unavailable<T>(
     body()
 }
 
+// M5d step (3)'s SECOND half of the same seam
+// (`GwzM5-8M5d-Charter.md` §3, 2026-09-03).
+//
+// The seam above presents a volume below the CATALOG's identity bar. It says
+// nothing about the LEGACY per-leaf handle probe (`identity.rs`'s
+// `name_to_handle_at` / `ATTR_CMN_OBJPERMANENTID` / NTFS file-id), and that
+// probe is the one the record create and every reverse checked door take. It
+// cannot be made to fail naturally on either CI host — APFS and ext4 both
+// answer it — and there is no other injection point, because those doors
+// reach the host through `identity.rs`, not through `HostPlatform`.
+//
+// Armed, `identity::object_identity` answers the same
+// `ErrorKind::Unsupported` carrying `PERSISTENT_FILESYSTEM_IDENTITY_REMEDY`
+// that a real overlay without `nfs_export` answers (measured on a real mount
+// at ship (1) W5: `name_to_handle_at` fails `EOPNOTSUPP`, which
+// `persistent_identity_error` downgrades to exactly that). It is INDEPENDENT
+// of the arm above: a volume can be below the identity bar with handles
+// intact (NFS, tmpfs) or below both (overlay), and the charter's whole point
+// is that those two answers differ.
+//
+// Scoped for the whole closure and disarmed on the way out, panic included,
+// for the same reason its sibling is: a single door takes the probe more than
+// once (root, then parent).
+#[cfg(test)]
+thread_local! {
+    static HANDLE_PROBE_UNAVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `body` with the host's LEGACY persistent-handle probe refusing.
+#[cfg(test)]
+pub(crate) fn with_handle_probe_unavailable<T>(body: impl FnOnce() -> T) -> T {
+    struct Disarm;
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            HANDLE_PROBE_UNAVAILABLE.with(|slot| slot.set(false));
+        }
+    }
+    HANDLE_PROBE_UNAVAILABLE.with(|slot| slot.set(true));
+    let _disarm = Disarm;
+    body()
+}
+
+/// Whether the seam above is armed, read by `identity.rs`'s legacy probe.
+#[cfg(test)]
+pub(in crate::checked_artifact) fn handle_probe_is_unavailable() -> bool {
+    HANDLE_PROBE_UNAVAILABLE.with(std::cell::Cell::get)
+}
+
 /// The volume a checked directory lives on, as a WORDING AID
 /// (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §3.3, 2026-09-03).
 ///

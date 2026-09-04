@@ -1,16 +1,19 @@
-#[cfg(test)]
-use super::super::PendingCommitSpec;
-use super::super::integration::{IntegrationIntent, PreparedIntegration};
+//! Freezing one accepted plan into a durable v1 record.
+//!
+//! **M5d (`GwzM5-8M5d-Charter.md` §1).** `merge/start/` was the v0 engine's
+//! start half; `create_record` and `freeze_merge_messages` were the shared
+//! part of it and are what remains. The record this builds is v1 — the only
+//! version this binary writes — so the v0-shaped intermediate the v1 lifecycle
+//! used to lift (`created_v1_record`) is gone: creation states the v1-only
+//! fields absent directly, which is what it always meant.
+
+use super::super::model::v1::MergeOperationRecordV1;
 use super::super::{
-    MergeOperationRecord, MergeParticipantPlan, MergeParticipantRecord, MergeRecordError,
-    OperationState, ParticipantState, RequestedSemantics, creation_envelope, select_record_version,
+    MergeParticipantPlan, MergeParticipantRecord, OperationState, ParticipantState,
+    RequestedSemantics, creation_envelope, select_record_version,
 };
-use super::prepared::{PreparedAction, Row};
-use crate::MergeParticipantState as PState;
 use crate::artifact;
-#[cfg(test)]
-use crate::git::GitPreparedMerge;
-use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::model::ModelResult;
 use crate::operation::OperationContext;
 use crate::runtime::clock::Clock;
 use std::collections::BTreeMap;
@@ -38,20 +41,18 @@ pub(super) fn freeze_merge_messages(
 /// Create the durable record for one accepted start, at the version the
 /// contract-§2 writer floor selects.
 ///
-/// A1 (Safety review §2.2 R4): this site used to hard-code the v0 envelope
-/// (`schema: MERGE_RECORD_SCHEMA, record_schema_version:
-/// MERGE_RECORD_SCHEMA_VERSION`). The version is now chosen by
-/// `select_record_version` — `max(active_writer_floor, highest requested
-/// semantic version)` — and unsupported requested semantics reject here,
-/// before any record exists. The chosen version is frozen before the first
-/// mutation.
+/// The version is chosen by `select_record_version` —
+/// `max(active_writer_floor, highest requested semantic version)` — and
+/// unsupported requested semantics (A2-A4) reject here, before any record
+/// exists. With `ACTIVE_WRITER_FLOOR` at `V1` that selection has one
+/// answer for every servable request, and the envelope it names is v1's.
 pub(super) fn create_record<C: Clock>(
     root: &Path,
     plan: &super::super::MergePlan,
     merge_id: &str,
     clock: &C,
     context: &OperationContext,
-) -> ModelResult<MergeOperationRecord> {
+) -> ModelResult<MergeOperationRecordV1> {
     let (schema, record_schema_version) = creation_envelope(select_record_version(
         RequestedSemantics::from_mode(plan.mode),
     )?);
@@ -83,7 +84,7 @@ pub(super) fn create_record<C: Clock>(
             )
         })
         .collect();
-    Ok(MergeOperationRecord {
+    Ok(MergeOperationRecordV1 {
         schema: schema.to_owned(),
         record_schema_version,
         writer_version: crate::VERSION.to_owned(),
@@ -103,84 +104,15 @@ pub(super) fn create_record<C: Clock>(
         participants,
         publication: None,
         operation_drift: Vec::new(),
+        // The v1-only fields. A record that has not started executing carries
+        // none of them: the accepted workspace, the recovery context, the two
+        // pending journals and the preservation/publication handoff are all
+        // written by the lifecycle, never by creation.
+        accepted_workspace: None,
+        recovery_context: None,
+        pending_rollback: None,
+        pending_preservation: None,
+        preservation_publication_handoff: None,
         extensions: BTreeMap::new(),
     })
-}
-
-pub(super) fn set_pending_action(
-    record: &mut MergeOperationRecord,
-    plan: &MergeParticipantPlan,
-    prepared: &PreparedAction,
-) -> ModelResult<()> {
-    let participant = record
-        .participants
-        .get_mut(&plan.target_id)
-        .ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::MergeRecordUnreadable,
-                format!("merge record is missing participant '{}'", plan.target_id),
-            )
-        })?;
-    let integration = PreparedIntegration::from_merge(
-        IntegrationIntent::from_plan(plan),
-        prepared.kind,
-        &prepared.result,
-    )
-    .map_err(|reason| ModelError::new(ErrorCode::InternalError, reason))?;
-    participant.pending_action = Some(integration.to_pending());
-    Ok(())
-}
-
-#[cfg(test)]
-pub(super) fn pending_commit_spec(result: &GitPreparedMerge) -> Option<PendingCommitSpec> {
-    match result {
-        GitPreparedMerge::Commit(spec) => {
-            Some(super::super::integration::pending_commit_spec(spec))
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn apply_row(
-    record: &mut MergeOperationRecord,
-    plan: &MergeParticipantPlan,
-    row: &Row<'_>,
-    error: Option<&ModelError>,
-    conflict_snapshot: Vec<super::super::ConflictFileEvidence>,
-) -> ModelResult<()> {
-    let participant = record
-        .participants
-        .get_mut(&plan.target_id)
-        .ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::MergeRecordUnreadable,
-                format!("merge record is missing participant '{}'", plan.target_id),
-            )
-        })?;
-    let next = match row.state {
-        PState::UpToDate => ParticipantState::UpToDate,
-        PState::FastForwarded => ParticipantState::FastForwarded,
-        PState::Merged => ParticipantState::Merged,
-        PState::Conflicted => ParticipantState::Conflicted,
-        PState::Failed => ParticipantState::Failed,
-        PState::Unattempted => ParticipantState::Unattempted,
-        _ => {
-            return Err(ModelError::new(
-                ErrorCode::InternalError,
-                "start produced an invalid durable participant state",
-            ));
-        }
-    };
-    participant.state = participant.state.transition(next)?;
-    participant.resulting_commit.clone_from(&row.oid);
-    participant.conflict_paths.clone_from(&row.paths);
-    participant.conflict_snapshot = conflict_snapshot;
-    participant.expected_merge_head =
-        (next == ParticipantState::Conflicted).then(|| plan.source_commit.clone());
-    participant.error = error.map(|error| MergeRecordError {
-        code: error.code,
-        message: error.message.clone(),
-        detail: None,
-    });
-    Ok(())
 }

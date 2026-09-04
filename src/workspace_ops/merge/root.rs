@@ -1,37 +1,33 @@
-mod abort;
 pub(super) mod artifact_facts;
 mod finalization;
 mod planning;
 mod reconciliation;
+mod v1_rollback;
 
 use std::path::Path;
 
 use crate::git::GitBackend;
 use crate::model::ModelResult;
 
-use super::MergeOperationRecord;
+use super::MergeStatusRecordView;
 
-pub(in crate::workspace_ops::merge) use abort::{
+pub(in crate::workspace_ops::merge) use v1_rollback::{
     V1RootRollbackObservation, execute_v1_root_metadata_rollback,
     observe_v1_root_metadata_rollback, observe_v1_selected_root_baseline,
     selected_root_result_artifacts,
 };
-pub(in crate::workspace_ops::merge) use abort::{
-    interrupted_evidence_rollback_is_exact, interrupted_evidence_rollback_is_exact_view,
-    normalize_evidence_observation,
-};
 
 pub(in crate::workspace_ops::merge) use finalization::{
-    candidate_metadata, evidence_parent, evidence_parent_view, root_finalization_is_exact,
-    root_finalization_is_exact_view, root_merge_commit,
+    evidence_parent_view, interrupted_evidence_rollback_is_exact_view,
+    root_finalization_is_exact_view,
 };
 pub(super) use planning::preflight_root;
 pub(in crate::workspace_ops::merge) use reconciliation::frozen_manifest;
 
-pub(crate) fn open_merge_stage_member_paths<B: GitBackend>(
+pub(in crate::workspace_ops) fn open_merge_stage_member_paths<B: GitBackend>(
     backend: &B,
     root: &Path,
-    record: &MergeOperationRecord,
+    record: MergeStatusRecordView<'_>,
 ) -> ModelResult<Vec<String>> {
     Ok(frozen_manifest(backend, root, record)?
         .members

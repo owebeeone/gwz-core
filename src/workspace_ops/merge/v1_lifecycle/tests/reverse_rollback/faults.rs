@@ -1,8 +1,4 @@
 use super::*;
-use crate::workspace_ops::merge::abort::{
-    V1ParticipantRollbackObservation, execute_v1_participant_rollback,
-    observe_v1_participant_rollback,
-};
 use crate::workspace_ops::merge::model::v1::ParticipantRollbackKindV1;
 use crate::workspace_ops::merge::model::v1::PendingRollbackActionV1;
 use crate::workspace_ops::merge::v1_lifecycle::authority::{
@@ -10,6 +6,10 @@ use crate::workspace_ops::merge::v1_lifecycle::authority::{
     V1LifecycleRequest, observe_rollback, resolve_observation,
 };
 use crate::workspace_ops::merge::v1_lifecycle::checked::StoredV1Record;
+use crate::workspace_ops::merge::v1_rollback::{
+    V1ParticipantRollbackObservation, execute_v1_participant_rollback,
+    observe_v1_participant_rollback,
+};
 
 #[test]
 fn participant_executor_is_checked_and_restart_observes_completion() {

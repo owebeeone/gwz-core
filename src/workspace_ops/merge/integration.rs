@@ -4,8 +4,8 @@ use crate::git::{GitMergeAnalysisKind, GitPreparedCommit, GitPreparedMerge, GitP
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::{
-    MergeParticipantPlan, MergeParticipantRecord, PendingCommitSpec, PendingGitSignature,
-    PendingMergeAction, PendingMergeActionKind, PendingMergeExpectedResult,
+    MergeParticipantRecord, PendingCommitSpec, PendingGitSignature, PendingMergeAction,
+    PendingMergeActionKind, PendingMergeExpectedResult,
 };
 
 const INCOMPLETE_ACTION: &str =
@@ -23,15 +23,6 @@ pub(crate) struct IntegrationIntent {
 }
 
 impl IntegrationIntent {
-    pub(crate) fn from_plan(plan: &MergeParticipantPlan) -> Self {
-        Self {
-            target_branch: plan.target_branch.clone(),
-            before_commit: plan.before_commit.clone(),
-            source_commit: plan.source_commit.clone(),
-            commit_message: plan.commit_message.clone(),
-        }
-    }
-
     pub(crate) fn from_record(participant: &MergeParticipantRecord) -> Self {
         Self {
             target_branch: participant.target_branch.clone(),

@@ -57,7 +57,7 @@ fn root_head_advance_is_reported_and_blocks_abort_without_mutation() {
     .unwrap();
     let member = temp.path().join("remote");
     let member_head = backend.head(&member).unwrap();
-    let record_before = FileMergeStore.discover_open(temp.path()).unwrap().unwrap();
+    let record_before = open_record(temp.path()).unwrap();
 
     let status = handle_merge(
         &backend,
@@ -83,17 +83,14 @@ fn root_head_advance_is_reported_and_blocks_abort_without_mutation() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
     assert_eq!(error.member_id.as_deref(), Some("@root"));
     assert_eq!(
         backend.head(temp.path()).unwrap().commit.as_deref(),
         Some(advanced.as_str())
     );
     assert_eq!(backend.head(&member).unwrap(), member_head);
-    assert_eq!(
-        FileMergeStore.discover_open(temp.path()).unwrap().unwrap(),
-        record_before
-    );
+    assert_eq!(open_record(temp.path()).unwrap(), record_before);
 }
 
 #[test]
@@ -104,7 +101,7 @@ fn wrong_id_is_rejected_after_restart_before_root_abort_mutates_any_repo() {
     let root_head = backend.head(temp.path()).unwrap();
     let member = temp.path().join("remote");
     let member_head = backend.head(&member).unwrap();
-    let record_before = FileMergeStore.discover_open(temp.path()).unwrap().unwrap();
+    let record_before = open_record(temp.path()).unwrap();
 
     let restarted_backend = crate::git::Git2Backend::new();
     let error = handle_merge(
@@ -121,10 +118,7 @@ fn wrong_id_is_rejected_after_restart_before_root_abort_mutates_any_repo() {
     assert_eq!(error.code, ErrorCode::MergeIdMismatch);
     assert_eq!(backend.head(temp.path()).unwrap(), root_head);
     assert_eq!(backend.head(&member).unwrap(), member_head);
-    assert_eq!(
-        FileMergeStore.discover_open(temp.path()).unwrap().unwrap(),
-        record_before
-    );
+    assert_eq!(open_record(temp.path()).unwrap(), record_before);
 
     let aborted = handle_merge(
         &restarted_backend,

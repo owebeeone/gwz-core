@@ -1319,7 +1319,13 @@ SCHEMA = schema(
         # Filesystem name behind the decision; absent when it cannot be named.
         filesystem=F(2, STR, optional=True),
         # Why identity could not be proved; absent when supported.
-        gap=F(3, Ref.MergeCrashRecoveryGap, optional=True)),
+        gap=F(3, Ref.MergeCrashRecoveryGap, optional=True),
+        # Whether this volume proves the persistent file handles the checked
+        # boundary's reverse doors need. Present only below the bar (absent
+        # when `supported`); false says the merge record was written raw and
+        # that a selected-root / `--preserve` abort may refuse here.
+        # Added 2026-09-03 for M5d (GwzM5-8M5d-Charter.md §3).
+        handles_ok=F(4, BOOL, optional=True)),
 
     # Plan, result, and live recovery projection for one merge participant.
     MergeRepoSummary=Msg(

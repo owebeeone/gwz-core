@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::artifact::{MarkerMergeArtifact, MarkerMergeParticipantArtifact, MarkerMergeTargetKind};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-use super::{MergeOperationRecord, MergeTargetKind, OperationState};
+use super::{MergeTargetKind, OperationState};
 
 use super::model::v1::{
     AcceptedMetadataSourceV1, AcceptedRootBaseV1, MemberAcceptanceV1, MergeOperationRecordV1,
@@ -18,27 +18,6 @@ pub(crate) struct VerifiedMergeParticipant {
     pub target_id: String,
     pub target_branch: String,
     pub resulting_commit: String,
-}
-
-/// Convert one complete, verified participant set into additive marker
-/// evidence. The result never contains the composition commit that will contain
-/// the marker.
-pub(crate) fn marker_merge_from_verified(
-    record: &MergeOperationRecord,
-    verified: &[VerifiedMergeParticipant],
-) -> ModelResult<MarkerMergeArtifact> {
-    marker_merge_from_view(
-        MarkerMergeRecordView {
-            state: record.state,
-            has_operation_drift: !record.operation_drift.is_empty(),
-            merge_id: &record.merge_id,
-            operation_id: &record.operation_id,
-            source_ref: &record.source_ref,
-            selected_targets: &record.selected_targets,
-            participants: &record.participants,
-        },
-        verified,
-    )
 }
 
 struct MarkerMergeRecordView<'a> {
@@ -320,13 +299,13 @@ fn drift(message: impl Into<String>) -> ModelError {
 mod tests {
     use super::*;
 
-    const RECORD: &str = r#"{schema: gwz.merge-operation/v0, record_schema_version: 0, writer_version: test, workspace_id: ws_test, merge_id: merge_1, operation_id: op_1, state: finalizing, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [mem_b, '@root', mem_a], participants: {mem_a: {path: a, target_kind: member, target_branch: main, before_commit: a0, source_commit: as, commit_message: m, state: merged, resulting_commit: a1}, mem_b: {path: b, target_kind: member, target_branch: release, before_commit: b0, source_commit: bs, commit_message: m, state: up_to_date, resulting_commit: b0}, '@root': {path: '.', target_kind: root, target_branch: main, before_commit: r0, source_commit: rs, commit_message: m, state: fast_forwarded, resulting_commit: r1}}}"#;
+    const RECORD: &str = r#"{schema: gwz.merge-operation/v1, record_schema_version: 1, writer_version: test, workspace_id: ws_test, merge_id: merge_1, operation_id: op_1, state: finalizing, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [mem_b, '@root', mem_a], participants: {mem_a: {path: a, target_kind: member, target_branch: main, before_commit: a0, source_commit: as, commit_message: m, state: merged, resulting_commit: a1}, mem_b: {path: b, target_kind: member, target_branch: release, before_commit: b0, source_commit: bs, commit_message: m, state: up_to_date, resulting_commit: b0}, '@root': {path: '.', target_kind: root, target_branch: main, before_commit: r0, source_commit: rs, commit_message: m, state: fast_forwarded, resulting_commit: r1}}}"#;
 
-    fn record() -> MergeOperationRecord {
+    fn record() -> MergeOperationRecordV1 {
         serde_yaml::from_str(RECORD).unwrap()
     }
 
-    fn changed(old: &str, new: &str) -> MergeOperationRecord {
+    fn changed(old: &str, new: &str) -> MergeOperationRecordV1 {
         serde_yaml::from_str(&RECORD.replacen(old, new, 1)).unwrap()
     }
 
@@ -348,15 +327,37 @@ mod tests {
         .into()
     }
 
-    fn rejected(record: &MergeOperationRecord, verified: &[VerifiedMergeParticipant]) -> ErrorCode {
-        marker_merge_from_verified(record, verified)
-            .unwrap_err()
-            .code
+    /// The v0 engine's `marker_merge_from_verified` entry left with it; the
+    /// property it pinned belongs to the view, which both the v1 marker path
+    /// and these cases share.
+    fn from_record(
+        record: &MergeOperationRecordV1,
+        verified: &[VerifiedMergeParticipant],
+    ) -> ModelResult<MarkerMergeArtifact> {
+        marker_merge_from_view(
+            MarkerMergeRecordView {
+                state: record.state,
+                has_operation_drift: !record.operation_drift.is_empty(),
+                merge_id: &record.merge_id,
+                operation_id: &record.operation_id,
+                source_ref: &record.source_ref,
+                selected_targets: &record.selected_targets,
+                participants: &record.participants,
+            },
+            verified,
+        )
+    }
+
+    fn rejected(
+        record: &MergeOperationRecordV1,
+        verified: &[VerifiedMergeParticipant],
+    ) -> ErrorCode {
+        from_record(record, verified).unwrap_err().code
     }
 
     #[test]
     fn conversion_preserves_order_and_exact_member_and_root_evidence() {
-        let marker = marker_merge_from_verified(&record(), &verified()).unwrap();
+        let marker = from_record(&record(), &verified()).unwrap();
         assert_eq!(marker.selected_targets, ["mem_b", "@root", "mem_a"]);
         assert_eq!(marker.root_merge_commit.as_deref(), Some("r1"));
         let member = &marker.participants["mem_a"];

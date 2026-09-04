@@ -1,6 +1,10 @@
 use super::super::{OperationState, ParticipantDriftKind, ParticipantState, RetryEligibility};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) enum ContinueDisposition {
     ResolveConflict,
     RetryIntegration,
@@ -8,6 +12,10 @@ pub(in crate::workspace_ops::merge) enum ContinueDisposition {
     RejectedTerminal,
 }
 
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) fn continue_disposition(
     state: ParticipantState,
 ) -> ContinueDisposition {
@@ -25,6 +33,10 @@ pub(in crate::workspace_ops::merge) fn continue_disposition(
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) fn post_start_state(
     states: impl IntoIterator<Item = ParticipantState>,
 ) -> OperationState {
@@ -50,6 +62,10 @@ pub(in crate::workspace_ops::merge) fn post_start_state(
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) fn post_continue_state(
     states: impl IntoIterator<Item = ParticipantState>,
 ) -> OperationState {

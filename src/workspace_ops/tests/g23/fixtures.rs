@@ -11,132 +11,6 @@ pub(super) fn request(dry_run: bool) -> crate::MergeRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) enum FinalizationFault {
-    AfterEnteringFinalizing,
-    BeforeCandidateCreation,
-    AfterCandidatePersistence,
-    AfterEvidenceCommit,
-    AfterEvidencePersistence,
-    AfterLockPublication,
-    AfterNoPublicationComplete,
-    BeforeArchive,
-}
-
-pub(super) struct FaultingMergeStore {
-    fault: FinalizationFault,
-    pub(super) fired: Cell<bool>,
-}
-
-impl FaultingMergeStore {
-    pub(super) fn new(fault: FinalizationFault) -> Self {
-        Self {
-            fault,
-            fired: Cell::new(false),
-        }
-    }
-
-    fn should_fail_write(&self, root: &Path, record: &MergeOperationRecord) -> bool {
-        let Some(publication) = record.publication.as_ref() else {
-            return false;
-        };
-        match self.fault {
-            FinalizationFault::AfterEnteringFinalizing => {
-                publication.step == PublicationStep::NotStarted
-            }
-            FinalizationFault::BeforeCandidateCreation => {
-                publication.step == PublicationStep::PreparingCandidate
-                    && publication.candidate.is_none()
-            }
-            FinalizationFault::AfterCandidatePersistence => {
-                publication.step == PublicationStep::CommittingEvidence
-                    && publication.candidate.is_some()
-                    && publication.composition_commit.is_none()
-            }
-            FinalizationFault::AfterEvidenceCommit => publication.composition_commit.is_some(),
-            FinalizationFault::AfterEvidencePersistence => {
-                publication.step == PublicationStep::PublishingCandidate
-                    && publication.composition_commit.is_some()
-            }
-            FinalizationFault::AfterLockPublication => {
-                let actual = fs::read(root.join(crate::artifact::LOCK_PATH))
-                    .ok()
-                    .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
-                publication.step == PublicationStep::PublishingCandidate
-                    && publication.composition_commit.is_some()
-                    && actual.as_deref() == publication.candidate_lock_sha256.as_deref()
-            }
-            FinalizationFault::AfterNoPublicationComplete => {
-                record.state == OperationState::Finalizing
-                    && publication.step == PublicationStep::Complete
-                    && publication.candidate.is_none()
-                    && publication.composition_commit.is_none()
-                    && publication.composition_tree.is_none()
-                    && publication.candidate_hashes.is_empty()
-            }
-            FinalizationFault::BeforeArchive => false,
-        }
-    }
-
-    fn inject(&self) -> ModelResult<()> {
-        self.fired.set(true);
-        Err(ModelError::new(
-            ErrorCode::MergeRecoveryRequired,
-            format!("injected {:?} failure", self.fault),
-        ))
-    }
-}
-
-impl MergeStore for FaultingMergeStore {
-    fn discover_open(&self, root: &Path) -> ModelResult<Option<MergeOperationRecord>> {
-        FileMergeStore.discover_open(root)
-    }
-
-    fn load(&self, root: &Path, merge_id: &str) -> ModelResult<MergeOperationRecord> {
-        FileMergeStore.load(root, merge_id)
-    }
-
-    fn write_open(&self, root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
-        if !self.fired.get() && self.should_fail_write(root, record) {
-            if matches!(self.fault, FinalizationFault::AfterNoPublicationComplete) {
-                FileMergeStore.write_open(root, record)?;
-            }
-            return self.inject();
-        }
-        FileMergeStore.write_open(root, record)
-    }
-
-    fn archive(&self, root: &Path, merge_id: &str) -> ModelResult<()> {
-        if !self.fired.get() && matches!(self.fault, FinalizationFault::BeforeArchive) {
-            return self.inject();
-        }
-        FileMergeStore.archive(root, merge_id)
-    }
-}
-
-pub(super) fn invoke_with_store(
-    backend: &crate::git::Git2Backend,
-    store: &FaultingMergeStore,
-    root: &Path,
-    request: crate::MergeRequest,
-    operation_id: &str,
-) -> ModelResult<crate::MergeResponse> {
-    let clock = FixedClock::new(TimestampMs(1_700_000_000_000));
-    let mut ids = SequentialIdProvider::new();
-    handle_merge_with_dependencies(
-        MergeDependencies {
-            backend,
-            store,
-            clock: &clock,
-            ids: &mut ids,
-            events: &crate::operation::NullSink,
-        },
-        root,
-        request,
-        operation_id,
-    )
-}
-
 pub(super) fn feature_commit(
     backend: &crate::git::Git2Backend,
     repo: &std::path::Path,
@@ -359,132 +233,97 @@ pub(super) fn assert_open_merge_blocks_all_starts_without_mutation(
     }
 }
 
+/// Force the one open record's `state` scalar, in place, without decoding it.
+///
+/// **M5d.** This was a `FileMergeStore` read/modify/write of the v0 record.
+/// There is no such store any more — the v1 lifecycle owns its own writer and
+/// validates every body it reads — so the fixture edits the durable YAML
+/// directly. That is the right level for what these tests assert: the
+/// open-merge gate classifies by ENVELOPE and never decodes the body, so a
+/// forced state must not have to be a state the lifecycle would have written.
 pub(super) fn force_open_merge_state(root: &Path, state: OperationState) -> String {
-    let store = FileMergeStore;
-    let mut record = store.discover_open(root).unwrap().unwrap();
-    record.state = state;
-    let merge_id = record.merge_id.clone();
-    store.write_open(root, &record).unwrap();
+    let directory = root.join(".gwz/merge");
+    let path = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("yaml"))
+        .expect("an open merge record");
+    let merge_id = path.file_stem().unwrap().to_string_lossy().into_owned();
+    let text = fs::read_to_string(&path).unwrap();
+    let wire = serde_yaml::to_string(&state).unwrap();
+    let wire = wire.trim().trim_start_matches("- ");
+    let patched = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("state:") {
+                format!("state: {wire}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&path, format!("{patched}\n")).unwrap();
     merge_id
 }
 
-pub(super) fn assert_root_evidence_abort_recovers(fault: FinalizationFault, born_root: bool) {
-    let kind = if born_root { "born" } else { "unborn" };
-    let temp = TempDir::new(&format!("merge-evidence-abort-{kind}-{fault:?}"));
-    let backend = crate::git::Git2Backend::new();
-    let _fixture = init_one_member_workspace(
-        temp.path(),
-        &backend,
-        &format!("merge-abort-{kind}-{fault:?}"),
-    );
-    let member = temp.path().join("remote");
-    let (member_before, _) = feature_commit(&backend, &member, "README.md", "source\n");
-    if born_root {
-        backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
-        let parents = backend
-            .head(temp.path())
-            .unwrap()
-            .commit
-            .into_iter()
-            .map(|commit| git2::Oid::from_str(&commit).unwrap())
-            .collect::<Vec<_>>();
-        commit_file(
-            temp.path(),
-            "root-note.txt",
-            "baseline\n",
-            "root baseline",
-            &parents,
-        )
-        .unwrap();
-    }
-    let root_before = backend.head(temp.path()).unwrap().commit;
-    let lock_before = fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap();
+/// The one open merge record under `root`, read the way every non-merge
+/// consumer reads it.
+///
+/// **M5d.** This replaces `FileMergeStore.discover_open`, which decoded a v0
+/// body through a store that no longer exists. A pre-0.14 (v0) envelope
+/// refuses here with the charter §2 sentence rather than answering `None`,
+/// which is exactly what these suites want: a fixture that silently read
+/// "no merge" for an occupancy would hide the defect.
+pub(super) fn open_record(root: &Path) -> Option<crate::workspace_ops::merge::OpenMergeRecord> {
+    crate::workspace_ops::merge::discover_open_v1_record(root).unwrap()
+}
 
-    fs::write(temp.path().join("staged-user.txt"), "staged\n").unwrap();
-    backend
-        .stage_paths(temp.path(), &["staged-user.txt"])
-        .unwrap();
-    fs::write(temp.path().join("staged-user.txt"), "dirty over staged\n").unwrap();
-    if born_root {
-        fs::write(temp.path().join("root-note.txt"), "dirty\n").unwrap();
-    }
-    fs::write(temp.path().join("untracked-user.txt"), "untracked\n").unwrap();
-    let staged_before = git2::Repository::open(temp.path())
-        .unwrap()
-        .index()
-        .unwrap()
-        .get_path(Path::new("staged-user.txt"), 0)
-        .unwrap()
-        .id;
+/// Whether `.gwz/merge` holds no open record at all.
+pub(super) fn no_open_record(root: &Path) -> bool {
+    open_record(root).is_none()
+}
 
-    let store = FaultingMergeStore::new(fault);
-    invoke_with_store(
-        &backend,
-        &store,
-        temp.path(),
-        request(false),
-        "op_evidence_abort",
-    )
-    .unwrap_err();
-    let record = store.discover_open(temp.path()).unwrap().unwrap();
-    assert_ne!(
-        backend.head(temp.path()).unwrap().commit,
-        root_before,
-        "{kind} {fault:?}"
-    );
-    assert_eq!(
-        record
-            .publication
-            .as_ref()
-            .and_then(|publication| publication.composition_commit.as_ref())
-            .is_some(),
-        matches!(fault, FinalizationFault::AfterEvidencePersistence),
-        "{kind} {fault:?}"
-    );
+/// The archived (`done/`) record for `merge_id`, as the I2 §7 projection reads
+/// it. Replaces `FileMergeStore.load`.
+pub(super) fn archived_record(
+    root: &Path,
+    merge_id: &str,
+) -> crate::workspace_ops::merge::ArchivedMergeRecord {
+    crate::workspace_ops::merge::read_archived_record(root, merge_id).unwrap()
+}
 
-    let aborted = invoke_with_store(
-        &backend,
-        &store,
-        temp.path(),
-        recovery_request(crate::MergeOp::Abort, Some(record.merge_id.clone())),
-        "op_evidence_abort_resume",
+/// Read the one open record's durable YAML, let the caller edit it as a
+/// `serde_yaml::Value`, and write it back.
+///
+/// **M5d.** The v0 suites did this with `FileMergeStore` read/modify/write.
+/// The v1 store is not a general record writer — it publishes through the
+/// checked door and validates every transition — so a fixture that wants to
+/// stage a durable state the lifecycle would not itself produce edits the
+/// bytes. Returns the merge id.
+pub(super) fn patch_open_record(root: &Path, edit: impl FnOnce(&mut serde_yaml::Value)) -> String {
+    let directory = root.join(".gwz/merge");
+    let path = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("yaml"))
+        .expect("an open merge record");
+    let mut value: serde_yaml::Value = serde_yaml::from_slice(&fs::read(&path).unwrap()).unwrap();
+    edit(&mut value);
+    fs::write(&path, serde_yaml::to_string(&value).unwrap()).unwrap();
+    path.file_stem().unwrap().to_string_lossy().into_owned()
+}
+
+/// Move an archived record back into `.gwz/merge` at `state`, so the
+/// open-merge gate sees an occupancy in that state.
+pub(super) fn reopen_archived_record(root: &Path, merge_id: &str, state: OperationState) {
+    let done = root.join(format!(".gwz/merge/done/{merge_id}.yaml"));
+    let mut value: serde_yaml::Value = serde_yaml::from_slice(&fs::read(&done).unwrap()).unwrap();
+    value["state"] = serde_yaml::to_value(state).unwrap();
+    fs::write(
+        root.join(format!(".gwz/merge/{merge_id}.yaml")),
+        serde_yaml::to_string(&value).unwrap(),
     )
     .unwrap();
-    assert_eq!(aborted.state, crate::MergeOperationState::Aborted);
-    assert_eq!(backend.head(temp.path()).unwrap().commit, root_before);
-    assert_eq!(
-        backend.head(&member).unwrap().commit.as_deref(),
-        Some(member_before.as_str())
-    );
-    assert_eq!(
-        fs::read(temp.path().join(crate::artifact::LOCK_PATH)).unwrap(),
-        lock_before
-    );
-    assert_eq!(
-        fs::read_to_string(temp.path().join("staged-user.txt")).unwrap(),
-        "dirty over staged\n"
-    );
-    if born_root {
-        assert_eq!(
-            fs::read_to_string(temp.path().join("root-note.txt")).unwrap(),
-            "dirty\n"
-        );
-    }
-    assert_eq!(
-        fs::read_to_string(temp.path().join("untracked-user.txt")).unwrap(),
-        "untracked\n"
-    );
-    let staged_after = git2::Repository::open(temp.path())
-        .unwrap()
-        .index()
-        .unwrap()
-        .get_path(Path::new("staged-user.txt"), 0)
-        .unwrap()
-        .id;
-    assert_eq!(staged_after, staged_before);
-    assert!(
-        crate::artifact::list_markers(temp.path())
-            .unwrap()
-            .is_empty()
-    );
+    fs::remove_file(&done).unwrap();
 }

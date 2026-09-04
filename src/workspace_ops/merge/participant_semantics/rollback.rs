@@ -29,12 +29,20 @@ pub(in crate::workspace_ops::merge) fn rollback_class(state: ParticipantState) -
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) enum AbortPreflightDecision {
     Reject,
     Proceed,
     AlreadyApplied,
 }
 
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) fn abort_preflight_decision(
     operation: OperationState,
     participant: &MergeParticipantRecord,
@@ -85,6 +93,10 @@ pub(in crate::workspace_ops::merge) fn abort_preflight_decision(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) enum RollbackGitAction {
     None,
     AbortConflict,
@@ -92,11 +104,19 @@ pub(in crate::workspace_ops::merge) enum RollbackGitAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) struct ParticipantRollbackDecision {
     pub(in crate::workspace_ops::merge) git_action: RollbackGitAction,
     pub(in crate::workspace_ops::merge) terminal_state: Option<ParticipantState>,
 }
 
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) fn participant_rollback_decision(
     state: ParticipantState,
     already_applied: bool,

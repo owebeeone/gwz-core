@@ -80,6 +80,10 @@ impl OperationState {
         !matches!(self, Self::Completed | Self::Aborted)
     }
 
+    #[allow(
+        dead_code,
+        reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+    )]
     pub(crate) fn transition(self, next: Self) -> ModelResult<Self> {
         let legal = self == next
             || matches!(
@@ -118,6 +122,10 @@ impl OperationState {
 }
 
 impl ParticipantState {
+    #[allow(
+        dead_code,
+        reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+    )]
     pub(crate) fn transition(self, next: Self) -> ModelResult<Self> {
         let attempted = matches!(
             next,
@@ -148,6 +156,10 @@ impl ParticipantState {
 }
 
 impl PublicationStep {
+    #[allow(
+        dead_code,
+        reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+    )]
     pub(crate) fn transition(self, next: Self) -> ModelResult<Self> {
         (next >= self)
             .then_some(next)
@@ -155,6 +167,10 @@ impl PublicationStep {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 fn transition_error<T: std::fmt::Debug>(kind: &str, from: T, to: T) -> ModelError {
     ModelError::new(
         ErrorCode::MergeRecoveryRequired,

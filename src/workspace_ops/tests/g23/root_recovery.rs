@@ -197,9 +197,10 @@ fn merged_root_cannot_redefine_an_in_flight_member_and_remains_abortable() {
     assert!(error.message.contains("identity changed"));
     assert_eq!(error.member_id.as_deref(), Some("mem_remote"));
     assert_eq!(error.member_path.as_deref(), Some("remote"));
-    let open = FileMergeStore.discover_open(temp.path()).unwrap().unwrap();
-    assert_eq!(open.state, OperationState::Finalizing);
-    let member_result = open.participants["mem_remote"]
+    let open = open_record(temp.path()).unwrap();
+    let open = open.view();
+    assert_eq!(open.state(), OperationState::Finalizing);
+    let member_result = open.participants()["mem_remote"]
         .resulting_commit
         .clone()
         .unwrap();
@@ -221,7 +222,7 @@ fn merged_root_cannot_redefine_an_in_flight_member_and_remains_abortable() {
     let retry_error = handle_merge(
         &backend,
         temp.path(),
-        recovery_request(crate::MergeOp::Resume, Some(open.merge_id.clone())),
+        recovery_request(crate::MergeOp::Resume, Some(open.merge_id().to_owned())),
         "op_root_redefines_retry",
     )
     .unwrap_err();
@@ -232,7 +233,7 @@ fn merged_root_cannot_redefine_an_in_flight_member_and_remains_abortable() {
     let aborted = handle_merge(
         &backend,
         temp.path(),
-        recovery_request(crate::MergeOp::Abort, Some(open.merge_id)),
+        recovery_request(crate::MergeOp::Abort, Some(open.merge_id().to_owned())),
         "op_root_redefines_abort",
     )
     .unwrap();
@@ -295,7 +296,8 @@ fn merged_root_schema_and_path_errors_remain_durable_retryable_and_abortable() {
         assert_eq!(error.code, expected_code, "{name}");
         assert_eq!(error.member_id.as_deref(), Some("@root"), "{name}");
         assert_eq!(error.member_path.as_deref(), Some("."), "{name}");
-        let open = FileMergeStore.discover_open(temp.path()).unwrap().unwrap();
+        let open = open_record(temp.path()).unwrap();
+        let open = open.view();
 
         let status = handle_merge(
             &backend,
@@ -315,7 +317,7 @@ fn merged_root_schema_and_path_errors_remain_durable_retryable_and_abortable() {
         let retry = handle_merge(
             &backend,
             temp.path(),
-            recovery_request(crate::MergeOp::Resume, Some(open.merge_id.clone())),
+            recovery_request(crate::MergeOp::Resume, Some(open.merge_id().to_owned())),
             format!("op_root_invalid_retry_{name}"),
         )
         .unwrap_err();
@@ -325,7 +327,7 @@ fn merged_root_schema_and_path_errors_remain_durable_retryable_and_abortable() {
         let aborted = handle_merge(
             &backend,
             temp.path(),
-            recovery_request(crate::MergeOp::Abort, Some(open.merge_id)),
+            recovery_request(crate::MergeOp::Abort, Some(open.merge_id().to_owned())),
             format!("op_root_invalid_abort_{name}"),
         )
         .unwrap();

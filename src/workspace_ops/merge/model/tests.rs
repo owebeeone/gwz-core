@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use super::v1::MergeOperationRecordV1;
 use super::*;
 use crate::model::ErrorCode;
 use crate::operation::OperationContext;
@@ -59,8 +60,8 @@ fn lifecycle_transitions_reject_skips_and_regressions() {
 
 #[test]
 fn record_round_trip_retains_unknown_fields() {
-    let yaml = r#"schema: gwz.merge-operation/v0
-record_schema_version: 0
+    let yaml = r#"schema: gwz.merge-operation/v1
+record_schema_version: 1
 writer_version: 0.9.2
 workspace_id: ws_default
 merge_id: merge_1
@@ -76,7 +77,7 @@ selected_targets: []
 participants: {}
 future_record: retained
 "#;
-    let record: MergeOperationRecord = serde_yaml::from_str(yaml).unwrap();
+    let record: MergeOperationRecordV1 = serde_yaml::from_str(yaml).unwrap();
     assert_eq!(record.mode, MergeExecutionMode::Normal);
     let rewritten = serde_yaml::to_string(&record).unwrap();
     assert!(!rewritten.contains("\nmode:"));
@@ -88,7 +89,7 @@ future_record: retained
     let encoded = serde_yaml::to_string(&ff_only).unwrap();
     assert!(encoded.contains("mode: ff_only"));
     assert_eq!(
-        serde_yaml::from_str::<MergeOperationRecord>(&encoded)
+        serde_yaml::from_str::<MergeOperationRecordV1>(&encoded)
             .unwrap()
             .mode,
         MergeExecutionMode::FfOnly
@@ -179,9 +180,9 @@ fn record_conversion_preserves_frozen_order_and_counts() {
         drift: Vec::new(),
         extensions: BTreeMap::new(),
     };
-    let record = MergeOperationRecord {
-        schema: MERGE_RECORD_SCHEMA.to_owned(),
-        record_schema_version: MERGE_RECORD_SCHEMA_VERSION,
+    let record = MergeOperationRecordV1 {
+        schema: super::v1::MERGE_RECORD_SCHEMA_V1.to_owned(),
+        record_schema_version: super::v1::MERGE_RECORD_SCHEMA_VERSION_V1,
         writer_version: "0.9.2".to_owned(),
         workspace_id: "ws_default".to_owned(),
         merge_id: "merge_1".to_owned(),
@@ -208,6 +209,11 @@ fn record_conversion_preserves_frozen_order_and_counts() {
         ]),
         publication: None,
         operation_drift: Vec::new(),
+        accepted_workspace: None,
+        recovery_context: None,
+        pending_rollback: None,
+        pending_preservation: None,
+        preservation_publication_handoff: None,
         extensions: BTreeMap::new(),
     };
     let context = OperationContext {
@@ -219,7 +225,7 @@ fn record_conversion_preserves_frozen_order_and_counts() {
         attribution: None,
     };
 
-    let response = record.to_response(&context).unwrap();
+    let response = record.to_v1_response(&context).unwrap();
     assert_eq!(response.response.meta.action, crate::ActionKind::Merge);
     assert_eq!(response.participant_counts.total, 2);
     assert_eq!(response.participant_counts.conflicted, 1);
@@ -239,77 +245,7 @@ fn record_conversion_preserves_frozen_order_and_counts() {
     assert!(rewritten.contains("commit_message: Merge 'feature/x' into 'main'"));
     assert!(rewritten.contains("code: git_command_failed"));
     assert_eq!(
-        serde_yaml::from_str::<MergeOperationRecord>(&rewritten).unwrap(),
+        serde_yaml::from_str::<MergeOperationRecordV1>(&rewritten).unwrap(),
         record
-    );
-
-    let snapshot = MergeStatusSnapshot {
-        record,
-        participants: BTreeMap::from([
-            (
-                "mem_core".to_owned(),
-                MergeParticipantObservation {
-                    live_commit: Some("111".to_owned()),
-                    conflict_paths: vec!["src/lib.rs".to_owned()],
-                    drift: Vec::new(),
-                    continue_eligibility: RetryEligibility {
-                        eligible: true,
-                        blockers: Vec::new(),
-                    },
-                    abort_eligibility: RollbackEligibility {
-                        eligible: true,
-                        blockers: Vec::new(),
-                    },
-                    pending_action: None,
-                },
-            ),
-            (
-                "mem_lib".to_owned(),
-                MergeParticipantObservation {
-                    live_commit: Some("333".to_owned()),
-                    conflict_paths: Vec::new(),
-                    drift: Vec::new(),
-                    continue_eligibility: RetryEligibility {
-                        eligible: true,
-                        blockers: Vec::new(),
-                    },
-                    abort_eligibility: RollbackEligibility {
-                        eligible: true,
-                        blockers: Vec::new(),
-                    },
-                    pending_action: None,
-                },
-            ),
-        ]),
-        operation_drift: vec![OperationDrift {
-            kind: OperationDriftKind::BaselineManifestChanged,
-            message: "manifest changed".to_owned(),
-        }],
-    };
-    let durable_record = snapshot.record.clone();
-    let status = snapshot.to_response(&context).unwrap();
-    assert_eq!(snapshot.record, durable_record);
-    assert_eq!(status.repos[0].live_commit.as_deref(), Some("111"));
-    assert_eq!(status.repos[0].continue_eligible, Some(true));
-    assert_eq!(status.repos[0].abort_eligible, Some(true));
-    assert_eq!(status.operation_drift.len(), 1);
-
-    let idle = super::super::response::idle_status_response(&context).unwrap();
-    assert_eq!(idle.state, crate::MergeOperationState::Idle);
-    assert_eq!(
-        idle.response.meta.aggregate_status,
-        crate::AggregateStatus::Noop
-    );
-    assert!(idle.merge_id.is_none());
-    assert!(!idle.open);
-    assert_eq!(idle.participant_counts.total, 0);
-    assert!(idle.repos.is_empty());
-    assert!(idle.operation_drift.is_empty());
-
-    let mut incomplete = snapshot;
-    incomplete.participants.remove("mem_lib");
-    assert_eq!(
-        incomplete.to_response(&context).unwrap_err().code,
-        ErrorCode::InternalError
     );
 }

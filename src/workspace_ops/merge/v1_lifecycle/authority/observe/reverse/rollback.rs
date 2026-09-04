@@ -106,7 +106,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: MergeAuth
         } => participant_intent(current, member_id, action, terminal_state),
         RollbackCursor::NoMutationParticipant { member_id } => {
             let row = participant(current, member_id)?;
-            crate::workspace_ops::merge::abort::verify_v1_no_mutation_participant(
+            crate::workspace_ops::merge::v1_rollback::verify_v1_no_mutation_participant(
                 backend,
                 current.location().root(),
                 current.record(),
@@ -303,12 +303,12 @@ impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for RollbackEntryHandof
                 "rollback handoff does not match the preview",
             ));
         }
-        crate::workspace_ops::merge::abort::preflight_v1_rollback(
+        crate::workspace_ops::merge::v1_rollback::preflight_v1_rollback(
             self.backend,
             current.location().root(),
             anticipated,
         )?;
-        crate::workspace_ops::merge::abort::preflight_v1_evidence(
+        crate::workspace_ops::merge::v1_rollback::preflight_v1_evidence(
             self.backend,
             current.location().root(),
             anticipated,
@@ -388,7 +388,7 @@ fn observe_participant<B: MergeAuthorityBackend>(
     terminal_state: ParticipantState,
 ) -> ModelResult<ExactObservationFact> {
     let row = participant(current, member_id)?;
-    match crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
+    match crate::workspace_ops::merge::v1_rollback::observe_v1_participant_rollback(
         backend,
         current.location().root(),
         current.record(),
@@ -396,10 +396,10 @@ fn observe_participant<B: MergeAuthorityBackend>(
         row,
         action,
     )? {
-        crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::Before => Ok(
+        crate::workspace_ops::merge::v1_rollback::V1ParticipantRollbackObservation::Before => Ok(
             ExactObservationFact::NotStarted(NotStartedObservation::Rollback(pending.clone())),
         ),
-        crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::After => {
+        crate::workspace_ops::merge::v1_rollback::V1ParticipantRollbackObservation::After => {
             let mut next = row.clone();
             next.state = terminal_state;
             next.pending_action = None;
@@ -417,7 +417,7 @@ fn observe_participant<B: MergeAuthorityBackend>(
                 RollbackObservation::ParticipantDone(Box::new(proof)),
             )))
         }
-        crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::Ambiguous => {
+        crate::workspace_ops::merge::v1_rollback::V1ParticipantRollbackObservation::Ambiguous => {
             ambiguity(current)
         }
     }
@@ -445,8 +445,8 @@ fn observe_evidence<B: MergeAuthorityBackend>(
     pending: &PendingRollbackActionV1,
     step: EvidenceRollbackStepV1,
 ) -> ModelResult<ExactObservationFact> {
-    use crate::workspace_ops::merge::abort::V1EvidenceRollbackObservation as O;
-    match crate::workspace_ops::merge::abort::observe_v1_evidence_rollback(
+    use crate::workspace_ops::merge::v1_rollback::V1EvidenceRollbackObservation as O;
+    match crate::workspace_ops::merge::v1_rollback::observe_v1_evidence_rollback(
         backend,
         current.location().root(),
         current.record(),

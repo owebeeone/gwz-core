@@ -23,6 +23,10 @@ impl ParticipantResultClass {
         self == Self::Integrated
     }
 
+    #[allow(
+        dead_code,
+        reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+    )]
     fn is_conflict(self) -> bool {
         self == Self::Conflict
     }
@@ -102,6 +106,10 @@ pub(in crate::workspace_ops::merge) fn is_integrated_result(state: ParticipantSt
     result_class(state).is_integrated()
 }
 
+#[allow(
+    dead_code,
+    reason = "M5d lint sweep: reached only from this crate's own `cfg(test)` suites, so the non-test lib build sees it as dead; held rather than deleted."
+)]
 pub(in crate::workspace_ops::merge) fn is_conflicted_result(state: ParticipantState) -> bool {
     result_class(state).is_conflict()
 }

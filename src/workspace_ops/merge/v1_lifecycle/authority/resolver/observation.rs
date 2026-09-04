@@ -84,6 +84,19 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) enum ExactObservationFact {
     },
     Ambiguous(BoundAmbiguityEvidence),
     PreservationAmbiguous(BoundAmbiguityEvidence, VerifiedPreservationCursorPrefix),
+    /// The observation refused, and the refusal is itself durable diagnostic
+    /// state: record `drift`, then answer `error`.
+    ///
+    /// This is the v1 spelling of what v0 did inline at
+    /// `git show 57502e4:src/workspace_ops/merge/finalize_dispatch.rs` line 222
+    /// -- `record_root_metadata_invalid(...)?; return Err(error);`. The
+    /// difference is that the row here arrives as an authorized, bound
+    /// transition through `reduce`, not as a direct push into
+    /// `record.operation_drift`.
+    DriftRejection {
+        drift: BoundOperationDrift,
+        error: B<ModelError>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -208,6 +221,9 @@ fn observed_physical(
         ExactObservationFact::PreservationDurabilityPending { action, .. } => {
             Some(PhysicalActionKind::Preservation(action.clone()))
         }
+        // A refused observation authorizes no physical action; the only thing
+        // it can do is write its diagnostic.
+        ExactObservationFact::DriftRejection { .. } => None,
         ExactObservationFact::Abandon(..)
         | ExactObservationFact::Completed(_)
         | ExactObservationFact::Ambiguous(_)

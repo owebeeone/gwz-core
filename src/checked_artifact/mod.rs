@@ -106,6 +106,13 @@ pub(crate) use fault::{
 #[cfg(test)]
 pub(crate) use capability::{InjectedVolumeDescription, with_identity_unavailable};
 
+/// M5d step (3)'s handle-probe half of that seam (`GwzM5-8M5d-Charter.md` §3,
+/// 2026-09-03): armed, the LEGACY per-leaf probe refuses exactly as a real
+/// overlay without `nfs_export` does, so the raw-create arm and the
+/// reverse-door refusal are reachable from a test on APFS and ext4.
+#[cfg(test)]
+pub(crate) use capability::with_handle_probe_unavailable;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CheckedArtifactFact {
     Missing,

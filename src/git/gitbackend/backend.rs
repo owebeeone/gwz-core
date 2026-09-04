@@ -26,16 +26,6 @@ impl Git2Backend {
     }
 
     #[cfg(test)]
-    pub(crate) fn reset_preparation_call_count() {
-        PREPARATION_CALL_COUNT.set(0);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn preparation_call_count() -> usize {
-        PREPARATION_CALL_COUNT.get()
-    }
-
-    #[cfg(test)]
     pub(crate) fn before_next_prepared_execution(callback: impl FnOnce() + 'static) {
         BEFORE_PREPARED_EXECUTION.with(|slot| {
             assert!(

@@ -1,7 +1,81 @@
+use std::collections::BTreeMap;
+
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::OperationContext;
 
 use super::model::*;
+
+/// The per-participant half of a merge response.
+///
+/// **M5d charter §4 ("Responses").** One computation serves the open v0
+/// record, the open v1 record and the archived projection, so the rows a
+/// terminal answer reports have the same shape as the open answer they
+/// replace. Before this the archived arm synthesized `repos: []` and default
+/// counts, which is why a completed `--no-ff` merge printed
+/// `participants: total 0`.
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::workspace_ops::merge) struct MergeRecordRows {
+    pub(in crate::workspace_ops::merge) participant_counts: crate::MergeParticipantCounts,
+    pub(in crate::workspace_ops::merge) repos: Vec<crate::MergeRepoSummary>,
+    pub(in crate::workspace_ops::merge) preservation: Option<Vec<crate::MergePreservation>>,
+    pub(in crate::workspace_ops::merge) publication_step: Option<crate::MergePublicationStep>,
+}
+
+/// Project one record body's selected participants into response rows.
+///
+/// The inputs are the four fields every record version shares, so a v0 body,
+/// a v1 body and an archived body of either version all project identically.
+pub(in crate::workspace_ops::merge) fn record_rows(
+    selected_targets: &[String],
+    participants: &BTreeMap<String, MergeParticipantRecord>,
+    publication: Option<&PublicationProgress>,
+    source_ref: &str,
+) -> ModelResult<MergeRecordRows> {
+    let mut counts = crate::MergeParticipantCounts {
+        total: selected_targets.len() as i64,
+        ..Default::default()
+    };
+    let mut repos = Vec::with_capacity(selected_targets.len());
+    let mut preservation = Vec::new();
+    for target_id in selected_targets {
+        let participant = participants.get(target_id).ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::MergeRecordUnreadable,
+                format!("merge record is missing participant '{target_id}'"),
+            )
+        })?;
+        super::participant_semantics::result::increment_count(&mut counts, participant.state);
+        preservation.extend(participant.preservation.iter().map(|value| {
+            crate::MergePreservation {
+                target_id: target_id.clone(),
+                path: participant.path.clone(),
+                backup_ref: value.backup_ref.clone(),
+                backup_commit: value.backup_commit.clone(),
+                stash_id: value.stash_id.clone(),
+                stash_object_id: value.stash_object_id.clone(),
+            }
+        }));
+        repos.push(participant.to_protocol(target_id, source_ref));
+    }
+    if let Some(publication) = publication {
+        preservation.extend(publication.root_preservation.iter().map(|value| {
+            crate::MergePreservation {
+                target_id: "@root".to_owned(),
+                path: ".".to_owned(),
+                backup_ref: value.backup_ref.clone(),
+                backup_commit: value.backup_commit.clone(),
+                stash_id: value.stash_id.clone(),
+                stash_object_id: value.stash_object_id.clone(),
+            }
+        }));
+    }
+    Ok(MergeRecordRows {
+        participant_counts: counts,
+        repos,
+        preservation: (!preservation.is_empty()).then_some(preservation),
+        publication_step: publication.map(|value| value.step.into()),
+    })
+}
 
 /// Stable no-open result for `gwz merge --status`.
 pub(crate) fn idle_status_response(
@@ -74,6 +148,32 @@ pub(in crate::workspace_ops::merge) fn archived_status_response(
     )
 }
 
+/// The terminal answer a v1 start, continue or abort returns once its record
+/// is archived.
+///
+/// **M5d charter §4 ("Responses").** A completed v1 start "returns the
+/// per-repo rows, `participant_counts`, `publication_step`, and `preservation`
+/// projected from the **archived** record (I2 §7: the archived projection reads
+/// only the exact done-record bytes)" — so the rows below come from the decoded
+/// done-record and nothing else. `archived_status_response` above stays the
+/// read-only archive-history answer for `gwz merge --status <id>` and `--gc`,
+/// which report no live participant work and keep their documented empty rows
+/// (`gwz-cli/docs/MachineOutput.md:249-251`).
+pub(in crate::workspace_ops::merge) fn archived_terminal_response(
+    merge_id: &str,
+    archived: &super::record_wire::ValidatedArchivedRecord,
+    context: &OperationContext,
+) -> ModelResult<crate::MergeResponse> {
+    let mut response = archived_status_response(merge_id, archived.projection(), context)?;
+    let rows = archived.rows().clone();
+    response.participant_counts = rows.participant_counts;
+    response.repos = rows.repos;
+    response.preservation = rows.preservation;
+    response.publication_step = rows.publication_step;
+    response.operation_drift = archived.operation_drift().to_vec();
+    Ok(response)
+}
+
 /// Attach immutable archive history to an existing terminal response without
 /// discarding command-specific summaries such as post-GC preservation rows.
 /// The caller must derive both inputs from the same canonical archive bytes.
@@ -110,47 +210,12 @@ macro_rules! impl_record_response {
                 &self,
                 context: &OperationContext,
             ) -> ModelResult<crate::MergeResponse> {
-                let mut counts = crate::MergeParticipantCounts {
-                    total: self.selected_targets.len() as i64,
-                    ..Default::default()
-                };
-                let mut repos = Vec::with_capacity(self.selected_targets.len());
-                let mut preservation = Vec::new();
-                for target_id in &self.selected_targets {
-                    let participant = self.participants.get(target_id).ok_or_else(|| {
-                        ModelError::new(
-                            ErrorCode::MergeRecordUnreadable,
-                            format!("merge record is missing participant '{target_id}'"),
-                        )
-                    })?;
-                    super::participant_semantics::result::increment_count(
-                        &mut counts,
-                        participant.state,
-                    );
-                    preservation.extend(participant.preservation.iter().map(|value| {
-                        crate::MergePreservation {
-                            target_id: target_id.clone(),
-                            path: participant.path.clone(),
-                            backup_ref: value.backup_ref.clone(),
-                            backup_commit: value.backup_commit.clone(),
-                            stash_id: value.stash_id.clone(),
-                            stash_object_id: value.stash_object_id.clone(),
-                        }
-                    }));
-                    repos.push(participant.to_protocol(target_id, &self.source_ref));
-                }
-                if let Some(publication) = self.publication.as_ref() {
-                    preservation.extend(publication.root_preservation.iter().map(|value| {
-                        crate::MergePreservation {
-                            target_id: "@root".to_owned(),
-                            path: ".".to_owned(),
-                            backup_ref: value.backup_ref.clone(),
-                            backup_commit: value.backup_commit.clone(),
-                            stash_id: value.stash_id.clone(),
-                            stash_object_id: value.stash_object_id.clone(),
-                        }
-                    }));
-                }
+                let rows = record_rows(
+                    &self.selected_targets,
+                    &self.participants,
+                    self.publication.as_ref(),
+                    &self.source_ref,
+                )?;
                 Ok(crate::MergeResponse {
                     response: crate::operation::response_envelope_for(
                         &context_meta(context),
@@ -162,11 +227,11 @@ macro_rules! impl_record_response {
                     merge_id: Some(self.merge_id.clone()),
                     state: self.state.into(),
                     open: impl_record_response!(@open self, $open),
-                    participant_counts: counts,
-                    repos,
+                    participant_counts: rows.participant_counts,
+                    repos: rows.repos,
                     operation_drift: self.operation_drift.iter().map(Into::into).collect(),
-                    preservation: (!preservation.is_empty()).then_some(preservation),
-                    publication_step: self.publication.as_ref().map(|value| value.step.into()),
+                    preservation: rows.preservation,
+                    publication_step: rows.publication_step,
                     record: Some($projector(self)),
                     crash_recovery: None,
                 })
@@ -176,52 +241,12 @@ macro_rules! impl_record_response {
 }
 
 impl_record_response!(
-    MergeOperationRecord,
-    to_response,
-    pub(crate),
-    project_open_v0,
-    from_state
-);
-impl_record_response!(
     super::model::v1::MergeOperationRecordV1,
     to_v1_response,
     pub(in crate::workspace_ops::merge),
     project_open_v1,
     always
 );
-
-impl MergeStatusSnapshot {
-    pub(crate) fn to_response(
-        &self,
-        context: &OperationContext,
-    ) -> ModelResult<crate::MergeResponse> {
-        let mut response = self.record.to_response(context)?;
-        // A snapshot is built from a record discovered in `.gwz/merge`, so it
-        // remains open to the workspace gate even when its terminal lifecycle
-        // state means only archive completion remains. The archived response
-        // returned after close continues to project `open = false`.
-        response.open = true;
-        for repo in &mut response.repos {
-            let observation = self.participants.get(&repo.target_id).ok_or_else(|| {
-                ModelError::new(
-                    ErrorCode::InternalError,
-                    format!(
-                        "merge status snapshot is missing participant '{}'",
-                        repo.target_id
-                    ),
-                )
-            })?;
-            repo.live_commit.clone_from(&observation.live_commit);
-            repo.conflict_paths.clone_from(&observation.conflict_paths);
-            repo.continue_eligible = Some(observation.continue_eligibility.eligible);
-            repo.abort_eligible = Some(observation.abort_eligibility.eligible);
-            repo.drift = observation.drift.iter().map(Into::into).collect();
-            repo.pending_action = observation.pending_action.as_ref().map(Into::into);
-        }
-        response.operation_drift = self.operation_drift.iter().map(Into::into).collect();
-        Ok(response)
-    }
-}
 
 fn context_meta(context: &OperationContext) -> crate::RequestMeta {
     crate::RequestMeta {
@@ -417,14 +442,20 @@ impl From<&OperationDrift> for crate::MergeOperationDrift {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::operation::{ActionKind, OperationContext};
-    use std::collections::BTreeMap;
 
+    use crate::operation::{ActionKind, OperationContext};
+
+    /// A record found in `.gwz/merge` reads `open` even when its own state is
+    /// terminal: only the ARCHIVED answer says `open: false`.
+    ///
+    /// **M5d.** The v0 twin of this case paired `MergeOperationRecord`'s
+    /// `from_state` arm against `MergeStatusSnapshot`'s override. Both left
+    /// with the v0 engine, and the v1 record response uses the `always` arm,
+    /// which is the same property with no override to get wrong.
     #[test]
-    fn terminal_record_is_open_only_while_discovered_in_open_storage() {
-        let record: MergeOperationRecord = serde_yaml::from_str(
-            r#"{schema: gwz.merge-operation/v0, record_schema_version: 0, writer_version: test, workspace_id: ws_test, merge_id: merge_1, operation_id: op_start, state: aborted, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [], participants: {}}"#,
+    fn an_open_v1_record_reads_open_even_when_its_state_is_terminal() {
+        let record: crate::workspace_ops::merge::model::v1::MergeOperationRecordV1 = serde_yaml::from_str(
+            r#"{schema: gwz.merge-operation/v1, record_schema_version: 1, writer_version: test, workspace_id: ws_test, merge_id: merge_1, operation_id: op_start, state: aborted, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [], participants: {}}"#,
         )
         .unwrap();
         let context = OperationContext {
@@ -436,12 +467,6 @@ mod tests {
             attribution: None,
         };
 
-        assert!(!record.to_response(&context).unwrap().open);
-        let snapshot = MergeStatusSnapshot {
-            record,
-            participants: BTreeMap::new(),
-            operation_drift: Vec::new(),
-        };
-        assert!(snapshot.to_response(&context).unwrap().open);
+        assert!(record.to_v1_response(&context).unwrap().open);
     }
 }

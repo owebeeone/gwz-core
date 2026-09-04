@@ -1,10 +1,10 @@
 use super::*;
 use crate::workspace_ops::merge::ConflictFileEvidence;
-use crate::workspace_ops::merge::abort::{
+use crate::workspace_ops::merge::model::v1::ParticipantRollbackKindV1;
+use crate::workspace_ops::merge::v1_rollback::{
     V1ParticipantRollbackObservation as O, execute_v1_participant_rollback,
     observe_v1_participant_rollback,
 };
-use crate::workspace_ops::merge::model::v1::ParticipantRollbackKindV1;
 
 #[test]
 fn native_conflict_abort_is_exact_and_preserves_the_before_checkout() {

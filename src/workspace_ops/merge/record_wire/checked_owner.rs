@@ -2,7 +2,7 @@
 
 use super::{
     CanonicalMergeLocations, CanonicalRecordKind, CanonicalRecordLeaf, RecordDecodeError,
-    decode_production_v0,
+    decode_v0_parts,
 };
 use crate::workspace_ops::merge::OperationState;
 
@@ -75,9 +75,7 @@ fn decode_checked_owner_v0_bytes(
     exact_bytes: &[u8],
 ) -> Result<(CheckedOwnerRecordObservation<'_>, OperationState), CheckedOwnerObservationError> {
     require_bounded(exact_bytes)?;
-    let decoded =
-        decode_production_v0(exact_bytes).map_err(CheckedOwnerObservationError::Decode)?;
-    let (_, _, record) = decoded.into_production_parts();
+    let (_, record) = decode_v0_parts(exact_bytes).map_err(CheckedOwnerObservationError::Decode)?;
     Ok((
         CheckedOwnerRecordObservation {
             version: CheckedOwnerRecordVersion::V0,

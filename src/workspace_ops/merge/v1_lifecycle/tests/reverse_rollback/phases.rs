@@ -1,9 +1,9 @@
 use super::*;
-use crate::workspace_ops::merge::abort::{
+use crate::workspace_ops::merge::model::v1::{EvidenceRollbackStepV1, ParticipantRollbackKindV1};
+use crate::workspace_ops::merge::v1_rollback::{
     V1EvidenceRollbackObservation as E, V1ParticipantRollbackObservation as O,
     execute_v1_evidence_rollback, observe_v1_evidence_rollback, observe_v1_participant_rollback,
 };
-use crate::workspace_ops::merge::model::v1::{EvidenceRollbackStepV1, ParticipantRollbackKindV1};
 
 #[test]
 fn integrated_participant_classifies_exact_before_after_and_ambiguous() {

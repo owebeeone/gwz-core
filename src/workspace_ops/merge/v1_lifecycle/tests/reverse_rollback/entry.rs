@@ -1,5 +1,5 @@
 use super::*;
-use crate::workspace_ops::merge::abort::{
+use crate::workspace_ops::merge::v1_rollback::{
     preflight_v1_rollback, verify_v1_no_mutation_participant,
 };
 

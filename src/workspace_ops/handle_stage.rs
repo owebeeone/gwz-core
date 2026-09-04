@@ -6,7 +6,6 @@ use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OpenMergeCommand, OperationRequest};
 
-use super::merge::MergeStore;
 use super::*;
 
 /// Stage pathspecs across the repos that own them — the multi-repo `git add` verb
@@ -31,8 +30,12 @@ where
         request.meta.dry_run.unwrap_or(false),
     )?;
     let root = _access.root().to_path_buf();
-    if let Some(record) = merge::FileMergeStore.discover_open(&root)? {
-        return handle_open_merge_stage(backend, &root, &record, &request, context);
+    // An open merge owns staging: its member paths come from the FROZEN
+    // manifest at the root participant's `before_commit`, not the live one,
+    // and `@root` stages the workspace root. A pre-0.14 (v0) record refuses
+    // above, in the mutation guard, with the charter §2 sentence.
+    if let Some(open) = merge::discover_open_v1_record(&root)? {
+        return handle_open_merge_stage(backend, &root, open.view(), &request, context);
     }
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
@@ -134,7 +137,7 @@ where
 fn handle_open_merge_stage<B: GitBackend>(
     backend: &B,
     root: &Path,
-    record: &merge::MergeOperationRecord,
+    record: merge::MergeStatusRecordView<'_>,
     request: &crate::StageRequest,
     context: crate::operation::OperationContext,
 ) -> ModelResult<crate::StageResponse> {
@@ -267,7 +270,7 @@ impl SelectionScope {
 }
 
 fn selected_open_merge_targets(
-    record: &merge::MergeOperationRecord,
+    record: merge::MergeStatusRecordView<'_>,
     selection: &crate::Selection,
 ) -> ModelResult<Vec<StageTarget>> {
     let included = selection
@@ -281,7 +284,7 @@ fn selected_open_merge_targets(
         matches!(token, "@all" | "@default")
             || target_id == token
             || record
-                .participants
+                .participants()
                 .get(target_id)
                 .is_some_and(|participant| {
                     participant.target_kind == merge::MergeTargetKind::Member
@@ -291,7 +294,7 @@ fn selected_open_merge_targets(
     let known = |token: &str| {
         matches!(token, "@all" | "@default")
             || record
-                .selected_targets
+                .selected_targets()
                 .iter()
                 .any(|target_id| token_matches(target_id, token))
     };
@@ -301,7 +304,8 @@ fn selected_open_merge_targets(
                 ErrorCode::OpenOperation,
                 format!(
                     "merge '{}' is open; selected add target '{}' is not a frozen merge participant",
-                    record.merge_id, token
+                    record.merge_id(),
+                    token
                 ),
             ));
         }
@@ -312,10 +316,10 @@ fn selected_open_merge_targets(
             .iter()
             .any(|target| matches!(target.as_str(), "@all" | "@default"));
     Ok(record
-        .selected_targets
+        .selected_targets()
         .iter()
         .filter_map(|target_id| {
-            let participant = record.participants.get(target_id)?;
+            let participant = record.participants().get(target_id)?;
             let selected = include_all
                 || included
                     .iter()
@@ -339,11 +343,11 @@ fn selected_open_merge_targets(
 mod tests {
     use super::*;
 
-    fn open_record() -> merge::MergeOperationRecord {
-        serde_yaml::from_str(
+    fn open_record() -> merge::OpenMergeRecord {
+        merge::OpenMergeRecord::from_yaml_for_test(
             r#"
-schema: gwz.merge-operation/v0
-record_schema_version: 0
+schema: gwz.merge-operation/v1
+record_schema_version: 1
 writer_version: test
 workspace_id: ws_test
 merge_id: merge_stage
@@ -372,7 +376,10 @@ participants:
     state: conflicted
 "#,
         )
-        .unwrap()
+    }
+
+    fn view(record: &merge::OpenMergeRecord) -> merge::MergeStatusRecordView<'_> {
+        record.view()
     }
 
     fn selected(targets: &[&str]) -> crate::Selection {
@@ -390,7 +397,8 @@ participants:
             vec!["mem_not_selected"],
             vec!["@root", "mem_not_selected"],
         ] {
-            let error = selected_open_merge_targets(&record, &selected(&targets)).unwrap_err();
+            let error =
+                selected_open_merge_targets(view(&record), &selected(&targets)).unwrap_err();
             assert_eq!(error.code, ErrorCode::OpenOperation);
             assert!(error.message.contains(targets.last().unwrap()));
         }
@@ -399,12 +407,12 @@ participants:
     #[test]
     fn open_merge_selection_keeps_frozen_order_and_supports_exclusion_only() {
         let record = open_record();
-        let root = selected_open_merge_targets(&record, &selected(&["@root"])).unwrap();
+        let root = selected_open_merge_targets(view(&record), &selected(&["@root"])).unwrap();
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].member_path, None);
 
         let without_root = selected_open_merge_targets(
-            &record,
+            view(&record),
             &crate::Selection {
                 exclude_targets: vec!["@root".to_owned()],
                 ..Default::default()
@@ -423,7 +431,7 @@ participants:
     #[test]
     fn open_merge_selection_expands_default_and_requires_literal_root_selector() {
         let record = open_record();
-        let all = selected_open_merge_targets(&record, &selected(&["@default"])).unwrap();
+        let all = selected_open_merge_targets(view(&record), &selected(&["@default"])).unwrap();
         assert_eq!(
             all.iter()
                 .map(|target| target.member_path.as_deref())
@@ -432,7 +440,7 @@ participants:
         );
 
         let none = selected_open_merge_targets(
-            &record,
+            view(&record),
             &crate::Selection {
                 exclude_targets: vec!["@default".to_owned()],
                 ..Default::default()
@@ -441,7 +449,7 @@ participants:
         .unwrap();
         assert!(none.is_empty());
 
-        let error = selected_open_merge_targets(&record, &selected(&["."])).unwrap_err();
+        let error = selected_open_merge_targets(view(&record), &selected(&["."])).unwrap_err();
         assert_eq!(error.code, ErrorCode::OpenOperation);
     }
 }

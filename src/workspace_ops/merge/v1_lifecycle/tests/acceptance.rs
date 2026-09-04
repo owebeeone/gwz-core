@@ -161,6 +161,7 @@ fn detached_root_is_accepted_only_for_a_frozen_no_publication_result() {
         )
         .err()
         .unwrap()
+        .error
         .code,
         ErrorCode::AcceptanceInputDrift
     );

@@ -41,21 +41,6 @@ fn open_status_retries_the_complete_snapshot_after_lineage_changes() {
 }
 
 #[test]
-fn open_v0_projection_is_present_without_invented_acceptance_or_recovery() {
-    let record: crate::workspace_ops::merge::MergeOperationRecord = serde_yaml::from_str(
-        r#"{schema: gwz.merge-operation/v0, record_schema_version: 0, writer_version: test, workspace_id: ws_test, merge_id: merge_1, operation_id: op_1, state: executing, source_ref: feature/x, created_at: now, baseline: {lock_sha256: lock, manifest_sha256: manifest}, selected_targets: [], participants: {}}"#,
-    )
-    .unwrap();
-    let projection = crate::workspace_ops::merge::model::project_open_v0(&record);
-
-    assert_eq!(projection.source_version, crate::MergeRecordVersion::V0);
-    assert!(!projection.archived);
-    assert!(projection.terminal_outcome.is_none());
-    assert!(projection.acceptance.is_none());
-    assert!(projection.recovery.is_none());
-}
-
-#[test]
 fn open_status_is_byte_exact_and_projects_read_only_live_facts() {
     let root = TempDir::new_git("merge-v1-status-read-only");
     let path = root.path.join(".gwz/merge/merge_1.yaml");

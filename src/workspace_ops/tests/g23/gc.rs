@@ -104,8 +104,7 @@ fn explicit_gc_checked_deletes_only_backup_refs_and_archive_record() {
     );
     assert!(crate::stash::bundle_path(temp.path(), &stash_id).is_file());
     assert_eq!(
-        FileMergeStore
-            .load(temp.path(), &merge_id)
+        crate::workspace_ops::merge::read_archived_record(temp.path(), &merge_id)
             .unwrap_err()
             .code,
         ErrorCode::OperationNotFound
@@ -172,7 +171,7 @@ fn explicit_gc_rejects_cross_merge_ref_ownership_before_deleting_any_ref() {
 
     let error = handle_merge(&backend, temp.path(), gc, "op_gc_owner_collect").unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeRecordUnreadable);
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
     assert_eq!(
         backend.read_ref(&lib, &original).unwrap().as_deref(),
         Some(extra.as_str())
@@ -257,7 +256,7 @@ fn assert_gc_rejects_later_target_before_deleting_earlier_ref(invalid_commit: &s
 
     let error = handle_merge(&backend, temp.path(), gc, "op_gc_malformed_collect").unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeRecordUnreadable);
+    assert_eq!(error.code, ErrorCode::ArchivedRecordUnreadable);
     assert_eq!(
         backend.read_ref(&app, &app_ref).unwrap().as_deref(),
         Some(app_commit.as_str())
@@ -430,8 +429,7 @@ fn explicit_gc_collects_a_completed_no_ff_archive() {
     );
     assert!(!archived_path(temp.path(), &merge_id).exists());
     assert_eq!(
-        FileMergeStore
-            .load(temp.path(), &merge_id)
+        crate::workspace_ops::merge::read_archived_record(temp.path(), &merge_id)
             .unwrap_err()
             .code,
         ErrorCode::OperationNotFound

@@ -41,22 +41,22 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_recovery_origin<
                 .participants
                 .get(member_id)
                 .ok_or_else(|| recovery_error("rolling-back recovery participant is missing"))?;
-            crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
+            crate::workspace_ops::merge::v1_rollback::observe_v1_participant_rollback(
                 backend,
                 current.location().root(),
                 current.record(),
                 member_id,
                 row,
                 *action,
-            )? != crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::Ambiguous
+            )? != crate::workspace_ops::merge::v1_rollback::V1ParticipantRollbackObservation::Ambiguous
         }
         PendingRollbackActionV1::PublicationEvidence { next_step } => {
-            crate::workspace_ops::merge::abort::observe_v1_evidence_rollback(
+            crate::workspace_ops::merge::v1_rollback::observe_v1_evidence_rollback(
                 backend,
                 current.location().root(),
                 current.record(),
                 *next_step,
-            )? != crate::workspace_ops::merge::abort::V1EvidenceRollbackObservation::Ambiguous
+            )? != crate::workspace_ops::merge::v1_rollback::V1EvidenceRollbackObservation::Ambiguous
         }
         PendingRollbackActionV1::SelectedRootMetadata { next_step } => {
             crate::workspace_ops::merge::root::observe_v1_root_metadata_rollback(

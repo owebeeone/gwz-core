@@ -1,6 +1,6 @@
 use serde_yaml::Value;
 
-use super::super::MergeOperationRecord;
+use super::archive::MergeOperationRecordV0;
 use super::header::{
     HeaderClassificationError, InstalledMergeRecordVersions, MergeRecordDispatch,
     MergeRecordHeader, classify_merge_record_header, read_merge_record_header,
@@ -11,34 +11,28 @@ use super::super::model::v1::{CanonicalMergeRecord, MergeOperationRecordV1, vali
 use super::unknown_fields::{UnknownFieldManifest, UnknownFieldManifestError};
 use crate::model::ModelError;
 
+/// An ARCHIVED v0 body, decoded.
+///
+/// **M5d (`GwzM5-8M5d-Charter.md` §2, §5).** There is no longer any way to
+/// reach this from an OPEN record: open-record occupancy is decided by
+/// `merge::open_record` from the header alone, and a v0 envelope there is the
+/// §2 refusal. The only producer left is `decode_archived_common`, over
+/// `done/` bytes.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
-)]
-pub(crate) struct DecodedV0Record {
+struct DecodedV0Record {
     raw: Value,
     header: MergeRecordHeader,
-    record: MergeOperationRecord,
+    record: MergeOperationRecordV0,
+    #[allow(
+        dead_code,
+        reason = "M5d lint sweep: never read, but it is filled by the fallible `UnknownFieldManifest::extract_v0` that rejects an unknown-field v0 body; removing the field would invite removing that refusal."
+    )]
     unknown_fields: UnknownFieldManifest,
 }
 
 impl DecodedV0Record {
-    pub(crate) fn into_production_parts(self) -> (Value, MergeRecordHeader, MergeOperationRecord) {
+    fn into_production_parts(self) -> (Value, MergeRecordHeader, MergeOperationRecordV0) {
         (self.raw, self.header, self.record)
-    }
-
-    pub(crate) fn record(&self) -> &MergeOperationRecord {
-        &self.record
-    }
-
-    pub(crate) fn unknown_fields(&self) -> &UnknownFieldManifest {
-        &self.unknown_fields
-    }
-
-    #[cfg(test)]
-    pub(crate) fn raw(&self) -> &Value {
-        &self.raw
     }
 }
 
@@ -80,16 +74,12 @@ pub(crate) enum RecordDecodeError {
 /// unknown pair keeps its frozen typed projection from
 /// `classify_merge_record_header`.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "A1 activation: reached only by this tree's own suites; the compile gate's blanket `dead_code` allowance expired with the activation, so the residue is named item by item."
-)]
-pub(crate) enum DecodedRecord {
+enum DecodedRecord {
     V0(Box<DecodedV0Record>),
     V1(Box<DecodedV1Record>),
 }
 
-pub(crate) fn decode_production(bytes: &[u8]) -> Result<DecodedRecord, RecordDecodeError> {
+fn decode_any(bytes: &[u8]) -> Result<DecodedRecord, RecordDecodeError> {
     let document = parse_strict_yaml(bytes).map_err(RecordDecodeError::Raw)?;
     let header = read_merge_record_header(&document).map_err(|reason| {
         RecordDecodeError::Header(HeaderClassificationError::Malformed(reason))
@@ -120,8 +110,8 @@ pub(crate) fn decode_production(bytes: &[u8]) -> Result<DecodedRecord, RecordDec
 /// archive-PROJECTION inputs. Envelope fields are carried verbatim.
 pub(crate) fn decode_archived_common(
     bytes: &[u8],
-) -> Result<(Value, MergeRecordHeader, MergeOperationRecord), RecordDecodeError> {
-    Ok(match decode_production(bytes)? {
+) -> Result<(Value, MergeRecordHeader, MergeOperationRecordV0), RecordDecodeError> {
+    Ok(match decode_any(bytes)? {
         DecodedRecord::V0(decoded) => decoded.into_production_parts(),
         DecodedRecord::V1(decoded) => {
             let DecodedV1Record {
@@ -133,7 +123,7 @@ pub(crate) fn decode_archived_common(
             (
                 raw,
                 header,
-                MergeOperationRecord {
+                MergeOperationRecordV0 {
                     schema: record.schema,
                     record_schema_version: record.record_schema_version,
                     writer_version: record.writer_version,
@@ -156,11 +146,16 @@ pub(crate) fn decode_archived_common(
     })
 }
 
-/// The v0 record store's decoder. The store owns only v0 bodies, so it
-/// installs v0 alone; a v1 envelope classifies `UnsupportedRecordVersion`
-/// here and the dispatch routes that record to the v1 lifecycle before this
-/// decoder is ever reached in production.
-pub(crate) fn decode_production_v0(bytes: &[u8]) -> Result<DecodedV0Record, RecordDecodeError> {
+/// Decode v0 bytes the caller already holds, for the checked-artifact owner
+/// and archive-source observations.
+///
+/// **M5d.** This is NOT an open-record path: nothing discovers a record with
+/// it. `checked_owner` is handed exact bytes and reads three identity scalars
+/// plus the state out of them, and the v0 arm exists because a `done/` v0
+/// archive is still a checked source (charter §5).
+pub(super) fn decode_v0_parts(
+    bytes: &[u8],
+) -> Result<(MergeRecordHeader, MergeOperationRecordV0), RecordDecodeError> {
     let document = parse_strict_yaml(bytes).map_err(RecordDecodeError::Raw)?;
     let header = read_merge_record_header(&document).map_err(|reason| {
         RecordDecodeError::Header(HeaderClassificationError::Malformed(reason))
@@ -169,11 +164,6 @@ pub(crate) fn decode_production_v0(bytes: &[u8]) -> Result<DecodedV0Record, Reco
         .map_err(RecordDecodeError::Header)?
     {
         MergeRecordDispatch::V0 => {}
-        // L13 / [P3-7]: the typed twin of `decode_production_v1`'s mirror
-        // arm. The v0-only installed set cannot classify a v1 envelope as
-        // `V1`, so this is unreachable today — but the panic audit condemned
-        // exactly this shape, and a typed refusal costs nothing and keeps the
-        // decoder total.
         MergeRecordDispatch::V1 => {
             return Err(RecordDecodeError::Body {
                 header,
@@ -181,7 +171,8 @@ pub(crate) fn decode_production_v0(bytes: &[u8]) -> Result<DecodedV0Record, Reco
             });
         }
     }
-    decode_v0_body(document.into_root(), header)
+    let (_, header, record) = decode_v0_body(document.into_root(), header)?.into_production_parts();
+    Ok((header, record))
 }
 
 fn decode_v0_body(

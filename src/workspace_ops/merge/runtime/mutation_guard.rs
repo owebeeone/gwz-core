@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::super::{FileMergeStore, MergeStore, discover_open_before_manifest};
+use super::super::{classify_open_record, discover_open_envelope_before_manifest};
 use super::open_gate::enforce_workspace_open_merge_gate;
 use crate::model::ModelResult;
 use crate::operation::WorkspaceMutatorLock;
@@ -81,8 +81,8 @@ pub fn acquire_workspace_mutation_guard(
             .and_then(|workspace| workspace.root.as_ref())
             .is_none()
     {
-        discover_open_before_manifest(&FileMergeStore, start)?
-            .map(|recovery| recovery.root)
+        discover_open_envelope_before_manifest(start)?
+            .map(|envelope| envelope.root)
             .map_or_else(
                 || crate::workspace_ops::resolve_workspace_root(start, workspace),
                 Ok,
@@ -91,12 +91,11 @@ pub fn acquire_workspace_mutation_guard(
         crate::workspace_ops::resolve_workspace_root(start, workspace)?
     };
     let lock = WorkspaceMutatorLock::acquire(&root)?;
-    let store = FileMergeStore;
-    let open = store.discover_open(&root)?;
-    crate::operation::enforce_open_merge_gate(
-        open.as_ref().map(|record| record.merge_id.as_str()),
-        command,
-    )?;
+    // A1: by envelope, for the reason `enforce_workspace_open_merge_gate`
+    // states — the v0 store's decoder cannot read an open v1 record, and a
+    // version error here replaced the open-merge remedy with misdirection.
+    let open = classify_open_record(&root)?;
+    super::open_gate::enforce_open_merge_gate_for_envelope(open.as_ref(), command)?;
     let guard = WorkspaceMutationGuard { root, _lock: lock };
     Ok(if dry_run {
         WorkspaceMutationAccess::PlanOnly(guard)

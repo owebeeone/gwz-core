@@ -1,6 +1,5 @@
 use serde_yaml::Value;
 
-use super::super::model::MergeOperationRecord;
 use super::super::model::v1::{MergeOperationRecordV1, validate_v1_record};
 use super::header::{
     HeaderClassificationError, HeaderMalformedReason, InstalledMergeRecordVersions,
@@ -9,11 +8,13 @@ use super::header::{
 use super::raw_yaml::parse_strict_yaml;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::{MergeRecordCompatibilityContext, MergeRecordRequiredWave};
+pub(in crate::workspace_ops::merge) use v0_record::MergeOperationRecordV0;
 
 mod cleanup;
 mod v0;
 mod v0_audit;
 mod v0_evidence;
+mod v0_record;
 mod v1;
 
 pub(crate) use cleanup::ArchivedCleanupWorklist;
@@ -22,6 +23,8 @@ pub(crate) use cleanup::ArchivedCleanupWorklist;
 pub(crate) struct ValidatedArchivedRecord {
     projection: super::super::model::archive_projection::ArchivedMergeProjection,
     cleanup: ArchivedCleanupWorklist,
+    rows: super::super::response::MergeRecordRows,
+    operation_drift: Vec<crate::MergeOperationDrift>,
 }
 
 impl ValidatedArchivedRecord {
@@ -29,6 +32,17 @@ impl ValidatedArchivedRecord {
         &self,
     ) -> &super::super::model::archive_projection::ArchivedMergeProjection {
         &self.projection
+    }
+
+    /// The participant rows this archive reports, projected from the same
+    /// exact done-record bytes as `projection` (M5d charter §4).
+    pub(in crate::workspace_ops::merge) fn rows(&self) -> &super::super::response::MergeRecordRows {
+        &self.rows
+    }
+
+    /// The operation-level drift the archived body recorded.
+    pub(in crate::workspace_ops::merge) fn operation_drift(&self) -> &[crate::MergeOperationDrift] {
+        &self.operation_drift
     }
 
     #[allow(
@@ -70,16 +84,24 @@ fn decode_v0(
     expected_merge_id: &str,
     header: &MergeRecordHeader,
 ) -> ModelResult<ValidatedArchivedRecord> {
-    let record: MergeOperationRecord = serde_yaml::from_value(raw)
+    let record: MergeOperationRecordV0 = serde_yaml::from_value(raw)
         .map_err(|_| archived_unreadable(expected_merge_id, Some(header)))?;
     validate_identity(&record.merge_id, expected_merge_id, header)?;
     let projection =
         v0::project(&record).map_err(|_| archived_unreadable(expected_merge_id, Some(header)))?;
     let cleanup = cleanup::from_v0(&record)
         .map_err(|error| cleanup_unreadable(expected_merge_id, header, error))?;
+    let rows = super::super::response::record_rows(
+        &record.selected_targets,
+        &record.participants,
+        record.publication.as_ref(),
+        &record.source_ref,
+    )?;
     Ok(ValidatedArchivedRecord {
         projection,
         cleanup,
+        rows,
+        operation_drift: record.operation_drift.iter().map(Into::into).collect(),
     })
 }
 
@@ -98,9 +120,17 @@ fn decode_v1(
         v1::project(&record).map_err(|_| archived_unreadable(expected_merge_id, Some(header)))?;
     let cleanup = cleanup::from_v1(&record)
         .map_err(|error| cleanup_unreadable(expected_merge_id, header, error))?;
+    let rows = super::super::response::record_rows(
+        &record.selected_targets,
+        &record.participants,
+        record.publication.as_ref(),
+        &record.source_ref,
+    )?;
     Ok(ValidatedArchivedRecord {
         projection,
         cleanup,
+        rows,
+        operation_drift: record.operation_drift.iter().map(Into::into).collect(),
     })
 }
 

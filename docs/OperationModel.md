@@ -125,8 +125,8 @@ mutations; run branch and stash mutators serially there.
 **A merge runs on every filesystem. Crash recovery is a capability, not a
 gate.**
 
-`gwz merge --no-ff` can record its operation through the checked merge artifact
-catalog under `.gwz/catalog-final`. The catalog identifies its own files and
+A merge can record its operation through the checked merge artifact catalog
+under `.gwz/catalog-final`. The catalog identifies its own files and
 directories by a *durable* identity that survives renames and process exits, so
 that an interrupted merge can prove on restart which objects it created. That
 is what "crash recovery" means here, and it needs two things from the volume:
@@ -166,6 +166,41 @@ same published composition evidence. What is missing is the catalog's evidence
 that an interrupted *start* would have used to prove on restart which objects
 it created.
 
+### Volumes without persistent file handles
+
+Persistent file handles are the second of the two requirements above, and some
+volumes lack them while the merge still needs to run there — overlayfs mounted
+without `nfs_export`, and some FUSE mounts. Those volumes are below the bar
+already, so they warn; the same probe that decides the bar also answers this
+question, and the answer changes two things.
+
+The **merge record is written directly** rather than through the checked
+artifact boundary. The write is still staged, renamed, flushed and read back to
+verify its bytes; what it does not carry is the catalog, which this volume
+cannot host at all. There is **no second warning** for it — the one diagnostic
+above gains a clause instead:
+
+```text
+Selected-root and --preserve abort may refuse until the workspace is on a handle-capable volume.
+```
+
+Machine consumers read the same fact from the response rather than from stderr:
+`crash_recovery.handles_ok` is `false` on such a volume, `true` on a below-bar
+volume whose handles work, and absent above the bar.
+
+That clause is the second change. A plain abort still clears the record — it
+touches no checked artifact. An abort that must **re-verify** one, though —
+a selected root's manifest and lock, a preservation bundle under `--preserve`,
+or the merge's published evidence — needs handles this volume does not have,
+and refuses. One escape works from there: copy the whole workspace onto a
+volume that proves handles (a local APFS or HFS+ volume on macOS; ext4, xfs or
+f2fs on Linux; NTFS on Windows) and run `gwz merge --abort` there, adding
+`--preserve` if that was the door that refused.
+
+A power loss mid-merge on such a volume is operator cleanup rather than a
+recovery GWZ performs: nothing on that volume can prove after a reboot which
+objects the interrupted attempt created.
+
 `--filesystem-strict` is accepted only on a merge start. On `--continue`,
 `--abort`, `--status` or `--gc` it is refused as an invalid request. There is
 no environment variable and no configuration key: the flag is the whole
@@ -202,33 +237,30 @@ The bar is identity-based. It is not a filesystem-name test, and
   above it. They never needed the catalog.
 * **A later continue or abort** uses what its start opened — a catalog, or
   none — and does not consult `--filesystem-strict` again.
-* **Abort is capability-free by path** on a record of either version when it
+* **Abort is capability-free by path** on the open merge record when it
   touches no checked artifact. An abort that must re-verify checked artifacts —
   preservation bundles, a selected root's manifest and lock, or the merge's
   published evidence — still goes through the checked boundary and its weaker
   legacy identity probe (2026-09-02,
   `GwzM5-8R2E-CapabilityFreeAmendment.md` §6).
-* **Ordinary and `--ff-only` merges** write v0 records and never reach this
-  door, including a merge interrupted during finalization: such a record is
-  eligible for an automatic upgrade to the v1 lifecycle, and when the catalog
-  is unavailable that upgrade is declined before it writes anything and the v0
-  lifecycle completes the merge itself.
+* **How the merge was started.** Ordinary, `--ff-only`, custom-message and
+  `--no-ff` starts all write the same merge record and reach this door alike,
+  so the decision, the warning, `--filesystem-strict` and the `crash_recovery`
+  object never depend on which of them you ran. There is no second record
+  format and no upgrade between formats.
 * `gwz repo create`, `init-from-sources`, `gwz merge --status`, GC, and the
   workspace mutation guard never reach the catalog.
 
 ### Stated limits
 
-* **The record boundary keeps its own, weaker requirement.** A `--no-ff` merge
-  record is published through the checked artifact boundary, which asks for
-  persistent file handles and a mount identity but for no filesystem UUID. A
-  volume that cannot answer *that* — overlayfs without `nfs_export`, sshfs and
-  other FUSE mounts without export support — still refuses a `--no-ff` merge at
-  the record write, with the boundary's own message rather than the warning
-  above. That set is much smaller than the catalog's bar — it is not "every
-  filesystem below the bar", it is "every filesystem with no persistent file
-  handles at all" — but it is not empty, and the sentence at the top of this
-  section is qualified by it. Ordinary and `--ff-only` merges are unaffected.
-  Lifting it is ship (2) of DR-1, not this change.
+* **Without persistent file handles the limit is on abort, not on start.**
+  The merge runs to completion on such a volume — the record takes the raw
+  write described above — but an abort that must re-verify a checked artifact,
+  a selected root's manifest and lock or a preservation bundle under
+  `--preserve`, needs handles the volume does not have and refuses. Copying the
+  workspace onto a handle-capable volume and aborting there is the escape;
+  plain participant-only abort keeps working. The sentence at the top of this
+  section is not qualified: the merge itself still runs on every filesystem.
 * **A workspace moved between volumes mid-merge re-decides.** The decision is
   not recorded in the catalog or in the merge record, so a `--continue` decides
   again, on the volume it finds. Same volume, same answer. Moved onto an
@@ -246,10 +278,10 @@ The bar is identity-based. It is not a filesystem-name test, and
 ### Machine consumers
 
 Every merge response that made this decision carries a `crash_recovery` object
-— `supported`, the `filesystem` name when it can be named, and the `gap` when
-it is not supported. JSON, porcelain and `--jsonl` consumers read it there and
-never need to parse stderr; the CLI's `docs/MachineOutput.md` carries the
-rendered shape.
+— `supported`, the `filesystem` name when it can be named, the `gap` when it is
+not supported, and `handles_ok` below the bar. JSON, porcelain and `--jsonl`
+consumers read it there and never need to parse stderr; the CLI's
+`docs/MachineOutput.md` carries the rendered shape.
 
 ## Branch And Stash Outcomes
 

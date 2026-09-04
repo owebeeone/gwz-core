@@ -47,7 +47,10 @@ impl<B: MergeAuthorityBackend> ExactObserver for ReverseRuntime<'_, B> {
                 rollback::observe(self.backend, self.context, current, request)
             }
             ObservationRoute::Forward => {
-                observe_forward(self.backend, self.context, current, request)
+                // A reverse invocation never performs a forward participant
+                // action, so any conflict it observes predates this process
+                // and its live markers are not a verified original.
+                observe_forward(self.backend, self.context, current, request, false)
             }
             ObservationRoute::Archive => {
                 archive::observe_open(self.backend, self.context, current, request)

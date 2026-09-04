@@ -5,10 +5,7 @@ use sha2::{Digest, Sha256};
 use super::super::model::v1::{
     AcceptedMetadataSourceV1, AcceptedRootBaseV1, MemberAcceptanceV1, MergeOperationRecordV1,
 };
-use super::super::{
-    MergeOperationRecord, OperationState, PublicationCandidate, PublicationProgress,
-    PublicationStep,
-};
+use super::super::{OperationState, PublicationCandidate, PublicationProgress, PublicationStep};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(in crate::workspace_ops::merge) enum CandidatePublicationPrefix {
@@ -41,11 +38,11 @@ impl CandidatePublicationObservation {
 
 #[allow(dead_code, reason = "retained v0 wrapper over the shared view")]
 pub(in crate::workspace_ops::merge) fn classify_candidate_publication(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
     observation: &CandidatePublicationObservation,
 ) -> ModelResult<Option<CandidatePublicationPrefix>> {
     classify_candidate_publication_view(
-        super::super::status::MergeStatusRecordView::from_v0(record),
+        super::super::status::MergeStatusRecordView::from_v1(record),
         observation,
     )
 }
@@ -111,11 +108,11 @@ fn classify_candidate_parts(
 
 #[allow(dead_code, reason = "retained v0 wrapper over the shared view")]
 pub(in crate::workspace_ops::merge) fn publication_prefix_allowed(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV1,
     prefix: CandidatePublicationPrefix,
 ) -> ModelResult<bool> {
     publication_prefix_allowed_view(
-        super::super::status::MergeStatusRecordView::from_v0(record),
+        super::super::status::MergeStatusRecordView::from_v1(record),
         prefix,
     )
 }
@@ -342,12 +339,6 @@ pub(in crate::workspace_ops::merge) enum FinalizationNextAction {
     ArchiveCompleted,
 }
 
-pub(in crate::workspace_ops::merge) fn finalization_next_action(
-    record: &MergeOperationRecord,
-) -> ModelResult<FinalizationNextAction> {
-    finalization_next_action_from_parts(record.state, &record.merge_id, record.publication.as_ref())
-}
-
 fn finalization_next_action_from_parts(
     state: OperationState,
     merge_id: &str,
@@ -404,12 +395,6 @@ pub(crate) fn finalization_next_action_for_v1(
         &record.merge_id,
         record.publication.as_ref(),
     )?))
-}
-
-pub(crate) fn finalization_next_action_for_i2(
-    record: &MergeOperationRecord,
-) -> ModelResult<&'static str> {
-    Ok(action_name(finalization_next_action(record)?))
 }
 
 fn action_name(action: FinalizationNextAction) -> &'static str {

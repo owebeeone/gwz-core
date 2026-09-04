@@ -40,10 +40,18 @@ pub(super) fn load_open(root: &Path, merge_id: &str) -> ModelResult<StoredV1Reco
 /// single-open-record invariant survives: the pre-flight existence check stays
 /// and the checked replacement publishes no-replace onto an absent leaf.
 /// `commit`'s raw writers are untouched — E4.3's half of O13.
+/// **M5d step (3) (`GwzM5-8M5d-Charter.md` §3, 2026-09-03).** The start's own
+/// crash-recovery decision arrives here as a parameter and is passed straight
+/// through to the boundary door, which chooses checked or raw publication from
+/// it. Nothing on this side of the boundary re-probes, names the raw primitive
+/// or knows it exists: F-3's redefined seam floor requires that
+/// `v1_lifecycle/` name neither the primitive nor its module, and only
+/// `checked_artifact/entry.rs` call it.
 pub(super) fn create_open(
     lease: &V1MutationLease,
     root: &Path,
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
+    crash_recovery: Option<&crate::checked_artifact::entry::CrashRecoveryDecision>,
 ) -> ModelResult<StoredV1Record> {
     validate_merge_id(&record.merge_id)?;
     let root = root.canonicalize().map_err(io_error)?;
@@ -60,7 +68,12 @@ pub(super) fn create_open(
     let encoded = serde_yaml::to_string(&raw)
         .map(String::into_bytes)
         .map_err(encode_error)?;
-    crate::checked_artifact::entry::create_merge_store_record(&root, &relative, &encoded)?;
+    crate::checked_artifact::entry::create_merge_store_record(
+        &root,
+        &relative,
+        &encoded,
+        crash_recovery,
+    )?;
 
     let published = StoredV1Record::from_open_bytes(&root, &path, &read_regular(&path)?)?;
     if published.record() != record {

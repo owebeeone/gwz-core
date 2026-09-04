@@ -7,7 +7,7 @@ use crate::workspace_ops::merge::v1_lifecycle::transition::{
     PreparedReverseEntryView, ReverseEntryKind, ReverseEntryPredecessor, preview_reverse_entry,
     visit_reverse_entry,
 };
-use crate::workspace_ops::merge::{OperationState, ParticipantState};
+use crate::workspace_ops::merge::{OperationDriftKind, OperationState, ParticipantState};
 
 pub(super) fn observe_entry<B: MergeAuthorityBackend>(
     backend: &B,
@@ -78,13 +78,29 @@ impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for PreservationEntryVi
             ));
         }
 
-        if !anticipated.operation_drift.is_empty() {
+        // The two root-candidate rows are diagnostics about the workspace
+        // root's *future* metadata, not statements about whether this operation
+        // can be reversed -- so they must never be able to block or complicate
+        // an abort. v0 encoded that intent by stripping both kinds at the top
+        // of abort, before the evidence preflight, and again if the record
+        // passed through `RollingBack` with evidence present
+        // (`git show 57502e4:src/workspace_ops/merge/abort/mod.rs`, lines
+        // 116-137). v1 keeps the diagnostic in the record instead of erasing
+        // it -- an aborted merge should still say why it was aborted -- so the
+        // exemption lives here, at the one gate that would otherwise refuse.
+        if anticipated.operation_drift.iter().any(|drift| {
+            !matches!(
+                drift.kind,
+                OperationDriftKind::RootCandidateMetadataInvalid
+                    | OperationDriftKind::RootCandidateStateChanged
+            )
+        }) {
             return Err(ModelError::new(
                 ErrorCode::MergeDrift,
                 "operation drift prevents coordinated preservation entry",
             ));
         }
-        crate::workspace_ops::merge::abort::preflight_v1_evidence(
+        crate::workspace_ops::merge::v1_rollback::preflight_v1_evidence(
             self.backend,
             current.location().root(),
             anticipated,
@@ -137,17 +153,18 @@ fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
         })?;
         match row.state {
             ParticipantState::Conflicted => {
-                let observed = crate::workspace_ops::merge::abort::observe_v1_participant_rollback(
-                    backend,
-                    current.location().root(),
-                    record,
-                    member_id,
-                    row,
-                    ParticipantRollbackKindV1::AbortConflict,
-                )
-                .map_err(|error| attach_member(error, member_id, &row.path))?;
+                let observed =
+                    crate::workspace_ops::merge::v1_rollback::observe_v1_participant_rollback(
+                        backend,
+                        current.location().root(),
+                        record,
+                        member_id,
+                        row,
+                        ParticipantRollbackKindV1::AbortConflict,
+                    )
+                    .map_err(|error| attach_member(error, member_id, &row.path))?;
                 if observed
-                    == crate::workspace_ops::merge::abort::V1ParticipantRollbackObservation::Ambiguous
+                    == crate::workspace_ops::merge::v1_rollback::V1ParticipantRollbackObservation::Ambiguous
                 {
                     return Err(ModelError::new(
                         ErrorCode::MergeRecoveryRequired,
@@ -158,8 +175,9 @@ fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
             }
             ParticipantState::Planned
             | ParticipantState::Failed
-            | ParticipantState::Unattempted => {
-                crate::workspace_ops::merge::abort::verify_v1_no_mutation_participant(
+            | ParticipantState::Unattempted
+            | ParticipantState::UpToDate => {
+                crate::workspace_ops::merge::v1_rollback::verify_v1_no_mutation_participant(
                     backend,
                     current.location().root(),
                     record,
@@ -168,8 +186,7 @@ fn preflight_non_preservation_participants<B: MergeAuthorityBackend>(
                 )
                 .map_err(|error| attach_member(error, member_id, &row.path))?;
             }
-            ParticipantState::UpToDate
-            | ParticipantState::FastForwarded
+            ParticipantState::FastForwarded
             | ParticipantState::Merged
             | ParticipantState::Continued => {
                 return Err(ModelError::new(
@@ -205,7 +222,7 @@ pub(super) fn observe_preserve_participant<B: MergeAuthorityBackend>(
     request: &BoundObservationRequest,
     member_id: &str,
 ) -> ModelResult<ExactObservationFact> {
-    let fact = observe_forward(backend, context, current, request)?.into_fact();
+    let fact = observe_forward(backend, context, current, request, false)?.into_fact();
     match fact {
         ExactObservationFact::NotStarted(NotStartedObservation::Participant {
             member_id: observed,

@@ -10,19 +10,13 @@ mod scalar;
 
 mod archive;
 mod location;
-mod open_v0;
 mod unknown_fields;
 
 pub(in crate::workspace_ops::merge) use unknown_fields::{
     ContainerSegment, IdentityValue, SemanticIdentity, UnknownFieldLocator, UnknownFieldManifest,
 };
 
-#[cfg(test)]
-pub(crate) use open_v0::{
-    OpenV0Adaptation, VerifiedV0Descriptor, adapt_open_v0, verified_v0_descriptor,
-};
-pub(crate) use open_v0::{PreparedOpenV0Upgrade, PreparedV1Upgrade, prepare_upgrade};
-
+pub(in crate::workspace_ops::merge) use archive::MergeOperationRecordV0;
 pub(crate) use archive::{ArchivedCleanupWorklist, ValidatedArchivedRecord, decode_archived};
 #[allow(
     unused_imports,
@@ -44,10 +38,7 @@ pub(crate) use location::{
     replace_open_before_final_check_for_test, replace_parent_before_final_check_for_test,
 };
 
-pub(crate) use decode::{
-    DecodedRecord, decode_archived_common, decode_production, decode_production_v0,
-    decode_production_v1,
-};
+pub(crate) use decode::{decode_archived_common, decode_production_v1};
 
 #[cfg(test)]
 pub(crate) use checked_owner::observe_checked_archive_source_v0_leaves_for_test;
@@ -63,12 +54,15 @@ pub(crate) use checked_owner::{
     observe_checked_owner_v1, observe_checked_owner_v1_from_canonical,
 };
 pub(super) use decode::RecordDecodeError;
+use decode::decode_v0_parts;
 pub(crate) use header::InstalledMergeRecordVersions;
+pub(super) use header::read_merge_record_header;
 pub(super) use header::{
     HeaderClassificationError, HeaderMalformedReason, MergeRecordDispatch, MergeRecordHeader,
     classify_merge_record_header,
 };
 pub(super) use raw_yaml::StrictYamlError;
+pub(super) use raw_yaml::parse_strict_yaml;
 
 #[cfg(test)]
 mod tests;

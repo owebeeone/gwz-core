@@ -127,10 +127,12 @@ is not stale. If a process dies while holding the lock, the operating system
 releases the file lock with that process. Concurrent mutators on network
 filesystems with unreliable advisory locking are unsupported.
 
-`gwz merge --no-ff` additionally activates the checked merge artifact catalog
-under `.gwz/catalog-final` while holding that lock. The catalog requires
-persistent file handles and a mount identity from the filesystem and refuses,
-naming the capability, where they are absent — see
+`gwz merge` additionally activates the checked merge artifact catalog under
+`.gwz/catalog-final` while holding that lock, on a volume that can host it. The
+catalog needs persistent file handles and a durable filesystem identity. Where
+the volume cannot prove them the merge still runs: GWZ warns once and proceeds
+without the catalog, and `--filesystem-strict` turns that warning back into a
+refusal at the start — see
 [Checked Merge Artifacts And Filesystem Identity](OperationModel.md#checked-merge-artifacts-and-filesystem-identity).
 No other workspace mutation requires them.
 

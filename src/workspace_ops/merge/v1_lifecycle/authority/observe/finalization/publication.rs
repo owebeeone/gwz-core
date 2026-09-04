@@ -22,6 +22,29 @@ pub(super) fn observe_reverse_handoff<B: MergeAuthorityBackend>(
     current: &StoredV1Record,
 ) -> ModelResult<ReversePublicationHandoffObservation> {
     let Some(progress) = current.record().publication.as_ref() else {
+        // No publication progress AND no frozen acceptance: the operation is
+        // `Finalizing` but acceptance never froze. There provably is no
+        // candidate and no evidence commit -- both are built from the accepted
+        // workspace -- so the handoff is `NoCandidate` on structural grounds,
+        // and reversibility is judged against the participants alone.
+        //
+        // Asking `verify_accepted_inputs` here instead is what made such a
+        // merge unabortable: `verify_accepted_root` demands an
+        // `accepted_workspace` that does not exist and answers
+        // `AcceptanceInputDrift`, which `is_semantic_drift` maps to "inexact",
+        // so every merge that failed at acceptance -- root metadata invalid or
+        // otherwise -- was refused its abort with "publication state is not an
+        // exact reversible handoff". v0 had no such gate: `abort/mod.rs` went
+        // from the open-record checks straight to its evidence preflight
+        // (`git show 57502e4:src/workspace_ops/merge/abort/mod.rs`).
+        if current.record().accepted_workspace.is_none() {
+            require_handoff_exact(verification_is_exact(verify_participants(
+                backend, current,
+            ))?)?;
+            return Ok(ReversePublicationHandoffObservation::Ready(
+                PublicationHandoffFact::NoCandidate,
+            ));
+        }
         require_handoff_exact(verification_is_exact(verify_accepted_inputs(
             backend, current,
         ))?)?;

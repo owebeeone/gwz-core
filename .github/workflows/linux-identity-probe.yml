@@ -9,11 +9,19 @@ on:
     paths:
       - ".github/workflows/linux-identity-probe.yml"
       - "scripts/linux_identity_probe/**"
+      - "src/checked_artifact/**"
+      - "src/verified_write.rs"
+      - "src/workspace_ops/merge/v1_lifecycle/**"
+      - "src/workspace_ops/tests/g23/crash_recovery.rs"
   push:
     branches: [main]
     paths:
       - ".github/workflows/linux-identity-probe.yml"
       - "scripts/linux_identity_probe/**"
+      - "src/checked_artifact/**"
+      - "src/verified_write.rs"
+      - "src/workspace_ops/merge/v1_lifecycle/**"
+      - "src/workspace_ops/tests/g23/crash_recovery.rs"
 
 jobs:
   contract:
@@ -93,3 +101,72 @@ jobs:
           name: linux-durable-identity-evidence
           path: ${{ runner.temp }}/linux-durable-identity-evidence.json
           if-no-files-found: error
+
+  handle-fail-merge:
+    name: Ordinary merge on a real handle-fail volume
+    needs: contract
+    runs-on: ubuntu-24.04
+    # M5d step (3) (dev-docs/GwzM5-8M5d-Charter.md §3, §8's acceptance). The
+    # `native` job above proves the KERNEL refuses `name_to_handle_at` on an
+    # overlay mounted without `nfs_export`. This job proves what GWZ does about
+    # it: an ordinary `gwz merge` on such a volume starts, writes its record
+    # RAW, says so once, and completes -- and its `--continue` does too. The
+    # same rows run on every other host through the charter's `cfg(test)` seam;
+    # here the seam is NOT armed (`GWZ_M5D_REAL_HANDLE_FAIL=1` switches it off)
+    # and the real kernel answers, which is what makes the seam trustworthy
+    # rather than self-confirming.
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Build the lib test binary on the runner's own volume
+        # Built BEFORE the overlay exists and with the ordinary TMPDIR, so the
+        # compiler's own scratch files never touch the volume under test.
+        run: cargo test --locked --lib --no-run
+      - name: Mount an overlay without nfs_export
+        # Same mount recipe as `scripts/linux_identity_probe/run_probe.py`'s
+        # overlay row, which is what measured (ship (1) W5) that this shape
+        # refuses `name_to_handle_at` with EOPNOTSUPP on a real mount.
+        #
+        # FAIL-NOT-SKIP is carried by the rows themselves, not by a pre-check
+        # here: each asserts `crash_recovery.handles_ok == Some(false)`, so a
+        # kernel or mount that DOES answer the handle probe turns this job RED
+        # rather than letting it pass having proved nothing.
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /mnt/gwz-overlay/lower /mnt/gwz-overlay/upper \
+            /mnt/gwz-overlay/work /mnt/gwz-overlay/merged
+          sudo mount -t overlay overlay \
+            -o lowerdir=/mnt/gwz-overlay/lower,upperdir=/mnt/gwz-overlay/upper,workdir=/mnt/gwz-overlay/work \
+            /mnt/gwz-overlay/merged
+          sudo chown -R "$(id -u):$(id -g)" /mnt/gwz-overlay
+          stat -f -c 'merged fstype: %T' /mnt/gwz-overlay/merged
+      - name: Ordinary merge, --no-ff merge and --continue on that volume
+        env:
+          TMPDIR: /mnt/gwz-overlay/merged
+          GWZ_M5D_REAL_HANDLE_FAIL: "1"
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "gwz ci"
+          git config --global init.defaultBranch main
+          # Exact names, not a prefix. Run 33848859741 measured why: the prefix
+          # `a_handle_fail` also selected `a_handle_failure_above_the_bar_...`,
+          # a SEAM-ONLY row that needs a host above the identity bar and so
+          # cannot hold on this volume. That row is renamed out of the prefix
+          # and these three are named outright.
+          cargo test --locked --lib -- --exact --nocapture \
+            workspace_ops::tests::g23::crash_recovery::a_handle_fail_ordinary_start_writes_its_record_raw_and_completes \
+            workspace_ops::tests::g23::crash_recovery::a_handle_fail_no_ff_start_writes_its_record_raw_and_completes \
+            workspace_ops::tests::g23::crash_recovery::a_handle_fail_attempt_continues_after_resolution \
+            2>&1 | tee /tmp/handle-fail.log
+          # Anti-vacuity: libtest exits 0 when a filter matches NOTHING, so a
+          # renamed row would silently turn this job into a no-op.
+          grep -q "^test result: ok. 3 passed; 0 failed" /tmp/handle-fail.log
+      - name: Unmount
+        if: always()
+        run: sudo umount /mnt/gwz-overlay/merged || true

@@ -1172,8 +1172,17 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             + "    root: &std::path::Path,\n"
             + ") -> crate::model::ModelResult<()> {\n"
             + "    use crate::workspace_ops::merge::MergeStore;\n"
-            + "    let _ = crate::workspace_ops::merge::FileMergeStore\n"
-            + "        .discover_open(root)?;\n"
+            # M5d lint sweep (2026-09-04). `gc` returns `ModelResult<()>`, so
+            # the `let _ =` this line used to carry bound a unit value and the
+            # probe copy failed `-D clippy::let_unit_value` -- the compile
+            # assertion above went red for a reason unrelated to the property
+            # under test, exactly like the pre-A1 dead-code case documented in
+            # `run_compiler_probe`. It was masked until now by the
+            # `items_after_test_module` errors the sweep cleared. Dropping the
+            # binding is semantics-identical and keeps both seam names
+            # (`FileMergeStore`, `MergeStore`) that the assertions below match,
+            # so no lint allowance is widened.
+            + "    crate::workspace_ops::merge::FileMergeStore.gc(root, None)?;\n"
             + "    Ok(())\n}\n",
             encoding="utf-8",
         )
@@ -1193,12 +1202,12 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         result = self.append(
             "workspace_ops/merge/v1_lifecycle/tests/fixtures.rs",
             "\nfn probe_archive(root: &std::path::Path, id: &str) {\n"
-            "    let _ = crate::workspace_ops::merge::archive_merge_record(root, id);\n"
+            "    let _ = crate::workspace_ops::merge::FileMergeStore;\n"
             "}\n",
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("v1 lifecycle names the v0 persistence seam", result.stderr)
-        self.assertIn("archive_merge_record", result.stderr)
+        self.assertIn("FileMergeStore", result.stderr)
 
     def test_v0_persistence_seam_inventory_must_stay_derivable(self) -> None:
         temporary, source = self.copied_source()
@@ -1215,13 +1224,7 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
                 # message never fired, not because derivation broke. Restated
                 # against the reshaped block so the surgery is a real
                 # mutation again.
-                "pub(crate) use store::{\n"
-                "    AdaptationPrecheck, FileMergeStore, MergeStore, OpenRecordEnvelope, "
-                "archive_merge_record,\n"
-                "    classify_open_record, discover_open_envelope_before_manifest, "
-                "enter_finalizing,\n"
-                "    persist_merge_record, persist_operation_transition,\n"
-                "};\n",
+                "pub(crate) use store::{FileMergeStore, MergeStore};\n",
                 "",
                 1,
             ),
@@ -1241,6 +1244,75 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("v0 persistence seam", result.stderr)
         self.assertIn("protected source tree changed", result.stderr)
+
+    # --- M5d step (3): F-3's redefined floor, the neutral raw primitive -----
+    # The successor property named by the J-1 succession ruling of 2026-09-03
+    # (GwzM5-8M5d-GateRevisions.md Part B §B.5.2). Its two halves and its
+    # anti-vacuity anchor each get a row, plus the masking proof the exact
+    # caller count depends on.
+    def test_v1_lifecycle_naming_the_neutral_raw_primitive_is_rejected(self) -> None:
+        result = self.append(
+            "workspace_ops/merge/v1_lifecycle/tests/fixtures.rs",
+            "\nfn probe_raw_write(path: &std::path::Path, bytes: &[u8]) {\n"
+            "    let _ = crate::verified_write::write_atomic_verified(path, bytes);\n"
+            "}\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "v1 lifecycle names the neutral raw write primitive", result.stderr
+        )
+        self.assertIn("verified_write", result.stderr)
+
+    def test_a_second_caller_of_the_neutral_raw_primitive_is_rejected(self) -> None:
+        result = self.append(
+            "workspace_ops/handle_stash/shared.rs",
+            "\nfn bypass(path: &std::path::Path, bytes: &[u8]) {\n"
+            "    let _ = crate::verified_write::write_atomic_verified(path, bytes);\n"
+            "}\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "raw record-write caller outside the single permitted door", result.stderr
+        )
+        self.assertIn("expected=0 actual=1", result.stderr)
+
+    def test_converting_the_carved_raw_create_arm_is_rejected(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        path = source / "checked_artifact/entry.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "crate::verified_write::write_atomic_verified(&path, goal)",
+                "Ok(())",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "raw record-write caller outside the single permitted door", result.stderr
+        )
+        self.assertIn("expected=1 actual=0", result.stderr)
+        self.assertIn("capability-free raw writer inventory moved", result.stderr)
+
+    def test_the_neutral_raw_primitives_module_must_exist(self) -> None:
+        temporary, source = self.copied_source()
+        self.addCleanup(temporary.cleanup)
+        (source / "verified_write.rs").unlink()
+        result = run(source)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "the neutral raw-write primitive's module is GONE", result.stderr
+        )
+
+    def test_a_comment_naming_the_neutral_raw_primitive_is_not_a_call(self) -> None:
+        result = self.append(
+            "workspace_ops/handle_stash/shared.rs",
+            "\n// crate::verified_write::write_atomic_verified(path, bytes)\n"
+            "const RAW: &str = \"write_atomic_verified\";\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_comments_and_strings_do_not_create_false_references(self) -> None:
         result = self.append(

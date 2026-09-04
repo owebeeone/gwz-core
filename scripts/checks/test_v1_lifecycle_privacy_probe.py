@@ -61,7 +61,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TOOLCHAIN = "+1.95.0"
 
-OUTSIDE = "src/workspace_ops/merge/finalize_dispatch.rs"
+# M5d: the previous outside position, `merge/finalize_dispatch.rs`, was a v0
+# engine file deleted by 8603b58, which left this probe pointing at a missing
+# path (5 of 8 tests erroring with FileNotFoundError). `merge/plan.rs` is the
+# replacement on purpose: it is a SIBLING of `v1_lifecycle/` inside `merge/`,
+# which is the strongest outside position available -- same crate, same parent
+# module, so a leak of a sealed type would be visible here first. It is the
+# shared planner every merge runs through, predates and survives the erasure,
+# and is not a deletion candidate.
+OUTSIDE = "src/workspace_ops/merge/plan.rs"
 INSIDE_LIFECYCLE = "src/workspace_ops/merge/v1_lifecycle/service.rs"
 INSIDE_STORE = "src/workspace_ops/merge/v1_lifecycle/store/mod.rs"
 

@@ -1,64 +1,6 @@
 use super::*;
 
-mod preserving_abort_gate;
 mod review_remediation;
-mod root_retry_safety;
-
-struct FailingPreservationStore {
-    fail_at_write: usize,
-    writes: Cell<usize>,
-    fired: Cell<bool>,
-}
-
-impl MergeStore for FailingPreservationStore {
-    fn discover_open(&self, root: &Path) -> ModelResult<Option<MergeOperationRecord>> {
-        FileMergeStore.discover_open(root)
-    }
-
-    fn load(&self, root: &Path, merge_id: &str) -> ModelResult<MergeOperationRecord> {
-        FileMergeStore.load(root, merge_id)
-    }
-
-    fn write_open(&self, root: &Path, record: &MergeOperationRecord) -> ModelResult<()> {
-        let write = self.writes.get() + 1;
-        self.writes.set(write);
-        if !self.fired.get() && write == self.fail_at_write {
-            self.fired.set(true);
-            return Err(ModelError::new(
-                ErrorCode::MergeRecoveryRequired,
-                format!("injected preservation write {write} failure"),
-            ));
-        }
-        FileMergeStore.write_open(root, record)
-    }
-
-    fn archive(&self, root: &Path, merge_id: &str) -> ModelResult<()> {
-        FileMergeStore.archive(root, merge_id)
-    }
-}
-
-fn invoke_preservation_store(
-    backend: &crate::git::Git2Backend,
-    store: &FailingPreservationStore,
-    root: &Path,
-    request: crate::MergeRequest,
-    operation_id: &str,
-) -> ModelResult<crate::MergeResponse> {
-    let clock = FixedClock::new(TimestampMs(1_700_000_000_000));
-    let mut ids = SequentialIdProvider::new();
-    handle_merge_with_dependencies(
-        MergeDependencies {
-            backend,
-            store,
-            clock: &clock,
-            ids: &mut ids,
-            events: &crate::operation::NullSink,
-        },
-        root,
-        request,
-        operation_id,
-    )
-}
 
 #[test]
 fn preserve_abort_saves_committed_staged_and_untracked_work_before_rollback() {
@@ -128,144 +70,6 @@ fn preserve_abort_saves_committed_staged_and_untracked_work_before_rollback() {
 }
 
 #[test]
-fn preserve_abort_handles_post_composition_root_work_with_root_bundle_identity() {
-    let temp = TempDir::new("merge-preserve-root");
-    let backend = crate::git::Git2Backend::new();
-    let _fixture = init_one_member_workspace(temp.path(), &backend, "merge-preserve-root");
-    backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
-    let root_before =
-        commit_file(temp.path(), "root.txt", "baseline\n", "root baseline", &[]).unwrap();
-    feature_commit(&backend, temp.path(), "root-feature.txt", "root feature\n");
-    let mut start = request(false);
-    start.meta.selection = Some(crate::Selection {
-        targets: vec!["@root".to_owned()],
-        ..Default::default()
-    });
-    let store = FaultingMergeStore::new(FinalizationFault::AfterEvidencePersistence);
-    invoke_with_store(
-        &backend,
-        &store,
-        temp.path(),
-        start,
-        "op_preserve_root_start",
-    )
-    .unwrap_err();
-    let record = store.discover_open(temp.path()).unwrap().unwrap();
-    let composition = record
-        .publication
-        .as_ref()
-        .and_then(|publication| publication.composition_commit.as_ref())
-        .unwrap()
-        .clone();
-    let post_composition = commit_file(
-        temp.path(),
-        "after-composition.txt",
-        "keep me\n",
-        "post composition work",
-        &[git2::Oid::from_str(&composition).unwrap()],
-    )
-    .unwrap();
-    fs::write(temp.path().join("root-untracked.txt"), "keep me too\n").unwrap();
-
-    let mut abort = recovery_request(crate::MergeOp::Abort, Some(record.merge_id));
-    abort.preserve = Some(true);
-    let aborted = invoke_with_store(
-        &backend,
-        &store,
-        temp.path(),
-        abort,
-        "op_preserve_root_abort",
-    )
-    .unwrap();
-
-    assert_eq!(aborted.state, crate::MergeOperationState::Aborted);
-    assert_eq!(
-        backend.head(temp.path()).unwrap().commit.as_deref(),
-        Some(root_before.as_str())
-    );
-    let evidence = aborted
-        .preservation
-        .as_ref()
-        .unwrap()
-        .iter()
-        .find(|entry| entry.target_id == "@root")
-        .unwrap();
-    assert_eq!(
-        evidence.backup_commit.as_deref(),
-        Some(post_composition.as_str())
-    );
-    assert!(
-        evidence
-            .backup_ref
-            .as_deref()
-            .unwrap()
-            .ends_with("/root/head")
-    );
-    let stash_id = evidence.stash_id.clone().unwrap();
-    let stash_object_id = evidence.stash_object_id.clone().unwrap();
-    let bundle = crate::stash::read_bundle(temp.path(), &stash_id).unwrap();
-    assert!(
-        bundle
-            .members
-            .iter()
-            .any(|member| member.member_id == "@root" && member.path == ".")
-    );
-    handle_stash(
-        &backend,
-        temp.path(),
-        crate::StashRequest {
-            meta: request_meta(),
-            op: crate::StashOp::Apply,
-            stash_id: Some(stash_id),
-            message: None,
-            include_untracked: None,
-            include_ignored: None,
-            expanded: None,
-            preserve_index: None,
-        },
-        "op_preserve_root_restore",
-    )
-    .unwrap();
-    assert_eq!(
-        fs::read_to_string(temp.path().join("root-untracked.txt"))
-            .unwrap()
-            .lines()
-            .collect::<Vec<_>>(),
-        ["keep me too"]
-    );
-    handle_stash(
-        &backend,
-        temp.path(),
-        crate::StashRequest {
-            meta: {
-                let mut meta = request_meta();
-                meta.selection = Some(crate::Selection {
-                    targets: vec!["@root".to_owned()],
-                    ..Default::default()
-                });
-                meta
-            },
-            op: crate::StashOp::Drop,
-            stash_id: Some(format!("stash_{}", aborted.merge_id.unwrap())),
-            message: None,
-            include_untracked: None,
-            include_ignored: None,
-            expanded: None,
-            preserve_index: None,
-        },
-        "op_preserve_root_drop",
-    )
-    .unwrap();
-    assert!(
-        backend
-            .stash_list(temp.path())
-            .unwrap()
-            .iter()
-            .all(|entry| entry.object_id != stash_object_id)
-    );
-}
-
-#[test]
 fn preserve_abort_rejects_diverged_successful_member_before_creating_artifacts() {
     let temp = TempDir::new("merge-preserve-diverged");
     let backend = crate::git::Git2Backend::new();
@@ -300,12 +104,13 @@ fn preserve_abort_rejects_diverged_successful_member_before_creating_artifacts()
     let error =
         handle_merge(&backend, temp.path(), abort, "op_preserve_diverged_abort").unwrap_err();
 
-    assert_eq!(error.code, ErrorCode::MergeDrift);
+    assert_eq!(error.code, ErrorCode::PreservationEvidenceMismatch);
     assert_eq!(error.member_id.as_deref(), Some("mem_lib"));
-    let record = FileMergeStore.discover_open(temp.path()).unwrap().unwrap();
+    let record = open_record(temp.path()).unwrap();
+    let record = record.view();
     assert!(
         record
-            .participants
+            .participants()
             .values()
             .all(|row| row.preservation.is_empty())
     );
@@ -313,7 +118,7 @@ fn preserve_abort_rejects_diverged_successful_member_before_creating_artifacts()
         backend
             .read_ref(
                 &lib,
-                &format!("refs/gwz/merge/{}/mem_lib/head", record.merge_id),
+                &format!("refs/gwz/merge/{}/mem_lib/head", record.merge_id()),
             )
             .unwrap()
             .is_none()
@@ -354,18 +159,53 @@ fn preserve_abort_resumes_from_recorded_ref_and_native_stash_without_duplicates(
     let stash = backend
         .stash_for_merge_preservation(&lib, &merge_id, true)
         .unwrap();
-    let mut record = FileMergeStore.discover_open(temp.path()).unwrap().unwrap();
-    record.state = OperationState::Preserving;
-    record.participants.get_mut("mem_lib").unwrap().preservation =
-        vec![crate::workspace_ops::merge::PreservationEvidence {
-            backup_ref: Some(backup_ref),
-            backup_commit: Some(extra.clone()),
-            stash_id: Some(format!("stash_{merge_id}")),
-            stash_object_id: Some(stash.object_id.clone()),
-            noop_commit: None,
-            reset_commit: None,
-        }];
-    FileMergeStore.write_open(temp.path(), &record).unwrap();
+    patch_open_record(temp.path(), |value| {
+        value["state"] = serde_yaml::to_value(OperationState::Preserving).unwrap();
+        // `preservation` is a SHARED field, but `state: Preserving` is a v1
+        // journal state, and v1 requires the durable publication handoff that
+        // entering preservation writes: `validate_durable_handoff`
+        // (model/v1/validate/preservation.rs:28-51) makes
+        // `preservation_publication_handoff` REQUIRED for `Preserving`, and
+        // without it decode refuses the whole record with
+        // PreservationEvidenceMismatch before the abort is even dispatched.
+        // `no_candidate` is what production would have written here:
+        // `install_preservation_handoff`
+        // (v1_lifecycle/transition/reduce/mod.rs:176-187) stores
+        // `model_handoff(...)` only if `preservation_handoff_is_compatible`
+        // accepts it, and with no `publication` on the record yet that
+        // predicate admits exactly `NoCandidate`
+        // (model/v1/validate/publication.rs:99-101).
+        // Written as literal YAML because `merge::model` is private to
+        // `merge`, so the enum cannot be named from this test module.
+        value["preservation_publication_handoff"] =
+            serde_yaml::from_str("kind: no_candidate").unwrap();
+        value["participants"]["mem_lib"]["preservation"] =
+            serde_yaml::to_value(vec![crate::workspace_ops::merge::PreservationEvidence {
+                backup_ref: Some(backup_ref),
+                backup_commit: Some(extra.clone()),
+                stash_id: Some(format!("stash_{merge_id}")),
+                stash_object_id: Some(stash.object_id.clone()),
+                noop_commit: None,
+                reset_commit: None,
+            }])
+            .unwrap();
+    });
+    // The durable evidence above is only half of `mem_lib`'s stash step. A
+    // member's owner step writes its `PreservationEvidence` and THEN its bundle
+    // entry (`PreservationStashPhaseV1::WriteBundle`), so evidence without a
+    // bundle is a state no interrupted run can leave behind, and the entry
+    // preflight says so: `v1_bundle_cursor_is_exact`
+    // (preserve/checked_bundle.rs:48) derives the expected bundle from every
+    // owner whose evidence carries a `stash_object_id`, finds nothing on disk,
+    // and `cursor.rs:185` refuses with "preservation bundle does not match the
+    // exact durable cursor prefix". Running the production writer completes the
+    // interrupted step exactly as production would have.
+    crate::workspace_ops::merge::v1_write_preservation_bundle_for_test(
+        &backend,
+        temp.path(),
+        "mem_lib",
+    )
+    .unwrap();
     let mut abort = recovery_request(crate::MergeOp::Abort, Some(merge_id));
     abort.preserve = Some(true);
 
@@ -395,104 +235,4 @@ fn preserve_abort_resumes_from_recorded_ref_and_native_stash_without_duplicates(
             .count(),
         1
     );
-}
-
-#[test]
-fn preserve_abort_failure_windows_never_begin_rollback_and_retry_converges() {
-    for fail_at_write in 1..=3 {
-        let temp = TempDir::new(&format!("merge-preserve-fault-{fail_at_write}"));
-        let backend = crate::git::Git2Backend::new();
-        let fixture = init_mixed_merge_workspace(temp.path(), &backend);
-        let started = handle_merge(
-            &backend,
-            temp.path(),
-            request(false),
-            format!("op_preserve_fault_start_{fail_at_write}"),
-        )
-        .unwrap();
-        let merge_id = started.merge_id.clone().unwrap();
-        let lib = temp.path().join("lib");
-        let result = merge_repo(&started, "mem_lib")
-            .resulting_commit
-            .clone()
-            .unwrap();
-        let extra = commit_file(
-            &lib,
-            "fault-window.txt",
-            "preserve me\n",
-            "fault window work",
-            &[git2::Oid::from_str(&result).unwrap()],
-        )
-        .unwrap();
-        fs::write(lib.join("fault-untracked.txt"), "stash me\n").unwrap();
-        let store = FailingPreservationStore {
-            fail_at_write,
-            writes: Cell::new(0),
-            fired: Cell::new(false),
-        };
-        let mut abort = recovery_request(crate::MergeOp::Abort, Some(merge_id.clone()));
-        abort.preserve = Some(true);
-
-        let error = invoke_preservation_store(
-            &backend,
-            &store,
-            temp.path(),
-            abort.clone(),
-            "op_preserve_fault",
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, ErrorCode::MergeRecoveryRequired);
-        assert_eq!(
-            backend.head(&lib).unwrap().commit.as_deref(),
-            Some(extra.as_str()),
-            "failure window {fail_at_write} rolled back the successful participant"
-        );
-        assert_eq!(
-            backend.repository_state(&temp.path().join("docs")).unwrap(),
-            crate::git::GitRepositoryState::Merge,
-            "failure window {fail_at_write} aborted the conflicted participant"
-        );
-        let backup_ref = format!("refs/gwz/merge/{merge_id}/mem_lib/head");
-        assert_eq!(
-            backend.read_ref(&lib, &backup_ref).unwrap().is_some(),
-            fail_at_write >= 2
-        );
-        assert_eq!(
-            backend
-                .stash_list(&lib)
-                .unwrap()
-                .iter()
-                .any(|entry| entry.message.contains(&format!("gwz:stash_{merge_id}:"))),
-            fail_at_write >= 3
-        );
-
-        let aborted = invoke_preservation_store(
-            &backend,
-            &store,
-            temp.path(),
-            abort,
-            "op_preserve_fault_retry",
-        )
-        .unwrap();
-        assert_eq!(aborted.state, crate::MergeOperationState::Aborted);
-        assert_eq!(
-            backend.head(&lib).unwrap().commit.as_deref(),
-            Some(fixture.lib_before.as_str())
-        );
-        let evidence = aborted
-            .preservation
-            .as_ref()
-            .unwrap()
-            .iter()
-            .find(|entry| entry.target_id == "mem_lib")
-            .unwrap();
-        assert_eq!(evidence.backup_commit.as_deref(), Some(extra.as_str()));
-        assert!(evidence.stash_object_id.is_some());
-        let bundle = crate::stash::read_bundle(temp.path(), &format!("stash_{merge_id}")).unwrap();
-        assert!(bundle.members.iter().any(|member| {
-            member.member_id == "mem_lib"
-                && member.native_stash_object_id == evidence.stash_object_id
-        }));
-    }
 }

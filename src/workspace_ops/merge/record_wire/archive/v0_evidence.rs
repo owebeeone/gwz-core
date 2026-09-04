@@ -5,9 +5,10 @@ use sha2::{Digest, Sha256};
 use super::super::super::model::archive_projection::*;
 use super::super::super::model::v1::MergeOperationRecordV1;
 use super::super::super::{
-    MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeOperationRecord, MergeTargetKind,
-    OperationState, ParticipantState, PreservationEvidence, PublicationProgress,
+    MERGE_RECORD_SCHEMA, MERGE_RECORD_SCHEMA_VERSION, MergeTargetKind, OperationState,
+    ParticipantState, PreservationEvidence, PublicationProgress,
 };
+use super::MergeOperationRecordV0;
 use crate::artifact::{LOCK_PATH, LockArtifact, ManifestArtifact, MarkerArtifact};
 use crate::workspace::MemberPath;
 
@@ -24,7 +25,7 @@ pub(super) struct CandidateEvidence {
     pub(super) publication_complete: bool,
 }
 
-pub(super) fn validate_common(record: &MergeOperationRecord) -> Result<(), ()> {
+pub(super) fn validate_common(record: &MergeOperationRecordV0) -> Result<(), ()> {
     validate_common_v0(record)?;
     if record.state.is_open() {
         return Err(());
@@ -89,7 +90,7 @@ pub(super) fn validate_common(record: &MergeOperationRecord) -> Result<(), ()> {
     Ok(())
 }
 
-pub(super) fn validate_baseline(record: &MergeOperationRecord) -> Result<BaselineEvidence, ()> {
+pub(super) fn validate_baseline(record: &MergeOperationRecordV0) -> Result<BaselineEvidence, ()> {
     let manifest = record
         .baseline
         .manifest_yaml
@@ -122,7 +123,7 @@ pub(super) fn validate_baseline(record: &MergeOperationRecord) -> Result<Baselin
 }
 
 pub(super) fn validate_candidate(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     publication: &PublicationProgress,
 ) -> Result<CandidateEvidence, ()> {
     let candidate = publication.candidate.as_ref().ok_or(())?;
@@ -235,7 +236,7 @@ pub(super) fn validate_candidate(
 }
 
 pub(super) fn validate_marker_merge(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     publication: &PublicationProgress,
     marker: &MarkerArtifact,
     candidate_lock: &LockArtifact,
@@ -262,7 +263,7 @@ struct MarkerMergeView<'a> {
     baseline: &'a super::super::super::MergeBaseline,
 }
 
-fn marker_view_v0(record: &MergeOperationRecord) -> MarkerMergeView<'_> {
+fn marker_view_v0(record: &MergeOperationRecordV0) -> MarkerMergeView<'_> {
     MarkerMergeView {
         created_at: &record.created_at,
         merge_id: &record.merge_id,
@@ -381,7 +382,7 @@ fn marker_result_matches_state(
 }
 
 pub(super) fn project_root(
-    record: &MergeOperationRecord,
+    record: &MergeOperationRecordV0,
     publication_branch: Option<&str>,
 ) -> Result<Option<AcceptedRootProjection>, ()> {
     let (kind, commit, symbolic_branch, branch) =
@@ -440,7 +441,7 @@ pub(super) fn project_root(
     }))
 }
 
-fn validate_common_v0(record: &MergeOperationRecord) -> Result<(), ()> {
+fn validate_common_v0(record: &MergeOperationRecordV0) -> Result<(), ()> {
     if record.schema != MERGE_RECORD_SCHEMA
         || record.record_schema_version != MERGE_RECORD_SCHEMA_VERSION
         || !portable_id(&record.workspace_id, "ws_")
@@ -543,7 +544,7 @@ fn preservation_rows(rows: &[PreservationEvidence]) -> bool {
     })
 }
 
-fn commit_message(record: &MergeOperationRecord, message: &str) -> bool {
+fn commit_message(record: &MergeOperationRecordV0, message: &str) -> bool {
     let trailer = format!(
         "\n\nGWZ-Merge-ID: {}\nGWZ-Operation-ID: {}",
         record.merge_id, record.operation_id

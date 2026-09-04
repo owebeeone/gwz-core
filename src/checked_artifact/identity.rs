@@ -152,6 +152,15 @@ impl DurableObjectIdentity {
 }
 
 pub(super) fn object_identity(dir: &Dir) -> std::io::Result<ObjectIdentity> {
+    // M5d step (3)'s test-only seam (`GwzM5-8M5d-Charter.md` §3, 2026-09-03),
+    // armed by `capability::with_handle_probe_unavailable`. The CI hosts are
+    // APFS and ext4, which both answer this probe, so a handle-fail volume
+    // cannot be presented to the doors that take it any other way. The refusal
+    // it answers with is byte-identical to a real overlay's.
+    #[cfg(test)]
+    if super::capability::handle_probe_is_unavailable() {
+        return Err(persistent_identity_unsupported());
+    }
     platform::dir_object_identity(dir)
 }
 

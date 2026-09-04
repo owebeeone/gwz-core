@@ -3548,6 +3548,7 @@ pub struct MergeCrashRecovery {
     pub supported: bool,
     pub filesystem: Option<String>,
     pub gap: Option<MergeCrashRecoveryGap>,
+    pub handles_ok: Option<bool>,
 }
 impl MergeCrashRecovery {
     pub fn to_cbor(&self) -> Cbor {
@@ -3555,6 +3556,7 @@ impl MergeCrashRecovery {
             (1, Cbor::Bool(self.supported)),
             (2, match &self.filesystem { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (3, match &self.gap { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (4, match &self.handles_ok { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -3562,6 +3564,7 @@ impl MergeCrashRecovery {
             supported: c.try_get(1)?.try_bool()?,
             filesystem: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             gap: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(MergeCrashRecoveryGap::from_wire(v.try_int()?)?) } },
+            handles_ok: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
         })
     }
 }
