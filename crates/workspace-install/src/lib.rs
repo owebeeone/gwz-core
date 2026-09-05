@@ -19,10 +19,11 @@
 //!    1 is the one in-memory freeze vector for the rest of the invocation.
 //! 3. **Build.** Copy with exclusions applied during traversal (verbatim) or
 //!    construct clean/bare repositories through the construction port,
-//!    install the fresh pointer and allocation marker through the store
-//!    session, check the destination against design §4.1's completion column
-//!    and §4.0's independence rules, recheck the source observations, then
-//!    recapture the destination lock and desired branches.
+//!    install the destination's own Git configuration and the fresh pointer
+//!    and allocation marker through the store session, check the destination
+//!    against design §4.1's completion column and §4.0's independence rules,
+//!    recheck the source observations, then recapture the destination lock
+//!    and desired branches.
 //! 4. **Publish.** Write the final manifest **last**, then mark the row
 //!    `ready`.
 //!
@@ -244,6 +245,16 @@ pub struct ManifestReceipt {
     pub marker_regenerated: bool,
 }
 
+/// What installing the destination's Git configuration removed (design
+/// §4.1's last exclusion row: filesystem and credential-bearing remote URLs
+/// copied from the source go away in install, and ordinary non-credential
+/// https/ssh origins remain).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GitInstallReport {
+    /// The remotes whose URL was removed, as `<repository>: <remote>`.
+    pub removed_remotes: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstallPortError {
     Layout(LayoutError),
@@ -289,9 +300,10 @@ impl std::error::Error for InstallPortError {}
 /// **Call order.** Installation calls them in exactly this order, and the
 /// order is the contract a real adapter may rely on: `snapshot_source`,
 /// `observe_destination`, `allocate_destination`, then either the tree
-/// copier or `construct_repositories`, then `observe_destination` again,
-/// `recheck_source`, `recapture_configuration` and `publish_manifest`.
-/// Nothing follows `publish_manifest` but the row's move to `ready`.
+/// copier or `construct_repositories`, then `install_destination_git`,
+/// `observe_destination` again, `recheck_source`,
+/// `recapture_configuration` and `publish_manifest`. Nothing follows
+/// `publish_manifest` but the row's move to `ready`.
 pub trait InstallPorts {
     /// Inventory every included repository of `source` (root, members,
     /// nested) and capture HEADs, branches and remotes. Refuses design §4.0
@@ -317,6 +329,18 @@ pub trait InstallPorts {
         &mut self,
         request: &ConstructionRequest,
     ) -> Result<(), InstallPortError>;
+
+    /// Install the destination's own Git configuration: remove the
+    /// filesystem and credential-bearing remote URLs a verbatim copy
+    /// inherited, keeping ordinary non-credential https/ssh origins. Runs
+    /// for every mode -- clean and bare keep the source's non-`file:`
+    /// `origin` URLs (design §4.2), and having nothing to remove is a
+    /// report, not a special case -- and always before the independence
+    /// check that has to see the result.
+    fn install_destination_git(
+        &mut self,
+        destination: &Path,
+    ) -> Result<GitInstallReport, InstallPortError>;
 
     /// Verify the source still matches `snapshot`.
     fn recheck_source(&mut self, snapshot: &SourceSnapshot) -> Result<(), InstallPortError>;
@@ -468,6 +492,7 @@ pub enum InstallStep {
     AllocateDestination,
     CopyTree,
     ConstructRepositories,
+    InstallDestinationGit,
     InstallPointer,
     CheckDestination,
     RecheckSource,
@@ -485,6 +510,7 @@ impl InstallStep {
             Self::AllocateDestination => "allocate destination",
             Self::CopyTree => "copy tree",
             Self::ConstructRepositories => "construct repositories",
+            Self::InstallDestinationGit => "install destination git configuration",
             Self::InstallPointer => "install pointer",
             Self::CheckDestination => "check destination",
             Self::RecheckSource => "recheck source",
@@ -510,6 +536,7 @@ pub enum InstallEffect {
     DestinationAllocated,
     TreeCopied,
     RepositoriesConstructed,
+    DestinationGitInstalled,
     /// The allocation marker and then the pointer, as the store writes them.
     PointerInstalled,
     ConfigurationInstalled,
@@ -522,6 +549,8 @@ pub enum InstallEffect {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstallReport {
     pub copy: Option<CopyReport>,
+    /// Remote URLs removed from the destination's Git configuration.
+    pub git: Option<GitInstallReport>,
     /// Generated `gwz.conf/` changes and lock recapture, reported rather
     /// than hidden in a commit (design §4.2).
     pub configuration: Option<ConfigurationReport>,
@@ -588,6 +617,7 @@ impl std::error::Error for InstallFailure {}
 struct Progress {
     effects: Vec<InstallEffect>,
     copy: Option<CopyReport>,
+    git: Option<GitInstallReport>,
     configuration: Option<ConfigurationReport>,
 }
 
@@ -707,6 +737,15 @@ pub fn install(
         progress.did(InstallEffect::RepositoriesConstructed);
     }
 
+    let git = attempt!(
+        InstallStep::InstallDestinationGit,
+        ports
+            .install_destination_git(&request.destination)
+            .map_err(|error| InstallError::Port(Box::new(error)))
+    );
+    progress.git = Some(git);
+    progress.did(InstallEffect::DestinationGitInstalled);
+
     attempt!(
         InstallStep::InstallPointer,
         session
@@ -794,6 +833,7 @@ pub fn install(
 
     Ok(InstallReport {
         copy: progress.copy,
+        git: progress.git,
         configuration: progress.configuration,
         effects: progress.effects,
     })

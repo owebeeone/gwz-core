@@ -29,8 +29,8 @@ use crate::test_support::{
 };
 use crate::{
     CapturedRepository, CompletionFault, ConfigurationReport, DestinationObservation,
-    InstallEffect, InstallError, InstallPortError, InstallRefusal, InstallRequest, InstallStep,
-    ManifestReceipt, SourceSnapshot, install,
+    GitInstallReport, InstallEffect, InstallError, InstallPortError, InstallRefusal,
+    InstallRequest, InstallStep, ManifestReceipt, SourceSnapshot, install,
 };
 
 const ROOT: &str = "/root";
@@ -193,6 +193,7 @@ fn verbatim_runs_the_four_steps_in_order_and_publishes_the_manifest_last() {
             InstallEvent::AllocateDestination,
             // 3: build, install metadata, check, recheck, recapture.
             InstallEvent::CopyTree,
+            InstallEvent::InstallDestinationGit,
             InstallEvent::InstallPointer,
             InstallEvent::ObserveDestination,
             InstallEvent::RecheckSource,
@@ -213,6 +214,7 @@ fn verbatim_runs_the_four_steps_in_order_and_publishes_the_manifest_last() {
             InstallEffect::RowAllocated,
             InstallEffect::DestinationAllocated,
             InstallEffect::TreeCopied,
+            InstallEffect::DestinationGitInstalled,
             InstallEffect::PointerInstalled,
             InstallEffect::ConfigurationInstalled,
             InstallEffect::ManifestPublished,
@@ -259,6 +261,7 @@ fn clean_constructs_from_one_freeze_vector_covering_every_member_and_never_copie
             InstallEvent::Allocate,
             InstallEvent::AllocateDestination,
             InstallEvent::ConstructRepositories,
+            InstallEvent::InstallDestinationGit,
             InstallEvent::InstallPointer,
             InstallEvent::ObserveDestination,
             InstallEvent::RecheckSource,
@@ -274,6 +277,7 @@ fn clean_constructs_from_one_freeze_vector_covering_every_member_and_never_copie
             InstallEffect::RowAllocated,
             InstallEffect::DestinationAllocated,
             InstallEffect::RepositoriesConstructed,
+            InstallEffect::DestinationGitInstalled,
             InstallEffect::PointerInstalled,
             InstallEffect::ConfigurationInstalled,
             InstallEffect::ManifestPublished,
@@ -787,6 +791,7 @@ fn source_drift_at_the_recheck_stops_publication() {
             InstallEffect::RowAllocated,
             InstallEffect::DestinationAllocated,
             InstallEffect::TreeCopied,
+            InstallEffect::DestinationGitInstalled,
             InstallEffect::PointerInstalled,
             InstallEffect::ErrorRecorded,
         ]
@@ -834,6 +839,7 @@ fn a_metadata_failure_between_the_manifest_and_ready_leaves_the_row_creating() {
             InstallEffect::RowAllocated,
             InstallEffect::DestinationAllocated,
             InstallEffect::TreeCopied,
+            InstallEffect::DestinationGitInstalled,
             InstallEffect::PointerInstalled,
             InstallEffect::ConfigurationInstalled,
             InstallEffect::ManifestPublished,
@@ -1147,5 +1153,106 @@ fn an_unimplemented_port_is_an_error_not_a_refusal_and_writes_nothing() {
         harness.journal.events(),
         vec![InstallEvent::SnapshotSource],
         "a port error stops before the rest of the aggregate"
+    );
+}
+
+#[test]
+fn the_destination_git_install_reports_the_remote_urls_it_removed() {
+    let removed = vec!["@root: origin".to_owned(), "mem_app: backup".to_owned()];
+    let mut harness = founded();
+    let mut ports = harness.ports();
+    ports.git(GitInstallReport {
+        removed_remotes: removed.clone(),
+    });
+    let mut session = JournalSession::new(&mut harness.session, &harness.journal);
+    let copier = JournalCopier::new(&harness.copier, &harness.journal);
+
+    let report = install(
+        &request(CloneMode::Verbatim),
+        &mut session,
+        &copier,
+        &mut ports,
+        &NeverCancelled,
+    )
+    .expect("the install completes");
+
+    assert_eq!(
+        report.git,
+        Some(GitInstallReport {
+            removed_remotes: removed
+        }),
+        "filesystem and credential URLs go away in install, and the removal is reported"
+    );
+}
+
+#[test]
+fn a_failed_destination_git_install_stops_before_the_pointer() {
+    let mut harness = founded();
+    let mut ports = harness.ports();
+    ports.fail_next(
+        InstallEvent::InstallDestinationGit,
+        InstallPortError::Destination {
+            path: PathBuf::from("/ws-A/app/.git/config"),
+            detail: "read-only file system".to_owned(),
+        },
+    );
+    let mut session = JournalSession::new(&mut harness.session, &harness.journal);
+    let copier = JournalCopier::new(&harness.copier, &harness.journal);
+
+    let failure = install(
+        &request(CloneMode::Verbatim),
+        &mut session,
+        &copier,
+        &mut ports,
+        &NeverCancelled,
+    )
+    .expect_err("the destination's git configuration could not be installed");
+
+    assert_eq!(failure.step, InstallStep::InstallDestinationGit);
+    assert_eq!(
+        failure.effects,
+        vec![
+            InstallEffect::RowAllocated,
+            InstallEffect::DestinationAllocated,
+            InstallEffect::TreeCopied,
+            InstallEffect::ErrorRecorded,
+        ],
+        "the copied tree is retained and no pointer was installed"
+    );
+    assert!(harness.store.pointers().is_empty());
+    assert_eq!(
+        harness.row_state().map(|(state, _)| state),
+        Some(MemberState::Creating)
+    );
+}
+
+#[test]
+fn a_destination_that_is_not_the_rows_recorded_path_is_refused_by_the_store() {
+    // The installer never does host-path arithmetic: it hands the store the
+    // destination as given, and the store -- the one component that can
+    // canonicalise -- refuses a spelling that resolves anywhere but the
+    // row's recorded path.
+    let mut harness = founded();
+    let mut ports = harness.ports();
+    let mut session = JournalSession::new(&mut harness.session, &harness.journal);
+    let copier = JournalCopier::new(&harness.copier, &harness.journal);
+    let mut wanted = request(CloneMode::Verbatim);
+    wanted.destination = PathBuf::from("/somewhere-else");
+
+    let failure = install(&wanted, &mut session, &copier, &mut ports, &NeverCancelled)
+        .expect_err("the destination is not the row's path");
+
+    assert_eq!(failure.step, InstallStep::InstallPointer);
+    let InstallError::Store(error) = &failure.error else {
+        panic!("expected a store error, got {:?}", failure.error);
+    };
+    assert!(
+        matches!(**error, StoreError::PathMismatch { .. }),
+        "{error}"
+    );
+    assert!(harness.store.pointers().is_empty());
+    assert_eq!(
+        harness.row_state().map(|(state, _)| state),
+        Some(MemberState::Creating)
     );
 }

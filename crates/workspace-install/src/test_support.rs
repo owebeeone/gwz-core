@@ -18,7 +18,7 @@ use gwz_family_store_contract::{AppliedChange, FamilySession, StoreError};
 
 use crate::{
     ConfigurationPlan, ConfigurationReport, ConstructionRequest, DestinationObservation,
-    InstallPortError, InstallPorts, ManifestReceipt, SourceSnapshot,
+    GitInstallReport, InstallPortError, InstallPorts, ManifestReceipt, SourceSnapshot,
 };
 
 /// One thing the installer did, whichever collaborator it did it through.
@@ -29,6 +29,7 @@ pub enum InstallEvent {
     AllocateDestination,
     CopyTree,
     ConstructRepositories,
+    InstallDestinationGit,
     InstallPointer,
     RecheckSource,
     RecaptureConfiguration,
@@ -53,6 +54,7 @@ impl InstallEvent {
             Self::AllocateDestination => "allocate_destination",
             Self::CopyTree => "copy_tree",
             Self::ConstructRepositories => "construct_repositories",
+            Self::InstallDestinationGit => "install_destination_git",
             Self::InstallPointer => "install_pointer",
             Self::RecheckSource => "recheck_source",
             Self::RecaptureConfiguration => "recapture_configuration",
@@ -112,9 +114,9 @@ impl Journal {
 /// and `ready` follows the manifest.
 fn violation(events: &[InstallEvent], event: InstallEvent) -> Option<String> {
     use InstallEvent::{
-        Allocate, AllocateDestination, ConstructRepositories, CopyTree, InstallPointer, MarkReady,
-        ObserveDestination, PublishManifest, RecaptureConfiguration, RecheckSource, RecordError,
-        SnapshotSource,
+        Allocate, AllocateDestination, ConstructRepositories, CopyTree, InstallDestinationGit,
+        InstallPointer, MarkReady, ObserveDestination, PublishManifest, RecaptureConfiguration,
+        RecheckSource, RecordError, SnapshotSource,
     };
     let seen = |wanted: InstallEvent| events.contains(&wanted);
     let broke = |detail: String| Some(format!("{}: {detail}", event.label()));
@@ -134,6 +136,7 @@ fn violation(events: &[InstallEvent], event: InstallEvent) -> Option<String> {
         AllocateDestination
         | CopyTree
         | ConstructRepositories
+        | InstallDestinationGit
         | InstallPointer
         | RecheckSource
         | RecaptureConfiguration
@@ -146,8 +149,11 @@ fn violation(events: &[InstallEvent], event: InstallEvent) -> Option<String> {
         CopyTree | ConstructRepositories if !seen(AllocateDestination) => {
             broke("ran before the destination was allocated".to_owned())
         }
-        InstallPointer if !seen(CopyTree) && !seen(ConstructRepositories) => {
+        InstallDestinationGit if !seen(CopyTree) && !seen(ConstructRepositories) => {
             broke("ran before the destination was built".to_owned())
+        }
+        InstallPointer if !seen(InstallDestinationGit) => {
+            broke("ran before the destination's git configuration was installed".to_owned())
         }
         PublishManifest if !seen(RecheckSource) || !seen(RecaptureConfiguration) => {
             broke("the manifest precedes the source recheck and the lock recapture".to_owned())
@@ -174,6 +180,7 @@ pub struct RecordingInstallPorts {
     snapshot: Option<SourceSnapshot>,
     observations: Vec<DestinationObservation>,
     configuration: Option<ConfigurationReport>,
+    git: Option<GitInstallReport>,
     receipt: Option<ManifestReceipt>,
     failures: Vec<(InstallEvent, InstallPortError)>,
     construction: Vec<ConstructionRequest>,
@@ -214,6 +221,10 @@ impl RecordingInstallPorts {
 
     pub fn recapture(&mut self, report: ConfigurationReport) {
         self.configuration = Some(report);
+    }
+
+    pub fn git(&mut self, report: GitInstallReport) {
+        self.git = Some(report);
     }
 
     pub fn receipt(&mut self, receipt: ManifestReceipt) {
@@ -279,6 +290,14 @@ impl InstallPorts for RecordingInstallPorts {
     ) -> Result<(), InstallPortError> {
         self.construction.push(request.clone());
         self.record(InstallEvent::ConstructRepositories)
+    }
+
+    fn install_destination_git(
+        &mut self,
+        _destination: &Path,
+    ) -> Result<GitInstallReport, InstallPortError> {
+        self.record(InstallEvent::InstallDestinationGit)?;
+        Ok(self.git.clone().unwrap_or_default())
     }
 
     fn recheck_source(&mut self, _snapshot: &SourceSnapshot) -> Result<(), InstallPortError> {
@@ -470,6 +489,7 @@ mod tests {
             InstallEvent::Allocate,
             InstallEvent::AllocateDestination,
             InstallEvent::CopyTree,
+            InstallEvent::InstallDestinationGit,
             InstallEvent::InstallPointer,
             InstallEvent::RecaptureConfiguration,
         ] {
@@ -507,8 +527,18 @@ mod tests {
         journal.record(InstallEvent::ObserveDestination);
         journal.record(InstallEvent::Allocate);
         journal.record(InstallEvent::AllocateDestination);
+        journal.record(InstallEvent::InstallDestinationGit);
+        assert_eq!(
+            journal.violations().len(),
+            1,
+            "git install before the build"
+        );
         journal.record(InstallEvent::InstallPointer);
-        assert_eq!(journal.violations().len(), 1, "pointer before the build");
+        assert_eq!(
+            journal.violations().len(),
+            1,
+            "the git install was recorded"
+        );
         journal.record(InstallEvent::MarkReady);
         assert_eq!(journal.violations().len(), 2, "ready before the manifest");
     }
