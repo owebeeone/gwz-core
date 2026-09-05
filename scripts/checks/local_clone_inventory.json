@@ -1,6 +1,6 @@
 {
   "inventory_version": 1,
-  "description": "Package classification and complete allowed dependency edges for the local clone family libraries under crates/. Authority: gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md revision 1 (§2 packages/roles/edges, §4 owners, §6 gate), adopting LBT-001..LBT-012 of the canonical Library Boundary and Testing Policy. Changing a role, an edge or an allowlist is a policy change that goes through lane C with the affected lane's review, never a routine way to make the gate green (LBT-012).",
+  "description": "Package classification and complete allowed dependency edges for the local clone family libraries under crates/. Authority: gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md revision 1 (\u00a72 packages/roles/edges, \u00a74 owners, \u00a76 gate), adopting LBT-001..LBT-012 of the canonical Library Boundary and Testing Policy. Changing a role, an edge or an allowlist is a policy change that goes through lane C with the affected lane's review, never a routine way to make the gate green (LBT-012).",
   "policy": {
     "adoption_document": "gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md",
     "adoption_revision": 1,
@@ -15,11 +15,26 @@
     "harness": "Development tooling; outside every production dependency path; dev-dependency only."
   },
   "role_edges": {
-    "contract": ["contract", "pure"],
-    "pure": ["contract", "pure"],
-    "implementation": ["contract", "pure"],
-    "integration": ["contract", "pure"],
-    "harness": ["contract", "pure"]
+    "contract": [
+      "contract",
+      "pure"
+    ],
+    "pure": [
+      "contract",
+      "pure"
+    ],
+    "implementation": [
+      "contract",
+      "pure"
+    ],
+    "integration": [
+      "contract",
+      "pure"
+    ],
+    "harness": [
+      "contract",
+      "pure"
+    ]
   },
   "forbidden_dependencies": [
     "gwz-core",
@@ -46,10 +61,20 @@
       "role": "implementation",
       "owner": "R",
       "rationale": "Native/ordinary SystemTreeCopier implements TreeCopier.",
-      "first_party": ["gwz-copy-contract"],
-      "third_party": [],
-      "dev_first_party": ["gwz-copy-contract"],
-      "dev_third_party": [],
+      "first_party": [
+        "gwz-copy-contract"
+      ],
+      "third_party": [
+        "libc",
+        "rustix",
+        "windows-sys"
+      ],
+      "dev_first_party": [
+        "gwz-copy-contract"
+      ],
+      "dev_third_party": [
+        "tempfile"
+      ],
       "expected": "present"
     },
     "gwz-repo-contract": {
@@ -68,10 +93,19 @@
       "role": "implementation",
       "owner": "I",
       "rationale": "Local Git/filesystem reads implement the repository contracts.",
-      "first_party": ["gwz-repo-contract"],
-      "third_party": ["git2"],
-      "dev_first_party": ["gwz-repo-contract", "gwz-local-testrepo"],
-      "dev_third_party": [],
+      "first_party": [
+        "gwz-repo-contract"
+      ],
+      "third_party": [
+        "git2"
+      ],
+      "dev_first_party": [
+        "gwz-repo-contract",
+        "gwz-local-testrepo"
+      ],
+      "dev_third_party": [
+        "tempfile"
+      ],
       "expected": "present"
     },
     "gwz-work-detector": {
@@ -79,9 +113,13 @@
       "role": "pure",
       "owner": "W",
       "rationale": "Classifies supplied observations and decoded evidence; no I/O, so no port is needed.",
-      "first_party": ["gwz-repo-contract"],
+      "first_party": [
+        "gwz-repo-contract"
+      ],
       "third_party": [],
-      "dev_first_party": ["gwz-repo-contract"],
+      "dev_first_party": [
+        "gwz-repo-contract"
+      ],
       "dev_third_party": [],
       "expected": "present"
     },
@@ -90,9 +128,13 @@
       "role": "integration",
       "owner": "H",
       "rationale": "Bounded traversal through an injected read-only ObjectReader; no deletion or fetch.",
-      "first_party": ["gwz-repo-contract"],
+      "first_party": [
+        "gwz-repo-contract"
+      ],
       "third_party": [],
-      "dev_first_party": ["gwz-repo-contract"],
+      "dev_first_party": [
+        "gwz-repo-contract"
+      ],
       "dev_third_party": [],
       "expected": "present"
     },
@@ -112,9 +154,13 @@
       "role": "contract",
       "owner": "C",
       "rationale": "Read view, locked session and family metadata mutation port over the small pure model.",
-      "first_party": ["gwz-family-model"],
+      "first_party": [
+        "gwz-family-model"
+      ],
       "third_party": [],
-      "dev_first_party": ["gwz-family-model"],
+      "dev_first_party": [
+        "gwz-family-model"
+      ],
       "dev_third_party": [],
       "expected": "present"
     },
@@ -123,10 +169,21 @@
       "role": "implementation",
       "owner": "S",
       "rationale": "YAML index, ordinary publication and OS advisory locking implement the store contract.",
-      "first_party": ["gwz-family-store-contract", "gwz-family-model"],
-      "third_party": [],
-      "dev_first_party": ["gwz-family-store-contract", "gwz-family-model"],
-      "dev_third_party": [],
+      "first_party": [
+        "gwz-family-store-contract",
+        "gwz-family-model"
+      ],
+      "third_party": [
+        "serde",
+        "serde_yaml"
+      ],
+      "dev_first_party": [
+        "gwz-family-store-contract",
+        "gwz-family-model"
+      ],
+      "dev_third_party": [
+        "tempfile"
+      ],
       "expected": "present"
     },
     "gwz-local-import": {
@@ -134,9 +191,15 @@
       "role": "integration",
       "owner": "X",
       "rationale": "Pairing, capture, retained imports and push through its own narrow LocalTransport port.",
-      "first_party": ["gwz-repo-contract", "gwz-family-model"],
+      "first_party": [
+        "gwz-repo-contract",
+        "gwz-family-model"
+      ],
       "third_party": [],
-      "dev_first_party": ["gwz-repo-contract", "gwz-family-model"],
+      "dev_first_party": [
+        "gwz-repo-contract",
+        "gwz-family-model"
+      ],
       "dev_third_party": [],
       "expected": "present"
     },
@@ -145,9 +208,19 @@
       "role": "integration",
       "owner": "N",
       "rationale": "Copy/construction/install ordering via injected ports; consumes construction and configuration ports rather than concrete siblings.",
-      "first_party": ["gwz-copy-contract", "gwz-repo-contract", "gwz-family-model", "gwz-family-store-contract"],
+      "first_party": [
+        "gwz-copy-contract",
+        "gwz-repo-contract",
+        "gwz-family-model",
+        "gwz-family-store-contract"
+      ],
       "third_party": [],
-      "dev_first_party": ["gwz-copy-contract", "gwz-repo-contract", "gwz-family-model", "gwz-family-store-contract"],
+      "dev_first_party": [
+        "gwz-copy-contract",
+        "gwz-repo-contract",
+        "gwz-family-model",
+        "gwz-family-store-contract"
+      ],
       "dev_third_party": [],
       "expected": "present"
     },
@@ -156,9 +229,13 @@
       "role": "integration",
       "owner": "B",
       "rationale": "Bare/clean construction through its own repository-builder port.",
-      "first_party": ["gwz-repo-contract"],
+      "first_party": [
+        "gwz-repo-contract"
+      ],
       "third_party": [],
-      "dev_first_party": ["gwz-repo-contract"],
+      "dev_first_party": [
+        "gwz-repo-contract"
+      ],
       "dev_third_party": [],
       "expected": "present"
     },
@@ -167,9 +244,19 @@
       "role": "integration",
       "owner": "D",
       "rationale": "Fresh safety observations and one-shot removal through ports; consumes a history-check port rather than the concrete verifier.",
-      "first_party": ["gwz-repo-contract", "gwz-family-model", "gwz-family-store-contract", "gwz-work-detector"],
+      "first_party": [
+        "gwz-repo-contract",
+        "gwz-family-model",
+        "gwz-family-store-contract",
+        "gwz-work-detector"
+      ],
       "third_party": [],
-      "dev_first_party": ["gwz-repo-contract", "gwz-family-model", "gwz-family-store-contract", "gwz-work-detector"],
+      "dev_first_party": [
+        "gwz-repo-contract",
+        "gwz-family-model",
+        "gwz-family-store-contract",
+        "gwz-work-detector"
+      ],
       "dev_third_party": [],
       "expected": "present"
     },
@@ -178,9 +265,16 @@
       "role": "harness",
       "owner": "T",
       "rationale": "Tiny real Git/temporary-tree fixtures for real-I/O adapter tests; dev-only, never a production dependency of any crate.",
-      "first_party": ["gwz-repo-contract"],
-      "third_party": ["git2", "tempfile"],
-      "dev_first_party": ["gwz-repo-contract"],
+      "first_party": [
+        "gwz-repo-contract"
+      ],
+      "third_party": [
+        "git2",
+        "tempfile"
+      ],
+      "dev_first_party": [
+        "gwz-repo-contract"
+      ],
       "dev_third_party": [],
       "expected": "pending"
     }
