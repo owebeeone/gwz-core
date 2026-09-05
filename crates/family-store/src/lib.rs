@@ -72,11 +72,12 @@ impl FamilyStore for YamlFamilyStore {
     }
 
     fn try_lock(&self, location: &FamilyLocation) -> Result<Self::Session, StoreError> {
-        // A clone locks its root: resolve the family first, then take the
-        // one lock that serialises this family (design §3.2).
-        let root = match observe(&location.workspace)? {
-            FamilyObservation::Family { root, .. } => root,
-            FamilyObservation::NoFamily => location.workspace.clone(),
+        // A clone locks its root: locate the family first, then take the one
+        // lock that serialises it (design §3.2). Founding is allowed, so a
+        // workspace in no family locks itself.
+        let root = match locate(&location.workspace)? {
+            Some((root, _)) => root,
+            None => location.workspace.clone(),
         };
         let directory = metadata_directory(&root);
         publish::ensure_metadata_directory(&directory)
@@ -384,9 +385,17 @@ fn metadata_directory(workspace: &Path) -> PathBuf {
     workspace.join(relative)
 }
 
-/// Observe a workspace's family without writing anything, the lock file
-/// included.
-fn observe(workspace: &Path) -> Result<FamilyObservation, StoreError> {
+/// Which root a workspace belongs to, and how it was reached — without
+/// decoding that root's index.
+///
+/// This is the step `try_lock` needs and `read_view` starts from. Keeping
+/// the index *decode* out of it is what makes a family whose index is
+/// malformed or oversize still lockable, so `reread` reports the refusal
+/// under the lock and an explicit repair or disband can be attempted; a
+/// store that refused the lock would leave nothing able to address the
+/// family at all. It matches the reference fake, whose `try_lock` resolves
+/// the root and whose `reread` carries the refusal.
+fn locate(workspace: &Path) -> Result<Option<(PathBuf, FamilySource)>, StoreError> {
     let index = index_state(workspace)?;
     let pointer_path = workspace.join(POINTER_RELATIVE_PATH);
     let pointer = publish::file_state(&pointer_path)
@@ -397,17 +406,10 @@ fn observe(workspace: &Path) -> Result<FamilyObservation, StoreError> {
         });
     }
     if index.is_present() {
-        let view = read_index(workspace)?.ok_or_else(|| StoreError::NoFamily {
-            workspace: workspace.to_path_buf(),
-        })?;
-        return Ok(FamilyObservation::Family {
-            root: workspace.to_path_buf(),
-            source: FamilySource::Index,
-            view,
-        });
+        return Ok(Some((workspace.to_path_buf(), FamilySource::Index)));
     }
     let Some(pointer) = read_pointer(workspace)? else {
-        return Ok(FamilyObservation::NoFamily);
+        return Ok(None);
     };
     let root = PathBuf::from(&pointer.root_path);
     let invalid = |detail: &str| StoreError::PointerTargetInvalid {
@@ -415,15 +417,29 @@ fn observe(workspace: &Path) -> Result<FamilyObservation, StoreError> {
         root: root.clone(),
         detail: detail.to_owned(),
     };
-    let view = read_index(&root)?.ok_or_else(|| invalid("the root holds no family index"))?;
-    if view.family_id.as_str() != pointer.family_id {
-        return Err(invalid("the root holds another family's index"));
+    // A root that holds no index, or another family's, invalidates the
+    // pointer. An index this store cannot decode does not: the pointer
+    // still names this root, and the refusal belongs to whoever reads it.
+    match read_index(&root) {
+        Ok(Some(view)) if view.family_id.as_str() == pointer.family_id => {}
+        Ok(Some(_)) => return Err(invalid("the root holds another family's index")),
+        Ok(None) => return Err(invalid("the root holds no family index")),
+        Err(StoreError::Malformed { .. } | StoreError::Oversize { .. }) => {}
+        Err(error) => return Err(error),
     }
-    Ok(FamilyObservation::Family {
-        root,
-        source: FamilySource::Pointer,
-        view,
-    })
+    Ok(Some((root, FamilySource::Pointer)))
+}
+
+/// Observe a workspace's family without writing anything, the lock file
+/// included.
+fn observe(workspace: &Path) -> Result<FamilyObservation, StoreError> {
+    let Some((root, source)) = locate(workspace)? else {
+        return Ok(FamilyObservation::NoFamily);
+    };
+    let view = read_index(&root)?.ok_or_else(|| StoreError::NoFamily {
+        workspace: workspace.to_path_buf(),
+    })?;
+    Ok(FamilyObservation::Family { root, source, view })
 }
 
 fn index_state(workspace: &Path) -> Result<FileState, StoreError> {

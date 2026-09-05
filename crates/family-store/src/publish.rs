@@ -62,10 +62,23 @@ pub(crate) fn encoded_size(path: &Path) -> io::Result<u64> {
 
 /// Create `directory` if it is missing, creating nothing above it: the
 /// orchestrator allocates the workspace, the store owns only `.gwz/`.
+/// Something already at that path which is not a directory is an error, not
+/// a success: the store neither replaces nor writes through it.
 pub(crate) fn ensure_metadata_directory(directory: &Path) -> io::Result<()> {
     match fs::create_dir(directory) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            if fs::symlink_metadata(directory)?.is_dir() {
+                return Ok(());
+            }
+            Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                format!(
+                    "{} is not a directory, so the family metadata cannot live there",
+                    directory.display()
+                ),
+            ))
+        }
         Err(error) => Err(error),
     }
 }
@@ -225,6 +238,20 @@ mod tests {
         ensure_metadata_directory(&metadata).unwrap();
         ensure_metadata_directory(&metadata).unwrap();
         assert!(metadata.is_dir());
+    }
+
+    #[test]
+    fn something_that_is_not_a_directory_where_the_metadata_belongs_is_an_error() {
+        let temp = temp();
+        let occupied = temp.path().join(".gwz");
+        publish(&occupied, b"not a directory").unwrap();
+        let error = ensure_metadata_directory(&occupied).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotADirectory, "{error:?}");
+        assert_eq!(
+            fs::read(&occupied).unwrap(),
+            b"not a directory",
+            "and it is retained, not replaced"
+        );
     }
 
     #[test]

@@ -544,3 +544,100 @@ fn partial_is_reported_only_once_an_effect_has_landed() {
         other => panic!("a landed effect makes it Partial, got {other:?}"),
     }
 }
+
+#[test]
+fn a_family_whose_index_is_malformed_is_still_lockable_and_the_reread_refuses() {
+    // A store that refused the lock here would leave nothing able to
+    // address the family at all: the refusal belongs to `reread` under the
+    // lock, exactly where the reference fake puts it.
+    let family = Family::founded();
+    let path = family.root.join(INDEX_RELATIVE_PATH);
+    fs::write(&path, b"schema: [unterminated\n").unwrap();
+    let mut session = family
+        .store
+        .try_lock(&FamilyLocation::new(&family.root))
+        .expect("a malformed index does not deny the lock");
+    assert_eq!(session.root(), family.root);
+    match session.reread() {
+        Err(StoreError::Malformed { path: reported, .. }) => assert_eq!(reported, path),
+        other => panic!("the reread carries the refusal, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            family.store.read_view(&FamilyLocation::new(&family.root)),
+            Err(StoreError::Malformed { .. })
+        ),
+        "and a read refuses rather than pretending there is no family"
+    );
+}
+
+#[test]
+fn founding_at_a_workspace_that_already_holds_a_pointer_refuses() {
+    let family = Family::founded();
+    let clone = family.root.join("../ws-A");
+    fs::create_dir_all(clone.join(".gwz")).unwrap();
+    fs::write(
+        clone.join(POINTER_RELATIVE_PATH),
+        format!(
+            "schema: gwz.family-root/v1\nfamily_id: fam_store\nroot_path: {}\n",
+            family.root.display()
+        ),
+    )
+    .unwrap();
+    let mut session = family
+        .store
+        .try_lock(&FamilyLocation::new(&clone))
+        .expect("the clone locks its root");
+    assert_eq!(session.root(), family.root, "a clone locks its root");
+    // Founding at the *root* of that family refuses: an index is there.
+    match session.found(
+        FamilyId::new("fam_second").unwrap(),
+        AllocationId::new("alloc_second").unwrap(),
+    ) {
+        Err(StoreError::ConflictingMetadata { workspace }) => assert_eq!(workspace, family.root),
+        other => panic!("founding over an index refuses, got {other:?}"),
+    }
+    // And a pointer that appears at the root *after* the lock was taken
+    // refuses too: `found` rereads under the lock rather than trusting what
+    // `try_lock` saw.
+    let fresh = family.root.join("../unfounded");
+    fs::create_dir_all(&fresh).unwrap();
+    let mut session = family
+        .store
+        .try_lock(&FamilyLocation::new(&fresh))
+        .expect("an unfounded workspace locks itself");
+    fs::create_dir_all(fresh.join(".gwz")).unwrap();
+    fs::write(
+        fresh.join(POINTER_RELATIVE_PATH),
+        format!(
+            "schema: gwz.family-root/v1\nfamily_id: fam_store\nroot_path: {}\n",
+            family.root.display()
+        ),
+    )
+    .unwrap();
+    match session.found(
+        FamilyId::new("fam_second").unwrap(),
+        AllocationId::new("alloc_second").unwrap(),
+    ) {
+        Err(StoreError::ConflictingMetadata { workspace }) => assert_eq!(workspace, fresh),
+        other => panic!("founding where a pointer stands refuses, got {other:?}"),
+    }
+    assert!(
+        !fresh.join(INDEX_RELATIVE_PATH).exists(),
+        "the refusal wrote no index"
+    );
+}
+
+#[test]
+fn a_clone_whose_pointer_cannot_be_decoded_refuses_as_malformed() {
+    let family = Family::founded();
+    let clone = family.root.join("../ws-A");
+    fs::create_dir_all(clone.join(".gwz")).unwrap();
+    let pointer = clone.join(POINTER_RELATIVE_PATH);
+    fs::write(&pointer, b"schema: gwz.family-root/v1\nfamily_id: [\n").unwrap();
+    match family.store.read_view(&FamilyLocation::new(&clone)) {
+        Err(StoreError::Malformed { path, .. }) => assert_eq!(path, pointer),
+        other => panic!("an undecodable pointer refuses, got {other:?}"),
+    }
+    assert!(pointer.is_file(), "the file is retained for inspection");
+}
