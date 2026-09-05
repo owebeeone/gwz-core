@@ -43,6 +43,27 @@ fn fetch_anonymous_imports_an_explicit_refspec_without_persisting_a_remote() {
         backend.remotes(&receiver).unwrap().is_empty(),
         "no named remote is persisted"
     );
+    // LCM1.0c-fu1 (Code round-2 residual): an anonymous remote carries no
+    // fetchspec of its own, so the explicit refspec is the only ref the fetch
+    // may update -- no `refs/remotes/<name>/*` tracking ref appears. True by
+    // construction in libgit2 (`create_internal` adds the default fetchspec
+    // only for a NAMED remote); pinned here so a change fails loudly.
+    let tracking_refs: Vec<String> = git2::Repository::open(&receiver)
+        .unwrap()
+        .references_glob("refs/remotes/*")
+        .unwrap()
+        .map(|reference| {
+            reference
+                .expect("list references")
+                .name()
+                .expect("a utf-8 reference name")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        tracking_refs.is_empty(),
+        "the anonymous fetch updates no origin tracking ref: {tracking_refs:?}"
+    );
     // LCM1.0c-rem1 (State P2-1 / Code P3-4): `FETCH_HEAD` is MEASURED, not
     // described. The record planted before the fetch distinguishes "left
     // alone" from "absent because nothing was ever there". Measured on

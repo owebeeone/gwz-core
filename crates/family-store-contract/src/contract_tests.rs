@@ -9,12 +9,12 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
 use gwz_family_model::{
     AllocationId, FamilyChange, FamilyId, FamilyView, MAX_ENCODED_INDEX_BYTES, MemberName,
-    MemberState, validate_transition,
+    MemberRow, MemberState, validate_transition,
 };
 
 use crate::{
@@ -22,13 +22,25 @@ use crate::{
     MetadataEffect, StoreError, StoreOperation,
 };
 
-/// What the suite needs from an implementation's fixture: fresh locations
-/// and the ability to observe or corrupt the on-disk (or in-memory) state.
+/// What the suite needs from an implementation's fixture: fresh locations,
+/// materialised member workspaces, and the ability to observe or corrupt the
+/// on-disk (or in-memory) state.
 pub trait StoreFixture {
     type Store: FamilyStore;
 
-    /// A store plus a fresh root location holding no family.
+    /// A store plus a fresh root location holding no family. The suite
+    /// records member rows at `../<name>` (siblings of the root), so the
+    /// root's parent must be fixture-private.
     fn fresh_root(&mut self) -> (Self::Store, FamilyLocation);
+    /// The workspace at `relative` (root-relative, spelled as a member row
+    /// spells its path), materialised the way the orchestrator allocates a
+    /// destination before the store writes into it (design §3 step 2;
+    /// LCM1.0c-fu1, Code C2-P3-1): a filesystem fixture `create_dir_all`s the
+    /// directory and returns the join; the in-memory fake returns the join.
+    /// The suite hands the returned path to `install_pointer` verbatim, so
+    /// the store's own resolution -- not the fixture's -- decides that it is
+    /// the row's path.
+    fn member_workspace(&mut self, root: &Path, relative: &str) -> PathBuf;
     /// Whether the family lock artifact exists at `root`.
     fn lock_artifact_exists(&self, root: &Path) -> bool;
     /// Make the index at `root` undecodable.
@@ -62,25 +74,26 @@ pub fn run_all<F: StoreFixture>(fixture: &mut F) {
     installing_a_pointer_into_a_destination_holding_an_index_conflicts(fixture);
     installing_a_pointer_over_another_familys_pointer_is_pointer_target_invalid(fixture);
     removing_the_row_before_the_pointer_is_refused_and_leaves_no_orphan(fixture);
+    // LCM1.0c-fu1 (State S2-P3-1, Code C2-P3-2): the destination is the
+    // row's recorded path, resolved by the store itself, in every derivation;
+    // and the ordering refusal covers `Disband` as well as `RemoveRow`.
+    installing_a_pointer_anywhere_but_the_rows_path_is_refused_without_effects(fixture);
+    a_pointer_installed_through_a_non_canonical_spelling_is_the_rows_pointer(fixture);
+    disbanding_before_the_pointers_is_refused_and_leaves_no_orphan(fixture);
 }
 
-/// The destination a `creating` member records; `install_pointer` writes the
-/// marker and pointer there. Rooted under the family root so the fake and a
-/// real store agree on the path the row resolves to.
-fn destination_of(root: &Path, relative: &str) -> PathBuf {
-    root.join(relative)
+/// A founded family holding one `creating` member `A` at `../ws-A`, under a
+/// held session.
+struct Founded<S: FamilyStore> {
+    store: S,
+    session: S::Session,
+    root: PathBuf,
+    name: MemberName,
+    /// `A`'s destination as the fixture materialised it (`<root>/../ws-A`).
+    destination: PathBuf,
 }
 
-/// Found a family and allocate one `creating` member `A` at `../ws-A`,
-/// returning the held session, the member name and its destination.
-fn founded_with_a_creating_member<F: StoreFixture>(
-    fixture: &mut F,
-) -> (
-    <F::Store as FamilyStore>::Session,
-    PathBuf,
-    MemberName,
-    PathBuf,
-) {
+fn founded_with_a_creating_member<F: StoreFixture>(fixture: &mut F) -> Founded<F::Store> {
     let (store, location) = fixture.fresh_root();
     let (family_id, root_allocation) = family();
     let mut session = store.try_lock(&location).expect("lock is free");
@@ -93,12 +106,30 @@ fn founded_with_a_creating_member<F: StoreFixture>(
         })
         .unwrap();
     let root = session.root().to_path_buf();
-    let destination = destination_of(&root, "../ws-A");
-    (session, root, name, destination)
+    let destination = fixture.member_workspace(&root, "../ws-A");
+    Founded {
+        store,
+        session,
+        root,
+        name,
+        destination,
+    }
+}
+
+fn keep(name: &MemberName) -> FamilyChange {
+    FamilyChange::RemoveRow {
+        name: name.clone(),
+        reason: gwz_family_model::RemovalReason::Keep,
+    }
 }
 
 pub fn installing_a_pointer_writes_the_marker_before_the_pointer<F: StoreFixture>(fixture: &mut F) {
-    let (mut session, _root, name, destination) = founded_with_a_creating_member(fixture);
+    let Founded {
+        mut session,
+        name,
+        destination,
+        ..
+    } = founded_with_a_creating_member(fixture);
     let applied = session.install_pointer(&name, &destination).unwrap();
     assert_eq!(
         applied.effects,
@@ -117,19 +148,13 @@ pub fn installing_a_pointer_writes_the_marker_before_the_pointer<F: StoreFixture
 pub fn a_failed_pointer_write_reports_partial_with_the_marker_completed<F: StoreFixture>(
     fixture: &mut F,
 ) {
-    let (store, location) = fixture.fresh_root();
-    let (family_id, root_allocation) = family();
-    let mut session = store.try_lock(&location).unwrap();
-    session.found(family_id, root_allocation).unwrap();
-    let name = MemberName::parse("A").unwrap();
-    session
-        .apply(&FamilyChange::Allocate {
-            name: name.clone(),
-            row: creating_row("../ws-A"),
-        })
-        .unwrap();
-    let root = session.root().to_path_buf();
-    let destination = destination_of(&root, "../ws-A");
+    let Founded {
+        mut session,
+        root,
+        name,
+        destination,
+        ..
+    } = founded_with_a_creating_member(fixture);
     fixture.fail_next(&root, StoreOperation::WritePointer);
     match session.install_pointer(&name, &destination) {
         Err(StoreError::Partial {
@@ -156,7 +181,12 @@ pub fn a_failed_pointer_write_reports_partial_with_the_marker_completed<F: Store
 pub fn remove_pointer_is_repeatable_and_the_second_call_reports_no_effects<F: StoreFixture>(
     fixture: &mut F,
 ) {
-    let (mut session, _root, name, destination) = founded_with_a_creating_member(fixture);
+    let Founded {
+        mut session,
+        name,
+        destination,
+        ..
+    } = founded_with_a_creating_member(fixture);
     session.install_pointer(&name, &destination).unwrap();
     let removed = session.remove_pointer(&name).unwrap();
     assert!(
@@ -175,10 +205,35 @@ pub fn remove_pointer_is_repeatable_and_the_second_call_reports_no_effects<F: St
 pub fn installing_a_pointer_into_a_destination_holding_an_index_conflicts<F: StoreFixture>(
     fixture: &mut F,
 ) {
-    let (mut session, root, name, _destination) = founded_with_a_creating_member(fixture);
-    // The root itself holds this family's index; installing a pointer there
-    // would make one workspace hold both an index and a pointer.
-    match session.install_pointer(&name, &root) {
+    // Family one records member `B` at `../root-two`, where family two has
+    // been founded: the row's OWN destination holds an index, so installing
+    // the pointer would make one workspace hold both an index and a pointer.
+    // (LCM1.0c-fu1, State S2-P3-1: the destination must be the row's path,
+    // so the conflicting directory is reached through a row, not by handing
+    // `install_pointer` the root.)
+    let Founded {
+        store,
+        mut session,
+        root,
+        ..
+    } = founded_with_a_creating_member(fixture);
+    let root_two = fixture.member_workspace(&root, "../root-two");
+    store
+        .try_lock(&FamilyLocation::new(&root_two))
+        .unwrap()
+        .found(
+            FamilyId::new("fam_two").unwrap(),
+            AllocationId::new("alloc_two").unwrap(),
+        )
+        .unwrap();
+    let b = MemberName::parse("B").unwrap();
+    session
+        .apply(&FamilyChange::Allocate {
+            name: b.clone(),
+            row: creating_row("../root-two"),
+        })
+        .unwrap();
+    match session.install_pointer(&b, &root_two) {
         Err(StoreError::ConflictingMetadata { .. }) => {}
         other => panic!("a destination holding an index must conflict, got {other:?}"),
     }
@@ -189,29 +244,22 @@ pub fn installing_a_pointer_over_another_familys_pointer_is_pointer_target_inval
 >(
     fixture: &mut F,
 ) {
-    let (store, location) = fixture.fresh_root();
-    // Family one, member A at ../ws-A, pointer installed.
-    let mut first = store.try_lock(&location).unwrap();
-    first
-        .found(
-            FamilyId::new("fam_one").unwrap(),
-            AllocationId::new("alloc_one").unwrap(),
-        )
-        .unwrap();
-    let a = MemberName::parse("A").unwrap();
-    first
-        .apply(&FamilyChange::Allocate {
-            name: a.clone(),
-            row: creating_row("../ws-A"),
-        })
-        .unwrap();
-    let root_one = first.root().to_path_buf();
-    let shared = destination_of(&root_one, "../ws-A");
+    // Family one installs `A`'s pointer at its own recorded destination.
+    let Founded {
+        store,
+        session: mut first,
+        root: root_one,
+        name: a,
+        destination: shared,
+    } = founded_with_a_creating_member(fixture);
     first.install_pointer(&a, &shared).unwrap();
     drop(first);
 
-    // Family two at a sibling root, member B recorded at the SAME destination.
-    let root_two = root_one.join("../root-two");
+    // Family two at a sibling root records `B` at `../ws-A` as well: the same
+    // directory, reached through family two's own root (`<root-two>/../ws-A`)
+    // -- `B`'s recorded path, not a divergent destination (LCM1.0c-fu1, State
+    // S2-P3-1). That destination already holds family one's pointer.
+    let root_two = fixture.member_workspace(&root_one, "../root-two");
     let mut second = store.try_lock(&FamilyLocation::new(&root_two)).unwrap();
     second
         .found(
@@ -226,8 +274,8 @@ pub fn installing_a_pointer_over_another_familys_pointer_is_pointer_target_inval
             row: creating_row("../ws-A"),
         })
         .unwrap();
-    // The destination already holds family one's pointer.
-    match second.install_pointer(&b, &shared) {
+    let own = fixture.member_workspace(&root_two, "../ws-A");
+    match second.install_pointer(&b, &own) {
         Err(StoreError::PointerTargetInvalid { .. }) => {}
         other => panic!("a destination pointing at another family must refuse, got {other:?}"),
     }
@@ -239,25 +287,30 @@ pub fn removing_the_row_before_the_pointer_is_refused_and_leaves_no_orphan<F: St
     // State P2-2: the orphaning order (remove the row before its pointer) is
     // refused by the store, so a pointer whose row is gone is never produced;
     // and the required order (pointer first) leaves no orphan.
-    let (mut session, root, name, destination) = founded_with_a_creating_member(fixture);
+    let Founded {
+        mut session,
+        name,
+        destination,
+        ..
+    } = founded_with_a_creating_member(fixture);
     session.install_pointer(&name, &destination).unwrap();
 
     // Removing the row while its pointer stands is refused.
-    match session.apply(&FamilyChange::RemoveRow {
-        name: name.clone(),
-        reason: gwz_family_model::RemovalReason::Keep,
-    }) {
-        Err(StoreError::PointerStillInstalled { .. }) => {}
+    match session.apply(&keep(&name)) {
+        Err(StoreError::PointerStillInstalled { member, .. }) => {
+            assert_eq!(
+                member, "A",
+                "the refusal names the row whose pointer stands"
+            );
+        }
         other => panic!("removing a row before its pointer must be refused, got {other:?}"),
     }
     // The row and its pointer both still stand: nothing was orphaned.
-    let view = session.reread().unwrap().expect("index remains");
+    let view = session
+        .reread()
+        .unwrap()
+        .expect("the family index is intact");
     assert!(view.members.contains_key(&name), "the row is untouched");
-    match session.reread() {
-        Ok(Some(_)) => {}
-        other => panic!("the family index is intact: {other:?}"),
-    }
-    let _ = root;
 
     // The required order leaves no orphan: pointer first, then the row.
     let removed = session.remove_pointer(&name).unwrap();
@@ -268,10 +321,7 @@ pub fn removing_the_row_before_the_pointer_is_refused_and_leaves_no_orphan<F: St
         "the pointer is removed first"
     );
     session
-        .apply(&FamilyChange::RemoveRow {
-            name: name.clone(),
-            reason: gwz_family_model::RemovalReason::Keep,
-        })
+        .apply(&keep(&name))
         .expect("removing the row after its pointer succeeds");
     assert!(
         !session
@@ -282,6 +332,130 @@ pub fn removing_the_row_before_the_pointer_is_refused_and_leaves_no_orphan<F: St
             .contains_key(&name),
         "the row is gone and no pointer was stranded"
     );
+}
+
+pub fn installing_a_pointer_anywhere_but_the_rows_path_is_refused_without_effects<
+    F: StoreFixture,
+>(
+    fixture: &mut F,
+) {
+    // LCM1.0c-fu1 (State S2-P3-1): the destination is not a free argument. A
+    // pointer installed anywhere but the store's own resolution of the row's
+    // recorded path would be unreachable by `remove_pointer` and invisible to
+    // the RemoveRow/Disband guard -- the S-P2-2 orphan by another door -- so
+    // the store refuses before any effect.
+    let Founded {
+        store,
+        mut session,
+        root,
+        name,
+        destination,
+    } = founded_with_a_creating_member(fixture);
+    let elsewhere = fixture.member_workspace(&root, "../ws-elsewhere");
+    match session.install_pointer(&name, &elsewhere) {
+        Err(StoreError::PathMismatch { member, .. }) => {
+            assert_eq!(member, "A", "the refusal names the member");
+        }
+        other => panic!(
+            "a destination other than the row's recorded path must be refused as \
+             PathMismatch, got {other:?}"
+        ),
+    }
+    // Nothing was written at either path...
+    assert_eq!(
+        store.read_view(&FamilyLocation::new(&elsewhere)).unwrap(),
+        FamilyObservation::NoFamily,
+        "nothing was written at the divergent destination"
+    );
+    assert_eq!(
+        store.read_view(&FamilyLocation::new(&destination)).unwrap(),
+        FamilyObservation::NoFamily,
+        "nothing was written at the row's path either"
+    );
+    let removed = session.remove_pointer(&name).unwrap();
+    assert!(
+        removed.effects.is_empty(),
+        "there is no pointer to remove: {removed:?}"
+    );
+    // ...so the row is not protected by a pointer and may be removed.
+    session
+        .apply(&keep(&name))
+        .expect("no pointer stands, so the row may be removed");
+}
+
+pub fn a_pointer_installed_through_a_non_canonical_spelling_is_the_rows_pointer<F: StoreFixture>(
+    fixture: &mut F,
+) {
+    // LCM1.0c-fu1 (State S2-P3-1) closure: `install_pointer`'s destination
+    // check, `remove_pointer` and the RemoveRow/Disband guard resolve the
+    // row's path the same way, so a pointer installed through ANY spelling of
+    // that path is the one `remove_pointer` finds and the one that protects
+    // the row. A store whose three derivations disagree strands the pointer
+    // here, in the suite, instead of in a user's family.
+    let Founded {
+        mut session,
+        root,
+        name,
+        ..
+    } = founded_with_a_creating_member(fixture);
+    let spelled = root.join("./../ws-A");
+    let applied = session.install_pointer(&name, &spelled).unwrap();
+    assert_eq!(
+        applied.effects.len(),
+        2,
+        "the non-canonical spelling of the row's path is accepted: {applied:?}"
+    );
+    match session.apply(&keep(&name)) {
+        Err(StoreError::PointerStillInstalled { member, .. }) => {
+            assert_eq!(member, "A", "the guard sees the pointer through the row");
+        }
+        other => panic!("the row is protected by the pointer it reaches, got {other:?}"),
+    }
+    let removed = session.remove_pointer(&name).unwrap();
+    assert!(
+        removed
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, MetadataEffect::PointerRemoved { .. })),
+        "remove_pointer finds the pointer installed through the other spelling: {removed:?}"
+    );
+    session
+        .apply(&keep(&name))
+        .expect("with the pointer gone the row may be removed");
+}
+
+pub fn disbanding_before_the_pointers_is_refused_and_leaves_no_orphan<F: StoreFixture>(
+    fixture: &mut F,
+) {
+    // LCM1.0c-fu1 (Code C2-P3-2): the second path of the State P2-2 hazard.
+    // Disbanding removes the index, so a pointer still installed at that
+    // moment would have no row to reach it through; the store refuses until
+    // every pointer of the family is gone, then disbands.
+    let Founded {
+        mut session,
+        name,
+        destination,
+        ..
+    } = founded_with_a_creating_member(fixture);
+    session.install_pointer(&name, &destination).unwrap();
+    match session.apply(&FamilyChange::Disband) {
+        Err(StoreError::PointerStillInstalled { member, .. }) => {
+            assert_eq!(
+                member, "A",
+                "the refusal names the member whose pointer stands"
+            );
+        }
+        other => panic!("disbanding before the pointers must be refused, got {other:?}"),
+    }
+    let view = session.reread().unwrap().expect("the index is intact");
+    assert!(view.members.contains_key(&name), "the row is untouched");
+
+    session.remove_pointer(&name).unwrap();
+    let disbanded = session
+        .apply(&FamilyChange::Disband)
+        .expect("disband succeeds once the pointers are gone");
+    assert_eq!(disbanded.effects, vec![MetadataEffect::IndexRemoved]);
+    assert_eq!(session.reread().unwrap(), None, "the index is gone");
 }
 
 fn family() -> (FamilyId, AllocationId) {
@@ -429,7 +603,32 @@ pub fn malformed_and_oversize_indexes_refuse<F: StoreFixture>(fixture: &mut F) {
     }
 }
 
-/// In-memory family state shared by a store and its sessions.
+/// The fake's own resolution of a workspace path (the contract's "one
+/// canonical resolution", call-order clause): lexical, so `<root>/../ws-A`,
+/// `<root>/./../ws-A` and `<root>/../root-two/../ws-A` are one key. A
+/// filesystem store canonicalises through the filesystem instead; what the
+/// contract requires is that one resolution serves `install_pointer`'s
+/// destination check, `remove_pointer` and the `RemoveRow`/`Disband` guard.
+fn resolve(path: &Path) -> PathBuf {
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match resolved.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    resolved.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => resolved.push(".."),
+            },
+            other => resolved.push(other),
+        }
+    }
+    resolved
+}
+
+/// In-memory family state shared by a store and its sessions. Every key is
+/// a [`resolve`]d workspace path.
 #[derive(Debug, Default)]
 struct Families {
     /// Root workspace -> its index, when founded.
@@ -472,28 +671,24 @@ impl InMemoryFamilyStore {
     }
 
     pub fn lock_file_exists(&self, root: &Path) -> bool {
-        self.families
-            .borrow()
-            .lock_files
-            .iter()
-            .any(|path| path == root)
+        self.families.borrow().lock_files.contains(&resolve(root))
     }
 
     pub fn corrupt_index(&self, root: &Path) {
         self.families
             .borrow_mut()
             .indexes
-            .insert(root.to_path_buf(), IndexState::Malformed);
+            .insert(resolve(root), IndexState::Malformed);
     }
 
     pub fn oversize_index(&self, root: &Path) {
         self.families.borrow_mut().indexes.insert(
-            root.to_path_buf(),
+            resolve(root),
             IndexState::Oversize(MAX_ENCODED_INDEX_BYTES + 1),
         );
     }
 
-    /// Clone pointers currently written (workspace -> root).
+    /// Clone pointers currently written (resolved workspace -> root).
     pub fn pointers(&self) -> BTreeMap<PathBuf, PathBuf> {
         self.families
             .borrow()
@@ -516,14 +711,13 @@ impl InMemoryFamilyStore {
         &self,
         workspace: &Path,
     ) -> Result<Option<(PathBuf, FamilySource)>, StoreError> {
+        let workspace = resolve(workspace);
         let families = self.families.borrow();
-        let has_index = families.indexes.contains_key(workspace);
-        let pointer = families.pointers.get(workspace).cloned();
+        let has_index = families.indexes.contains_key(&workspace);
+        let pointer = families.pointers.get(&workspace).cloned();
         match (has_index, pointer) {
-            (true, Some(_)) => Err(StoreError::ConflictingMetadata {
-                workspace: workspace.to_path_buf(),
-            }),
-            (true, None) => Ok(Some((workspace.to_path_buf(), FamilySource::Index))),
+            (true, Some(_)) => Err(StoreError::ConflictingMetadata { workspace }),
+            (true, None) => Ok(Some((workspace, FamilySource::Index))),
             (false, Some((family_id, root))) => match families.indexes.get(&root) {
                 Some(IndexState::Valid(view)) if view.family_id == family_id => {
                     Ok(Some((root, FamilySource::Pointer)))
@@ -548,7 +742,7 @@ impl InMemoryFamilyStore {
             });
         }
         let families = self.families.borrow();
-        match families.indexes.get(root) {
+        match families.indexes.get(&resolve(root)) {
             None => Ok(None),
             Some(IndexState::Valid(view)) => Ok(Some(view.clone())),
             Some(IndexState::Malformed) => Err(StoreError::Malformed {
@@ -582,7 +776,7 @@ impl FamilyStore for InMemoryFamilyStore {
     fn try_lock(&self, location: &FamilyLocation) -> Result<Self::Session, StoreError> {
         let root = match self.resolve_root(&location.workspace)? {
             Some((root, _)) => root,
-            None => location.workspace.clone(),
+            None => resolve(&location.workspace),
         };
         if self.take_failure(StoreOperation::Lock) {
             return Err(StoreError::Io {
@@ -617,6 +811,27 @@ pub struct InMemorySession {
 }
 
 impl InMemorySession {
+    /// A row's recorded path resolved against the root, as the effects and
+    /// refusals spell it.
+    fn recorded_workspace(&self, row: &MemberRow) -> PathBuf {
+        self.root.join(&row.path)
+    }
+
+    /// The one derivation `install_pointer`'s destination check,
+    /// `remove_pointer` and the `RemoveRow`/`Disband` guard share: the row's
+    /// recorded path, when this family's pointer stands there.
+    fn installed_pointer_of(&self, view: &FamilyView, row: &MemberRow) -> Option<PathBuf> {
+        let workspace = self.recorded_workspace(row);
+        let stands = self
+            .store
+            .families
+            .borrow()
+            .pointers
+            .get(&resolve(&workspace))
+            .is_some_and(|(family_id, _)| *family_id == view.family_id);
+        stands.then_some(workspace)
+    }
+
     fn write_index(&self, view: Option<FamilyView>) -> Result<MetadataEffect, StoreError> {
         let (operation, effect) = match &view {
             Some(_) => (StoreOperation::WriteIndex, MetadataEffect::IndexWritten),
@@ -709,45 +924,27 @@ impl FamilySession for InMemorySession {
         // may not be disbanded, while a clone pointer this family installed is
         // still present -- that order strands a pointer with no row to reach
         // it through. Refuse it, so the store never silently accepts the
-        // orphaning order.
-        match change {
-            FamilyChange::RemoveRow { name, .. } => {
-                if let Some(row) = current.members.get(name) {
-                    let workspace = self.root.join(&row.path);
-                    let stranded = self
-                        .store
-                        .families
-                        .borrow()
-                        .pointers
-                        .get(&workspace)
-                        .is_some_and(|(family_id, _)| *family_id == current.family_id);
-                    if stranded {
-                        return Err(StoreError::PointerStillInstalled {
-                            member: name.as_str().to_owned(),
-                            workspace,
-                        });
-                    }
-                }
-            }
-            FamilyChange::Disband => {
-                let stranded = self
-                    .store
-                    .families
-                    .borrow()
-                    .pointers
-                    .iter()
-                    .find(|(_, (family_id, root))| {
-                        *family_id == current.family_id && *root == self.root
-                    })
-                    .map(|(workspace, _)| workspace.clone());
-                if let Some(workspace) = stranded {
-                    return Err(StoreError::PointerStillInstalled {
-                        member: "*".to_owned(),
-                        workspace,
-                    });
-                }
-            }
-            _ => {}
+        // orphaning order. Both arms derive the pointer from the ROW (its
+        // recorded path, resolved as `install_pointer` resolved it), which is
+        // the only derivation a filesystem store has (LCM1.0c-fu1, State
+        // S2-P3-1 / Code C2-P3-2).
+        let stranded = match change {
+            FamilyChange::RemoveRow { name, .. } => current
+                .members
+                .get(name)
+                .and_then(|row| self.installed_pointer_of(&current, row))
+                .map(|workspace| (name.clone(), workspace)),
+            FamilyChange::Disband => current.members.iter().find_map(|(name, row)| {
+                self.installed_pointer_of(&current, row)
+                    .map(|workspace| (name.clone(), workspace))
+            }),
+            _ => None,
+        };
+        if let Some((member, workspace)) = stranded {
+            return Err(StoreError::PointerStillInstalled {
+                member: member.as_str().to_owned(),
+                workspace,
+            });
         }
         let validated = validate_transition(&current, change)?;
         let next = match change {
@@ -781,14 +978,26 @@ impl FamilySession for InMemorySession {
             }
             .into());
         }
+        // LCM1.0c-fu1 (State S2-P3-1): the destination must resolve to the
+        // row's recorded path -- any spelling of it, nothing else -- so the
+        // pointer written here is the one `remove_pointer` and the guard find.
+        let recorded = self.recorded_workspace(row);
+        let key = resolve(destination);
+        if key != resolve(&recorded) {
+            return Err(StoreError::PathMismatch {
+                member: name.as_str().to_owned(),
+                recorded,
+                requested: destination.to_path_buf(),
+            });
+        }
         {
             let families = self.store.families.borrow();
-            if families.indexes.contains_key(destination) {
+            if families.indexes.contains_key(&key) {
                 return Err(StoreError::ConflictingMetadata {
                     workspace: destination.to_path_buf(),
                 });
             }
-            if let Some((family_id, _)) = families.pointers.get(destination)
+            if let Some((family_id, _)) = families.pointers.get(&key)
                 && *family_id != view.family_id
             {
                 return Err(StoreError::PointerTargetInvalid {
@@ -810,7 +1019,7 @@ impl FamilySession for InMemorySession {
             .families
             .borrow_mut()
             .markers
-            .insert(destination.to_path_buf(), row.allocation_id.clone());
+            .insert(key.clone(), row.allocation_id.clone());
         effects.push(MetadataEffect::MarkerWritten {
             workspace: destination.to_path_buf(),
         });
@@ -822,10 +1031,11 @@ impl FamilySession for InMemorySession {
                 detail: "scripted pointer failure".to_owned(),
             });
         }
-        self.store.families.borrow_mut().pointers.insert(
-            destination.to_path_buf(),
-            (view.family_id.clone(), self.root.clone()),
-        );
+        self.store
+            .families
+            .borrow_mut()
+            .pointers
+            .insert(key, (view.family_id.clone(), self.root.clone()));
         effects.push(MetadataEffect::PointerWritten {
             workspace: destination.to_path_buf(),
         });
@@ -843,20 +1053,21 @@ impl FamilySession for InMemorySession {
             .members
             .get(name)
             .ok_or_else(|| gwz_family_model::Refusal::NotFound { name: name.clone() })?;
-        let workspace = self.root.join(&row.path);
+        let workspace = self.recorded_workspace(row);
+        let key = resolve(&workspace);
         let mut effects = Vec::new();
         let mut families = self.store.families.borrow_mut();
         let matches = families
             .pointers
-            .get(&workspace)
+            .get(&key)
             .is_some_and(|(family_id, _)| *family_id == view.family_id);
         if matches {
-            families.pointers.remove(&workspace);
+            families.pointers.remove(&key);
             effects.push(MetadataEffect::PointerRemoved {
                 workspace: workspace.clone(),
             });
         }
-        if families.markers.remove(&workspace).is_some() {
+        if families.markers.remove(&key).is_some() {
             effects.push(MetadataEffect::MarkerRemoved { workspace });
         }
         drop(families);
@@ -893,6 +1104,11 @@ impl StoreFixture for InMemoryFixture {
         (store, FamilyLocation::new(root))
     }
 
+    fn member_workspace(&mut self, root: &Path, relative: &str) -> PathBuf {
+        // Nothing to materialise: the fake's workspaces are map keys.
+        root.join(relative)
+    }
+
     fn lock_artifact_exists(&self, root: &Path) -> bool {
         self.stores().any(|store| store.lock_file_exists(root))
     }
@@ -912,12 +1128,21 @@ impl StoreFixture for InMemoryFixture {
     fn fail_next(&mut self, root: &Path, operation: StoreOperation) {
         // Route to the store handed this root; the store queues the failure
         // for the next matching operation (a filesystem fixture would instead
-        // make the target path unwritable).
-        if let Some((_, store)) = self.roots.iter().find(|(handed, _)| handed == root) {
-            store.fail_next(operation);
-        } else if let Some((_, store)) = self.roots.last() {
-            store.fail_next(operation);
-        }
+        // make the target path unwritable). An unknown root is a suite bug,
+        // not a reason to script some other family's failure (LCM1.0c-fu1,
+        // Code round-2 residual).
+        let root = resolve(root);
+        let (_, store) = self
+            .roots
+            .iter()
+            .find(|(handed, _)| resolve(handed) == root)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fail_next: {} is not a root this fixture handed out",
+                    root.display()
+                )
+            });
+        store.fail_next(operation);
     }
 }
 
@@ -928,6 +1153,34 @@ mod tests {
     #[test]
     fn in_memory_store_satisfies_the_conformance_suite() {
         run_all(&mut InMemoryFixture::default());
+    }
+
+    #[test]
+    fn the_fakes_resolution_is_lexical_and_root_bounded() {
+        assert_eq!(
+            resolve(Path::new("/mem/root-1/../ws-A")),
+            Path::new("/mem/ws-A")
+        );
+        assert_eq!(
+            resolve(Path::new("/mem/root-1/./../ws-A")),
+            Path::new("/mem/ws-A")
+        );
+        assert_eq!(
+            resolve(Path::new("/mem/root-1/../root-two/../ws-A")),
+            Path::new("/mem/ws-A")
+        );
+        assert_eq!(resolve(Path::new("/a/../../b")), Path::new("/b"));
+        assert_eq!(resolve(Path::new("../x/../y")), Path::new("../y"));
+    }
+
+    #[test]
+    fn fail_next_on_a_root_the_fixture_never_handed_out_panics() {
+        let mut fixture = InMemoryFixture::default();
+        let _ = fixture.fresh_root();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fixture.fail_next(Path::new("/mem/never"), StoreOperation::WritePointer);
+        }));
+        assert!(outcome.is_err(), "an unknown root is refused, not rerouted");
     }
 
     #[test]

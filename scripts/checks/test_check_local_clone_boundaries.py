@@ -10,6 +10,7 @@ build, is the rejector.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -22,6 +23,65 @@ from pathlib import Path
 SCRIPT = Path(__file__).with_name("check_local_clone_boundaries.py")
 INVENTORY = Path(__file__).with_name("local_clone_inventory.json")
 ROOT = SCRIPT.parents[2]
+
+
+def load_gate():
+    """The checker as a module, for unit tests over `tier_a_unlocked`."""
+    spec = importlib.util.spec_from_file_location("check_local_clone_boundaries", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module  # dataclasses resolve their module here
+    spec.loader.exec_module(module)
+    return module
+
+
+# A Tier A loop in the shape of `.github/workflows/checked-artifact-boundary.yml`,
+# with the command itself wrapped across `\` continuations (State S2-P3-2:
+# a per-line matcher sees no line holding both `cargo test` and
+# `--manifest-path`).
+SPLIT_UNLOCKED_WORKFLOW = """\
+name: synthetic
+on: [push]
+jobs:
+  libraries:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Each library's Tier A command
+        run: |
+          # cargo test --manifest-path crates/x/Cargo.toml --lib --locked
+          for directory in alpha \\
+              alpha-contract; do
+            cargo test \\
+              --manifest-path "crates/$directory/Cargo.toml" \\
+              --lib
+          done
+"""
+
+SPLIT_LOCKED_WORKFLOW = SPLIT_UNLOCKED_WORKFLOW.replace(
+    "              --lib\n", "              --lib --locked\n"
+)
+
+SECOND_LOCKED_WORKFLOW = """\
+name: synthetic-two
+on: [push]
+jobs:
+  one-library:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: cargo test --locked --manifest-path crates/alpha/Cargo.toml --lib
+"""
+
+SECOND_UNLOCKED_WORKFLOW = SECOND_LOCKED_WORKFLOW.replace(" --locked", "")
+
+NO_TIER_A_WORKFLOW = """\
+name: synthetic-none
+on: [push]
+jobs:
+  root-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: cargo test --locked --lib
+"""
 
 
 def run(core: Path, inventory: Path = INVENTORY) -> subprocess.CompletedProcess[str]:
@@ -140,6 +200,23 @@ class SyntheticTree:
         path = self.core / "inventory.json"
         path.write_text(json.dumps(self.inventory, indent=1), encoding="utf-8")
         return path
+
+    def workflow(self, name: str, text: str) -> None:
+        directory = self.core / ".github" / "workflows"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_text(text, encoding="utf-8")
+
+    def third_party_alpha(self) -> None:
+        """`gwz-alpha` declares a third-party dependency (`tempfile`)."""
+        self.crate(
+            "gwz-alpha",
+            "alpha",
+            "implementation",
+            ["gwz-alpha-contract"],
+            ["tempfile"],
+            deps='gwz-alpha-contract = { path = "../alpha-contract" }\n'
+            'tempfile = "3"\n',
+        )
 
     def check(self) -> subprocess.CompletedProcess[str]:
         self.write_core_manifest()
@@ -412,6 +489,50 @@ class LocalCloneBoundaryTest(unittest.TestCase):
         result = tree.check()
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("locked Tier A step", result.stdout)
+
+    def test_tier_a_command_split_across_continuations_is_unlocked_and_refused(self) -> None:
+        # LCM1.0c-fu1 (State S2-P3-2): the workflow-parsing half of the
+        # S-P3-3 guard, with no inventory flag. A Tier A command wrapped
+        # across `\` continuations and carrying no `--locked` is unlocked --
+        # the guard stays armed -- so a declared third-party edge is refused.
+        gate = load_gate()
+        tree = SyntheticTree()
+        self.addCleanup(tree.cleanup)
+        tree.third_party_alpha()
+        tree.workflow("boundary.yml", SPLIT_UNLOCKED_WORKFLOW)
+        self.assertTrue(gate.tier_a_unlocked(tree.core, tree.inventory))
+        result = tree.check()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("declares third-party dependency 'tempfile'", result.stderr)
+        self.assertIn("runs unlocked", result.stderr)
+
+    def test_locked_on_every_tier_a_command_is_locked_and_anything_less_is_not(self) -> None:
+        # LCM1.0c-fu1 (State S2-P3-2): "locked" needs affirmative evidence on
+        # EVERY `cargo test ... --manifest-path` command in every workflow;
+        # anything the parser cannot establish counts as unlocked.
+        gate = load_gate()
+        tree = SyntheticTree()
+        self.addCleanup(tree.cleanup)
+        tree.third_party_alpha()
+        # No workflow at all while crates/ exists: unknown, hence unlocked.
+        self.assertTrue(gate.tier_a_unlocked(tree.core, tree.inventory))
+        # A workflow with no recognisable Tier A command: unknown, unlocked.
+        tree.workflow("none.yml", NO_TIER_A_WORKFLOW)
+        self.assertTrue(gate.tier_a_unlocked(tree.core, tree.inventory))
+        # `--locked` on the wrapped command and on a second workflow's command:
+        # locked, and the gate admits the third-party edge with its note.
+        tree.workflow("boundary.yml", SPLIT_LOCKED_WORKFLOW)
+        tree.workflow("second.yml", SECOND_LOCKED_WORKFLOW)
+        self.assertFalse(gate.tier_a_unlocked(tree.core, tree.inventory))
+        result = tree.check()
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("locked Tier A step", result.stdout)
+        # One unlocked command anywhere -- even after a locked one -- unlocks.
+        tree.workflow("second.yml", SECOND_UNLOCKED_WORKFLOW)
+        self.assertTrue(gate.tier_a_unlocked(tree.core, tree.inventory))
+        result = tree.check()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("runs unlocked", result.stderr)
 
     def test_malformed_inventory_is_an_error_not_a_pass(self) -> None:
         tree = SyntheticTree()

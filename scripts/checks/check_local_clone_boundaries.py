@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -273,30 +274,60 @@ def test_closure(
     return reached, findings
 
 
+TIER_A_COMMAND = "cargo test"
+MANIFEST_FLAG = "--manifest-path"
+LOCKED_FLAG = "--locked"
+CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
+
+
+def tier_a_commands(text: str) -> list[str]:
+    """Every `cargo test ... --manifest-path ...` command in a workflow text.
+
+    Comment lines are dropped and `\\`-newline continuations joined first, so
+    a command wrapped across lines (as the Tier A loop's own `for` header
+    already is) is matched whole rather than missed (State S2-P3-2).
+    """
+    kept = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+    joined = CONTINUATION.sub(" ", "\n".join(kept))
+    return [
+        line for line in joined.splitlines() if TIER_A_COMMAND in line and MANIFEST_FLAG in line
+    ]
+
+
 def tier_a_unlocked(core: Path, inventory: dict) -> bool:
-    """Whether CI runs each library's Tier A command WITHOUT `--locked`.
+    """Whether CI may run a library's Tier A command WITHOUT `--locked`.
 
     LCM1.0c-rem1 (State P3-3): an unlocked `--manifest-path` build resolves a
     library's third-party dependencies fresh, so once any crate declares one
     (e.g. lane I's `git2`) CI may resolve a different version from the product
-    lock -- a false green. An explicit `ci_tier_a_unlocked` inventory flag
-    wins; otherwise the workflow is read and the Tier A `cargo test
-    --manifest-path` step is unlocked iff it carries no `--locked`. No
-    workflow (a synthetic fixture) means there is no unlocked CI step to
-    worry about.
+    lock -- a false green. This answer arms the guard in `run`, so it fails
+    toward "unlocked" (LCM1.0c-fu1, State S2-P3-2): `False` (locked) needs
+    affirmative evidence -- the explicit `ci_tier_a_unlocked: false` inventory
+    flag, or `--locked` on EVERY `cargo test ... --manifest-path` command in
+    every `.github/workflows/*.yml`/`*.yaml`. Anything the function cannot
+    establish counts as unlocked: no workflow at all while `crates_dir` exists,
+    a workflow it cannot read, workflows with no recognisable Tier A command,
+    or one such command anywhere without the flag. No workflow AND no
+    `crates_dir` is the only "nothing to build" answer.
     """
     flag = inventory.get("ci_tier_a_unlocked")
     if isinstance(flag, bool):
         return flag
-    workflow = core / ".github" / "workflows" / "checked-artifact-boundary.yml"
-    try:
-        text = workflow.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    for line in text.splitlines():
-        if "cargo test" in line and "--manifest-path" in line:
-            return "--locked" not in line
-    return False
+    workflows_dir = core / ".github" / "workflows"
+    workflows = sorted(
+        path for path in workflows_dir.glob("*.y*ml") if path.suffix in (".yml", ".yaml")
+    ) if workflows_dir.is_dir() else []
+    if not workflows:
+        return (core / inventory.get("crates_dir", "crates")).is_dir()
+    commands: list[str] = []
+    for workflow in workflows:
+        try:
+            commands.extend(tier_a_commands(workflow.read_text(encoding="utf-8")))
+        except OSError:
+            return True
+    if not commands:
+        return True
+    return any(LOCKED_FLAG not in command for command in commands)
 
 
 def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:

@@ -58,7 +58,12 @@ pub(crate) fn store(error: &StoreError) -> ModelError {
         | StoreError::ConflictingMetadata { .. }
         | StoreError::PointerTargetInvalid { .. } => ErrorCode::ManifestInvalid,
         StoreError::NoFamily { .. } => ErrorCode::MemberNotFound,
-        StoreError::PointerStillInstalled { .. } => ErrorCode::InvalidRequest,
+        // Both are orchestration-order/shape refusals: the caller asked for a
+        // write the family's own metadata makes unsafe (LCM1.0c-rem1 State
+        // P2-2; LCM1.0c-fu1 State S2-P3-1).
+        StoreError::PointerStillInstalled { .. } | StoreError::PathMismatch { .. } => {
+            ErrorCode::InvalidRequest
+        }
         StoreError::Refused(refusal) => return self::refusal(refusal),
         StoreError::Io { .. } | StoreError::Partial { .. } => ErrorCode::IoError,
     };
@@ -127,6 +132,15 @@ mod tests {
             })
             .code,
             ErrorCode::IoError
+        );
+        assert_eq!(
+            store(&StoreError::PathMismatch {
+                member: "A".to_owned(),
+                recorded: PathBuf::from("/root/../ws-A"),
+                requested: PathBuf::from("/root/../ws-B"),
+            })
+            .code,
+            ErrorCode::InvalidRequest
         );
         assert_eq!(unsupported("x").code, ErrorCode::UnsupportedOperation);
         assert_eq!(invalid("x").code, ErrorCode::InvalidRequest);

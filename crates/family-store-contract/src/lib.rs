@@ -98,7 +98,11 @@ pub enum StoreOperation {
 }
 
 /// One completed metadata effect. Reported on success and inside
-/// [`StoreError::Partial`].
+/// [`StoreError::Partial`]. `workspace` is the clone workspace as the
+/// operation addressed it: the `destination` the caller passed to
+/// [`FamilySession::install_pointer`], or the row's recorded path resolved
+/// against the root for [`FamilySession::remove_pointer`] and the
+/// `RemoveRow`/`Disband` guard (the conformance suite compares them exactly).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MetadataEffect {
     IndexWritten,
@@ -149,12 +153,26 @@ pub enum StoreError {
         path: PathBuf,
         detail: String,
     },
-    /// A member's row cannot be removed (`RemoveRow`/`Disband`) while a clone
-    /// pointer or marker it installed is still present: the pointer/marker
-    /// must be removed first, or it would be stranded with no row to reach it
-    /// through (LCM1.0c-rem1, State P2-2; design §3.1 recovery order). Nothing
-    /// was written.
+    /// A member's row cannot be removed (`RemoveRow`) and the family cannot be
+    /// disbanded (`Disband`) while a clone pointer this family installed at
+    /// the member's recorded path is still present: the pointer must be
+    /// removed first, or it would be stranded with no row to reach it through
+    /// (LCM1.0c-rem1, State P2-2; design §3.1 recovery order). `member` names
+    /// the row whose pointer stands -- for `Disband`, the first such row in
+    /// name order -- and `workspace` is its recorded path resolved against
+    /// the root. Nothing was written.
     PointerStillInstalled { member: String, workspace: PathBuf },
+    /// `install_pointer` was handed a destination that is not the store's own
+    /// resolution of the member row's recorded path (LCM1.0c-fu1, State
+    /// S2-P3-1). A pointer there would be unreachable by `remove_pointer` and
+    /// invisible to the `RemoveRow`/`Disband` guard, so nothing was written.
+    /// `recorded` is the row's path resolved against the root as the store
+    /// spells it; `requested` is the destination as passed.
+    PathMismatch {
+        member: String,
+        recorded: PathBuf,
+        requested: PathBuf,
+    },
     /// This store implements nothing yet.
     Unimplemented { operation: StoreOperation },
 }
@@ -221,9 +239,19 @@ impl fmt::Display for StoreError {
             ),
             Self::PointerStillInstalled { member, workspace } => write!(
                 f,
-                "cannot remove row `{member}` while its pointer at {} is still installed; \
-                 remove the pointer first",
+                "member `{member}` still has its clone pointer installed at {}; remove the \
+                 pointer before removing the row or disbanding the family",
                 workspace.display()
+            ),
+            Self::PathMismatch {
+                member,
+                recorded,
+                requested,
+            } => write!(
+                f,
+                "member `{member}` is recorded at {}; refusing to install its pointer at {}",
+                recorded.display(),
+                requested.display()
             ),
             Self::Unimplemented { operation } => write!(f, "{operation:?} is not implemented"),
         }
@@ -280,6 +308,18 @@ pub trait FamilyStore {
 ///   it accepts. The reverse order is crash-recoverable — a repeat after an
 ///   interrupted pointer removal succeeds (absent files are not errors) —
 ///   which is why it is the required one.
+/// - **One resolution of the recorded path (LCM1.0c-fu1, State S2-P3-1).**
+///   Three derivations look at a member's path — `install_pointer`'s check of
+///   its `destination`, `remove_pointer`, and the `RemoveRow`/`Disband` guard
+///   — and the store resolves all three through one canonical resolution of
+///   its own (`root` joined with the row's root-relative `path`: a filesystem
+///   store canonicalises through the filesystem, the reference fake
+///   lexically), so they agree by construction and the pointer `install_pointer`
+///   wrote is the one the other two find. `install_pointer` refuses a
+///   destination that resolves anywhere else ([`StoreError::PathMismatch`]),
+///   which is what makes the previous bullet's "must never be produced" true
+///   of the interface as declared. A store whose derivations disagree fails
+///   the conformance suite instead of stranding a pointer.
 /// - `reread` and `found` may be interleaved with the above at any point they
 ///   are individually valid.
 pub trait FamilySession {
@@ -302,16 +342,35 @@ pub trait FamilySession {
     fn apply(&mut self, change: &FamilyChange) -> Result<AppliedChange, StoreError>;
 
     /// Write the allocation marker, then the pointer, into `destination`'s
-    /// `.gwz/` for the `creating` row `name`. Refuses if the destination
-    /// holds an index or a pointer to another family.
+    /// `.gwz/` for the `creating` row `name`.
+    ///
+    /// `destination` is not a free argument: it must be the store's own
+    /// resolution of the row's recorded path (`root` joined with the row's
+    /// root-relative `path`, resolved canonically — see the call-order
+    /// clause), and it must already exist, because the orchestrator allocates
+    /// the destination before the store writes into it (design §3 step 2);
+    /// the store creates nothing above `.gwz/`. Any spelling that resolves to
+    /// that directory is accepted (effects name `destination` as passed); a
+    /// destination that resolves elsewhere is refused with
+    /// [`StoreError::PathMismatch`] before any effect; a destination that does
+    /// not exist fails with [`StoreError::Io`] `{ operation: WriteMarker, .. }`.
+    /// Refusal order: no index (`NoFamily`), unknown row (`Refused(NotFound)`),
+    /// non-`creating` row (`Refused(WrongState)`), `PathMismatch`, then the
+    /// destination's own metadata — it holds an index (`ConflictingMetadata`)
+    /// or a pointer to another family (`PointerTargetInvalid`). (LCM1.0c-rem1
+    /// State P2-2; LCM1.0c-fu1 State S2-P3-1, Code C2-P3-1.)
     fn install_pointer(
         &mut self,
         name: &MemberName,
         destination: &Path,
     ) -> Result<AppliedChange, StoreError>;
 
-    /// Remove the pointer and marker at the row's recorded path when they
-    /// match this family. Repeatable; absent files are not errors.
+    /// Remove the pointer and marker at the row's recorded path — resolved
+    /// exactly as `install_pointer` resolves it, so the pointer it installed
+    /// is the one found here — when they match this family. Repeatable;
+    /// absent files are not errors, and a recorded path that no longer
+    /// resolves (the directory is gone) holds nothing to remove. Effects name
+    /// the recorded path resolved against the root.
     fn remove_pointer(&mut self, name: &MemberName) -> Result<AppliedChange, StoreError>;
 }
 
@@ -350,5 +409,30 @@ mod tests {
         }
         .into();
         assert!(matches!(refused, StoreError::Refused(_)));
+    }
+
+    #[test]
+    fn ordering_and_path_refusals_name_the_member_and_the_paths() {
+        // LCM1.0c-fu1 (Code C2-P3-2): the ordering refusal describes both a
+        // row removal and a disband, with no `"*"` sentinel in the message.
+        let still = StoreError::PointerStillInstalled {
+            member: "A".to_owned(),
+            workspace: PathBuf::from("/root/../ws-A"),
+        };
+        let text = still.to_string();
+        assert!(text.contains("member `A`"), "{text}");
+        assert!(text.contains("/root/../ws-A"), "{text}");
+        assert!(text.contains("disbanding"), "{text}");
+        assert!(!text.contains('*'), "{text}");
+        // (State S2-P3-1): the mismatch refusal shows both spellings.
+        let mismatch = StoreError::PathMismatch {
+            member: "A".to_owned(),
+            recorded: PathBuf::from("/root/../ws-A"),
+            requested: PathBuf::from("/root/../ws-B"),
+        };
+        let text = mismatch.to_string();
+        assert!(text.contains("member `A`"), "{text}");
+        assert!(text.contains("/root/../ws-A"), "{text}");
+        assert!(text.contains("/root/../ws-B"), "{text}");
     }
 }
