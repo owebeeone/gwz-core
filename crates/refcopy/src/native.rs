@@ -68,7 +68,21 @@ const DIFFERENT_DEVICES: &str = "the source and the destination are on different
                                  copied by ordinary read/write";
 
 /// What one native attempt did.
+///
+/// All three outcomes exist on every target, because the engine handles all
+/// three on every target; a target with no mechanism simply never produces
+/// `Cloned` or `Failed`, which is what the `dead_code` allowance covers.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(any(
+        target_vendor = "apple",
+        all(
+            target_os = "linux",
+            not(any(target_arch = "sparc", target_arch = "sparc64"))
+        )
+    )),
+    allow(dead_code)
+)]
 pub(crate) enum Outcome {
     /// The mechanism cloned the file: the temporary now holds the source's
     /// bytes.
