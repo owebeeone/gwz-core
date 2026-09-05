@@ -329,3 +329,56 @@ fn the_contract_conformance_suite_passes_against_a_real_repository() {
         Some(fixture.root()),
     );
 }
+
+#[test]
+fn a_partial_clone_extension_refuses_even_when_libgit2_will_not_open_the_repository() {
+    let fixture = Fixture::checkout(ObjectFormat::Sha1);
+    fixture.append_config("[extensions]\n\tpartialClone = origin\n");
+    // Either arm is a refusal; which one depends on whether the linked
+    // libgit2 knows the extension. Never an admission.
+    match LocalRepoInspector::new().inspect_layout(fixture.root()) {
+        Err(LayoutError::Unsupported { hazards, .. }) => {
+            assert_has(&hazards, |hazard| {
+                matches!(hazard, LayoutHazard::PartialClone { .. })
+            });
+        }
+        Err(LayoutError::ReadFailed { .. }) => {}
+        other => panic!("a partial clone must refuse, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_unmanaged_nested_repository_is_inspected_on_its_own_path() {
+    // Architecture §4 has the caller scan "all included repositories,
+    // including unmanaged and ignored nested repositories". The contract's
+    // `inspect_layout` answers for one path, so this pins that a nested
+    // repository the caller finds is answered independently of its parent —
+    // including when the parent's own layout is fine.
+    let parent = Fixture::checkout(ObjectFormat::Sha1);
+    parent.write(".gitignore", b"vendor/\n");
+    parent.commit("ignore rules");
+    let nested_path = parent.mkdir("vendor/library");
+    crate::fixtures::nested_repository(&nested_path);
+    std::fs::write(nested_path.join("README"), b"nested\n").expect("nested file");
+
+    admitted(parent.root());
+    let nested = admitted(&nested_path);
+    assert_eq!(
+        nested.path,
+        std::fs::canonicalize(&nested_path).expect("real")
+    );
+    assert_ne!(nested.git_dir, parent.git_dir());
+
+    // A hazard inside the nested repository is the nested repository's, and
+    // does not change the parent's admission.
+    std::fs::write(
+        nested_path.join(".git/objects/info/alternates"),
+        b"/elsewhere/objects\n",
+    )
+    .expect("alternates");
+    assert_has(
+        &hazards_of(&LocalRepoInspector::new(), &nested_path),
+        |hazard| matches!(hazard, LayoutHazard::Alternates { .. }),
+    );
+    admitted(parent.root());
+}
