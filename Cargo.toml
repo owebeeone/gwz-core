@@ -10,6 +10,25 @@ repository = "https://github.com/owebeeone/gwz-core"
 path = "src/lib.rs"
 
 [dependencies]
+# Local clone family libraries (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md
+# §2). Core is the composition root: it depends on every functional library so
+# each is a member of both the outer gwz-dev workspace and a standalone core
+# checkout (`cargo test -p <name> --lib` works from either), and it registers
+# no library as a workspace of its own. None of them may depend on gwz-core;
+# `scripts/checks/check_local_clone_boundaries.py` enforces the edges.
+gwz-copy-contract = { path = "crates/copy-contract" }
+gwz-family-model = { path = "crates/family-model" }
+gwz-family-store = { path = "crates/family-store" }
+gwz-family-store-contract = { path = "crates/family-store-contract" }
+gwz-history-check = { path = "crates/history-check" }
+gwz-local-disposal = { path = "crates/local-disposal" }
+gwz-local-import = { path = "crates/local-import" }
+gwz-refcopy = { path = "crates/refcopy" }
+gwz-repo-contract = { path = "crates/repo-contract" }
+gwz-repo-factory = { path = "crates/repo-factory" }
+gwz-repo-inspect = { path = "crates/repo-inspect" }
+gwz-work-detector = { path = "crates/work-detector" }
+gwz-workspace-install = { path = "crates/workspace-install" }
 cap-fs-ext = "4"
 cap-std = "4"
 git2 = { version = "0.21", features = ["https", "ssh", "unstable-sha256"] }

@@ -1,0 +1,17 @@
+# Pure crate: classify supplied work observations and decoded GWZ evidence;
+# no I/O. Owner lane W. Allowed first-party dependencies: repo-contract
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-work-detector"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: pure unsaved-work classification."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gwz-repo-contract = { path = "../repo-contract" }

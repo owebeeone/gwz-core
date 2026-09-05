@@ -1,0 +1,22 @@
+# Implementation crate: local Git/filesystem reads implement the repository
+# contracts. Owner lane I. Allowed first-party dependencies: repo-contract
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2). `git2` is the
+# inventoried third-party dependency for this package; it is added by lane I
+# with the gate's inventory, not here.
+[package]
+name = "gwz-repo-inspect"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: local repository inspection (RepoInspector/ObjectReader implementation)."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gwz-repo-contract = { path = "../repo-contract" }
+
+[dev-dependencies]
+gwz-repo-contract = { path = "../repo-contract", features = ["contract-tests"] }

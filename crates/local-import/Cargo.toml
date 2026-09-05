@@ -1,0 +1,23 @@
+# Integration crate: pairing, capture, retained imports and push through its
+# own narrow `LocalTransport` port. Owner lane X. Allowed first-party
+# dependencies: repo-contract, family-model
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-local-import"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: family import/push orchestration over a narrow local transport port."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# The recording transport fake for consumers (core Tier B slices).
+test-support = []
+
+[dependencies]
+gwz-family-model = { path = "../family-model" }
+gwz-repo-contract = { path = "../repo-contract" }

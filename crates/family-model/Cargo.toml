@@ -1,0 +1,17 @@
+# Pure crate: family data, row transitions, names, remote-token resolution.
+# Owner lane F after the LCM1.0c checkpoint (C lands the checkpoint).
+# Allowed first-party dependencies: none
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-family-model"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: pure family model (names, rows, transitions, remote-token resolution)."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

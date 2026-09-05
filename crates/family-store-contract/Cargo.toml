@@ -1,0 +1,21 @@
+# Contract crate: family read view, lock session and family metadata
+# mutations. Owner lane C (S reviews). Allowed first-party dependencies:
+# family-model (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-family-store-contract"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: family store contract (read view, locked session, metadata effects)."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Store conformance suite and the in-memory fake; dev-dependencies only.
+contract-tests = []
+
+[dependencies]
+gwz-family-model = { path = "../family-model" }

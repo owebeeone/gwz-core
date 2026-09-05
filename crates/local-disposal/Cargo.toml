@@ -1,0 +1,28 @@
+# Integration crate: compose fresh safety observations and one-shot removal
+# through ports. Owner lane D. Allowed first-party dependencies: repo-contract,
+# family-model, family-store-contract, work-detector
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-local-disposal"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: explicit keep/disband and one-shot disposal."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# The recording disposal-port fake for consumers (core Tier B slices).
+test-support = []
+
+[dependencies]
+gwz-family-model = { path = "../family-model" }
+gwz-family-store-contract = { path = "../family-store-contract" }
+gwz-repo-contract = { path = "../repo-contract" }
+gwz-work-detector = { path = "../work-detector" }
+
+[dev-dependencies]
+gwz-family-store-contract = { path = "../family-store-contract", features = ["contract-tests"] }

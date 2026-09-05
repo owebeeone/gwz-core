@@ -1,0 +1,24 @@
+# Integration crate: bare/clean construction through its own repository-builder
+# port. Owner lane B. Allowed first-party dependencies: repo-contract
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-repo-factory"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: independent bare/clean repository construction."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# The recording build-port fake for consumers (core Tier B slices).
+test-support = []
+
+[dependencies]
+gwz-repo-contract = { path = "../repo-contract" }
+
+[dev-dependencies]
+gwz-repo-contract = { path = "../repo-contract", features = ["contract-tests"] }

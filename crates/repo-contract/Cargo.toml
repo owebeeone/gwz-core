@@ -1,0 +1,21 @@
+# Contract crate: repository observations, typed object ids, the
+# `RepoInspector` and bounded `ObjectReader` ports. Owner lane C (I reviews).
+# Allowed first-party dependencies: none
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-repo-contract"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: repository observation contract (no Git implementation)."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Conformance suites and in-memory/scripted fakes; dev-dependencies only.
+contract-tests = []
+
+[dependencies]

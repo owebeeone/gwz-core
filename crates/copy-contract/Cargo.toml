@@ -1,0 +1,22 @@
+# Contract crate: tree-copy request/result/error types, the cancellation port
+# and the `TreeCopier` trait. Owner lane C (interface owner). Allowed
+# first-party dependencies: none (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-copy-contract"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: tree-copy contract (no platform implementation)."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Shared conformance suite and contract-faithful fakes for implementations and
+# consumers. Enabled only through dev-dependencies; adds no adapter or
+# application dependency.
+contract-tests = []
+
+[dependencies]

@@ -27,7 +27,9 @@ def run(source: Path) -> subprocess.CompletedProcess[str]:
 def run_compiler_probe(mutator) -> subprocess.CompletedProcess[str]:
     temporary = tempfile.TemporaryDirectory()
     target = Path(temporary.name) / "gwz-core"
-    for name in (".github", "dev-docs", "scripts", "src", "tests", "protocol"):
+    # LCM1.0c: `crates/` holds the local clone family's path dependencies;
+    # the compiler probe copies them so the mutated copy still resolves.
+    for name in (".github", "dev-docs", "scripts", "src", "tests", "protocol", "crates"):
         shutil.copytree(ROOT / name, target / name)
     target.mkdir(exist_ok=True)
     for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):

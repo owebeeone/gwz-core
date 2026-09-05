@@ -1,0 +1,23 @@
+# Implementation crate: YAML index, ordinary temp-write/rename publication and
+# OS advisory try-locking implement the family store contract. Owner lane S.
+# Allowed first-party dependencies: family-store-contract, family-model
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2). Its YAML and OS
+# lock dependencies are added by lane S through the gate inventory.
+[package]
+name = "gwz-family-store"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: the sole family metadata writer (FamilyStore implementation)."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gwz-family-model = { path = "../family-model" }
+gwz-family-store-contract = { path = "../family-store-contract" }
+
+[dev-dependencies]
+gwz-family-store-contract = { path = "../family-store-contract", features = ["contract-tests"] }

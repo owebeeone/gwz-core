@@ -1,0 +1,29 @@
+# Integration crate: copy/construction/install ordering via injected ports.
+# Owner lane N. Allowed first-party dependencies: copy-contract, repo-contract,
+# family-model, family-store-contract
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
+[package]
+name = "gwz-workspace-install"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: destination construction and installation ordering."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# The recording install-port fake for consumers (core Tier B slices).
+test-support = []
+
+[dependencies]
+gwz-copy-contract = { path = "../copy-contract" }
+gwz-family-model = { path = "../family-model" }
+gwz-family-store-contract = { path = "../family-store-contract" }
+gwz-repo-contract = { path = "../repo-contract" }
+
+[dev-dependencies]
+gwz-copy-contract = { path = "../copy-contract", features = ["contract-tests"] }
+gwz-family-store-contract = { path = "../family-store-contract", features = ["contract-tests"] }

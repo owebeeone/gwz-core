@@ -1,0 +1,22 @@
+# Implementation crate: native/ordinary `SystemTreeCopier` implements
+# `TreeCopier`. Owner lane R. Allowed first-party dependencies: copy-contract
+# (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2). Third-party and
+# platform dependencies go through the inventory in
+# scripts/checks/local_clone_inventory.json.
+[package]
+name = "gwz-refcopy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: native copy-on-write with ordinary fallback (TreeCopier implementation)."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gwz-copy-contract = { path = "../copy-contract" }
+
+[dev-dependencies]
+gwz-copy-contract = { path = "../copy-contract", features = ["contract-tests"] }
