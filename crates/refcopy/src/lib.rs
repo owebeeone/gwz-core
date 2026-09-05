@@ -1,24 +1,30 @@
 //! `gwz-refcopy`: the product tree copier (lane R).
 //!
-//! [`SystemTreeCopier`] implements `gwz_copy_contract::TreeCopier` with the
-//! platform's native copy-on-write path (Apple `clonefile`, Linux
-//! `FICLONE`, a Windows block-clone/system-copy path) and an ordinary
-//! read/write fallback, following the fallback and metadata rules of
-//! gwz-dev `dev-docs/GwzLocalCloneImplementationArchitecture.md` §3.
+//! [`SystemTreeCopier`] implements `gwz_copy_contract::TreeCopier`: it copies
+//! a whole tree with exclusions applied during traversal, following the
+//! traversal, metadata, fallback and reporting rules of gwz-dev
+//! `dev-docs/GwzLocalCloneImplementationArchitecture.md` §3.
 //!
-//! LCM1.0c checkpoint state: the type and its capability probe exist with
-//! their frozen signatures; `copy_tree` refuses typed
-//! ([`CopyErrorCategory::Unimplemented`]) and writes nothing. Lane R's
-//! implementation starts from the contract's conformance suite
-//! (`gwz_copy_contract::contract_tests::run_all`) failing against this type.
+//! State of this build: the **ordinary** copy path is implemented and passes
+//! the contract's conformance suite (`gwz_copy_contract::contract_tests::
+//! run_all`). The native copy-on-write path is **not** in this build: Apple
+//! `clonefile`, Linux `FICLONE` and Windows block cloning each need a
+//! platform dependency (`libc`/`rustix`/`windows-sys`) that the local-clone
+//! boundary gate does not admit yet. Nothing here claims a native mechanism
+//! ran: [`SystemTreeCopier::probe_native`] reports
+//! [`NativeCapability::Unavailable`], [`SystemTreeCopier::mechanism`] reports
+//! [`NativeMechanism::None`], every report counts its files as
+//! `ordinary_files`, and `CopyMode::Auto` carries a warning saying so
+//! (design §12, "Native copy unavailable -> ordinary independent copy; actual
+//! method reported").
 
 #![forbid(unsafe_code)]
 
+mod ordinary;
+
 use std::path::Path;
 
-use gwz_copy_contract::{
-    Cancellation, CopyError, CopyErrorCategory, CopyReport, CopyRequest, TreeCopier,
-};
+use gwz_copy_contract::{Cancellation, CopyError, CopyReport, CopyRequest, TreeCopier};
 
 /// Whether a native copy-on-write path is believed available for a
 /// source/destination pair. A probe is a hint; the copy result decides.
@@ -58,52 +64,36 @@ impl SystemTreeCopier {
 
     /// Hint whether `source` and `destination` may share a native
     /// copy-on-write path. Never authoritative.
+    ///
+    /// This build links no platform copy-on-write dependency, so the honest
+    /// answer for every pair is [`NativeCapability::Unavailable`]: there is no
+    /// mechanism to attempt, and a probe must not suggest one exists.
+    /// [`NativeCapability::Unknown`] returns when a mechanism is linked but
+    /// the pair has not been examined.
     pub fn probe_native(&self, _source: &Path, _destination: &Path) -> NativeCapability {
-        NativeCapability::Unknown
+        match self.mechanism {
+            None => NativeCapability::Unavailable,
+            Some(NativeMechanism::None) => NativeCapability::Unavailable,
+            Some(_) => NativeCapability::Unknown,
+        }
     }
 }
 
 impl TreeCopier for SystemTreeCopier {
+    /// Copy `request`'s source tree, ordinarily.
+    ///
+    /// `CopyMode::Auto` and `CopyMode::OrdinaryOnly` do the same work here,
+    /// because no native mechanism is linked; `Auto` additionally warns that
+    /// native copy-on-write was unavailable. See [`ordinary`] for the shape of
+    /// a copy, its admission rules and its error classification.
     fn copy_tree(
         &self,
         request: &CopyRequest,
-        _cancellation: &dyn Cancellation,
+        cancellation: &dyn Cancellation,
     ) -> Result<CopyReport, CopyError> {
-        Err(CopyError::refused(
-            &request.destination,
-            CopyErrorCategory::Unimplemented,
-            "gwz-refcopy: SystemTreeCopier::copy_tree is not implemented (LCM1.0c checkpoint)",
-        ))
+        ordinary::copy_tree(request, cancellation)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use gwz_copy_contract::{CopyMode, NeverCancelled, contract_tests::TempTree};
-
-    #[test]
-    fn checkpoint_copier_refuses_typed_and_writes_nothing() {
-        let source = TempTree::new("refcopy-source");
-        source.file("a.txt", b"alpha");
-        let parent = TempTree::new("refcopy-dest");
-        let destination = parent.path().join("copy");
-        let request = CopyRequest {
-            source: source.path().to_path_buf(),
-            destination: destination.clone(),
-            exclusions: Vec::new(),
-            mode: CopyMode::Auto,
-        };
-        let error = SystemTreeCopier::new()
-            .copy_tree(&request, &NeverCancelled)
-            .expect_err("the checkpoint copier refuses");
-        assert_eq!(error.category, CopyErrorCategory::Unimplemented);
-        assert_eq!(error.partial, CopyReport::default());
-        assert!(!destination.exists(), "nothing is written");
-        assert_eq!(
-            SystemTreeCopier::new().probe_native(source.path(), &destination),
-            NativeCapability::Unknown
-        );
-        assert_eq!(SystemTreeCopier::new().mechanism(), NativeMechanism::None);
-    }
-}
+mod tests;
