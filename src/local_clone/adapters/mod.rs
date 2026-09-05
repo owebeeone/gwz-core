@@ -12,7 +12,7 @@
 //! | Port | Adapter | Behind it |
 //! |---|---|---|
 //! | `InstallPorts::snapshot_source`, `recheck_source` | [`install::CoreInstallPorts`] over [`inventory`] | `gwz-repo-inspect` layout inspection of every included repository, `git2` for branches and remotes, the manifest/lock digest |
-//! | `InstallPorts::observe_destination` | [`install::CoreInstallPorts`] | the filesystem, `gwz-family-store`'s metadata reading, `gwz-repo-inspect` and `gwz-history-check` for dest-complete |
+//! | `InstallPorts::observe_destination` | [`install::CoreInstallPorts`] | the filesystem, `gwz-family-store`'s metadata reading, `gwz-repo-inspect` and `gwz-history-check::check_connectivity` for dest-complete, bounded by [`object_census`] (LCM1.1 fix 2) |
 //! | `InstallPorts::allocate_destination` | [`install::CoreInstallPorts`] | `std::fs::create_dir` |
 //! | `InstallPorts::install_destination_git` | [`git_config`] | `git2` config edits under `gwz-repo-factory::origin_is_kept` |
 //! | `InstallPorts::construct_repositories` | refuses `Unimplemented` | `gwz-repo-factory` is LCM2.3/LCM3.1 |
@@ -29,5 +29,6 @@ pub mod git_config;
 pub mod install;
 pub mod inventory;
 pub mod member_paths;
+pub mod object_census;
 pub mod removal;
 pub mod store;

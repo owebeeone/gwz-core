@@ -195,9 +195,10 @@ fn a_source_hazard_refuses_before_reservation_and_leaves_nothing() {
         &NullSink,
     )
     .unwrap_err();
+    // LCM1.1 fix 1: a §4.0 hazard is its own code, not "not built yet".
     assert_eq!(
         error.code,
-        ErrorCode::UnsupportedOperation,
+        ErrorCode::UnsupportedSourceLayout,
         "{}",
         error.message
     );
@@ -232,7 +233,11 @@ impl Cancellation for CancelWhenExists {
 /// manifest-before-ready gap: retain and report"): an install interrupted
 /// after the row and before the manifest leaves a `creating` row carrying
 /// the diagnostic and an inspectable directory with no manifest -- the
-/// manifest really is last -- and nothing is cleaned up or promoted.
+/// manifest really is last -- and nothing is cleaned up or promoted. The
+/// code is `destination_incomplete` (LCM1.1 fix 1): an interruption leaves
+/// exactly the shape a failed completion rule leaves, the one `gwz local
+/// list` shows as `creating/incomplete`, and the message says it was
+/// cancelled.
 #[test]
 fn an_interrupted_create_leaves_a_creating_row_and_an_inspectable_directory() {
     let fixture = family_workspace("create-interrupted");
@@ -246,7 +251,12 @@ fn an_interrupted_create_leaves_a_creating_row_and_an_inspectable_directory() {
         &CancelWhenExists(dest.join(".gwz/family-root")),
     )
     .unwrap_err();
-    assert_eq!(error.code, ErrorCode::IoError, "{}", error.message);
+    assert_eq!(
+        error.code,
+        ErrorCode::DestinationIncomplete,
+        "{}",
+        error.message
+    );
     assert!(
         error
             .message
@@ -425,4 +435,297 @@ fn a_clone_of_a_clone_registers_on_the_root_and_collisions_refuse() {
     let (_, view) = family_view(&fixture.root);
     assert_eq!(view.members.len(), 2, "A and B only");
     assert!(!fixture.sibling("C").exists());
+}
+
+/// A cancellation port with a side effect: on its first poll it moves the
+/// source (a new branch in the root repository) and never cancels. The
+/// first poll is installation's `Reserve` checkpoint, after the snapshot,
+/// so the copy carries a source the frozen snapshot no longer describes.
+struct DriftSourceOnce {
+    repository: PathBuf,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl Cancellation for DriftSourceOnce {
+    fn is_cancelled(&self) -> bool {
+        if !self.done.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let repository = git2::Repository::open(&self.repository).unwrap();
+            let head = repository.head().unwrap().peel_to_commit().unwrap();
+            repository.branch("drifted", &head, false).unwrap();
+        }
+        false
+    }
+}
+
+/// Design §4 step 3 ("recheck the source observations"), §12 ("Observed
+/// source drift before publication: fail without marking ready"; LCM1.1
+/// fix 1): a source that moved between the snapshot and publication is
+/// `source_drift` -- not an I/O error -- with the row and the copied
+/// destination retained and the drift named.
+#[test]
+fn source_drift_before_publication_is_source_drift_with_the_row_retained() {
+    let fixture = family_workspace("create-drift");
+    let dest = fixture.sibling("A");
+    let validated = validate_clone_local(&clone_request("A")).unwrap();
+    let error = create::clone_local(
+        &fixture.root,
+        &fixture.root,
+        &validated,
+        open_merge_probe,
+        &DriftSourceOnce {
+            repository: fixture.root.clone(),
+            done: std::sync::atomic::AtomicBool::new(false),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::SourceDrift, "{}", error.message);
+    assert!(error.message.contains("source drift"), "{}", error.message);
+    assert!(
+        error.message.contains("repository @root changed"),
+        "{}",
+        error.message
+    );
+    for effect in [
+        "RowAllocated",
+        "TreeCopied",
+        "PointerInstalled",
+        "ErrorRecorded",
+    ] {
+        assert!(
+            error.message.contains(effect),
+            "{effect}: {}",
+            error.message
+        );
+    }
+    assert!(
+        error.message.contains("retained for inspection"),
+        "{}",
+        error.message
+    );
+    let (_, view) = family_view(&fixture.root);
+    let (_, row) = view.member("A").expect("the creating row is retained");
+    assert_eq!(row.state, MemberState::Creating);
+    assert!(
+        row.last_error
+            .as_deref()
+            .is_some_and(|detail| detail.contains("source drift")),
+        "{:?}",
+        row.last_error
+    );
+    assert!(dest.join(".gwz/family-root").is_file());
+    assert!(!dest.join("gwz.conf/gwz.yml").exists(), "never published");
+}
+
+/// A cancellation port with a side effect: once the copier has reproduced
+/// `object` at the destination it removes it again and never cancels, so
+/// the destination's own store is missing one object the copy delivered.
+struct RemoveObjectOnceCopied {
+    object: PathBuf,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl Cancellation for RemoveObjectOnceCopied {
+    fn is_cancelled(&self) -> bool {
+        if self.object.exists() && !self.done.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            fs::remove_file(&self.object).unwrap();
+        }
+        false
+    }
+}
+
+/// Design §4.0 dest-complete ("fails on missing objects"; LCM1.1 fix 1 and
+/// fix 2): an object missing from the destination's own store is found by
+/// the connectivity walk and refused as `destination_incomplete`, naming the
+/// repository and the missing object, with the row and directory retained
+/// and no manifest published.
+#[test]
+fn an_object_missing_from_the_destination_store_is_destination_incomplete() {
+    let fixture = family_workspace("create-missing-object");
+    let dest = fixture.sibling("A");
+    let tree = fixture
+        .workspace
+        .member("app")
+        .open()
+        .head()
+        .unwrap()
+        .peel_to_tree()
+        .unwrap()
+        .id()
+        .to_string();
+    let object = dest
+        .join("app/.git/objects")
+        .join(&tree[..2])
+        .join(&tree[2..]);
+    let validated = validate_clone_local(&clone_request("A")).unwrap();
+    let error = create::clone_local(
+        &fixture.root,
+        &fixture.root,
+        &validated,
+        open_merge_probe,
+        &RemoveObjectOnceCopied {
+            object,
+            done: std::sync::atomic::AtomicBool::new(false),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        ErrorCode::DestinationIncomplete,
+        "{}",
+        error.message
+    );
+    assert!(
+        error
+            .message
+            .contains("objects missing from the destination store"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains(&tree), "{}", error.message);
+    assert!(error.message.contains("app"), "{}", error.message);
+    assert!(
+        !error.message.contains("ManifestPublished"),
+        "{}",
+        error.message
+    );
+    let (_, view) = family_view(&fixture.root);
+    let (_, row) = view.member("A").expect("the creating row is retained");
+    assert_eq!(row.state, MemberState::Creating);
+    assert!(!dest.join("gwz.conf/gwz.yml").exists(), "never published");
+}
+
+/// Design §4 ("Permission, space, I/O and metadata failures are errors, not
+/// 'unsupported'"), §12 ("Copy permission/space/I/O error: fail, retain
+/// partial destination, source unchanged"; LCM1.1 fix 1): a file the copier
+/// cannot read stops the copy as `copy_failed`, with the row and the partial
+/// destination retained and the source untouched.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_source_file_is_copy_failed_with_the_partial_destination_retained() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = family_workspace("create-copy-failed");
+    let locked = fixture.root.join("app/locked.txt");
+    fs::write(&locked, b"cannot be read\n").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let dest = fixture.sibling("A");
+    let backend = Git2Backend::without_credential_helpers();
+    let error = handle_clone_local_workspace(
+        &backend,
+        &fixture.root,
+        clone_request("A"),
+        "op-clone",
+        &NullSink,
+    )
+    .unwrap_err();
+    // Readable again before any assertion can fail, so the fixture cleans up.
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(error.code, ErrorCode::CopyFailed, "{}", error.message);
+    assert!(
+        error.message.contains("copy failed at"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("locked.txt"), "{}", error.message);
+    for effect in ["RowAllocated", "DestinationAllocated", "ErrorRecorded"] {
+        assert!(
+            error.message.contains(effect),
+            "{effect}: {}",
+            error.message
+        );
+    }
+    assert!(!error.message.contains("TreeCopied"), "{}", error.message);
+    assert!(
+        error.message.contains("retained for inspection"),
+        "{}",
+        error.message
+    );
+    let (_, view) = family_view(&fixture.root);
+    let (_, row) = view.member("A").expect("the creating row is retained");
+    assert_eq!(row.state, MemberState::Creating);
+    assert!(dest.is_dir(), "the partial destination is retained");
+    assert!(
+        !dest.join(".gwz/family-root").exists(),
+        "the pointer is installed after the copy, so a failed copy has none"
+    );
+    assert_eq!(
+        read(&fixture.root.join("app/notes.txt")),
+        b"scratch\n",
+        "the source is unchanged"
+    );
+}
+
+/// LCM1.1 fix 2: dest-complete is a connectivity walk from every protected
+/// root of the destination, not a preservation proof with the destination
+/// as its own witness. Before the fix a source whose reflog or stash named
+/// a commit no ref reached -- the state of every real repository measured
+/// (gwz-core: 30 of 374 roots, gwz-cli: 12 of 220, the gwz-dev root: 3 of
+/// 473) -- was refused after the copy as "objects missing from the
+/// destination store". Now it creates, every object once, and the report
+/// says what the walk read, what bounded it and what it cost.
+#[test]
+fn a_source_with_reflog_only_history_creates_and_reports_the_verified_objects() {
+    let fixture = family_workspace("create-reflog-only");
+    // Amend `app`'s only commit: the original survives in HEAD's reflog and
+    // nowhere else.
+    let mut app = fixture.workspace.member("app").open();
+    let original = app.head().unwrap().peel_to_commit().unwrap();
+    let tree = original.tree().unwrap();
+    let amended = original
+        .amend(Some("HEAD"), None, None, None, Some("amended"), Some(&tree))
+        .unwrap();
+    assert_ne!(amended, original.id());
+    drop(tree);
+    drop(original);
+    // Stash a tracked edit in `app`: `stash@{0}` names two commits no ref
+    // does (the stash commit and its index commit), plus a tree and a blob.
+    fs::write(fixture.root.join("app/README"), b"stash me\n").unwrap();
+    let signature = gwz_local_testrepo::fixture_signature();
+    app.stash_save(&signature, "wip", None).unwrap();
+
+    let validated = validate_clone_local(&clone_request("A")).unwrap();
+    let report = create::clone_local(
+        &fixture.root,
+        &fixture.root,
+        &validated,
+        open_merge_probe,
+        &gwz_copy_contract::NeverCancelled,
+    )
+    .expect("a reflog-only commit and a stash are connected, not missing");
+    let (_, view) = family_view(&fixture.root);
+    assert_eq!(view.member("A").unwrap().1.state, MemberState::Ready);
+
+    // The report: both repositories walked, the amended-away commit and the
+    // stash commits read, the census the walk was bounded by at least what
+    // it read.
+    assert_eq!(report.verification.len(), 2, "{:?}", report.verification);
+    let keys: Vec<String> = report
+        .verification
+        .iter()
+        .map(|entry| entry.key.to_string())
+        .collect();
+    assert_eq!(
+        keys,
+        ["@root", "mem_app"],
+        "the manifest member id, not its path"
+    );
+    for entry in &report.verification {
+        assert!(entry.roots >= 2, "{entry:?}");
+        assert!(entry.objects_visited >= 3, "{entry:?}");
+        assert!(
+            entry.census.total() >= entry.objects_visited,
+            "the census bounds the walk: {entry:?}"
+        );
+        assert_eq!(entry.census.packs, 0, "the fixture is loose: {entry:?}");
+    }
+    let app_entry = &report.verification[1];
+    // `app`: the amended commit, the original, their shared tree and blob;
+    // the stash commit, its index commit, the stashed tree and blob.
+    assert_eq!(app_entry.objects_visited, 8, "{app_entry:?}");
+    let message = report.message(&validated.name);
+    assert!(
+        message.contains("dest-complete: 2 repositories,"),
+        "{message}"
+    );
+    assert!(message.contains("objects verified of"), "{message}");
 }

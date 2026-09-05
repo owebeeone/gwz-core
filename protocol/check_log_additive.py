@@ -70,7 +70,20 @@ from taut.ir.load import load_schema
 # added lines being the one `root_path` field object; the previous pin
 # below reproduced exactly on the pre-allocation tree (gwz-core 7e962d2).
 #   was: 26f0d16ffebdcdc26bbbe682a6347688781cd202694333dbb0c066d087fb6b4e
-PRE_LOG_WIRE_SHA256 = "2eca6469ed1281e77a95f1e419aa4065002aa94c77507a73ada6f6f9c8bb5503"
+#
+# Moved deliberately again on 2026-09-06 by LCM1.1 fix 1 (lane C, gwz-dev
+# dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md §14; GwzLocalCloneDesign.md
+# §4, §4.0, §4.1, §12), which allocates exactly four more `GwzErrorCode`
+# members for the local-create outcomes LCM1.1 had folded into
+# `unsupported_operation` and `io_error`: unsupported_source_layout (63),
+# copy_failed (64), source_drift (65) and destination_incomplete (66). No
+# message, field or slot changed. MEASURED additive, not assumed: the
+# projection was rendered on both trees and diffed -- 4 added lines, 0
+# removed lines, 3 hunks, the added lines being the four enum members as map
+# keys; the previous pin below reproduced exactly on the pre-allocation tree
+# (gwz-core 81fcaf2).
+#   was: 2eca6469ed1281e77a95f1e419aa4065002aa94c77507a73ada6f6f9c8bb5503
+PRE_LOG_WIRE_SHA256 = "0a173de982aaa93225e26581d678b4722356afc967fb4543de531708900cf981"
 LOG_METHODS = {"log", "log.output"}
 
 

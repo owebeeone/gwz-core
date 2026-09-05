@@ -29,18 +29,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gwz_copy_contract::{Cancellation, CopyErrorCategory, CopyMode};
+use gwz_copy_contract::{Cancellation, CopyMode};
 use gwz_family_model::{
     CloneMode, FamilyChange, FamilyId, MemberName, MemberPath, MemberState, validate_member_path,
 };
 use gwz_family_store_contract::{FamilyLocation, FamilySession, FamilyStore};
 use gwz_refcopy::SystemTreeCopier;
 use gwz_workspace_install::{
-    InstallEffect, InstallError, InstallFailure, InstallPortError, InstallRefusal, InstallReport,
-    InstallRequest, install,
+    InstallEffect, InstallFailure, InstallPortError, InstallReport, InstallRequest, install,
 };
 
-use super::adapters::install::{CoreInstallPorts, OpenMergeProbe, capture_source};
+use super::adapters::install::{
+    CoreInstallPorts, OpenMergeProbe, RepositoryVerification, capture_source,
+};
 use super::adapters::member_paths::{
     destination_path, intended_destination, mint_allocation_id, mint_family_id, recorded_path,
 };
@@ -63,9 +64,41 @@ pub struct CreateReport {
     /// none).
     pub founded: bool,
     pub install: InstallReport,
+    /// Design §4.0 dest-complete as it ran: one entry per destination
+    /// repository, the roots walked from, the objects read, the store's
+    /// census and the time (LCM1.1 fix 2).
+    pub verification: Vec<RepositoryVerification>,
 }
 
 impl CreateReport {
+    /// The dest-complete walk in one clause: repositories, objects read of
+    /// objects in store, elapsed.
+    fn verification_clause(&self) -> String {
+        let objects: u64 = self
+            .verification
+            .iter()
+            .map(|entry| entry.objects_visited)
+            .sum();
+        let census: u64 = self
+            .verification
+            .iter()
+            .map(|entry| entry.census.total())
+            .sum();
+        let elapsed: std::time::Duration =
+            self.verification.iter().map(|entry| entry.elapsed).sum();
+        let repositories = self.verification.len();
+        format!(
+            "dest-complete: {repositories} {}, {objects} objects verified of {census} in store, \
+             {} ms",
+            if repositories == 1 {
+                "repository"
+            } else {
+                "repositories"
+            },
+            elapsed.as_millis()
+        )
+    }
+
     /// One line for the response envelope.
     pub fn message(&self, name: &MemberName) -> String {
         let copy = self.install.copy.as_ref().map_or_else(
@@ -90,9 +123,10 @@ impl CreateReport {
             .map_or(0, |git| git.removed_remotes.len());
         format!(
             "created local clone `{name}` at {} (verbatim; recorded as {}; {copy}; {removed} \
-             remote URL(s) removed; family {}{})",
+             remote URL(s) removed; {}; family {}{})",
             self.destination.display(),
             self.recorded_path,
+            self.verification_clause(),
             self.family_id,
             if self.founded { ", founded" } else { "" }
         )
@@ -199,6 +233,7 @@ pub(crate) fn clone_local(
             family_id,
             founded,
             install: report,
+            verification: ports.verifications().to_vec(),
         }),
         Err(failure) => {
             // A family founded for a create that reserved nothing is
@@ -284,10 +319,12 @@ fn canonical(path: &Path) -> ModelResult<PathBuf> {
 }
 
 /// A port error before the lock (the capture): the same mapping a failed
-/// inventory step gets.
+/// inventory step gets (`errors::install_port_code`; a design §4.0 hazard
+/// is `unsupported_source_layout`, an inspector that could not read is
+/// `io_error`).
 fn port_error(name: &MemberName, destination: &Path, error: &InstallPortError) -> ModelError {
     ModelError::new(
-        port_code(error),
+        errors::install_port_code(error),
         format!(
             "local clone `{name}` -> {}: inventory source failed: {error}; nothing was reserved",
             destination.display()
@@ -295,52 +332,17 @@ fn port_error(name: &MemberName, destination: &Path, error: &InstallPortError) -
     )
 }
 
-fn port_code(error: &InstallPortError) -> ErrorCode {
-    match error {
-        InstallPortError::Layout(_) => ErrorCode::UnsupportedOperation,
-        InstallPortError::Unimplemented { .. } => ErrorCode::UnsupportedOperation,
-        InstallPortError::Drift { .. }
-        | InstallPortError::Construction { .. }
-        | InstallPortError::Configuration { .. }
-        | InstallPortError::Destination { .. } => ErrorCode::IoError,
-    }
-}
-
-fn refusal_code(refusal: &InstallRefusal) -> ErrorCode {
-    match refusal {
-        InstallRefusal::Family(refusal) => errors::refusal(refusal).code,
-        InstallRefusal::SourceLayout(_) => ErrorCode::UnsupportedOperation,
-        InstallRefusal::NameIsRemote(_)
-        | InstallRefusal::RootNotCaptured
-        | InstallRefusal::BranchExists { .. }
-        | InstallRefusal::BranchNotSupported { .. } => ErrorCode::InvalidRequest,
-        InstallRefusal::DestinationNotEmpty { .. }
-        | InstallRefusal::DestinationIsWorkspace { .. } => ErrorCode::PathCollision,
-        InstallRefusal::SourceOpenMerge { .. } => ErrorCode::OpenOperation,
-    }
-}
-
-/// An `InstallFailure` as a `ModelError`: the code follows the typed cause,
-/// the message names the step, the cause, every completed effect and what
-/// is left for inspection.
+/// An `InstallFailure` as a `ModelError`: the code follows the typed cause
+/// (`errors::install_error_code`, the one table for the local clone
+/// family), the message names the step, the cause, every completed effect
+/// and what is left for inspection.
 fn failure_error(
     name: &MemberName,
     destination: &Path,
     failure: &InstallFailure,
     founded_and_kept: bool,
 ) -> ModelError {
-    let code = match &failure.error {
-        InstallError::Refused(refusals) => refusals
-            .first()
-            .map_or(ErrorCode::InvalidRequest, refusal_code),
-        InstallError::Source(error) | InstallError::Port(error) => port_code(error),
-        InstallError::Copy(error) => match error.category {
-            CopyErrorCategory::DestinationNotEmpty => ErrorCode::PathCollision,
-            _ => ErrorCode::IoError,
-        },
-        InstallError::Store(error) => errors::store(error).code,
-        InstallError::Incomplete(_) | InstallError::Cancelled => ErrorCode::IoError,
-    };
+    let code = errors::install_error_code(&failure.error);
     let reserved = failure.effects.contains(&InstallEffect::RowAllocated);
     let left = if reserved {
         format!(

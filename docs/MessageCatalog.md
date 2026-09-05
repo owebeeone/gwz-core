@@ -717,6 +717,10 @@ has no service method and no handler that executes commands.
 | recovery_evidence_mismatch | 60 |
 | terminal_rollback_mismatch | 61 |
 | unknown_local | 62 |
+| unsupported_source_layout | 63 |
+| copy_failed | 64 |
+| source_drift | 65 |
+| destination_incomplete | 66 |
 
 ### MergeRecordRequiredWave
 

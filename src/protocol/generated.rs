@@ -1546,6 +1546,10 @@ pub enum GwzErrorCode {
     RecoveryEvidenceMismatch,
     TerminalRollbackMismatch,
     UnknownLocal,
+    UnsupportedSourceLayout,
+    CopyFailed,
+    SourceDrift,
+    DestinationIncomplete,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1612,6 +1616,10 @@ impl GwzErrorCode {
         Self::RecoveryEvidenceMismatch => 60,
         Self::TerminalRollbackMismatch => 61,
         Self::UnknownLocal => 62,
+        Self::UnsupportedSourceLayout => 63,
+        Self::CopyFailed => 64,
+        Self::SourceDrift => 65,
+        Self::DestinationIncomplete => 66,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1677,6 +1685,10 @@ impl GwzErrorCode {
         60 => Self::RecoveryEvidenceMismatch,
         61 => Self::TerminalRollbackMismatch,
         62 => Self::UnknownLocal,
+        63 => Self::UnsupportedSourceLayout,
+        64 => Self::CopyFailed,
+        65 => Self::SourceDrift,
+        66 => Self::DestinationIncomplete,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }

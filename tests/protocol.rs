@@ -1119,6 +1119,24 @@ fn error_code_wire_values_are_pinned() {
     // dev-docs/GwzLocalCloneDesign.md §7, §11 item 13): the family-only
     // merge miss.
     assert_eq!(GwzErrorCode::UnknownLocal.wire(), 62);
+    // LCM1.1 fix 1 (lane C, 2026-09-06, gwz-dev
+    // dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md §14): the four
+    // local-create outcomes that were folded into `unsupported_operation`
+    // and `io_error`, each distinct from both and from each other.
+    assert_eq!(GwzErrorCode::UnsupportedSourceLayout.wire(), 63);
+    assert_eq!(GwzErrorCode::CopyFailed.wire(), 64);
+    assert_eq!(GwzErrorCode::SourceDrift.wire(), 65);
+    assert_eq!(GwzErrorCode::DestinationIncomplete.wire(), 66);
+    for code in [
+        GwzErrorCode::UnsupportedSourceLayout,
+        GwzErrorCode::CopyFailed,
+        GwzErrorCode::SourceDrift,
+        GwzErrorCode::DestinationIncomplete,
+    ] {
+        assert_ne!(code, GwzErrorCode::UnsupportedOperation);
+        assert_ne!(code, GwzErrorCode::IoError);
+        assert_eq!(GwzErrorCode::from_wire(code.wire()).ok(), Some(code));
+    }
 }
 
 /// LCM1.0c follow-up 2 (operator rulings 2026-09-05, gwz-dev

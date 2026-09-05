@@ -4,8 +4,10 @@
 //! store (`gwz-family-store`) behind the destination's family metadata
 //! reading; the conf-integrity helpers (`crate::artifact`) behind recapture
 //! and manifest publication; [`super::git_config`] behind the destination's
-//! Git configuration; and `gwz-history-check` behind the destination's
-//! object-connectivity check (design §4.0 dest-complete).
+//! Git configuration; and `gwz-history-check::check_connectivity` behind
+//! the destination's object-connectivity check (design §4.0 dest-complete),
+//! bounded by [`super::object_census`] and reported per repository
+//! ([`RepositoryVerification`]; LCM1.1 fix 2, 2026-09-06).
 //!
 //! The snapshot is taken **before** the family lock ([`capture_source`]),
 //! so a source that design §4.0 refuses is refused with nothing written --
@@ -21,12 +23,13 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use gwz_copy_contract::Exclusion;
 use gwz_family_model::{AllocationId, CloneMode, FamilyId, PointerObservation};
 use gwz_family_store::{WorkspaceObservation, YamlFamilyStore};
-use gwz_history_check::{HistoryOutcome, Limits, NeverCancelled, Witness, check_history};
-use gwz_repo_contract::{HeadState, Observation, RepoInspector};
+use gwz_history_check::{ConnectivityOutcome, NeverCancelled, check_connectivity};
+use gwz_repo_contract::{HeadState, Observation, RepoInspector, RepoKey};
 use gwz_repo_inspect::{LocalObjectReader, LocalRepoInspector};
 use gwz_workspace_install::{
     ConfigurationPlan, ConfigurationReport, ConstructionRequest, DestinationObservation,
@@ -36,6 +39,7 @@ use gwz_workspace_install::{
 use super::exclusions::{FIXED_EXCLUSIONS, verbatim_exclusions, worktrees_of};
 use super::git_config::{DestinationRepository, install_destination_git};
 use super::inventory::{IncludedRepository, included_repositories, recheck, snapshot};
+use super::object_census::{ObjectCensus, census_of, connectivity_limits};
 use crate::artifact::{self, ConfIntegrityVerdict, ManifestArtifact};
 use crate::model::ModelResult;
 use crate::workspace::{RUNTIME_DIR, WORKSPACE_MANIFEST};
@@ -96,6 +100,24 @@ pub fn capture_source(
     })
 }
 
+/// One destination repository's dest-complete walk as it ran (LCM1.1 fix
+/// 2): what bounded it and what it cost, so the create's report can say
+/// exactly what was verified and at what price.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryVerification {
+    pub key: RepoKey,
+    /// Protected roots the walk started from: every ref, `HEAD`, every
+    /// retained reflog entry and stash entry the destination holds.
+    pub roots: u64,
+    /// Distinct objects read: everything reachable from those roots, each
+    /// once.
+    pub objects_visited: u64,
+    /// The destination store's own object count before the walk, the
+    /// walk's ceiling.
+    pub census: ObjectCensus,
+    pub elapsed: Duration,
+}
+
 /// The real install ports for one create.
 pub struct CoreInstallPorts {
     inspector: LocalRepoInspector,
@@ -108,6 +130,9 @@ pub struct CoreInstallPorts {
     source: PathBuf,
     open_merge: OpenMergeProbe,
     capture: SourceCapture,
+    /// The completion check's walks, one per destination repository that
+    /// passed it; reset on every observation.
+    verifications: Vec<RepositoryVerification>,
 }
 
 impl CoreInstallPorts {
@@ -130,12 +155,20 @@ impl CoreInstallPorts {
             source,
             open_merge,
             capture,
+            verifications: Vec::new(),
         }
     }
 
     /// Design §4.1's exclusion set for this source.
     pub fn exclusions(&self) -> &[Exclusion] {
         &self.capture.exclusions
+    }
+
+    /// What the last completion check verified, per repository, in the
+    /// inventory's order; empty until the destination has been observed
+    /// with a tree in it.
+    pub fn verifications(&self) -> &[RepositoryVerification] {
+        &self.verifications
     }
 
     fn destination_repositories(&self) -> Vec<DestinationRepository> {
@@ -153,9 +186,18 @@ impl CoreInstallPorts {
     /// destination: an admitted layout (no external common dir, alternates,
     /// escaping link or configuration), HEAD at the frozen source HEAD, and
     /// every protected root's object graph complete in the destination's
-    /// own store -- one `check_history` call per repository, with the
-    /// repository as its own witness.
-    fn dependencies(&self, destination: &Path) -> Vec<String> {
+    /// own store -- one `check_connectivity` walk per repository from every
+    /// root the inventory found, bounded by the store's own object census
+    /// (`connectivity_limits`) and recorded in [`Self::verifications`].
+    ///
+    /// Not `check_history` with the repository as its own witness: that is
+    /// the preservation proof, whose eligibility rule excludes a witness's
+    /// own reflog and stash entries, so it called a commit only a reflog
+    /// names "unpreserved" in every real repository measured (LCM1.1 fix
+    /// 2). Dest-complete asks only whether the store holds what each root
+    /// names.
+    fn dependencies(&mut self, destination: &Path) -> Vec<String> {
+        self.verifications.clear();
         let mut details = Vec::new();
         for repository in &self.capture.repositories {
             let path = destination.join(&repository.relative);
@@ -214,39 +256,58 @@ impl CoreInstallPorts {
                     continue;
                 }
             };
-            let reader = LocalObjectReader::open(&info);
-            let witness = Witness {
-                repository: repository.key.clone(),
-                label: path.display().to_string(),
+            let census = match census_of(&info.common_dir) {
+                Ok(census) => census,
+                Err(detail) => {
+                    details.push(format!(
+                        "{}: the destination object store could not be counted: {detail}",
+                        repository.key
+                    ));
+                    continue;
+                }
             };
-            match check_history(
-                &protected,
-                &[witness],
-                &reader,
-                Limits::default(),
-                &NeverCancelled,
-            ) {
-                HistoryOutcome::Verified(_) => {}
-                HistoryOutcome::Unpreserved(items) => {
+            let limits = connectivity_limits(protected.roots.len(), &census);
+            let reader = LocalObjectReader::open(&info);
+            let started = Instant::now();
+            match check_connectivity(&protected, &reader, limits, &NeverCancelled) {
+                ConnectivityOutcome::Complete(coverage) => {
+                    self.verifications.push(RepositoryVerification {
+                        key: repository.key.clone(),
+                        roots: coverage.roots_checked,
+                        objects_visited: coverage.objects_visited,
+                        census,
+                        elapsed: started.elapsed(),
+                    });
+                }
+                ConnectivityOutcome::Incomplete(items) => {
                     let missing: Vec<String> = items
                         .iter()
                         .map(|item| {
-                            item.missing.as_ref().map_or_else(
-                                || format!("{:?} at {}", item.root.source, item.root.oid),
-                                |oid| format!("{oid} (below {})", item.root.oid),
-                            )
+                            if item.missing == item.root.oid {
+                                format!("{:?} at {}", item.root.source, item.root.oid)
+                            } else {
+                                format!("{} (below {})", item.missing, item.root.oid)
+                            }
                         })
                         .collect();
                     details.push(format!(
-                        "{}: objects missing from the destination store: {}",
+                        "{}: objects missing from the destination store ({} objects in the \
+                         store, {} roots): {}",
                         repository.key,
+                        census.total(),
+                        protected.roots.len(),
                         missing.join(", ")
                     ));
                 }
-                HistoryOutcome::Unknown(reasons) => {
+                ConnectivityOutcome::Unknown(reasons) => {
                     details.push(format!(
-                        "{}: object connectivity could not be established: {reasons:?}",
-                        repository.key
+                        "{}: object connectivity could not be established within the \
+                         verification ceiling ({} objects in the store, {} roots, {} bytes of \
+                         bookkeeping allowed): {reasons:?}",
+                        repository.key,
+                        census.total(),
+                        protected.roots.len(),
+                        limits.max_bookkeeping_bytes
                     ));
                 }
             }

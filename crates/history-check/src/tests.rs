@@ -15,8 +15,9 @@ use gwz_repo_contract::{
 };
 
 use super::{
-    Cancellation, Coverage, HistoryOutcome, Limits, NeverCancelled, RootCoverage, UnpreservedItem,
-    Witness, check_history, is_eligible_witness_root,
+    Cancellation, ConnectivityCoverage, ConnectivityOutcome, Coverage, HistoryOutcome, Limits,
+    MissingObject, NeverCancelled, RootCoverage, UnpreservedItem, Witness, check_connectivity,
+    check_history, is_eligible_witness_root,
 };
 
 const SHA1: ObjectFormat = ObjectFormat::Sha1;
@@ -1018,4 +1019,291 @@ fn the_default_limits_are_the_architecture_caps() {
     assert_eq!(limits.reads, ReadLimits::default());
     assert!(!HistoryOutcome::Unknown(Vec::new()).is_verified());
     assert!(!NeverCancelled.is_cancelled());
+}
+
+// ------------------------------------------------ connectivity (fix 2)
+
+/// The dest-complete walk through the same read-only harness: the reader's
+/// roots are untouched afterwards, and the outcome never names a root it
+/// was not asked about.
+fn connectivity(protected: &ProtectedRoots, reader: &InMemoryObjectReader) -> ConnectivityOutcome {
+    use gwz_repo_contract::ObjectReader;
+    let before = reader.retained_roots().expect("roots are readable");
+    let outcome = check_connectivity(protected, reader, Limits::default(), &NeverCancelled);
+    read_only(reader, &before);
+    if let ConnectivityOutcome::Incomplete(items) = &outcome {
+        assert!(!items.is_empty());
+        for item in items {
+            assert!(
+                protected.roots.contains(&item.root),
+                "{:?} was never asked about",
+                item.root
+            );
+            assert_eq!(
+                items.iter().filter(|other| other.root == item.root).count(),
+                1,
+                "{:?} is named more than once",
+                item.root
+            );
+        }
+    }
+    outcome
+}
+
+fn expect_complete(outcome: ConnectivityOutcome) -> ConnectivityCoverage {
+    match outcome {
+        ConnectivityOutcome::Complete(coverage) => coverage,
+        other => panic!("expected Complete, got {other:?}"),
+    }
+}
+
+fn expect_incomplete(outcome: ConnectivityOutcome) -> Vec<MissingObject> {
+    match outcome {
+        ConnectivityOutcome::Incomplete(items) => items,
+        other => panic!("expected Incomplete, got {other:?}"),
+    }
+}
+
+fn expect_connectivity_unknown(
+    outcome: ConnectivityOutcome,
+) -> Vec<gwz_repo_contract::UnknownReason> {
+    match outcome {
+        ConnectivityOutcome::Unknown(reasons) => reasons,
+        other => panic!("expected Unknown, got {other:?}"),
+    }
+}
+
+/// The regression behind LCM1.1 fix 2: a commit that only a reflog entry or
+/// a stash entry names is *unpreserved* to `check_history` with the
+/// repository as its own witness (rightly -- a witness's own reflog and
+/// stash are not durable retention), but the store holds it whole, so
+/// design §4.0 dest-complete must call it connected. Every real repository
+/// measured had such roots and was falsely refused.
+#[test]
+fn a_reflog_only_root_with_a_complete_subgraph_is_connected() {
+    let mut reader = InMemoryObjectReader::new();
+    let head = commit(&mut reader, SHA1, 0x10, Vec::new());
+    let amended_away = commit(&mut reader, SHA1, 0x20, vec![head.clone()]);
+    let stashed = commit(&mut reader, SHA1, 0x30, vec![head.clone()]);
+    reader.root(ref_source("refs/heads/main"), head.clone());
+    let protected = roots(vec![
+        root(ref_source("refs/heads/main"), head.clone()),
+        root(RootSource::Head, head),
+        root(
+            RootSource::Reflog {
+                reference: "HEAD".to_owned(),
+                index: 1,
+            },
+            amended_away,
+        ),
+        root(RootSource::Stash { index: 1 }, stashed),
+    ]);
+
+    // The preservation answer: two roots no eligible witness root reaches.
+    let unpreserved = expect_unpreserved(check(&protected, &[root_witness()], &reader));
+    assert_eq!(unpreserved.len(), 2, "{unpreserved:?}");
+
+    // The connectivity answer: every root self-contained, every object once.
+    let coverage = expect_complete(connectivity(&protected, &reader));
+    assert_eq!(coverage.roots_checked, 4);
+    assert_eq!(
+        coverage.objects_visited, 9,
+        "three commits, each with its tree and blob, each read once"
+    );
+    assert!(coverage.bookkeeping_bytes > 0);
+}
+
+#[test]
+fn a_missing_object_below_one_root_names_that_root_and_the_object() {
+    let mut reader = InMemoryObjectReader::new();
+    let head = commit(&mut reader, SHA1, 0x10, Vec::new());
+    // A second commit whose tree names a blob the store does not hold.
+    let absent_blob = oid(SHA1, 0x22);
+    let topic_tree = oid(SHA1, 0x21);
+    let topic = oid(SHA1, 0x20);
+    reader
+        .tree(topic_tree.clone(), vec![absent_blob.clone()])
+        .commit(topic.clone(), topic_tree, vec![head.clone()]);
+    let main_root = root(ref_source("refs/heads/main"), head);
+    let topic_root = root(ref_source("refs/heads/topic"), topic);
+    let protected = roots(vec![main_root, topic_root.clone()]);
+
+    let items = expect_incomplete(connectivity(&protected, &reader));
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].root, topic_root);
+    assert_eq!(items[0].missing, absent_blob);
+}
+
+#[test]
+fn a_root_whose_own_object_is_missing_is_incomplete_at_the_root() {
+    let mut reader = InMemoryObjectReader::new();
+    let head = commit(&mut reader, SHA1, 0x10, Vec::new());
+    let vanished = oid(SHA1, 0x77);
+    let vanished_root = root(RootSource::Stash { index: 0 }, vanished.clone());
+    let protected = roots(vec![
+        root(ref_source("refs/heads/main"), head),
+        vanished_root.clone(),
+    ]);
+
+    let items = expect_incomplete(connectivity(&protected, &reader));
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].root, vanished_root);
+    assert_eq!(items[0].missing, vanished);
+}
+
+#[test]
+fn shared_subgraphs_are_read_once_across_roots() {
+    let mut reader = InMemoryObjectReader::new();
+    let base = commit(&mut reader, SHA1, 0x10, Vec::new());
+    let tip = commit(&mut reader, SHA1, 0x20, vec![base.clone()]);
+    let protected = roots(vec![
+        root(ref_source("refs/heads/main"), base.clone()),
+        root(ref_source("refs/heads/feature"), tip.clone()),
+        root(RootSource::Head, tip),
+        root(
+            RootSource::Reflog {
+                reference: "refs/heads/feature".to_owned(),
+                index: 1,
+            },
+            base,
+        ),
+    ]);
+
+    let coverage = expect_complete(connectivity(&protected, &reader));
+    assert_eq!(coverage.roots_checked, 4);
+    assert_eq!(coverage.objects_visited, 6);
+    assert_eq!(reader.reads().len(), 6, "no object is read twice");
+}
+
+#[test]
+fn an_incomplete_inventory_is_unknown_before_any_read() {
+    let mut reader = InMemoryObjectReader::new();
+    let head = commit(&mut reader, SHA1, 0x10, Vec::new());
+    let protected = ProtectedRoots {
+        roots: vec![root(ref_source("refs/heads/main"), head)],
+        unknown: vec![gwz_repo_contract::UnknownReason::new(
+            UnknownKind::Unreadable,
+            "refs/heads/broken could not be resolved",
+        )],
+    };
+
+    let reasons = expect_connectivity_unknown(check_connectivity(
+        &protected,
+        &reader,
+        Limits::default(),
+        &NeverCancelled,
+    ));
+    assert_eq!(reasons, protected.unknown);
+    assert!(reader.reads().is_empty(), "nothing was read");
+}
+
+#[test]
+fn uninterpreted_evidence_is_unknown_to_connectivity_before_any_read() {
+    let mut reader = InMemoryObjectReader::new();
+    let head = commit(&mut reader, SHA1, 0x10, Vec::new());
+    let protected = roots(vec![
+        root(ref_source("refs/heads/main"), head.clone()),
+        root(
+            RootSource::Other {
+                detail: "a nested bare repository".to_owned(),
+            },
+            head,
+        ),
+    ]);
+
+    let reasons = expect_connectivity_unknown(connectivity(&protected, &reader));
+    assert_eq!(reasons[0].kind, UnknownKind::UnsupportedEvidence);
+    assert!(reader.reads().is_empty(), "nothing was read");
+}
+
+#[test]
+fn connectivity_limits_and_cancellation_are_unknown_never_complete() {
+    let mut reader = InMemoryObjectReader::new();
+    let head = commit(&mut reader, SHA1, 0x10, Vec::new());
+    let protected = roots(vec![
+        root(ref_source("refs/heads/main"), head.clone()),
+        root(RootSource::Head, head),
+    ]);
+
+    let too_few_roots = Limits {
+        max_roots: 1,
+        ..Limits::default()
+    };
+    let reasons = expect_connectivity_unknown(check_connectivity(
+        &protected,
+        &reader,
+        too_few_roots,
+        &NeverCancelled,
+    ));
+    assert_eq!(reasons[0].kind, UnknownKind::LimitExceeded);
+    assert!(
+        reader.reads().is_empty(),
+        "the root cap is checked before any read"
+    );
+
+    let tiny_bookkeeping = Limits {
+        max_bookkeeping_bytes: 64,
+        ..Limits::default()
+    };
+    let reasons = expect_connectivity_unknown(check_connectivity(
+        &protected,
+        &reader,
+        tiny_bookkeeping,
+        &NeverCancelled,
+    ));
+    assert_eq!(reasons[0].kind, UnknownKind::LimitExceeded);
+    assert!(reasons[0].detail.contains("64"), "{}", reasons[0].detail);
+
+    let reasons = expect_connectivity_unknown(check_connectivity(
+        &protected,
+        &reader,
+        Limits::default(),
+        &CancelAfter::new(1),
+    ));
+    assert_eq!(reasons[0].kind, UnknownKind::Cancelled);
+    assert!(
+        reader.reads().len() < 3,
+        "cancellation stops the walk: {:?}",
+        reader.reads()
+    );
+
+    let reasons = expect_connectivity_unknown(check_connectivity(
+        &protected,
+        &reader,
+        Limits::default(),
+        &CancelAfter::new(0),
+    ));
+    assert_eq!(reasons[0].kind, UnknownKind::Cancelled);
+}
+
+#[test]
+fn no_roots_is_complete_with_nothing_read() {
+    let reader = InMemoryObjectReader::new();
+    let coverage = expect_complete(connectivity(&roots(Vec::new()), &reader));
+    assert_eq!(coverage, ConnectivityCoverage::default());
+    assert!(reader.reads().is_empty());
+}
+
+#[test]
+fn an_unreadable_store_is_unknown_to_connectivity_never_incomplete() {
+    let head = oid(SHA1, 0x10);
+    let protected = roots(vec![root(ref_source("refs/heads/main"), head)]);
+    let reader = BrokenReader::reading(
+        roots(Vec::new()),
+        ReadError::ReadFailed {
+            detail: "EIO".to_owned(),
+        },
+    );
+    let reasons = expect_connectivity_unknown(check_connectivity(
+        &protected,
+        &reader,
+        Limits::default(),
+        &NeverCancelled,
+    ));
+    assert_eq!(reasons[0].kind, UnknownKind::Unreadable);
+    assert_eq!(
+        reader.reads.get(),
+        1,
+        "the first failed read stops the walk"
+    );
 }

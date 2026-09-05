@@ -78,6 +78,25 @@ pub enum ErrorCode {
     /// and merge has no Git-remote fallback (gwz-dev
     /// dev-docs/GwzLocalCloneDesign.md §6/§7; wire `unknown_local` = 62).
     UnknownLocal,
+    /// A design §4.0 source-layout hazard refused before reservation -- a
+    /// gitfile, an external common directory, alternates, escaping metadata
+    /// or configuration, a partial clone, an environment override; v0
+    /// refuses, never rewrites (LCM1.1 fix 1, 2026-09-06; wire
+    /// `unsupported_source_layout` = 63).
+    UnsupportedSourceLayout,
+    /// The local clone's tree copy stopped (permission, space, I/O, metadata,
+    /// an uncopyable entry); the `creating` row and the partial destination
+    /// are retained (design §4, §12; wire `copy_failed` = 64).
+    CopyFailed,
+    /// The source changed between the snapshot and publication (design §4
+    /// step 3's recheck, §12); the destination is not marked ready (wire
+    /// `source_drift` = 65).
+    SourceDrift,
+    /// The destination failed a completion rule before ready -- §4.0
+    /// dest-complete, §4.1's at-ready column, lock recapture, marker
+    /// regeneration -- or the install was cancelled; the row and directory
+    /// are retained for inspection (wire `destination_incomplete` = 66).
+    DestinationIncomplete,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

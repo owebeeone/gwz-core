@@ -704,7 +704,44 @@ SCHEMA = schema(
          # creating/disposing; the state detail travels in the message. Never
          # a Git-remote fallback. Pull/push keep `missing_remote` for a token
          # that is neither a ready member nor a Git remote.
-         unknown_local=62),
+         unknown_local=62,
+         # The four local-create outcomes below were folded into
+         # `unsupported_operation` and `io_error` by LCM1.1's wiring, which
+         # left a driver unable to tell a design §4.0 refusal from "not built
+         # yet", or a copy failure, source drift and an incomplete destination
+         # from a plain I/O error. Allocated by LCM1.1 fix 1 (lane C,
+         # 2026-09-06; GwzLocalCloneDesign.md §4, §4.0, §4.1, §12).
+         #
+         # A design §4.0 source-layout hazard, refused before reservation:
+         # `.git` as a file (gitfile / linked worktree), a common directory
+         # outside the member, `objects/info/alternates` or
+         # `http-alternates`, metadata or an object store reached through a
+         # symlink outside the repository's copied boundary, configuration
+         # that would still name a path outside dest (`core.worktree`,
+         # `core.hooksPath`, `include.path`, `includeIf`, `url.*.insteadOf`),
+         # a partial clone, or an environment override. v0 refuses, never
+         # rewrites; nothing is written.
+         unsupported_source_layout=63,
+         # The tree copy stopped: permission, space, I/O, metadata, or an
+         # entry the copier does not copy (design §4: errors, not
+         # "unsupported"; §12 "retain partial destination, source
+         # unchanged"). The `creating` row and the partial destination are
+         # retained for inspection.
+         copy_failed=64,
+         # The source changed between the snapshot and publication (design
+         # §4 step 3 "recheck the source observations"; §12 "fail without
+         # marking ready"): the destination is a copy of a moving source.
+         # The row and the directory are retained.
+         source_drift=65,
+         # The destination failed a completion rule before `ready`: §4.0
+         # dest-complete (an object missing from its own store, HEAD off the
+         # frozen source HEAD, an inadmissible layout, a walk past the
+         # verification ceiling), §4.1's at-ready column, lock recapture,
+         # marker regeneration -- or the install was cancelled at a
+         # checkpoint, which leaves the same shape. The `creating` row and
+         # the directory are retained; `gwz local list` shows the row as
+         # `creating/incomplete`.
+         destination_incomplete=66),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(

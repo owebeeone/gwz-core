@@ -38,9 +38,18 @@ payload `LocalFamilyResponse.members` (a list of `LocalFamilyMemberEntry`:
 follow-up 3 (operator ruling 2026-09-06) adds `LocalFamilyResponse.root_path`
 (tag 3, optional): the family root's path as core observed it, present
 exactly when `members` is, so a driver joins it with each member's
-root-relative `path` instead of guessing the root. Every local-family
-handler still refuses with `unsupported_operation` before any effect; the
-product contract is the gwz-dev `dev-docs/GwzLocalCloneDesign.md`.
+root-relative `path` instead of guessing the root. LCM1.1 fix 1 (lane C,
+2026-09-06) adds four `GwzErrorCode` members for the local-create outcomes
+the wiring had folded into `unsupported_operation` and `io_error`:
+`unsupported_source_layout` (63, a design §4.0 hazard refused before
+reservation), `copy_failed` (64), `source_drift` (65) and
+`destination_incomplete` (66, a failed completion rule or a cancelled
+install, the row and directory retained); `docs/ErrorCatalog.md` carries
+the causes and recoveries. Since LCM1.1 `gwz clone --local` (verbatim),
+`gwz local list`, `dispose --keep` and `disband` run end to end; the other
+modes and operations still refuse `unsupported_operation` before any
+effect. The product contract is the gwz-dev
+`dev-docs/GwzLocalCloneDesign.md`.
 
 Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
 fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is

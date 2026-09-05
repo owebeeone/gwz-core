@@ -1,11 +1,22 @@
 //! Library error -> `ModelError` translation for the local clone family.
 //!
 //! Public contracts carry owned typed errors; core maps them onto the
-//! existing `GwzErrorCode` registry at this boundary. No new code is
-//! allocated at LCM1.0c (see `docs/ErrorCatalog.md`, "Local Clone Family").
+//! `GwzErrorCode` registry at this boundary (`docs/ErrorCatalog.md`, "Local
+//! Clone Family"). LCM1.0c allocated nothing; follow-up 2 allocated
+//! `unknown_local` (62); LCM1.1 fix 1 (2026-09-06) allocated the four
+//! local-create outcomes the wiring had folded into `unsupported_operation`
+//! and `io_error` -- `unsupported_source_layout` (63), `copy_failed` (64),
+//! `source_drift` (65) and `destination_incomplete` (66) -- so that
+//! `unsupported_operation` means exactly "not built yet" and `io_error`
+//! exactly an I/O failure. The install mappings live here, in one table,
+//! so a driver-facing code is decided in one place ([`install_error_code`],
+//! [`install_port_code`], [`install_refusal_code`]).
 
+use gwz_copy_contract::CopyErrorCategory;
 use gwz_family_model::{MemberState, Refusal};
 use gwz_family_store_contract::StoreError;
+use gwz_repo_contract::LayoutError;
+use gwz_workspace_install::{InstallError, InstallPortError, InstallRefusal};
 
 use crate::model::{ErrorCode, ModelError};
 
@@ -101,15 +112,104 @@ pub(crate) fn store(error: &StoreError) -> ModelError {
     ModelError::new(code, format!("local family: {error}"))
 }
 
+/// The code behind a source-layout verdict (design §4.0). A hazard list is
+/// the §4.0 refusal itself; a `.git` entry that is not a repository is a
+/// layout the copy cannot reproduce either; an inspector that could not
+/// read far enough to decide has an I/O failure, not a verdict (lane I
+/// proposal I-3); an inspector that does not inspect is a build gap.
+pub(crate) fn layout_code(error: &LayoutError) -> ErrorCode {
+    match error {
+        LayoutError::Unsupported { .. } | LayoutError::NotARepository { .. } => {
+            ErrorCode::UnsupportedSourceLayout
+        }
+        LayoutError::ReadFailed { .. } => ErrorCode::IoError,
+        LayoutError::Unimplemented { .. } => ErrorCode::UnsupportedOperation,
+    }
+}
+
+/// The code behind an install port error, whether it stopped the capture
+/// before the family lock or a port during installation (LCM1.1 fix 1).
+pub(crate) fn install_port_code(error: &InstallPortError) -> ErrorCode {
+    match error {
+        InstallPortError::Layout(error) => layout_code(error),
+        // Design §4 step 3, §12: the source moved between the snapshot and
+        // publication; the destination is a copy of a moving source.
+        InstallPortError::Drift { .. } => ErrorCode::SourceDrift,
+        InstallPortError::Unimplemented { .. } => ErrorCode::UnsupportedOperation,
+        // A destination that could not be allocated or observed, a
+        // configuration that could not be read or written, a construction
+        // that failed: I/O-class failures, reported with their detail.
+        InstallPortError::Construction { .. }
+        | InstallPortError::Configuration { .. }
+        | InstallPortError::Destination { .. } => ErrorCode::IoError,
+    }
+}
+
+/// The code behind an admission refusal (design §4 step 1): refused before
+/// reservation, so nothing was written.
+pub(crate) fn install_refusal_code(refusal: &InstallRefusal) -> ErrorCode {
+    match refusal {
+        InstallRefusal::Family(refusal) => self::refusal(refusal).code,
+        InstallRefusal::SourceLayout(error) => layout_code(error),
+        InstallRefusal::NameIsRemote(_)
+        | InstallRefusal::RootNotCaptured
+        | InstallRefusal::BranchExists { .. }
+        | InstallRefusal::BranchNotSupported { .. } => ErrorCode::InvalidRequest,
+        InstallRefusal::DestinationNotEmpty { .. }
+        | InstallRefusal::DestinationIsWorkspace { .. } => ErrorCode::PathCollision,
+        InstallRefusal::SourceOpenMerge { .. } => ErrorCode::OpenOperation,
+    }
+}
+
+/// The code behind an install failure: the typed cause decides, and the
+/// message (built by the caller) names the step, the cause, every
+/// completed effect and what is retained.
+pub(crate) fn install_error_code(error: &InstallError) -> ErrorCode {
+    match error {
+        InstallError::Refused(refusals) => refusals
+            .first()
+            .map_or(ErrorCode::InvalidRequest, install_refusal_code),
+        InstallError::Source(error) | InstallError::Port(error) => install_port_code(error),
+        InstallError::Copy(error) => match error.category {
+            CopyErrorCategory::DestinationNotEmpty => ErrorCode::PathCollision,
+            CopyErrorCategory::Unimplemented => ErrorCode::UnsupportedOperation,
+            // A copy cancelled between entries leaves exactly the shape a
+            // cancelled install leaves: a partial destination and the
+            // `creating` row, both retained.
+            CopyErrorCategory::Cancelled => ErrorCode::DestinationIncomplete,
+            // Design §4: permission, space, I/O and metadata failures are
+            // errors, not "unsupported"; §12: the partial destination is
+            // retained and the source unchanged.
+            CopyErrorCategory::SourceMissing
+            | CopyErrorCategory::SourceUnreadable
+            | CopyErrorCategory::DestinationUnwritable
+            | CopyErrorCategory::UnsupportedEntry
+            | CopyErrorCategory::ShortWrite
+            | CopyErrorCategory::MetadataFailed
+            | CopyErrorCategory::Io => ErrorCode::CopyFailed,
+        },
+        InstallError::Store(error) => store(error).code,
+        // A failed completion rule and a cancelled install leave the same
+        // retained shape (design §4 step 4: "errors or interruption leave
+        // the directory and diagnostic row for inspection"), which `gwz
+        // local list` shows as `creating/incomplete`; the message says
+        // which it was.
+        InstallError::Incomplete(_) | InstallError::Cancelled => ErrorCode::DestinationIncomplete,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gwz_family_model::{MemberName, MemberState};
+    use gwz_copy_contract::CopyError;
+    use gwz_family_model::{MemberName, MemberState, RemoteNameCollision};
     use gwz_family_store_contract::StoreOperation;
+    use gwz_repo_contract::LayoutHazard;
+    use gwz_workspace_install::CompletionFault;
     use std::path::PathBuf;
 
     #[test]
-    fn refusals_and_store_errors_map_onto_existing_codes_only() {
+    fn refusals_and_store_errors_map_onto_the_registry() {
         let name = MemberName::parse("A").unwrap();
         assert_eq!(
             refusal(&Refusal::NameCollision {
@@ -224,6 +324,178 @@ mod tests {
                 "{}",
                 not_ready.message
             );
+        }
+    }
+
+    fn copy_error(category: CopyErrorCategory) -> InstallError {
+        InstallError::Copy(Box::new(CopyError {
+            failed_path: PathBuf::from("app/locked.txt"),
+            category,
+            detail: "detail".to_owned(),
+            partial: gwz_copy_contract::CopyReport::default(),
+        }))
+    }
+
+    /// LCM1.1 fix 1 (2026-09-06): the four local-create outcomes are their
+    /// own codes, `unsupported_operation` is exactly "not built yet" and
+    /// `io_error` exactly an I/O failure -- at every call site that decides
+    /// a code: the capture before the lock and the ports (`install_port_code`),
+    /// admission (`install_refusal_code`) and the failure (`install_error_code`).
+    #[test]
+    fn install_failures_map_onto_the_four_local_create_codes() {
+        let hazard = LayoutError::Unsupported {
+            path: PathBuf::from("/src/app"),
+            hazards: vec![LayoutHazard::Alternates {
+                path: PathBuf::from("/src/app/.git/objects/info/alternates"),
+            }],
+        };
+        // A §4.0 hazard, before the lock and at admission alike.
+        assert_eq!(
+            install_port_code(&InstallPortError::Layout(hazard.clone())),
+            ErrorCode::UnsupportedSourceLayout
+        );
+        assert_eq!(
+            install_refusal_code(&InstallRefusal::SourceLayout(hazard.clone())),
+            ErrorCode::UnsupportedSourceLayout
+        );
+        assert_eq!(
+            install_error_code(&InstallError::Refused(vec![InstallRefusal::SourceLayout(
+                hazard
+            )])),
+            ErrorCode::UnsupportedSourceLayout
+        );
+        assert_eq!(
+            layout_code(&LayoutError::NotARepository {
+                path: PathBuf::from("/src/app")
+            }),
+            ErrorCode::UnsupportedSourceLayout
+        );
+        // An inspector that could not read is I/O; one that does not inspect
+        // is a build gap -- neither is a layout verdict.
+        assert_eq!(
+            layout_code(&LayoutError::ReadFailed {
+                path: PathBuf::from("/src/app"),
+                detail: "EIO".to_owned()
+            }),
+            ErrorCode::IoError
+        );
+        assert_eq!(
+            layout_code(&LayoutError::Unimplemented { operation: "x" }),
+            ErrorCode::UnsupportedOperation
+        );
+        assert_eq!(
+            install_port_code(&InstallPortError::Unimplemented { operation: "x" }),
+            ErrorCode::UnsupportedOperation
+        );
+        // Drift.
+        let drift = InstallPortError::Drift {
+            detail: "@root: branches differ".to_owned(),
+        };
+        assert_eq!(install_port_code(&drift), ErrorCode::SourceDrift);
+        assert_eq!(
+            install_error_code(&InstallError::Source(Box::new(drift.clone()))),
+            ErrorCode::SourceDrift
+        );
+        assert_eq!(
+            install_error_code(&InstallError::Port(Box::new(drift))),
+            ErrorCode::SourceDrift
+        );
+        // The I/O-class port errors stay `io_error`.
+        for error in [
+            InstallPortError::Construction {
+                detail: "x".to_owned(),
+            },
+            InstallPortError::Configuration {
+                detail: "x".to_owned(),
+            },
+            InstallPortError::Destination {
+                path: PathBuf::from("/dest"),
+                detail: "x".to_owned(),
+            },
+        ] {
+            assert_eq!(install_port_code(&error), ErrorCode::IoError, "{error}");
+        }
+        // The copy: every failure category is `copy_failed`; an occupied
+        // destination stays the collision it always was; a copier that does
+        // not copy is a build gap; a cancelled copy is the retained shape.
+        for category in [
+            CopyErrorCategory::SourceMissing,
+            CopyErrorCategory::SourceUnreadable,
+            CopyErrorCategory::DestinationUnwritable,
+            CopyErrorCategory::UnsupportedEntry,
+            CopyErrorCategory::ShortWrite,
+            CopyErrorCategory::MetadataFailed,
+            CopyErrorCategory::Io,
+        ] {
+            assert_eq!(
+                install_error_code(&copy_error(category)),
+                ErrorCode::CopyFailed,
+                "{category:?}"
+            );
+        }
+        assert_eq!(
+            install_error_code(&copy_error(CopyErrorCategory::DestinationNotEmpty)),
+            ErrorCode::PathCollision
+        );
+        assert_eq!(
+            install_error_code(&copy_error(CopyErrorCategory::Unimplemented)),
+            ErrorCode::UnsupportedOperation
+        );
+        assert_eq!(
+            install_error_code(&copy_error(CopyErrorCategory::Cancelled)),
+            ErrorCode::DestinationIncomplete
+        );
+        // The completion rules and a cancelled install.
+        assert_eq!(
+            install_error_code(&InstallError::Incomplete(vec![
+                CompletionFault::NotIndependent {
+                    detail: "app: objects missing".to_owned()
+                }
+            ])),
+            ErrorCode::DestinationIncomplete
+        );
+        assert_eq!(
+            install_error_code(&InstallError::Cancelled),
+            ErrorCode::DestinationIncomplete
+        );
+        // The admission refusals that keep their existing codes.
+        assert_eq!(
+            install_refusal_code(&InstallRefusal::NameIsRemote(RemoteNameCollision {
+                name: "origin".to_owned(),
+                member: "@root".to_owned(),
+            })),
+            ErrorCode::InvalidRequest
+        );
+        assert_eq!(
+            install_refusal_code(&InstallRefusal::DestinationNotEmpty {
+                destination: PathBuf::from("/dest")
+            }),
+            ErrorCode::PathCollision
+        );
+        assert_eq!(
+            install_refusal_code(&InstallRefusal::SourceOpenMerge {
+                detail: "merge_1".to_owned()
+            }),
+            ErrorCode::OpenOperation
+        );
+        assert_eq!(
+            install_error_code(&InstallError::Store(Box::new(StoreError::Busy {
+                lock_path: PathBuf::from("/root/.gwz/local-family.lock")
+            }))),
+            ErrorCode::OpenOperation
+        );
+        // Nothing above is an overload: the four are distinct from each
+        // other and from the two codes they were folded into.
+        let four = [
+            ErrorCode::UnsupportedSourceLayout,
+            ErrorCode::CopyFailed,
+            ErrorCode::SourceDrift,
+            ErrorCode::DestinationIncomplete,
+        ];
+        for (index, code) in four.iter().enumerate() {
+            assert_ne!(*code, ErrorCode::UnsupportedOperation);
+            assert_ne!(*code, ErrorCode::IoError);
+            assert!(four[index + 1..].iter().all(|other| other != code));
         }
     }
 }

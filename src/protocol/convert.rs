@@ -71,6 +71,10 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::RecoveryEvidenceMismatch => Self::RecoveryEvidenceMismatch,
             model::ErrorCode::TerminalRollbackMismatch => Self::TerminalRollbackMismatch,
             model::ErrorCode::UnknownLocal => Self::UnknownLocal,
+            model::ErrorCode::UnsupportedSourceLayout => Self::UnsupportedSourceLayout,
+            model::ErrorCode::CopyFailed => Self::CopyFailed,
+            model::ErrorCode::SourceDrift => Self::SourceDrift,
+            model::ErrorCode::DestinationIncomplete => Self::DestinationIncomplete,
         }
     }
 }

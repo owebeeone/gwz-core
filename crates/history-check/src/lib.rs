@@ -51,6 +51,24 @@
 //! LCM1.0c follow-up 2) — must present it with that named source so it can
 //! be verified.
 //!
+//! # Connectivity (design §4.0 dest-complete)
+//!
+//! [`check_connectivity`] answers a different question with the same walk:
+//! is every protected root of **one** repository self-contained in that
+//! repository's own object store -- its exact object present and its entire
+//! subgraph readable? It walks from every protected root itself, so a
+//! reflog entry, a stash entry or a coordination record counts exactly like
+//! a ref: the question is whether the store holds what the root names, not
+//! whether a durable witness retains it. `check_history` with the
+//! repository as its own witness is *not* this check: its eligibility rule
+//! ([`is_eligible_witness_root`]) rightly excludes a witness's own reflog
+//! and stash entries, so a commit only a reflog names is "unpreserved"
+//! there even when the store holds it whole -- the state of every real
+//! repository (LCM1.1 fix 2, 2026-09-06). The connectivity walk is bounded
+//! by the same [`Limits`], memoised the same way, cancellable at the same
+//! points, and persists nothing; an exceeded limit is `Unknown`, never
+//! `Complete`.
+//!
 //! # One call per witness store
 //!
 //! `check_history` takes one `ObjectReader`, and that reader must serve
@@ -318,6 +336,114 @@ pub fn check_history(
     verifier.conclude(protected, witnesses, &eligible)
 }
 
+/// The answer to design §4.0 dest-complete for one repository: whether
+/// every protected root is self-contained in the repository's own store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectivityOutcome {
+    /// Every protected root's object and entire subgraph were read from the
+    /// store.
+    Complete(ConnectivityCoverage),
+    /// At least one root names an object the store does not hold, or has
+    /// one missing beneath it; every such root is listed with the first
+    /// missing object found under it.
+    Incomplete(Vec<MissingObject>),
+    /// The walk could not conclude: an incomplete inventory, evidence this
+    /// verifier does not interpret, an unreadable or oversized object, an
+    /// exceeded limit, or cancellation.
+    Unknown(Vec<UnknownReason>),
+}
+
+impl ConnectivityOutcome {
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete(_))
+    }
+}
+
+/// What a complete connectivity walk read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConnectivityCoverage {
+    pub roots_checked: u64,
+    /// Distinct objects read from the store: every object reachable from
+    /// any protected root, once (memoised across roots).
+    pub objects_visited: u64,
+    /// Peak bookkeeping bytes accounted during the walk.
+    pub bookkeeping_bytes: u64,
+}
+
+/// One protected root the store does not hold whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingObject {
+    pub root: ProtectedRoot,
+    /// The first object found missing beneath the root, or the root's own
+    /// object when that is what is missing.
+    pub missing: ObjectId,
+}
+
+/// Decide whether every root in `protected` is self-contained in the store
+/// `reader` serves (design §4.0 dest-complete: "validate reachable object
+/// connectivity ... fails on missing objects"). Every protected root is
+/// walked from itself; an object is read once however many roots reach it.
+/// `reader` must serve exactly one repository's own object store with
+/// alternates disabled -- that is the caller's admission, not this
+/// function's.
+///
+/// `Unknown` > `Incomplete` > `Complete`, as for [`check_history`]: an
+/// inventory that is itself incomplete (`ProtectedRoots::unknown`, lane I
+/// proposal I-2) cannot prove a complete store and is `Unknown` before any
+/// read; so is evidence this verifier does not interpret, a root count over
+/// `limits.max_roots`, a bookkeeping walk over `limits.max_bookkeeping_bytes`,
+/// an object over `limits.reads`, or cancellation. `ReadError::Missing` is
+/// the one conclusion: the store definitively lacks the object, and the
+/// root above it is `Incomplete`.
+pub fn check_connectivity(
+    protected: &ProtectedRoots,
+    reader: &dyn ObjectReader,
+    limits: Limits,
+    cancellation: &dyn Cancellation,
+) -> ConnectivityOutcome {
+    if cancellation.is_cancelled() {
+        return ConnectivityOutcome::Unknown(vec![cancelled()]);
+    }
+    if !protected.is_complete() {
+        return ConnectivityOutcome::Unknown(protected.unknown.clone());
+    }
+    if protected.roots.len() as u64 > limits.max_roots {
+        return ConnectivityOutcome::Unknown(vec![UnknownReason::new(
+            UnknownKind::LimitExceeded,
+            format!(
+                "{} protected roots exceed the {} root limit",
+                protected.roots.len(),
+                limits.max_roots
+            ),
+        )]);
+    }
+    let unsupported: Vec<UnknownReason> = protected
+        .roots
+        .iter()
+        .filter_map(|root| match &root.source {
+            RootSource::Other { detail } => Some(UnknownReason::new(
+                UnknownKind::UnsupportedEvidence,
+                format!(
+                    "protected root {} is evidence this verifier does not interpret: {detail}",
+                    root.oid
+                ),
+            )),
+            _ => None,
+        })
+        .collect();
+    if !unsupported.is_empty() {
+        return ConnectivityOutcome::Unknown(unsupported);
+    }
+    if protected.roots.is_empty() {
+        return ConnectivityOutcome::Complete(ConnectivityCoverage::default());
+    }
+    let mut verifier = Verifier::new(reader, cancellation, limits);
+    if let Err(reason) = verifier.run(protected, &protected.roots) {
+        return ConnectivityOutcome::Unknown(vec![reason]);
+    }
+    verifier.conclude_connectivity(protected)
+}
+
 // ---------------------------------------------------------------- internals
 
 /// Bytes charged for one entry of a map keyed by an object id, beyond the
@@ -572,6 +698,37 @@ impl<'a> Verifier<'a> {
             }
             Err(error) => Err(read_reason(&error)),
         }
+    }
+
+    /// Every protected root was walked from itself: complete means the
+    /// store holds its whole subgraph; anything else names the first object
+    /// found missing beneath it (the root's own object when that is what
+    /// the store lacks).
+    fn conclude_connectivity(self, protected: &ProtectedRoots) -> ConnectivityOutcome {
+        let mut missing: Vec<MissingObject> = Vec::new();
+        for root in &protected.roots {
+            match self.state.get(&root.oid) {
+                Some(NodeState::Complete) => {}
+                Some(NodeState::Incomplete | NodeState::InProgress) | None => {
+                    missing.push(MissingObject {
+                        root: root.clone(),
+                        missing: self
+                            .first_missing
+                            .get(&root.oid)
+                            .cloned()
+                            .unwrap_or_else(|| root.oid.clone()),
+                    });
+                }
+            }
+        }
+        if !missing.is_empty() {
+            return ConnectivityOutcome::Incomplete(missing);
+        }
+        ConnectivityOutcome::Complete(ConnectivityCoverage {
+            roots_checked: protected.roots.len() as u64,
+            objects_visited: self.objects_visited,
+            bookkeeping_bytes: self.budget.peak,
+        })
     }
 
     fn conclude(
