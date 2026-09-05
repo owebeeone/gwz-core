@@ -358,6 +358,17 @@ pub enum ListState {
     Unobserved,
 }
 
+impl ListState {
+    /// Is this row usable as a family endpoint? Only [`Ready`](Self::Ready)
+    /// is: an incomplete, interrupted, missing, detached, mismatched,
+    /// malformed or unobserved destination is not an exchange endpoint even
+    /// when its manifest happens to exist (design §3.1). Every other state
+    /// is a report, not a step toward becoming ready.
+    pub const fn is_family_endpoint(self) -> bool {
+        matches!(self, Self::Ready)
+    }
+}
+
 /// Classify one recorded row against its observed target. Pure; never
 /// repairs, promotes or deletes.
 pub fn classify_target(row: &MemberRow, target: Option<&TargetObservation>) -> ListState {
@@ -735,6 +746,24 @@ mod list_table_tests {
 
         // No observation supplied is its own answer, never a guess.
         assert_eq!(observed(Ready, None), ListState::Unobserved);
+
+        // Exactly one of them is a family endpoint.
+        for state in [
+            ListState::Ready,
+            ListState::Incomplete,
+            ListState::InterruptedDisposal,
+            ListState::Missing,
+            ListState::PointerRemoved,
+            ListState::Mismatched,
+            ListState::Malformed,
+            ListState::Unobserved,
+        ] {
+            assert_eq!(
+                state.is_family_endpoint(),
+                state == ListState::Ready,
+                "{state:?}"
+            );
+        }
     }
 
     /// The projection reports; it never promotes, repairs or removes.
