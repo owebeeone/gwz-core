@@ -154,20 +154,35 @@ python3 scripts/retained_readers/retained_reader_matrix.py \
 `--attestation-out` requires non-null `GITHUB_SHA` and `GITHUB_RUN_ID` and is
 valid only with `--evidence-out`.
 
-`evidence-macos-aarch64.json` is the checked result of the full behavioral
-case set against the actual macOS arm64 release artifacts: every required
-executable reader/case result passed. CI repeats the complete behavioral matrix on
-Linux x86_64, Linux arm64, Windows x86_64, and both macOS architectures.
-Windows arm64 is historically undistributed and remains explicit substitute
-evidence rather than a skip.
+`evidence-macos-aarch64.json` is the checked result of the behavioral case
+set against the actual macOS arm64 release artifacts: every required
+executable reader/case result passed. Windows arm64 is historically
+undistributed and remains explicit substitute evidence rather than a skip.
 
-`.github/workflows/retained-readers.yml` runs this same case set on Linux and
-Windows x86_64, Linux arm64, and both supported macOS architectures. It uploads
-normalized evidence plus a commit/run attestation for every lane. Unit tests
-keep the checked macOS evidence byte-canonical and bind it to the current
-manifest, cases, fixtures, generator, and evaluator; the separate CI
-attestation binds each platform run without introducing a self-referential
-commit hash into checked evidence.
+`.github/workflows/retained-readers.yml` no longer re-runs that matrix. At the
+M5d landing (2026-09-05) the five-platform old-binary job was RETIRED
+(operator: "move on from v0.13"): it downloaded released v0.9.2/v0.10.2
+binaries over the network on five runners on every push to `main`. What the
+workflow still runs is the offline half -- the predicate checker, this
+package's unit tests, and `validate`/`gate-ready` over the manifest -- on
+ubuntu-24.04 and windows-2022. The matrix driver, the evidence comparer and
+the checked evidence remain in the tree and remain unit-tested; nothing
+schedules them. Unit tests keep the checked macOS evidence byte-canonical and
+bind it to the current manifest, cases, fixtures, generator, and evaluator, so
+the record stays honest about the run it came from even though no run repeats
+it. Re-running a lane by hand (below) is how fresh evidence is produced now.
+
+The same landing deleted nine open-v0 behavioral cases -- the
+`custom-message-pending`, `custom-message-pending-completed`,
+`custom-message-pending-wrong-message` and `no-ff-fast-forwardable` rows that
+drove an old reader through `continue`/`abort`/`preserve` on an open v0
+record. 0.14 is v1-only and creates no such record. The two
+`pre-record-open-v0` cases are KEPT: they are the only coverage of the
+`workspace-status` and `legacy-branch-merge` commands
+`retained_reader_matrix.FROZEN_COMMANDS` requires of the two v0.9.2 readers,
+and their claim -- that a reader with no merge-record dispatcher leaves an
+unknown open record untouched -- is a fact about that released binary, not
+about what 0.14 writes.
 
 Compare fresh macOS evidence with the checked portable semantic projection
 (only Git version, Python version, and Python executable digest are excluded):

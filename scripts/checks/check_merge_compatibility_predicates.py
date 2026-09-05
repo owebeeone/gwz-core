@@ -1,34 +1,48 @@
 #!/usr/bin/env python3
-"""Validate the closed I2 v0-to-v1 migration whitelist and fixture corpus."""
+"""Validate the closed I2 archive corpus and wire-reason registry.
+
+M5d (2026-09-05), operator ruling "remove the fragile stuff". This checker used
+to validate a v0->v1 migration registry -- `migration_whitelist`,
+`fixture_corpus`, `valid_unlisted_corpus`, `migration_policy` and
+`descriptor_schema` -- whose rows named Rust test SOURCE FILES by path and
+asserted the file, its `fn` and its subcase string existed. `55cf479` deleted
+the v0 merge engine and its test corpus, so every one of those paths dangled
+and the push-to-main gate went red on `characterization_v0.rs`.
+
+The whole class is gone, not re-pointed: the five adapter sections are deleted
+and this checker no longer resolves any registry value to a file on disk. It
+takes no `--core`, imports no source tree, and cannot break on a rename. What
+remains indexes DATA and WIRE CODES -- things that need an index and that no
+test-name coupling can supply:
+
+  * `normalization` -- the closed canonicalization rule, normative definition
+    corpus and enum registry the archive/projection vocabulary is stated in.
+  * `archive_corpus` -- the ten Table B archived-v0 decode shapes of the O8
+    archive-equivalence decision, recorded by CLAUSE. Users' pre-0.14 history
+    must keep decoding, so the M5d charter retains it.
+  * `rejection_reasons` -- despite its name this is the wire-code reason
+    registry that `dev-docs/GwzM5-8I2ProtocolContract.md` §1 binds codes 48-61
+    to ("Allowed exact reasons are the matching lists in
+    `GwzM5-8I2CompatibilityPredicates.json`; they are not free-form
+    diagnostics"). It is protocol surface, not v0 scaffolding.
+"""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any, Mapping
 
 
-SCHEMA = "gwz.merge-i2-compatibility-predicates/v2"
-DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+SCHEMA = "gwz.merge-i2-compatibility-predicates/v3"
 TOP_KEYS = {
     "schema",
     "normalization",
-    "migration_policy",
-    "descriptor_schema",
-    "migration_whitelist",
-    "fixture_corpus",
-    "valid_unlisted_corpus",
     # R2-E Phase E5.2, 2026-08-28. The standalone archive corpus of the O8
-    # archive-equivalence mechanism decision. It is deliberately NOT a third
-    # corpus of the migration registry: `GwzM5-8R4bG-Evidence.md` §12.7 records
-    # that "there is no registry vocabulary in which an archive shape could be
-    # bound", and §12.9(c) that widening `valid_unlisted_corpus` "would weaken
-    # the registry, not extend it". Archive rows are therefore cited by clause,
-    # in the shape §12.9's disposition table uses, and validated here so the
-    # per-scenario record exists where this checker looks.
+    # archive-equivalence mechanism decision. Archive rows are cited by clause,
+    # in the shape `GwzM5-8R4bG-Evidence.md` §12.9's disposition table uses, and
+    # validated here so the per-scenario record exists where this checker looks.
     "archive_corpus",
     "rejection_reasons",
 }
@@ -40,103 +54,6 @@ EXPECTED_IDENTITY = (
     "selected_path and branch names to attached_live_branch only after duplicate/collision and "
     "exact record-to-live relations are validated. @root remains @root."
 )
-POLICY_KEYS = {
-    "match",
-    "valid_unlisted",
-    "recovery_required",
-    "terminal",
-    "no_match",
-}
-SCHEMA_KEYS = {
-    "top_level",
-    "operation",
-    "selection",
-    "participant",
-    "pending",
-    "baseline",
-    "publication",
-    "observation",
-    "participant_observation",
-}
-DESCRIPTOR_KEYS = {
-    "location",
-    "mode",
-    "operation",
-    "selection",
-    "participants",
-    "baseline",
-    "publication",
-    "observation",
-}
-OPERATION_KEYS = {"state", "drift"}
-SELECTION_KEYS = {"ordered_ids", "root_selected"}
-PARTICIPANT_KEYS = {
-    "id",
-    "path",
-    "target_kind",
-    "target_branch",
-    "state",
-    "result",
-    "pending",
-    "conflict",
-    "error",
-    "preservation",
-    "drift",
-}
-PENDING_KEYS = {"kind", "expected", "commit_spec"}
-BASELINE_KEYS = {
-    "lock_yaml",
-    "manifest_yaml",
-    "lock_commit_hash",
-    "manifest_commit_hash",
-    "root_checkout",
-    "root_commit_hash",
-}
-PUBLICATION_KEYS = {
-    "presence",
-    "step",
-    "candidate",
-    "composition",
-    "hashes",
-    "root_merge",
-    "evidence_rolled_back",
-    "root_preservation",
-    "preservation_prefix",
-}
-OBSERVATION_KEYS = {"participants", "root", "preservation", "rollback"}
-PARTICIPANT_OBSERVATION_KEYS = {
-    "id",
-    "action",
-    "head",
-    "target_ref",
-    "index",
-    "worktree",
-}
-CLASSIFICATION_KEYS = {"base_phase", "acceptance", "metadata_source", "next_action"}
-RULE_KEYS = {"id", "descriptor_sha256", "descriptor", "classification"}
-FIXTURE_KEYS = {"case_id", "test", "subcase", "rule"}
-UNLISTED_KEYS = {"case_id", "test", "subcase", "operation_state", "reason"}
-# Every non-`finalizing` open state a valid-unlisted corpus row may declare.
-# R2-E Phase E5.1, 2026-08-28: the three pre-acceptance states join the five
-# the corpus already carried, for `GwzM5-8R4bG-Evidence.md` §12.9(d)'s ten
-# unbound progress rows. This EXTENDS the corpus vocabulary and does not weaken
-# it: the load-bearing closure the corpus rests on is `assert_ne!(record.state,
-# OperationState::Finalizing)` read against "every whitelist rule is
-# open+finalizing" (`compatibility_v0.rs`), and every state listed here is
-# non-`finalizing`, so a row declaring one still cannot match a rule. §12.9(c)'s
-# ruling that widening the corpus "to admit these rows would weaken the
-# registry, not extend it" is about `finalizing` shapes specifically, and
-# `finalizing` is deliberately still absent below.
-VALID_UNLISTED_STATES = {
-    "aborted",
-    "awaiting_resolution",
-    "completed",
-    "executing",
-    "halted",
-    "preserving",
-    "recovery_required",
-    "rolling_back",
-}
 EXPECTED_ENUMS = {
     "location": {"open"},
     "mode": {"normal"},
@@ -172,13 +89,6 @@ EXPECTED_DEFINITIONS = {
     "prefix_boundary": "The persisted composition checkout has exact candidate marker, lock, boundary, and index publication entries; no other change to those publication paths exists.",
     "no_reverse_owner": "No preservation or rollback owner, artifact, prefix, ref, stash, bundle, or reverse mutation exists.",
 }
-EXPECTED_POLICY = {
-    "match": "After complete structural validation, normalize record plus live observation and require byte-for-byte canonical descriptor equality with exactly one whitelist rule.",
-    "valid_unlisted": "A structurally valid v0 descriptor not listed here is not corrupt and is never staged for migration. Open read-only status remains byte-exact and projects source/version with acceptance and recovery absent. Mutating commands remain on the existing v0 lifecycle and may write v0 only when that released path's existing preflight authorizes the mutation. Archived v0 uses only the separately frozen archive decoder and legacy projection.",
-    "recovery_required": "No v0 recovery_required, preserving, or rolling_back descriptor is migration-eligible in A1. Origin/owner ambiguity is therefore outside the matcher and cannot be manufactured away by whitelist membership.",
-    "terminal": "Completed and aborted v0 records remain v0 and use the existing byte-preserving archive path.",
-    "no_match": "Zero matches means valid-unlisted v0, not a compatibility error. Multiple matches is a registry defect and fails the build/checker.",
-}
 # --- the standalone archive corpus (R2-E Phase E5.2, 2026-08-28) ----------
 #
 # The two-tier mechanism of the O8 archive-equivalence decision. Tier 1 is
@@ -188,8 +98,16 @@ EXPECTED_POLICY = {
 # byte equality is unavailable by construction. Both statuses are per row and
 # per tier, so a row can never report the O8 archive clause met on a tier it
 # has not executed.
+#
+# M5d (2026-09-05): a tier no longer carries `test`/`subcase`. Those two fields
+# existed only to address a Rust source file, and the removed assertion class
+# resolved them to disk. `status` plus `carrier` keeps the property that made
+# the pair load-bearing -- an unexecuted tier must name the lane that owes it,
+# and an executed one must name no carrier, so a row can never look discharged
+# and owed at once. TIER_KEYS being exact is what now holds the class shut: a
+# row that reintroduces a `test` field is rejected as an unregistered field.
 ARCHIVE_KEYS = {"shape", "fixture", "disposition", "clause", "tier1", "tier2"}
-TIER_KEYS = {"status", "test", "subcase", "carrier"}
+TIER_KEYS = {"status", "carrier"}
 ARCHIVE_DISPOSITIONS = {"byte-preserved-v0-origin", "pending-fixture"}
 TIER_STATUSES = {"executed", "owed", "pending-fixture"}
 # `GwzM5-8R4bG-Evidence.md` §12.4 "Table B -- the 10 archive shapes", in its
@@ -254,10 +172,6 @@ def string_list(value: Any, path: str, *, nonempty: bool = True) -> list[str]:
     return value
 
 
-def canonical(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-
-
 def load_json_exact(text_value: str) -> Any:
     def exact_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -269,145 +183,7 @@ def load_json_exact(text_value: str) -> Any:
     return json.loads(text_value, object_pairs_hook=exact_object)
 
 
-def descriptor_digest(value: Any) -> str:
-    return hashlib.sha256(canonical(value).encode()).hexdigest()
-
-
-def fixture_source(core: Path, fixture: str) -> tuple[Path, str]:
-    parts = fixture.split("::")
-    require(
-        len(parts) >= 4 and parts[0] == "workspace_ops",
-        f"fixture {fixture!r} is not an exact workspace_ops test path",
-    )
-    function = parts[-1]
-    require(
-        re.fullmatch(r"[a-z][a-z0-9_]*", function) is not None,
-        f"fixture {fixture!r} has an invalid test name",
-    )
-    source = core / "src" / "workspace_ops" / Path(*parts[1:-1]).with_suffix(".rs")
-    return source, function
-
-
-def validate_fixture(core: Path, row: Mapping[str, Any], path: str) -> None:
-    fixture = text(row["test"], f"{path}.test")
-    subcase = text(row["subcase"], f"{path}.subcase")
-    source, function = fixture_source(core, fixture)
-    require(source.is_file(), f"{path}.test source does not exist: {source}")
-    source_text = source.read_text(encoding="utf-8")
-    require(
-        re.search(rf"(?m)^fn\s+{re.escape(function)}\s*\(", source_text) is not None,
-        f"{path}.test function does not exist",
-    )
-    require(
-        f'"{subcase}"' in source_text,
-        f"{path}.subcase {subcase!r} is not exported by its Rust test",
-    )
-
-
-def enum(enums: Mapping[str, set[str]], name: str, value: Any, path: str) -> str:
-    require(value in enums[name], f"{path} is not a registered {name}")
-    return value
-
-
-def expected_classification(descriptor: Mapping[str, Any]) -> Mapping[str, str]:
-    publication = descriptor["publication"]
-    result = descriptor["participants"][0]["result"]
-    shape = (
-        publication["presence"],
-        publication["step"],
-        publication["candidate"],
-        publication["composition"],
-        publication["hashes"],
-        descriptor["observation"]["root"],
-        result,
-    )
-    table = {
-        ("absent", "absent", "absent", "absent", "empty", "baseline_unborn", "changed_exact"):
-            ("pre_candidate", "construct_operation_baseline", "validate_results"),
-        ("present", "validating_results", "absent", "absent", "empty", "baseline_unborn", "changed_exact"):
-            ("pre_candidate", "construct_operation_baseline", "validate_results"),
-        ("present", "preparing_candidate", "complete_valid", "absent", "empty", "baseline_unborn", "changed_exact"):
-            ("candidate_persisted", "recover_candidate", "create_or_adopt_evidence"),
-        ("present", "committing_evidence", "complete_valid", "absent", "empty", "unrecorded_evidence", "changed_exact"):
-            ("evidence_unrecorded", "recover_candidate", "create_or_adopt_evidence"),
-        ("present", "committing_evidence", "complete_valid", "complete_valid", "canonical_valid", "recorded_evidence", "changed_exact"):
-            ("evidence_recorded", "recover_candidate", "publish_candidate"),
-        ("present", "publishing_candidate", "complete_valid", "complete_valid", "canonical_valid", "prefix_boundary", "changed_exact"):
-            ("publishing_prefix", "recover_candidate", "publish_candidate"),
-        ("present", "complete", "absent", "absent", "empty", "baseline_unborn", "equals_before"):
-            ("no_publication_complete", "construct_operation_baseline", "complete_no_publication"),
-    }
-    require(shape in table, f"descriptor publication/observation shape is not migration-eligible: {shape!r}")
-    base, acceptance, action = table[shape]
-    return {
-        "base_phase": base,
-        "acceptance": acceptance,
-        "metadata_source": "operation_baseline",
-        "next_action": action,
-    }
-
-
-def validate_descriptor(
-    descriptor: Any, enums: Mapping[str, set[str]], path: str
-) -> Mapping[str, Any]:
-    row = exact_keys(descriptor, DESCRIPTOR_KEYS, path)
-    enum(enums, "location", row["location"], f"{path}.location")
-    enum(enums, "mode", row["mode"], f"{path}.mode")
-    operation = exact_keys(row["operation"], OPERATION_KEYS, f"{path}.operation")
-    enum(enums, "operation_state", operation["state"], f"{path}.operation.state")
-    require(operation["drift"] == [], f"{path}.operation.drift must be empty")
-
-    selection = exact_keys(row["selection"], SELECTION_KEYS, f"{path}.selection")
-    ids = string_list(selection["ordered_ids"], f"{path}.selection.ordered_ids")
-    require(ids == ["p0"], f"{path} identities must be the one-member alpha-normalized whitelist shape")
-    require(selection["root_selected"] is False, f"{path}.selection.root_selected must be false in the A1 whitelist")
-
-    participants = row["participants"]
-    require(isinstance(participants, list) and len(participants) == len(ids), f"{path}.participants must cover selection exactly")
-    for index, raw in enumerate(participants):
-        participant = exact_keys(raw, PARTICIPANT_KEYS, f"{path}.participants[{index}]")
-        require(participant["id"] == ids[index], f"{path}.participants are not in selection order")
-        require(participant["path"] == "selected_path", f"{path}.participants[{index}].path is not alpha-normalized")
-        enum(enums, "target_kind", participant["target_kind"], f"{path}.participants[{index}].target_kind")
-        require(participant["target_branch"] == "attached_live_branch", f"{path}.participants[{index}].target_branch is invalid")
-        enum(enums, "participant_state", participant["state"], f"{path}.participants[{index}].state")
-        enum(enums, "result_relation", participant["result"], f"{path}.participants[{index}].result")
-        require(exact_keys(participant["pending"], PENDING_KEYS, f"{path}.participants[{index}].pending") == {"kind": "absent", "expected": "absent", "commit_spec": "absent"}, f"{path}.participants[{index}].pending must be absent")
-        for key in ("conflict", "error", "preservation"):
-            require(participant[key] == "absent", f"{path}.participants[{index}].{key} must be absent")
-        require(participant["drift"] == [], f"{path}.participants[{index}].drift must be empty")
-
-    baseline = exact_keys(row["baseline"], BASELINE_KEYS, f"{path}.baseline")
-    for key in ("lock_yaml", "manifest_yaml", "lock_commit_hash", "manifest_commit_hash", "root_commit_hash"):
-        enum(enums, "presence_relation", baseline[key], f"{path}.baseline.{key}")
-    require(baseline["lock_yaml"] == baseline["manifest_yaml"] == "present_digest_valid", f"{path}.baseline bytes must be present and valid")
-    require(baseline["lock_commit_hash"] == baseline["manifest_commit_hash"] == baseline["root_commit_hash"] == "absent", f"{path}.baseline unborn commit fields must be absent")
-    enum(enums, "root_checkout", baseline["root_checkout"], f"{path}.baseline.root_checkout")
-
-    publication = exact_keys(row["publication"], PUBLICATION_KEYS, f"{path}.publication")
-    enum(enums, "publication_presence", publication["presence"], f"{path}.publication.presence")
-    enum(enums, "publication_step", publication["step"], f"{path}.publication.step")
-    enum(enums, "candidate_relation", publication["candidate"], f"{path}.publication.candidate")
-    enum(enums, "composition_relation", publication["composition"], f"{path}.publication.composition")
-    enum(enums, "hash_relation", publication["hashes"], f"{path}.publication.hashes")
-    require(publication["root_merge"] == "absent", f"{path}.publication.root_merge must be absent")
-    require(publication["evidence_rolled_back"] is False, f"{path}.publication.evidence_rolled_back must be false")
-    require(publication["root_preservation"] == publication["preservation_prefix"] == "absent", f"{path}.publication reverse evidence must be absent")
-
-    observation = exact_keys(row["observation"], OBSERVATION_KEYS, f"{path}.observation")
-    observations = observation["participants"]
-    require(isinstance(observations, list) and len(observations) == len(ids), f"{path}.observation.participants must cover selection exactly")
-    for index, raw in enumerate(observations):
-        item = exact_keys(raw, PARTICIPANT_OBSERVATION_KEYS, f"{path}.observation.participants[{index}]")
-        require(item == {"id": ids[index], "action": "none", "head": "equals_result", "target_ref": "equals_result", "index": "clean", "worktree": "clean"}, f"{path}.observation.participants[{index}] is not exact")
-    enum(enums, "root_observation", observation["root"], f"{path}.observation.root")
-    require(observation["preservation"] == observation["rollback"] == "none", f"{path}.observation reverse owners must be none")
-    return row
-
-
-def validate_archive_tier(
-    core: Path, tier: Any, path: str, *, expected_status: str | None = None
-) -> str:
+def validate_archive_tier(tier: Any, path: str, *, expected_status: str | None = None) -> str:
     row = exact_keys(tier, TIER_KEYS, path)
     status = text(row["status"], f"{path}.status")
     require(status in TIER_STATUSES, f"{path}.status is not a registered tier status")
@@ -416,20 +192,16 @@ def validate_archive_tier(
         f"{path}.status must be {expected_status!r} for this row's disposition",
     )
     if status == "executed":
-        # An executed tier names its live Rust binding and carries no carrier:
-        # nothing is owed elsewhere.
+        # An executed tier carries no carrier: nothing is owed elsewhere.
         require(row["carrier"] is None, f"{path}.carrier must be absent on an executed tier")
-        validate_fixture(core, row, path)
         return status
-    # An unexecuted tier names its carrier and names no test, so a row can
-    # never look bound by a binding that does not exist.
-    require(row["test"] is None, f"{path}.test must be absent on an unexecuted tier")
-    require(row["subcase"] is None, f"{path}.subcase must be absent on an unexecuted tier")
+    # An unexecuted tier names the lane that owes it, so a row can never read
+    # as discharged and owed at the same time.
     text(row["carrier"], f"{path}.carrier")
     return status
 
 
-def validate_archive_corpus(corpus: Any, core: Path) -> None:
+def validate_archive_corpus(corpus: Any) -> None:
     require(isinstance(corpus, list), "archive_corpus must be an array")
     shapes = [
         text(exact_keys(row, ARCHIVE_KEYS, f"archive_corpus[{index}]")["shape"], "shape")
@@ -462,13 +234,13 @@ def validate_archive_corpus(corpus: Any, core: Path) -> None:
         if disposition == "pending-fixture":
             pending.add(shape)
             require(row["fixture"] == "none", f"{path}.fixture must be 'none' when unfixtured")
-            validate_archive_tier(core, row["tier1"], f"{path}.tier1", expected_status="pending-fixture")
-            validate_archive_tier(core, row["tier2"], f"{path}.tier2", expected_status="pending-fixture")
+            validate_archive_tier(row["tier1"], f"{path}.tier1", expected_status="pending-fixture")
+            validate_archive_tier(row["tier2"], f"{path}.tier2", expected_status="pending-fixture")
             continue
         # A fixtured v0-origin row owes its tier-1 byte-digest proof now.
-        validate_archive_tier(core, row["tier1"], f"{path}.tier1", expected_status="executed")
+        validate_archive_tier(row["tier1"], f"{path}.tier1", expected_status="executed")
         executed_tier1 += 1
-        validate_archive_tier(core, row["tier2"], f"{path}.tier2")
+        validate_archive_tier(row["tier2"], f"{path}.tier2")
     # The E0.2b §8 [P2-2] denominators, machine-enforced: 8 archive-corpus rows
     # plus 2 PENDING-FIXTURE, and the pending pair is exactly the §6.4 pair.
     require(
@@ -481,7 +253,7 @@ def validate_archive_corpus(corpus: Any, core: Path) -> None:
     )
 
 
-def validate(document: Any, core: Path) -> None:
+def validate(document: Any) -> None:
     root = exact_keys(document, TOP_KEYS, "registry")
     require(root["schema"] == SCHEMA, f"registry schema must be {SCHEMA!r}")
 
@@ -504,81 +276,7 @@ def validate(document: Any, core: Path) -> None:
     enums = {name: set(string_list(values, f"normalization.enums.{name}")) for name, values in raw_enums.items()}
     require(enums == EXPECTED_ENUMS, "normalization.enums must equal the closed I2 enum registry")
 
-    policy = exact_keys(root["migration_policy"], POLICY_KEYS, "migration_policy")
-    for name, value in policy.items():
-        text(value, f"migration_policy.{name}")
-    require(policy == EXPECTED_POLICY, "migration_policy must equal the closed policy corpus")
-    schema = exact_keys(root["descriptor_schema"], SCHEMA_KEYS, "descriptor_schema")
-    expected_schema = {
-        "top_level": DESCRIPTOR_KEYS,
-        "operation": OPERATION_KEYS,
-        "selection": SELECTION_KEYS,
-        "participant": PARTICIPANT_KEYS,
-        "pending": PENDING_KEYS,
-        "baseline": BASELINE_KEYS,
-        "publication": PUBLICATION_KEYS,
-        "observation": OBSERVATION_KEYS,
-        "participant_observation": PARTICIPANT_OBSERVATION_KEYS,
-    }
-    for name, fields in schema.items():
-        require(set(string_list(fields, f"descriptor_schema.{name}")) == expected_schema[name], f"descriptor_schema.{name} is not exact")
-
-    rules = root["migration_whitelist"]
-    require(isinstance(rules, list) and rules, "migration_whitelist must be nonempty")
-    rule_ids: set[str] = set()
-    identities: set[str] = set()
-    for index, raw in enumerate(rules):
-        path = f"migration_whitelist[{index}]"
-        rule = exact_keys(raw, RULE_KEYS, path)
-        rule_id = text(rule["id"], f"{path}.id")
-        require(rule_id not in rule_ids, f"duplicate rule id {rule_id!r}")
-        rule_ids.add(rule_id)
-        descriptor = validate_descriptor(rule["descriptor"], enums, f"{path}.descriptor")
-        digest = text(rule["descriptor_sha256"], f"{path}.descriptor_sha256")
-        require(DIGEST_RE.fullmatch(digest) is not None and digest == descriptor_digest(descriptor), f"{path}.descriptor_sha256 does not match canonical descriptor")
-        identity = canonical(descriptor)
-        require(identity not in identities, f"duplicate semantic descriptor at {path}")
-        identities.add(identity)
-        classification = exact_keys(rule["classification"], CLASSIFICATION_KEYS, f"{path}.classification")
-        for key in CLASSIFICATION_KEYS:
-            enum(enums, key, classification[key], f"{path}.classification.{key}")
-        require(classification == expected_classification(descriptor), f"{path}.classification does not match the executable shape rule")
-
-    corpus = root["fixture_corpus"]
-    require(isinstance(corpus, list) and corpus, "fixture_corpus must be nonempty")
-    case_ids: set[str] = set()
-    fixture_bindings: set[tuple[str, str]] = set()
-    coverage: dict[str, int] = {rule_id: 0 for rule_id in rule_ids}
-    for index, raw in enumerate(corpus):
-        path = f"fixture_corpus[{index}]"
-        row = exact_keys(raw, FIXTURE_KEYS, path)
-        case_id = text(row["case_id"], f"{path}.case_id")
-        require(case_id not in case_ids, f"duplicate fixture case id {case_id!r}")
-        case_ids.add(case_id)
-        validate_fixture(core, row, path)
-        binding = (row["test"], row["subcase"])
-        require(binding not in fixture_bindings, f"duplicate fixture test/subcase {binding!r}")
-        fixture_bindings.add(binding)
-        require(row["rule"] in rule_ids, f"{path}.rule is unknown")
-        coverage[row["rule"]] += 1
-    require(all(count == 1 for count in coverage.values()), f"fixture coverage must bind every whitelist rule exactly once: {coverage}")
-
-    unlisted = root["valid_unlisted_corpus"]
-    require(isinstance(unlisted, list) and unlisted, "valid_unlisted_corpus must be nonempty")
-    for index, raw in enumerate(unlisted):
-        path = f"valid_unlisted_corpus[{index}]"
-        row = exact_keys(raw, UNLISTED_KEYS, path)
-        case_id = text(row["case_id"], f"{path}.case_id")
-        require(case_id not in case_ids, f"duplicate corpus case id {case_id!r}")
-        case_ids.add(case_id)
-        validate_fixture(core, row, path)
-        require(
-            row["operation_state"] in VALID_UNLISTED_STATES,
-            f"{path}.operation_state is not an exact valid-unlisted state",
-        )
-        text(row["reason"], f"{path}.reason")
-
-    validate_archive_corpus(root["archive_corpus"], core)
+    validate_archive_corpus(root["archive_corpus"])
 
     reasons = root["rejection_reasons"]
     require(isinstance(reasons, dict) and reasons, "rejection_reasons must be nonempty")
@@ -591,14 +289,13 @@ def validate(document: Any, core: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("registry", type=Path)
-    parser.add_argument("--core", type=Path, required=True)
     args = parser.parse_args()
     document = load_json_exact(args.registry.read_text(encoding="utf-8"))
-    validate(document, args.core.resolve())
+    validate(document)
     print(
-        f"validated {len(document['migration_whitelist'])} migration rules, "
-        f"{len(document['fixture_corpus'])} runtime bindings, and "
-        f"{len(document['archive_corpus'])} archive shapes"
+        "validated the closed normalization corpus, "
+        f"{len(document['archive_corpus'])} archive shapes, and "
+        f"{len(document['rejection_reasons'])} rejection reasons"
     )
     return 0
 

@@ -25,7 +25,7 @@
     {
       "id": "v0-v1-dual-decode-v0-writer-floor",
       "release": "v0.11.0",
-      "description": "The A1 generation, described as shipped: the reader decodes both v0 and v1 merge records, and --no-ff starts create v1 records, but ordinary and custom-message starts still create v0 because the active writer floor ships at ACTIVE_WRITER_FLOOR = V0 — the named residual owned by milestone M5c, which raises the floor with the production v1 ordinary-start owner as one reviewed change. Creation is not the only way a v1 record appears: an ordinary v0 record left in the Finalizing/Normal shape is whitelist-eligible and MIGRATES to v1 on post-activation resume or abort, so a workspace in which --no-ff was never used can still hold a v1 record that older readers refuse. Registered ahead of its retained-reader artifacts, which do not exist until this release is published."
+      "description": "The A1 generation, as released: the reader decodes both v0 and v1 merge records, and --no-ff starts create v1 records, while ordinary and custom-message starts still create v0 because v0.11.0 shipped ACTIVE_WRITER_FLOOR = V0. Registered for decode truth; no retained-reader artifacts are pinned for this release. RETRUTHED at the M5d landing (2026-09-05): the entry used to forward-state milestone M5c raising the writer floor, and a whitelist migration that turned an ordinary Finalizing/Normal v0 record into a v1 one on post-activation resume or abort. Neither describes this tree. 0.14 is v1-only, writes no v0 at any floor, and refuses a pre-0.14 open record outright instead of migrating it, so the only v0 bytes a v0.11.0 reader can still meet are history it wrote itself."
     }
   ],
   "platforms": [

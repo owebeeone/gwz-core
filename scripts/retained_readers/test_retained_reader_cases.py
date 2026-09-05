@@ -271,28 +271,14 @@ class RetainedReaderCaseTests(unittest.TestCase):
         self.assertEqual(["merge", "--status"], status["args"])
         self.assertEqual(expected, status["expected"])
 
-    def test_continue_cases_classify_optional_workspace_boundary_rewrite(self) -> None:
-        document = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
-        by_id = {case["id"]: case for case in document["cases"]}
-        for case_id in (
-            "v0-custom-message-pending-continue",
-            "v0-no-ff-fast-forwardable-continue-known-failure",
-        ):
-            dynamic = by_id[case_id]["expected"]["mutation"]["dynamic"]
-            boundary = [item for item in dynamic if item["pattern"] == "text:.git/info/exclude"]
-            self.assertEqual(
-                [{"pattern": "text:.git/info/exclude", "minimum": 0, "maximum": 1}],
-                boundary,
-                case_id,
-            )
-            self.assertTrue(
-                any(
-                    item.get("kind") == "yaml-semantic"
-                    and item.get("semantic") == "merge-record"
-                    for item in by_id[case_id]["postconditions"]
-                ),
-                case_id,
-            )
+    # `test_continue_cases_classify_optional_workspace_boundary_rewrite` was
+    # deleted at the M5d landing (2026-09-05) with its subject: it read
+    # `v0-custom-message-pending-continue` and
+    # `v0-no-ff-fast-forwardable-continue-known-failure` out of `cases.json`
+    # and pinned the optional `.git/info/exclude` rewrite each declares. Both
+    # cases drove an OLD reader through `merge --continue` on an open v0
+    # record, and 0.14 creates no such record. It is not re-pointed at a
+    # surviving case: no case left in the file performs a continue.
 
     def test_generation_is_byte_deterministic_and_contains_no_absolute_paths(self) -> None:
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:

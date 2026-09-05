@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import inspect
 import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 
 HERE = Path(__file__).resolve().parent
 CORE = HERE.parents[1]
-WORKSPACE = CORE.parent
 REGISTRY = CORE / "dev-docs/GwzM5-8I2CompatibilityPredicates.json"
 CHECKER = HERE / "check_merge_compatibility_predicates.py"
 
@@ -29,63 +31,52 @@ class CompatibilityPredicateTests(unittest.TestCase):
         self.document = self.checker.load_json_exact(REGISTRY.read_text(encoding="utf-8"))
 
     def validate(self) -> None:
-        self.checker.validate(self.document, CORE)
+        self.checker.validate(self.document)
 
-    def test_repository_registry_is_closed_and_fixture_bound(self) -> None:
+    def test_repository_registry_is_closed(self) -> None:
         self.validate()
 
-    def test_descriptor_digest_is_authoritative(self) -> None:
-        self.document["migration_whitelist"][0]["descriptor_sha256"] = "0" * 64
-        with self.assertRaisesRegex(ValueError, "descriptor_sha256"):
-            self.validate()
+    # --- the class M5d removed (2026-09-05) ------------------------------
+    #
+    # The five deleted sections addressed Rust test SOURCE FILES by path and
+    # the checker resolved them to disk, so deleting the v0 engine turned a
+    # correct deletion into a red gate. These two tests hold the class shut
+    # from both ends: nothing in the registry may name a source file, and the
+    # checker itself may not grow a way to look one up.
 
-    def test_semantic_identity_excludes_fixture_address(self) -> None:
-        duplicate = copy.deepcopy(self.document["migration_whitelist"][0])
-        duplicate["id"] = "same-descriptor-different-rule"
-        self.document["migration_whitelist"].append(duplicate)
-        corpus = copy.deepcopy(self.document["fixture_corpus"][0])
-        corpus["case_id"] = "changed/duplicate"
-        corpus["rule"] = duplicate["id"]
-        self.document["fixture_corpus"].append(corpus)
-        with self.assertRaisesRegex(ValueError, "duplicate semantic descriptor"):
-            self.validate()
+    def test_registry_names_no_rust_source_file(self) -> None:
+        encoded = json.dumps(self.document)
+        self.assertNotIn(".rs", encoded)
+        self.assertNotIn("src/workspace_ops", encoded)
+        self.assertNotIn("workspace_ops::", encoded)
 
-    def test_descriptor_cannot_select_a_conflicting_classification(self) -> None:
-        duplicate = copy.deepcopy(self.document["migration_whitelist"][0])
-        duplicate["id"] = "conflicting-rule"
-        duplicate["classification"]["next_action"] = "publish_candidate"
-        self.document["migration_whitelist"].append(duplicate)
-        corpus = copy.deepcopy(self.document["fixture_corpus"][0])
-        corpus["case_id"] = "changed/conflicting"
-        corpus["rule"] = duplicate["id"]
-        self.document["fixture_corpus"].append(corpus)
-        with self.assertRaisesRegex(ValueError, "descriptor|classification"):
-            self.validate()
-
-    def test_every_rule_requires_exactly_one_runtime_fixture(self) -> None:
-        self.document["fixture_corpus"].pop()
-        with self.assertRaisesRegex(ValueError, "fixture coverage"):
-            self.validate()
-
-    def test_fixture_subcase_must_be_exported_by_the_rust_test(self) -> None:
-        self.document["fixture_corpus"][0]["subcase"] = "not_a_real_window"
-        with self.assertRaisesRegex(ValueError, "subcase"):
-            self.validate()
-
-    def test_publication_shape_and_next_action_are_executable_rules(self) -> None:
-        self.document["migration_whitelist"][0]["classification"]["next_action"] = (
-            "publish_candidate"
+    def test_checker_takes_no_source_tree(self) -> None:
+        # `validate` is handed the document and nothing else, so no registry
+        # value has a source tree to be resolved against...
+        self.assertEqual(
+            ["document"], list(inspect.signature(self.checker.validate).parameters)
         )
-        with self.assertRaisesRegex(ValueError, "classification"):
+        # ...and the `--core` argument that used to supply one is gone from
+        # the CLI, so a caller cannot quietly hand one back.
+        result = subprocess.run(
+            [sys.executable, str(CHECKER), str(REGISTRY), "--core", str(CORE)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn("unrecognized arguments: --core", result.stderr)
+
+    def test_top_level_sections_are_closed(self) -> None:
+        self.document["migration_whitelist"] = []
+        with self.assertRaisesRegex(ValueError, "registry fields must be exactly"):
             self.validate()
 
-    def test_literal_fixture_member_identity_is_rejected(self) -> None:
-        descriptor = self.document["migration_whitelist"][0]["descriptor"]
-        descriptor["selection"]["ordered_ids"] = ["mem_remote"]
-        descriptor["participants"][0]["id"] = "mem_remote"
-        descriptor["observation"]["participants"][0]["id"] = "mem_remote"
-        with self.assertRaisesRegex(ValueError, "alpha-normalized"):
+    def test_registry_schema_version_is_pinned(self) -> None:
+        self.document["schema"] = "gwz.merge-i2-compatibility-predicates/v2"
+        with self.assertRaisesRegex(ValueError, "registry schema must be"):
             self.validate()
+
+    # --- the closed normalization corpus ---------------------------------
 
     def test_enum_registry_rejects_extra_or_missing_values(self) -> None:
         self.document["normalization"]["enums"]["mode"].append("invented")
@@ -104,13 +95,20 @@ class CompatibilityPredicateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonicalization rule"):
             self.validate()
 
-    def test_migration_policy_cannot_be_weakened(self) -> None:
-        self.document["migration_policy"]["no_match"] = "Zero matches migrates."
-        with self.assertRaisesRegex(ValueError, "closed policy corpus"):
-            self.validate()
+    # --- the wire-code reason registry -----------------------------------
+    #
+    # `GwzM5-8I2ProtocolContract.md` §1 binds codes 48-61 to these exact
+    # lists, so this is protocol surface and not v0 scaffolding.
 
     def test_reason_registry_rejects_extra_or_missing_codes(self) -> None:
         self.document["rejection_reasons"]["InventedCode"] = ["invented"]
+        with self.assertRaisesRegex(ValueError, "closed protocol reason corpus"):
+            self.validate()
+
+    def test_reason_registry_rejects_a_reworded_reason(self) -> None:
+        self.document["rejection_reasons"]["RecordedEvidenceDrift"] = [
+            "something about the evidence changed"
+        ]
         with self.assertRaisesRegex(ValueError, "closed protocol reason corpus"):
             self.validate()
 
@@ -130,27 +128,25 @@ class CompatibilityPredicateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "in table order"):
             self.validate()
 
-    def test_executed_tier_cannot_claim_a_test_that_does_not_exist(self) -> None:
+    def test_a_tier_cannot_reintroduce_a_test_binding(self) -> None:
+        # The exactness of `TIER_KEYS` is what now holds the removed class
+        # shut: a row cannot name a Rust test again, by any field name.
+        row = self.document["archive_corpus"][0]
+        row["tier1"]["test"] = (
+            "workspace_ops::tests::g23::archive_equivalence_v0::"
+            "archived_v0_shapes_are_byte_preserved_from_their_open_records"
+        )
+        with self.assertRaisesRegex(ValueError, "fields must be exactly"):
+            self.validate()
+
+    def test_executed_tier_cannot_also_owe_a_carrier(self) -> None:
         row = next(
             row
             for row in self.document["archive_corpus"]
             if row["tier1"]["status"] == "executed"
         )
-        row["tier1"]["subcase"] = "not_a_real_archive_subcase"
-        with self.assertRaisesRegex(ValueError, "subcase"):
-            self.validate()
-
-    def test_unexecuted_tier_cannot_claim_a_runtime_binding(self) -> None:
-        row = next(
-            row
-            for row in self.document["archive_corpus"]
-            if row["tier2"]["status"] == "owed"
-        )
-        row["tier2"]["test"] = (
-            "workspace_ops::tests::g23::archive_equivalence_v0::"
-            "archived_v0_shapes_are_byte_preserved_from_their_open_records"
-        )
-        with self.assertRaisesRegex(ValueError, "must be absent on an unexecuted tier"):
+        row["tier1"]["carrier"] = "some later lane"
+        with self.assertRaisesRegex(ValueError, "must be absent on an executed tier"):
             self.validate()
 
     def test_unexecuted_tier_must_name_its_carrier(self) -> None:
@@ -184,12 +180,7 @@ class CompatibilityPredicateTests(unittest.TestCase):
         row["disposition"] = "pending-fixture"
         row["fixture"] = "none"
         for tier in ("tier1", "tier2"):
-            row[tier] = {
-                "status": "pending-fixture",
-                "test": None,
-                "subcase": None,
-                "carrier": "invented",
-            }
+            row[tier] = {"status": "pending-fixture", "carrier": "invented"}
         with self.assertRaisesRegex(ValueError, "exactly 8 tier-1-executed rows"):
             self.validate()
 
@@ -211,42 +202,13 @@ class CompatibilityPredicateTests(unittest.TestCase):
         fixtured["disposition"] = "pending-fixture"
         fixtured["fixture"] = "none"
         for tier in ("tier1", "tier2"):
-            fixtured[tier] = {
-                "status": "pending-fixture",
-                "test": None,
-                "subcase": None,
-                "carrier": "invented",
-            }
+            fixtured[tier] = {"status": "pending-fixture", "carrier": "invented"}
         with self.assertRaisesRegex(ValueError, "PENDING-FIXTURE rows must be exactly"):
             self.validate()
 
     def test_archive_clause_must_be_content_anchored(self) -> None:
         self.document["archive_corpus"][0]["clause"] = "see the contract, line 180"
         with self.assertRaisesRegex(ValueError, "content-anchored"):
-            self.validate()
-
-    # --- the closed sets the E5 corpora rest on (E5 review [P3-3]) --------
-    #
-    # `VALID_UNLISTED_STATES` gained three tokens at E5.1 and carried no test
-    # of its own -- a pre-existing gap that E5.1 made load-bearing -- and the
-    # two archive sets E5.2 added carried none either. Same
-    # weaken-and-expect-a-raise form as the rest of this suite.
-
-    def test_valid_unlisted_corpus_cannot_declare_finalizing(self) -> None:
-        # The load-bearing exclusion, and the one the checker's own comment
-        # calls deliberate: `finalizing` is the single open state the
-        # whitelist adapts, so a corpus row declaring it would claim
-        # valid-unlisted for a shape a rule can match. This is what makes
-        # §12.9(c)'s ruling -- that widening the corpus to admit `finalizing`
-        # "would weaken the registry, not extend it" -- machine-held rather
-        # than a convention of the rows that happen to be filed.
-        self.document["valid_unlisted_corpus"][0]["operation_state"] = "finalizing"
-        with self.assertRaisesRegex(ValueError, "exact valid-unlisted state"):
-            self.validate()
-
-    def test_valid_unlisted_state_registry_is_closed(self) -> None:
-        self.document["valid_unlisted_corpus"][0]["operation_state"] = "invented"
-        with self.assertRaisesRegex(ValueError, "exact valid-unlisted state"):
             self.validate()
 
     def test_archive_disposition_registry_is_closed(self) -> None:

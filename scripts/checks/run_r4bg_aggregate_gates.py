@@ -650,9 +650,20 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # rule and binding counts are unchanged -- the archive corpus is not
         # part of the migration registry, by §12.7's own finding that no
         # registry vocabulary can hold an archive shape.
+        # M5d (2026-09-05), operator ruling "remove the fragile stuff": the
+        # migration registry is DELETED, so the "7 migration rules, 7 runtime
+        # bindings" half of this marker has no subject left. Those rows named
+        # Rust test source files by path and the checker resolved them to
+        # disk, so `55cf479`'s deletion of the v0 engine and its test corpus
+        # turned a correct deletion into a red push-to-main gate. The marker
+        # is not re-pointed at surviving tests -- the class is gone, and what
+        # remains is measured on this step's tree: the closed normalization
+        # corpus, the ten Table B archive shapes, and the 14 wire-code reason
+        # lists `GwzM5-8I2ProtocolContract.md` §1 binds codes 48-61 to. The
+        # checker takes no `--core` any more, so none is passed.
         ("frozen predicate registry",
-         check("check_merge_compatibility_predicates.py", REGISTRY, "--core", "."),
-         "validated 7 migration rules, 7 runtime bindings, and 10 archive shapes"),
+         check("check_merge_compatibility_predicates.py", REGISTRY),
+         "validated the closed normalization corpus, 10 archive shapes, and 14 rejection reasons"),
         ("registry checker suite", suite("test_merge_compatibility_predicates.py"), "OK"),
         # M5d step (3), 2026-09-03. MEASURED "12 sources, 155 assertions" ->
         # "13 sources, 167 assertions", and the drift is attributed rather than
