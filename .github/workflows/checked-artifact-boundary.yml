@@ -68,24 +68,26 @@ jobs:
         run: |
           python scripts/checks/check_local_clone_boundaries.py
           python -m unittest scripts/checks/test_check_local_clone_boundaries.py -v
-      - name: Each library's Tier A command from a standalone core checkout
-        # This checkout is not a Cargo workspace root, so the libraries are
-        # path dependencies rather than members here: `cargo test -p <name>`
-        # refuses a non-member that has dev-dependencies. Running each
-        # library as its own root through its manifest is the form that works
-        # in both this checkout and the outer gwz-dev workspace (LCM1.0c
-        # checkpoint §5). The per-crate lock this generates is not tracked,
-        # so `--locked` is not used on this step.
+      - name: Each library's Tier A command, locked against gwz-core's workspace lock
+        # Workspace layout Option A (LCM1.0c follow-up 2; operator ruling
+        # 2026-09-05, gwz-dev dev-docs/GwzLocalCloneDesign.md §11 item 14,
+        # GwzLocalCloneLibraryBoundaries.md §5/§6 revision 2): gwz-core is
+        # its own Cargo workspace whose members are the libraries under
+        # crates/, so this standalone checkout and the outer gwz-dev workspace
+        # run one and the same command against the committed gwz-core
+        # Cargo.lock. `--locked` is therefore restored, which is the S-P3-3
+        # guard's recorded retirement condition (LCM1.0c checkpoint §7.6).
+        # The package list is the inventory's present packages, so a lane
+        # flipping `expected` to `present` is covered without editing this
+        # file; an empty list is a failure, never a silent pass.
         run: |
-          for directory in copy-contract repo-contract family-model \
-              family-store-contract refcopy repo-inspect work-detector \
-              history-check family-store local-import workspace-install \
-              repo-factory local-disposal; do
-            cargo test --manifest-path "crates/$directory/Cargo.toml" --lib
+          names="$(python scripts/checks/check_local_clone_boundaries.py --list-present)"
+          test -n "$names"
+          for name in $names; do
+            cargo test -p "$name" --lib --locked
             # LCM1.0c-rem1 optional ride-along: the root job clippies gwz-core
-            # only, so lint each library here too (standalone-checkout form,
-            # matching the test command above).
-            cargo clippy --manifest-path "crates/$directory/Cargo.toml" --all-targets -- -D warnings
+            # only, so lint each library here too.
+            cargo clippy -p "$name" --all-targets --locked -- -D warnings
           done
       # check_m4_scenario_map.py is NOT wired here — corrective un-wiring
       # 2026-08-25 after the landing-commit run (32749441874) failed on it:

@@ -9,12 +9,27 @@ repository = "https://github.com/owebeeone/gwz-core"
 [lib]
 path = "src/lib.rs"
 
+# Workspace layout Option A (operator ruling 2026-09-05; gwz-dev
+# dev-docs/GwzLocalCloneDesign.md revision 9 §11 item 14,
+# GwzLocalCloneLibraryBoundaries.md §5/§6 revision 2; landed by LCM1.0c
+# follow-up 2). gwz-core is its own Cargo workspace whose members are the
+# local clone family libraries under crates/, so a standalone core checkout
+# and the outer gwz-dev workspace run the same Tier A command,
+# `cargo test -p <name> --lib --locked` from this directory, against this
+# directory's committed Cargo.lock. The outer gwz-dev workspace excludes
+# gwz-core exactly as it excludes taut-shape-rs; gwz-cli still reaches
+# gwz-core through its path dependency. No library declares a `[workspace]`
+# table of its own (the local-clone boundary gate refuses one).
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
 [dependencies]
 # Local clone family libraries (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md
-# §2). Core is the composition root: it depends on every functional library so
-# each is a member of both the outer gwz-dev workspace and a standalone core
-# checkout (`cargo test -p <name> --lib` works from either), and it registers
-# no library as a workspace of its own. None of them may depend on gwz-core;
+# §2). Core is the composition root: it depends on every functional library, and
+# every library is a member of this workspace (above), so `cargo test -p <name>
+# --lib --locked` works from a standalone core checkout and from the outer
+# gwz-dev workspace alike. None of them may depend on gwz-core;
 # `scripts/checks/check_local_clone_boundaries.py` enforces the edges.
 gwz-copy-contract = { path = "crates/copy-contract" }
 gwz-family-model = { path = "crates/family-model" }

@@ -2,16 +2,24 @@
 """Architecture gate for the local clone family libraries under `crates/`.
 
 Authority: gwz-dev `dev-docs/GwzLocalCloneLibraryBoundaries.md` §2/§6
-(revision 1), adopting LBT-001..LBT-012. The inventory beside this script,
+(revision 1; §5/§6 revision 2 for the workspace layout and the Tier A
+command form), adopting LBT-001..LBT-012. The inventory beside this script,
 `local_clone_inventory.json`, is the machine-readable classification: every
 package's role, owner, rationale and complete allowed dependency edges.
 
-What the gate checks (all through Cargo metadata, no build):
+What the gate checks (all through one `cargo metadata --no-deps` at the
+gwz-core root, no build):
 
 - LBT-001: every package directory under `crates/` is classified; a classified
   package that must be present exists, its Cargo name equals its inventory
   key, it is `publish = false`, carries explicit `edition`/`rust-version`
   (no workspace inheritance) and is not a workspace root of its own.
+- Layout Option A (operator ruling 2026-09-05; LCM1.0c follow-up 2): the
+  gwz-core manifest declares the `[workspace]` whose members are the
+  libraries, every present classified crate is one of its members, and the
+  workspace lock `Cargo.lock` is committed beside it, so
+  `cargo test -p <name> --lib --locked` from gwz-core is the one Tier A
+  command for a standalone core checkout and the outer workspace alike.
 - LBT-003/004/005: every DECLARED dependency edge -- normal, build, dev,
   optional and target-specific, with renames resolved to the real package
   name -- is inside the package's allowlist. First-party edges must be in
@@ -25,19 +33,21 @@ What the gate checks (all through Cargo metadata, no build):
   package's `--lib` test build (dev edges at the root, normal/build edges
   below) never reaches a forbidden package.
 - Each package has one `lib` target with tests enabled, so
-  `cargo test -p <name> --lib` is a real fast command.
+  `cargo test -p <name> --lib --locked` is a real fast command.
+- LBT-012 (State P3-3, retired on its recorded condition by follow-up 2 but
+  kept as a shape guard): a declared third-party edge is refused while any
+  recognised Tier A command in `.github/workflows/` runs without `--locked`.
 
 Coverage limits, stated honestly: this is a declared-edge gate. It does not
 audit the transitive third-party graph, expand macros, parse Rust, prove trait
 implementations or detect public type leakage; conformance suites and
 compiler witnesses in the crates do the behavioral half, and API review does
-the rest (policy §5). It uses `cargo metadata --no-deps --manifest-path` per
-package, which reads manifests and resolves path dependencies without a
-lockfile, network or build.
+the rest (policy §5).
 
 Usage (from gwz-core):
     python3 scripts/checks/check_local_clone_boundaries.py
     python3 scripts/checks/check_local_clone_boundaries.py --core <path> --inventory <json>
+    python3 scripts/checks/check_local_clone_boundaries.py --list-present   # CI's package list
 """
 
 from __future__ import annotations
@@ -56,6 +66,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INVENTORY = Path(__file__).with_name("local_clone_inventory.json")
 FIRST_PARTY_PREFIX = "gwz-"
 ROLES = ("contract", "pure", "implementation", "integration", "harness")
+CORE_LOCK = "Cargo.lock"
 
 
 class GateError(Exception):
@@ -140,17 +151,14 @@ def cargo_metadata(manifest: Path) -> dict:
         raise GateError(f"cargo metadata returned invalid JSON for {manifest}: {error}") from error
 
 
-def read_package(manifest: Path) -> Package:
-    metadata = cargo_metadata(manifest)
-    resolved = manifest.resolve()
-    entries = [
-        package
-        for package in metadata["packages"]
-        if Path(package["manifest_path"]).resolve() == resolved
-    ]
-    if len(entries) != 1:
-        raise GateError(f"cargo metadata did not report exactly one package for {manifest}")
-    entry = entries[0]
+def parse_manifest(manifest: Path) -> dict:
+    try:
+        return tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise GateError(f"cannot parse {manifest}: {error}") from error
+
+
+def package_from_metadata(entry: dict, manifest: Path, manifest_table: dict) -> Package:
     dependencies = [
         Dependency(
             name=dependency["name"],
@@ -165,16 +173,29 @@ def read_package(manifest: Path) -> Package:
     lib_tested = any(
         "lib" in target["kind"] and target.get("test", True) for target in entry["targets"]
     )
-    try:
-        manifest_table = tomllib.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise GateError(f"cannot parse {manifest}: {error}") from error
     package_table = manifest_table.get("package", {})
     return Package(
         name=entry["name"],
-        manifest_path=resolved,
+        manifest_path=manifest.resolve(),
         dependencies=dependencies,
         lib_target_tested=lib_tested,
+        publish=package_table.get("publish", True),
+        edition=package_table.get("edition"),
+        rust_version=package_table.get("rust-version"),
+        has_workspace_table="workspace" in manifest_table,
+    )
+
+
+def package_from_manifest_only(manifest: Path, manifest_table: dict) -> Package:
+    """The structural half of a package cargo could not report (a crate that
+    declares its own `[workspace]` breaks the whole workspace's metadata);
+    its edges are not inspected because the crate is already refused."""
+    package_table = manifest_table.get("package", {})
+    return Package(
+        name=str(package_table.get("name", "")),
+        manifest_path=manifest.resolve(),
+        dependencies=[],
+        lib_target_tested=True,
         publish=package_table.get("publish", True),
         edition=package_table.get("edition"),
         rust_version=package_table.get("rust-version"),
@@ -205,9 +226,12 @@ def check_package(
     if not isinstance(package.rust_version, str):
         findings.append(f"{package.name}: needs an explicit `rust-version` (no workspace inheritance)")
     if package.has_workspace_table:
-        findings.append(f"{package.name}: must not declare a `[workspace]` table")
+        findings.append(
+            f"{package.name}: must not declare a `[workspace]` table (the libraries are members "
+            "of gwz-core's workspace, never roots of their own)"
+        )
     if not package.lib_target_tested:
-        findings.append(f"{package.name}: needs a `lib` target with tests enabled (`cargo test -p {package.name} --lib`)")
+        findings.append(f"{package.name}: needs a `lib` target with tests enabled (`cargo test -p {package.name} --lib --locked`)")
 
     for dependency in package.dependencies:
         label = f"{package.name}: {dependency.describe()}"
@@ -274,14 +298,53 @@ def test_closure(
     return reached, findings
 
 
+def core_layout_findings(core: Path, crates_dir: Path, packages: dict[str, Package]) -> list[str]:
+    """Workspace layout Option A (record §7.6 retirement; boundaries §5/§6
+    revision 2): gwz-core's manifest is the workspace whose members are the
+    libraries, and its lock is committed so `--locked` has something to hold."""
+    findings: list[str] = []
+    manifest = core / "Cargo.toml"
+    try:
+        table = parse_manifest(manifest)
+    except GateError as error:
+        return [str(error)]
+    workspace = table.get("workspace")
+    if not isinstance(workspace, dict):
+        findings.append(
+            "Cargo.toml: gwz-core must declare the `[workspace]` whose members are the "
+            "libraries under crates/ (layout Option A, operator ruling 2026-09-05)"
+        )
+        return findings
+    members = [str(member) for member in workspace.get("members", [])]
+    root = core.resolve()
+    crates_glob = f"{crates_dir.resolve().relative_to(root).as_posix()}/*"
+    for name, package in packages.items():
+        relative = package.manifest_path.parent.relative_to(root).as_posix()
+        if crates_glob not in members and relative not in members:
+            findings.append(
+                f"{name}: not a member of gwz-core's `[workspace]` ({relative} is neither listed "
+                f"nor covered by `{crates_glob}`); `cargo test -p {name} --lib --locked` needs it"
+            )
+    if not (core / CORE_LOCK).is_file():
+        findings.append(
+            f"{CORE_LOCK}: gwz-core's workspace lock is missing; the Tier A command runs "
+            "`--locked` against it"
+        )
+    return findings
+
+
 TIER_A_COMMAND = "cargo test"
 MANIFEST_FLAG = "--manifest-path"
+PACKAGE_FLAGS = ("-p ", "--package ")
 LOCKED_FLAG = "--locked"
 CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
 
 
 def tier_a_commands(text: str) -> list[str]:
-    """Every `cargo test ... --manifest-path ...` command in a workflow text.
+    """Every library Tier A command in a workflow text: `cargo test` naming a
+    package (`-p`/`--package`, the Option A form) or a manifest
+    (`--manifest-path`, the pre-Option-A form, still recognised so the guard
+    keeps its shape).
 
     Comment lines are dropped and `\\`-newline continuations joined first, so
     a command wrapped across lines (as the Tier A loop's own `for` header
@@ -290,29 +353,34 @@ def tier_a_commands(text: str) -> list[str]:
     kept = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
     joined = CONTINUATION.sub(" ", "\n".join(kept))
     return [
-        line for line in joined.splitlines() if TIER_A_COMMAND in line and MANIFEST_FLAG in line
+        line
+        for line in joined.splitlines()
+        if TIER_A_COMMAND in line
+        and (MANIFEST_FLAG in line or any(flag in line for flag in PACKAGE_FLAGS))
     ]
 
 
 def tier_a_unlocked(core: Path, inventory: dict) -> bool:
     """Whether CI may run a library's Tier A command WITHOUT `--locked`.
 
-    LCM1.0c-rem1 (State P3-3): an unlocked `--manifest-path` build resolves a
-    library's third-party dependencies fresh, so once any crate declares one
-    (e.g. lane I's `git2`) CI may resolve a different version from the product
-    lock -- a false green. This answer arms the guard in `run`, so it fails
+    LCM1.0c-rem1 (State P3-3): an unlocked Tier A build resolves a library's
+    third-party dependencies fresh, so once any crate declares one CI may
+    resolve a different version from the product lock -- a false green. The
+    guard's recorded retirement condition (LCM1.0c checkpoint §7.6) was met
+    by LCM1.0c follow-up 2: gwz-core is its own workspace (layout Option A)
+    and the real workflow runs `cargo test -p <name> --lib --locked` from
+    gwz-core against the committed workspace lock, so this function reports
+    locked for the real tree. It stays as a shape guard and still fails
     toward "unlocked" (LCM1.0c-fu1, State S2-P3-2): `False` (locked) needs
-    affirmative evidence -- the explicit `ci_tier_a_unlocked: false` inventory
-    flag, or `--locked` on EVERY `cargo test ... --manifest-path` command in
-    every `.github/workflows/*.yml`/`*.yaml`. Anything the function cannot
-    establish counts as unlocked: no workflow at all while `crates_dir` exists,
-    a workflow it cannot read, workflows with no recognisable Tier A command,
-    or one such command anywhere without the flag. No workflow AND no
-    `crates_dir` is the only "nothing to build" answer.
+    affirmative evidence -- `--locked` on EVERY recognised Tier A command
+    (`tier_a_commands`) in every `.github/workflows/*.yml`/`*.yaml`.
+    Anything the function cannot establish counts as unlocked: no workflow
+    at all while `crates_dir` exists, a workflow it cannot read, workflows
+    with no recognisable Tier A command, or one such command anywhere
+    without the flag. No workflow AND no `crates_dir` is the only "nothing
+    to build" answer. The former `ci_tier_a_unlocked` inventory flag is
+    retired with the condition: the workflows are the only evidence.
     """
-    flag = inventory.get("ci_tier_a_unlocked")
-    if isinstance(flag, bool):
-        return flag
     workflows_dir = core / ".github" / "workflows"
     workflows = sorted(
         path for path in workflows_dir.glob("*.y*ml") if path.suffix in (".yml", ".yaml")
@@ -328,6 +396,17 @@ def tier_a_unlocked(core: Path, inventory: dict) -> bool:
     if not commands:
         return True
     return any(LOCKED_FLAG not in command for command in commands)
+
+
+def present_packages(core: Path, inventory: dict) -> list[str]:
+    """The classified packages whose crate is present, in inventory order:
+    CI's Tier A package list."""
+    crates_dir = core / inventory.get("crates_dir", "crates")
+    return [
+        name
+        for name, entry in inventory["packages"].items()
+        if (crates_dir / entry["directory"] / "Cargo.toml").exists()
+    ]
 
 
 def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
@@ -350,7 +429,7 @@ def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
         if path.is_dir() and not (path / "Cargo.toml").exists() and path.resolve() not in inventory_dirs:
             findings.append(f"{path.relative_to(core)}: directory without a manifest under crates/")
 
-    packages: dict[str, Package] = {}
+    manifests: dict[str, Path] = {}
     for name, entry in entries.items():
         manifest = crates_dir / entry["directory"] / "Cargo.toml"
         if not manifest.exists():
@@ -359,11 +438,39 @@ def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
             else:
                 notes.append(f"{name}: pending (lane {entry['owner']}); not present yet")
             continue
+        manifests[name] = manifest
+
+    # One `cargo metadata --no-deps` at the gwz-core root reports every
+    # workspace member with its declared edges (layout Option A). It cannot
+    # succeed while a member declares its own `[workspace]`; that crate is
+    # refused from its manifest alone, and the failure is a finding rather
+    # than an abort so the refusal is reported.
+    metadata_by_manifest: dict[Path, dict] | None = None
+    try:
+        metadata_by_manifest = {
+            Path(package["manifest_path"]).resolve(): package
+            for package in cargo_metadata(core / "Cargo.toml")["packages"]
+        }
+    except GateError as error:
+        findings.append(f"{error}")
+
+    packages: dict[str, Package] = {}
+    for name, manifest in manifests.items():
         try:
-            package = read_package(manifest)
+            manifest_table = parse_manifest(manifest)
         except GateError as error:
             findings.append(str(error))
             continue
+        entry = None if metadata_by_manifest is None else metadata_by_manifest.get(manifest.resolve())
+        if entry is not None:
+            package = package_from_metadata(entry, manifest, manifest_table)
+        else:
+            package = package_from_manifest_only(manifest, manifest_table)
+            if metadata_by_manifest is not None and not package.has_workspace_table:
+                findings.append(
+                    f"{name}: cargo metadata at the gwz-core root did not report "
+                    f"{manifest.relative_to(core)} (not a workspace member?)"
+                )
         if package.name != name:
             findings.append(
                 f"{manifest.relative_to(core)}: Cargo package name {package.name!r} differs "
@@ -372,6 +479,7 @@ def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
             continue
         packages[name] = package
 
+    findings.extend(core_layout_findings(core, crates_dir, packages))
     for name, package in packages.items():
         findings.extend(check_package(package, entries[name], inventory, inventory_dirs))
     for name in packages:
@@ -381,11 +489,11 @@ def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
         if unclassified:
             findings.append(f"{name}: test closure reaches unclassified packages {unclassified}")
 
-    # LBT-012 fail-closed guard (LCM1.0c-rem1, State P3-3). A declared
-    # third-party edge resolved by an unlocked Tier A CI step may diverge from
-    # the product lock. Refuse the combination until the retirement condition
-    # holds (record §7.6: commit per-crate locks and restore `--locked`, or
-    # land the nested-workspace layout so the product resolution is measured).
+    # LBT-012 shape guard (LCM1.0c-rem1, State P3-3; retirement condition met
+    # by follow-up 2, see `tier_a_unlocked`). A declared third-party edge
+    # resolved by an unlocked Tier A CI step may diverge from the workspace
+    # lock, so the combination stays refused: an unlocked Tier A command is a
+    # workflow defect now that `--locked` has a committed lock to hold.
     forbidden = set(inventory.get("forbidden_dependencies", []))
     declared_third_party = sorted(
         (name, dependency.name)
@@ -396,10 +504,10 @@ def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
     if declared_third_party and tier_a_unlocked(core, inventory):
         for name, dependency in declared_third_party:
             findings.append(
-                f"{name}: declares third-party dependency {dependency!r} while the CI Tier A "
-                "step runs unlocked (LBT-012, State P3-3); commit per-crate locks and restore "
-                "`--locked`, or land the nested-workspace layout, before a crate declares a "
-                "third-party dependency"
+                f"{name}: declares third-party dependency {dependency!r} while a CI Tier A "
+                "command runs unlocked (LBT-012, State P3-3); every `cargo test -p <name> "
+                "--lib` in .github/workflows must carry `--locked` against gwz-core's "
+                "workspace lock"
             )
     elif declared_third_party:
         notes.append(
@@ -422,7 +530,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--core", type=Path, default=ROOT, help="gwz-core checkout root")
     parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
+    parser.add_argument(
+        "--list-present",
+        action="store_true",
+        help="print the present classified package names, one per line (CI's Tier A list), and exit",
+    )
     args = parser.parse_args()
+    if args.list_present:
+        try:
+            names = present_packages(args.core.resolve(), load_inventory(args.inventory.resolve()))
+        except GateError as error:
+            print(f"local-clone boundary: error: {error}", file=sys.stderr)
+            return 2
+        if not names:
+            print("local-clone boundary: error: no present classified package", file=sys.stderr)
+            return 2
+        print("\n".join(names))
+        return 0
     try:
         findings, notes = run(args.core.resolve(), args.inventory.resolve())
     except GateError as error:
