@@ -748,3 +748,39 @@ fn every_built_repository_carries_its_own_frozen_commit() {
         assert_eq!(target, &repo.head);
     }
 }
+
+#[test]
+fn each_repository_is_created_in_its_own_object_format() {
+    let sha256 = ObjectFormat::Sha256;
+    let request = clean(vec![
+        repo(RepoKey::Root, "", 1, Some("main")),
+        CapturedRepo {
+            object_format: sha256,
+            head: oid(sha256, 2),
+            ..repo(member("app"), "app", 2, Some("main"))
+        },
+    ]);
+    let mut port = planted(&request);
+
+    let report = construct(&request, &mut port).expect("clean construction");
+
+    assert_eq!(
+        port.repository(destination(""))
+            .expect("built")
+            .object_format,
+        Some(SHA1)
+    );
+    let app = port.repository(destination("app")).expect("built");
+    assert_eq!(app.object_format, Some(sha256));
+    // A 32-byte digest is transferred and placed as itself; nothing
+    // assumes 40 hex characters.
+    assert_eq!(app.transferred, [oid(sha256, 2).to_hex()]);
+    assert_eq!(app.branches.get("main"), Some(&oid(sha256, 2)));
+    assert_eq!(
+        built(&report, &member("app")).head,
+        HeadState::Attached {
+            branch: "main".to_owned(),
+            target: oid(sha256, 2),
+        }
+    );
+}
