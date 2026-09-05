@@ -128,10 +128,10 @@ mod tests {
     }
 
     /// Expected outcome for one (verb, token) cell of the table.
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Cell {
         BoundRoot,
-        Bound(&'static str),
+        Bound(&'static str, MemberKind),
         UnknownLocal(Option<MemberState>),
         Lifecycle(MemberState),
         GitRemote,
@@ -142,13 +142,21 @@ mod tests {
         let owned = raw.map(token);
         let actual = resolve_remote_token(view, owned.as_ref(), verb);
         let cell = match &actual {
-            Resolution::Bound(member) if member.is_root => Cell::BoundRoot,
+            Resolution::Bound(member) if member.is_root => {
+                assert_eq!(member.path, ROOT_PATH);
+                assert_eq!(member.kind, MemberKind::Checkout, "the root is a checkout");
+                Cell::BoundRoot
+            }
             Resolution::Bound(member) => {
                 assert_eq!(member.path, format!("../ws-{}", member.name));
-                Cell::Bound(match member.name.as_str() {
-                    "A" => "A",
-                    other => panic!("unexpected bound member {other}"),
-                })
+                Cell::Bound(
+                    match member.name.as_str() {
+                        "A" => "A",
+                        "hub" => "hub",
+                        other => panic!("unexpected bound member {other}"),
+                    },
+                    member.kind,
+                )
             }
             Resolution::UnknownLocal { token, state } => {
                 assert_eq!(Some(token.as_str()), raw);
@@ -172,8 +180,13 @@ mod tests {
         );
     }
 
-    /// The boundary document's table, every verb, every state, both fallbacks
-    /// and the no-family case, in one place (F51 P2-4 closure evidence).
+    /// The boundary document's table, every verb, every state, both
+    /// fallbacks and the no-family case, in one place (F51 P2-4 closure
+    /// evidence). It carries every design §7 CLI row that reaches this
+    /// function: `pull --head --remote A|origin|root`, `merge --remote
+    /// A|C|origin`, `push --remote hub|origin`, and the absent token behind
+    /// `gwz merge feature/x` / `gwz merge A`, which are git refs and never
+    /// arrive as a family selector.
     #[test]
     fn one_table_covers_every_verb_state_and_fallback() {
         let view = fixtures::view();
@@ -184,7 +197,18 @@ mod tests {
             // token,          merge,                               pull/push
             (None, NoToken, NoToken),
             (Some("root"), BoundRoot, BoundRoot),
-            (Some("A"), Bound("A"), Bound("A")),
+            (
+                Some("A"),
+                Bound("A", MemberKind::Checkout),
+                Bound("A", MemberKind::Checkout),
+            ),
+            // A ready bare hub binds like any other member, and its kind
+            // reaches the caller: `gwz push --remote hub` (design §8.5).
+            (
+                Some("hub"),
+                Bound("hub", MemberKind::Bare),
+                Bound("hub", MemberKind::Bare),
+            ),
             (Some("B"), UnknownLocal(Some(Creating)), Lifecycle(Creating)),
             (
                 Some("C"),
@@ -197,9 +221,9 @@ mod tests {
             (Some("upstream"), UnknownLocal(None), GitRemote),
         ];
         for (raw, merge, pull_push) in rows {
-            check(family, Verb::Merge, *raw, clone_cell(merge));
-            check(family, Verb::Pull, *raw, clone_cell(pull_push));
-            check(family, Verb::Push, *raw, clone_cell(pull_push));
+            check(family, Verb::Merge, *raw, *merge);
+            check(family, Verb::Pull, *raw, *pull_push);
+            check(family, Verb::Push, *raw, *pull_push);
         }
     }
 
@@ -207,7 +231,9 @@ mod tests {
     /// tokens are Git-remote candidates, and no token is still no token.
     #[test]
     fn no_family_never_binds_and_never_refuses_on_lifecycle() {
-        for raw in ["A", "root", "origin"] {
+        // `hub` after `gwz local disband`: no family, so pull/push reach
+        // the ordinary remote lookup and report missing_remote (design §8.6).
+        for raw in ["A", "root", "origin", "hub"] {
             check(None, Verb::Merge, Some(raw), Cell::UnknownLocal(None));
             check(None, Verb::Pull, Some(raw), Cell::GitRemote);
             check(None, Verb::Push, Some(raw), Cell::GitRemote);
@@ -232,16 +258,5 @@ mod tests {
             resolve_remote_token(Some(&view), Some(&token("C")), Verb::Push),
             Resolution::LifecycleRefusal { .. }
         ));
-    }
-
-    fn clone_cell(cell: &Cell) -> Cell {
-        match cell {
-            Cell::BoundRoot => Cell::BoundRoot,
-            Cell::Bound(name) => Cell::Bound(name),
-            Cell::UnknownLocal(state) => Cell::UnknownLocal(*state),
-            Cell::Lifecycle(state) => Cell::Lifecycle(*state),
-            Cell::GitRemote => Cell::GitRemote,
-            Cell::NoToken => Cell::NoToken,
-        }
     }
 }
