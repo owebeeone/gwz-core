@@ -603,6 +603,42 @@ def _fault_count(darwin: str, linux: str) -> str:
     is immutable. The landing rule from this miss: a landing that adds or removes
     a #[test] re-measures this driver's pins, and every landing compares the
     --list partition counts against these pins (seconds) before the push.
+
+    LCM1.0c (2026-09-05, the local clone family's core integration skeleton,
+    gwz-core 7faf475..HEAD on the 87207c2 base) moves the LIB REMAINDER and
+    only it, by FIFTEEN rows, and corrects the darwin base by one:
+
+      * THIRTEEN under the new `local_clone::` namespace: the request-shape
+        and error-mapping unit rows in `request.rs` / `errors.rs`, and the
+        Tier B slices `tests::request` and `tests::transport` (the latter
+        drives libgit2 between temporary repositories).
+      * ONE in `workspace_ops::merge::validate::tests`
+        (`local_source_name_is_refused_by_the_engine_on_every_op`).
+      * ONE in `workspace_ops::tests::g01`
+        (`tracking_backend_records_anonymous_transfers_and_injected_failures`).
+      None carries a cfg gate (the lane's src diff adds no `cfg(` other than
+      `cfg(test)`), and NO test is removed (zero `#[test]` deletions in the
+      same diff), so the two platforms move by the same fifteen.
+
+      checked_artifact:: 459 / 476: UNMOVED -- `--list` re-measured 459 on
+        this lane's tree and on a worktree at the 87207c2 base.
+      v1_lifecycle:: 265 (+ the release-profile 1): UNMOVED -- `--list`
+        re-measured the namespace at 266 on both trees.
+      lib remainder darwin 1004 -> 1018: MEASURED on this lane's tree two
+        ways -- the whole lib suite executed (`cargo test -p gwz-core
+        --no-fail-fast` from the gwz-dev workspace root, 1743 passed / 0 failed
+        / 1 ignored = 459 + 266 + 1018, 2026-09-05) and the `--list` partition
+        (1019 listed = 1018 + the one ignored row). The darwin BASE was 1003
+        passed, not 1004: `--list` on the 87207c2 worktree lists this
+        partition at 1004 INCLUDING the ignored row, so 87207c2's darwin value
+        (set equal to the linux measurement) was one high on this platform,
+        and the one-row per-OS offset in this partition is still real
+        (linux 1746 vs darwin 1728 passed at the base: the 17 checked_artifact
+        rows plus this one). 1003 + 15 = 1018.
+      lib remainder linux  1004 -> 1019: DERIVED (+15, every added row
+        cfg-free) from 87207c2's executed linux measurement,
+        FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
+        measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -641,7 +677,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1004 passed", "1004 passed")),
+         _fault_count("1018 passed", "1019 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
