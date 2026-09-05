@@ -180,6 +180,45 @@ fn the_device_of_a_new_path_is_its_nearest_existing_ancestors() {
     );
 }
 
+/// The one thing the probe rules out without copying. `/dev` is a separate
+/// filesystem from the temporary directory on both hosts this ships to
+/// (devfs on Apple targets, devtmpfs on Linux); where it is not, or where
+/// there is no mechanism to rule out, the test says so and stops.
+#[cfg(unix)]
+#[test]
+fn a_pair_on_two_devices_is_the_one_thing_the_probe_rules_out() {
+    let tree = TempTree::new("r-probe-cross-device");
+    let elsewhere = Path::new("/dev");
+    if MECHANISM == NativeMechanism::None {
+        eprintln!("skipped: no native mechanism is compiled in for this target");
+        return;
+    }
+    if device_of(elsewhere) == device_of(tree.path()) || device_of(elsewhere).is_none() {
+        eprintln!("skipped: this host has no second device to probe across");
+        return;
+    }
+    assert_eq!(
+        probe(elsewhere, tree.path()),
+        NativeCapability::Unavailable,
+        "no copy-on-write mechanism clones across devices, and that is knowable in advance"
+    );
+    // So the copy is planned ordinary from the start, and says why once,
+    // rather than making one doomed attempt per file.
+    let plan = Plan::for_request(&CopyRequest {
+        source: elsewhere.to_path_buf(),
+        destination: tree.path().join("copy"),
+        exclusions: Vec::new(),
+        mode: CopyMode::Auto,
+    });
+    assert_eq!(plan.attempt, Attempt::Skip);
+    assert!(
+        plan.unavailable
+            .is_some_and(|reason| reason.contains("different devices")),
+        "{:?}",
+        plan.unavailable
+    );
+}
+
 // -------------------------------------------------------------------- plan
 
 #[test]
