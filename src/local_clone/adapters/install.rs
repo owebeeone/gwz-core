@@ -7,11 +7,12 @@
 //! Git configuration; and `gwz-history-check` behind the destination's
 //! object-connectivity check (design §4.0 dest-complete).
 //!
-//! The snapshot is taken **before** the family lock (`preflight`), so a
-//! source that design §4.0 refuses is refused with nothing written -- no
-//! lock file, no index, no row -- and installation's own `snapshot_source`
-//! call returns that capture; `recheck_source` re-inventories the source
-//! before publication, which is what makes taking it early safe.
+//! The snapshot is taken **before** the family lock ([`capture_source`]),
+//! so a source that design §4.0 refuses is refused with nothing written --
+//! no lock file, no index, no row -- and installation's own
+//! `snapshot_source` call returns that capture; `recheck_source`
+//! re-inventories the source before publication, which is what makes taking
+//! it early safe.
 //!
 //! Clean and bare modes are not composed here: `construct_repositories`
 //! answers `Unimplemented` (LCM2.3 / LCM3.1), and `recapture_configuration`
@@ -45,6 +46,56 @@ use crate::workspace::{RUNTIME_DIR, WORKSPACE_MANIFEST};
 /// classifier; the adapter never decodes a record.
 pub type OpenMergeProbe = fn(&Path) -> ModelResult<Option<String>>;
 
+/// The source as captured once, before any family file exists (design §4
+/// step 1): its included repositories, the exclusion set they imply, the
+/// frozen snapshot and the manifest the destination will be given last.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceCapture {
+    pub repositories: Vec<IncludedRepository>,
+    pub exclusions: Vec<Exclusion>,
+    pub snapshot: SourceSnapshot,
+    pub manifest: ManifestArtifact,
+}
+
+/// Inventory and capture `source` (canonical). A design §4.0 hazard
+/// refuses here as [`InstallPortError::Layout`], with every repository's
+/// hazards aggregated; nothing is written.
+pub fn capture_source(
+    source: &Path,
+    open_merge: OpenMergeProbe,
+) -> Result<SourceCapture, InstallPortError> {
+    let inspector = LocalRepoInspector::new();
+    let fixed: Vec<Exclusion> = FIXED_EXCLUSIONS
+        .iter()
+        .map(|fixed| Exclusion::RelativePath(PathBuf::from(fixed)))
+        .collect();
+    let repositories = included_repositories(source, &fixed).map_err(|detail| {
+        InstallPortError::Layout(gwz_repo_contract::LayoutError::ReadFailed {
+            path: source.to_path_buf(),
+            detail,
+        })
+    })?;
+    let git_dirs: Vec<PathBuf> = repositories
+        .iter()
+        .map(IncludedRepository::relative_git_dir)
+        .collect();
+    let exclusions = verbatim_exclusions(git_dirs.iter().map(PathBuf::as_path));
+    let open_merge = open_merge(source).map_err(|error| InstallPortError::Configuration {
+        detail: format!("source merge store: {}", error.message),
+    })?;
+    let snapshot = snapshot(&inspector, source, &repositories, open_merge)?;
+    let manifest =
+        artifact::read_manifest(source).map_err(|error| InstallPortError::Configuration {
+            detail: format!("source manifest: {}", error.message),
+        })?;
+    Ok(SourceCapture {
+        repositories,
+        exclusions,
+        snapshot,
+        manifest,
+    })
+}
+
 /// The real install ports for one create.
 pub struct CoreInstallPorts {
     inspector: LocalRepoInspector,
@@ -56,19 +107,19 @@ pub struct CoreInstallPorts {
     /// The source workspace, canonical.
     source: PathBuf,
     open_merge: OpenMergeProbe,
-    repositories: Vec<IncludedRepository>,
-    exclusions: Vec<Exclusion>,
-    snapshot: Option<SourceSnapshot>,
-    manifest: Option<ManifestArtifact>,
+    capture: SourceCapture,
 }
 
 impl CoreInstallPorts {
+    /// Ports for one create of the family `family_id` at `root`, copying
+    /// `source` as captured by [`capture_source`].
     pub fn new(
         root: PathBuf,
         family_id: FamilyId,
         allocation: AllocationId,
         source: PathBuf,
         open_merge: OpenMergeProbe,
+        capture: SourceCapture,
     ) -> Self {
         Self {
             inspector: LocalRepoInspector::new(),
@@ -78,68 +129,18 @@ impl CoreInstallPorts {
             allocation,
             source,
             open_merge,
-            repositories: Vec::new(),
-            exclusions: Vec::new(),
-            snapshot: None,
-            manifest: None,
+            capture,
         }
     }
 
-    /// Inventory and capture the source once, before any family file
-    /// exists. A design §4.0 hazard refuses here as
-    /// [`InstallPortError::Layout`].
-    pub fn preflight(&mut self) -> Result<&SourceSnapshot, InstallPortError> {
-        let (repositories, exclusions, snapshot) = self.capture()?;
-        self.manifest = Some(artifact::read_manifest(&self.source).map_err(|error| {
-            InstallPortError::Configuration {
-                detail: format!("source manifest: {}", error.message),
-            }
-        })?);
-        self.repositories = repositories;
-        self.exclusions = exclusions;
-        self.snapshot = Some(snapshot);
-        Ok(self.snapshot.as_ref().expect("just captured"))
-    }
-
-    /// Design §4.1's exclusion set for this source, known after
-    /// [`preflight`](Self::preflight).
+    /// Design §4.1's exclusion set for this source.
     pub fn exclusions(&self) -> &[Exclusion] {
-        &self.exclusions
-    }
-
-    /// The included repositories of the source, root first.
-    pub fn repositories(&self) -> &[IncludedRepository] {
-        &self.repositories
-    }
-
-    fn capture(
-        &self,
-    ) -> Result<(Vec<IncludedRepository>, Vec<Exclusion>, SourceSnapshot), InstallPortError> {
-        let fixed: Vec<Exclusion> = FIXED_EXCLUSIONS
-            .iter()
-            .map(|fixed| Exclusion::RelativePath(PathBuf::from(fixed)))
-            .collect();
-        let repositories = included_repositories(&self.source, &fixed).map_err(|detail| {
-            InstallPortError::Layout(gwz_repo_contract::LayoutError::ReadFailed {
-                path: self.source.clone(),
-                detail,
-            })
-        })?;
-        let git_dirs: Vec<PathBuf> = repositories
-            .iter()
-            .map(IncludedRepository::relative_git_dir)
-            .collect();
-        let exclusions = verbatim_exclusions(git_dirs.iter().map(PathBuf::as_path));
-        let open_merge =
-            (self.open_merge)(&self.source).map_err(|error| InstallPortError::Configuration {
-                detail: format!("source merge store: {}", error.message),
-            })?;
-        let snapshot = snapshot(&self.inspector, &self.source, &repositories, open_merge)?;
-        Ok((repositories, exclusions, snapshot))
+        &self.capture.exclusions
     }
 
     fn destination_repositories(&self) -> Vec<DestinationRepository> {
-        self.repositories
+        self.capture
+            .repositories
             .iter()
             .map(|repository| DestinationRepository {
                 label: repository.label(),
@@ -156,7 +157,7 @@ impl CoreInstallPorts {
     /// repository as its own witness.
     fn dependencies(&self, destination: &Path) -> Vec<String> {
         let mut details = Vec::new();
-        for repository in &self.repositories {
+        for repository in &self.capture.repositories {
             let path = destination.join(&repository.relative);
             if fs::symlink_metadata(path.join(".git")).is_err() {
                 details.push(format!(
@@ -174,14 +175,11 @@ impl CoreInstallPorts {
                 }
             };
             let frozen = self
+                .capture
                 .snapshot
-                .as_ref()
-                .and_then(|snapshot| {
-                    snapshot
-                        .repositories
-                        .iter()
-                        .find(|captured| captured.key == repository.key)
-                })
+                .repositories
+                .iter()
+                .find(|captured| captured.key == repository.key)
                 .map(|captured| captured.head.clone());
             let observed = match &info.head {
                 HeadState::Attached { target, .. } | HeadState::Detached { target } => {
@@ -268,7 +266,8 @@ impl CoreInstallPorts {
         .map(PathBuf::from)
         .collect();
         residual.extend(
-            self.repositories
+            self.capture
+                .repositories
                 .iter()
                 .map(|repository| worktrees_of(&repository.relative_git_dir())),
         );
@@ -284,13 +283,13 @@ impl InstallPorts for CoreInstallPorts {
         let same_source = fs::canonicalize(source)
             .map(|resolved| resolved == self.source)
             .unwrap_or(false);
-        if let (true, Some(snapshot)) = (same_source, self.snapshot.as_ref()) {
-            return Ok(snapshot.clone());
+        if same_source {
+            return Ok(self.capture.snapshot.clone());
         }
         Err(InstallPortError::Destination {
             path: source.to_path_buf(),
             detail: format!(
-                "the source is not the preflighted workspace {}",
+                "the source is not the captured workspace {}",
                 self.source.display()
             ),
         })
@@ -408,8 +407,8 @@ impl InstallPorts for CoreInstallPorts {
     }
 
     fn recheck_source(&mut self, snapshot: &SourceSnapshot) -> Result<(), InstallPortError> {
-        let (_, _, fresh) = self.capture()?;
-        recheck(snapshot, &fresh)
+        let fresh = capture_source(&self.source, self.open_merge)?;
+        recheck(snapshot, &fresh.snapshot)
     }
 
     fn recapture_configuration(
@@ -446,15 +445,9 @@ impl InstallPorts for CoreInstallPorts {
                 operation: "publish_manifest for clean and bare clones",
             });
         }
-        let manifest = self
-            .manifest
-            .as_ref()
-            .ok_or(InstallPortError::Unimplemented {
-                operation: "publish_manifest before the source was captured",
-            })?;
         // The typed writer regenerates the conf-integrity marker over the
         // final manifest and the copied lock bytes (design §4.1).
-        artifact::write_manifest(&plan.destination, manifest).map_err(|error| {
+        artifact::write_manifest(&plan.destination, &self.capture.manifest).map_err(|error| {
             InstallPortError::Configuration {
                 detail: format!("destination manifest: {}", error.message),
             }

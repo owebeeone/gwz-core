@@ -9,12 +9,15 @@ use crate::workspace_ops::{
     handle_clone_local_workspace, handle_local_family, handle_merge_with_local_family,
 };
 
+/// A **clean** clone request: since LCM1.1 a verbatim create runs for real
+/// (`local_clone::tests::create`), so the mode that still refuses as
+/// unsupported before any family file is the one this slice pins.
 fn clone_request(name: &str, dry_run: Option<bool>) -> crate::CloneLocalWorkspaceRequest {
     let mut request = crate::CloneLocalWorkspaceRequest {
         meta: meta("req-clone-local"),
         name: name.to_owned(),
         dest: None,
-        mode: crate::LocalCloneMode::Verbatim,
+        mode: crate::LocalCloneMode::Clean,
         branch: None,
         copy_source: None,
     };
@@ -56,7 +59,7 @@ fn clone_local_refuses_unsupported_after_shape_and_before_any_family_file() {
         handle_clone_local_workspace(&backend, &root, clone_request("A", None), "op-1", &NullSink)
             .unwrap_err();
     assert_eq!(error.code, ErrorCode::UnsupportedOperation);
-    assert!(error.message.contains("verbatim"), "{}", error.message);
+    assert!(error.message.contains("clean mode"), "{}", error.message);
     assert!(
         family_files_absent(&root),
         "no lock, index, pointer or marker"

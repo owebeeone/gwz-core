@@ -1,17 +1,21 @@
-//! Dispatch slots for the local clone family (LCM1.0c checkpoint).
+//! Dispatch slots for the local clone family.
 //!
 //! `clone_local_workspace` (ActionKind 27), `local_family` (ActionKind 28)
 //! and the family branch of `merge` (`MergeRequest.local_source_name`).
 //! Each slot validates attribution and request shape, refuses an
 //! unsupported family `dry_run`, discovers the workspace, observes the
-//! family through the store contract and only then would reserve, copy,
-//! import or remove. Since W2 (lane S) that observation is a real read, so a
-//! slot now refuses for its own reason: `dispose` and `disband` are
-//! `unsupported_operation`; `list` answers `Ok` with an empty member list
-//! outside a family and refuses at `local_clone::list::observe_members`
-//! inside one; a family merge is `unknown_local` for an unknown token and
-//! `unsupported_operation` for a bound member. No slot has an effect: no
-//! lock file, no metadata, no copy, no import.
+//! family through the store contract and only then reserves, copies,
+//! imports or removes (design §6.2).
+//!
+//! LCM1.1 (lane C wiring): `clone --local` in verbatim mode runs end to end
+//! through `local_clone::create` (`gwz_workspace_install::install` over the
+//! real adapters); `local list` observes every member's target through the
+//! store; `dispose --keep` and `disband` are composed over
+//! `gwz_local_disposal::dispose` and the store session. Still refusing:
+//! clean and bare clones (LCM3.1 / LCM2.3), ordinary `dispose` (its fresh
+//! work/history checks are LCM2.1) and a family merge's import and
+//! delegation (LCM1.2), each as `unsupported_operation` after the family
+//! observation and before any effect.
 
 use std::path::Path;
 
@@ -21,11 +25,19 @@ use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::local_clone::request::{
     ValidatedLocalFamily, validate_clone_local, validate_local_family,
 };
-use crate::local_clone::{errors, family_merge, list};
-use crate::model::ModelResult;
+use crate::local_clone::{create, errors, family_merge, list};
+use crate::model::{ModelError, ModelResult};
 use crate::operation::{EventEmitter, EventSink, OperationRequest};
 
 use super::*;
+
+/// The merge store's own envelope classifier, as the open-merge probe the
+/// local-clone adapters take: `Some(merge_id)` while a record is open under
+/// `.gwz/merge/`; a record that cannot be classified is an error, never
+/// "no merge".
+pub(crate) fn open_merge_probe(root: &Path) -> ModelResult<Option<String>> {
+    Ok(super::merge::classify_open_record(root)?.map(|envelope| envelope.merge_id))
+}
 
 /// `gwz clone --local --name <name> [dest]`.
 pub fn handle_clone_local_workspace<B>(
@@ -44,12 +56,18 @@ where
     emitter.operation_started();
     let result = (|| {
         let validated = validate_clone_local(&request)?;
-        let what = format!("local clone ({} mode)", validated.mode.as_str());
         let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
-        let _observation = family_merge::family_store()
-            .read_view(&FamilyLocation::new(&root))
-            .map_err(|error| errors::store_in(&what, &error))?;
-        Err(errors::unsupported(&what))
+        let report = create::clone_local(
+            start,
+            &root,
+            &validated,
+            open_merge_probe,
+            &gwz_copy_contract::NeverCancelled,
+        )?;
+        let mut response =
+            response_envelope(context.clone(), crate::AggregateStatus::Ok, Vec::new());
+        response.meta.message = Some(report.message(&validated.name));
+        Ok(crate::CloneLocalWorkspaceResponse { response })
     })();
     emitter.operation_finished();
     result
@@ -60,13 +78,9 @@ where
 /// `list` is observation-only (design §3.1): on an observed family it
 /// projects the model's listing -- the root first, then every member in name
 /// order with its recorded and observed state -- into
-/// `LocalFamilyResponse.members` (design §7, operator ruling 2026-09-05); a
-/// workspace that holds neither an index nor a pointer lists nothing. The
-/// member target observation the projection needs is not implemented at
-/// this checkpoint (`local_clone::list::observe_members`), and the composed
-/// store refuses before it, so today every op still stops at the family
-/// observation with `unsupported_operation`; the projection itself is
-/// exercised by `local_clone::list`'s unit tests over a fake view.
+/// `LocalFamilyResponse.members` (design §7, operator ruling 2026-09-05),
+/// each member's target observed at its recorded path through the store; a
+/// workspace that holds neither an index nor a pointer lists nothing.
 pub fn handle_local_family<B>(
     _backend: &B,
     start: &Path,
@@ -92,18 +106,23 @@ where
         let observation = family_merge::family_store()
             .read_view(&FamilyLocation::new(&root))
             .map_err(|error| errors::store_in(what, &error))?;
+        let envelope = |status: crate::AggregateStatus, message: Option<String>| {
+            let mut response = response_envelope(context.clone(), status, Vec::new());
+            response.meta.message = message;
+            response
+        };
         match validated {
             ValidatedLocalFamily::List => {
-                let members = match observation.view() {
-                    Some(view) => list::members(view, &list::observe_members(&root, view)?),
-                    None => Vec::new(),
+                let members = match &observation {
+                    gwz_family_store_contract::FamilyObservation::Family {
+                        root: family_root,
+                        view,
+                        ..
+                    } => list::members(view, &list::observe_members(family_root, view)?),
+                    gwz_family_store_contract::FamilyObservation::NoFamily => Vec::new(),
                 };
                 Ok(crate::LocalFamilyResponse {
-                    response: response_envelope(
-                        context.clone(),
-                        crate::AggregateStatus::Ok,
-                        Vec::new(),
-                    ),
+                    response: envelope(crate::AggregateStatus::Ok, None),
                     members,
                     // Present exactly when `members` is (operator ruling
                     // 2026-09-06): the observed root, for a driver to join
@@ -112,7 +131,7 @@ where
                 })
             }
             ValidatedLocalFamily::Dispose { .. } | ValidatedLocalFamily::Disband => {
-                Err(errors::unsupported(what))
+                Err::<crate::LocalFamilyResponse, ModelError>(errors::unsupported(what))
             }
         }
     })();

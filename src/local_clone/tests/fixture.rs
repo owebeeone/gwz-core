@@ -101,3 +101,64 @@ pub(super) fn family_files_absent(root: &Path) -> bool {
             .join(gwz_family_model::ALLOCATION_MARKER_RELATIVE_PATH)
             .exists()
 }
+
+/// A real family root built with lane T's fixture harness and the public
+/// handlers: a root repository and one member (`app`), each with one
+/// commit, registered through `handle_create_workspace` and
+/// `handle_add_existing_repo`, then given the dirt a verbatim copy must
+/// carry -- an untracked note in the member and an unstaged edit at the
+/// root.
+pub(super) struct FamilyFixture {
+    pub(super) tree: gwz_local_testrepo::TempTree,
+    pub(super) workspace: gwz_local_testrepo::TestWorkspace,
+    /// The workspace root, canonical (the harness hands out canonical
+    /// paths).
+    pub(super) root: PathBuf,
+}
+
+impl FamilyFixture {
+    /// The default destination `gwz clone --local --name <name>` picks from
+    /// this root: its sibling `root-<name>`.
+    pub(super) fn sibling(&self, name: &str) -> PathBuf {
+        self.tree.path().join(format!("root-{name}"))
+    }
+}
+
+pub(super) fn family_workspace(label: &str) -> FamilyFixture {
+    let tree = gwz_local_testrepo::TempTree::new(label);
+    let workspace = tree.workspace("root", &["app"]);
+    workspace.commit_all("init");
+    let root = workspace.path().to_path_buf();
+    handle_create_workspace(
+        crate::CreateWorkspaceRequest {
+            meta: meta("req-create"),
+            workspace_root: root.to_string_lossy().into_owned(),
+            workspace_id: None,
+        },
+        "op-create",
+    )
+    .expect("create the workspace over the fixture root repository");
+    let backend = crate::git::Git2Backend::without_credential_helpers();
+    crate::workspace_ops::handle_add_existing_repo(
+        &backend,
+        &root,
+        crate::AddExistingRepoRequest {
+            meta: meta("req-add"),
+            repository_path: root.join("app").to_string_lossy().into_owned(),
+            member_path: Some("app".to_owned()),
+            member_id: None,
+            source_id: None,
+        },
+        "op-add",
+    )
+    .expect("register the member repository");
+    workspace
+        .member("app")
+        .work_untracked("notes.txt", b"scratch\n");
+    workspace.root().work_unstaged("README", b"edited\n");
+    FamilyFixture {
+        tree,
+        workspace,
+        root,
+    }
+}
