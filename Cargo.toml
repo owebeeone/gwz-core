@@ -66,3 +66,10 @@ rustix = { version = "1", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+# LCM1.1 (lane C wiring): the Tier B slices under src/local_clone/tests build
+# real temporary workspaces with lane T's dev-only fixture harness. A dev edge
+# only -- the boundary gate refuses a normal dependency on a harness package,
+# and nothing in src/ outside cfg(test) may name it.
+gwz-local-testrepo = { path = "crates/local-testrepo" }

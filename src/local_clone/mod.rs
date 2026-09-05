@@ -41,6 +41,7 @@
 //! per repository. The verifier's signature does not enforce this yet;
 //! the rule lives here and in the LCM1.0c checkpoint §11 until it does.
 
+pub mod adapters;
 pub mod errors;
 pub mod family_merge;
 pub mod list;

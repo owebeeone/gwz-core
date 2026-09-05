@@ -43,8 +43,9 @@ mod tests;
 
 use gwz_family_model::{
     ALLOCATION_MARKER_RELATIVE_PATH, AllocationId, FamilyChange, FamilyId, FamilyView,
-    INDEX_RELATIVE_PATH, LOCK_RELATIVE_PATH, MemberName, MemberRow, MemberState,
-    POINTER_RELATIVE_PATH, Refusal, check_encoded_size, validate_transition, validate_view,
+    INDEX_RELATIVE_PATH, LOCK_RELATIVE_PATH, MarkerObservation, MemberName, MemberRow, MemberState,
+    POINTER_RELATIVE_PATH, PointerObservation, Refusal, TargetObservation, check_encoded_size,
+    validate_transition, validate_view,
 };
 use gwz_family_store_contract::{
     AppliedChange, FamilyLocation, FamilyObservation, FamilySession, FamilySource, FamilyStore,
@@ -62,6 +63,179 @@ impl YamlFamilyStore {
     pub fn new() -> Self {
         Self
     }
+
+    /// What `workspace` holds of the family `family_id` registered at
+    /// `root`, read without writing anything (design §3.1: `gwz local list`
+    /// is observation-only; the format is this crate's, so the reading is
+    /// too -- LCM1.1, lane C wiring).
+    ///
+    /// The three facts are reported as they stand: whether an index occupies
+    /// the workspace's index path (any node there -- the store refuses to
+    /// read through an irregular one, so it is index-shaped either way), the
+    /// pointer file as decoded, and the marker file as decoded against
+    /// `allocation`. A pointer is [`PointerObservation::Matches`] only when it
+    /// names this family **and** this root -- one resolution of `root`, the
+    /// spelling `install_pointer` wrote -- so a family whose root moved reads
+    /// as `OtherFamily` and lists as mismatched rather than ready (design
+    /// §11 item 4: v0 fails closed on a family-root mismatch). A node that is
+    /// not a regular file, or a file that does not decode, is `Malformed`
+    /// and retained. Nothing here follows a symlink at a metadata path.
+    pub fn observe_workspace(
+        &self,
+        workspace: &Path,
+        family_id: &FamilyId,
+        root: &Path,
+        allocation: &AllocationId,
+    ) -> WorkspaceObservation {
+        let resolved = match resolve(workspace) {
+            Ok(resolved) => resolved,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return WorkspaceObservation::Missing;
+            }
+            Err(error) => {
+                return WorkspaceObservation::Unobservable {
+                    detail: format!("{}: {error}", workspace.display()),
+                };
+            }
+        };
+        match fs::symlink_metadata(&resolved) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return WorkspaceObservation::Unobservable {
+                    detail: format!("{} is not a directory", workspace.display()),
+                };
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return WorkspaceObservation::Missing;
+            }
+            Err(error) => {
+                return WorkspaceObservation::Unobservable {
+                    detail: format!("{}: {error}", workspace.display()),
+                };
+            }
+        }
+        let index = match index_state(&resolved) {
+            Ok(state) => state.is_present(),
+            Err(error) => {
+                return WorkspaceObservation::Unobservable {
+                    detail: error.to_string(),
+                };
+            }
+        };
+        let expected_root = resolve(root).unwrap_or_else(|_| root.to_path_buf());
+        let pointer = match read_destination_pointer(&resolved) {
+            Ok(None) => match publish::file_state(&resolved.join(POINTER_RELATIVE_PATH)) {
+                Ok(FileState::Absent) => PointerObservation::Absent,
+                Ok(_) => PointerObservation::Malformed,
+                Err(error) => {
+                    return WorkspaceObservation::Unobservable {
+                        detail: error.to_string(),
+                    };
+                }
+            },
+            Ok(Some(pointer)) => {
+                let this_family = pointer.family_id == family_id.as_str();
+                let this_root = Path::new(&pointer.root_path) == expected_root;
+                if this_family && this_root {
+                    PointerObservation::Matches
+                } else {
+                    PointerObservation::OtherFamily
+                }
+            }
+            Err(StoreError::Malformed { .. }) => PointerObservation::Malformed,
+            Err(error) => {
+                return WorkspaceObservation::Unobservable {
+                    detail: error.to_string(),
+                };
+            }
+        };
+        let marker = match read_marker(&resolved) {
+            Ok(None) => MarkerObservation::Absent,
+            Ok(Some(marker)) => {
+                if marker.family_id == family_id.as_str()
+                    && marker.allocation_id == allocation.as_str()
+                {
+                    MarkerObservation::Matches
+                } else {
+                    MarkerObservation::Mismatch
+                }
+            }
+            Err(StoreError::Malformed { .. }) => MarkerObservation::Malformed,
+            Err(error) => {
+                return WorkspaceObservation::Unobservable {
+                    detail: error.to_string(),
+                };
+            }
+        };
+        WorkspaceObservation::Present(WorkspaceMetadata {
+            index,
+            pointer,
+            marker,
+        })
+    }
+
+    /// [`observe_workspace`](Self::observe_workspace) keyed by a row, for
+    /// the `gwz local list` projection and disposal's fresh evidence: the
+    /// recorded path is resolved against `root` exactly as the session
+    /// resolves it, and the reading is folded into the model's
+    /// [`TargetObservation`] -- an index at the path is
+    /// [`PointerObservation::IsIndex`] (a root, not a clone), a workspace
+    /// that cannot be observed is `Malformed` with the reason, and a path
+    /// that no longer exists is `Missing`.
+    pub fn observe_member_target(
+        &self,
+        root: &Path,
+        view: &FamilyView,
+        row: &MemberRow,
+    ) -> TargetObservation {
+        match self.observe_workspace(
+            &root.join(&row.path),
+            &view.family_id,
+            root,
+            &row.allocation_id,
+        ) {
+            WorkspaceObservation::Missing => TargetObservation::Missing,
+            WorkspaceObservation::Unobservable { detail } => {
+                TargetObservation::Malformed { detail }
+            }
+            WorkspaceObservation::Present(metadata) => TargetObservation::Present {
+                pointer: if metadata.index {
+                    PointerObservation::IsIndex
+                } else {
+                    metadata.pointer
+                },
+                marker: metadata.marker,
+            },
+        }
+    }
+}
+
+/// One read of a workspace's family metadata
+/// ([`YamlFamilyStore::observe_workspace`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkspaceObservation {
+    /// The path does not exist.
+    Missing,
+    /// The path exists but its metadata could not be read: it is not a
+    /// directory, or an I/O failure stopped the reading.
+    Unobservable {
+        detail: String,
+    },
+    Present(WorkspaceMetadata),
+}
+
+/// The facts of one present workspace, unfolded: a caller folds them into
+/// the shape it needs (the model's `TargetObservation`, an installer's
+/// destination observation).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceMetadata {
+    /// A node occupies the index path: the workspace is a family root, or
+    /// holds conflicting metadata.
+    pub index: bool,
+    /// The pointer file as read; never [`PointerObservation::IsIndex`], which
+    /// the caller derives from `index`.
+    pub pointer: PointerObservation,
+    pub marker: MarkerObservation,
 }
 
 impl FamilyStore for YamlFamilyStore {

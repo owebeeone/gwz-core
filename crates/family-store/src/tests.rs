@@ -641,3 +641,143 @@ fn a_clone_whose_pointer_cannot_be_decoded_refuses_as_malformed() {
     }
     assert!(pointer.is_file(), "the file is retained for inspection");
 }
+
+/// LCM1.1 (lane C wiring): `gwz local list` and disposal's fresh evidence
+/// read what stands at a row's recorded path -- the index, the pointer and
+/// the marker -- through the store, which owns the format, and never write.
+/// The observation is keyed by the row so it resolves the recorded path
+/// exactly as `install_pointer` and `remove_pointer` do.
+#[test]
+fn observing_a_members_target_reports_present_missing_and_foreign_metadata() {
+    use crate::{WorkspaceMetadata, WorkspaceObservation};
+    use gwz_family_model::{MarkerObservation, PointerObservation, TargetObservation};
+
+    let family = Family::founded();
+    let mut session = family.lock();
+    let destination = family.creating(&mut session, "A", "../ws-A");
+    let view = session.reread().unwrap().expect("the index is there");
+    let row = view.members.get(&name("A")).unwrap().clone();
+    let observe = || {
+        family
+            .store
+            .observe_member_target(&family.root, &view, &row)
+    };
+
+    // Allocated but not yet installed: present, holding nothing of the family.
+    assert_eq!(
+        observe(),
+        TargetObservation::Present {
+            pointer: PointerObservation::Absent,
+            marker: MarkerObservation::Absent,
+        }
+    );
+    session
+        .install_pointer(&name("A"), &destination)
+        .expect("install");
+    assert_eq!(
+        observe(),
+        TargetObservation::Present {
+            pointer: PointerObservation::Matches,
+            marker: MarkerObservation::Matches,
+        }
+    );
+    // The same reading through the path-keyed form, with the facts unfolded.
+    assert_eq!(
+        family.store.observe_workspace(
+            &destination,
+            &view.family_id,
+            &family.root,
+            &row.allocation_id
+        ),
+        WorkspaceObservation::Present(WorkspaceMetadata {
+            index: false,
+            pointer: PointerObservation::Matches,
+            marker: MarkerObservation::Matches,
+        })
+    );
+
+    // Another allocation's marker is a mismatch; another family's pointer is
+    // foreign; a pointer that does not decode is malformed -- each retained.
+    let other_allocation = AllocationId::new("alloc-other").unwrap();
+    assert_eq!(
+        family.store.observe_workspace(
+            &destination,
+            &view.family_id,
+            &family.root,
+            &other_allocation
+        ),
+        WorkspaceObservation::Present(WorkspaceMetadata {
+            index: false,
+            pointer: PointerObservation::Matches,
+            marker: MarkerObservation::Mismatch,
+        })
+    );
+    let other_family = FamilyId::new("fam_other").unwrap();
+    assert_eq!(
+        family.store.observe_workspace(
+            &destination,
+            &other_family,
+            &family.root,
+            &row.allocation_id
+        ),
+        WorkspaceObservation::Present(WorkspaceMetadata {
+            index: false,
+            pointer: PointerObservation::OtherFamily,
+            marker: MarkerObservation::Mismatch,
+        })
+    );
+    // A pointer naming this family at another root is not this root's pointer
+    // (design §11 item 4: fail closed on a family-root mismatch).
+    let elsewhere = family.root.join("../elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    assert_eq!(
+        family.store.observe_workspace(
+            &destination,
+            &view.family_id,
+            &elsewhere,
+            &row.allocation_id
+        ),
+        WorkspaceObservation::Present(WorkspaceMetadata {
+            index: false,
+            pointer: PointerObservation::OtherFamily,
+            marker: MarkerObservation::Matches,
+        })
+    );
+    fs::write(
+        destination.join(POINTER_RELATIVE_PATH),
+        b"schema: [broken\n",
+    )
+    .unwrap();
+    assert_eq!(
+        observe(),
+        TargetObservation::Present {
+            pointer: PointerObservation::Malformed,
+            marker: MarkerObservation::Matches,
+        }
+    );
+
+    // An index at the recorded path makes it a root, not a clone.
+    fs::copy(
+        family.root.join(INDEX_RELATIVE_PATH),
+        destination.join(INDEX_RELATIVE_PATH),
+    )
+    .unwrap();
+    assert_eq!(
+        observe(),
+        TargetObservation::Present {
+            pointer: PointerObservation::IsIndex,
+            marker: MarkerObservation::Matches,
+        }
+    );
+
+    // A file where the workspace should be cannot hold metadata; a path that
+    // is gone is missing.
+    fs::remove_dir_all(&destination).unwrap();
+    assert_eq!(observe(), TargetObservation::Missing);
+    fs::write(&destination, b"not a directory").unwrap();
+    assert!(
+        matches!(observe(), TargetObservation::Malformed { .. }),
+        "{:?}",
+        observe()
+    );
+}

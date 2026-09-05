@@ -322,6 +322,7 @@ dependencies = [
  "gwz-history-check",
  "gwz-local-disposal",
  "gwz-local-import",
+ "gwz-local-testrepo",
  "gwz-refcopy",
  "gwz-repo-contract",
  "gwz-repo-factory",
