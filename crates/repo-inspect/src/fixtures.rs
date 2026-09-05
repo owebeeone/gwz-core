@@ -116,6 +116,104 @@ impl Fixture {
         path
     }
 
+    pub(crate) fn remove(&self, relative: &str) {
+        fs::remove_file(self.root.join(relative)).expect("remove");
+    }
+
+    /// Stage every worktree change without committing.
+    pub(crate) fn stage_all(&self) {
+        let repository = self.open();
+        let mut index = repository.index().expect("index");
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .expect("add all");
+        index.write().expect("write index");
+    }
+
+    /// Stage the removal of a path that is already gone from the worktree.
+    pub(crate) fn stage_removal(&self, relative: &str) {
+        let repository = self.open();
+        let mut index = repository.index().expect("index");
+        index
+            .remove_path(Path::new(relative))
+            .expect("remove from index");
+        index.write().expect("write index");
+    }
+
+    /// Set an index entry's raw flags: the only way to produce the
+    /// assume-unchanged and skip-worktree states this crate must observe
+    /// physically, and the same bits `git update-index` would set.
+    pub(crate) fn set_index_flags(&self, relative: &str, flags: u16, flags_extended: u16) {
+        let repository = self.open();
+        let mut index = repository.index().expect("index");
+        let mut entry = index
+            .get_path(Path::new(relative), 0)
+            .unwrap_or_else(|| panic!("{relative} is in the index"));
+        entry.flags |= flags;
+        entry.flags_extended |= flags_extended;
+        index.add(&entry).expect("update entry");
+        index.write().expect("write index");
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn set_mode(&self, relative: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(self.root.join(relative), fs::Permissions::from_mode(mode))
+            .expect("set mode");
+    }
+
+    /// Leave an unfinished native operation behind, exactly as Git records it:
+    /// a state file in the Git directory.
+    pub(crate) fn begin_native_operation(&self, file: &str) {
+        let head = self.head_commit();
+        fs::write(self.git_dir().join(file), format!("{head}\n")).expect("operation state");
+    }
+
+    /// Push one native stash entry, leaving a clean worktree behind.
+    pub(crate) fn stash(&self, message: &str) {
+        let mut repository = self.open();
+        let who = Signature::now("Fixture", "fixture@example.invalid").expect("signature");
+        repository
+            .stash_save2(&who, Some(message), None)
+            .expect("stash save");
+    }
+
+    /// Take the repository into a conflicted merge: `path` differs on both
+    /// sides, so the index carries stages 1/2/3 and `MERGE_HEAD` is written.
+    pub(crate) fn conflicting_merge(&self, path: &str) {
+        self.write(path, b"base\n");
+        self.commit("base");
+        let base = self.head_commit();
+
+        self.write(path, b"ours\n");
+        self.commit("ours");
+
+        let repository = self.open();
+        let base_commit = repository.find_commit(base).expect("base commit");
+        repository
+            .branch("theirs", &base_commit, true)
+            .expect("branch");
+        let ours = repository.head().expect("head").name().unwrap().to_owned();
+        repository.set_head("refs/heads/theirs").expect("set head");
+        repository
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .expect("checkout theirs");
+        self.write(path, b"theirs\n");
+        self.commit("theirs");
+        let theirs = self.head_commit();
+
+        repository.set_head(&ours).expect("back to ours");
+        repository
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .expect("checkout ours");
+        let annotated = repository
+            .find_annotated_commit(theirs)
+            .expect("annotated commit");
+        repository
+            .merge(&[&annotated], None, None)
+            .expect("merge starts and conflicts");
+    }
+
     /// Append raw text to the repository's own `config`, so the test controls
     /// the exact spelling a user would have written.
     pub(crate) fn append_config(&self, text: &str) {
@@ -178,6 +276,14 @@ impl Fixture {
         .expect("gitfile");
         linked
     }
+}
+
+/// An unmanaged nested repository: a plain `git init` at `path`, the shape
+/// architecture §4 requires the inventory to see even inside ignored data.
+pub(crate) fn nested_repository(path: &Path) -> Repository {
+    let mut options = RepositoryInitOptions::new();
+    options.initial_head("main").mkpath(true);
+    Repository::init_opts(path, &options).expect("nested repository")
 }
 
 #[cfg(unix)]
