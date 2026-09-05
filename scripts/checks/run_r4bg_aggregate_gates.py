@@ -695,6 +695,28 @@ def _fault_count(darwin: str, linux: str) -> str:
         on a unix host) from the reviewed tuple's linux value,
         FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
         measured number wins.
+
+    LCM1.0c follow-up 3 (2026-09-06, the operator's four cross-driver rulings
+    and the W2 contract proposals) moves the LIB REMAINDER and only it, by
+    two rows, neither carrying a cfg gate: `local_clone::list::tests::
+    the_root_path_is_the_observed_root_and_absent_outside_a_family` (ruling
+    3, `LocalFamilyResponse.root_path`) and `workspace_ops::tests::g08::
+    push_remote_binds_from_the_request_field_first_and_the_policy_second`
+    (ruling 4, the push-token precedence pin). The contract crates' additions
+    (I-2, T-1/T-2, S-1, S-4) are in their own crates, not the gwz-core lib.
+
+      checked_artifact:: 459 / 476: UNMOVED (`--list` re-measured 459 on this
+        tree, 2026-09-06).
+      v1_lifecycle:: 266 listed / 265 executed: UNMOVED (`--list` 266).
+      lib remainder darwin 1028 -> 1030: MEASURED on this tree (`cargo test -p
+        gwz-core --lib --locked -- --skip checked_artifact:: --skip
+        workspace_ops::merge::v1_lifecycle::` -> `1030 passed; 1 ignored`,
+        2026-09-06, run from gwz-core under the Option A workspace) and
+        cross-checked against `--list` (1031 listed = 1030 + the one ignored
+        row; 1756 rows in all, was 1754). 1028 + 2 = 1030.
+      lib remainder linux  1029 -> 1031: DERIVED (+2, both rows cfg-free on a
+        unix host) from the follow-up 2 linux value, FIRST-DISPATCH-EXPECTED
+        at the lane owner's landing dispatch; a measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -733,7 +755,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1028 passed", "1029 passed")),
+         _fault_count("1030 passed", "1031 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

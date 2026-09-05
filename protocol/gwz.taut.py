@@ -1941,7 +1941,19 @@ SCHEMA = schema(
         # The `list` projection: the root first, then every member in name
         # order. Empty for every other op and whenever the envelope carries
         # an error.
-        members=F(2, List(Ref.LocalFamilyMemberEntry))),
+        members=F(2, List(Ref.LocalFamilyMemberEntry)),
+        # The family root's path as core observed it (operator ruling
+        # 2026-09-06, allocated by LCM1.0c follow-up 3; design §7, §8.1):
+        # the directory holding the index, reached through the pointer when
+        # the addressed workspace is a clone, spelled as the store resolved
+        # it. Each member's `path` stays root-relative on the wire; a driver
+        # that shows absolute paths (design §8.1's `gwz local list` sample)
+        # joins `root_path` with the member's `path` and never guesses the
+        # root from its own cwd. Present exactly when `members` is: the
+        # `list` op on an observed family. Absent for every other op, for a
+        # workspace in no family (`members` is empty there too) and whenever
+        # the envelope carries an error.
+        root_path=F(3, STR, optional=True)),
 
     # ---- diff request messages --------------------------------------------
     # One resolved comparison for one target repo: kind + resolved endpoints.

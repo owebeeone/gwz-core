@@ -58,7 +58,19 @@ from taut.ir.load import load_schema
 # previous pin below reproduced exactly on the pre-allocation tree
 # (gwz-core 0d7b53d).
 #   was: 3c34bd741b32f366f63928211eec83c920b5b0ca0ed1d847447f4d3428c22031
-PRE_LOG_WIRE_SHA256 = "26f0d16ffebdcdc26bbbe682a6347688781cd202694333dbb0c066d087fb6b4e"
+#
+# Moved deliberately again on 2026-09-06 by LCM1.0c follow-up 3 (the
+# operator's cross-driver ruling 3 of 2026-09-06, gwz-dev
+# dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md §12 and GwzLocalCloneDesign.md
+# §7/§8.1), which allocates exactly one more optional response field,
+# LocalFamilyResponse.root_path (tag 3): the family root's path, so a
+# driver resolves each member's root-relative `path` against it instead of
+# guessing. MEASURED additive, not assumed: the projection was rendered on
+# both trees and diffed -- 11 added lines, 0 removed lines, 1 hunk, the
+# added lines being the one `root_path` field object; the previous pin
+# below reproduced exactly on the pre-allocation tree (gwz-core 7e962d2).
+#   was: 26f0d16ffebdcdc26bbbe682a6347688781cd202694333dbb0c066d087fb6b4e
+PRE_LOG_WIRE_SHA256 = "2eca6469ed1281e77a95f1e419aa4065002aa94c77507a73ada6f6f9c8bb5503"
 LOG_METHODS = {"log", "log.output"}
 
 

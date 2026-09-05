@@ -130,6 +130,9 @@ fn local_family_ops_refuse_unsupported_without_writing() {
     )
     .expect("a list outside a family observes an empty family");
     assert!(listing.members.is_empty());
+    // LCM1.0c follow-up 3 (operator ruling 2026-09-06): no family, no root to
+    // name -- `root_path` is present exactly when `members` is.
+    assert_eq!(listing.root_path, None);
     assert!(family_files_absent(&root));
 
     for (op, name, expected) in [

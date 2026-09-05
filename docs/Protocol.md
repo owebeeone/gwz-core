@@ -34,10 +34,13 @@ payload `LocalFamilyResponse.members` (a list of `LocalFamilyMemberEntry`:
 `name`, `kind`, `recorded_state`, `observed_state`, `path`, optional
 `last_error`, whose enums `LocalMemberKind`, `LocalMemberState` and
 `LocalObservedState` mirror the pure family model one-for-one) and
-`GwzErrorCode.unknown_local` (62), the family-only merge miss. Every
-local-family handler still refuses with `unsupported_operation` before any
-effect; the product contract is the gwz-dev
-`dev-docs/GwzLocalCloneDesign.md`.
+`GwzErrorCode.unknown_local` (62), the family-only merge miss. LCM1.0c
+follow-up 3 (operator ruling 2026-09-06) adds `LocalFamilyResponse.root_path`
+(tag 3, optional): the family root's path as core observed it, present
+exactly when `members` is, so a driver joins it with each member's
+root-relative `path` instead of guessing the root. Every local-family
+handler still refuses with `unsupported_operation` before any effect; the
+product contract is the gwz-dev `dev-docs/GwzLocalCloneDesign.md`.
 
 Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
 fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is

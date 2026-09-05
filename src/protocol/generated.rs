@@ -5271,18 +5271,21 @@ impl LocalFamilyMemberEntry {
 pub struct LocalFamilyResponse {
     pub response: ResponseEnvelope,
     pub members: Vec<LocalFamilyMemberEntry>,
+    pub root_path: Option<String>,
 }
 impl LocalFamilyResponse {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.response.to_cbor()),
             (2, Cbor::Array(self.members.iter().map(|x| x.to_cbor()).collect())),
+            (3, match &self.root_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
         Ok(Self {
             response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
             members: c.try_get(2)?.try_array()?.iter().map(|x| LocalFamilyMemberEntry::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            root_path: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
         })
     }
 }

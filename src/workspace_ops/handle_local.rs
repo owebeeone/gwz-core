@@ -105,6 +105,10 @@ where
                         Vec::new(),
                     ),
                     members,
+                    // Present exactly when `members` is (operator ruling
+                    // 2026-09-06): the observed root, for a driver to join
+                    // with each member's root-relative `path`.
+                    root_path: list::root_path(&observation),
                 })
             }
             ValidatedLocalFamily::Dispose { .. } | ValidatedLocalFamily::Disband => {

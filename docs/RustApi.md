@@ -11,7 +11,7 @@ operations.
 | --- | --- |
 | `artifact` | Read/write manifest, lock, and snapshot YAML artifacts. |
 | `git` | `GitBackend`, `Git2Backend`, Git status/head/remote/result types, transfer progress, timeout configuration, and the anonymous local fetch/push ports. |
-| `local_clone` | Thin local clone family adapters: request-shape validation, the `LocalTransport` adapter over `GitBackend`, the family-merge wrapper (whose resolver miss is `unknown_local`), and the `list` projection of the family model's observation-only listing onto `LocalFamilyResponse.members`. Library logic lives in the crates under `crates/`. |
+| `local_clone` | Thin local clone family adapters: request-shape validation, the `LocalTransport` adapter over `GitBackend`, the family-merge wrapper (whose resolver miss is `unknown_local`), and the `list` projection of the family model's observation-only listing onto `LocalFamilyResponse.members` (with the observed root in `root_path`). Library logic lives in the crates under `crates/`. |
 | `model` | Core ids, model errors, source kinds, desired refs, selection, policy, and attribution validation. |
 | `operation` | Operation runtime, events, aggregate/member execution helpers, concurrency helpers, and response envelope helpers. |
 | `protocol` | Generated taut protocol module and conversion helpers. |

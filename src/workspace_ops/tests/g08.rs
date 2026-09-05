@@ -239,6 +239,72 @@ pub(crate) fn push_rejects_whole_batch_when_a_member_fails_preflight() {
     assert_eq!(read_repo_ref(&remote, "refs/heads/main"), None);
 }
 
+/// Design §7 names only `PushRequest.remote` for `gwz push --remote <name>`,
+/// and the operator's cross-driver ruling 4 (2026-09-06, LCM1.0c follow-up 3)
+/// has both drivers encode the token there once, no longer also in
+/// `OperationPolicy.remote`. Core needs no change for that: both resolvers
+/// read the request field first and fall back to the policy field for a
+/// caller that still sets only that (request-over-policy precedence,
+/// boundaries §3). A characterisation pin, not a behaviour change -- it was
+/// green on first run.
+#[test]
+pub(crate) fn push_remote_binds_from_the_request_field_first_and_the_policy_second() {
+    use crate::workspace_ops::push_member::{resolve_push_remote, resolve_root_push_remote};
+
+    let member = crate::artifact::ManifestMember {
+        id: "mem_app".to_owned(),
+        path: "repos/app".to_owned(),
+        source_kind: crate::artifact::ArtifactSourceKind::Git,
+        source_id: "src_app".to_owned(),
+        active: true,
+        desired: None,
+        remotes: vec![crate::artifact::RemoteArtifact {
+            name: "origin".to_owned(),
+            url: "file:///nowhere/origin.git".to_owned(),
+            fetch: true,
+            push: true,
+        }],
+    };
+    let mut both = push_request(None, Some("policy-hub"));
+    both.remote = Some("hub".to_owned());
+    let request_only = push_request_explicit(Some("hub"), None);
+    let policy_only = push_request(None, Some("hub"));
+    let neither = push_request_explicit(None, None);
+
+    assert_eq!(resolve_push_remote(&member, &both).unwrap(), "hub");
+    assert_eq!(resolve_push_remote(&member, &request_only).unwrap(), "hub");
+    assert_eq!(resolve_push_remote(&member, &policy_only).unwrap(), "hub");
+    assert_eq!(
+        resolve_push_remote(&member, &neither).unwrap(),
+        "origin",
+        "no token at all: the member's own push remote"
+    );
+
+    let temp = TempDir::new("push-remote-precedence");
+    let backend = Git2Backend::new();
+    let root = temp.path().join("root");
+    backend.create_repo(&root).unwrap();
+    assert_eq!(
+        resolve_root_push_remote(&backend, &root, &both).unwrap(),
+        "hub"
+    );
+    assert_eq!(
+        resolve_root_push_remote(&backend, &root, &request_only).unwrap(),
+        "hub"
+    );
+    assert_eq!(
+        resolve_root_push_remote(&backend, &root, &policy_only).unwrap(),
+        "hub"
+    );
+    assert_eq!(
+        resolve_root_push_remote(&backend, &root, &neither)
+            .unwrap_err()
+            .code,
+        crate::model::ErrorCode::MissingRemote,
+        "a root with no remote and no token is the existing missing_remote"
+    );
+}
+
 pub(crate) fn push_request(
     unsupported_member: Option<crate::UnsupportedMemberBehavior>,
     remote: Option<&str>,

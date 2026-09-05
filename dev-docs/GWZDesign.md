@@ -1760,7 +1760,7 @@ lands.
 | `LocalFamilyOp` | `list`=0, `dispose`=1, `disband`=2 |
 | `MergeRequest.local_source_name` | tag 9, optional, start only; tag 8 is `filesystem_strict` |
 | `CloneLocalWorkspaceResponse` | envelope only |
-| `LocalFamilyResponse` | `response`(1), `members`(2, list of `LocalFamilyMemberEntry`): the `gwz local list` projection — the root first, then every member in name order; empty for every other op and whenever the envelope carries an error (operator ruling 2026-09-05, design §11 item 12) |
+| `LocalFamilyResponse` | `response`(1), `members`(2, list of `LocalFamilyMemberEntry`): the `gwz local list` projection — the root first, then every member in name order; empty for every other op and whenever the envelope carries an error (operator ruling 2026-09-05, design §11 item 12); `root_path`(3, optional): the family root's path as core observed it — the directory holding the index, reached through the pointer from a clone — present exactly when `members` is, so a driver joins it with each member's root-relative `path` rather than guess the root (operator ruling 2026-09-06, LCM1.0c follow-up 3) |
 | `LocalFamilyMemberEntry` | `name`(1), `kind`(2, `LocalMemberKind`), `recorded_state`(3, `LocalMemberState`), `observed_state`(4, `LocalObservedState`), `path`(5, root-relative), `last_error`(6, optional); mirrors `gwz_family_model::ListRow` field for field |
 | `LocalMemberKind` | `checkout`=0, `bare`=1 (mirrors `gwz_family_model::MemberKind`) |
 | `LocalMemberState` | `creating`=0, `ready`=1, `disposing`=2 (mirrors `gwz_family_model::MemberState`) |

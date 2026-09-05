@@ -1978,6 +1978,7 @@ has no service method and no handler that executes commands.
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
 | members | 2 | List<LocalFamilyMemberEntry> | no | no | - |
+| root_path | 3 | str | yes | no | - |
 
 ### DiffComparison
 

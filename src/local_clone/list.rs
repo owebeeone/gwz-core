@@ -17,6 +17,7 @@ use gwz_family_model::{
     FamilyView, ListRow, ListState, MemberKind, MemberName, MemberState, TargetObservation,
     project_list,
 };
+use gwz_family_store_contract::FamilyObservation;
 
 use super::errors::unsupported;
 use crate::model::ModelResult;
@@ -68,6 +69,19 @@ pub fn members(
     observations: &BTreeMap<MemberName, TargetObservation>,
 ) -> Vec<crate::LocalFamilyMemberEntry> {
     project_list(view, observations).iter().map(entry).collect()
+}
+
+/// `LocalFamilyResponse.root_path` (design §7, §8.1; operator ruling
+/// 2026-09-06): the registering root as the store observed it -- the
+/// directory holding the index, reached through the pointer when the
+/// addressed workspace is a clone -- spelled as a wire string the way
+/// `handle_ls` spells `abspath`. Members' `path`s stay root-relative; a
+/// driver joins the two. A workspace in no family has no root to name.
+pub fn root_path(observation: &FamilyObservation) -> Option<String> {
+    match observation {
+        FamilyObservation::NoFamily => None,
+        FamilyObservation::Family { root, .. } => Some(root.to_string_lossy().into_owned()),
+    }
 }
 
 /// Observe every recorded member's target for the listing -- presence, the
@@ -255,6 +269,33 @@ mod tests {
             relisted[1].observed_state,
             crate::LocalObservedState::Unobserved
         );
+    }
+
+    /// Design §7/§8.1 (operator ruling 2026-09-06): `root_path` is the
+    /// registering root as the store observed it, so a driver joins it with
+    /// each member's root-relative `path`; outside a family there is no
+    /// root to name and the field is absent.
+    #[test]
+    fn the_root_path_is_the_observed_root_and_absent_outside_a_family() {
+        use gwz_family_store_contract::{FamilyObservation, FamilySource};
+        let view = FamilyView::founded(
+            FamilyId::new("fam_test").unwrap(),
+            AllocationId::new("alloc-root").unwrap(),
+        );
+        let root = Path::new("/somewhere/gwz-dev");
+        for source in [FamilySource::Index, FamilySource::Pointer] {
+            let observation = FamilyObservation::Family {
+                root: root.to_path_buf(),
+                source,
+                view: view.clone(),
+            };
+            assert_eq!(
+                root_path(&observation).as_deref(),
+                Some("/somewhere/gwz-dev"),
+                "{source:?}: the root is named whether reached by index or pointer"
+            );
+        }
+        assert_eq!(root_path(&FamilyObservation::NoFamily), None);
     }
 
     #[test]
