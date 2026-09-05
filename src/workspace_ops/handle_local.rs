@@ -25,7 +25,7 @@ use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::local_clone::request::{
     ValidatedLocalFamily, validate_clone_local, validate_local_family,
 };
-use crate::local_clone::{create, errors, family_merge, list};
+use crate::local_clone::{create, dispose, errors, family_merge, list};
 use crate::model::{ModelError, ModelResult};
 use crate::operation::{EventEmitter, EventSink, OperationRequest};
 
@@ -130,8 +130,38 @@ where
                     root_path: list::root_path(&observation),
                 })
             }
-            ValidatedLocalFamily::Dispose { .. } | ValidatedLocalFamily::Disband => {
+            ValidatedLocalFamily::Dispose {
+                name, keep: true, ..
+            } => {
+                let report = dispose::keep(start, &root, &name, open_merge_probe)?;
+                Ok(crate::LocalFamilyResponse {
+                    response: envelope(crate::AggregateStatus::Ok, Some(report.message(&name))),
+                    members: Vec::new(),
+                    root_path: None,
+                })
+            }
+            // Ordinary deletion's fresh work and history checks are LCM2.1;
+            // the ports behind them are wired (`local_clone::adapters::
+            // disposal`) but the slot refuses before any effect.
+            ValidatedLocalFamily::Dispose { .. } => {
                 Err::<crate::LocalFamilyResponse, ModelError>(errors::unsupported(what))
+            }
+            ValidatedLocalFamily::Disband => {
+                let (status, message) = match dispose::disband(&root)? {
+                    Some(report) => (crate::AggregateStatus::Ok, report.message()),
+                    None => (
+                        crate::AggregateStatus::Noop,
+                        format!(
+                            "{} is in no local family; nothing to disband",
+                            root.display()
+                        ),
+                    ),
+                };
+                Ok(crate::LocalFamilyResponse {
+                    response: envelope(status, Some(message)),
+                    members: Vec::new(),
+                    root_path: None,
+                })
             }
         }
     })();

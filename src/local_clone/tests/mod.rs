@@ -2,6 +2,7 @@
 //! `cargo test -p gwz-core --lib local_clone::tests::<slice>`.
 
 mod create;
+mod dispose;
 mod fixture;
 mod list;
 mod request;

@@ -142,7 +142,7 @@ pub(crate) fn clone_local(
 
     // Step 5: the family lock, founding when there is no index yet.
     let mut session = store
-        .try_lock(&FamilyLocation::new(workspace))
+        .try_lock(&FamilyLocation::new(&placement.source))
         .map_err(|error| errors::store_in(&what, &error))?;
     let (family_id, founded) = match session
         .reread()

@@ -43,6 +43,7 @@
 
 pub mod adapters;
 pub mod create;
+pub mod dispose;
 pub mod errors;
 pub mod family_merge;
 pub mod list;

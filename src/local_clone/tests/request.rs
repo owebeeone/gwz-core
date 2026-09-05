@@ -138,20 +138,34 @@ fn local_family_ops_refuse_unsupported_without_writing() {
     assert_eq!(listing.root_path, None);
     assert!(family_files_absent(&root));
 
-    for (op, name, expected) in [
-        (crate::LocalFamilyOp::Dispose, Some("C"), "local dispose"),
-        (crate::LocalFamilyOp::Disband, None, "local disband"),
-    ] {
-        let error = handle_local_family(&backend, &root, family_request(op, name), "op", &NullSink)
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::UnsupportedOperation, "{op:?}");
-        assert!(
-            error.message.contains(expected),
-            "{op:?}: {}",
-            error.message
-        );
-        assert!(family_files_absent(&root), "{op:?}");
-    }
+    // LCM1.1: ordinary deletion still refuses as unsupported after the
+    // family observation (its fresh checks are LCM2.1); `dispose --keep` and
+    // `disband` run for real (`local_clone::tests::dispose`), and a disband
+    // outside any family is a no-op that writes nothing.
+    let error = handle_local_family(
+        &backend,
+        &root,
+        family_request(crate::LocalFamilyOp::Dispose, Some("C")),
+        "op",
+        &NullSink,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::UnsupportedOperation);
+    assert!(error.message.contains("local dispose"), "{}", error.message);
+    assert!(family_files_absent(&root));
+    let disband = handle_local_family(
+        &backend,
+        &root,
+        family_request(crate::LocalFamilyOp::Disband, None),
+        "op",
+        &NullSink,
+    )
+    .expect("a disband outside any family is a no-op");
+    assert_eq!(
+        disband.response.meta.aggregate_status,
+        crate::AggregateStatus::Noop
+    );
+    assert!(family_files_absent(&root));
 
     let mut keep_force = family_request(crate::LocalFamilyOp::Dispose, Some("C"));
     keep_force.keep = Some(true);
