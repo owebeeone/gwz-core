@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use gwz_family_model::{
     AllocationId, FamilyChange, FamilyId, FamilyView, MAX_ENCODED_INDEX_BYTES, MemberName,
-    MemberRow, MemberState, validate_transition,
+    MemberRow, MemberState, Refusal, validate_transition,
 };
 
 use crate::{
@@ -53,6 +53,30 @@ pub trait StoreFixture {
     /// filesystem fixture makes the target unwritable; the in-memory fake
     /// queues a scripted failure.
     fn fail_next(&mut self, root: &Path, operation: StoreOperation);
+    /// Clear every obstruction `fail_next` planted at `root` (LCM1.0c
+    /// follow-up 3, lane S proposal S-1). The suite calls this after it has
+    /// observed the scripted failure and before it retries the same call, so
+    /// a fixture whose obstruction is durable on disk (an unwritable path, a
+    /// directory planted where the pointer goes) clears it here and needs no
+    /// bracketing wrapper of its own. The in-memory fake's queued failure is
+    /// consumed by the failing call, so the default body -- nothing -- is
+    /// right for it.
+    fn clear_failures(&mut self, root: &Path) {
+        let _ = root;
+    }
+    /// A second spelling of the member workspace at `relative`: `alias` is a
+    /// root-relative path, spelled as a row spells its path, that the store's
+    /// own resolution must resolve to the same directory as `relative` -- a
+    /// symlink on a filesystem fixture. Returns the alias joined to `root`, to
+    /// record as another row's path and hand to `install_pointer`, or `None`
+    /// when the fixture cannot alias, in which case the path-collision case is
+    /// skipped for it (LCM1.0c follow-up 3, lane S proposal S-4). The
+    /// reference fixture always can, so the case is never vacuous for the
+    /// contract.
+    fn alias_workspace(&mut self, root: &Path, relative: &str, alias: &str) -> Option<PathBuf> {
+        let _ = (root, relative, alias);
+        None
+    }
 }
 
 /// Run every conformance case through `fixture`.
@@ -80,6 +104,10 @@ pub fn run_all<F: StoreFixture>(fixture: &mut F) {
     installing_a_pointer_anywhere_but_the_rows_path_is_refused_without_effects(fixture);
     a_pointer_installed_through_a_non_canonical_spelling_is_the_rows_pointer(fixture);
     disbanding_before_the_pointers_is_refused_and_leaves_no_orphan(fixture);
+    // LCM1.0c-fu3 (lane S proposal S-4): two rows whose recorded paths
+    // resolve to one directory -- a spelling the pure model cannot see --
+    // refuse at `install_pointer`, before the destination's own metadata.
+    installing_a_pointer_where_another_rows_path_resolves_is_a_path_collision(fixture);
 }
 
 /// A founded family holding one `creating` member `A` at `../ws-A`, under a
@@ -173,9 +201,71 @@ pub fn a_failed_pointer_write_reports_partial_with_the_marker_completed<F: Store
         }
         other => panic!("a failed pointer write must report Partial, got {other:?}"),
     }
-    // A retry after the scripted failure completes both effects.
+    // A retry after the scripted failure completes both effects. A fixture
+    // whose obstruction is durable clears it here (S-1); the fake's queued
+    // failure was consumed by the call above.
+    fixture.clear_failures(&root);
     let applied = session.install_pointer(&name, &destination).unwrap();
     assert_eq!(applied.effects.len(), 2, "the retry completes both effects");
+}
+
+/// S-4 (LCM1.0c-fu3): `B`'s recorded path is a second spelling of `A`'s
+/// directory. Installing `B`'s pointer there is `Refused(PathCollision)` and
+/// has no effect on `A`'s pointer. The refusal is derived from the rows and
+/// symmetric -- while both rows stand, an install for *either* refuses, which
+/// is why `A` installs before `B` is allocated here -- and it never blocks
+/// `remove_pointer`, so `dispose --keep` still clears the mix-up. Skipped for
+/// a fixture that cannot alias a directory (`alias_workspace` is `None`).
+pub fn installing_a_pointer_where_another_rows_path_resolves_is_a_path_collision<
+    F: StoreFixture,
+>(
+    fixture: &mut F,
+) {
+    let Founded {
+        mut session,
+        root,
+        name,
+        destination,
+        ..
+    } = founded_with_a_creating_member(fixture);
+    let Some(alias) = fixture.alias_workspace(&root, "../ws-A", "../ws-A-alias") else {
+        return;
+    };
+    session.install_pointer(&name, &destination).unwrap();
+    let other = MemberName::parse("B").unwrap();
+    session
+        .apply(&FamilyChange::Allocate {
+            name: other.clone(),
+            row: creating_row("../ws-A-alias"),
+        })
+        .expect("the model sees two distinct normalised paths");
+    assert_eq!(
+        session.install_pointer(&other, &alias).unwrap_err(),
+        StoreError::Refused(Refusal::PathCollision {
+            path: "../ws-A-alias".to_owned(),
+            holder: "A".to_owned(),
+        }),
+        "the destination is where A's row resolves"
+    );
+    assert_eq!(
+        session.install_pointer(&name, &destination).unwrap_err(),
+        StoreError::Refused(Refusal::PathCollision {
+            path: "../ws-A".to_owned(),
+            holder: "B".to_owned(),
+        }),
+        "symmetric: while both rows stand, A cannot re-install either"
+    );
+    let removed = session.remove_pointer(&name).unwrap();
+    assert!(
+        removed.effects.contains(&MetadataEffect::PointerRemoved {
+            workspace: destination.clone(),
+        }),
+        "A's pointer stood untouched and is removable: {removed:?}"
+    );
+    assert!(
+        session.remove_pointer(&other).unwrap().effects.is_empty(),
+        "B never had a pointer"
+    );
 }
 
 pub fn remove_pointer_is_repeatable_and_the_second_call_reports_no_effects<F: StoreFixture>(
@@ -637,6 +727,9 @@ struct Families {
     pointers: BTreeMap<PathBuf, (FamilyId, PathBuf)>,
     /// Clone workspace -> allocation id.
     markers: BTreeMap<PathBuf, AllocationId>,
+    /// A second lexical spelling of a workspace -> the spelling every map is
+    /// keyed by (S-4; a filesystem store sees the same through a symlink).
+    aliases: BTreeMap<PathBuf, PathBuf>,
     /// Roots whose lock is currently held.
     locked: Vec<PathBuf>,
     /// Roots whose lock file has ever been created.
@@ -672,6 +765,27 @@ impl InMemoryFamilyStore {
 
     pub fn lock_file_exists(&self, root: &Path) -> bool {
         self.families.borrow().lock_files.contains(&resolve(root))
+    }
+
+    /// Make `alias` a second spelling of the workspace `target`: both key the
+    /// same maps from now on (S-4).
+    pub fn alias(&self, alias: &Path, target: &Path) {
+        self.families
+            .borrow_mut()
+            .aliases
+            .insert(resolve(alias), resolve(target));
+    }
+
+    /// The store's own resolution of a workspace path: [`resolve`] and then
+    /// the alias table, so two spellings of one directory are one key.
+    fn key(&self, workspace: &Path) -> PathBuf {
+        let lexical = resolve(workspace);
+        self.families
+            .borrow()
+            .aliases
+            .get(&lexical)
+            .cloned()
+            .unwrap_or(lexical)
     }
 
     pub fn corrupt_index(&self, root: &Path) {
@@ -711,7 +825,7 @@ impl InMemoryFamilyStore {
         &self,
         workspace: &Path,
     ) -> Result<Option<(PathBuf, FamilySource)>, StoreError> {
-        let workspace = resolve(workspace);
+        let workspace = self.key(workspace);
         let families = self.families.borrow();
         let has_index = families.indexes.contains_key(&workspace);
         let pointer = families.pointers.get(&workspace).cloned();
@@ -827,7 +941,7 @@ impl InMemorySession {
             .families
             .borrow()
             .pointers
-            .get(&resolve(&workspace))
+            .get(&self.store.key(&workspace))
             .is_some_and(|(family_id, _)| *family_id == view.family_id);
         stands.then_some(workspace)
     }
@@ -982,13 +1096,24 @@ impl FamilySession for InMemorySession {
         // row's recorded path -- any spelling of it, nothing else -- so the
         // pointer written here is the one `remove_pointer` and the guard find.
         let recorded = self.recorded_workspace(row);
-        let key = resolve(destination);
-        if key != resolve(&recorded) {
+        let key = self.store.key(destination);
+        if key != self.store.key(&recorded) {
             return Err(StoreError::PathMismatch {
                 member: name.as_str().to_owned(),
                 recorded,
                 requested: destination.to_path_buf(),
             });
+        }
+        // LCM1.0c-fu3 (S-4): another row whose recorded path resolves to the
+        // same directory, refused before the destination's own metadata.
+        if let Some((holder, _)) = view.members.iter().find(|(other, other_row)| {
+            *other != name && self.store.key(&self.recorded_workspace(other_row)) == key
+        }) {
+            return Err(gwz_family_model::Refusal::PathCollision {
+                path: row.path.clone(),
+                holder: holder.as_str().to_owned(),
+            }
+            .into());
         }
         {
             let families = self.store.families.borrow();
@@ -1054,7 +1179,7 @@ impl FamilySession for InMemorySession {
             .get(name)
             .ok_or_else(|| gwz_family_model::Refusal::NotFound { name: name.clone() })?;
         let workspace = self.recorded_workspace(row);
-        let key = resolve(&workspace);
+        let key = self.store.key(&workspace);
         let mut effects = Vec::new();
         let mut families = self.store.families.borrow_mut();
         let matches = families
@@ -1085,6 +1210,10 @@ pub struct InMemoryFixture {
     /// `fail_next` routes a scripted failure to the family that owns `root`.
     roots: Vec<(PathBuf, InMemoryFamilyStore)>,
     counter: u32,
+    /// How often the suite asked for obstructions to be cleared (S-1) and for
+    /// an alias (S-4): proof the corresponding cases ran against this fixture.
+    pub clear_failures_calls: u32,
+    pub alias_calls: u32,
 }
 
 impl InMemoryFixture {
@@ -1144,6 +1273,32 @@ impl StoreFixture for InMemoryFixture {
             });
         store.fail_next(operation);
     }
+
+    fn clear_failures(&mut self, root: &Path) {
+        // The queued failure was consumed by the call that failed; there is
+        // nothing durable to clear. Counted so the suite's call is observable.
+        self.store_for(root);
+        self.clear_failures_calls += 1;
+    }
+
+    fn alias_workspace(&mut self, root: &Path, relative: &str, alias: &str) -> Option<PathBuf> {
+        let aliased = root.join(alias);
+        self.store_for(root).alias(&aliased, &root.join(relative));
+        self.alias_calls += 1;
+        Some(aliased)
+    }
+}
+
+impl InMemoryFixture {
+    /// The store handed `root`; an unknown root is a suite bug.
+    fn store_for(&self, root: &Path) -> &InMemoryFamilyStore {
+        let root = resolve(root);
+        self.roots
+            .iter()
+            .find(|(handed, _)| resolve(handed) == root)
+            .map(|(_, store)| store)
+            .unwrap_or_else(|| panic!("{} is not a root this fixture handed out", root.display()))
+    }
 }
 
 #[cfg(test)]
@@ -1152,7 +1307,12 @@ mod tests {
 
     #[test]
     fn in_memory_store_satisfies_the_conformance_suite() {
-        run_all(&mut InMemoryFixture::default());
+        let mut fixture = InMemoryFixture::default();
+        run_all(&mut fixture);
+        // LCM1.0c-fu3: the S-1 clearing hook and the S-4 alias hook were each
+        // exercised exactly once, so neither case was vacuous for the fake.
+        assert_eq!(fixture.clear_failures_calls, 1);
+        assert_eq!(fixture.alias_calls, 1);
     }
 
     #[test]

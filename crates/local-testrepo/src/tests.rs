@@ -328,20 +328,24 @@ fn protected_roots_report_head_then_every_ref_in_name_order() {
     let tag = repo.annotated_tag("v1", &head);
 
     let roots = repo.protected_roots();
+    assert!(roots.is_complete());
     assert_eq!(roots.roots[0].source, RootSource::Head);
     assert_eq!(roots.roots[0].oid, head);
-    let named: Vec<(String, String)> = roots.roots[1..]
+    // Contract T-1 (LCM1.0c-fu3): the annotated tag is one `AnnotatedTag`
+    // root at the tag object; the branch stays a `Ref`.
+    let named: Vec<(String, String, bool)> = roots.roots[1..]
         .iter()
         .map(|root| match &root.source {
-            RootSource::Ref { name } => (name.clone(), root.oid.to_hex()),
+            RootSource::Ref { name } => (name.clone(), root.oid.to_hex(), false),
+            RootSource::AnnotatedTag { name } => (name.clone(), root.oid.to_hex(), true),
             other => panic!("unexpected root {other:?}"),
         })
         .collect();
     assert_eq!(
         named,
         vec![
-            ("refs/heads/main".to_owned(), head.to_hex()),
-            ("refs/tags/v1".to_owned(), tag.to_hex()),
+            ("refs/heads/main".to_owned(), head.to_hex(), false),
+            ("refs/tags/v1".to_owned(), tag.to_hex(), true),
         ]
     );
 }

@@ -320,6 +320,13 @@ pub trait FamilyStore {
 ///   which is what makes the previous bullet's "must never be produced" true
 ///   of the interface as declared. A store whose derivations disagree fails
 ///   the conformance suite instead of stranding a pointer.
+/// - **Foreign metadata is nobody's pointer (LCM1.0c-fu3, lane S proposal
+///   S-3).** A pointer file the store cannot decode, or one naming another
+///   family, is *not this family's pointer*: it neither protects the row from
+///   `RemoveRow`/`Disband` nor is removed by `remove_pointer`. It is retained
+///   for inspection and reported by `gwz local list` (`malformed` /
+///   `mismatched`), so a corrupt or foreign pointer cannot brick
+///   `dispose --keep`; only a pointer that decodes to this family's id stands.
 /// - `reread` and `found` may be interleaved with the above at any point they
 ///   are individually valid.
 pub trait FamilySession {
@@ -355,10 +362,31 @@ pub trait FamilySession {
     /// [`StoreError::PathMismatch`] before any effect; a destination that does
     /// not exist fails with [`StoreError::Io`] `{ operation: WriteMarker, .. }`.
     /// Refusal order: no index (`NoFamily`), unknown row (`Refused(NotFound)`),
-    /// non-`creating` row (`Refused(WrongState)`), `PathMismatch`, then the
-    /// destination's own metadata — it holds an index (`ConflictingMetadata`)
-    /// or a pointer to another family (`PointerTargetInvalid`). (LCM1.0c-rem1
-    /// State P2-2; LCM1.0c-fu1 State S2-P3-1, Code C2-P3-1.)
+    /// non-`creating` row (`Refused(WrongState)`), `PathMismatch`, then
+    /// `Refused(PathCollision)` — the resolved destination is also where
+    /// another row's recorded path resolves: two rows that canonicalise to one
+    /// directory through a symlinked or case-folded spelling the pure model's
+    /// lexical normalisation cannot see (`path` is this row's recorded path,
+    /// `holder` the other member's name; row-derived and symmetric, so while
+    /// both rows stand an install for either refuses, whether or not the other
+    /// pointer is installed yet, and `remove_pointer` is never blocked by it,
+    /// so `dispose --keep` clears the mix-up) — then the destination's own
+    /// metadata: it holds an index (`ConflictingMetadata`) or a pointer to
+    /// another family (`PointerTargetInvalid`). (LCM1.0c-rem1 State P2-2;
+    /// LCM1.0c-fu1 State S2-P3-1, Code C2-P3-1; **LCM1.0c-fu3 lane S proposal
+    /// S-4 inserted `PathCollision` into the frozen order, after
+    /// `PathMismatch` and before the destination's metadata.**)
+    ///
+    /// **Destination metadata (LCM1.0c-fu3, lane S proposal S-2).** The
+    /// destination-metadata step reads regular files only. A node at the
+    /// destination's pointer or marker path that is not a regular file (a
+    /// directory, a symlink, a socket) is not metadata this store wrote, so
+    /// it is neither `ConflictingMetadata` nor `PointerTargetInvalid`; the
+    /// write that follows then replaces it as a node or fails on it with a
+    /// checked `Io`/`Partial` naming that path — a symlink is replaced,
+    /// never followed; a directory fails — and nothing is silently removed.
+    /// A non-regular node at the destination's *index* path refuses
+    /// `Malformed` before any effect, like an index the store cannot decode.
     fn install_pointer(
         &mut self,
         name: &MemberName,
@@ -369,8 +397,10 @@ pub trait FamilySession {
     /// exactly as `install_pointer` resolves it, so the pointer it installed
     /// is the one found here — when they match this family. Repeatable;
     /// absent files are not errors, and a recorded path that no longer
-    /// resolves (the directory is gone) holds nothing to remove. Effects name
-    /// the recorded path resolved against the root.
+    /// resolves (the directory is gone) holds nothing to remove. A pointer
+    /// that does not decode, or names another family, is not removed either
+    /// (call-order clause, S-3): it is left for inspection. Effects name the
+    /// recorded path resolved against the root.
     fn remove_pointer(&mut self, name: &MemberName) -> Result<AppliedChange, StoreError>;
 }
 

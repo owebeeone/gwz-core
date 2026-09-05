@@ -751,12 +751,16 @@ impl TestRepo {
 
     /// The roots this fixture created: `HEAD` first (when born), then every
     /// reference by full name in sorted order, each with the id the reference
-    /// points at directly (so an annotated tag appears with the tag object's
-    /// id).
+    /// points at directly. A `refs/tags/` reference whose direct object is a
+    /// tag object is reported once, as `RootSource::AnnotatedTag` at the tag
+    /// object's id, never also as `Ref` (contract T-1, LCM1.0c-fu3); a
+    /// lightweight tag stays a `Ref`.
     ///
     /// Reflog and stash roots are **not** included: a reader that reports them
-    /// has more roots than this, and a conformance fixture is a public-field
-    /// struct precisely so the consumer can widen or narrow it.
+    /// has more roots than this, which the contract's
+    /// `object_reader_conformance_allowing` (T-2) admits by kind, and a
+    /// conformance fixture is a public-field struct precisely so the consumer
+    /// can widen or narrow it.
     pub fn protected_roots(&self) -> ProtectedRoots {
         let repository = self.open();
         let mut roots = Vec::new();
@@ -770,13 +774,20 @@ impl TestRepo {
         }
         for name in self.ref_names() {
             if let Some(oid) = self.ref_target(&name) {
-                roots.push(ProtectedRoot {
-                    source: RootSource::Ref { name },
-                    oid,
-                });
+                let annotated = name.starts_with("refs/tags/")
+                    && repository.find_tag(self.git_oid(&oid)).is_ok();
+                let source = if annotated {
+                    RootSource::AnnotatedTag { name }
+                } else {
+                    RootSource::Ref { name }
+                };
+                roots.push(ProtectedRoot { source, oid });
             }
         }
-        ProtectedRoots { roots }
+        ProtectedRoots {
+            roots,
+            unknown: Vec::new(),
+        }
     }
 
     /// What an `ObjectReader` over this repository is expected to contain:

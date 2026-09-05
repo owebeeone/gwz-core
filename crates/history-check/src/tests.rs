@@ -34,7 +34,13 @@ fn root(source: RootSource, id: ObjectId) -> ProtectedRoot {
 }
 
 fn roots(items: Vec<ProtectedRoot>) -> ProtectedRoots {
-    ProtectedRoots { roots: items }
+    // `unknown` (contract I-2, LCM1.0c-fu3) is empty: these inventories are
+    // complete. The contract obliges `check_history` to treat a non-empty
+    // `unknown` as an unknown inventory; that arm is lane H's follow-up.
+    ProtectedRoots {
+        roots: items,
+        ..Default::default()
+    }
 }
 
 fn member(id: &str) -> Witness {

@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::{
-    LayoutError, ObjectFormat, ObjectId, ObjectKind, ObjectReader, ObjectRecord, Observation,
-    ProtectedRoot, ProtectedRoots, ReadError, ReadLimits, RepoInspector, RepositoryInfo,
-    RootSource, WorkObservation,
+    HeadState, LayoutError, ObjectFormat, ObjectId, ObjectKind, ObjectReader, ObjectRecord,
+    Observation, ProtectedRoot, ProtectedRoots, ReadError, ReadLimits, RepoInspector,
+    RepositoryInfo, RootSource, RootSourceKind, WorkObservation,
 };
 
 /// Deterministic object ids for fixtures: `oid(format, n)` is the digest whose
@@ -150,11 +150,48 @@ impl GraphFixture {
         };
         (fixture, reader)
     }
+
+    /// [`Self::small`] plus an annotated tag object at the commit, whose ref
+    /// `refs/tags/v1` is reported **once**, as `RootSource::AnnotatedTag` at
+    /// the tag object's id (LCM1.0c follow-up 3, T-1). A reader that reports
+    /// the same tag as `Ref { "refs/tags/v1" }` -- or as both -- fails
+    /// [`reports_exactly_the_fixture_roots`] against this fixture; the real
+    /// inspector builds the same shape in a real repository.
+    pub fn tagged(format: ObjectFormat) -> (Self, InMemoryObjectReader) {
+        let (mut fixture, mut reader) = Self::small(format);
+        let commit = fixture.objects[2].oid.clone();
+        let tag = oid(format, 0x04);
+        reader.tag(tag.clone(), commit).root(
+            RootSource::AnnotatedTag {
+                name: "refs/tags/v1".to_owned(),
+            },
+            tag.clone(),
+        );
+        fixture.objects.push(reader.objects[&tag].clone());
+        fixture.roots = reader.roots.clone();
+        (fixture, reader)
+    }
 }
 
-/// Run the [`ObjectReader`] conformance cases against `reader`.
+/// Run the [`ObjectReader`] conformance cases against `reader`, with exact
+/// root equality.
 pub fn object_reader_conformance<R: ObjectReader>(reader: &R, fixture: &GraphFixture) {
-    reports_exactly_the_fixture_roots(reader, fixture);
+    object_reader_conformance_allowing(reader, fixture, &[]);
+}
+
+/// Run the conformance cases against `reader`, allowing it to report roots
+/// beyond the fixture's whose kind is in `allowed` (lane T proposal T-2,
+/// LCM1.0c follow-up 3): a real reader also reports retained reflog entries
+/// and stash entries that a fixture cannot enumerate portably. Every fixture
+/// root must still be reported exactly, `unknown` must be empty, and an extra
+/// root of any other kind fails. With `allowed` empty this is
+/// [`object_reader_conformance`]'s exact equality.
+pub fn object_reader_conformance_allowing<R: ObjectReader>(
+    reader: &R,
+    fixture: &GraphFixture,
+    allowed: &[RootSourceKind],
+) {
+    reports_the_fixture_roots_allowing(reader, fixture, allowed);
     serves_every_fixture_object_with_its_edges(reader, fixture);
     refuses_a_missing_object_typed(reader, fixture);
     refuses_an_oversized_object_within_limits(reader, fixture);
@@ -164,6 +201,40 @@ pub fn object_reader_conformance<R: ObjectReader>(reader: &R, fixture: &GraphFix
 pub fn reports_exactly_the_fixture_roots<R: ObjectReader>(reader: &R, fixture: &GraphFixture) {
     let roots = reader.retained_roots().expect("roots are readable");
     assert_eq!(roots, fixture.roots);
+}
+
+/// [`reports_exactly_the_fixture_roots`] when `allowed` is empty; otherwise
+/// the fixture's roots are a subset of what is reported and every extra root
+/// is of an allowed kind (T-2).
+pub fn reports_the_fixture_roots_allowing<R: ObjectReader>(
+    reader: &R,
+    fixture: &GraphFixture,
+    allowed: &[RootSourceKind],
+) {
+    if allowed.is_empty() {
+        return reports_exactly_the_fixture_roots(reader, fixture);
+    }
+    let reported = reader.retained_roots().expect("roots are readable");
+    assert!(
+        reported.unknown.is_empty(),
+        "the reader established every root: {:?}",
+        reported.unknown
+    );
+    for expected in &fixture.roots.roots {
+        assert!(
+            reported.roots.contains(expected),
+            "fixture root {expected:?} was not reported: {:?}",
+            reported.roots
+        );
+    }
+    for root in &reported.roots {
+        if !fixture.roots.roots.contains(root) {
+            assert!(
+                allowed.contains(&root.source.kind()),
+                "extra root {root:?} is not of an allowed kind {allowed:?}"
+            );
+        }
+    }
 }
 
 pub fn serves_every_fixture_object_with_its_edges<R: ObjectReader>(
@@ -319,6 +390,26 @@ pub fn observations_are_repeatable<I: RepoInspector>(inspector: &I, repository: 
         .inspect_layout(repository)
         .expect("fixture repository is admitted");
     assert_eq!(inspector.inspect_layout(repository).unwrap(), info);
+    // I-1 (LCM1.0c follow-up 3): the layout's paths are resolved, and an
+    // attached or unborn HEAD names its branch by full reference name.
+    for (label, path) in [
+        ("path", &info.path),
+        ("git_dir", &info.git_dir),
+        ("common_dir", &info.common_dir),
+    ] {
+        assert!(
+            path.is_absolute(),
+            "RepositoryInfo::{label} must be a resolved path: {}",
+            path.display()
+        );
+    }
+    match &info.head {
+        HeadState::Attached { branch, .. } | HeadState::Unborn { branch } => assert!(
+            branch.starts_with("refs/"),
+            "HeadState branch must be a full reference name: {branch}"
+        ),
+        HeadState::Detached { .. } => {}
+    }
     assert_eq!(inspector.observe_work(&info), inspector.observe_work(&info));
     assert_eq!(
         inspector.inventory_history(&info),
@@ -365,19 +456,110 @@ mod tests {
     #[test]
     fn scripted_layouts_are_repeatable() {
         let mut inspector = ScriptedRepoInspector::new();
+        // An absolute path on every host: the I-1 assertions in the suite
+        // require a resolved layout, and `/repo` is relative on Windows.
+        let repo = std::env::temp_dir().join("scripted-repo");
         let info = RepositoryInfo {
-            path: PathBuf::from("/repo"),
-            git_dir: PathBuf::from("/repo/.git"),
-            common_dir: PathBuf::from("/repo/.git"),
+            path: repo.clone(),
+            git_dir: repo.join(".git"),
+            common_dir: repo.join(".git"),
             bare: false,
             object_format: ObjectFormat::Sha256,
-            head: HeadState::Detached {
+            head: HeadState::Attached {
+                branch: "refs/heads/main".to_owned(),
                 target: oid(ObjectFormat::Sha256, 9),
             },
         };
-        inspector.layout("/repo", Ok(info.clone()));
-        inspector.work("/repo", Observation::Known(WorkObservation::default()));
-        inspector.history("/repo", Observation::Known(ProtectedRoots::default()));
-        inspector_conformance(&inspector, Path::new("/nowhere"), Some(Path::new("/repo")));
+        inspector.layout(repo.clone(), Ok(info.clone()));
+        inspector.work(repo.clone(), Observation::Known(WorkObservation::default()));
+        inspector.history(repo.clone(), Observation::Known(ProtectedRoots::default()));
+        inspector_conformance(&inspector, Path::new("/nowhere"), Some(&repo));
+    }
+
+    /// T-1 (LCM1.0c follow-up 3): the tagged fixture carries the annotated
+    /// tag once, as `AnnotatedTag` at the tag object, and the in-memory
+    /// reader conforms to it exactly.
+    #[test]
+    fn the_tagged_fixture_reports_the_annotated_tag_once_at_the_tag_object() {
+        for format in [ObjectFormat::Sha1, ObjectFormat::Sha256] {
+            let (fixture, reader) = GraphFixture::tagged(format);
+            object_reader_conformance(&reader, &fixture);
+            let tags: Vec<&ProtectedRoot> = fixture
+                .roots
+                .roots
+                .iter()
+                .filter(|root| root.source.kind() == RootSourceKind::AnnotatedTag)
+                .collect();
+            assert_eq!(tags.len(), 1, "{:?}", fixture.roots);
+            let record = reader
+                .read_object(&tags[0].oid, &ReadLimits::default())
+                .unwrap();
+            assert_eq!(record.kind, ObjectKind::Tag, "the root is the tag object");
+            assert_eq!(record.edges, vec![fixture.objects[2].oid.clone()]);
+            assert!(
+                !fixture.roots.roots.iter().any(|root| matches!(
+                    &root.source,
+                    RootSource::Ref { name } if name == "refs/tags/v1"
+                )),
+                "the tag is never also a Ref: {:?}",
+                fixture.roots
+            );
+        }
+    }
+
+    /// T-1: a reader spelling the annotated tag as `Ref` fails the exact
+    /// comparison; so would one reporting it under both sources.
+    #[test]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    fn a_reader_spelling_the_annotated_tag_as_a_ref_fails_exact_equality() {
+        let (fixture, _) = GraphFixture::tagged(ObjectFormat::Sha1);
+        let mut reader = InMemoryObjectReader::new();
+        for record in &fixture.objects {
+            reader.insert(record.clone());
+        }
+        for root in &fixture.roots.roots {
+            let source = match &root.source {
+                RootSource::AnnotatedTag { name } => RootSource::Ref { name: name.clone() },
+                other => other.clone(),
+            };
+            reader.root(source, root.oid.clone());
+        }
+        reports_exactly_the_fixture_roots(&reader, &fixture);
+    }
+
+    /// T-2 (LCM1.0c follow-up 3): an extra root of an allowed kind passes the
+    /// allowing comparison while the exact one stays exact.
+    #[test]
+    fn an_extra_root_of_an_allowed_kind_passes_the_allowing_comparison() {
+        let (fixture, mut reader) = GraphFixture::small(ObjectFormat::Sha1);
+        let commit = fixture.objects[2].oid.clone();
+        reader.root(
+            RootSource::Reflog {
+                reference: "HEAD".to_owned(),
+                index: 3,
+            },
+            commit,
+        );
+        object_reader_conformance_allowing(&reader, &fixture, &[RootSourceKind::Reflog]);
+        assert_ne!(
+            reader.retained_roots().unwrap(),
+            fixture.roots,
+            "the allowance is what makes this pass; exact equality would not"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "is not of an allowed kind")]
+    fn an_extra_root_of_another_kind_fails_the_allowing_comparison() {
+        let (fixture, mut reader) = GraphFixture::small(ObjectFormat::Sha1);
+        let commit = fixture.objects[2].oid.clone();
+        reader.root(
+            RootSource::Reflog {
+                reference: "HEAD".to_owned(),
+                index: 3,
+            },
+            commit,
+        );
+        reports_the_fixture_roots_allowing(&reader, &fixture, &[RootSourceKind::Stash]);
     }
 }

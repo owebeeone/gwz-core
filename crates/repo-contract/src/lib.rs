@@ -173,6 +173,11 @@ impl fmt::Display for RepoKey {
 }
 
 /// What `HEAD` points at.
+///
+/// `branch` is the **full** reference name (`refs/heads/main`), never the
+/// short one, matching [`RootSource::Ref`]'s `name` (lane I proposal I-1,
+/// pinned in LCM1.0c follow-up 3; `contract_tests::observations_are_repeatable`
+/// asserts the `refs/` prefix on every inspector it is run against).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HeadState {
     Attached { branch: String, target: ObjectId },
@@ -184,9 +189,15 @@ pub enum HeadState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepositoryInfo {
     /// The path that was inspected (worktree root, or the Git directory of
-    /// a bare repository).
+    /// a bare repository), **resolved** (`std::fs::canonicalize`) like
+    /// `git_dir` and `common_dir`, so a boundary comparison and an equality
+    /// comparison mean the same thing on a host whose temporary directory
+    /// is itself a symlink (lane I proposal I-1, pinned in LCM1.0c follow-up
+    /// 3; the conformance suite asserts all three are absolute).
     pub path: PathBuf,
+    /// Resolved, as `path` is.
     pub git_dir: PathBuf,
+    /// Resolved, as `path` is.
     pub common_dir: PathBuf,
     pub bare: bool,
     pub object_format: ObjectFormat,
@@ -229,6 +240,12 @@ pub enum LayoutError {
         path: PathBuf,
         hazards: Vec<LayoutHazard>,
     },
+    /// The repository could not be opened or read far enough to classify.
+    /// Reports only the failure: hazards observed before the failing read
+    /// (an environment override, a gitfile) are **not** carried, because a
+    /// `ReadFailed` is not a layout verdict -- the caller refuses either
+    /// way, and the next successful inspection reports every hazard (lane I
+    /// proposal I-3, LCM1.0c follow-up 3: recorded, not aggregated).
     ReadFailed {
         path: PathBuf,
         detail: String,
@@ -403,6 +420,24 @@ pub enum PhysicalState {
     Unobservable,
 }
 
+/// An unfinished native Git operation, as libgit2's `RepositoryState`
+/// classifies the repository's on-disk state. The mapping is part of the
+/// contract (lane T proposal T-3, pinned in LCM1.0c follow-up 3;
+/// `gwz-repo-inspect` implements it):
+///
+/// | libgit2 state | on disk | variant |
+/// |---|---|---|
+/// | `Merge` | `MERGE_HEAD` | `Merge` |
+/// | `Revert`, `RevertSequence` | `REVERT_HEAD`, `sequencer/` | `Revert` |
+/// | `CherryPick`, `CherryPickSequence` | `CHERRY_PICK_HEAD`, `sequencer/` | `CherryPick` |
+/// | `Bisect` | `BISECT_LOG` | `Bisect` |
+/// | `Rebase`, `RebaseInteractive`, `RebaseMerge` | `rebase-apply/rebasing`, `rebase-merge/interactive`, `rebase-merge/` | `Rebase` |
+/// | `ApplyMailbox`, `ApplyMailboxOrRebase` | `rebase-apply/applying`, `rebase-apply/` with neither marker | `ApplyMailbox` |
+/// | `Clean` | -- | `None` in [`WorkObservation::native_operation`] |
+///
+/// `Other` is reserved for a state the inspector cannot classify; libgit2
+/// reports none today. Every variant is an open operation to the work
+/// classifier (the `open-merge` waiver), so the distinction is diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeOperation {
     Merge,
@@ -419,6 +454,27 @@ pub enum NativeOperation {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProtectedRoots {
     pub roots: Vec<ProtectedRoot>,
+    /// Roots the inventory could not establish, each naming itself (lane I
+    /// proposal I-2, LCM1.0c follow-up 3), mirroring
+    /// [`WorkObservation::unknown`]: one unreadable ref is reported here by
+    /// name and reason while every readable root is still listed in `roots`,
+    /// instead of turning the whole inventory into [`Observation::Unknown`].
+    /// An inventory with a non-empty `unknown` is **incomplete**: a consumer
+    /// that verifies or deletes on the strength of `roots` must treat it
+    /// exactly as it treats `Observation::Unknown` (design §5.1: unknown
+    /// evidence refuses) -- `gwz-history-check` and `gwz-local-disposal`
+    /// carry that obligation, and an inspector switches to per-root reasons
+    /// only once they do (checkpoint §12). An observer whose whole inventory
+    /// failed (the reference store unreadable) still returns
+    /// `Observation::Unknown`. Empty means every root was established.
+    pub unknown: Vec<UnknownReason>,
+}
+
+impl ProtectedRoots {
+    /// Every root was established: nothing is unknown.
+    pub fn is_complete(&self) -> bool {
+        self.unknown.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -429,8 +485,11 @@ pub struct ProtectedRoot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RootSource {
-    /// A ref by full name (`refs/heads/main`, `refs/tags/v1`,
-    /// `refs/gwz/local-imports/<id>`).
+    /// A ref by full name (`refs/heads/main`, `refs/tags/v0` for a
+    /// **lightweight** tag, `refs/gwz/local-imports/<id>`), holding the id
+    /// the ref points at directly. A `refs/tags/` ref whose direct object is
+    /// a tag object is not reported here but as
+    /// [`AnnotatedTag`](Self::AnnotatedTag).
     Ref {
         name: String,
     },
@@ -445,7 +504,15 @@ pub enum RootSource {
     Stash {
         index: u64,
     },
-    /// An annotated tag object (its own object, separate from its target).
+    /// An annotated tag: a `refs/tags/<name>` ref whose direct object is a
+    /// tag object, reported **once**, under this source and at the tag
+    /// object's own id -- never also as [`Ref`](Self::Ref) -- because design
+    /// §5.1 protects the tag object separately from its target and the target
+    /// is an edge of that object, so one root covers both (lane T proposal
+    /// T-1 and lane I's finding, ruled in LCM1.0c follow-up 3;
+    /// `contract_tests::GraphFixture::tagged` and
+    /// `reports_exactly_the_fixture_roots` pin it). `name` is the full ref
+    /// name (`refs/tags/v1`).
     AnnotatedTag {
         name: String,
     },
@@ -456,6 +523,15 @@ pub enum RootSource {
     /// so a history check verifies it like any other named root instead of
     /// treating it as [`Other`](Self::Other); as a *witness* root it is
     /// operation state, not a durable retention, and is not eligible.
+    ///
+    /// How an inspector receives these ids is the implementation's own
+    /// constructor seam (`gwz_repo_inspect::LocalRepoInspector::
+    /// with_coordination_roots`), not a port method (lane H proposals H-1/H-3
+    /// as built by lane I, decided in LCM1.0c follow-up 3): the
+    /// [`RepoInspector`] signatures stay context-free, the scripted fake needs
+    /// no such input, and every consumer sees only this variant. An inspector
+    /// reports them from `inventory_history` and excludes them from
+    /// `retained_roots`.
     CoordinationRecord {
         record: String,
         object: String,
@@ -463,6 +539,34 @@ pub enum RootSource {
     Other {
         detail: String,
     },
+}
+
+/// The discriminant of a [`RootSource`], for allowances that name a kind of
+/// root rather than one root (lane T proposal T-2, LCM1.0c follow-up 3:
+/// `contract_tests::object_reader_conformance_allowing`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RootSourceKind {
+    Ref,
+    Head,
+    Reflog,
+    Stash,
+    AnnotatedTag,
+    CoordinationRecord,
+    Other,
+}
+
+impl RootSource {
+    pub fn kind(&self) -> RootSourceKind {
+        match self {
+            Self::Ref { .. } => RootSourceKind::Ref,
+            Self::Head => RootSourceKind::Head,
+            Self::Reflog { .. } => RootSourceKind::Reflog,
+            Self::Stash { .. } => RootSourceKind::Stash,
+            Self::AnnotatedTag { .. } => RootSourceKind::AnnotatedTag,
+            Self::CoordinationRecord { .. } => RootSourceKind::CoordinationRecord,
+            Self::Other { .. } => RootSourceKind::Other,
+        }
+    }
 }
 
 /// Per-call resource bounds for object reads.
@@ -552,6 +656,15 @@ impl std::error::Error for ReadError {}
 /// Call order: `inspect_layout` first; its `RepositoryInfo` is the input to
 /// the two observations. Each call is independent and repeatable; none
 /// mutates the repository. Resource bounds: one open repository per call.
+///
+/// **Bounds and cancellation (lane I proposal I-4, recorded in LCM1.0c
+/// follow-up 3).** `observe_work` and `inventory_history` take no
+/// [`ReadLimits`] and no cancellation port: their inputs are one
+/// repository's index, refs and reflogs, which the implementer bounds by
+/// construction. LCM2's full work-loss scan (lane D) is the first consumer
+/// that needs a bounded, cancellable observation; when it lands this trait
+/// gains a bounded method through lane C, rather than a defaulted body now
+/// that would ignore its bounds (boundaries §3 forbids permissive defaults).
 pub trait RepoInspector {
     fn inspect_layout(&self, path: &Path) -> Result<RepositoryInfo, LayoutError>;
     fn observe_work(&self, repository: &RepositoryInfo) -> Observation<WorkObservation>;
@@ -613,6 +726,69 @@ mod tests {
             unreachable!()
         };
         assert_eq!(reasons[0].kind, UnknownKind::Unimplemented);
+    }
+
+    /// I-2 (LCM1.0c follow-up 3): a per-root unknown leaves the known roots
+    /// in place and marks the inventory incomplete.
+    #[test]
+    fn protected_roots_are_complete_only_when_nothing_is_unknown() {
+        let mut roots = ProtectedRoots::default();
+        assert!(roots.is_complete());
+        roots.roots.push(ProtectedRoot {
+            source: RootSource::Head,
+            oid: ObjectId::parse_hex(ObjectFormat::Sha1, &"ab".repeat(20)).unwrap(),
+        });
+        roots.unknown.push(UnknownReason {
+            kind: UnknownKind::Unreadable,
+            path: Some(b"refs/heads/broken".to_vec()),
+            detail: "a reference file could not be read".to_owned(),
+        });
+        assert!(!roots.is_complete());
+        assert_eq!(roots.roots.len(), 1, "the known roots are still listed");
+    }
+
+    /// T-2 (LCM1.0c follow-up 3): every source has exactly one kind.
+    #[test]
+    fn root_source_kinds_name_every_source() {
+        let cases = [
+            (
+                RootSource::Ref {
+                    name: "refs/heads/main".to_owned(),
+                },
+                RootSourceKind::Ref,
+            ),
+            (RootSource::Head, RootSourceKind::Head),
+            (
+                RootSource::Reflog {
+                    reference: "HEAD".to_owned(),
+                    index: 1,
+                },
+                RootSourceKind::Reflog,
+            ),
+            (RootSource::Stash { index: 0 }, RootSourceKind::Stash),
+            (
+                RootSource::AnnotatedTag {
+                    name: "refs/tags/v1".to_owned(),
+                },
+                RootSourceKind::AnnotatedTag,
+            ),
+            (
+                RootSource::CoordinationRecord {
+                    record: "stash gwz_stash_0001".to_owned(),
+                    object: "base".to_owned(),
+                },
+                RootSourceKind::CoordinationRecord,
+            ),
+            (
+                RootSource::Other {
+                    detail: "nested".to_owned(),
+                },
+                RootSourceKind::Other,
+            ),
+        ];
+        for (source, kind) in cases {
+            assert_eq!(source.kind(), kind, "{source:?}");
+        }
     }
 
     #[test]

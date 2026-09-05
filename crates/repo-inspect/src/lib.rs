@@ -253,7 +253,14 @@ pub(crate) fn normalise_roots(mut roots: Vec<ProtectedRoot>) -> ProtectedRoots {
             .then_with(|| left.oid.cmp(&right.oid))
     });
     roots.dedup();
-    ProtectedRoots { roots }
+    // The contract's per-root channel (`unknown`, I-2, LCM1.0c-fu3) stays
+    // empty here: `history.rs` still reports an unreadable root as a
+    // whole-observation `Unknown` until the consumers honour an incomplete
+    // inventory (checkpoint §12).
+    ProtectedRoots {
+        roots,
+        unknown: Vec::new(),
+    }
 }
 
 fn source_key(source: &gwz_repo_contract::RootSource) -> (u8, String, u64) {

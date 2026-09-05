@@ -41,6 +41,12 @@ pub mod contract_tests;
 /// Implementations are polled between bounded work units. Returning `true`
 /// makes the copier stop before its next unit and report
 /// [`CopyErrorCategory::Cancelled`] with the partial report.
+///
+/// A work unit is one directory entry, or one buffered write of an ordinary
+/// copy. A natively cloned file is a **single** work unit -- the platform
+/// clones it in one call -- so under [`CopyMode::Auto`] a file the native
+/// path takes has no mid-file cancellation point; the poll happens before
+/// and after it (lane R proposal R3, LCM1.0c follow-up 3).
 pub trait Cancellation {
     fn is_cancelled(&self) -> bool;
 }
@@ -168,8 +174,15 @@ pub enum CopyWarningKind {
     /// from [`NativeUnsupportedFellBack`](Self::NativeUnsupportedFellBack),
     /// which reports an attempt that was made and rejected per entry.
     NativeUnavailable,
-    /// Ancillary metadata (ACLs, extended attributes, alternate streams) was
-    /// not copied for this entry.
+    /// Ancillary metadata (ACLs, extended attributes, alternate data
+    /// streams, timestamps) is **not guaranteed either way** for this entry
+    /// -- or, when `path` is empty, for the whole copy: the copier does not
+    /// itself copy it, yet a natively cloned file may carry more of the
+    /// source's metadata than an ordinarily copied one (Apple `clonefile`
+    /// carries ACLs, extended attributes and timestamps). A consumer must
+    /// not read this warning as "stripped" any more than its absence as
+    /// "preserved" (lane R proposal R1, LCM1.0c follow-up 3; the previous
+    /// wording, "was not copied for this entry", overstated it).
     AncillaryMetadataUnsupported,
 }
 
@@ -257,11 +270,21 @@ impl std::error::Error for CopyError {}
 /// The tree-copy port.
 ///
 /// Call order: one call per copy; the copier owns no state across calls.
-/// Resource bounds: the copier holds at most one open source and one open
-/// destination file plus a bounded buffer per in-flight entry. Error
-/// mapping: every failure is a [`CopyError`] whose `partial` report is
-/// accurate for the destination's contents at return.
+/// Resource bounds: the copier holds at most one open source handle and one
+/// destination-side handle -- the destination file being written, or, for a
+/// native clone that names its target through a directory, that directory
+/// -- plus a bounded buffer per in-flight entry (lane R proposal R2, LCM1.0c
+/// follow-up 3; was "one open destination file"). Error mapping: every
+/// failure is a [`CopyError`] whose `partial` report is accurate for the
+/// destination's contents at return.
 pub trait TreeCopier {
+    // `CopyError` is 128 bytes on `x86_64-pc-windows-msvc` (a `PathBuf` is
+    // 32 bytes there, 24 on Unix), exactly clippy's `result_large_err`
+    // threshold. Boxing `partial` would change a public field every consumer
+    // constructs and reads; the error is built once per failed copy, so its
+    // size is immaterial. Allowed at the declaration, which the implementors
+    // inherit (LCM1.0c follow-up 3, the Windows-target clippy defect).
+    #[allow(clippy::result_large_err)]
     fn copy_tree(
         &self,
         request: &CopyRequest,
