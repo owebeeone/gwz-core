@@ -6,6 +6,7 @@
 
 use gwz_family_model::{CloneMode, MemberName, ROOT_NAME, RemoteToken};
 use gwz_local_disposal::HazardWaiver;
+use gwz_local_import::IMPORT_REF_NAMESPACE;
 
 use super::errors::{invalid, unsupported};
 use crate::model::ModelResult;
@@ -126,8 +127,12 @@ pub struct FamilyMergeSelector {
     pub source_ref: Option<String>,
 }
 
-/// Validate the family half of a merge start. The engine's own validation
-/// runs later on the delegated request with the selector cleared.
+/// Validate the family half of a merge start, then the engine's own start
+/// gate on the projected request (selector cleared, a placeholder import ref
+/// as `source_ref`), so a start the engine would refuse after the import is
+/// refused before it (LCM1.0c-rem1, Code P3-1; design §6.2). The engine
+/// validates the delegated request again later; the two gates are one
+/// function (`MergeRequest::validate_merge_start_shape`).
 pub fn validate_family_merge(request: &crate::MergeRequest) -> ModelResult<FamilyMergeSelector> {
     let raw = request
         .local_source_name
@@ -154,6 +159,15 @@ pub fn validate_family_merge(request: &crate::MergeRequest) -> ModelResult<Famil
     {
         return Err(invalid("source_ref must not be empty when supplied"));
     }
+    // The engine's start gate, on the request as the wrapper will delegate
+    // it: the selector is cleared and the import ref (minted at import time)
+    // stands in as `source_ref`. Shape stays ahead of the dry-run refusal.
+    let projected = crate::MergeRequest {
+        local_source_name: None,
+        source_ref: Some(format!("{IMPORT_REF_NAMESPACE}pending")),
+        ..request.clone()
+    };
+    projected.validate_merge_start_shape()?;
     if request.meta.dry_run == Some(true) {
         return Err(unsupported("local family merge with dry_run"));
     }
@@ -372,6 +386,57 @@ mod tests {
         assert_eq!(
             validate_family_merge(&none).unwrap_err().code,
             ErrorCode::InvalidRequest
+        );
+    }
+
+    /// LCM1.0c-rem1 (Code P3-1): the wrapper runs the engine's own start
+    /// gate on the projected request (selector cleared, a placeholder import
+    /// ref as `source_ref`), so a start the engine would refuse AFTER the
+    /// import is refused before it, with the engine's code and message.
+    #[test]
+    fn family_merge_shape_runs_the_engine_start_gate_before_any_import() {
+        let mut whitespace = merge_request(crate::MergeOp::Start);
+        whitespace.message = Some("   ".to_owned());
+        let error = validate_family_merge(&whitespace).unwrap_err();
+        assert_eq!(error.code, ErrorCode::MergeValidationFailed);
+        assert!(
+            error
+                .message
+                .contains("merge commit message must not be empty"),
+            "{}",
+            error.message
+        );
+
+        let mut partial = merge_request(crate::MergeOp::Start);
+        partial.meta.policy = Some(crate::OperationPolicy {
+            partial: Some(crate::PartialBehavior::Partial),
+            ..crate::OperationPolicy::default()
+        });
+        let error = validate_family_merge(&partial).unwrap_err();
+        assert_eq!(error.code, ErrorCode::MergeValidationFailed);
+        assert!(
+            error
+                .message
+                .contains("partial merge policy is not supported"),
+            "{}",
+            error.message
+        );
+
+        // The gate sees the PROJECTED request: the engine's own selector
+        // refusal and `source_ref` requirement do not fire on a well-formed
+        // family start, with or without an explicit source ref.
+        assert!(validate_family_merge(&merge_request(crate::MergeOp::Start)).is_ok());
+        let mut with_ref = merge_request(crate::MergeOp::Start);
+        with_ref.source_ref = Some("lane/agent-17".to_owned());
+        assert!(validate_family_merge(&with_ref).is_ok());
+
+        // Shape stays ahead of the dry-run refusal (the pinned order).
+        let mut dry_and_malformed = merge_request(crate::MergeOp::Start);
+        dry_and_malformed.meta.dry_run = Some(true);
+        dry_and_malformed.message = Some("subject\0body".to_owned());
+        assert_eq!(
+            validate_family_merge(&dry_and_malformed).unwrap_err().code,
+            ErrorCode::MergeValidationFailed
         );
     }
 }

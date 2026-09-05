@@ -329,11 +329,158 @@ pub fn run_all<C: TreeCopier>(copier: &C) {
     refuses_a_nonempty_destination_without_writing(copier);
     refuses_a_missing_source(copier);
     cancellation_before_the_first_entry_reports_cancelled_with_an_accurate_partial_report(copier);
+    // LCM1.0c-rem1 (Code P3-2): the suite must exercise a NON-EMPTY partial
+    // report -- a cancellation after some entries are written, and (on unix) a
+    // mid-copy destination write failure -- and prove the partial matches the
+    // destination's real contents while the source is untouched.
+    cancellation_after_the_first_entry_keeps_an_accurate_non_empty_partial_report(copier);
+    #[cfg(unix)]
+    a_read_only_destination_is_unwritable_and_keeps_an_accurate_partial(copier);
     ordinary_only_mode_reports_no_native_files(copier);
     #[cfg(unix)]
     never_hardlinks_source_files(copier);
     #[cfg(unix)]
     symlinks_remain_links_with_their_target(copier);
+}
+
+/// Cancellation that allows `allow` polls, then reports cancelled forever.
+struct CancelAfter {
+    remaining: std::sync::atomic::AtomicU64,
+}
+
+impl CancelAfter {
+    fn new(allow: u64) -> Self {
+        Self {
+            remaining: std::sync::atomic::AtomicU64::new(allow),
+        }
+    }
+}
+
+impl Cancellation for CancelAfter {
+    fn is_cancelled(&self) -> bool {
+        // Decrement while polls remain; cancel once the budget is spent.
+        loop {
+            let current = self.remaining.load(Ordering::SeqCst);
+            if current == 0 {
+                return true;
+            }
+            if self
+                .remaining
+                .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return false;
+            }
+        }
+    }
+}
+
+/// Count the regular files, directories (excluding `root`) and symlinks that
+/// actually exist under `root`, so a partial report can be checked against the
+/// destination's real contents.
+fn observe_tree(root: &Path) -> (u64, u64, u64) {
+    fn walk(dir: &Path, files: &mut u64, dirs: &mut u64, symlinks: &mut u64) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let file_type = meta.file_type();
+            if file_type.is_symlink() {
+                *symlinks += 1;
+            } else if file_type.is_dir() {
+                *dirs += 1;
+                walk(&path, files, dirs, symlinks);
+            } else if file_type.is_file() {
+                *files += 1;
+            }
+        }
+    }
+    let (mut files, mut dirs, mut symlinks) = (0, 0, 0);
+    if root.exists() {
+        walk(root, &mut files, &mut dirs, &mut symlinks);
+    }
+    (files, dirs, symlinks)
+}
+
+fn assert_partial_matches_destination(report: &CopyReport, destination: &Path) {
+    let (files, dirs, symlinks) = observe_tree(destination);
+    assert_eq!(
+        report.files(),
+        files,
+        "the partial file count equals the destination's actual files"
+    );
+    assert_eq!(
+        report.directories, dirs,
+        "the partial directory count equals the destination's actual directories"
+    );
+    assert_eq!(
+        report.symlinks, symlinks,
+        "the partial symlink count equals the destination's actual symlinks"
+    );
+}
+
+fn assert_source_is_untouched(source: &TempTree) {
+    assert_eq!(fs::read(source.path().join("a.txt")).unwrap(), b"alpha");
+    assert_eq!(
+        fs::read(source.path().join("dir/b.bin")).unwrap(),
+        [0u8, 1, 2, 3, 4, 5, 6]
+    );
+}
+
+pub fn cancellation_after_the_first_entry_keeps_an_accurate_non_empty_partial_report<
+    C: TreeCopier,
+>(
+    copier: &C,
+) {
+    let source = fixture();
+    let parent = TempTree::new("cancel-midway-dest");
+    let destination = parent.path().join("copy");
+    // Allow exactly one poll (the first entry, `a.txt`), then cancel before
+    // the next -- so at least one file is written and the partial is non-empty.
+    let error = copier
+        .copy_tree(
+            &request(&source, destination.clone(), CopyMode::Auto),
+            &CancelAfter::new(1),
+        )
+        .expect_err("a mid-copy cancellation stops the copy");
+    assert_eq!(error.category, CopyErrorCategory::Cancelled);
+    assert!(
+        error.partial.files() >= 1,
+        "at least one entry was written before cancellation: {:?}",
+        error.partial
+    );
+    assert_partial_matches_destination(&error.partial, &destination);
+    assert_source_is_untouched(&source);
+}
+
+#[cfg(unix)]
+pub fn a_read_only_destination_is_unwritable_and_keeps_an_accurate_partial<C: TreeCopier>(
+    copier: &C,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    let source = fixture();
+    let parent = TempTree::new("unwritable-dest");
+    // A pre-existing, admitted, empty destination that is readable and
+    // traversable but not writable: the copy is admitted, then the first
+    // write fails as `DestinationUnwritable`, and the partial is accurate.
+    let destination = parent.path().join("copy");
+    fs::create_dir(&destination).unwrap();
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o500)).unwrap();
+    let outcome = copier.copy_tree(
+        &request(&source, destination.clone(), CopyMode::Auto),
+        &crate::NeverCancelled,
+    );
+    // Restore write permission before any assertion can unwind, so the temp
+    // tree can be removed on drop.
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
+    let error = outcome.expect_err("a read-only destination cannot be written");
+    assert_eq!(error.category, CopyErrorCategory::DestinationUnwritable);
+    assert_partial_matches_destination(&error.partial, &destination);
+    assert_source_is_untouched(&source);
 }
 
 fn fixture() -> TempTree {
@@ -553,6 +700,42 @@ mod tests {
     #[test]
     fn ordinary_copier_satisfies_the_conformance_suite() {
         run_all(&OrdinaryTreeCopier);
+    }
+
+    /// LCM1.0c-rem1 (Code P3-2): the accuracy assertion is load-bearing -- a
+    /// copier that writes an entry but reports an empty partial fails the
+    /// suite. A copier that merely matched the category would pass without it.
+    #[test]
+    fn the_accuracy_check_rejects_a_copier_that_lies_about_its_partial_report() {
+        /// Writes `a.txt` to the destination but reports a cancellation with
+        /// an empty partial report -- an inaccurate partial.
+        struct LyingCopier;
+        impl TreeCopier for LyingCopier {
+            fn copy_tree(
+                &self,
+                request: &CopyRequest,
+                _cancellation: &dyn Cancellation,
+            ) -> Result<CopyReport, CopyError> {
+                let _ = fs::create_dir_all(&request.destination);
+                let _ = fs::write(request.destination.join("a.txt"), b"alpha");
+                Err(CopyError {
+                    failed_path: PathBuf::from("a.txt"),
+                    category: CopyErrorCategory::Cancelled,
+                    detail: "lies about the partial".to_owned(),
+                    partial: CopyReport::default(),
+                })
+            }
+        }
+        let panicked = std::panic::catch_unwind(|| {
+            cancellation_after_the_first_entry_keeps_an_accurate_non_empty_partial_report(
+                &LyingCopier,
+            );
+        })
+        .is_err();
+        assert!(
+            panicked,
+            "the suite must reject a copier whose partial report is inaccurate"
+        );
     }
 
     #[test]

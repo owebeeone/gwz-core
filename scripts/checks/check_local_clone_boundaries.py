@@ -273,6 +273,32 @@ def test_closure(
     return reached, findings
 
 
+def tier_a_unlocked(core: Path, inventory: dict) -> bool:
+    """Whether CI runs each library's Tier A command WITHOUT `--locked`.
+
+    LCM1.0c-rem1 (State P3-3): an unlocked `--manifest-path` build resolves a
+    library's third-party dependencies fresh, so once any crate declares one
+    (e.g. lane I's `git2`) CI may resolve a different version from the product
+    lock -- a false green. An explicit `ci_tier_a_unlocked` inventory flag
+    wins; otherwise the workflow is read and the Tier A `cargo test
+    --manifest-path` step is unlocked iff it carries no `--locked`. No
+    workflow (a synthetic fixture) means there is no unlocked CI step to
+    worry about.
+    """
+    flag = inventory.get("ci_tier_a_unlocked")
+    if isinstance(flag, bool):
+        return flag
+    workflow = core / ".github" / "workflows" / "checked-artifact-boundary.yml"
+    try:
+        text = workflow.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if "cargo test" in line and "--manifest-path" in line:
+            return "--locked" not in line
+    return False
+
+
 def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
     inventory = load_inventory(inventory_path)
     crates_dir = core / inventory.get("crates_dir", "crates")
@@ -323,6 +349,31 @@ def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
         unclassified = sorted(dep for dep in reached if dep not in entries)
         if unclassified:
             findings.append(f"{name}: test closure reaches unclassified packages {unclassified}")
+
+    # LBT-012 fail-closed guard (LCM1.0c-rem1, State P3-3). A declared
+    # third-party edge resolved by an unlocked Tier A CI step may diverge from
+    # the product lock. Refuse the combination until the retirement condition
+    # holds (record §7.6: commit per-crate locks and restore `--locked`, or
+    # land the nested-workspace layout so the product resolution is measured).
+    forbidden = set(inventory.get("forbidden_dependencies", []))
+    declared_third_party = sorted(
+        (name, dependency.name)
+        for name, package in packages.items()
+        for dependency in package.dependencies
+        if not is_first_party(dependency.name) and dependency.name not in forbidden
+    )
+    if declared_third_party and tier_a_unlocked(core, inventory):
+        for name, dependency in declared_third_party:
+            findings.append(
+                f"{name}: declares third-party dependency {dependency!r} while the CI Tier A "
+                "step runs unlocked (LBT-012, State P3-3); commit per-crate locks and restore "
+                "`--locked`, or land the nested-workspace layout, before a crate declares a "
+                "third-party dependency"
+            )
+    elif declared_third_party:
+        notes.append(
+            f"{len(declared_third_party)} declared third-party edge(s) with a locked Tier A step"
+        )
 
     notes.append(
         f"{len(packages)} classified package(s) inspected, "

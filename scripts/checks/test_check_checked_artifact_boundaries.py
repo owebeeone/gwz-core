@@ -24,13 +24,20 @@ def run(source: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+# LCM1.0c-rem1 (State P3-2): ignore git-ignored build output (`crates/*/target`
+# and per-crate `Cargo.lock`) so the documented standalone Tier A command's
+# leftovers are not copied into every compiler probe.
+def copy_probe_dir(src: Path, dst: Path) -> None:
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "Cargo.lock"))
+
+
 def run_compiler_probe(mutator) -> subprocess.CompletedProcess[str]:
     temporary = tempfile.TemporaryDirectory()
     target = Path(temporary.name) / "gwz-core"
     # LCM1.0c: `crates/` holds the local clone family's path dependencies;
     # the compiler probe copies them so the mutated copy still resolves.
     for name in (".github", "dev-docs", "scripts", "src", "tests", "protocol", "crates"):
-        shutil.copytree(ROOT / name, target / name)
+        copy_probe_dir(ROOT / name, target / name)
     target.mkdir(exist_ok=True)
     for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
         shutil.copy2(ROOT / name, target / name)
@@ -76,6 +83,24 @@ def run_compiler_probe(mutator) -> subprocess.CompletedProcess[str]:
 
 
 class CheckedArtifactBoundaryTest(unittest.TestCase):
+    def test_probe_copy_omits_git_ignored_build_output(self) -> None:
+        # `crates/x/target/` and per-crate `Cargo.lock` are git-ignored build
+        # output and must not be copied into a compiler probe tree.
+        with tempfile.TemporaryDirectory() as scratch:
+            src = Path(scratch) / "crates"
+            (src / "x" / "src").mkdir(parents=True)
+            (src / "x" / "src" / "lib.rs").write_text("", encoding="utf-8")
+            (src / "x" / "Cargo.toml").write_text("", encoding="utf-8")
+            (src / "x" / "target").mkdir()
+            (src / "x" / "target" / "marker").write_text("build", encoding="utf-8")
+            (src / "x" / "Cargo.lock").write_text("lock", encoding="utf-8")
+            dst = Path(scratch) / "copy"
+            copy_probe_dir(src, dst)
+            self.assertTrue((dst / "x" / "src" / "lib.rs").exists())
+            self.assertTrue((dst / "x" / "Cargo.toml").exists())
+            self.assertFalse((dst / "x" / "target").exists())
+            self.assertFalse((dst / "x" / "Cargo.lock").exists())
+
     def test_current_source_inventory_is_classified(self) -> None:
         result = run(SOURCE)
         self.assertEqual(result.returncode, 0, result.stderr)

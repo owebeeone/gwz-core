@@ -58,6 +58,7 @@ pub(crate) fn store(error: &StoreError) -> ModelError {
         | StoreError::ConflictingMetadata { .. }
         | StoreError::PointerTargetInvalid { .. } => ErrorCode::ManifestInvalid,
         StoreError::NoFamily { .. } => ErrorCode::MemberNotFound,
+        StoreError::PointerStillInstalled { .. } => ErrorCode::InvalidRequest,
         StoreError::Refused(refusal) => return self::refusal(refusal),
         StoreError::Io { .. } | StoreError::Partial { .. } => ErrorCode::IoError,
     };

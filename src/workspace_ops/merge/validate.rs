@@ -92,6 +92,40 @@ fn validate_no_local_source_name(request: &crate::MergeRequest) -> ModelResult<(
     Ok(())
 }
 
+/// The engine's complete start-shape gate, for a caller that must refuse a
+/// malformed start BEFORE its own side effects.
+///
+/// LCM1.0c-rem1 (Code P3-1; gwz-dev `dev-docs/GwzLocalCloneDesign.md` §6.2,
+/// "an invalid family merge start request must not fetch first"). The
+/// local-family wrapper imports refs under the family lock and only then
+/// delegates to the engine, which runs [`validate_merge_request`] on the
+/// delegated request; anything the engine would refuse there -- the
+/// `validate_common_meta` policy refusals, the Start `reject_present` set,
+/// `validate_custom_commit_message` -- must be refused by the wrapper first,
+/// on the PROJECTED request (selector cleared, a placeholder import ref as
+/// `source_ref`). This is that gate, and it IS `validate_merge_request`
+/// restricted to `Start`, so the wrapper cannot drift from the engine by
+/// re-listing its rules.
+pub(crate) fn validate_merge_start_shape(request: &crate::MergeRequest) -> ModelResult<()> {
+    if request.op != crate::MergeOp::Start {
+        return invalid("merge start shape is validated for merge start only");
+    }
+    validate_merge_request(request)
+}
+
+impl crate::MergeRequest {
+    /// Crate-visible handle on [`validate_merge_start_shape`] for the
+    /// local-family wrapper (`crate::local_clone::request`). `merge`'s module
+    /// tree is a pinned compiler root (`scripts/checks/
+    /// check_checked_artifact_boundaries.py`, `PROTECTED_COMPILER_ROOT_DIGESTS`)
+    /// and `validate` is private to it, so the engine's rule is exported as
+    /// an inherent method on the request type -- reachable wherever the type
+    /// is, with no re-export in `merge/mod.rs`.
+    pub(crate) fn validate_merge_start_shape(&self) -> ModelResult<()> {
+        validate_merge_start_shape(self)
+    }
+}
+
 pub(crate) fn validate_open_merge_id(requested: Option<&str>, open_id: &str) -> ModelResult<()> {
     if requested.is_some_and(|requested| requested != open_id) {
         return Err(ModelError::new(
@@ -376,6 +410,53 @@ mod tests {
         assert!(validate_merge_request(&start).is_ok());
         start.mode = Some(crate::MergeMode::NoFf);
         assert!(validate_merge_request(&start).is_ok());
+    }
+
+    /// LCM1.0c-rem1 (Code P3-1): the start-shape gate the family wrapper
+    /// runs on its projected request is the engine's own start validation,
+    /// refusal for refusal, and it applies to `Start` only.
+    #[test]
+    fn merge_start_shape_is_the_engine_start_gate_and_start_only() {
+        let start = request(crate::MergeOp::Start);
+        assert!(validate_merge_start_shape(&start).is_ok());
+        assert!(start.validate_merge_start_shape().is_ok());
+
+        let mut whitespace = start.clone();
+        whitespace.message = Some(" \t".to_owned());
+        let mut partial = start.clone();
+        partial.meta.policy = Some(crate::OperationPolicy {
+            partial: Some(crate::PartialBehavior::Partial),
+            ..crate::OperationPolicy::default()
+        });
+        let mut selector = start.clone();
+        selector.local_source_name = Some("A".to_owned());
+        let mut with_id = start.clone();
+        with_id.merge_id = Some("merge_1".to_owned());
+        let mut unsourced = start;
+        unsourced.source_ref = None;
+        for (label, malformed) in [
+            ("whitespace message", whitespace),
+            ("partial policy", partial),
+            ("selector", selector),
+            ("merge_id", with_id),
+            ("no source_ref", unsourced),
+        ] {
+            let engine = validate_merge_request(&malformed).unwrap_err();
+            let shape = malformed.validate_merge_start_shape().unwrap_err();
+            assert_eq!(shape.code, engine.code, "{label}");
+            assert_eq!(shape.message, engine.message, "{label}");
+        }
+
+        for op in [
+            crate::MergeOp::Resume,
+            crate::MergeOp::Abort,
+            crate::MergeOp::Status,
+            crate::MergeOp::Gc,
+        ] {
+            let error = validate_merge_start_shape(&request(op)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::MergeValidationFailed, "{op:?}");
+            assert!(error.message.contains("merge start only"), "{op:?}");
+        }
     }
 
     #[test]

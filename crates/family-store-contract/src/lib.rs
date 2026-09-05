@@ -149,6 +149,12 @@ pub enum StoreError {
         path: PathBuf,
         detail: String,
     },
+    /// A member's row cannot be removed (`RemoveRow`/`Disband`) while a clone
+    /// pointer or marker it installed is still present: the pointer/marker
+    /// must be removed first, or it would be stranded with no row to reach it
+    /// through (LCM1.0c-rem1, State P2-2; design §3.1 recovery order). Nothing
+    /// was written.
+    PointerStillInstalled { member: String, workspace: PathBuf },
     /// This store implements nothing yet.
     Unimplemented { operation: StoreOperation },
 }
@@ -213,6 +219,12 @@ impl fmt::Display for StoreError {
                 path.display(),
                 completed.len()
             ),
+            Self::PointerStillInstalled { member, workspace } => write!(
+                f,
+                "cannot remove row `{member}` while its pointer at {} is still installed; \
+                 remove the pointer first",
+                workspace.display()
+            ),
             Self::Unimplemented { operation } => write!(f, "{operation:?} is not implemented"),
         }
     }
@@ -249,9 +261,27 @@ pub trait FamilyStore {
     fn try_lock(&self, location: &FamilyLocation) -> Result<Self::Session, StoreError>;
 }
 
-/// One held family lock. Call order: `reread`/`found`/`apply`/pointer
-/// operations in any order while held; dropping the session releases the
-/// lock. Each operation rereads and validates before it writes.
+/// One held family lock. Dropping the session releases the lock; each
+/// operation rereads and validates before it writes.
+///
+/// **Call order (LCM1.0c-rem1, State P2-2; design §3, §3.1).** These are not
+/// free: two independently developed orchestrations (install, disposal,
+/// disband) must agree on the write order, and one order is unrecoverable.
+///
+/// - A pointer or marker is installed only *after* the member's `creating`
+///   row exists ([`install_pointer`](FamilySession::install_pointer) refuses a
+///   non-`creating` row).
+/// - A pointer and its marker are removed *strictly before* the member's row
+///   is removed or the family is disbanded. `remove_pointer` is keyed by the
+///   member name and needs the row to find the recorded path, so a pointer
+///   whose row is already gone is **not reachable through this interface** and
+///   must never be produced: the store refuses a `RemoveRow`/`Disband` that
+///   would strand an installed pointer, so the safe order is the only order
+///   it accepts. The reverse order is crash-recoverable — a repeat after an
+///   interrupted pointer removal succeeds (absent files are not errors) —
+///   which is why it is the required one.
+/// - `reread` and `found` may be interleaved with the above at any point they
+///   are individually valid.
 pub trait FamilySession {
     /// The registering root whose lock this session holds.
     fn root(&self) -> &Path;

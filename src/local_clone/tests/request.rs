@@ -222,3 +222,40 @@ fn family_merge_refuses_in_order_and_plain_merges_reach_the_engine() {
     .unwrap_err();
     assert_eq!(bypass.code, ErrorCode::MergeValidationFailed);
 }
+
+/// LCM1.0c-rem1 (Code P3-1; design §6.2 "an invalid family merge start
+/// request must not fetch first"): a family start the engine would refuse is
+/// refused by the wrapper with the engine's code BEFORE the family
+/// observation, so no import ref can exist. A guard today (the wrapper stops
+/// at the observation anyway); load-bearing once lane X wires the import.
+#[test]
+fn a_malformed_family_start_is_refused_with_the_engine_code_before_any_import() {
+    let temp = TempDir::new("family-merge-shape");
+    let root = workspace(&temp);
+    let backend = Git2Backend::without_credential_helpers();
+
+    let mut whitespace = merge_request(crate::MergeOp::Start, Some("A"));
+    whitespace.message = Some(" \t\n".to_owned());
+    let error =
+        handle_merge_with_local_family(&backend, &root, whitespace, "op-1", &NullSink).unwrap_err();
+    assert_eq!(
+        error.code,
+        ErrorCode::MergeValidationFailed,
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("must not be empty"),
+        "{}",
+        error.message
+    );
+    assert!(family_files_absent(&root));
+    let repo = git2::Repository::open(&root).unwrap();
+    assert!(
+        repo.references_glob("refs/gwz/local-imports/*")
+            .unwrap()
+            .next()
+            .is_none(),
+        "no import ref was created"
+    );
+}

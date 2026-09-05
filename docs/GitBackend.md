@@ -57,15 +57,27 @@ exchange:
 
 - `url` is an existing local repository path. A URL scheme, scp-like
   syntax or a missing directory refuses with `invalid_request` before any
-  effect; libgit2's local transport is the only one that can run.
+  effect. The admitted directory is canonicalised and handed to libgit2 as
+  a `file://` URL (LCM1.0c-rem1, Code P2-1): libgit2 matches its transport
+  table by prefix before its heuristics, and the heuristic for a bare
+  string on macOS/Linux selects SSH for any `:` in the string before it
+  tests for a directory, so a bare path under a `:`-containing directory
+  left the local transport and failed as a host lookup. With the `file://`
+  form the local transport is the only one that can run, whatever the path
+  contains (`anonymous_ports_stay_local_for_a_peer_path_containing_a_colon`);
+  results and error messages name the path the caller passed.
 - Refspecs are explicit and required; nothing is inferred from a remote's
   configuration because no remote is configured. The peer is an anonymous
   in-memory remote and nothing is persisted in `.git/config`.
 - No credential, ssh-agent or progress callbacks are attached, and tags are
-  not followed. `update_fetchhead(false)` is requested, but the bundled
-  libgit2 still wrote `FETCH_HEAD` for a local transfer in
-  `local_clone::tests::transport`; the file is outside the port contract
-  and nothing reads it.
+  not followed. No fetch record is written: `update_fetchhead(false)` is
+  requested and honoured for the record. Measured (LCM1.0c-rem1, State P2-1
+  / Code P3-4): libgit2 1.9.7 nevertheless truncates the receiver's
+  `FETCH_HEAD` to empty on every fetch and creates it when absent
+  (`remote.c`, `git_remote_update_tips` -> `truncate_fetch_head`, not gated
+  by the flag), so a prior fetch record in the receiver does not survive a
+  family import. Both arms are asserted by `local_clone::tests::transport`;
+  the file is outside the port contract and nothing in gwz reads it.
 - A rejected ref update is `remote_rejected`, never a silent success:
   libgit2 refuses a non-fast-forward update without `+` before the transfer
   (`NotFastForward`, mapped here), and any per-ref rejection the receiving

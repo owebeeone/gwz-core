@@ -145,9 +145,23 @@ pub(super) fn add_remote(
     })
 }
 
-/// Admit `url` as an anonymous local peer: an existing directory reachable
-/// as a path, never a transport URL. libgit2 selects its local transport for
-/// a plain path, so nothing here can reach a network or a credential helper.
+/// Admit `url` as an anonymous local peer -- an existing directory reachable
+/// as a path, never a transport URL -- and return the string libgit2 is
+/// handed for it: the canonical `file://` URL of that directory.
+///
+/// LCM1.0c-rem1 (Code P2-1). libgit2 selects a transport by URL prefix first
+/// (`file://` is its local transport) and falls back to heuristics for a bare
+/// string; on non-Windows hosts the heuristic treats ANY `:` in the string
+/// as scp-style SSH syntax before it tests for a directory
+/// (`libgit2/src/libgit2/transport.c`, `transport_find_fn`), and this crate
+/// builds libgit2 with the SSH transport. A bare path such as
+/// `/Users/x/gwz:lane/A` -- ordinary on macOS -- therefore left the local
+/// transport and failed as a host lookup. The `file://` form makes the local
+/// transport the only one that can run for every admitted directory;
+/// libgit2 percent-decodes it back to the path (`util/fs_path.c`,
+/// `git_fs_path_fromurl`). Callers keep passing paths: a `file://` INPUT is
+/// refused with every other URL because the port's contract is a path, and
+/// results and error messages name the path the caller gave.
 fn admitted_local_peer(url: &str) -> ModelResult<String> {
     let refuse = |detail: &str| {
         ModelError::new(
@@ -167,7 +181,11 @@ fn admitted_local_peer(url: &str) -> ModelResult<String> {
     if !path.is_dir() {
         return Err(refuse("not an existing directory"));
     }
-    Ok(url.to_owned())
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| refuse(&format!("cannot canonicalise the directory: {error}")))?;
+    let file_url = url::Url::from_file_path(&canonical)
+        .map_err(|()| refuse("the canonical directory path is not absolute"))?;
+    Ok(file_url.as_str().to_owned())
 }
 
 pub(super) fn fetch_anonymous(
@@ -187,12 +205,19 @@ pub(super) fn fetch_anonymous(
     let mut remote_handle = repo.remote_anonymous(&peer).map_err(git_error)?;
     // No `RemoteCallbacks` at all: no credentials, no progress, no network.
     let mut options = git2::FetchOptions::new();
+    // No fetch record is written. libgit2 still TRUNCATES the receiver's
+    // `FETCH_HEAD` to empty on every fetch (`remote.c`,
+    // `git_remote_update_tips` -> `truncate_fetch_head`, creating the file
+    // when absent); measured by `local_clone::tests::transport`, stated in
+    // the port contract, outside its promise.
     options.update_fetchhead(false);
     options.download_tags(git2::AutotagOption::None);
     remote_handle
         .fetch(refspecs, Some(&mut options), Some("gwz local import"))
         .map_err(git_error)?;
-    Ok(GitFetchResult { remote: peer })
+    Ok(GitFetchResult {
+        remote: url.to_owned(),
+    })
 }
 
 pub(super) fn push_anonymous(
@@ -235,7 +260,7 @@ pub(super) fn push_anonymous(
             if error.code() == git2::ErrorCode::NotFastForward {
                 ModelError::new(
                     ErrorCode::RemoteRejected,
-                    format!("{peer} rejected {refspec}: {}", error.message()),
+                    format!("{url} rejected {refspec}: {}", error.message()),
                 )
             } else {
                 git_error(error)
@@ -245,11 +270,11 @@ pub(super) fn push_anonymous(
     if let Some((refname, message)) = first_rejection {
         return Err(ModelError::new(
             ErrorCode::RemoteRejected,
-            format!("{peer} rejected {refname}: {message}"),
+            format!("{url} rejected {refname}: {message}"),
         ));
     }
     Ok(GitPushResult {
-        remote: peer,
+        remote: url.to_owned(),
         refspec: refspec.to_owned(),
     })
 }

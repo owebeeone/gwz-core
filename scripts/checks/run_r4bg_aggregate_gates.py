@@ -639,6 +639,35 @@ def _fault_count(darwin: str, linux: str) -> str:
         cfg-free) from 87207c2's executed linux measurement,
         FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
         measured number wins.
+
+    LCM1.0c-rem1 (2026-09-05, the local clone family's round-1 remediation,
+    one commit on the 52468ca tuple) moves the LIB REMAINDER and only it, by
+    FOUR rows, and removes none:
+
+      * THREE under `local_clone::`: the Code P2-1 colon-path transport case
+        (`tests::transport`, `#[cfg(unix)]`), the Code P3-1 engine-start-gate
+        unit row in `request.rs`, and the Code P3-1 Tier B row in
+        `tests::request`.
+      * ONE in `workspace_ops::merge::validate::tests` (the Code P3-1
+        start-shape-equals-engine-gate row).
+      The one `#[cfg(unix)]` row compiles on both CI platforms (both are
+      unix), and no other `cfg(` is added, so both platforms move by four.
+      The copy-contract and family-store-contract suite additions (P3-2,
+      S-P3-1/P2-2) are in their own crates, not the gwz-core lib, so they do
+      not move this partition.
+
+      checked_artifact:: 459 / 476: UNMOVED -- no `checked_artifact::` row is
+        added (`--list` re-measured 459 on this tree).
+      v1_lifecycle:: 266 listed / 265 executed: UNMOVED.
+      lib remainder darwin 1018 -> 1022: MEASURED on this commit's tree
+        (`cargo test -p gwz-core --lib -- --skip checked_artifact:: --skip
+        workspace_ops::merge::v1_lifecycle::` -> `1022 passed; 1 ignored`,
+        2026-09-05) and cross-checked against `--list` (1023 listed = 1022 +
+        the one ignored row). 1018 + 4 = 1022.
+      lib remainder linux  1019 -> 1023: DERIVED (+4, every added row cfg-free
+        on a unix host) from the reviewed tuple's linux value,
+        FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
+        measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -677,7 +706,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1018 passed", "1019 passed")),
+         _fault_count("1022 passed", "1023 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

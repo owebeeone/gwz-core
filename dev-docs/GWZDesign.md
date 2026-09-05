@@ -495,10 +495,14 @@ push_anonymous(repo, local_url, refspec) -> GitPushResult      # LCM1.0c
 
 The two anonymous ports (added 2026-09-05 for the local clone family, see
 [Local Clone Family](#local-clone-family)) accept only an existing local
-repository path as the peer, use an anonymous in-memory remote with explicit
-refspecs, attach no credential or network helpers, persist no remote name,
-do not update `FETCH_HEAD`, and surface a per-ref push rejection as a typed
-error instead of reporting success.
+repository path as the peer (handed to libgit2 as its canonical `file://`
+URL, so the local transport is selected whatever the path contains), use an
+anonymous in-memory remote with explicit refspecs, attach no credential or
+network helpers, persist no remote name, follow no tags, write no fetch
+record, and surface a per-ref push rejection as a typed error instead of
+reporting success. `FETCH_HEAD` is outside their promise: libgit2 truncates
+it to empty on every fetch even with the record write disabled (measured,
+`docs/GitBackend.md`).
 
 Backend calls should receive operation attribution context. Calls that create
 Git objects should accept explicit Git object identities instead of reading only

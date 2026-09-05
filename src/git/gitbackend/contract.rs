@@ -741,11 +741,18 @@ pub trait GitBackend {
     fn push(&self, path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult>;
     /// Anonymous local fetch (LCM1.0c, local clone family; gwz-dev
     /// `dev-docs/GwzLocalCloneDesign.md` §6.2). `url` must be an existing
-    /// local repository path, never a URL; `refspecs` are explicit and
-    /// required. The backend creates an anonymous in-memory remote, attaches
-    /// no credential or network helper, persists no remote name, does not
-    /// update `FETCH_HEAD` and follows no tags. Refuses before any effect on
-    /// a non-local peer or an empty refspec list.
+    /// local repository path, never a URL (the backend hands libgit2 its
+    /// canonical `file://` form so the local transport is selected whatever
+    /// the path contains); `refspecs` are explicit and required. The backend
+    /// creates an anonymous in-memory remote, attaches no credential or
+    /// network helper, persists no remote name, updates no `origin`
+    /// tracking ref, follows no tags and writes no fetch record. Measured
+    /// (LCM1.0c-rem1, `local_clone::tests::transport`): libgit2 still
+    /// truncates the receiver's `FETCH_HEAD` to empty on every fetch,
+    /// creating it when absent, so a prior fetch record in the receiver does
+    /// not survive this port; `FETCH_HEAD` is outside the port's promise and
+    /// no gwz reader consumes it. Refuses before any effect on a non-local
+    /// peer or an empty refspec list.
     fn fetch_anonymous(
         &self,
         path: &Path,

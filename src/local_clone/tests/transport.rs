@@ -9,6 +9,10 @@ use crate::local_clone::transport::{BackendLocalTransport, object_id_from_hex};
 use crate::model::ErrorCode;
 
 const IMPORT_REF: &str = "refs/gwz/local-imports/t1";
+/// A user's earlier fetch record, planted so the FETCH_HEAD assertion below
+/// can tell "untouched" from "never existed".
+const STALE_FETCH_HEAD: &[u8] =
+    b"0000000000000000000000000000000000000000\t\tbranch 'stale' of earlier\n";
 
 #[test]
 fn fetch_anonymous_imports_an_explicit_refspec_without_persisting_a_remote() {
@@ -18,6 +22,9 @@ fn fetch_anonymous_imports_an_explicit_refspec_without_persisting_a_remote() {
     let source_commit = init_repo_with_commit(&source, false, "source");
     let _receiver_commit = init_repo_with_commit(&receiver, false, "receiver");
     let backend = Git2Backend::without_credential_helpers();
+    let fetch_head = receiver.join(".git").join("FETCH_HEAD");
+    assert!(!fetch_head.exists(), "a fresh receiver has no FETCH_HEAD");
+    std::fs::write(&fetch_head, STALE_FETCH_HEAD).unwrap();
 
     let result = backend
         .fetch_anonymous(
@@ -36,10 +43,22 @@ fn fetch_anonymous_imports_an_explicit_refspec_without_persisting_a_remote() {
         backend.remotes(&receiver).unwrap().is_empty(),
         "no named remote is persisted"
     );
-    // FETCH_HEAD is outside the port contract: `update_fetchhead(false)` is
-    // requested, but the bundled libgit2 still wrote the file for this local
-    // transfer (observed here). It is not a persisted remote and nothing
-    // reads it; the assertion that matters is the absence of a remote.
+    // LCM1.0c-rem1 (State P2-1 / Code P3-4): `FETCH_HEAD` is MEASURED, not
+    // described. The record planted before the fetch distinguishes "left
+    // alone" from "absent because nothing was ever there". Measured on
+    // libgit2 1.9.7: `update_fetchhead(false)` stops the fetch RECORD from
+    // being written, but `git_remote_update_tips` truncates the file to
+    // empty on every fetch regardless (`remote.c`, `truncate_fetch_head`,
+    // creating it when absent -- pinned in
+    // `adapter_maps_every_port_method_onto_the_backend`). So a user's prior
+    // fetch record does not survive this port; the contract says so and
+    // keeps `FETCH_HEAD` outside its promise. A libgit2 change in either
+    // direction fails here instead of quietly invalidating that sentence.
+    assert_eq!(
+        std::fs::read(&fetch_head).unwrap(),
+        b"",
+        "libgit2 truncates FETCH_HEAD on every fetch and writes no record into it"
+    );
     assert!(
         backend
             .read_ref(&receiver, "refs/tags/v1")
@@ -197,6 +216,67 @@ fn push_anonymous_into_a_non_bare_receiver_is_refused_by_libgit2() {
     );
 }
 
+/// LCM1.0c-rem1, Code P2-1. libgit2 consults its transport table by URL
+/// prefix first and only then by heuristic, and on non-Windows hosts the
+/// heuristic treats ANY `:` in a bare string as scp-style SSH syntax before it
+/// tests for a directory (`transport.c`, `transport_find_fn`); this crate
+/// builds libgit2 with SSH support, so a bare path under a `:`-containing
+/// directory -- ordinary on macOS -- left the local transport. The port hands
+/// libgit2 a canonical `file://` URL for the admitted directory instead, so
+/// both transfers stay local whatever the path contains. Windows spells `:`
+/// only in drive letters and tests for a directory first, so the case is
+/// unix-only.
+#[cfg(unix)]
+#[test]
+fn anonymous_ports_stay_local_for_a_peer_path_containing_a_colon() {
+    let temp = TempDir::new("peer:colon");
+    assert!(
+        temp.path().to_string_lossy().contains(':'),
+        "the fixture directory carries the `:` under test: {}",
+        temp.path().display()
+    );
+    let source = temp.path().join("source");
+    let receiver = temp.path().join("receiver");
+    let hub = temp.path().join("hub");
+    let source_commit = init_repo_with_commit(&source, false, "source");
+    init_repo_with_commit(&receiver, false, "receiver");
+    init_repo_with_commit(&hub, true, "hub");
+    let backend = Git2Backend::without_credential_helpers();
+
+    let fetched = backend
+        .fetch_anonymous(
+            &receiver,
+            &source.to_string_lossy(),
+            &[&format!("+refs/heads/main:{IMPORT_REF}")],
+        )
+        .expect("a `:` in the peer path selects the local transport, not SSH");
+    assert_eq!(fetched.remote, source.to_string_lossy());
+    assert_eq!(
+        backend.read_ref(&receiver, IMPORT_REF).unwrap().as_deref(),
+        Some(source_commit.as_str()),
+        "the import ref holds the source commit"
+    );
+
+    let pushed = backend
+        .push_anonymous(
+            &source,
+            &hub.to_string_lossy(),
+            "refs/heads/main:refs/heads/lane/from-A",
+        )
+        .expect("a `:` in the peer path pushes through the local transport");
+    assert_eq!(pushed.remote, hub.to_string_lossy());
+    assert_eq!(
+        backend
+            .read_ref(&hub, "refs/heads/lane/from-A")
+            .unwrap()
+            .as_deref(),
+        Some(source_commit.as_str()),
+        "the hub branch holds the source commit"
+    );
+    assert!(backend.remotes(&receiver).unwrap().is_empty());
+    assert!(backend.remotes(&source).unwrap().is_empty());
+}
+
 #[test]
 fn adapter_maps_every_port_method_onto_the_backend() {
     let temp = TempDir::new("adapter");
@@ -222,6 +302,8 @@ fn adapter_maps_every_port_method_onto_the_backend() {
         Err(TransportError::Repository { .. })
     ));
     assert_eq!(transport.ref_exists(&receiver, IMPORT_REF), Ok(false));
+    let fetch_head = receiver.join(".git").join("FETCH_HEAD");
+    assert!(!fetch_head.exists());
     transport
         .fetch_anonymous(
             &receiver,
@@ -230,6 +312,13 @@ fn adapter_maps_every_port_method_onto_the_backend() {
         )
         .unwrap();
     assert_eq!(transport.ref_exists(&receiver, IMPORT_REF), Ok(true));
+    // The absent-before arm of the FETCH_HEAD measurement (see the port test
+    // above): libgit2 creates the file empty when the receiver had none.
+    assert_eq!(
+        std::fs::read(&fetch_head).unwrap(),
+        b"",
+        "an absent FETCH_HEAD is created empty by libgit2's fetch"
+    );
     assert_eq!(
         transport.read_ref(&receiver, IMPORT_REF),
         Ok(Some(head.clone()))

@@ -387,6 +387,32 @@ class LocalCloneBoundaryTest(unittest.TestCase):
         self.assertIn("must not declare a `[workspace]` table", result.stderr)
         self.assertIn("needs an explicit `rust-version`", result.stderr)
 
+    def test_declared_third_party_with_unlocked_tier_a_is_rejected(self) -> None:
+        # LCM1.0c-rem1 (State P3-3): a crate that DECLARES a third-party
+        # dependency while CI's Tier A step runs unlocked is refused; the same
+        # tree with a locked Tier A step passes.
+        tree = SyntheticTree()
+        self.addCleanup(tree.cleanup)
+        tree.crate(
+            "gwz-alpha",
+            "alpha",
+            "implementation",
+            ["gwz-alpha-contract"],
+            ["tempfile"],
+            deps='gwz-alpha-contract = { path = "../alpha-contract" }\n'
+            'tempfile = "3"\n',
+        )
+        tree.inventory["ci_tier_a_unlocked"] = True
+        result = tree.check()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("declares third-party dependency 'tempfile'", result.stderr)
+        self.assertIn("runs unlocked", result.stderr)
+
+        tree.inventory["ci_tier_a_unlocked"] = False
+        result = tree.check()
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("locked Tier A step", result.stdout)
+
     def test_malformed_inventory_is_an_error_not_a_pass(self) -> None:
         tree = SyntheticTree()
         self.addCleanup(tree.cleanup)

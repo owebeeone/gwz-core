@@ -100,6 +100,14 @@ def probe_text(label: str, path: str) -> str:
     )
 
 
+# LCM1.0c-rem1 (State P3-2): `crates/` carries git-ignored per-crate `target/`
+# and `Cargo.lock` after a developer runs the documented standalone Tier A
+# command; copying them into every probe grows unbounded on disk and time.
+# Ignore build output on every copied directory (only `crates/` ever holds it).
+def copy_probe_dir(src: Path, dst: Path) -> None:
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "Cargo.lock"))
+
+
 def compile_with_probe(
     relative: str, label: str, path: str
 ) -> subprocess.CompletedProcess[str]:
@@ -112,7 +120,7 @@ def compile_with_probe(
     # without it the copied manifest cannot resolve and every probe fails
     # for a reason that has nothing to do with privacy either.
     for name in (".github", "dev-docs", "protocol", "scripts", "src", "tests", "crates"):
-        shutil.copytree(ROOT / name, target / name)
+        copy_probe_dir(ROOT / name, target / name)
     for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
         shutil.copy2(ROOT / name, target / name)
     probed = target / relative
@@ -172,6 +180,26 @@ class V1LifecyclePrivacyProbeTest(unittest.TestCase):
             with self.subTest(label=label):
                 result = compile_with_probe(relative, label, SEALED[label])
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_probe_copy_omits_git_ignored_build_output(self) -> None:
+        # A `crates/x/target/` and per-crate `Cargo.lock` in the source are
+        # git-ignored build output and must not be copied into a probe tree.
+        import tempfile as _tempfile
+
+        with _tempfile.TemporaryDirectory() as scratch:
+            src = Path(scratch) / "crates"
+            (src / "x" / "src").mkdir(parents=True)
+            (src / "x" / "src" / "lib.rs").write_text("", encoding="utf-8")
+            (src / "x" / "Cargo.toml").write_text("", encoding="utf-8")
+            (src / "x" / "target").mkdir()
+            (src / "x" / "target" / "marker").write_text("build", encoding="utf-8")
+            (src / "x" / "Cargo.lock").write_text("lock", encoding="utf-8")
+            dst = Path(scratch) / "copy"
+            copy_probe_dir(src, dst)
+            self.assertTrue((dst / "x" / "src" / "lib.rs").exists())
+            self.assertTrue((dst / "x" / "Cargo.toml").exists())
+            self.assertFalse((dst / "x" / "target").exists())
+            self.assertFalse((dst / "x" / "Cargo.lock").exists())
 
     def test_prepared_v1_rewrite_is_unnameable_outside_the_perimeter(self) -> None:
         self.assert_sealed(OUTSIDE, "prepared_rewrite", "transition")
