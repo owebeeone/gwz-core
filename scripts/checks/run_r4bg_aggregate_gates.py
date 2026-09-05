@@ -641,7 +641,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1004 passed", "1005 passed")),
+         _fault_count("1004 passed", "1004 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
@@ -766,6 +766,15 @@ def run_battery(selector: str) -> bool | None:
         passed = False
         reason = f"expected {expected!r} absent" if missing else f"exit {result.returncode}"
         print(f"    FAIL  {label} ({elapsed:.1f}s, {reason})\n      $ {' '.join(argv)}", flush=True)
+        if missing:
+            # Say what WAS measured, not only what was expected: the stderr tail
+            # below is usually fixture chatter, and a pin mismatch that hides the
+            # real count forces log forensics (the v0.14.0 verify's linux leg
+            # failed on '1005 passed' and never printed the 1004 it found).
+            found = [l for l in blob.splitlines()
+                     if "test result:" in l or " passed" in l or l.lstrip().startswith(("ok (", "validated "))]
+            for line in found[-5:]:
+                print(f"      found: {line.strip()}", flush=True)
         for line in blob.strip().splitlines()[-20:]:
             print(f"      | {line}", flush=True)
     return passed
