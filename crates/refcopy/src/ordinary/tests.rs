@@ -4,9 +4,10 @@
 
 use std::cell::Cell;
 
-use gwz_copy_contract::{CancelFlag, NeverCancelled, contract_tests::TempTree};
+use gwz_copy_contract::{CancelFlag, CopyMode, NeverCancelled, contract_tests::TempTree};
 
 use super::*;
+use crate::native::Attempt;
 
 /// A writer that accepts at most `chunk` bytes per call and interrupts every
 /// other call, so the copier's write loop must retry and advance.
@@ -263,6 +264,8 @@ fn a_temporary_name_is_a_sibling_of_the_entry_and_unique_per_entry() {
         report: CopyReport::default(),
         buffer: Vec::new(),
         temporaries: 0,
+        plan: Plan::scripted(Attempt::Skip),
+        native_fallback_noted: false,
     };
     let first = run.temporary_path(Path::new("/destination/dir/a.txt"));
     let second = run.temporary_path(Path::new("/destination/dir/b.txt"));
@@ -280,25 +283,40 @@ fn a_temporary_name_is_a_sibling_of_the_entry_and_unique_per_entry() {
     }
 }
 
+/// A copy that will make no native attempt says so once, up front; a copy
+/// that will make them promises nothing until an attempt is actually
+/// rejected, which is `note_native_fallback`'s warning, not this one.
 #[test]
-fn auto_mode_warns_that_native_copy_on_write_is_unavailable_in_this_build() {
-    let auto = opening_warnings(CopyMode::Auto);
-    assert_eq!(auto.len(), 2);
-    assert_eq!(auto[0].kind, CopyWarningKind::NativeUnavailable);
-    assert!(auto[0].detail.contains("unavailable in this build"));
-    assert_eq!(auto[0].path, PathBuf::new(), "the warning names the copy");
-    assert_eq!(auto[1].kind, CopyWarningKind::AncillaryMetadataUnsupported);
-
-    let ordinary = opening_warnings(CopyMode::OrdinaryOnly);
+fn only_a_copy_that_makes_no_native_attempt_opens_with_the_unavailable_warning() {
+    let unavailable = opening_warnings(Plan {
+        attempt: Attempt::Skip,
+        unavailable: Some("no mechanism here"),
+    });
+    assert_eq!(unavailable.len(), 2);
+    assert_eq!(unavailable[0].kind, CopyWarningKind::NativeUnavailable);
+    assert_eq!(unavailable[0].detail, "no mechanism here");
     assert_eq!(
-        ordinary.len(),
-        1,
-        "an ordinary-only copy was never promised a native path: {ordinary:?}"
+        unavailable[0].path,
+        PathBuf::new(),
+        "the warning names the copy"
     );
     assert_eq!(
-        ordinary[0].kind,
+        unavailable[1].kind,
         CopyWarningKind::AncillaryMetadataUnsupported
     );
+
+    for plan in [
+        // An ordinary-only copy was never promised a native path.
+        Plan::scripted(Attempt::Skip),
+        Plan::scripted(Attempt::Native),
+    ] {
+        let warnings = opening_warnings(plan);
+        assert_eq!(warnings.len(), 1, "{plan:?}: {warnings:?}");
+        assert_eq!(
+            warnings[0].kind,
+            CopyWarningKind::AncillaryMetadataUnsupported
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -321,6 +339,8 @@ fn a_metadata_failure_is_reported_as_an_error_not_as_unsupported() {
         report: CopyReport::default(),
         buffer: Vec::new(),
         temporaries: 0,
+        plan: Plan::scripted(Attempt::Skip),
+        native_fallback_noted: false,
     };
     let frame = Frame {
         relative: PathBuf::from("gone"),

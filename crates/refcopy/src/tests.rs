@@ -16,11 +16,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gwz_copy_contract::{
-    Cancellation, CopyErrorCategory, CopyMode, CopyReport, CopyRequest, CopyWarningKind, Exclusion,
-    NeverCancelled, TreeCopier,
+    Cancellation, CopyError, CopyErrorCategory, CopyMode, CopyReport, CopyRequest, CopyWarning,
+    CopyWarningKind, Exclusion, NeverCancelled, TreeCopier,
     contract_tests::{TempTree, run_all},
 };
 
+use crate::native::{Attempt, Plan};
 use crate::{NativeCapability, NativeMechanism, SystemTreeCopier};
 
 // ---------------------------------------------------------------- helpers
@@ -217,10 +218,17 @@ fn auto_and_forced_ordinary_copies_produce_the_same_included_tree() {
     assert_eq!(auto_report.files(), ordinary_report.files());
     assert_eq!(auto_report.logical_bytes, ordinary_report.logical_bytes);
     assert_eq!(
-        (auto_report.native_files, ordinary_report.native_files),
-        (0, 0),
-        "no report may claim a native mechanism ran"
+        ordinary_report.native_files, 0,
+        "a forced-ordinary copy never claims a native mechanism ran"
     );
+    assert_eq!(
+        ordinary_report.ordinary_files,
+        ordinary_report.files(),
+        "and counts every file as the ordinary copy it was"
+    );
+    // Whichever mechanism `Auto` reached for, the tree it produced is the
+    // one compared above: how the bytes arrived is a reporting difference,
+    // never an observable one.
     assert_report_matches(&auto_report, &auto);
 }
 
@@ -545,7 +553,12 @@ fn the_source_is_only_ever_read() {
 fn no_temporary_file_survives_a_cancelled_entry() {
     // A file large enough to need more than one buffered write, cancelled
     // between chunks: the incomplete entry is removed, so the partial report
-    // still equals the destination's contents.
+    // still equals the destination's contents. Forced ordinary, because a
+    // native clone is one work unit -- the whole file arrives in a single
+    // syscall, and there is no point inside it at which cancellation is
+    // polled. That is the contract's own position: cancellation is checked
+    // between bounded work units and never promises to preempt a blocking OS
+    // call.
     let source = TempTree::new("r-temp");
     source.file("big.bin", &vec![7u8; 256 * 1024]);
     let parent = TempTree::new("r-temp-dest");
@@ -556,7 +569,7 @@ fn no_temporary_file_survives_a_cancelled_entry() {
                 source: source.path().to_path_buf(),
                 destination: destination.clone(),
                 exclusions: Vec::new(),
-                mode: CopyMode::Auto,
+                mode: CopyMode::OrdinaryOnly,
             },
             &CancelAfter::new(1),
         )
@@ -699,31 +712,39 @@ fn neither_a_symlinked_source_nor_a_symlinked_destination_is_followed() {
 // -------------------------------------------------- what the report says
 
 #[test]
-fn auto_mode_reports_that_native_copy_on_write_was_unavailable() {
+fn every_report_says_which_mechanism_actually_copied_each_file() {
     let source = fixture();
     let parent = TempTree::new("r-warnings");
+    let copier = SystemTreeCopier::new();
     let auto = copy(&request(
         &source,
         parent.path().join("auto"),
         CopyMode::Auto,
     ));
-    let native: Vec<_> = auto
+    assert_eq!(
+        auto.native_files + auto.ordinary_files,
+        auto.files(),
+        "every file is reported by the mechanism that actually copied it"
+    );
+    let unavailable: Vec<_> = auto
         .warnings
         .iter()
         .filter(|warning| warning.kind == CopyWarningKind::NativeUnavailable)
         .collect();
-    assert_eq!(native.len(), 1, "one copy-wide warning, not one per file");
-    assert!(
-        native[0].detail.contains("unavailable in this build"),
-        "{}",
-        native[0].detail
-    );
-    assert_eq!(auto.native_files, 0);
-    assert_eq!(
-        auto.ordinary_files,
-        auto.files(),
-        "every file is reported by the mechanism that actually copied it"
-    );
+    if copier.mechanism() == NativeMechanism::None {
+        assert_eq!(
+            unavailable.len(),
+            1,
+            "one copy-wide warning, not one per file"
+        );
+        assert_eq!(unavailable[0].path, PathBuf::new(), "it names the copy");
+        assert_eq!(auto.native_files, 0, "and nothing claims to have cloned");
+    } else {
+        assert!(
+            unavailable.is_empty(),
+            "a mechanism was compiled in and the pair was not ruled out: {unavailable:?}"
+        );
+    }
     assert!(
         auto.warnings
             .iter()
@@ -760,22 +781,63 @@ fn a_partial_report_keeps_the_copy_wide_warnings() {
             .partial
             .warnings
             .iter()
-            .any(|warning| warning.kind == CopyWarningKind::NativeUnavailable),
-        "a partial report still says how the copy was performed"
+            .any(|warning| warning.kind == CopyWarningKind::AncillaryMetadataUnsupported),
+        "a partial report still carries what the copy said about itself"
     );
 }
 
 #[test]
 fn the_native_probe_and_mechanism_are_honest_about_this_build() {
     let copier = SystemTreeCopier::new();
-    let source = TempTree::new("r-probe");
-    let destination = source.path().join("copy");
     assert_eq!(
-        copier.probe_native(source.path(), &destination),
-        NativeCapability::Unavailable,
-        "no native mechanism is linked; the probe must not suggest one"
+        copier.mechanism(),
+        expected_mechanism(),
+        "the mechanism reported is the one compiled in for this target"
     );
-    assert_eq!(copier.mechanism(), NativeMechanism::None);
+    let source = TempTree::new("r-probe");
+    // A destination that does not exist yet, alongside the source: the same
+    // device, so nothing is ruled out.
+    let beside = source.path().join("copy");
+    let probed = copier.probe_native(source.path(), &beside);
+    if copier.mechanism() == NativeMechanism::None {
+        assert_eq!(
+            probed,
+            NativeCapability::Unavailable,
+            "no native mechanism is linked; the probe must not suggest one"
+        );
+        return;
+    }
+    assert_eq!(
+        probed,
+        NativeCapability::Unknown,
+        "a mechanism is linked and the pair is on one device, so the operation decides"
+    );
+    assert_ne!(
+        probed,
+        NativeCapability::Available,
+        "a probe never claims to know what only a copy can establish"
+    );
+    // A destination whose device cannot be read at all is still `Unknown`:
+    // an unreadable hint rules nothing out.
+    assert_eq!(
+        copier.probe_native(source.path(), Path::new("")),
+        NativeCapability::Unknown
+    );
+}
+
+/// The mechanism this target must report, from the same platform facts the
+/// crate compiles against -- written out independently here so that a change
+/// to the selection in `native` has to be restated deliberately.
+fn expected_mechanism() -> NativeMechanism {
+    if cfg!(target_vendor = "apple") {
+        NativeMechanism::AppleClonefile
+    } else if cfg!(target_os = "linux")
+        && !cfg!(any(target_arch = "sparc", target_arch = "sparc64"))
+    {
+        NativeMechanism::LinuxFiclone
+    } else {
+        NativeMechanism::None
+    }
 }
 
 #[cfg(unix)]
@@ -855,6 +917,210 @@ fn a_private_directory_is_never_wider_than_its_source_while_its_subtree_is_copie
                 & 0o7777,
             0o700,
             "the exact source mode lands once the subtree is complete"
+        );
+    }
+}
+
+// ------------------------------------------------------------ native path
+
+/// The native smoke test the architecture requires: on a host whose
+/// filesystem can clone, the native path must actually have run.
+#[test]
+fn the_native_path_actually_runs_when_the_host_can_clone() {
+    let copier = SystemTreeCopier::new();
+    if copier.mechanism() == NativeMechanism::None {
+        eprintln!("skipped: no native copy-on-write mechanism is compiled in for this target");
+        return;
+    }
+    let source = fixture();
+    let parent = TempTree::new("r-native");
+    let destination = parent.path().join("copy");
+    let report = copy(&request(&source, destination.clone(), CopyMode::Auto));
+    if report.native_files == 0 {
+        eprintln!("skipped: this host's filesystem rejected every native clone");
+        return;
+    }
+    assert_eq!(
+        report.native_files,
+        report.files(),
+        "every regular file was cloned by {:?}",
+        copier.mechanism()
+    );
+    assert_report_matches(&report, &destination);
+}
+
+/// Run the engine with a scripted native attempt, which is how the fallback
+/// and the real-failure paths are exercised on a host whose filesystem
+/// always clones.
+fn copy_with(request: &CopyRequest, attempt: Attempt) -> Result<CopyReport, CopyError> {
+    crate::ordinary::copy_tree(request, &NeverCancelled, Plan::scripted(attempt))
+}
+
+fn warnings_of(report: &CopyReport, kind: CopyWarningKind) -> Vec<&CopyWarning> {
+    report
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == kind)
+        .collect()
+}
+
+/// Any temporary the copier left behind, anywhere under `root`.
+fn stray_temporaries(root: &Path) -> Vec<PathBuf> {
+    observe(root)
+        .into_keys()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".gwz-refcopy."))
+        })
+        .collect()
+}
+
+/// Cloning shares physical blocks. That is not a hardlink, and this is the
+/// test that tells the two apart: distinct inodes, one link each, and a
+/// write to either side that the other never sees.
+#[cfg(unix)]
+#[test]
+fn a_cloned_file_is_an_independent_file_and_never_a_hardlink() {
+    use std::os::unix::fs::MetadataExt;
+
+    let source = fixture();
+    let parent = TempTree::new("r-clone-independent");
+    let destination = parent.path().join("copy");
+    let report = copy(&request(&source, destination.clone(), CopyMode::Auto));
+    if report.native_files == 0 {
+        eprintln!("skipped: no file on this host was copied by the native path");
+        return;
+    }
+    for relative in ["a.txt", "dir/b.bin"] {
+        let cloned = fs::metadata(destination.join(relative)).unwrap();
+        let original = fs::metadata(source.path().join(relative)).unwrap();
+        assert_ne!(
+            (cloned.dev(), cloned.ino()),
+            (original.dev(), original.ino()),
+            "{relative} is its own file, not the source's inode under a second name"
+        );
+        assert_eq!(cloned.nlink(), 1, "{relative} has one link: the copy's own");
+        assert_eq!(
+            original.nlink(),
+            1,
+            "{relative} left the source with one link"
+        );
+    }
+    // Writes on either side stay on that side, which is what "may share
+    // physical blocks, but later writes must be independent" means.
+    fs::write(destination.join("a.txt"), b"destination edit").unwrap();
+    assert_eq!(fs::read(source.path().join("a.txt")).unwrap(), b"alpha");
+    fs::write(source.path().join("dir/b.bin"), b"source edit").unwrap();
+    assert_eq!(
+        fs::read(destination.join("dir/b.bin")).unwrap(),
+        [0u8, 1, 2, 3, 4, 5, 6]
+    );
+}
+
+/// A native attempt that comes back classified unsupported is not an error:
+/// that file is copied ordinarily, from a destination the wrapper has
+/// already reset, and the report says so once.
+#[test]
+fn a_classified_unsupported_native_attempt_falls_back_to_an_ordinary_copy() {
+    let source = fixture();
+    let parent = TempTree::new("r-fallback");
+    let fallen_back = parent.path().join("fallback");
+    let ordinary = parent.path().join("ordinary");
+    let report = copy_with(
+        &request(&source, fallen_back.clone(), CopyMode::Auto),
+        Attempt::ScriptedUnsupported,
+    )
+    .expect("an unsupported native attempt is not a failure");
+    let forced = copy(&request(&source, ordinary.clone(), CopyMode::OrdinaryOnly));
+
+    assert_eq!(
+        observe(&fallen_back),
+        observe(&ordinary),
+        "the fallback lands exactly the bytes the ordinary path would have"
+    );
+    assert_eq!(report.native_files, 0, "nothing was cloned");
+    assert_eq!(
+        (report.ordinary_files, report.logical_bytes),
+        (forced.ordinary_files, forced.logical_bytes),
+        "and every file is counted as the ordinary copy it became"
+    );
+    assert_report_matches(&report, &fallen_back);
+    assert_eq!(
+        stray_temporaries(&fallen_back),
+        Vec::<PathBuf>::new(),
+        "the destination is clean: no reset temporary was left behind"
+    );
+
+    let fell_back = warnings_of(&report, CopyWarningKind::NativeUnsupportedFellBack);
+    assert_eq!(
+        fell_back.len(),
+        1,
+        "named once for the copy, not once per file: {fell_back:?}"
+    );
+    assert_eq!(
+        fell_back[0].path,
+        PathBuf::from("a.txt"),
+        "the first entry the mechanism rejected"
+    );
+    assert!(
+        fell_back[0].detail.contains("ordinary_files"),
+        "the warning says where the rest are counted: {}",
+        fell_back[0].detail
+    );
+    assert!(
+        warnings_of(&report, CopyWarningKind::NativeUnavailable).is_empty(),
+        "an attempt was made and rejected, which is not the same as never attempting"
+    );
+}
+
+/// The other half of the classification: a permission, space or I/O failure
+/// of the native call is an error, and never a reason to fall back.
+#[test]
+fn a_real_native_failure_stops_the_copy_instead_of_falling_back() {
+    for category in [
+        CopyErrorCategory::DestinationUnwritable,
+        CopyErrorCategory::Io,
+    ] {
+        let source = fixture();
+        let parent = TempTree::new("r-native-error");
+        let destination = parent.path().join("copy");
+        let error = copy_with(
+            &request(&source, destination.clone(), CopyMode::Auto),
+            Attempt::ScriptedFailure(category),
+        )
+        .expect_err("a real native failure is a failure");
+
+        assert_eq!(error.category, category);
+        assert_eq!(
+            error.failed_path,
+            PathBuf::from("a.txt"),
+            "the first file offered to the mechanism"
+        );
+        assert_eq!(
+            error.partial.files(),
+            0,
+            "the copy stopped at that file: {:?}",
+            error.partial
+        );
+        assert_report_matches(&error.partial, &destination);
+        assert!(
+            warnings_of(&error.partial, CopyWarningKind::NativeUnsupportedFellBack).is_empty(),
+            "a real failure is never reported as an unsupported fallback"
+        );
+        assert_eq!(
+            stray_temporaries(&destination),
+            Vec::<PathBuf>::new(),
+            "and leaves no temporary behind"
+        );
+        assert!(
+            destination.exists(),
+            "the partial destination is retained for inspection"
+        );
+        assert_eq!(
+            fs::read(source.path().join("a.txt")).unwrap(),
+            b"alpha",
+            "the source is unchanged"
         );
     }
 }

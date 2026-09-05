@@ -1,12 +1,5 @@
-//! The ordinary (std-only) tree copy: admission, traversal and per-entry copy.
-//!
-//! This module is the whole product copier in this build. Native
-//! copy-on-write (Apple `clonefile`, Linux `FICLONE`, Windows block cloning)
-//! needs a platform dependency the boundary gate does not admit yet, so
-//! [`CopyMode::Auto`] copies ordinarily and says so in the report's warnings;
-//! nothing here ever claims a native mechanism ran
-//! (gwz-dev `dev-docs/GwzLocalCloneDesign.md` §12, "Native copy unavailable →
-//! ordinary independent copy; actual method reported").
+//! The copy engine: admission, traversal, and the ordinary (std-only)
+//! per-entry copy that is also the native path's fallback.
 //!
 //! Shape of one copy (`dev-docs/GwzLocalCloneImplementationArchitecture.md` §3):
 //!
@@ -22,6 +15,15 @@
 //!   into place, so an interrupted entry never appears under its final name;
 //!   the temporary is removed on failure, which keeps the partial report equal
 //!   to what the destination actually holds.
+//! - In [`CopyMode::Auto`](gwz_copy_contract::CopyMode::Auto), each regular
+//!   file is first offered to
+//!   [`crate::native`], which clones it into that same temporary name. A
+//!   classified unsupported result falls back to the ordinary copy for that
+//!   file, from a temporary the wrapper has already reset; a real failure
+//!   (permission, space, I/O) stops the copy. `CopyMode::OrdinaryOnly`, and
+//!   any build or pair with no mechanism, skips the attempt and says so once
+//!   (gwz-dev `dev-docs/GwzLocalCloneDesign.md` §12, "Native copy unavailable
+//!   → ordinary independent copy; actual method reported").
 //! - Failures retain the partial destination and carry the accurate partial
 //!   report. The source is only ever read.
 
@@ -37,9 +39,11 @@ use std::path::{Path, PathBuf};
 use std::vec::IntoIter;
 
 use gwz_copy_contract::{
-    Cancellation, CopyError, CopyErrorCategory, CopyMode, CopyReport, CopyRequest, CopyWarning,
+    Cancellation, CopyError, CopyErrorCategory, CopyReport, CopyRequest, CopyWarning,
     CopyWarningKind,
 };
+
+use crate::native::{Outcome, Plan};
 
 /// Bytes of the single reused copy buffer. One buffer serves the whole copy:
 /// the copier holds at most one open source file, one open destination file
@@ -50,10 +54,12 @@ const BUFFER_BYTES: usize = 64 * 1024;
 /// category and diagnostic detail.
 type Failure = (PathBuf, CopyErrorCategory, String);
 
-/// Copy `request`'s source tree into its destination.
+/// Copy `request`'s source tree into its destination, following `plan` for
+/// the native attempt. The plan is decided once, before anything is written.
 pub(crate) fn copy_tree(
     request: &CopyRequest,
     cancellation: &dyn Cancellation,
+    plan: Plan,
 ) -> Result<CopyReport, CopyError> {
     let source_permissions = admit_source(request)?;
     let created_root = admit_destination(request)?;
@@ -61,11 +67,13 @@ pub(crate) fn copy_tree(
         request,
         cancellation,
         report: CopyReport {
-            warnings: opening_warnings(request.mode),
+            warnings: opening_warnings(plan),
             ..CopyReport::default()
         },
         buffer: vec![0u8; BUFFER_BYTES],
         temporaries: 0,
+        plan,
+        native_fallback_noted: false,
     };
     // The root frame carries the source root's permissions only when this call
     // created the destination root; an admitted pre-existing directory belongs
@@ -91,29 +99,30 @@ pub(crate) fn copy_tree(
     }
 }
 
-/// The two copy-wide observations every report carries.
-fn opening_warnings(mode: CopyMode) -> Vec<CopyWarning> {
+/// The copy-wide observations every report carries.
+fn opening_warnings(plan: Plan) -> Vec<CopyWarning> {
     // A copy-wide warning names the copy itself: the empty relative path, the
     // same way the traversal names the source root.
     let mut warnings = Vec::new();
-    if mode == CopyMode::Auto {
-        // Nothing was attempted natively (no mechanism is linked), so this
-        // is `NativeUnavailable`, not a per-entry fallback (R1).
+    if let Some(reason) = plan.unavailable {
+        // No native attempt is made at all, which is `NativeUnavailable`
+        // rather than a per-entry fallback (R1). An attempt that is made and
+        // rejected is `NativeUnsupportedFellBack`, named once by
+        // `note_native_fallback`.
         warnings.push(CopyWarning {
             path: PathBuf::new(),
             kind: CopyWarningKind::NativeUnavailable,
-            detail: "native copy-on-write is unavailable in this build (no platform \
-                     copy-on-write dependency is linked); every regular file was copied by \
-                     ordinary read/write"
-                .to_owned(),
+            detail: reason.to_owned(),
         });
     }
     warnings.push(CopyWarning {
         path: PathBuf::new(),
         kind: CopyWarningKind::AncillaryMetadataUnsupported,
-        detail: "ancillary metadata (ACLs, extended attributes, alternate data streams, \
-                 timestamps) was not copied; contents, entry type, symlink target and \
-                 permission bits were"
+        detail: "this copier does not itself copy ancillary metadata (ACLs, extended \
+                 attributes, alternate data streams, timestamps); contents, entry type, \
+                 symlink target and permission bits it does copy, and a natively cloned file \
+                 may carry more of the source's metadata than an ordinarily copied one, so \
+                 ancillary metadata is not guaranteed either way"
             .to_owned(),
     });
     warnings
@@ -282,6 +291,16 @@ struct CopyRun<'a> {
     report: CopyReport,
     buffer: Vec<u8>,
     temporaries: u64,
+    /// Decided once, before traversal: whether each regular file is offered
+    /// to the native mechanism first.
+    plan: Plan,
+    /// Whether one `NativeUnsupportedFellBack` warning has been recorded.
+    /// Every file is still offered to the mechanism — a tree can span mount
+    /// points, and the operation decides for each pair — but the warning is
+    /// named once, so a large tree on a filesystem that cannot clone reports
+    /// one line and not one per file. The rest are counted in
+    /// `CopyReport::ordinary_files`.
+    native_fallback_noted: bool,
 }
 
 impl CopyRun<'_> {
@@ -396,7 +415,9 @@ impl CopyRun<'_> {
         Ok(())
     }
 
-    /// Copy one regular file through a sibling temporary file and a rename.
+    /// Copy one regular file through a sibling temporary file and a rename:
+    /// natively when the plan says so and the operation agrees, ordinarily
+    /// otherwise.
     fn copy_file(
         &mut self,
         relative: &Path,
@@ -412,6 +433,22 @@ impl CopyRun<'_> {
             .metadata()
             .map_err(|error| at(CopyErrorCategory::SourceUnreadable, error.to_string()))?;
         let temporary = self.temporary_path(destination);
+
+        if self.plan.attempt.is_attempted() {
+            match self.plan.attempt.clone_regular_file(&input, &temporary) {
+                Outcome::Cloned => {
+                    return self.finish_clone(relative, &source_metadata, &temporary, destination);
+                }
+                // The wrapper left no file at the temporary name, so the
+                // ordinary copy below starts from nothing: it never appends
+                // to a partial native attempt.
+                Outcome::Unsupported(detail) => self.note_native_fallback(relative, detail),
+                // Permission, space and I/O failures are errors, not
+                // "unsupported" (design §4).
+                Outcome::Failed(category, detail) => return Err(at(category, detail)),
+            }
+        }
+
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -463,6 +500,68 @@ impl CopyRun<'_> {
             },
         )?;
         Ok(())
+    }
+
+    /// Finish a file the native mechanism cloned into `temporary`: give it
+    /// the source's permission bits and rename it into place.
+    ///
+    /// The mechanisms carry the source's mode themselves, but the bits are
+    /// applied here anyway so that a cloned file and an ordinarily copied one
+    /// are observably the same file whatever a mechanism chose to carry.
+    fn finish_clone(
+        &mut self,
+        relative: &Path,
+        source_metadata: &fs::Metadata,
+        temporary: &Path,
+        destination: &Path,
+    ) -> Result<(), Failure> {
+        let at = |category, detail: String| (relative.to_path_buf(), category, detail);
+        if let Err(error) = apply_permissions(&source_metadata.permissions(), temporary) {
+            let detail = format!("permissions could not be applied: {error}");
+            let _ = fs::remove_file(temporary);
+            return Err(at(CopyErrorCategory::MetadataFailed, detail));
+        }
+        if let Err(error) = fs::rename(temporary, destination) {
+            let detail = error.to_string();
+            let _ = fs::remove_file(temporary);
+            return Err(at(destination_category(&error), detail));
+        }
+        // Counted only once the entry exists under its final name, and
+        // counted as native because the native call is what put it there.
+        self.report.native_files += 1;
+        // The logical length of the source, which is what the ordinary path
+        // counts too: a sparse file counts the bytes it presents, not the
+        // blocks it occupies.
+        self.report.logical_bytes += source_metadata.len();
+        // The other half of the split the ordinary path makes: off unix the
+        // read-only attribute lands after the rename, not before it.
+        preserve_permissions_on_path(&source_metadata.permissions(), destination).map_err(
+            |error| {
+                at(
+                    CopyErrorCategory::MetadataFailed,
+                    format!("permissions could not be applied: {error}"),
+                )
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Record that a native attempt was classified unsupported and the file
+    /// was copied ordinarily instead. Named once per copy; see
+    /// [`CopyRun::native_fallback_noted`].
+    fn note_native_fallback(&mut self, relative: &Path, detail: String) {
+        if self.native_fallback_noted {
+            return;
+        }
+        self.native_fallback_noted = true;
+        self.report.warnings.push(CopyWarning {
+            path: relative.to_path_buf(),
+            kind: CopyWarningKind::NativeUnsupportedFellBack,
+            detail: format!(
+                "{detail}; this entry and any later one the mechanism rejects were copied by \
+                 ordinary read/write and are counted in ordinary_files"
+            ),
+        });
     }
 
     /// Read one source directory into a sorted frame.
@@ -671,6 +770,22 @@ fn preserve_permissions_on_handle(_permissions: &Permissions, _handle: &File) ->
 
 #[cfg(unix)]
 fn preserve_permissions_on_path(_permissions: &Permissions, _path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Apply a file's permissions by path. The native path has no handle of its
+/// own to set them on -- the mechanism created the file -- so it names the
+/// temporary, which it created and still owns exclusively.
+#[cfg(unix)]
+fn apply_permissions(permissions: &Permissions, path: &Path) -> io::Result<()> {
+    fs::set_permissions(path, permissions.clone())
+}
+
+/// Off unix, permission preservation is the read-only attribute, and the
+/// rename is easier before it is set; this matches
+/// [`preserve_permissions_on_path`], which runs after the rename.
+#[cfg(not(unix))]
+fn apply_permissions(_permissions: &Permissions, _path: &Path) -> io::Result<()> {
     Ok(())
 }
 

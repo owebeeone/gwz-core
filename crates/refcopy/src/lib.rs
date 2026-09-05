@@ -5,23 +5,37 @@
 //! traversal, metadata, fallback and reporting rules of gwz-dev
 //! `dev-docs/GwzLocalCloneImplementationArchitecture.md` §3.
 //!
-//! State of this build: the **ordinary** copy path is implemented and passes
-//! the contract's conformance suite (`gwz_copy_contract::contract_tests::
-//! run_all`). The native copy-on-write path is **not** in this build: Apple
-//! `clonefile`, Linux `FICLONE` and Windows block cloning each need a
-//! platform dependency (`libc`/`rustix`/`windows-sys`) that the local-clone
-//! boundary gate does not admit yet. Nothing here claims a native mechanism
-//! ran: [`SystemTreeCopier::probe_native`] reports
-//! [`NativeCapability::Unavailable`], [`SystemTreeCopier::mechanism`] reports
-//! [`NativeMechanism::None`], every report counts its files as
-//! `ordinary_files`, and `CopyMode::Auto` carries one copy-wide
-//! `CopyWarningKind::NativeUnavailable` warning saying so (design §12,
-//! "Native copy unavailable -> ordinary independent copy; actual method
-//! reported"); `NativeUnsupportedFellBack` is reserved for a native attempt
-//! that was made and rejected per entry, which this build never makes.
+//! Two paths, one result. Every regular file is copied either by the
+//! platform's native copy-on-write mechanism ([`native`]: Apple `clonefile`
+//! on Apple targets, `FICLONE` on Linux) or by ordinary buffered read/write
+//! ([`ordinary`], which is also the whole engine: admission, traversal,
+//! metadata and error classification). Which one ran changes nothing an
+//! inspection of the destination can see -- contents, entry type, symlink
+//! target and permission bits are the same either way, and both sides stay
+//! independently writable, because a clone shares physical blocks and is
+//! never a hardlink. It changes only [`CopyReport::native_files`] versus
+//! `ordinary_files`, which is how a report says how the bytes actually
+//! arrived (design §12, "Native copy unavailable -> ordinary independent
+//! copy; actual method reported").
+//!
+//! Selection is per file and the operation decides:
+//!
+//! - `CopyMode::OrdinaryOnly` never attempts a native call, and is never
+//!   promised one, so it carries no native warning.
+//! - `CopyMode::Auto` attempts one for each regular file, unless no
+//!   mechanism is compiled in for this target (Windows today -- see
+//!   [`native`]) or [`SystemTreeCopier::probe_native`] has already ruled the
+//!   pair out. Then the copy is ordinary and carries one copy-wide
+//!   `CopyWarningKind::NativeUnavailable` warning saying why.
+//! - An attempt that is made and classified unsupported (an unsupported
+//!   filesystem, a cross-device pair) falls back to the ordinary copy for
+//!   that file and is reported once as
+//!   `CopyWarningKind::NativeUnsupportedFellBack`. A permission, space or
+//!   I/O failure is an error, and stops the copy.
 
 #![forbid(unsafe_code)]
 
+mod native;
 mod ordinary;
 
 use std::path::Path;
@@ -49,51 +63,68 @@ pub enum NativeMechanism {
 
 /// The product copier. `new()` selects the platform mechanism at
 /// construction; `mechanism()` reports it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SystemTreeCopier {
-    mechanism: Option<NativeMechanism>,
+    mechanism: NativeMechanism,
 }
 
 impl SystemTreeCopier {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            mechanism: native::MECHANISM,
+        }
     }
 
     /// The native mechanism this copier would attempt in `CopyMode::Auto`.
+    /// [`NativeMechanism::None`] means this build has no native call for
+    /// this target and every file is copied ordinarily.
     pub fn mechanism(&self) -> NativeMechanism {
-        self.mechanism.unwrap_or(NativeMechanism::None)
+        self.mechanism
     }
 
     /// Hint whether `source` and `destination` may share a native
     /// copy-on-write path. Never authoritative.
     ///
-    /// This build links no platform copy-on-write dependency, so the honest
-    /// answer for every pair is [`NativeCapability::Unavailable`]: there is no
-    /// mechanism to attempt, and a probe must not suggest one exists.
-    /// [`NativeCapability::Unknown`] returns when a mechanism is linked but
-    /// the pair has not been examined.
-    pub fn probe_native(&self, _source: &Path, _destination: &Path) -> NativeCapability {
+    /// [`NativeCapability::Unavailable`] is returned only for what can be
+    /// known without copying: no mechanism is compiled in for this target,
+    /// or the two paths are on different devices, which no copy-on-write
+    /// mechanism can clone across. Otherwise the answer is
+    /// [`NativeCapability::Unknown`] -- the necessary conditions hold, and
+    /// whether the filesystem actually supports cloning is decided by the
+    /// operation, per file.
+    ///
+    /// [`NativeCapability::Available`] is never returned. Establishing it
+    /// would mean either performing a copy, which a probe must not do, or
+    /// trusting a filesystem-type table, which the architecture explicitly
+    /// declines to make authoritative; the copier itself never relies on the
+    /// probe for anything but the cross-device shortcut above.
+    pub fn probe_native(&self, source: &Path, destination: &Path) -> NativeCapability {
         match self.mechanism {
-            None => NativeCapability::Unavailable,
-            Some(NativeMechanism::None) => NativeCapability::Unavailable,
-            Some(_) => NativeCapability::Unknown,
+            NativeMechanism::None => NativeCapability::Unavailable,
+            _ => native::probe(source, destination),
         }
     }
 }
 
+impl Default for SystemTreeCopier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TreeCopier for SystemTreeCopier {
-    /// Copy `request`'s source tree, ordinarily.
+    /// Copy `request`'s source tree.
     ///
-    /// `CopyMode::Auto` and `CopyMode::OrdinaryOnly` do the same work here,
-    /// because no native mechanism is linked; `Auto` additionally warns that
-    /// native copy-on-write was unavailable. See [`ordinary`] for the shape of
-    /// a copy, its admission rules and its error classification.
+    /// The native plan is decided once, before anything is written; see
+    /// [`ordinary`] for the shape of a copy, its admission rules and its
+    /// error classification, and [`native`] for what a failed native attempt
+    /// is read to mean.
     fn copy_tree(
         &self,
         request: &CopyRequest,
         cancellation: &dyn Cancellation,
     ) -> Result<CopyReport, CopyError> {
-        ordinary::copy_tree(request, cancellation)
+        ordinary::copy_tree(request, cancellation, native::Plan::for_request(request))
     }
 }
 
