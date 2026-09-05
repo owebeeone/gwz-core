@@ -11,7 +11,7 @@ operations.
 | --- | --- |
 | `artifact` | Read/write manifest, lock, and snapshot YAML artifacts. |
 | `git` | `GitBackend`, `Git2Backend`, Git status/head/remote/result types, transfer progress, timeout configuration, and the anonymous local fetch/push ports. |
-| `local_clone` | Thin local clone family adapters: request-shape validation, the `LocalTransport` adapter over `GitBackend`, the family-merge wrapper (whose resolver miss is `unknown_local`), and the `list` projection of the family model's observation-only listing onto `LocalFamilyResponse.members` (with the observed root in `root_path`). Library logic lives in the crates under `crates/`. |
+| `local_clone` | Thin local clone family adapters: request-shape validation, the `LocalTransport` adapter over `GitBackend`, the family-merge wrapper (whose resolver miss is `unknown_local`), the `list` projection of the family model's observation-only listing onto `LocalFamilyResponse.members` (with the observed root in `root_path`), and -- since LCM1.1 -- `adapters/` (one thin adapter per library port: the install ports over `gwz-repo-inspect`, `gwz-family-store`, the conf-integrity helpers and `gwz-history-check`; the disposal ports; the design §4.1 exclusion set; the destination Git-configuration installer; an ordinary recursive remover), `create` (`gwz clone --local`, verbatim, composed over `gwz_workspace_install::install`) and `dispose` (`dispose --keep` over `gwz_local_disposal::dispose`, and `disband` over the store session). Library logic lives in the crates under `crates/`. |
 | `model` | Core ids, model errors, source kinds, desired refs, selection, policy, and attribution validation. |
 | `operation` | Operation runtime, events, aggregate/member execution helpers, concurrency helpers, and response envelope helpers. |
 | `protocol` | Generated taut protocol module and conversion helpers. |
@@ -61,10 +61,22 @@ use gwz_core::{RequestMeta, Selection, WorkspaceRef};
 
 `handle_merge_with_events` remains the public merge engine entry; it refuses
 a request that still carries `local_source_name`, so drivers dispatch merges
-through `handle_merge_with_local_family`. At the LCM1.0c checkpoint the two
-local-family handlers and the family branch of the merge wrapper validate
-request shape and then refuse with `unsupported_operation` before any
-effect.
+through `handle_merge_with_local_family`. Since LCM1.1 (lane C wiring)
+`handle_clone_local_workspace` creates a verbatim clone end to end
+(`local_clone::create`: the family observation, the source inventory and
+snapshot before the family lock, founding when the workspace is in no
+family, then `gwz_workspace_install::install` over the real adapters -- the
+`creating` row, the destination, `gwz-refcopy` with design §4.1's
+exclusions, the destination's Git configuration, pointer and marker, the
+completion check, the source recheck, the manifest last, then `ready`; the
+response message names the destination, the recorded path, the copy counts
+and the family), `handle_local_family` lists every member's observed target
+through the store, detaches a member with `--keep` and disbands a family
+(`local_clone::dispose`). Still refusing with `unsupported_operation` after
+request shape and the family observation, before any effect: `--clean` and
+`--bare` clones (LCM3.1 / LCM2.3), ordinary `dispose` without `--keep`
+(its fresh work/history checks are LCM2.1), `--from` (LCM3.2), and the
+family branch of the merge wrapper past resolution (LCM1.2).
 
 `handle_clone_workspace` is a Rust convenience entrypoint for clone +
 materialize-lock. It records the operation as materialization and does not add a

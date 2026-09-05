@@ -322,3 +322,107 @@ fn the_family_fixture_is_a_registered_workspace_with_one_member() {
     assert!(family_files_absent(&fixture.root), "no family yet");
     let _ = FamilyFixture::sibling;
 }
+
+/// Plan LCM1.1 exit ("root -> A -> B has one namespace and independent
+/// data"), design §3 and §8.1: a clone made *from* A registers on the root
+/// with A as its source, points at the root, and lists beside A; a taken
+/// name and an occupied destination refuse typed, before any effect.
+#[test]
+fn a_clone_of_a_clone_registers_on_the_root_and_collisions_refuse() {
+    let fixture = family_workspace("create-chain");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_clone_local_workspace(
+        &backend,
+        &fixture.root,
+        clone_request("A"),
+        "op-clone-a",
+        &NullSink,
+    )
+    .expect("clone A");
+    let a = fixture.sibling("A");
+    // From A: `gwz clone --local --name B` with the default sibling dest.
+    handle_clone_local_workspace(&backend, &a, clone_request("B"), "op-clone-b", &NullSink)
+        .expect("clone B from A");
+    let b = fixture.sibling("B");
+    let (family_root, view) = family_view(&fixture.root);
+    assert_eq!(family_root, fixture.root);
+    let (_, row_b) = view.member("B").expect("row B on the root");
+    assert_eq!(row_b.state, MemberState::Ready);
+    assert_eq!(row_b.path, "../root-B");
+    assert_eq!(row_b.source_path, "../root-A", "B was copied from A");
+    assert_eq!(
+        read(&b.join("app/notes.txt")),
+        b"scratch\n",
+        "A's tree is B's"
+    );
+    assert!(
+        !b.join(".gwz/local-family.yml").exists(),
+        "B holds no index: A's pointer was not copied and B got its own"
+    );
+    match gwz_family_store::YamlFamilyStore::new()
+        .read_view(&FamilyLocation::new(&b))
+        .unwrap()
+    {
+        FamilyObservation::Family { root, .. } => assert_eq!(root, fixture.root),
+        FamilyObservation::NoFamily => panic!("B holds no pointer"),
+    }
+    let listed = crate::workspace_ops::handle_local_family(
+        &backend,
+        &b,
+        crate::LocalFamilyRequest {
+            meta: meta("req-list"),
+            op: crate::LocalFamilyOp::List,
+            name: None,
+            keep: None,
+            force_hazards: Vec::new(),
+        },
+        "op-list",
+        &NullSink,
+    )
+    .unwrap();
+    assert_eq!(
+        listed
+            .members
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["root", "A", "B"]
+    );
+
+    // A taken name refuses as a collision naming the holder; an occupied
+    // destination refuses as a collision too; neither writes a row.
+    let taken = handle_clone_local_workspace(
+        &backend,
+        &fixture.root,
+        clone_request("A"),
+        "op-clone-again",
+        &NullSink,
+    )
+    .unwrap_err();
+    assert_eq!(taken.code, ErrorCode::PathCollision, "{}", taken.message);
+    assert!(taken.message.contains("../root-A"), "{}", taken.message);
+    let mut occupied = clone_request("C");
+    occupied.dest = Some(a.to_string_lossy().into_owned());
+    let occupied = handle_clone_local_workspace(
+        &backend,
+        &fixture.root,
+        occupied,
+        "op-clone-occupied",
+        &NullSink,
+    )
+    .unwrap_err();
+    assert_eq!(
+        occupied.code,
+        ErrorCode::PathCollision,
+        "{}",
+        occupied.message
+    );
+    assert!(
+        occupied.message.contains("nothing was reserved"),
+        "{}",
+        occupied.message
+    );
+    let (_, view) = family_view(&fixture.root);
+    assert_eq!(view.members.len(), 2, "A and B only");
+    assert!(!fixture.sibling("C").exists());
+}

@@ -66,3 +66,22 @@ until LCM3.2, and every mode or operation not yet implemented), and
 `missing_remote` (pull/push token that is neither a ready family member nor
 a Git remote — pull/push keep their Git-remote fallback and never answer
 `unknown_local`).
+
+LCM1.1 (lane C wiring) allocates nothing new either. `gwz clone --local`
+reuses: `path_collision` (the destination is not empty, or is already a
+workspace), `open_operation` (the source has an open gwz merge; verbatim
+refuses it), `unsupported_operation` (a design §4.0 source-layout hazard --
+gitfile, alternates, external common directory, escaping metadata or
+configuration, partial clone, environment override -- and the clean/bare
+modes), `invalid_request` (the clone name is a Git remote of a source
+repository, the addressed workspace is not a ready member of its family, a
+destination that cannot be spelled root-relative), the family model's own
+codes for a taken name, path or allocation (`path_collision`,
+`member_not_found`, `invalid_request` as `local_clone::errors::refusal`
+maps them), and `io_error` (a copy failure, source drift between the
+snapshot and publication, an incomplete destination, a cancelled install --
+each message names the step, the completed effects and what is retained).
+`gwz local dispose --keep` and `disband` reuse `member_not_found` (no such
+member; the workspace is in no family), `invalid_request` (the root, a
+target containing the working directory, a path mismatch), `open_operation`
+(the family lock is held) and the store's codes.

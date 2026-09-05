@@ -717,6 +717,30 @@ def _fault_count(darwin: str, linux: str) -> str:
       lib remainder linux  1029 -> 1031: DERIVED (+2, both rows cfg-free on a
         unix host) from the follow-up 2 linux value, FIRST-DISPATCH-EXPECTED
         at the lane owner's landing dispatch; a measured number wins.
+
+    LCM1.1 (2026-09-06, lane C wiring: the first real `gwz clone --local`,
+    `local list`, `dispose --keep` and `disband`) moves the LIB REMAINDER and
+    only it, by 22 rows, none carrying a cfg gate except the two
+    `#[cfg(unix)]` symlink cases below, which a linux host also runs:
+    `local_clone::adapters::` 10 (member_paths 4, exclusions 1, removal 3
+    incl. one `#[cfg(unix)]`, git_config 2), `local_clone::tests::create::`
+    5, `local_clone::tests::list::` 2, `local_clone::tests::dispose::` 5;
+    `local_clone::list::tests::` kept its count (one row replaced). The
+    store's new observation test is in its own crate, not the gwz-core lib.
+
+      checked_artifact:: 459 / 476: UNMOVED (`--list` re-measured 459 on this
+        tree, 2026-09-06).
+      v1_lifecycle:: 266 listed / 265 executed: UNMOVED (`--list` 266).
+      lib remainder darwin 1030 -> 1052: MEASURED on this tree (`cargo test -p
+        gwz-core --lib --locked -- --skip checked_artifact:: --skip
+        workspace_ops::merge::v1_lifecycle::` -> `1052 passed; 1 ignored`,
+        53.4 s, 2026-09-06, run from gwz-core under the Option A workspace)
+        and cross-checked against `--list` (1053 listed = 1052 + the one
+        ignored row; 1778 rows in all, was 1756). 1030 + 22 = 1052.
+      lib remainder linux  1031 -> 1053: DERIVED (+22, every added row runs
+        on a unix host) from the follow-up 3 linux value,
+        FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
+        measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -755,7 +779,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1030 passed", "1031 passed")),
+         _fault_count("1052 passed", "1053 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

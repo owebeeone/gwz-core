@@ -1743,10 +1743,12 @@ The product contract is the gwz-dev workspace document
 `GwzLocalClonePlan.md` (revision 4) through the independently compiled
 libraries of `GwzLocalCloneImplementationArchitecture.md` (revision 3) and
 `GwzLocalCloneLibraryBoundaries.md` (revision 1). This section records what
-that contract fixes inside `gwz-core`. Status: LCM1.0c interface checkpoint
-(2026-09-05) — the protocol, crates, ports and dispatch slots below exist;
-every local-clone operation refuses as unsupported until its feature lane
-lands.
+that contract fixes inside `gwz-core`. Status: LCM1.1 (2026-09-06, lane C
+wiring) — `gwz clone --local --name <Name> [dest]` (verbatim), `gwz local
+list`, `gwz local dispose <name> --keep` and `gwz local disband` run end to
+end over the libraries; `--clean`/`--bare`, ordinary `dispose`, `--from`
+and the family merge's import and delegation (LCM1.2) still refuse as
+unsupported after the family observation and before any effect.
 
 ### Protocol surface
 
@@ -1776,9 +1778,10 @@ the `--from` selector and the `list` payload shape of `LocalFamilyResponse`
 11–13) and allocated by LCM1.0c follow-up 2 as the table records, together
 with `unknown_local`. Core decodes `copy_source` and refuses a present value
 as unsupported until LCM3.2; the `list` projection
-(`local_clone::list`) is wired into `workspace_ops::handle_local_family`,
-whose member target observation is not implemented yet, so every handler
-still refuses before any effect.
+(`local_clone::list`) is wired into `workspace_ops::handle_local_family`
+and, since LCM1.1, observes every member's target -- presence, pointer and
+marker at its recorded path -- through `gwz-family-store`'s observation-only
+reading (`YamlFamilyStore::observe_member_target`).
 
 ### Family files
 
@@ -1826,10 +1829,29 @@ Core keeps thin adapters only: `workspace_ops::handle_local` owns the
 `clone_local_workspace`, `local_family` and family-merge dispatch slots;
 `local_clone/` owns request-shape validation, the family-merge wrapper and
 the adapter that implements the import library's `LocalTransport` port over
-`GitBackend` (`fetch_anonymous`, `push_anonymous`). Later adapters (copy,
-store, installation helpers, decoded GWZ evidence, removal) are added there
-by the integration lane as their libraries land; no library logic moves
-into core. The
+`GitBackend` (`fetch_anonymous`, `push_anonymous`). LCM1.1 added
+`local_clone/adapters/` -- one thin adapter per library port, no policy:
+the install ports over `gwz-repo-inspect` (the included-repository
+inventory is core's traversal: root, manifest members, unmanaged nested
+repositories, never following a symlink, never entering a `.git`),
+`gwz-family-store` (destination metadata), the conf-integrity helpers
+(recapture, the manifest last with its regenerated marker) and
+`gwz-history-check` (design §4.0 dest-complete: every destination
+repository's protected roots complete in its own store, one call per
+repository); the destination Git-configuration installer (design §4.1's
+last row: filesystem and credential remote URLs removed under
+`gwz-repo-factory::origin_is_kept`, the rule the factory applies to what
+it constructs, so install owns that row in every mode); the disposal ports
+(`observe_target` over the store and the inspector, `check_history` one
+`gwz-history-check` call per witness store paired by identity, never a
+union reader, `remove_directory` an ordinary recursive remover that never
+follows a symlink); the exclusion set; and the minted ids and paths --
+plus `local_clone::create` (the verbatim create composed over
+`gwz_workspace_install::install`, the source snapshot taken before the
+family lock so a §4.0 hazard leaves nothing, founding when the workspace is
+in no family) and `local_clone::dispose` (`--keep` over
+`gwz_local_disposal::dispose`; `disband` over the store session, every
+pointer and marker then the index). No library logic moves into core. The
 independently compiled crates under `crates/` (three contracts, one pure
 model, seven implementation/integration packages, one dev-only fixture
 harness) are inventoried by `scripts/checks/local_clone_inventory.json` and
