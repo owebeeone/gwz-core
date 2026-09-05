@@ -1738,6 +1738,455 @@ mod tests {
         assert!(ports.calls().is_empty(), "no port was consulted");
     }
 
+    /// Design §12: a clean intact lane whose protected history lives in a
+    /// survivor is deleted once, with no archive and no second removal.
+    #[test]
+    fn a_clean_preserved_intact_lane_is_deleted_once() {
+        let (store, mut session) = ready();
+        let mut ports = scripted(clean_evidence(), HistoryAnswer::Preserved);
+        let report = dispose(&delete(&[]), &mut session, &mut ports).expect("deletion proceeds");
+        assert_eq!(
+            report.effects,
+            vec![
+                DisposeEffect::RowDisposing,
+                DisposeEffect::DirectoryRemoved,
+                DisposeEffect::PointerRemoved,
+                DisposeEffect::RowRemoved,
+            ],
+            "disposing is written first; the pointer goes before the row"
+        );
+        assert_eq!(
+            ports.calls(),
+            [
+                DisposalCall::ObserveTarget {
+                    target: PathBuf::from(WS_A)
+                },
+                DisposalCall::CheckHistory {
+                    query: HistoryQuery {
+                        target: RepoKey::Root,
+                        protected: ProtectedRoots::default(),
+                    }
+                },
+                DisposalCall::RemoveDirectory {
+                    target: PathBuf::from(WS_A)
+                },
+            ],
+            "one observation, one history query, exactly one removal of the validated target"
+        );
+        assert!(session.reread().unwrap().unwrap().members.is_empty());
+        assert!(store.pointers().is_empty(), "no pointer is stranded");
+    }
+
+    /// Design §8.4: the explicit destructive alternative. Every named
+    /// hazard, and only the named ones, is waived.
+    #[test]
+    fn every_named_hazard_is_waived_over_an_intact_ready_tree() {
+        let (_store, mut session) = ready();
+        let mut ports = scripted(
+            TargetEvidence {
+                repositories: vec![RepositoryEvidence {
+                    work: dirty_work(),
+                    gwz: open_merge(),
+                    ..repository(RepoKey::Root, WS_A)
+                }],
+                ..clean_evidence()
+            },
+            HistoryAnswer::Unpreserved {
+                detail: "lane/agent-17 is unique".to_owned(),
+            },
+        );
+        let report = dispose(&delete(&HazardWaiver::ALL), &mut session, &mut ports)
+            .expect("all three names waive all three hazards");
+        assert!(report.effects.contains(&DisposeEffect::DirectoryRemoved));
+        assert!(session.reread().unwrap().unwrap().members.is_empty());
+    }
+
+    /// Design §5.1: every repository in the deletion tree is inspected, so
+    /// the history port is asked once per repository, keyed by identity.
+    #[test]
+    fn the_history_port_is_asked_once_per_repository_in_the_tree() {
+        let keys = [
+            RepoKey::Root,
+            RepoKey::Member {
+                id: "taut".to_owned(),
+            },
+            RepoKey::Member {
+                id: "nested".to_owned(),
+            },
+        ];
+        let (_store, mut session) = ready();
+        let mut ports = scripted(
+            TargetEvidence {
+                repositories: vec![
+                    repository(keys[0].clone(), WS_A),
+                    repository(keys[1].clone(), "/fam/ws-A/taut"),
+                    repository(keys[2].clone(), "/fam/ws-A/taut/nested"),
+                ],
+                ..clean_evidence()
+            },
+            HistoryAnswer::Preserved,
+        );
+        // The middle repository is the only one whose history is unique.
+        ports.history_sequence([
+            HistoryAnswer::Preserved,
+            HistoryAnswer::Unpreserved {
+                detail: "taut has unique commits".to_owned(),
+            },
+            HistoryAnswer::Preserved,
+        ]);
+        let failure = dispose(&delete(&[]), &mut session, &mut ports).unwrap_err();
+        assert_eq!(
+            failure.error,
+            DisposeError::Hazards(vec![HazardFinding {
+                waiver: HazardWaiver::UnpreservedHistory,
+                repository: keys[1].clone(),
+                hazards: Vec::new(),
+                detail: Some("taut has unique commits".to_owned()),
+            }]),
+            "the refusal names the repository that is not preserved"
+        );
+        let queried: Vec<RepoKey> = ports
+            .calls()
+            .iter()
+            .filter_map(|call| match call {
+                DisposalCall::CheckHistory { query } => Some(query.target.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(queried, keys, "one query per repository, in tree order");
+        assert_no_removal(&ports);
+    }
+
+    /// Design §5.2/§5.3: a removal error stops, reports the remainder, and
+    /// rolls nothing back. A later explicit dispose reports the interrupted
+    /// state; once the contents are gone it may remove the stale row.
+    #[test]
+    fn a_removal_error_stops_and_leaves_the_remainder_for_manual_cleanup() {
+        let (_store, mut session) = ready();
+        let mut ports = scripted(clean_evidence(), HistoryAnswer::Preserved);
+        let remaining = vec![
+            PathBuf::from("/fam/ws-A/locked"),
+            PathBuf::from("/fam/ws-A/locked/db"),
+        ];
+        ports.fail_removal(RemovalFailure {
+            error: PortError::Removal {
+                path: PathBuf::from("/fam/ws-A/locked/db"),
+                detail: "resource busy".to_owned(),
+            },
+            remaining: remaining.clone(),
+        });
+        let failure = dispose(&delete(&[]), &mut session, &mut ports).unwrap_err();
+        let DisposeError::RemovalStopped {
+            remaining: reported,
+            detail,
+        } = &failure.error
+        else {
+            panic!("expected RemovalStopped, got {:?}", failure.error);
+        };
+        assert_eq!(reported, &remaining);
+        assert!(detail.contains("resource busy"), "{detail}");
+        assert_eq!(
+            failure.effects,
+            vec![DisposeEffect::RowDisposing],
+            "the row was marked, nothing else completed"
+        );
+        assert_eq!(
+            session.reread().unwrap().unwrap().members[&name("A")].state,
+            MemberState::Disposing,
+            "no rollback: the interrupted state stands for a later command to report"
+        );
+
+        // Repeating it is not a replay: the interrupted row is not forceable.
+        let mut ports = scripted(clean_evidence(), HistoryAnswer::Preserved);
+        let failure = dispose(&delete(&HazardWaiver::ALL), &mut session, &mut ports).unwrap_err();
+        assert_eq!(
+            failure.error,
+            DisposeError::Refused(Refusal::WrongState {
+                name: name("A"),
+                expected: MemberState::Ready,
+                actual: MemberState::Disposing,
+            })
+        );
+        assert_no_removal(&ports);
+
+        // After manual cleanup the contents are gone, and an explicit
+        // dispose may remove the stale row (design §5.2 step 5).
+        let mut ports = scripted(
+            TargetEvidence {
+                target: TargetObservation::Missing,
+                repositories: Vec::new(),
+                unknown: Vec::new(),
+            },
+            HistoryAnswer::Preserved,
+        );
+        let report = dispose(&delete(&[]), &mut session, &mut ports).expect("the stale row goes");
+        assert_eq!(
+            report.effects,
+            vec![DisposeEffect::PointerRemoved, DisposeEffect::RowRemoved]
+        );
+        assert!(session.reread().unwrap().unwrap().members.is_empty());
+        assert_no_removal(&ports);
+    }
+
+    /// A stale row is removed only after validation, and its removal asks
+    /// neither the work detector nor the history verifier: no file is
+    /// touched, so there is nothing to lose.
+    #[test]
+    fn a_stale_row_for_an_absent_target_needs_no_checks_and_no_force() {
+        let (store, mut session) = ready();
+        let mut ports = RecordingDisposalPorts::new();
+        ports.evidence(TargetEvidence {
+            target: TargetObservation::Missing,
+            repositories: Vec::new(),
+            unknown: Vec::new(),
+        });
+        // No history answer is scripted: an unscripted call would be
+        // `Unknown` and would refuse, so a green run proves none was made.
+        let report = dispose(&delete(&[]), &mut session, &mut ports).expect("the stale row goes");
+        assert_eq!(
+            report.effects,
+            vec![DisposeEffect::PointerRemoved, DisposeEffect::RowRemoved]
+        );
+        assert_eq!(
+            ports.calls(),
+            [DisposalCall::ObserveTarget {
+                target: PathBuf::from(WS_A)
+            }],
+            "the target was observed; nothing else was asked and nothing was removed"
+        );
+        assert!(store.pointers().is_empty());
+        assert!(session.reread().unwrap().unwrap().members.is_empty());
+    }
+
+    /// Checkpoint §11 (lane D): a pointer the store cannot physically remove
+    /// blocks row removal, and the report names the pointer, not the row.
+    #[test]
+    fn a_pointer_the_store_cannot_remove_blocks_the_row() {
+        let pointer_failure = || StoreError::Io {
+            operation: StoreOperation::RemovePointer,
+            path: PathBuf::from("/fam/ws-A/.gwz/family-root"),
+            detail: "permission denied".to_owned(),
+        };
+        // Through `--keep`.
+        let mut session = ScriptedSession::ready_at("../ws-A");
+        session.fail_remove_pointer = Some(pointer_failure());
+        let mut ports = scripted(clean_evidence(), HistoryAnswer::Preserved);
+        let failure = dispose(&keep(), &mut session, &mut ports).unwrap_err();
+        assert_eq!(failure.error, DisposeError::Store(pointer_failure()));
+        assert!(failure.effects.is_empty());
+        assert!(
+            session.applied().is_empty(),
+            "the row removal was never attempted"
+        );
+        assert!(
+            session
+                .reread()
+                .unwrap()
+                .unwrap()
+                .members
+                .contains_key(&name("A")),
+            "the row stands while its pointer does"
+        );
+        assert!(ports.calls().is_empty(), "keep consults no port");
+
+        // And after a successful deletion: the row stays `disposing` for a
+        // later command to report, and nothing is rolled back.
+        let mut session = ScriptedSession::ready_at("../ws-A");
+        session.fail_remove_pointer = Some(pointer_failure());
+        let failure = dispose(&delete(&[]), &mut session, &mut ports).unwrap_err();
+        assert_eq!(failure.error, DisposeError::Store(pointer_failure()));
+        assert_eq!(
+            failure.effects,
+            vec![DisposeEffect::RowDisposing, DisposeEffect::DirectoryRemoved]
+        );
+        assert_eq!(
+            session.applied(),
+            vec![FamilyChange::MarkDisposing {
+                name: name("A"),
+                expected_allocation: allocation(),
+            }],
+            "RemoveRow was never attempted, so the row is not reported instead"
+        );
+    }
+
+    /// An evidence port that cannot answer refuses; it never reads as clean.
+    #[test]
+    fn an_evidence_port_failure_refuses() {
+        let (_store, mut session) = ready();
+        let mut ports = RecordingDisposalPorts::new();
+        ports.fail_evidence(PortError::Evidence {
+            detail: "the deletion tree could not be walked".to_owned(),
+        });
+        let failure = dispose(&delete(&HazardWaiver::ALL), &mut session, &mut ports).unwrap_err();
+        assert!(
+            matches!(
+                failure.error,
+                DisposeError::Port(PortError::Evidence { .. })
+            ),
+            "{:?}",
+            failure.error
+        );
+        assert!(failure.effects.is_empty());
+        assert_no_removal(&ports);
+    }
+
+    /// The whole refusal surface in one sweep: on every one of them the
+    /// removal port recorded zero calls and no row was removed.
+    #[test]
+    fn no_refusal_path_ever_reaches_the_remover() {
+        let unreadable = UnknownReason::new(UnknownKind::Unreadable, "unreadable");
+        let cases: Vec<(&str, DisposeRequest, TargetEvidence, HistoryAnswer)> = vec![
+            (
+                "unknown member",
+                DisposeRequest {
+                    name: name("Z"),
+                    ..delete(&HazardWaiver::ALL)
+                },
+                clean_evidence(),
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "repeated waiver",
+                delete(&[HazardWaiver::Dirty, HazardWaiver::Dirty]),
+                clean_evidence(),
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "cwd inside the target",
+                DisposeRequest {
+                    cwd: PathBuf::from("/fam/ws-A/src"),
+                    ..delete(&HazardWaiver::ALL)
+                },
+                clean_evidence(),
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "a root the lock does not hold",
+                DisposeRequest {
+                    root: PathBuf::from("/fam/elsewhere"),
+                    cwd: PathBuf::from("/fam/elsewhere"),
+                    ..delete(&HazardWaiver::ALL)
+                },
+                clean_evidence(),
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "a replaced target",
+                delete(&HazardWaiver::ALL),
+                TargetEvidence {
+                    target: TargetObservation::Present {
+                        pointer: PointerObservation::OtherFamily,
+                        marker: MarkerObservation::Mismatch,
+                    },
+                    ..clean_evidence()
+                },
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "an uninterpretable nested layout",
+                delete(&HazardWaiver::ALL),
+                TargetEvidence {
+                    unknown: vec![unreadable.clone()],
+                    ..clean_evidence()
+                },
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "no repository in the tree",
+                delete(&HazardWaiver::ALL),
+                TargetEvidence {
+                    repositories: Vec::new(),
+                    ..clean_evidence()
+                },
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "a repository outside the tree",
+                delete(&HazardWaiver::ALL),
+                TargetEvidence {
+                    repositories: vec![repository(RepoKey::Root, "/fam/ws-B")],
+                    ..clean_evidence()
+                },
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "unknown work",
+                delete(&HazardWaiver::ALL),
+                TargetEvidence {
+                    repositories: vec![RepositoryEvidence {
+                        work: Observation::Unknown(vec![unreadable.clone()]),
+                        ..repository(RepoKey::Root, WS_A)
+                    }],
+                    ..clean_evidence()
+                },
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "unknown history",
+                delete(&HazardWaiver::ALL),
+                clean_evidence(),
+                HistoryAnswer::Unknown {
+                    reasons: vec![unreadable.clone()],
+                },
+            ),
+            (
+                "unwaived dirt",
+                delete(&[HazardWaiver::OpenMerge, HazardWaiver::UnpreservedHistory]),
+                TargetEvidence {
+                    repositories: vec![RepositoryEvidence {
+                        work: dirty_work(),
+                        ..repository(RepoKey::Root, WS_A)
+                    }],
+                    ..clean_evidence()
+                },
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "unwaived open merge",
+                delete(&[HazardWaiver::Dirty, HazardWaiver::UnpreservedHistory]),
+                TargetEvidence {
+                    repositories: vec![RepositoryEvidence {
+                        gwz: open_merge(),
+                        ..repository(RepoKey::Root, WS_A)
+                    }],
+                    ..clean_evidence()
+                },
+                HistoryAnswer::Preserved,
+            ),
+            (
+                "unwaived unpreserved history",
+                delete(&[HazardWaiver::Dirty, HazardWaiver::OpenMerge]),
+                clean_evidence(),
+                HistoryAnswer::Unpreserved {
+                    detail: "unique".to_owned(),
+                },
+            ),
+        ];
+        for (label, request, evidence, history) in cases {
+            let (store, mut session) = ready();
+            let mut ports = scripted(evidence, history);
+            let failure = dispose(&request, &mut session, &mut ports)
+                .err()
+                .unwrap_or_else(|| panic!("{label} must refuse"));
+            assert!(
+                failure.effects.is_empty(),
+                "{label} completed {:?} before refusing",
+                failure.effects
+            );
+            assert_no_removal(&ports);
+            assert_eq!(
+                store.pointers().len(),
+                1,
+                "{label}: the clone pointer still stands"
+            );
+            assert_eq!(
+                session.reread().unwrap().unwrap().members.len(),
+                1,
+                "{label}: the row still stands"
+            );
+        }
+    }
+
     /// A repeated waiver is a malformed request, refused before any effect.
     #[test]
     fn a_repeated_waiver_refuses_before_any_effect() {
