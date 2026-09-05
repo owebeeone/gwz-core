@@ -99,6 +99,51 @@ impl fmt::Display for NameError {
 
 impl std::error::Error for NameError {}
 
+/// A clone name that is already a Git remote in a source member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteNameCollision {
+    pub name: String,
+    /// The repository member whose remotes hold the name, as core names it.
+    pub member: String,
+}
+
+impl fmt::Display for RemoteNameCollision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "`{}` is already a git remote in {}",
+            self.name, self.member
+        )
+    }
+}
+
+impl std::error::Error for RemoteNameCollision {}
+
+/// Design §2: create also refuses a name that is already a Git remote in
+/// any source member, so `--remote <name>` can never mean two things.
+///
+/// The model never looks at a repository: core supplies the observed
+/// `(member, remote name)` pairs from its existing per-repository remote
+/// lookup, and this decides from them, naming the member that holds the
+/// remote. Comparison is exact, as Git's own remote names are.
+pub fn check_name_free_of_remotes<'a, I>(
+    name: &MemberName,
+    observed_remotes: I,
+) -> Result<(), RemoteNameCollision>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    for (member, remote) in observed_remotes {
+        if remote == name.as_str() {
+            return Err(RemoteNameCollision {
+                name: name.as_str().to_owned(),
+                member: member.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// What `gwz local dispose <token>` is addressing.
 ///
 /// The root is a legal, meaningful token here and an illegal clone name, so
@@ -191,6 +236,36 @@ mod tests {
             MemberName::parse("a").unwrap(),
             "names are compared exactly; the model never case-folds"
         );
+    }
+
+    #[test]
+    fn a_name_that_is_already_a_git_remote_refuses_and_names_the_member() {
+        let observed = [
+            ("@root", "origin"),
+            ("gwz-core", "origin"),
+            ("gwz-core", "upstream"),
+            ("gwz-cli", "hub"),
+        ];
+        let hub = MemberName::parse("hub").unwrap();
+        assert_eq!(
+            check_name_free_of_remotes(&hub, observed).unwrap_err(),
+            RemoteNameCollision {
+                name: "hub".to_owned(),
+                member: "gwz-cli".to_owned(),
+            }
+        );
+        assert_eq!(
+            check_name_free_of_remotes(&hub, observed)
+                .unwrap_err()
+                .to_string(),
+            "`hub` is already a git remote in gwz-cli"
+        );
+        assert!(
+            check_name_free_of_remotes(&MemberName::parse("Hub").unwrap(), observed).is_ok(),
+            "remote names are compared exactly"
+        );
+        assert!(check_name_free_of_remotes(&MemberName::parse("A").unwrap(), observed).is_ok());
+        assert!(check_name_free_of_remotes(&hub, []).is_ok());
     }
 
     #[test]

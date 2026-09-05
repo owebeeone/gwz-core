@@ -30,7 +30,8 @@ mod transition;
 
 pub use name::{
     DisposeTarget, MemberName, NameError, RESERVED_DIRECTORY_NAMES, RESERVED_NAMES,
-    classify_dispose_target, validate as validate_member_name,
+    RemoteNameCollision, check_name_free_of_remotes, classify_dispose_target,
+    validate as validate_member_name,
 };
 pub use path::{
     MemberPath, PathError, PathRelation, normalize as normalize_member_path,
