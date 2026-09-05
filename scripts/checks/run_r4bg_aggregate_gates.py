@@ -668,6 +668,33 @@ def _fault_count(darwin: str, linux: str) -> str:
         on a unix host) from the reviewed tuple's linux value,
         FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
         measured number wins.
+
+    LCM1.0c follow-up 2 (2026-09-05, the operator's four rulings on the
+    checkpoint's §7 questions plus the W1 lanes' contract proposals; gwz-core
+    commits LCM1.0c-fu2a/fu2b/fu2c on the 0d7b53d tuple) moves the LIB
+    REMAINDER and only it, by SIX rows, all under `local_clone::`, and
+    removes none: three in the new `list` module (the one-for-one wire enum
+    mirror, the fake-view projection, the unimplemented member observation),
+    one in `request.rs` (copy_source decode/refusal), one in `errors.rs`
+    (unknown_local carries the state detail) and one in `family_merge.rs`
+    (the resolver miss is unknown_local). No `cfg(` on any of them. The
+    contract crates' additions (H3, W1, R2, F1) are in their own crates, not
+    the gwz-core lib, so they do not move this partition; fu2b (layout
+    Option A) and fu2c's core edits add no row.
+
+      checked_artifact:: 459 / 476: UNMOVED (`--list` re-measured 459 on this
+        tree, 2026-09-05).
+      v1_lifecycle:: 266 listed / 265 executed: UNMOVED (`--list` 266).
+      lib remainder darwin 1022 -> 1028: MEASURED on this tree (`cargo test -p
+        gwz-core --lib --locked -- --skip checked_artifact:: --skip
+        workspace_ops::merge::v1_lifecycle::` -> `1028 passed; 1 ignored`,
+        2026-09-05, run from gwz-core under the Option A workspace) and
+        cross-checked against `--list` (1029 listed = 1028 + the one ignored
+        row; 1754 rows in all, was 1748). 1022 + 6 = 1028.
+      lib remainder linux  1023 -> 1029: DERIVED (+6, every added row cfg-free
+        on a unix host) from the reviewed tuple's linux value,
+        FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
+        measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -706,7 +733,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1022 passed", "1023 passed")),
+         _fault_count("1028 passed", "1029 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
