@@ -169,6 +169,72 @@ impl Fixture {
         fs::write(self.git_dir().join(file), format!("{head}\n")).expect("operation state");
     }
 
+    /// An annotated tag object at `HEAD`, returning the **tag object's** id.
+    pub(crate) fn annotated_tag(&self, name: &str) -> Oid {
+        let repository = self.open();
+        let target = repository
+            .find_object(self.head_commit(), None)
+            .expect("target");
+        let who = Signature::now("Fixture", "fixture@example.invalid").expect("signature");
+        repository
+            .tag(name, &target, &who, "annotated", false)
+            .expect("annotated tag")
+    }
+
+    /// A lightweight tag at `HEAD`.
+    pub(crate) fn lightweight_tag(&self, name: &str) {
+        let repository = self.open();
+        let target = repository
+            .find_object(self.head_commit(), None)
+            .expect("target");
+        repository
+            .tag_lightweight(name, &target, false)
+            .expect("lightweight tag");
+    }
+
+    /// Point an arbitrary reference at `HEAD`, for the namespaces the witness
+    /// rules distinguish (`refs/gwz/local-imports/…` versus
+    /// `refs/gwz/merge/…`).
+    pub(crate) fn reference(&self, name: &str) {
+        let head = self.head_commit();
+        self.open()
+            .reference(name, head, true, "fixture")
+            .expect("reference");
+    }
+
+    /// Move the current branch back one commit, leaving the commit it left
+    /// behind reachable only from the reflog.
+    pub(crate) fn reset_branch_to_first_parent(&self) {
+        let repository = self.open();
+        let head = repository.head().expect("head");
+        let name = head.name().expect("head name").to_owned();
+        let parent = head
+            .peel_to_commit()
+            .expect("head commit")
+            .parent(0)
+            .expect("first parent")
+            .id();
+        repository
+            .reference(&name, parent, true, "reset to the first parent")
+            .expect("move the branch");
+    }
+
+    /// A bare clone of this repository beside it, sharing no object store.
+    pub(crate) fn clone_into_bare(&self, name: &str) -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(name);
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.bare(true);
+        builder
+            .clone(&format!("file://{}", self.real_root().display()), &root)
+            .expect("bare clone");
+        Self {
+            temp,
+            root,
+            bare: true,
+        }
+    }
+
     /// Push one native stash entry, leaving a clean worktree behind.
     pub(crate) fn stash(&self, message: &str) {
         let mut repository = self.open();

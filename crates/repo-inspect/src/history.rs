@@ -116,6 +116,20 @@ impl Collected {
             }
         }
 
+        // libgit2's reference iterator silently skips a loose ref file it
+        // cannot parse. A ref that is not reported is not a ref that does not
+        // exist -- it is one whose protected object is unknown -- so the loose
+        // ref files are enumerated independently and anything libgit2 did not
+        // report is recorded as unreadable.
+        for name in loose_reference_names(repository) {
+            if !references.contains(&name) {
+                self.unreadable(
+                    "a reference file could not be read",
+                    format!("{name} is present but was not reported by the reference store"),
+                );
+            }
+        }
+
         for name in &references {
             if witnesses_only && is_temporary(name) {
                 continue;
@@ -166,6 +180,9 @@ impl Collected {
     /// the stash stack, so entry `n` is `stash@{n}` and the older entries
     /// design §5.1 names are the entries past 0.
     fn gather_stashes(&mut self, repository: &Repository, format: ObjectFormat) {
+        if !has_reflog(repository, "refs/stash") {
+            return;
+        }
         let reflog = match repository.reflog("refs/stash") {
             Ok(reflog) => reflog,
             Err(error) if error.code() == ErrorCode::NotFound => return,
@@ -195,6 +212,9 @@ impl Collected {
     }
 
     fn gather_reflog(&mut self, repository: &Repository, format: ObjectFormat, name: &str) {
+        if !has_reflog(repository, name) {
+            return;
+        }
         let reflog = match repository.reflog(name) {
             Ok(reflog) => reflog,
             Err(error) if matches!(error.code(), ErrorCode::NotFound) => return,
@@ -274,6 +294,54 @@ impl Collected {
             format!("{what}: {detail}"),
         ));
     }
+}
+
+/// Every loose reference file under the common directory, as a full
+/// reference name. Dot-files are skipped: they are filesystem debris, not
+/// references.
+fn loose_reference_names(repository: &Repository) -> Vec<String> {
+    fn walk(root: &std::path::Path, directory: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(listing) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in listing.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => walk(root, &path, out),
+                Ok(kind) if kind.is_file() => {
+                    if let Ok(relative) = path.strip_prefix(root)
+                        && let Some(text) = relative.to_str()
+                    {
+                        out.push(format!(
+                            "refs/{}",
+                            text.replace(std::path::MAIN_SEPARATOR, "/")
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let root = repository.commondir().join("refs");
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
+    out
+}
+
+/// Whether a reference has a reflog **without creating one**.
+///
+/// libgit2's `git_reflog_read` writes an empty reflog file when none exists
+/// (`refdb_fs.c`, `refdb_reflog_fs__read` -> `create_new_reflog_file`), which
+/// would make this inspection a writer. `git_reference_has_log` only stats the
+/// path, so every reflog read here is guarded by it.
+pub(crate) fn has_reflog(repository: &Repository, name: &str) -> bool {
+    repository.reference_has_log(name).unwrap_or(false)
 }
 
 fn is_temporary(name: &str) -> bool {

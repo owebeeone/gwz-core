@@ -114,6 +114,9 @@ fn native_operation(repository: &Repository) -> Option<NativeOperation> {
 /// `refs/stash`'s reflog is the stash stack; its length is the number of
 /// entries, including the older ones design §5.1 names.
 fn stash_entries(repository: &Repository, unknown: &mut Vec<UnknownReason>) -> u64 {
+    if !crate::history::has_reflog(repository, "refs/stash") {
+        return 0;
+    }
     match repository.reflog("refs/stash") {
         Ok(reflog) => reflog.len() as u64,
         Err(error) if error.code() == ErrorCode::NotFound => 0,
