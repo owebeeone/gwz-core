@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use gwz_family_model::{AllocationId, FamilyChange, FamilyId, FamilyView, MemberName, Refusal};
 
-#[cfg(feature = "contract-tests")]
+#[cfg(any(test, feature = "contract-tests"))]
 pub mod contract_tests;
 
 /// The workspace whose family is addressed. It may be the root (holding the

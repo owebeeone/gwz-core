@@ -33,7 +33,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(feature = "contract-tests")]
+#[cfg(any(test, feature = "contract-tests"))]
 pub mod contract_tests;
 
 /// Cooperative cancellation port.

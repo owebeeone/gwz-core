@@ -108,7 +108,10 @@ def compile_with_probe(
     # Same copy set as `run_compiler_probe`: the tree carries `include_str!`
     # seam pins that reach `dev-docs/` and `scripts/`, so a narrower copy
     # fails to build for reasons that have nothing to do with privacy.
-    for name in (".github", "dev-docs", "protocol", "scripts", "src", "tests"):
+    # LCM1.0c: `crates/` holds the local clone family's path dependencies;
+    # without it the copied manifest cannot resolve and every probe fails
+    # for a reason that has nothing to do with privacy either.
+    for name in (".github", "dev-docs", "protocol", "scripts", "src", "tests", "crates"):
         shutil.copytree(ROOT / name, target / name)
     for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
         shutil.copy2(ROOT / name, target / name)

@@ -27,3 +27,9 @@ bazel-*
 
 # Compiled Rust artifacts left in the tree
 *.rlib
+
+# LCM1.0c: a library under crates/ run as its own root from a standalone core
+# checkout (`cargo test --manifest-path crates/<dir>/Cargo.toml --lib`) gets a
+# per-crate lock and target; neither is tracked.
+/crates/*/Cargo.lock
+/crates/*/target/

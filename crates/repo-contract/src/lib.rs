@@ -30,7 +30,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "contract-tests")]
+#[cfg(any(test, feature = "contract-tests"))]
 pub mod contract_tests;
 
 /// A repository-relative path as Git stores it: raw bytes, not necessarily

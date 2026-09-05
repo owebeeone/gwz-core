@@ -69,12 +69,19 @@ jobs:
           python scripts/checks/check_local_clone_boundaries.py
           python -m unittest scripts/checks/test_check_local_clone_boundaries.py -v
       - name: Each library's Tier A command from a standalone core checkout
+        # This checkout is not a Cargo workspace root, so the libraries are
+        # path dependencies rather than members here: `cargo test -p <name>`
+        # refuses a non-member that has dev-dependencies. Running each
+        # library as its own root through its manifest is the form that works
+        # in both this checkout and the outer gwz-dev workspace (LCM1.0c
+        # checkpoint §5). The per-crate lock this generates is not tracked,
+        # so `--locked` is not used on this step.
         run: |
-          for package in gwz-copy-contract gwz-repo-contract gwz-family-model \
-              gwz-family-store-contract gwz-refcopy gwz-repo-inspect gwz-work-detector \
-              gwz-history-check gwz-family-store gwz-local-import gwz-workspace-install \
-              gwz-repo-factory gwz-local-disposal; do
-            cargo test --locked -p "$package" --lib --all-features
+          for directory in copy-contract repo-contract family-model \
+              family-store-contract refcopy repo-inspect work-detector \
+              history-check family-store local-import workspace-install \
+              repo-factory local-disposal; do
+            cargo test --manifest-path "crates/$directory/Cargo.toml" --lib
           done
       # check_m4_scenario_map.py is NOT wired here — corrective un-wiring
       # 2026-08-25 after the landing-commit run (32749441874) failed on it:
