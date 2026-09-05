@@ -5,6 +5,14 @@
 //! test cannot accidentally observe a "successful" transfer it never
 //! arranged. Refs created by scripted fetches/pushes are tracked so tests
 //! can assert retained partial effects.
+//!
+//! Beyond plain failure, three scripts model the transfers a verifier has
+//! to survive: [`RecordingTransport::fail_next_after_write`] (a partial
+//! transfer that lands its ref and still fails),
+//! [`RecordingTransport::succeed_without_effect`] (a transfer that reports
+//! success and delivers nothing) and
+//! [`RecordingTransport::drift_after_resolve`] (a source that advances
+//! between capture and fetch).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -46,8 +54,15 @@ pub struct RecordingTransport {
     sources: BTreeMap<(PathBuf, String), ObjectId>,
     /// (repository, ref name) -> object id.
     refs: BTreeMap<(PathBuf, String), ObjectId>,
-    /// Operations scripted to fail on their next call.
-    failures: Vec<(&'static str, TransportError)>,
+    /// Operations scripted to fail before any effect, each on the call the
+    /// countdown names.
+    failures: Vec<(&'static str, usize, TransportError)>,
+    /// Operations scripted to perform their writes and then fail.
+    partial_failures: Vec<(&'static str, usize, TransportError)>,
+    /// Operations scripted to report success without writing anything.
+    no_effect: Vec<&'static str>,
+    /// (source, selector) -> what the source becomes once resolved.
+    drift: BTreeMap<(PathBuf, String), ObjectId>,
 }
 
 impl RecordingTransport {
@@ -75,18 +90,91 @@ impl RecordingTransport {
     }
 
     /// Fail the next call of `operation` (`resolve_source`, `ref_exists`,
-    /// `fetch_anonymous`, `push_anonymous`, `read_ref`).
+    /// `fetch_anonymous`, `push_anonymous`, `read_ref`) before it has any
+    /// effect.
     pub fn fail_next(&mut self, operation: &'static str, error: TransportError) {
-        self.failures.push((operation, error));
+        self.fail_call(operation, 1, error);
+    }
+
+    /// Fail the `occurrence`-th (1-based) upcoming call of `operation`,
+    /// before it has any effect.
+    pub fn fail_call(&mut self, operation: &'static str, occurrence: usize, error: TransportError) {
+        assert!(occurrence >= 1, "occurrences are 1-based");
+        self.failures.push((operation, occurrence, error));
+    }
+
+    /// Let the next `fetch_anonymous`/`push_anonymous` write its refs and
+    /// then fail: a partial transfer whose effects are real.
+    pub fn fail_next_after_write(&mut self, operation: &'static str, error: TransportError) {
+        self.fail_call_after_write(operation, 1, error);
+    }
+
+    /// [`Self::fail_next_after_write`] on the `occurrence`-th (1-based)
+    /// upcoming call.
+    pub fn fail_call_after_write(
+        &mut self,
+        operation: &'static str,
+        occurrence: usize,
+        error: TransportError,
+    ) {
+        assert!(occurrence >= 1, "occurrences are 1-based");
+        self.partial_failures.push((operation, occurrence, error));
+    }
+
+    /// Let the next `fetch_anonymous`/`push_anonymous` report success
+    /// without writing anything: the case received-OID verification exists
+    /// for.
+    pub fn succeed_without_effect(&mut self, operation: &'static str) {
+        self.no_effect.push(operation);
+    }
+
+    /// Advance a source once it has been resolved: `resolve_source` answers
+    /// the value scripted by [`Self::source`], and a later fetch of the same
+    /// selector sees `next` instead.
+    pub fn drift_after_resolve(
+        &mut self,
+        source: impl Into<PathBuf>,
+        selector: &SourceSelector,
+        next: ObjectId,
+    ) {
+        self.drift
+            .insert((source.into(), selector_key(selector)), next);
     }
 
     fn take_failure(&mut self, operation: &str) -> Option<TransportError> {
-        let index = self
-            .failures
-            .iter()
-            .position(|(name, _)| *name == operation)?;
-        Some(self.failures.remove(index).1)
+        count_down(&mut self.failures, operation)
     }
+
+    fn take_partial_failure(&mut self, operation: &str) -> Option<TransportError> {
+        count_down(&mut self.partial_failures, operation)
+    }
+
+    fn take_no_effect(&mut self, operation: &str) -> bool {
+        let Some(index) = self.no_effect.iter().position(|name| *name == operation) else {
+            return false;
+        };
+        self.no_effect.remove(index);
+        true
+    }
+}
+
+/// Tick every script for `operation`; the first to reach zero fires and is
+/// removed.
+fn count_down(
+    scripts: &mut Vec<(&'static str, usize, TransportError)>,
+    operation: &str,
+) -> Option<TransportError> {
+    let mut due = None;
+    for (index, script) in scripts.iter_mut().enumerate() {
+        if script.0 != operation {
+            continue;
+        }
+        script.1 -= 1;
+        if script.1 == 0 && due.is_none() {
+            due = Some(index);
+        }
+    }
+    due.map(|index| scripts.remove(index).2)
 }
 
 fn selector_key(selector: &SourceSelector) -> String {
@@ -109,13 +197,19 @@ impl LocalTransport for RecordingTransport {
         if let Some(error) = self.take_failure("resolve_source") {
             return Err(error);
         }
-        self.sources
-            .get(&(source.to_path_buf(), selector_key(selector)))
-            .cloned()
-            .ok_or_else(|| TransportError::Repository {
-                path: source.to_path_buf(),
-                detail: "unscripted source".to_owned(),
-            })
+        let key = (source.to_path_buf(), selector_key(selector));
+        let resolved =
+            self.sources
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| TransportError::Repository {
+                    path: source.to_path_buf(),
+                    detail: "unscripted source".to_owned(),
+                })?;
+        if let Some(next) = self.drift.remove(&key) {
+            self.sources.insert(key, next);
+        }
+        Ok(resolved)
     }
 
     fn ref_exists(&mut self, repository: &Path, name: &str) -> Result<bool, TransportError> {
@@ -145,6 +239,9 @@ impl LocalTransport for RecordingTransport {
         if let Some(error) = self.take_failure("fetch_anonymous") {
             return Err(error);
         }
+        if self.take_no_effect("fetch_anonymous") {
+            return Ok(());
+        }
         for refspec in refspecs {
             let (src, dst) = refspec
                 .split_once(':')
@@ -164,6 +261,9 @@ impl LocalTransport for RecordingTransport {
             self.refs
                 .insert((receiver.to_path_buf(), dst.to_owned()), oid);
         }
+        if let Some(error) = self.take_partial_failure("fetch_anonymous") {
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -181,6 +281,9 @@ impl LocalTransport for RecordingTransport {
         if let Some(error) = self.take_failure("push_anonymous") {
             return Err(error);
         }
+        if self.take_no_effect("push_anonymous") {
+            return Ok(());
+        }
         let (src, dst) = refspec
             .split_once(':')
             .ok_or_else(|| TransportError::Failed {
@@ -196,6 +299,9 @@ impl LocalTransport for RecordingTransport {
             })?;
         self.refs
             .insert((destination.to_path_buf(), dst.to_owned()), oid);
+        if let Some(error) = self.take_partial_failure("push_anonymous") {
+            return Err(error);
+        }
         Ok(())
     }
 
