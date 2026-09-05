@@ -110,6 +110,27 @@ pub enum HazardKind {
     OpenGwzRecord,
 }
 
+impl HazardKind {
+    /// The `gwz local dispose --force <name>` waiver that covers this hazard
+    /// (design §5.2), or `None` for a hazard that no waiver covers because it
+    /// always arrives with an unknown reason and an unknown work inventory
+    /// refuses instead. `open-merge` is the design's only open-operation
+    /// name, so an unfinished native operation maps to it too. Disposal owns
+    /// the waiver vocabulary; this is the classifier's side of the
+    /// one-to-one mapping, kept exhaustive so a new hazard cannot be added
+    /// without deciding how it refuses.
+    pub fn force_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Work(_) | Self::Suppressed | Self::NativeStash => Some("dirty"),
+            Self::OpenNativeOperation
+            | Self::OpenGwzMerge
+            | Self::OpenGwzStash
+            | Self::OpenGwzRecord => Some("open-merge"),
+            Self::UninterpretableEvidence => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hazard {
     pub kind: HazardKind,
@@ -1069,6 +1090,51 @@ mod tests {
             classify_observed_work(&Observation::Known(observed.clone()), &evidence),
             classify_work(&observed, &evidence)
         );
+    }
+
+    // --- the disposal force vocabulary --------------------------------------
+
+    #[test]
+    fn every_hazard_kind_maps_onto_one_dispose_force_name() {
+        for kind in [
+            HazardKind::Work(WorkKind::Staged),
+            HazardKind::Work(WorkKind::Ignored),
+            HazardKind::Suppressed,
+            HazardKind::NativeStash,
+        ] {
+            assert_eq!(kind.force_name(), Some("dirty"), "{kind:?}");
+        }
+        for kind in [
+            HazardKind::OpenNativeOperation,
+            HazardKind::OpenGwzMerge,
+            HazardKind::OpenGwzStash,
+            HazardKind::OpenGwzRecord,
+        ] {
+            assert_eq!(kind.force_name(), Some("open-merge"), "{kind:?}");
+        }
+        assert_eq!(HazardKind::UninterpretableEvidence.force_name(), None);
+    }
+
+    #[test]
+    fn a_hazard_with_no_force_name_never_stands_alone_as_dirty() {
+        let evidence = GwzEvidence {
+            merge: EvidenceState::Unknown {
+                detail: "record version 9".to_owned(),
+            },
+            ..GwzEvidence::default()
+        };
+        let report = classify_work(
+            &observation(vec![entry("a.rs", WorkKind::Staged)]),
+            &evidence,
+        );
+        assert!(
+            report
+                .hazards
+                .iter()
+                .any(|hazard| hazard.kind.force_name().is_none())
+        );
+        assert_eq!(report.verdict, WorkVerdict::Unknown);
+        assert!(!report.unknown.is_empty());
     }
 
     #[test]
