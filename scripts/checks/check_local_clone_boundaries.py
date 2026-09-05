@@ -48,6 +48,7 @@ Usage (from gwz-core):
     python3 scripts/checks/check_local_clone_boundaries.py
     python3 scripts/checks/check_local_clone_boundaries.py --core <path> --inventory <json>
     python3 scripts/checks/check_local_clone_boundaries.py --list-present   # CI's package list
+    python3 scripts/checks/check_local_clone_boundaries.py --list-cross-checkable   # CI's foreign-target list
 """
 
 from __future__ import annotations
@@ -409,6 +410,39 @@ def present_packages(core: Path, inventory: dict) -> list[str]:
     ]
 
 
+# Declared third-party dependencies that build native code through a build
+# script (`git2` -> `libgit2-sys` compiles libgit2 with the target's C
+# toolchain), which a `cargo clippy --target <foreign>` on a host that has only
+# that target's `rust-std` cannot do.
+NATIVE_BUILD_DEPENDENCIES = frozenset({"git2"})
+
+
+def cross_checkable_packages(core: Path, inventory: dict) -> list[str]:
+    """The present packages whose declared closure -- the package's own
+    normal and dev edges, then the normal edges of every first-party crate
+    reached, each with its declared third-party set -- names no native-build
+    dependency, so `cargo clippy -p <name> --all-targets --target <foreign>`
+    compiles on a host with only that target's `rust-std`: CI's
+    foreign-target check list (LCM1.0c follow-up 3, deliverable C)."""
+    packages = inventory["packages"]
+    result = []
+    for name in present_packages(core, inventory):
+        entry = packages[name]
+        third = set(entry["third_party"]) | set(entry["dev_third_party"])
+        seen = {name}
+        stack = list(entry["first_party"]) + list(entry["dev_first_party"])
+        while stack:
+            other = stack.pop()
+            if other in seen or other not in packages:
+                continue
+            seen.add(other)
+            third |= set(packages[other]["third_party"])
+            stack.extend(packages[other]["first_party"])
+        if not third & NATIVE_BUILD_DEPENDENCIES:
+            result.append(name)
+    return result
+
+
 def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
     inventory = load_inventory(inventory_path)
     crates_dir = core / inventory.get("crates_dir", "crates")
@@ -535,10 +569,17 @@ def main() -> int:
         action="store_true",
         help="print the present classified package names, one per line (CI's Tier A list), and exit",
     )
+    parser.add_argument(
+        "--list-cross-checkable",
+        action="store_true",
+        help="print the present classified packages whose declared closure builds no native code "
+        "(CI's foreign-target clippy list), one per line, and exit",
+    )
     args = parser.parse_args()
-    if args.list_present:
+    if args.list_present or args.list_cross_checkable:
+        listing = cross_checkable_packages if args.list_cross_checkable else present_packages
         try:
-            names = present_packages(args.core.resolve(), load_inventory(args.inventory.resolve()))
+            names = listing(args.core.resolve(), load_inventory(args.inventory.resolve()))
         except GateError as error:
             print(f"local-clone boundary: error: {error}", file=sys.stderr)
             return 2

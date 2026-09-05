@@ -611,6 +611,59 @@ class LocalCloneBoundaryTest(unittest.TestCase):
         self.assertEqual(len(names), 14)
         self.assertIn("gwz-local-testrepo", names)
 
+    def test_cross_checkable_list_excludes_every_native_build_closure(self) -> None:
+        # LCM1.0c follow-up 3 (deliverable C): the foreign-target clippy step
+        # runs on the crates whose declared closure builds no native code.
+        # `git2` reaches libgit2-sys, which needs the target's C toolchain, so
+        # the inspector (normal edge), the fixture crate (its own edge) and
+        # anything whose dev closure reaches the fixture crate are excluded;
+        # the contract, pure, refcopy and family-store crates are listed.
+        gate = load_gate()
+        inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+        listed = subprocess.run(
+            [sys.executable, str(SCRIPT), "--list-cross-checkable"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        names = listed.stdout.split()
+        self.assertEqual(names, gate.cross_checkable_packages(ROOT, inventory))
+        present = set(gate.present_packages(ROOT, inventory))
+        self.assertTrue(set(names) <= present)
+        for excluded in ("gwz-repo-inspect", "gwz-local-testrepo"):
+            self.assertIn(excluded, present)
+            self.assertNotIn(excluded, names)
+        for included in ("gwz-copy-contract", "gwz-refcopy", "gwz-family-store", "gwz-work-detector"):
+            self.assertIn(included, names)
+        workflow = (ROOT / ".github" / "workflows" / "checked-artifact-boundary.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--list-cross-checkable", workflow)
+        self.assertIn("--target x86_64-pc-windows-msvc", workflow)
+        # A synthetic closure. `a` is excluded through its dev edge to `b`,
+        # `b` through its normal edge to `c` (which declares git2), and `e`
+        # through its own dev git2 (`--all-targets` compiles a crate's own dev
+        # deps); `d`, one normal edge away from `e`, is not, because a
+        # dependency's dev deps are never compiled.
+        synthetic = {
+            "packages": {
+                "a": {"first_party": [], "third_party": [], "dev_first_party": ["b"], "dev_third_party": []},
+                "b": {"first_party": ["c"], "third_party": [], "dev_first_party": [], "dev_third_party": []},
+                "c": {"first_party": [], "third_party": ["git2"], "dev_first_party": [], "dev_third_party": []},
+                "d": {"first_party": ["e"], "third_party": [], "dev_first_party": [], "dev_third_party": []},
+                "e": {"first_party": [], "third_party": [], "dev_first_party": [], "dev_third_party": ["git2"]},
+            }
+        }
+        for name, entry in synthetic["packages"].items():
+            entry["directory"] = name
+        with tempfile.TemporaryDirectory() as temp:
+            core = Path(temp)
+            for name in synthetic["packages"]:
+                (core / "crates" / name).mkdir(parents=True)
+                (core / "crates" / name / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+            self.assertEqual(gate.cross_checkable_packages(core, synthetic), ["d"])
+
     def test_tier_a_command_split_across_continuations_is_unlocked_and_refused(self) -> None:
         # LCM1.0c-fu1 (State S2-P3-2): the workflow-parsing half of the
         # S-P3-3 guard, with no inventory flag. A Tier A command wrapped

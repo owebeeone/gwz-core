@@ -89,6 +89,22 @@ jobs:
             # only, so lint each library here too.
             cargo clippy -p "$name" --all-targets --locked -- -D warnings
           done
+      - name: Foreign-target clippy of the platform tables (x86_64-pc-windows-msvc)
+        # LCM1.0c follow-up 3 (deliverable C). Lane R's native wrappers and
+        # every `cfg(windows)` arm otherwise compile only on the dispatch-only
+        # Windows matrix, so they can rot between dispatches; this checks them
+        # on every push for the crates whose declared closure builds no native
+        # code (`git2` needs the target's C toolchain -- the checker lists the
+        # rest). The Linux target is this runner's host, covered by the loop
+        # above. This is the check that caught `clippy::result_large_err` on
+        # `CopyError`, 128 bytes on Windows.
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          names="$(python scripts/checks/check_local_clone_boundaries.py --list-cross-checkable)"
+          test -n "$names"
+          for name in $names; do
+            cargo clippy -p "$name" --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+          done
       # check_m4_scenario_map.py is NOT wired here — corrective un-wiring
       # 2026-08-25 after the landing-commit run (32749441874) failed on it:
       # its MAP_DOC resolves `dev-docs/GwzM5-8R4bG-Evidence.md` ONE LEVEL

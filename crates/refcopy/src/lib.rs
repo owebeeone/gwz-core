@@ -34,6 +34,13 @@
 //!   I/O failure is an error, and stops the copy.
 
 #![forbid(unsafe_code)]
+// `CopyError` is 128 bytes on `x86_64-pc-windows-msvc` (a `PathBuf` is 32
+// bytes there), exactly clippy's `result_large_err` threshold; the contract
+// allows the lint at `TreeCopier::copy_tree` for the same reason and boxing
+// would change a public field every consumer reads. This crate's own
+// `Result<_, CopyError>` helpers inherit that decision (LCM1.0c follow-up 3,
+// the foreign-target clippy step; lane C, reported to lane R).
+#![allow(clippy::result_large_err)]
 
 mod native;
 mod ordinary;
