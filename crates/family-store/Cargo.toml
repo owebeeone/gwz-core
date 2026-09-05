@@ -2,7 +2,12 @@
 # OS advisory try-locking implement the family store contract. Owner lane S.
 # Allowed first-party dependencies: family-store-contract, family-model
 # (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2). Its YAML and OS
-# lock dependencies are added by lane S through the gate inventory.
+# lock dependencies were declared by the lane owner with the W2 allowlist
+# (serde/serde_yaml, matching gwz-core's own manifest formats; `tempfile` for
+# the real-store conformance fixture) so no feature lane races on the lock.
+# The OS advisory try-lock is std-only (`flock`/`LockFileEx` through the
+# platform crates gwz-core already vendors is NOT required here — see
+# GwzLocalClone-LCM1.0c-ReviewState.md P3-3).
 [package]
 name = "gwz-family-store"
 version = "0.1.0"
@@ -18,6 +23,10 @@ path = "src/lib.rs"
 [dependencies]
 gwz-family-model = { path = "../family-model" }
 gwz-family-store-contract = { path = "../family-store-contract" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 
 [dev-dependencies]
 gwz-family-store-contract = { path = "../family-store-contract", features = ["contract-tests"] }
+tempfile = "3"
+

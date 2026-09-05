@@ -2,7 +2,11 @@
 # `TreeCopier`. Owner lane R. Allowed first-party dependencies: copy-contract
 # (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2). Third-party and
 # platform dependencies go through the inventory in
-# scripts/checks/local_clone_inventory.json.
+# scripts/checks/local_clone_inventory.json; the lane owner declared them with
+# the W2 allowlist (versions matching gwz-core's own manifest) so no feature
+# lane races on the workspace lock. `rustix` is the safe-wrapped route to
+# clonefile/FICLONE; `libc` and `windows-sys` are there if a raw call is
+# unavoidable.
 [package]
 name = "gwz-refcopy"
 version = "0.1.0"
@@ -18,5 +22,14 @@ path = "src/lib.rs"
 [dependencies]
 gwz-copy-contract = { path = "../copy-contract" }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 gwz-copy-contract = { path = "../copy-contract", features = ["contract-tests"] }
+tempfile = "3"
+
