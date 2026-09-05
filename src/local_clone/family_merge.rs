@@ -17,10 +17,10 @@
 //!    the public [`crate::workspace_ops::handle_merge_with_events`] once. The
 //!    engine takes its own locks; the wrapper holds only the family lock.
 //!
-//! LCM1.0c checkpoint (follow-up 2): steps 1-4 run for real. The composed
-//! store implementation still refuses `Unimplemented` at step 3, which this
-//! wrapper reports as `unsupported_operation`, so with today's store nothing
-//! after step 3 executes and no lock file, ref or record is created. Step 4
+//! LCM1.0c checkpoint, as of W2: steps 1-4 run for real, step 3 against the
+//! real store (lane S). Nothing after step 4 executes -- the import and the
+//! delegation are lane X's steps 5-6 -- so no lock file, ref or record is
+//! created on any path through this wrapper. Step 4
 //! is [`resolve_family_merge`]: on an observed view, a token that names no
 //! ready family member is the design's `UnknownLocal` --
 //! `GwzErrorCode.unknown_local` (62) with the state detail in the message

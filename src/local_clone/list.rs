@@ -78,8 +78,10 @@ pub fn members(
 /// to the store (lane S) and directory presence to the inspector (lane I).
 /// Until they land this refuses `unsupported_operation` rather than hand
 /// the projection an empty map, which would list every member as
-/// `unobserved` without saying why. Reachable only once the composed store
-/// returns a view; today it refuses `Unimplemented` first.
+/// `unobserved` without saying why. Since W2 the store returns a real view,
+/// so this is reached: a `list` in a workspace that *is* a family member
+/// refuses here. A workspace in no family never arrives -- the caller
+/// answers `Ok` with an empty member list before this point.
 pub(crate) fn observe_members(
     _root: &Path,
     _view: &FamilyView,

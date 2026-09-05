@@ -5,9 +5,13 @@
 //! Each slot validates attribution and request shape, refuses an
 //! unsupported family `dry_run`, discovers the workspace, observes the
 //! family through the store contract and only then would reserve, copy,
-//! import or remove. At this checkpoint the composed store refuses
-//! `Unimplemented`, so every slot returns `unsupported_operation` with no
-//! effect: no lock file, no metadata, no copy, no import.
+//! import or remove. Since W2 (lane S) that observation is a real read, so a
+//! slot now refuses for its own reason: `dispose` and `disband` are
+//! `unsupported_operation`; `list` answers `Ok` with an empty member list
+//! outside a family and refuses at `local_clone::list::observe_members`
+//! inside one; a family merge is `unknown_local` for an unknown token and
+//! `unsupported_operation` for a bound member. No slot has an effect: no
+//! lock file, no metadata, no copy, no import.
 
 use std::path::Path;
 

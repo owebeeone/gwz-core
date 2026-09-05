@@ -14,10 +14,16 @@
 //! Refusal order, which every dispatch slot preserves (design §6.2, plan
 //! LCM1.0c): attribution and request shape first; an unsupported family
 //! `dry_run` next; then the family observation through the store contract;
-//! only then any lock file, metadata reservation, copy or import. At this
-//! checkpoint the store implementation refuses `Unimplemented`, so every
-//! local-family operation stops there with `unsupported_operation` and no
-//! effect. Later adapters (copy, installation, disposal, evidence) are added
+//! only then any lock file, metadata reservation, copy or import. Since W2
+//! (lane S) the store implementation is real, so the observation is a real
+//! read of the family metadata rather than a refusal, and what stops an
+//! operation is now the operation itself: `dispose` and `disband` refuse
+//! `unsupported_operation`; `list` answers with an empty member list outside
+//! a family and refuses inside one at [`list::observe_members`]; a family
+//! merge refuses `unknown_local` for a token that names no ready member and
+//! `unsupported_operation` for one that does, until lane X lands the import.
+//! Every one of those paths still creates nothing -- observing a family is a
+//! read. Later adapters (copy, installation, disposal, evidence) are added
 //! here by the integration lane as their libraries land.
 //!
 //! # History-check adapter rule (lane H proposal H2, LCM1.0c follow-up 2)
