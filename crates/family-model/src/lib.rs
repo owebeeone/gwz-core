@@ -16,10 +16,15 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+mod name;
 mod path;
 mod resolve;
 mod transition;
 
+pub use name::{
+    DisposeTarget, MemberName, NameError, RESERVED_DIRECTORY_NAMES, RESERVED_NAMES,
+    classify_dispose_target, validate as validate_member_name,
+};
 pub use path::{
     MemberPath, PathError, PathRelation, normalize as normalize_member_path,
     relate as relate_member_paths, validate as validate_member_path,
@@ -44,12 +49,47 @@ pub const POINTER_RELATIVE_PATH: &str = ".gwz/family-root";
 pub const ALLOCATION_MARKER_RELATIVE_PATH: &str = ".gwz/local-clone-allocation";
 /// Largest encoded index the store accepts; larger refuses before mutation.
 pub const MAX_ENCODED_INDEX_BYTES: u64 = 1024 * 1024;
+/// Format version of the index and pointer files. It is the `/v1` in
+/// [`INDEX_SCHEMA`] and [`POINTER_SCHEMA`]; a file carrying any other
+/// version is not this format and refuses rather than being upgraded.
+pub const INDEX_FORMAT_VERSION: u32 = 1;
+
+/// The encoded index is larger than the model admits (design §3, "maximum
+/// encoded size 1 MiB; oversize or malformed input refuses before
+/// mutation"). The store adds the path it read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexOversize {
+    pub bytes: u64,
+    pub limit: u64,
+}
+
+impl fmt::Display for IndexOversize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "encoded family index is {} bytes, over the {} byte limit",
+            self.bytes, self.limit
+        )
+    }
+}
+
+impl std::error::Error for IndexOversize {}
+
+/// Decide whether an encoded index of `bytes` may be read or written. The
+/// limit is inclusive: exactly [`MAX_ENCODED_INDEX_BYTES`] is admitted.
+pub fn check_encoded_size(bytes: u64) -> Result<(), IndexOversize> {
+    if bytes > MAX_ENCODED_INDEX_BYTES {
+        return Err(IndexOversize {
+            bytes,
+            limit: MAX_ENCODED_INDEX_BYTES,
+        });
+    }
+    Ok(())
+}
 /// The original workspace's own name; never a clone name.
 pub const ROOT_NAME: &str = "root";
 /// The root's own root-relative path.
 pub const ROOT_PATH: &str = ".";
-/// Names a clone may never take (design §2).
-pub const RESERVED_NAMES: [&str; 4] = ["root", "origin", "HEAD", "FETCH_HEAD"];
 
 /// Field names of the frozen format-1 index and pointer files. The store
 /// encodes and decodes with exactly these keys.
@@ -67,54 +107,6 @@ pub mod fields {
     pub const MODE: &str = "mode";
     pub const LAST_ERROR: &str = "last_error";
 }
-
-/// A validated clone name: non-empty, not reserved, no `/` or `:`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MemberName(String);
-
-impl MemberName {
-    pub fn parse(name: &str) -> Result<Self, NameError> {
-        if name.is_empty() {
-            return Err(NameError::Empty);
-        }
-        if let Some(separator) = name.chars().find(|c| matches!(c, '/' | ':')) {
-            return Err(NameError::Separator(separator));
-        }
-        if RESERVED_NAMES.contains(&name) {
-            return Err(NameError::Reserved(name.to_owned()));
-        }
-        Ok(Self(name.to_owned()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for MemberName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NameError {
-    Empty,
-    Reserved(String),
-    Separator(char),
-}
-
-impl fmt::Display for NameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => f.write_str("a clone name must not be empty"),
-            Self::Reserved(name) => write!(f, "`{name}` is a reserved name"),
-            Self::Separator(c) => write!(f, "a clone name must not contain `{c}`"),
-        }
-    }
-}
-
-impl std::error::Error for NameError {}
 
 /// The core-minted family identity. Never a request input.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -455,27 +447,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn member_names_reject_reserved_empty_and_separators() {
-        assert_eq!(MemberName::parse("").unwrap_err(), NameError::Empty);
-        for reserved in RESERVED_NAMES {
-            assert_eq!(
-                MemberName::parse(reserved).unwrap_err(),
-                NameError::Reserved(reserved.to_owned())
-            );
-        }
-        assert_eq!(
-            MemberName::parse("a/b").unwrap_err(),
-            NameError::Separator('/')
-        );
-        assert_eq!(
-            MemberName::parse("a:b").unwrap_err(),
-            NameError::Separator(':')
-        );
-        assert_eq!(MemberName::parse("lane-17").unwrap().as_str(), "lane-17");
-        assert_eq!(MemberName::parse("Root").unwrap().as_str(), "Root");
-    }
-
-    #[test]
     fn ids_must_not_be_empty() {
         assert_eq!(FamilyId::new("  ").unwrap_err(), IdError::Empty);
         assert_eq!(AllocationId::new("").unwrap_err(), IdError::Empty);
@@ -562,5 +533,24 @@ mod tests {
             ),
             ListState::InterruptedDisposal
         );
+    }
+
+    #[test]
+    fn the_index_size_decision_names_the_limit_it_enforces() {
+        assert_eq!(INDEX_FORMAT_VERSION, 1);
+        assert!(INDEX_SCHEMA.ends_with("/v1"));
+        assert!(POINTER_SCHEMA.ends_with("/v1"));
+        assert_eq!(check_encoded_size(0), Ok(()));
+        assert_eq!(check_encoded_size(MAX_ENCODED_INDEX_BYTES), Ok(()));
+        let refusal = check_encoded_size(MAX_ENCODED_INDEX_BYTES + 1).unwrap_err();
+        assert_eq!(
+            refusal,
+            IndexOversize {
+                bytes: MAX_ENCODED_INDEX_BYTES + 1,
+                limit: MAX_ENCODED_INDEX_BYTES,
+            }
+        );
+        assert!(refusal.to_string().contains("1048577"));
+        assert!(refusal.to_string().contains("1048576"));
     }
 }
