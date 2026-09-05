@@ -864,3 +864,43 @@ fn a_workspace_can_be_built_bare_for_the_hub_shape() {
     assert!(workspace.member("libs/a").is_bare());
     assert_eq!(workspace.root().workdir(), None);
 }
+
+#[test]
+fn hazards_apply_to_a_bare_repository_too() {
+    // LCM1.0c checkpoint §6 wants each hook-path outcome "additionally for a
+    // bare repository and for a push-hook working directory". A bare
+    // repository's Git directory *is* its path, and a push-triggered hook's
+    // working directory is that same Git directory, so both variants are the
+    // same fixture shape — built here so lane I's preflight has it.
+    let temp = TempTree::new("bare-hazards");
+
+    let hub = temp.bare_repo("hub");
+    hub.commit_files("first", &[("README", b"hub\n")]);
+    assert_eq!(hub.layout_git_dir(), hub.path());
+    let alternates = hub.hazard_alternates(&temp.join("outside/objects"));
+    assert_eq!(alternates, hub.path().join("objects/info/alternates"));
+    assert!(alternates.is_file());
+
+    let escaping = temp.bare_repo("escaping");
+    let resolved = escaping.hazard_relative_hooks_path("../shared-hooks");
+    assert_eq!(
+        escaping.config_value("core.hooksPath").as_deref(),
+        Some("../shared-hooks")
+    );
+    assert!(
+        !resolved
+            .canonicalize()
+            .unwrap()
+            .starts_with(escaping.path())
+    );
+
+    let internal = temp.bare_repo("internal");
+    let inside = internal.hazard_relative_hooks_path("hooks");
+    assert!(inside.starts_with(internal.path()));
+
+    let unresolvable = temp.bare_repo("unresolvable");
+    let blocker = unresolvable.hazard_unresolvable_hooks_path();
+    assert!(blocker.starts_with(unresolvable.path()));
+    let configured = unresolvable.config_value("core.hooksPath").expect("set");
+    assert!(!Path::new(&configured).exists());
+}
