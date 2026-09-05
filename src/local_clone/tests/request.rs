@@ -116,8 +116,23 @@ fn local_family_ops_refuse_unsupported_without_writing() {
     let root = workspace(&temp);
     let backend = Git2Backend::without_credential_helpers();
 
+    // W2 (lane S landed the real store): a `list` in a workspace that is not a
+    // family member observes no family and answers with an empty member list --
+    // core's own `None => Vec::new()` branch (`local_clone::list`), reached
+    // before the still-unsupported per-member target observation. It is an
+    // observation, not a refusal, and it still writes nothing.
+    let listing = handle_local_family(
+        &backend,
+        &root,
+        family_request(crate::LocalFamilyOp::List, None),
+        "op-list",
+        &NullSink,
+    )
+    .expect("a list outside a family observes an empty family");
+    assert!(listing.members.is_empty());
+    assert!(family_files_absent(&root));
+
     for (op, name, expected) in [
-        (crate::LocalFamilyOp::List, None, "local family list"),
         (crate::LocalFamilyOp::Dispose, Some("C"), "local dispose"),
         (crate::LocalFamilyOp::Disband, None, "local disband"),
     ] {
@@ -186,12 +201,13 @@ fn family_merge_refuses_in_order_and_plain_merges_reach_the_engine() {
         &NullSink,
     )
     .unwrap_err();
-    assert_eq!(error.code, ErrorCode::UnsupportedOperation);
-    assert!(
-        error.message.contains("local family merge from `A`"),
-        "{}",
-        error.message
-    );
+    // W2 (lane S landed the real store): the selector now resolves against an
+    // observed view instead of stopping at an unimplemented read, and a token
+    // that names no ready member of this family is the design's `UnknownLocal`
+    // (design revision 9 section 6, error code 62) -- exactly the resolver row
+    // the boundaries document prescribes for the merge verb.
+    assert_eq!(error.code, ErrorCode::UnknownLocal);
+    assert!(error.message.contains('A'), "{}", error.message);
     assert!(family_files_absent(&root));
     let repo = git2::Repository::open(&root).unwrap();
     assert!(
