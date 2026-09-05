@@ -1,0 +1,590 @@
+{
+  "_schema": {
+    "purpose": "The one cross-driver CLI parity fixture for the local clone family surface (operator ruling 1 of 2026-09-06, LCM1.0c follow-up 3). Both drivers -- gwz-cli and gwz-py -- read THIS file and assert against it; neither restates these cases inline and neither keeps a copy. Add a case here, not in a driver's test module. A row pins the command line a person types, the protocol message it must build and the field values that message must carry; nothing here reaches core, the assertion is on the encoded request (or on the refusal that precedes any request).",
+    "authority": "gwz-dev dev-docs/GwzLocalCloneDesign.md revision 10 section 7 (CLI -> live message) and section 11 items 11-15, plus the operator's cross-driver rulings of 2026-09-06 recorded in GwzLocalClone-LCM1.0c-Checkpoint.md section 12: (1) this file is the single source; (2) machine output spells enum values in snake_case; (3) LocalFamilyResponse.root_path; (4) `push --remote` encodes the token once, in PushRequest.remote, and an empty `--name` refuses at the driver. Where the two drivers' former copies disagreed, the design section 7 table decided.",
+    "location": {
+      "this_file": "gwz-core/protocol/fixtures/cli_parity/local_family_cases.json (beside merge_response.json and merge_event.json, the existing cross-driver fixtures)",
+      "gwz_cli": "../gwz-core/protocol/fixtures/cli_parity/local_family_cases.json relative to the gwz-cli checkout: from src/tests/g12.rs that is include_str!(\"../../../gwz-core/protocol/fixtures/cli_parity/local_family_cases.json\"), the same sibling path src/tests/g02.rs already resolves for merge_response.json through CARGO_MANIFEST_DIR. gwz-cli reaches gwz-core as a path dependency, so the sibling exists wherever gwz-cli builds.",
+      "gwz_py": "../gwz-core/protocol/fixtures/cli_parity/local_family_cases.json relative to the gwz-py checkout: from src/tests/test_cli_local_family.py that is Path(__file__).resolve().parents[3] / \"gwz-core\" / \"protocol\" / \"fixtures\" / \"cli_parity\" / \"local_family_cases.json\", the same sibling scripts/check_protocol_drift.py already resolves for the schema."
+    },
+    "provenance": "Merged 2026-09-06 from gwz-py src/tests/fixtures/cli_parity/parser_cases.json (30 message cases, 15 refusals; its `accept`/`parse_reject`/`semantic_reject`/`rust_accept`/`rust_version` argv lists are that driver's general parser fixture and stay there) and gwz-cli tests/fixtures/cli_parity/local_family_cases.json (24 accept, 17 reject). Ids are gwz-py's where a row existed there; rows only gwz-cli carried got new ids. Folded: gwz-cli's `--force wat` row into local-dispose-force-unknown-name (same case, one token); gwz-py's python-only push-remote-python-clears-the-policy-binding into push-remote-family-hub, now both drivers, per ruling 4. Values that changed for a driver: gwz-cli's two push rows (policy_remote \"hub\"/\"origin\" -> meta.policy.remote null, ruling 4 and design section 7, which names only PushRequest.remote); clone-local-empty-name is no longer python-only (ruling 4).",
+    "stability": "Keys and case ids are stable. Append cases; do not renumber, rename or reorder existing ones. A case a driver cannot express is scoped with `drivers`, never deleted.",
+    "message_cases": {
+      "what": "One entry per design section 7 'CLI -> live message' row, plus the section 4 `--from` selector rows and the dry-run pass-throughs. Each pins the command line a person types, the protocol message it must build, and the field values that message must carry.",
+      "id": "stable, unique, kebab-case",
+      "design_row": "the design table cell this case pins, verbatim, or the design clause it comes from",
+      "argv": "argv without the program name and without shell quoting, byte-identical to the design's command line",
+      "message": "the generated request message's type name",
+      "fields": "dotted paths from the request root to the expected value. A path resolves through an absent (null) intermediate to null, so `meta.policy.remote` is null when the request carries no policy object at all (gwz-cli's former `policy_remote` key is exactly `meta.policy.remote`). Enum values are the protocol enum's own name in snake_case (`verbatim`, `ff_only`, `start`); everything else is literal JSON.",
+      "drivers": "optional; which drivers accept this spelling. Default is both: [\"python\", \"rust\"].",
+      "core_refuses": "optional; the GwzErrorCode core answers for this request. The CLI still encodes and sends it -- the key records that the refusal is core's, not the CLI's.",
+      "note": "optional prose"
+    },
+    "message_refusals": {
+      "what": "Command lines a driver must refuse before encoding any request. `refused_by` says whose refusal it is.",
+      "id": "stable, unique, kebab-case",
+      "argv": "argv without the program name",
+      "refused_by": "`cli` -- the driver refuses before any core call",
+      "message_contains": "substrings BOTH drivers' refusal messages contain. Every listed substring must appear; the wording around them differs per driver, so keep these short. May be empty when the two drivers share no wording, in which case `driver_message_contains` carries each driver's own needle.",
+      "driver_message_contains": "optional; {\"rust\": [...], \"python\": [...]} -- extra substrings one driver's message must contain, on top of `message_contains` (gwz-cli's former `rust_needle` lives here).",
+      "drivers": "optional; default both",
+      "note": "optional prose"
+    }
+  },
+  "message_cases": [
+    {
+      "id": "clone-local-verbatim",
+      "design_row": "gwz clone --local --name A ../gwz-dev-A",
+      "argv": ["clone", "--local", "--name", "A", "../gwz-dev-A"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "A",
+        "dest": "../gwz-dev-A",
+        "mode": "verbatim",
+        "branch": null,
+        "copy_source": null,
+        "meta.dry_run": null
+      }
+    },
+    {
+      "id": "clone-local-verbatim-explicit",
+      "design_row": "gwz clone --local --name A ../gwz-dev-A (--verbatim is the default, spelled out)",
+      "argv": ["clone", "--local", "--verbatim", "--name", "A", "../gwz-dev-A"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "A",
+        "dest": "../gwz-dev-A",
+        "mode": "verbatim",
+        "branch": null,
+        "copy_source": null
+      }
+    },
+    {
+      "id": "clone-local-default-dest",
+      "design_row": "Dest defaults to ../<root-dirname>-<Name> (design section 4, section 11 item 3)",
+      "argv": ["clone", "--local", "--name", "A"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "A",
+        "dest": null,
+        "mode": "verbatim",
+        "branch": null,
+        "copy_source": null
+      },
+      "note": "An absent dest is core's default, not a CLI-side path join."
+    },
+    {
+      "id": "clone-local-clean-branch",
+      "design_row": "gwz clone --local --clean -b lane/x --name C dest",
+      "argv": ["clone", "--local", "--clean", "-b", "lane/x", "--name", "C", "dest"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "C",
+        "dest": "dest",
+        "mode": "clean",
+        "branch": "lane/x",
+        "copy_source": null
+      }
+    },
+    {
+      "id": "clone-local-bare",
+      "design_row": "gwz clone --local --bare --name hub dest",
+      "argv": ["clone", "--local", "--bare", "--name", "hub", "dest"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "hub",
+        "dest": "dest",
+        "mode": "bare",
+        "branch": null,
+        "copy_source": null
+      }
+    },
+    {
+      "id": "clone-local-bare-branch",
+      "design_row": "-b is accepted with --bare as well as --clean (design section 4.3)",
+      "argv": ["clone", "--local", "--bare", "-b", "lane/x", "--name", "hub", "dest"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "hub",
+        "dest": "dest",
+        "mode": "bare",
+        "branch": "lane/x",
+        "copy_source": null
+      }
+    },
+    {
+      "id": "clone-local-from-name",
+      "design_row": "Copy source is cwd (or --from <name|path>) (design section 4; wire field copy_source, section 7 and section 11 item 11)",
+      "argv": ["clone", "--local", "--clean", "--from", "A", "--name", "B", "../gwz-dev-B"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "B",
+        "dest": "../gwz-dev-B",
+        "mode": "clean",
+        "branch": null,
+        "copy_source": "A"
+      },
+      "note": "`from` is a keyword in both generated languages, so the wire field is copy_source (tag 6). The CLI does not decide whether the token is a family name or a path -- core resolves it."
+    },
+    {
+      "id": "clone-local-from-path",
+      "design_row": "--from <name|path>: the path form, dest defaulting in core",
+      "argv": ["clone", "--local", "--from", "../gwz-dev-A", "--name", "B"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "B",
+        "dest": null,
+        "mode": "verbatim",
+        "copy_source": "../gwz-dev-A"
+      }
+    },
+    {
+      "id": "clone-local-from-path-with-dest",
+      "design_row": "--from <name|path>: the path form with an explicit dest (section 7 copy_source, tag 6, section 11 item 11)",
+      "argv": ["clone", "--local", "--from", "../gwz-dev-C", "--name", "D", "../gwz-dev-D"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "D",
+        "dest": "../gwz-dev-D",
+        "mode": "verbatim",
+        "branch": null,
+        "copy_source": "../gwz-dev-C"
+      }
+    },
+    {
+      "id": "clone-local-dry-run",
+      "design_row": "v0 local create refuses an unsupported dry-run in core (design section 6.2)",
+      "argv": ["--dry-run", "clone", "--local", "--name", "A"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "A",
+        "meta.dry_run": true
+      },
+      "core_refuses": "unsupported_operation",
+      "note": "The local-family verbs pass --dry-run through for core to refuse; only the URL clone keeps its own CLI-side refusal (see message_refusals/url-clone-dry-run)."
+    },
+    {
+      "id": "local-list",
+      "design_row": "gwz local list",
+      "argv": ["local", "list"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "list",
+        "name": null,
+        "keep": null,
+        "force_hazards": [],
+        "meta.dry_run": null
+      }
+    },
+    {
+      "id": "local-dispose",
+      "design_row": "gwz local dispose C",
+      "argv": ["local", "dispose", "C"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "dispose",
+        "name": "C",
+        "keep": null,
+        "force_hazards": []
+      }
+    },
+    {
+      "id": "local-dispose-keep",
+      "design_row": "gwz local dispose C --keep",
+      "argv": ["local", "dispose", "C", "--keep"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "dispose",
+        "name": "C",
+        "keep": true,
+        "force_hazards": []
+      }
+    },
+    {
+      "id": "local-dispose-force-one",
+      "design_row": "gwz local dispose C --force unpreserved-history",
+      "argv": ["local", "dispose", "C", "--force", "unpreserved-history"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "dispose",
+        "name": "C",
+        "keep": null,
+        "force_hazards": ["unpreserved-history"]
+      }
+    },
+    {
+      "id": "local-dispose-force-many",
+      "design_row": "gwz local dispose C --force open-merge,dirty,unpreserved-history",
+      "argv": ["local", "dispose", "C", "--force", "open-merge,dirty,unpreserved-history"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "dispose",
+        "name": "C",
+        "keep": null,
+        "force_hazards": ["open-merge", "dirty", "unpreserved-history"]
+      }
+    },
+    {
+      "id": "local-dispose-force-spaced",
+      "design_row": "hazard list splitting (design section 11 item 15)",
+      "argv": ["local", "dispose", "C", "--force", "dirty, open-merge"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "dispose",
+        "name": "C",
+        "keep": null,
+        "force_hazards": ["dirty", " open-merge"]
+      },
+      "note": "The split is on ',' and nothing else: no trimming, no case folding, no normalization. A deletion waiver is the operator's authorization token; rewriting it before encoding would make the CLI answer for a vocabulary that belongs to core. Core refuses ' open-merge' as an unknown hazard, which is the correct answer to what was actually typed."
+    },
+    {
+      "id": "local-dispose-force-unknown-name",
+      "design_row": "core rejects unknown hazards (design section 7): the hazard vocabulary is core's, so an unknown name travels",
+      "argv": ["local", "dispose", "C", "--force", "sunspots"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "dispose",
+        "name": "C",
+        "keep": null,
+        "force_hazards": ["sunspots"]
+      },
+      "core_refuses": "invalid_request",
+      "note": "The CLI refuses only the shapes that would be misread on the wire -- a force naming nothing, or an empty element. gwz-cli's former `--force wat` row is this case with another token."
+    },
+    {
+      "id": "local-disband",
+      "design_row": "gwz local disband",
+      "argv": ["local", "disband"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "disband",
+        "name": null,
+        "keep": null,
+        "force_hazards": []
+      }
+    },
+    {
+      "id": "local-list-dry-run",
+      "design_row": "the family verbs pass --dry-run through for core to refuse",
+      "argv": ["--dry-run", "local", "list"],
+      "message": "LocalFamilyRequest",
+      "fields": {
+        "op": "list",
+        "meta.dry_run": true
+      },
+      "core_refuses": "unsupported_operation"
+    },
+    {
+      "id": "pull-head-remote-family",
+      "design_row": "gwz pull --head --remote A",
+      "argv": ["pull", "--head", "--remote", "A"],
+      "message": "PullHeadRequest",
+      "fields": {
+        "meta.policy.remote": "A"
+      },
+      "note": "pull binds the name through OperationPolicy.remote, not a request field (design section 7: PullHeadRequest.meta.policy.remote). Core resolves a ready family name first and falls back to a git remote."
+    },
+    {
+      "id": "pull-head-remote-git",
+      "design_row": "gwz pull --head --remote origin",
+      "argv": ["pull", "--head", "--remote", "origin"],
+      "message": "PullHeadRequest",
+      "fields": {
+        "meta.policy.remote": "origin"
+      },
+      "note": "Identical encoding to the family row: `origin` is reserved as a family name, so this reaches the git remote and never UnknownLocal."
+    },
+    {
+      "id": "pull-head-remote-root-ff-only",
+      "design_row": "gwz --sync ff-only pull --head --remote root",
+      "argv": ["--sync", "ff-only", "pull", "--head", "--remote", "root"],
+      "message": "PullHeadRequest",
+      "fields": {
+        "meta.policy.remote": "root"
+      }
+    },
+    {
+      "id": "merge-source-ref",
+      "design_row": "gwz merge feature/x",
+      "argv": ["merge", "feature/x"],
+      "message": "MergeRequest",
+      "fields": {
+        "op": "start",
+        "source_ref": "feature/x",
+        "local_source_name": null,
+        "meta.policy.remote": null
+      }
+    },
+    {
+      "id": "merge-remote-family-head",
+      "design_row": "gwz merge --remote A",
+      "argv": ["merge", "--remote", "A"],
+      "message": "MergeRequest",
+      "fields": {
+        "op": "start",
+        "source_ref": null,
+        "local_source_name": "A",
+        "meta.policy.remote": null
+      },
+      "note": "For merge, --remote is family-only: a MergeRequest field, never OperationPolicy.remote. HEAD per paired member."
+    },
+    {
+      "id": "merge-remote-family-ref",
+      "design_row": "gwz merge --remote C lane/agent-17",
+      "argv": ["merge", "--remote", "C", "lane/agent-17"],
+      "message": "MergeRequest",
+      "fields": {
+        "op": "start",
+        "source_ref": "lane/agent-17",
+        "local_source_name": "C",
+        "meta.policy.remote": null
+      }
+    },
+    {
+      "id": "merge-remote-origin-is-unknown-local",
+      "design_row": "gwz merge --remote origin -> UnknownLocal (family-only; reserved / not a member)",
+      "argv": ["merge", "--remote", "origin"],
+      "message": "MergeRequest",
+      "fields": {
+        "op": "start",
+        "source_ref": null,
+        "local_source_name": "origin",
+        "meta.policy.remote": null
+      },
+      "core_refuses": "unknown_local",
+      "note": "merge --remote has no git-remote fallback, so the CLI encodes the name unchanged and core answers unknown_local (62) with the state detail in the message. Pull and push keep missing_remote for their neither case."
+    },
+    {
+      "id": "merge-bare-name-is-a-git-ref",
+      "design_row": "gwz merge A -> git ref `A`, not a family name",
+      "argv": ["merge", "A"],
+      "message": "MergeRequest",
+      "fields": {
+        "op": "start",
+        "source_ref": "A",
+        "local_source_name": null,
+        "meta.policy.remote": null
+      }
+    },
+    {
+      "id": "merge-remote-dry-run",
+      "design_row": "an invalid or unsupported family start refuses in core (design section 6.2)",
+      "argv": ["--dry-run", "merge", "--remote", "A"],
+      "message": "MergeRequest",
+      "fields": {
+        "op": "start",
+        "local_source_name": "A",
+        "meta.dry_run": true
+      },
+      "note": "merge --dry-run is a supported merge shape; the family selector does not add a CLI-side refusal to it."
+    },
+    {
+      "id": "push-remote-family-hub",
+      "design_row": "gwz push --remote hub -> PushRequest remote=hub (family); current branch to the same branch in hub",
+      "argv": ["push", "--remote", "hub"],
+      "message": "PushRequest",
+      "fields": {
+        "remote": "hub",
+        "meta.policy.remote": null
+      },
+      "note": "Ruling 4 (2026-09-06): the token is encoded ONCE, in PushRequest.remote -- design section 7 names only that field for push -- and OperationPolicy.remote stays absent. Core reads the request field first and still accepts a policy-only token from an older caller, so this decides the bytes a driver sends, not what core will bind. A ready family row wins in core; an absent row falls back to a git remote. This row was the unresolved divergence (gwz-cli also set the policy field; gwz-py cleared it): gwz-py's encoding stands."
+    },
+    {
+      "id": "push-remote-git-origin",
+      "design_row": "gwz push --remote origin -> PushRequest remote=origin (git)",
+      "argv": ["push", "--remote", "origin"],
+      "message": "PushRequest",
+      "fields": {
+        "remote": "origin",
+        "meta.policy.remote": null
+      }
+    }
+  ],
+  "message_refusals": [
+    {
+      "id": "clone-local-without-name",
+      "argv": ["clone", "--local"],
+      "refused_by": "cli",
+      "message_contains": ["--name"]
+    },
+    {
+      "id": "clone-local-dest-without-name",
+      "argv": ["clone", "--local", "dest"],
+      "refused_by": "cli",
+      "message_contains": ["--name"],
+      "note": "--local requires --name whether or not a destination is given."
+    },
+    {
+      "id": "clone-local-empty-name",
+      "argv": ["clone", "--local", "--name", ""],
+      "refused_by": "cli",
+      "message_contains": ["--name"],
+      "note": "Ruling 4 (2026-09-06): both drivers refuse an empty --name before encoding. Core's own shape check (validate_clone_local) refuses the empty name and the reserved names too, so the driver's refusal is the earlier answer, not the only one; the CLI answers for the shape that would otherwise cost a workspace discovery and a family read to learn the same thing. Formerly python-only."
+    },
+    {
+      "id": "clone-local-url-and-dest",
+      "argv": ["clone", "--local", "--name", "A", "url", "dest"],
+      "refused_by": "cli",
+      "message_contains": ["clone --local"],
+      "driver_message_contains": {
+        "rust": ["not a workspace URL"],
+        "python": ["one destination path"]
+      },
+      "note": "--local takes a single destination, never a URL plus a directory."
+    },
+    {
+      "id": "clone-local-verbatim-and-clean",
+      "argv": ["clone", "--local", "--verbatim", "--clean", "--name", "A"],
+      "refused_by": "cli",
+      "message_contains": ["--verbatim", "--clean"],
+      "driver_message_contains": {
+        "rust": ["mutually exclusive"]
+      }
+    },
+    {
+      "id": "clone-local-verbatim-and-bare",
+      "argv": ["clone", "--local", "--verbatim", "--bare", "--name", "A"],
+      "refused_by": "cli",
+      "message_contains": ["--verbatim", "--bare"],
+      "driver_message_contains": {
+        "rust": ["mutually exclusive"]
+      }
+    },
+    {
+      "id": "clone-local-branch-without-clean-or-bare",
+      "argv": ["clone", "--local", "-b", "lane/x", "--name", "A"],
+      "refused_by": "cli",
+      "message_contains": ["--clean", "--bare"],
+      "driver_message_contains": {
+        "rust": ["--clean or --bare"]
+      }
+    },
+    {
+      "id": "clone-local-empty-from",
+      "argv": ["clone", "--local", "--from", "", "--name", "B"],
+      "refused_by": "cli",
+      "message_contains": ["--from", "must not be empty"],
+      "note": "An empty copy_source is not `the cwd workspace`: the absent field means that. Encoding an empty string would ask core to resolve a nameless source."
+    },
+    {
+      "id": "clone-local-flags-without-local",
+      "argv": ["clone", "--from", "A", "https://example.invalid/ws.git"],
+      "refused_by": "cli",
+      "message_contains": ["--local"],
+      "note": "--name, --verbatim, --clean, --bare, -b and --from all mean nothing without --local; each refuses the same way."
+    },
+    {
+      "id": "clone-clean-without-local",
+      "argv": ["clone", "https://example.invalid/ws.git", "--clean"],
+      "refused_by": "cli",
+      "message_contains": ["--local"]
+    },
+    {
+      "id": "clone-from-without-local",
+      "argv": ["clone", "https://example.invalid/ws.git", "--from", "A"],
+      "refused_by": "cli",
+      "message_contains": ["--local"]
+    },
+    {
+      "id": "url-clone-dry-run",
+      "argv": ["--dry-run", "clone", "https://example.invalid/workspace.git"],
+      "refused_by": "cli",
+      "message_contains": ["--dry-run", "clone"],
+      "note": "The URL clone keeps its own pre-existing CLI-side --dry-run refusal. The local-family verbs do not copy it: they pass --dry-run through for core to refuse (see the *-dry-run message_cases)."
+    },
+    {
+      "id": "local-dispose-bare-force",
+      "argv": ["local", "dispose", "C", "--force"],
+      "refused_by": "cli",
+      "message_contains": ["hazard"],
+      "note": "An empty force_hazards list is `no force`, so encoding one for a --force invocation would invert the operator's authorization (design section 8.4)."
+    },
+    {
+      "id": "local-dispose-global-force-without-hazards",
+      "argv": ["--force", "local", "dispose", "C"],
+      "refused_by": "cli",
+      "message_contains": ["hazard"],
+      "note": "The global --force before the verb is the same refusal. Design section 11 item 15: the Rust CLI cannot add a subcommand --force beside the global one, so it parses the hazard list as operands of the global flag; every command line in sections 5 and 8 stays byte-identical."
+    },
+    {
+      "id": "local-dispose-empty-hazard-list",
+      "argv": ["local", "dispose", "C", "--force", ""],
+      "refused_by": "cli",
+      "message_contains": ["hazard"],
+      "driver_message_contains": {
+        "rust": ["empty"]
+      },
+      "note": "gwz-cli distinguishes an empty list from an empty element and says `must not contain an empty hazard name`; gwz-py cannot -- argparse gives a bare --force and --force \"\" the same value -- so it answers both with one message. Same refusal, different wording, hence the short shared needle."
+    },
+    {
+      "id": "local-dispose-trailing-empty-hazard",
+      "argv": ["local", "dispose", "C", "--force", "dirty,"],
+      "refused_by": "cli",
+      "message_contains": ["hazard"],
+      "driver_message_contains": {
+        "rust": ["empty"]
+      }
+    },
+    {
+      "id": "local-dispose-only-separators",
+      "argv": ["local", "dispose", "C", "--force", ","],
+      "refused_by": "cli",
+      "message_contains": ["hazard"]
+    },
+    {
+      "id": "local-dispose-hazards-without-force",
+      "argv": ["local", "dispose", "C", "dirty"],
+      "refused_by": "cli",
+      "message_contains": ["--force"],
+      "drivers": ["rust"],
+      "note": "Hazard names without --force never become a waiver. Scoped to rust because gwz-py's argparse rejects the extra operand as unrecognized before any handler runs -- a parser exit, not the driver's typed usage refusal, so its harness cannot read a message from it. Both drivers refuse before encoding."
+    },
+    {
+      "id": "local-dispose-keep-and-force",
+      "argv": ["local", "dispose", "C", "--keep", "--force", "dirty"],
+      "refused_by": "cli",
+      "message_contains": ["--keep", "--force"],
+      "driver_message_contains": {
+        "rust": ["mutually exclusive"]
+      },
+      "note": "Refused at the CLI in both drivers, although design section 7 also assigns it to core (`core rejects unknown hazards and keep+force`). Detaching and waiving loss are opposite intents; the CLI refuses the contradiction before it costs a family lock, and core keeps its own check for non-CLI callers."
+    },
+    {
+      "id": "merge-remote-continue",
+      "argv": ["merge", "--remote", "A", "--continue"],
+      "refused_by": "cli",
+      "message_contains": ["start"],
+      "driver_message_contains": {
+        "rust": ["starting a merge"]
+      },
+      "note": "local_source_name is start-only (design section 7); --continue, --abort, --status and --gc each refuse the same way."
+    },
+    {
+      "id": "merge-remote-abort",
+      "argv": ["merge", "--remote", "A", "--abort"],
+      "refused_by": "cli",
+      "message_contains": ["start"],
+      "driver_message_contains": {
+        "rust": ["starting a merge"]
+      }
+    },
+    {
+      "id": "merge-remote-status",
+      "argv": ["merge", "--remote", "A", "--status"],
+      "refused_by": "cli",
+      "message_contains": ["start"],
+      "driver_message_contains": {
+        "rust": ["starting a merge"]
+      }
+    },
+    {
+      "id": "merge-remote-gc",
+      "argv": ["merge", "--remote", "A", "--gc"],
+      "refused_by": "cli",
+      "message_contains": ["start"],
+      "driver_message_contains": {
+        "rust": ["starting a merge"]
+      }
+    }
+  ]
+}
