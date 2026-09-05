@@ -161,6 +161,13 @@ pub enum CopyWarningKind {
     /// A native attempt was classified unsupported and the entry was copied
     /// by ordinary read/write instead.
     NativeUnsupportedFellBack,
+    /// No native mechanism was attempted at all -- none is compiled into
+    /// the copier, or the probe reported the source/destination pair
+    /// unavailable -- so the copy ran ordinarily from the start (lane R
+    /// proposal R1, LCM1.0c follow-up 2). Copy-wide, named once; distinct
+    /// from [`NativeUnsupportedFellBack`](Self::NativeUnsupportedFellBack),
+    /// which reports an attempt that was made and rejected per entry.
+    NativeUnavailable,
     /// Ancillary metadata (ACLs, extended attributes, alternate streams) was
     /// not copied for this entry.
     AncillaryMetadataUnsupported,
@@ -211,11 +218,24 @@ impl CopyError {
         category: CopyErrorCategory,
         detail: impl Into<String>,
     ) -> Self {
+        Self::refused_with(path, category, detail, CopyReport::default())
+    }
+
+    /// A failure that stopped a copy already under way: `partial` is the
+    /// work completed before it, accurate for the destination's contents at
+    /// return (lane R proposal R2, LCM1.0c follow-up 2). [`refused`]
+    /// (Self::refused) is this with an empty report.
+    pub fn refused_with(
+        path: impl Into<PathBuf>,
+        category: CopyErrorCategory,
+        detail: impl Into<String>,
+        partial: CopyReport,
+    ) -> Self {
         Self {
             failed_path: path.into(),
             category,
             detail: detail.into(),
-            partial: CopyReport::default(),
+            partial,
         }
     }
 }
@@ -273,6 +293,22 @@ mod tests {
 
     #[test]
     fn refused_error_carries_an_empty_partial_report() {
+        let partial = CopyReport {
+            ordinary_files: 2,
+            ..CopyReport::default()
+        };
+        let stopped = CopyError::refused_with(
+            "dir/b.txt",
+            CopyErrorCategory::Cancelled,
+            "stopped",
+            partial.clone(),
+        );
+        assert_eq!(
+            stopped.partial, partial,
+            "refused_with keeps the work done so far"
+        );
+        assert_eq!(stopped.failed_path, PathBuf::from("dir/b.txt"));
+        assert_eq!(stopped.category, CopyErrorCategory::Cancelled);
         let error = CopyError::refused("dest", CopyErrorCategory::DestinationNotEmpty, "x");
         assert_eq!(error.partial, CopyReport::default());
         assert_eq!(error.partial.files(), 0);

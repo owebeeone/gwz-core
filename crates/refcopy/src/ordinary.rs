@@ -82,12 +82,12 @@ pub(crate) fn copy_tree(
     }
     match run.walk(root_permissions) {
         Ok(()) => Ok(run.report),
-        Err((failed_path, category, detail)) => Err(CopyError {
+        Err((failed_path, category, detail)) => Err(CopyError::refused_with(
             failed_path,
             category,
             detail,
-            partial: run.report,
-        }),
+            run.report,
+        )),
     }
 }
 
@@ -97,9 +97,11 @@ fn opening_warnings(mode: CopyMode) -> Vec<CopyWarning> {
     // same way the traversal names the source root.
     let mut warnings = Vec::new();
     if mode == CopyMode::Auto {
+        // Nothing was attempted natively (no mechanism is linked), so this
+        // is `NativeUnavailable`, not a per-entry fallback (R1).
         warnings.push(CopyWarning {
             path: PathBuf::new(),
-            kind: CopyWarningKind::NativeUnsupportedFellBack,
+            kind: CopyWarningKind::NativeUnavailable,
             detail: "native copy-on-write is unavailable in this build (no platform \
                      copy-on-write dependency is linked); every regular file was copied by \
                      ordinary read/write"

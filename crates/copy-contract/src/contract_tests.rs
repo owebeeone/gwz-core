@@ -135,11 +135,8 @@ impl TreeCopier for OrdinaryTreeCopier {
         }
         copy_dir(request, cancellation, Path::new(""), &mut report)
             .map(|()| report.clone())
-            .map_err(|(failed, category, detail)| CopyError {
-                failed_path: failed,
-                category,
-                detail,
-                partial: report,
+            .map_err(|(failed, category, detail)| {
+                CopyError::refused_with(failed, category, detail, report)
             })
     }
 }

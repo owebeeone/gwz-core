@@ -4,7 +4,9 @@
 //! import (design §6.2). The functions are pure over the request and return
 //! validated plain values that the adapters consume.
 
-use gwz_family_model::{CloneMode, MemberName, ROOT_NAME, RemoteToken};
+use gwz_family_model::{
+    CloneMode, DisposeTarget, MemberName, RemoteToken, classify_dispose_target,
+};
 use gwz_local_disposal::HazardWaiver;
 use gwz_local_import::IMPORT_REF_NAMESPACE;
 
@@ -109,13 +111,20 @@ pub fn validate_local_family(
                 .name
                 .as_deref()
                 .ok_or_else(|| invalid("dispose requires a member name"))?;
-            if raw == ROOT_NAME {
-                return Err(invalid(
-                    "root is never disposed; `gwz local disband` retires the family",
-                ));
-            }
-            let name = MemberName::parse(raw)
-                .map_err(|error| invalid(format!("invalid member name: {error}")))?;
+            // The model decides what a dispose token addresses (F2): the
+            // root is a legal token and never disposed, so its refusal says
+            // why rather than reporting a reserved word.
+            let name = match classify_dispose_target(raw) {
+                DisposeTarget::Root => {
+                    return Err(invalid(
+                        "root is never disposed; `gwz local disband` retires the family",
+                    ));
+                }
+                DisposeTarget::Invalid(error) => {
+                    return Err(invalid(format!("invalid member name: {error}")));
+                }
+                DisposeTarget::Member(name) => name,
+            };
             let waivers = HazardWaiver::parse_all(&request.force_hazards)
                 .map_err(|error| invalid(error.to_string()))?;
             let keep = request.keep.unwrap_or(false);

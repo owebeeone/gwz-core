@@ -52,12 +52,18 @@ pub(crate) fn refusal(refusal: &Refusal) -> ModelError {
     let code = match refusal {
         Refusal::NameCollision { .. }
         | Refusal::PathCollision { .. }
-        | Refusal::NestedPath { .. } => ErrorCode::PathCollision,
+        | Refusal::NestedPath { .. }
+        | Refusal::AllocationCollision { .. } => ErrorCode::PathCollision,
         Refusal::NotFound { .. } => ErrorCode::MemberNotFound,
         Refusal::InvalidRow { .. }
+        | Refusal::PathNotNormalised { .. }
         | Refusal::WrongState { .. }
         | Refusal::AllocationMismatch { .. }
         | Refusal::NotDisposing { .. } => ErrorCode::InvalidRequest,
+        // `Refusal` is `#[non_exhaustive]` (F1): a refusal the model adds
+        // later is a request the family's own metadata refuses, until this
+        // table names it.
+        _ => ErrorCode::InvalidRequest,
     };
     ModelError::new(code, refusal.to_string())
 }
@@ -116,6 +122,24 @@ mod tests {
         assert_eq!(
             refusal(&Refusal::NotFound { name: name.clone() }).code,
             ErrorCode::MemberNotFound
+        );
+        // F1 (LCM1.0c follow-up 2): the two refusals that were message folds.
+        assert_eq!(
+            refusal(&Refusal::AllocationCollision {
+                name: name.clone(),
+                holder: "root".to_owned()
+            })
+            .code,
+            ErrorCode::PathCollision
+        );
+        assert_eq!(
+            refusal(&Refusal::PathNotNormalised {
+                name: name.clone(),
+                path: "../ws-A/".to_owned(),
+                normalised: "../ws-A".to_owned()
+            })
+            .code,
+            ErrorCode::InvalidRequest
         );
         assert_eq!(
             refusal(&Refusal::WrongState {

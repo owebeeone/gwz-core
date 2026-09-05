@@ -710,7 +710,7 @@ fn auto_mode_reports_that_native_copy_on_write_was_unavailable() {
     let native: Vec<_> = auto
         .warnings
         .iter()
-        .filter(|warning| warning.kind == CopyWarningKind::NativeUnsupportedFellBack)
+        .filter(|warning| warning.kind == CopyWarningKind::NativeUnavailable)
         .collect();
     assert_eq!(native.len(), 1, "one copy-wide warning, not one per file");
     assert!(
@@ -740,7 +740,7 @@ fn auto_mode_reports_that_native_copy_on_write_was_unavailable() {
         !ordinary
             .warnings
             .iter()
-            .any(|warning| warning.kind == CopyWarningKind::NativeUnsupportedFellBack),
+            .any(|warning| warning.kind == CopyWarningKind::NativeUnavailable),
         "an ordinary-only copy was never promised a native path"
     );
 }
@@ -760,7 +760,7 @@ fn a_partial_report_keeps_the_copy_wide_warnings() {
             .partial
             .warnings
             .iter()
-            .any(|warning| warning.kind == CopyWarningKind::NativeUnsupportedFellBack),
+            .any(|warning| warning.kind == CopyWarningKind::NativeUnavailable),
         "a partial report still says how the copy was performed"
     );
 }

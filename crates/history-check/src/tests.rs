@@ -741,6 +741,11 @@ fn cancellation_mid_walk_is_unknown_and_stops_reading() {
     invariants(&protected, &outcome);
 
     let reasons = expect_unknown(outcome);
+    assert_eq!(
+        reasons[0].kind,
+        UnknownKind::Cancelled,
+        "a cancelled walk is its own kind (H1), not an exhausted bound"
+    );
     assert!(
         reasons[0].detail.contains("cancel"),
         "the reason says it was cancelled: {}",
@@ -766,8 +771,45 @@ fn cancellation_before_any_work_is_unknown_without_reading() {
         &CancelAfter::new(0),
     );
     invariants(&protected, &outcome);
-    expect_unknown(outcome);
+    let reasons = expect_unknown(outcome);
+    assert_eq!(reasons[0].kind, UnknownKind::Cancelled);
     assert!(reader.reads().is_empty());
+}
+
+/// H3 (LCM1.0c follow-up 2): a Git object a GWZ coordination record
+/// references is a *named* protected root, so it is verified against the
+/// witnesses like any other root -- covered when its exact id is reachable
+/// whole, unpreserved when it is not -- and never `Unknown` as
+/// uninterpreted evidence. As a witness root it is operation state and is
+/// not eligible.
+#[test]
+fn a_coordination_record_object_is_a_named_root_that_is_verified_or_unpreserved() {
+    let mut reader = InMemoryObjectReader::new();
+    let head = commit(&mut reader, SHA1, 0x10, Vec::new());
+    reader.root(ref_source("refs/heads/main"), head.clone());
+    let stash_source = RootSource::CoordinationRecord {
+        record: "stash gwz_stash_0007".to_owned(),
+        object: "worktree".to_owned(),
+    };
+
+    let held = roots(vec![root(stash_source.clone(), head.clone())]);
+    let coverage = expect_verified(check(&held, &[member("hub")], &reader));
+    assert_eq!(coverage.covered.len(), 1);
+    assert_eq!(coverage.covered[0].root.source, stash_source);
+    assert_eq!(
+        coverage.covered[0].witness_root.source,
+        ref_source("refs/heads/main")
+    );
+
+    let gone = roots(vec![root(stash_source.clone(), oid(SHA1, 0x90))]);
+    let items = expect_unpreserved(check(&gone, &[member("hub")], &reader));
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].root.source, stash_source);
+
+    assert!(
+        !is_eligible_witness_root(&stash_source),
+        "a record's objects are operation state, not a durable witness root"
+    );
 }
 
 #[test]

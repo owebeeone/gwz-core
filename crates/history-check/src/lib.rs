@@ -47,8 +47,21 @@
 //! record format); it yields `Unknown` with `UnknownKind::UnsupportedEvidence`
 //! before any read. Callers that can name a root — a ref, `HEAD`, a reflog
 //! entry, a stash entry, an annotated tag, and the Git objects a GWZ stash
-//! coordination record references — must present it with that named source
-//! so it can be verified.
+//! coordination record references (`RootSource::CoordinationRecord`, since
+//! LCM1.0c follow-up 2) — must present it with that named source so it can
+//! be verified.
+//!
+//! # One call per witness store
+//!
+//! `check_history` takes one `ObjectReader`, and that reader must serve
+//! exactly one surviving repository's object store. The core adapter calls
+//! this function once per witness store and combines the outcomes; it never
+//! hands over a union reader spanning several witnesses, because a union
+//! could complete one witness's graph with another witness's objects and so
+//! certify a root as preserved in a repository that does not hold its whole
+//! subgraph. The rule is recorded beside the adapter's home in core
+//! (`gwz-core/src/local_clone/`) and in the LCM1.0c checkpoint §11; no
+//! signature change enforces it yet.
 
 #![forbid(unsafe_code)]
 
@@ -177,7 +190,12 @@ pub fn is_eligible_witness_root(source: &RootSource) -> bool {
     match source {
         RootSource::Head | RootSource::AnnotatedTag { .. } => true,
         RootSource::Ref { name } => !is_temporary_operation_ref(name),
-        RootSource::Reflog { .. } | RootSource::Stash { .. } | RootSource::Other { .. } => false,
+        // A coordination record's objects live as long as the record does:
+        // operation state, like a stash entry, not a durable retention.
+        RootSource::Reflog { .. }
+        | RootSource::Stash { .. }
+        | RootSource::CoordinationRecord { .. }
+        | RootSource::Other { .. } => false,
     }
 }
 
@@ -316,6 +334,7 @@ fn root_bytes(root: &ProtectedRoot) -> u64 {
     let name = match &root.source {
         RootSource::Ref { name } | RootSource::AnnotatedTag { name } => name.len(),
         RootSource::Reflog { reference, .. } => reference.len(),
+        RootSource::CoordinationRecord { record, object } => record.len() + object.len(),
         RootSource::Other { detail } => detail.len(),
         RootSource::Head | RootSource::Stash { .. } => 0,
     };
@@ -323,11 +342,8 @@ fn root_bytes(root: &ProtectedRoot) -> u64 {
 }
 
 fn cancelled() -> UnknownReason {
-    // `UnknownKind` has no `Cancelled` variant yet; a cancelled walk is
-    // reported as the work bound it is, with an explicit detail. See the
-    // lane C proposal in the landing report.
     UnknownReason::new(
-        UnknownKind::LimitExceeded,
+        UnknownKind::Cancelled,
         "history verification was cancelled before it completed",
     )
 }

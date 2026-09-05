@@ -46,7 +46,10 @@
 //!
 //! Hazard and reason order is deterministic: work entries in input order,
 //! then suppressed paths, the unfinished native operation, native stashes,
-//! and finally the GWZ merge, stash and other records.
+//! the observer's own per-path unknowns (`WorkObservation::unknown`, lane W
+//! proposal W1: a known observation whose listed paths could not be
+//! established -- each is an unknown reason here, never clean), and finally
+//! the GWZ merge, stash and other records.
 
 #![forbid(unsafe_code)]
 
@@ -265,6 +268,10 @@ impl Builder {
                 format!("{count} native stash entr{plural}"),
             );
         }
+
+        // The observer established the inventory except for these paths;
+        // each is carried through as it was reported (kind, path, detail).
+        self.unknown.extend(observation.unknown.iter().cloned());
     }
 
     /// One status-suppressed tracked path, classified from its physical
@@ -477,6 +484,38 @@ mod tests {
 
     fn kinds(report: &WorkReport) -> Vec<HazardKind> {
         report.hazards.iter().map(|h| h.kind.clone()).collect()
+    }
+
+    /// W1 (LCM1.0c follow-up 2): a known observation may name paths it
+    /// could not establish. Each is an unknown reason in the report, with
+    /// its path and detail as reported, so the verdict is `Unknown` -- never
+    /// clean -- while the hazards found beside it are still listed.
+    #[test]
+    fn per_path_unknowns_in_a_known_observation_are_unknown_reasons_beside_the_hazards() {
+        let observed = WorkObservation {
+            entries: vec![entry("src/a.rs", WorkKind::Unstaged)],
+            unknown: vec![UnknownReason {
+                kind: UnknownKind::Unreadable,
+                path: Some(path("vendor/blob.bin")),
+                detail: "the worktree entry could not be read".to_owned(),
+            }],
+            ..WorkObservation::default()
+        };
+        let report = classify_work(&observed, &GwzEvidence::default());
+        assert_eq!(report.verdict, WorkVerdict::Unknown);
+        assert_eq!(kinds(&report), vec![HazardKind::Work(WorkKind::Unstaged)]);
+        assert_eq!(unknown_kinds(&report), vec![UnknownKind::Unreadable]);
+        assert_eq!(
+            report.unknown[0].path.as_deref(),
+            Some(b"vendor/blob.bin".as_slice())
+        );
+        assert!(report.unknown[0].detail.contains("could not be read"));
+
+        // An empty list is the ordinary known observation: nothing changes.
+        assert_eq!(
+            classify_work(&observation(Vec::new()), &GwzEvidence::default()).verdict,
+            WorkVerdict::Clean
+        );
     }
 
     fn unknown_kinds(report: &WorkReport) -> Vec<UnknownKind> {
@@ -1011,6 +1050,7 @@ mod tests {
             sparse_absent: Vec::new(),
             native_operation: Some(NativeOperation::Rebase),
             stash_entries: 1,
+            unknown: Vec::new(),
         };
         let evidence = GwzEvidence {
             merge: EvidenceState::Open {

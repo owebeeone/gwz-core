@@ -5,7 +5,7 @@
 //! and name the row and the state that refused.
 
 use crate::path::{MemberPath, PathError, PathRelation, relate};
-use crate::{AllocationId, FamilyView, MemberName, MemberRow, MemberState, ROOT_PATH};
+use crate::{AllocationId, FamilyView, MemberName, MemberRow, MemberState, ROOT_NAME, ROOT_PATH};
 
 /// One index change. Pointer and marker files are separate store session
 /// operations; this enum only ever changes the root index.
@@ -48,11 +48,31 @@ pub enum RemovalReason {
     Stale,
 }
 
+/// Why the model refused a change or a decoded index. `#[non_exhaustive]`
+/// (lane F proposal F1, LCM1.0c follow-up 2): a consumer outside this crate
+/// keeps a wildcard arm, so a refusal added later is mapped by that arm
+/// instead of breaking the consumer's build; every refusal is typed here,
+/// never folded into another variant's message text.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Refusal {
     NameCollision {
         name: MemberName,
         holder_path: String,
+    },
+    /// A member path with a valid meaning, spelled unnormalised; the index
+    /// records only `normalised` (F1; was an `InvalidRow` message fold).
+    PathNotNormalised {
+        name: MemberName,
+        path: String,
+        normalised: String,
+    },
+    /// The allocation marker value is already held by another destination:
+    /// `holder` is that member's name, or [`ROOT_NAME`] for the root (F1;
+    /// was an `InvalidRow` message fold).
+    AllocationCollision {
+        name: MemberName,
+        holder: String,
     },
     PathCollision {
         path: String,
@@ -96,6 +116,23 @@ impl std::fmt::Display for Refusal {
         match self {
             Self::NameCollision { name, holder_path } => {
                 write!(f, "name `{name}` already holds {holder_path}")
+            }
+            Self::PathNotNormalised {
+                name,
+                path,
+                normalised,
+            } => write!(
+                f,
+                "row `{name}`: member path `{path}` is not normalised (`{normalised}`)"
+            ),
+            Self::AllocationCollision { name, holder } if holder == ROOT_NAME => {
+                write!(f, "row `{name}`: allocation is already held by the root")
+            }
+            Self::AllocationCollision { name, holder } => {
+                write!(
+                    f,
+                    "row `{name}`: allocation is already held by member `{holder}`"
+                )
             }
             Self::PathCollision { path, holder } => {
                 write!(f, "path `{path}` is already a family member ({holder})")
@@ -293,18 +330,16 @@ pub fn check_allocation_available(
     allocation: &AllocationId,
 ) -> Result<(), Refusal> {
     if &view.root.allocation_id == allocation {
-        return Err(Refusal::InvalidRow {
+        return Err(Refusal::AllocationCollision {
             name: name.clone(),
-            detail: format!("allocation `{allocation}` is the root's"),
+            holder: ROOT_NAME.to_owned(),
         });
     }
     for (other_name, other) in &view.members {
         if other_name != name && &other.allocation_id == allocation {
-            return Err(Refusal::InvalidRow {
+            return Err(Refusal::AllocationCollision {
                 name: name.clone(),
-                detail: format!(
-                    "allocation `{allocation}` is already held by member `{other_name}`"
-                ),
+                holder: other_name.as_str().to_owned(),
             });
         }
     }
@@ -358,6 +393,11 @@ fn path_refusal(name: &MemberName, path: &str, error: &PathError) -> Refusal {
         | PathError::ContainsRoot { .. } => Refusal::NestedPath {
             path: path.to_owned(),
             other: ROOT_PATH.to_owned(),
+        },
+        PathError::NotNormalised { normalised, .. } => Refusal::PathNotNormalised {
+            name: name.clone(),
+            path: path.to_owned(),
+            normalised: normalised.clone(),
         },
         other => Refusal::InvalidRow {
             name: name.clone(),
@@ -697,8 +737,12 @@ mod path_policy_tests {
             let refusal =
                 allocate(path).expect_err("an un-normalised path must be refused, not recorded");
             assert!(
-                matches!(refusal, Refusal::InvalidRow { .. }),
-                "{path}: {refusal:?}"
+                matches!(
+                    &refusal,
+                    Refusal::PathNotNormalised { path: spelled, normalised, .. }
+                        if spelled == path && normalised == "../ws-N"
+                ),
+                "{path}: the typed refusal carries the spelling and its normal form: {refusal:?}"
             );
             assert!(
                 refusal.to_string().contains("../ws-N"),
@@ -710,9 +754,15 @@ mod path_policy_tests {
     #[test]
     fn collisions_and_nesting_are_decided_after_normalisation() {
         let same = allocate("../ws-A/").expect_err("`../ws-A/` is `../ws-A`");
-        assert!(matches!(same, Refusal::InvalidRow { .. }), "{same:?}");
+        assert!(
+            matches!(same, Refusal::PathNotNormalised { .. }),
+            "{same:?}"
+        );
         let nested = allocate("../ws-A/inner/").expect_err("still inside A");
-        assert!(matches!(nested, Refusal::InvalidRow { .. }), "{nested:?}");
+        assert!(
+            matches!(nested, Refusal::PathNotNormalised { .. }),
+            "{nested:?}"
+        );
         assert!(allocate("../ws-N").is_ok());
         assert!(allocate("../../elsewhere/ws-N").is_ok());
     }
@@ -814,7 +864,7 @@ mod path_policy_tests {
         view.members.insert(name("Same"), distinct("../ws-A/"));
         let refusal = validate_view(&view).unwrap_err();
         assert!(
-            matches!(refusal, Refusal::InvalidRow { .. }),
+            matches!(refusal, Refusal::PathNotNormalised { .. }),
             "an unnormalised recorded path refuses on its own row: {refusal:?}"
         );
 
@@ -853,9 +903,13 @@ mod path_policy_tests {
     fn an_allocation_marker_identifies_exactly_one_destination() {
         let view = view();
         let mut candidate = row("../ws-N", MemberState::Creating);
-        for (taken, holder) in [
-            (view.members[&name("A")].allocation_id.clone(), "member `A`"),
-            (view.root.allocation_id.clone(), "the root"),
+        for (taken, holder, wording) in [
+            (
+                view.members[&name("A")].allocation_id.clone(),
+                "A",
+                "member `A`",
+            ),
+            (view.root.allocation_id.clone(), ROOT_NAME, "the root"),
         ] {
             candidate.allocation_id = taken;
             let refusal = validate_transition(
@@ -866,10 +920,15 @@ mod path_policy_tests {
                 },
             )
             .expect_err("one marker value must not match two destinations");
-            assert!(
-                matches!(&refusal, Refusal::InvalidRow { detail, .. } if detail.contains(holder)),
-                "{holder}: {refusal:?}"
+            assert_eq!(
+                refusal,
+                Refusal::AllocationCollision {
+                    name: name("N"),
+                    holder: holder.to_owned(),
+                },
+                "the typed refusal names the holder"
             );
+            assert!(refusal.to_string().contains(wording), "{holder}: {refusal}");
         }
         candidate.allocation_id = AllocationId::new("alloc-N").unwrap();
         assert!(

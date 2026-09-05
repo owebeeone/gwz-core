@@ -325,6 +325,11 @@ pub enum UnknownKind {
     LimitExceeded,
     /// The observer does not implement this observation.
     Unimplemented,
+    /// The caller's cancellation port stopped the observation before it
+    /// completed (lane H proposal H1, LCM1.0c follow-up 2). Distinct from
+    /// [`LimitExceeded`](Self::LimitExceeded): nothing was exhausted, the
+    /// caller asked to stop, and repeating the observation may complete.
+    Cancelled,
 }
 
 /// On-disk unsaved work in one repository, as observed (never as reported
@@ -341,6 +346,14 @@ pub struct WorkObservation {
     pub native_operation: Option<NativeOperation>,
     /// Native stash entries present.
     pub stash_entries: u64,
+    /// Entries the observer could not establish, each with its path (lane W
+    /// proposal W1, LCM1.0c follow-up 2): the observation as a whole is
+    /// known -- every other entry is accurately reported -- but these paths
+    /// are not. A consumer classifies each as an unknown reason, never as
+    /// clean; an observer whose whole inventory failed returns
+    /// [`Observation::Unknown`] instead. Empty means every entry was
+    /// established.
+    pub unknown: Vec<UnknownReason>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -435,6 +448,17 @@ pub enum RootSource {
     /// An annotated tag object (its own object, separate from its target).
     AnnotatedTag {
         name: String,
+    },
+    /// A Git object a GWZ coordination record references (lane H proposal
+    /// H3, LCM1.0c follow-up 2): `record` names the record (kind and id,
+    /// for example `stash gwz_stash_0007`) and `object` the role the id plays
+    /// in it (for example `base`, `index`, `worktree`, `untracked`). Nameable,
+    /// so a history check verifies it like any other named root instead of
+    /// treating it as [`Other`](Self::Other); as a *witness* root it is
+    /// operation state, not a durable retention, and is not eligible.
+    CoordinationRecord {
+        record: String,
+        object: String,
     },
     Other {
         detail: String,

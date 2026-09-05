@@ -19,6 +19,21 @@
 //! local-family operation stops there with `unsupported_operation` and no
 //! effect. Later adapters (copy, installation, disposal, evidence) are added
 //! here by the integration lane as their libraries land.
+//!
+//! # History-check adapter rule (lane H proposal H2, LCM1.0c follow-up 2)
+//!
+//! The disposal port's `check_history` adapter, when it lands in this
+//! module, calls `gwz_history_check::check_history` **once per witness
+//! store**: each call gets one `ObjectReader` that serves exactly one
+//! surviving family repository's object store, and the adapter combines
+//! the per-witness outcomes (a protected root is preserved when some single
+//! witness preserves it whole). It never hands the verifier a union reader
+//! spanning several witnesses, because a union reader could complete one
+//! witness's graph with another witness's objects and so certify a root as
+//! preserved in a repository that does not hold its whole subgraph -- the
+//! design's "surviving family repositories" proof (§5.1, §11 item 9) is
+//! per repository. The verifier's signature does not enforce this yet;
+//! the rule lives here and in the LCM1.0c checkpoint §11 until it does.
 
 pub mod errors;
 pub mod family_merge;

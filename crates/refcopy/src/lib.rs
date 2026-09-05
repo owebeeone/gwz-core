@@ -14,9 +14,11 @@
 //! ran: [`SystemTreeCopier::probe_native`] reports
 //! [`NativeCapability::Unavailable`], [`SystemTreeCopier::mechanism`] reports
 //! [`NativeMechanism::None`], every report counts its files as
-//! `ordinary_files`, and `CopyMode::Auto` carries a warning saying so
-//! (design §12, "Native copy unavailable -> ordinary independent copy; actual
-//! method reported").
+//! `ordinary_files`, and `CopyMode::Auto` carries one copy-wide
+//! `CopyWarningKind::NativeUnavailable` warning saying so (design §12,
+//! "Native copy unavailable -> ordinary independent copy; actual method
+//! reported"); `NativeUnsupportedFellBack` is reserved for a native attempt
+//! that was made and rejected per entry, which this build never makes.
 
 #![forbid(unsafe_code)]
 

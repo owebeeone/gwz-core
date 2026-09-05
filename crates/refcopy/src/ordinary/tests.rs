@@ -284,7 +284,7 @@ fn a_temporary_name_is_a_sibling_of_the_entry_and_unique_per_entry() {
 fn auto_mode_warns_that_native_copy_on_write_is_unavailable_in_this_build() {
     let auto = opening_warnings(CopyMode::Auto);
     assert_eq!(auto.len(), 2);
-    assert_eq!(auto[0].kind, CopyWarningKind::NativeUnsupportedFellBack);
+    assert_eq!(auto[0].kind, CopyWarningKind::NativeUnavailable);
     assert!(auto[0].detail.contains("unavailable in this build"));
     assert_eq!(auto[0].path, PathBuf::new(), "the warning names the copy");
     assert_eq!(auto[1].kind, CopyWarningKind::AncillaryMetadataUnsupported);
