@@ -1,0 +1,22 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@gwz_core_crates//:defs.bzl", "aliases", "all_crate_deps")
+
+exports_files(["Cargo.toml"])  # crate_universe (the @gwz_core_crates hub) reads this
+
+# gwz-work-detector — GWZ local clone: pure unsaved-work classification.
+# A member of gwz-core's own Cargo workspace (see //gwz-core:BUILD.bazel): third-party deps
+# resolve from //gwz-core:Cargo.lock through @gwz_core_crates; first-party deps are the sibling
+# members listed by label, mirroring [dependencies] in Cargo.toml (the allowed edges are owned
+# by gwz-core/scripts/checks/check_local_clone_boundaries.py).
+rust_library(
+    name = "gwz_work_detector",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [
+        "//gwz-core/crates/repo-contract:gwz_repo_contract",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//gwz-core:__subpackages__"],
+)

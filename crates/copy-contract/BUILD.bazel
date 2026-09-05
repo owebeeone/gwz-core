@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@gwz_core_crates//:defs.bzl", "aliases", "all_crate_deps")
+
+exports_files(["Cargo.toml"])  # crate_universe (the @gwz_core_crates hub) reads this
+
+# gwz-copy-contract — GWZ local clone: tree-copy contract (no platform implementation).
+# A member of gwz-core's own Cargo workspace (see //gwz-core:BUILD.bazel): third-party deps
+# resolve from //gwz-core:Cargo.lock through @gwz_core_crates; first-party deps are the sibling
+# members listed by label, mirroring [dependencies] in Cargo.toml (the allowed edges are owned
+# by gwz-core/scripts/checks/check_local_clone_boundaries.py).
+rust_library(
+    name = "gwz_copy_contract",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//gwz-core:__subpackages__"],
+)

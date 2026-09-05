@@ -1,23 +1,59 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@gwz_core_crates//:defs.bzl", "aliases", "all_crate_deps")
 
-exports_files(["Cargo.toml"])  # crate_universe reads this
+# gwz-core is its own Cargo workspace (Option A, operator ruling 2026-09-05; see the
+# [workspace] table in Cargo.toml). crate_universe's @gwz_core_crates hub (MODULE.bazel)
+# reads this workspace's manifest and lock, so both are exported here.
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+])
+
+# The local clone family libraries: this workspace's members under crates/*, each a Bazel
+# package with a rust_library named after the crate (crates/<name>/BUILD.bazel). crate_universe
+# does not splice workspace members -- it expects them to be Bazel targets -- so they are wired
+# by label, exactly as gwz-cli wires //gwz-core:gwz_core. Mirrors [dependencies] in Cargo.toml
+# and is kept in lockstep by hand. The dev-only harness crates/local-testrepo is a
+# [dev-dependencies] edge (testonly in Bazel) and is deliberately absent.
+_LOCAL_CLONE_LIBRARIES = [
+    "//gwz-core/crates/copy-contract:gwz_copy_contract",
+    "//gwz-core/crates/family-model:gwz_family_model",
+    "//gwz-core/crates/family-store:gwz_family_store",
+    "//gwz-core/crates/family-store-contract:gwz_family_store_contract",
+    "//gwz-core/crates/history-check:gwz_history_check",
+    "//gwz-core/crates/local-disposal:gwz_local_disposal",
+    "//gwz-core/crates/local-import:gwz_local_import",
+    "//gwz-core/crates/refcopy:gwz_refcopy",
+    "//gwz-core/crates/repo-contract:gwz_repo_contract",
+    "//gwz-core/crates/repo-factory:gwz_repo_factory",
+    "//gwz-core/crates/repo-inspect:gwz_repo_inspect",
+    "//gwz-core/crates/work-detector:gwz_work_detector",
+    "//gwz-core/crates/workspace-install:gwz_workspace_install",
+]
 
 # gwz-core — the GWZ workspace library.
-# Deps: git2 (native: libgit2-sys/libssh2-sys/libz-sys/openssl-sys), serde,
-# serde_yaml, yaml-rust2, url.
+# Third-party deps -- git2 (native: libgit2-sys/libssh2-sys/libz-sys/openssl-sys), cap-std,
+# cap-fs-ext, serde, serde_yaml, yaml-rust2, url, chrono, regex, ... -- come from
+# @gwz_core_crates, resolved from //gwz-core:Cargo.lock. taut-shape arrives the same way:
+# this workspace's lock pins it to the git rev in Cargo.toml (the outer workspace's [patch]
+# to the sibling taut-shape-rs checkout is only visible to the @crates hub, as it is only
+# visible to cargo when building from the outer workspace).
 rust_library(
     name = "gwz_core",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
-    # include_str!/generated data + non-rs files the crate reads at compile time
-    compile_data = glob(["**/*"], exclude = ["**/*.rs", "BUILD.bazel", "Cargo.toml"], allow_empty = True),
+    # Non-Rust files the crate embeds at compile time (include_str! of
+    # src/workspace_ops/agents_gwz_template.md). Confined to src/: the previous `**/*` glob
+    # swept target/ (9 GB, 44k files), docs/, dev-docs/, protocol/ and .git/ into every rustc
+    # action's inputs.
+    compile_data = glob(
+        ["src/**"],
+        exclude = ["src/**/*.rs"],
+        allow_empty = True,
+    ),
     aliases = aliases(),
-    # taut-shape is included here automatically: it is a path dependency in the
-    # unified Cargo workspace, so crate_universe splices it and exposes it as
-    # @crates//:taut-shape, which all_crate_deps() picks up like any other dep.
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + _LOCAL_CLONE_LIBRARIES,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
 )
