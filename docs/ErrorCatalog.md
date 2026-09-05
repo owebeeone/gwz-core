@@ -42,19 +42,27 @@
 | `stash_incomplete` | Local bundle metadata and native Git stash payloads no longer match, or a partial restore needs explicit selection. | Inspect `gwz stash list --expanded`; recover/drop native stashes manually if needed. |
 | `stash_conflict` | Native stash restore reported a conflict. | Resolve the affected member repository and retry or clean up the stash explicitly. |
 | `source_identity_mismatch` | A repository being attached or assigned an existing source identity does not contain every commit required by historical snapshot/marker evidence. | Fetch the missing history into the repository, verify it is the intended source, and retry. |
+| `unknown_local` | `gwz merge --remote <name>` named no ready local-family member: the name is absent from the family index, reserved (`origin`), or its row is `creating`/`disposing` (the message says which). Merge resolves family names only; it never falls back to a Git remote. | Run `gwz local list`; name a `ready` member, or use `gwz merge <ref>` for a Git ref and `gwz pull --head --remote <git-remote>` for a Git remote. |
 
 Errors can appear as a returned `ModelError`, an operation-level `GwzError` in
 `ResponseEnvelope.errors`, or a member-scoped `MemberResponse.error`.
 
 ## Local Clone Family
 
-The LCM1.0c checkpoint (2026-09-05) allocates no new error code. Local
-family requests reuse `invalid_request` (malformed name, missing dispose
-name, unknown hazard, `keep` with hazards, `local_source_name` on a
-non-start merge), `merge_validation_failed` (a `local_source_name` that
-reaches the merge engine instead of the family wrapper), `unsupported_operation`
-(family dry-run, and every mode or operation not yet implemented), and
+The LCM1.0c checkpoint (2026-09-05) allocated no new error code; follow-up
+2 (operator ruling 2026-09-05, gwz-dev `dev-docs/GwzLocalCloneDesign.md`
+revision 9 §6/§7, §11 item 13) allocates exactly one, `unknown_local` (62),
+for the product design's `UnknownLocal` outcome: a family-only merge
+selector (`MergeRequest.local_source_name`, `gwz merge --remote <name>`)
+that names no ready family member. The message carries the state detail —
+the row's recorded lifecycle state when a row exists, "no ready family
+member" when none does — and there is no Git-remote fallback. Everything
+else reuses existing codes: `invalid_request` (malformed name, missing
+dispose name, unknown hazard, `keep` with hazards, `local_source_name` on a
+non-start merge, an empty `copy_source`), `merge_validation_failed` (a
+`local_source_name` that reaches the merge engine instead of the family
+wrapper), `unsupported_operation` (family dry-run, a present `copy_source`
+until LCM3.2, and every mode or operation not yet implemented), and
 `missing_remote` (pull/push token that is neither a ready family member nor
-a Git remote). The product design's `UnknownLocal` outcome for a family-only
-merge selector has no `GwzErrorCode` yet; its allocation is an open
-operator decision recorded in the LCM1.0c checkpoint.
+a Git remote — pull/push keep their Git-remote fallback and never answer
+`unknown_local`).

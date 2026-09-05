@@ -47,8 +47,26 @@ pub fn validate_clone_local(
     {
         return Err(invalid("dest must not be empty when supplied"));
     }
+    if request
+        .copy_source
+        .as_deref()
+        .is_some_and(|source| source.trim().is_empty())
+    {
+        return Err(invalid(
+            "copy_source (--from <name|path>) must not be empty when supplied",
+        ));
+    }
     if request.meta.dry_run == Some(true) {
         return Err(unsupported("local create with dry_run"));
+    }
+    // Tag 6 (`copy_source`, the `--from` selector; design §7, §11 item 11)
+    // is decoded and shape-checked above; choosing another family member or
+    // path as the copy source is LCM3.2, so a present value is refused here
+    // rather than silently copying the addressed workspace instead.
+    if request.copy_source.is_some() {
+        return Err(unsupported(
+            "local create from an explicit copy source (--from <name|path>)",
+        ));
     }
     Ok(ValidatedCloneLocal {
         name,
@@ -207,6 +225,7 @@ mod tests {
             dest: None,
             mode,
             branch: None,
+            copy_source: None,
         }
     }
 
@@ -271,6 +290,53 @@ mod tests {
             validate_clone_local(&bad_dry).unwrap_err().code,
             ErrorCode::InvalidRequest,
             "shape is checked before the dry-run refusal"
+        );
+    }
+
+    /// Design §7 / §11 item 11 (operator ruling 2026-09-05): tag 6 is
+    /// `copy_source`, the `--from <name|path>` selector. Core decodes it and
+    /// checks its shape (an empty value is malformed, ahead of every
+    /// unsupported refusal); a present value is refused as unsupported until
+    /// LCM3.2 implements the selector, and never silently ignored.
+    #[test]
+    fn clone_shape_decodes_copy_source_and_refuses_it_until_lcm3_2() {
+        let mut from_member = clone_request("A", crate::LocalCloneMode::Verbatim);
+        from_member.copy_source = Some("B".to_owned());
+        let error = validate_clone_local(&from_member).unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedOperation);
+        assert!(error.message.contains("--from"), "{}", error.message);
+
+        let mut from_path = clone_request("A", crate::LocalCloneMode::Clean);
+        from_path.copy_source = Some("../gwz-dev-B".to_owned());
+        assert_eq!(
+            validate_clone_local(&from_path).unwrap_err().code,
+            ErrorCode::UnsupportedOperation
+        );
+
+        let mut empty = clone_request("A", crate::LocalCloneMode::Verbatim);
+        empty.copy_source = Some("  ".to_owned());
+        let error = validate_clone_local(&empty).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("copy_source"), "{}", error.message);
+
+        let mut empty_and_dry = clone_request("A", crate::LocalCloneMode::Verbatim);
+        empty_and_dry.copy_source = Some(String::new());
+        empty_and_dry.meta.dry_run = Some(true);
+        assert_eq!(
+            validate_clone_local(&empty_and_dry).unwrap_err().code,
+            ErrorCode::InvalidRequest,
+            "shape stays ahead of the dry-run refusal"
+        );
+
+        let mut dry_from = clone_request("A", crate::LocalCloneMode::Verbatim);
+        dry_from.copy_source = Some("B".to_owned());
+        dry_from.meta.dry_run = Some(true);
+        assert!(
+            validate_clone_local(&dry_from)
+                .unwrap_err()
+                .message
+                .contains("dry_run"),
+            "the pinned dry-run refusal comes before the copy-source one"
         );
     }
 

@@ -337,6 +337,78 @@ impl LocalFamilyOp {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LocalMemberKind {
+    #[default] Checkout,
+    Bare,
+}
+impl LocalMemberKind {
+    pub fn wire(self) -> i64 { match self {
+        Self::Checkout => 0,
+        Self::Bare => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Checkout,
+        1 => Self::Bare,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LocalMemberKind", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LocalMemberState {
+    #[default] Creating,
+    Ready,
+    Disposing,
+}
+impl LocalMemberState {
+    pub fn wire(self) -> i64 { match self {
+        Self::Creating => 0,
+        Self::Ready => 1,
+        Self::Disposing => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Creating,
+        1 => Self::Ready,
+        2 => Self::Disposing,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LocalMemberState", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LocalObservedState {
+    #[default] Ready,
+    Incomplete,
+    InterruptedDisposal,
+    Missing,
+    PointerRemoved,
+    Mismatched,
+    Malformed,
+    Unobserved,
+}
+impl LocalObservedState {
+    pub fn wire(self) -> i64 { match self {
+        Self::Ready => 0,
+        Self::Incomplete => 1,
+        Self::InterruptedDisposal => 2,
+        Self::Missing => 3,
+        Self::PointerRemoved => 4,
+        Self::Mismatched => 5,
+        Self::Malformed => 6,
+        Self::Unobserved => 7,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Ready,
+        1 => Self::Incomplete,
+        2 => Self::InterruptedDisposal,
+        3 => Self::Missing,
+        4 => Self::PointerRemoved,
+        5 => Self::Mismatched,
+        6 => Self::Malformed,
+        7 => Self::Unobserved,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LocalObservedState", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum MergeAnalysisKind {
     #[default] UpToDate,
     FastForward,
@@ -1473,6 +1545,7 @@ pub enum GwzErrorCode {
     TerminalEvidenceMismatch,
     RecoveryEvidenceMismatch,
     TerminalRollbackMismatch,
+    UnknownLocal,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1538,6 +1611,7 @@ impl GwzErrorCode {
         Self::TerminalEvidenceMismatch => 59,
         Self::RecoveryEvidenceMismatch => 60,
         Self::TerminalRollbackMismatch => 61,
+        Self::UnknownLocal => 62,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1602,6 +1676,7 @@ impl GwzErrorCode {
         59 => Self::TerminalEvidenceMismatch,
         60 => Self::RecoveryEvidenceMismatch,
         61 => Self::TerminalRollbackMismatch,
+        62 => Self::UnknownLocal,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }
@@ -4607,6 +4682,7 @@ pub struct CloneLocalWorkspaceRequest {
     pub dest: Option<String>,
     pub mode: LocalCloneMode,
     pub branch: Option<String>,
+    pub copy_source: Option<String>,
 }
 impl CloneLocalWorkspaceRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -4616,6 +4692,7 @@ impl CloneLocalWorkspaceRequest {
             (3, match &self.dest { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (4, Cbor::Int(self.mode.wire())),
             (5, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.copy_source { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4625,6 +4702,7 @@ impl CloneLocalWorkspaceRequest {
             dest: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             mode: LocalCloneMode::from_wire(c.try_get(4)?.try_int()?)?,
             branch: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            copy_source: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
         })
     }
 }
@@ -5158,18 +5236,53 @@ impl CloneLocalWorkspaceResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct LocalFamilyMemberEntry {
+    pub name: String,
+    pub kind: LocalMemberKind,
+    pub recorded_state: LocalMemberState,
+    pub observed_state: LocalObservedState,
+    pub path: String,
+    pub last_error: Option<String>,
+}
+impl LocalFamilyMemberEntry {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.name.clone())),
+            (2, Cbor::Int(self.kind.wire())),
+            (3, Cbor::Int(self.recorded_state.wire())),
+            (4, Cbor::Int(self.observed_state.wire())),
+            (5, Cbor::Text(self.path.clone())),
+            (6, match &self.last_error { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            name: c.try_get(1)?.try_text()?,
+            kind: LocalMemberKind::from_wire(c.try_get(2)?.try_int()?)?,
+            recorded_state: LocalMemberState::from_wire(c.try_get(3)?.try_int()?)?,
+            observed_state: LocalObservedState::from_wire(c.try_get(4)?.try_int()?)?,
+            path: c.try_get(5)?.try_text()?,
+            last_error: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct LocalFamilyResponse {
     pub response: ResponseEnvelope,
+    pub members: Vec<LocalFamilyMemberEntry>,
 }
 impl LocalFamilyResponse {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.response.to_cbor()),
+            (2, Cbor::Array(self.members.iter().map(|x| x.to_cbor()).collect())),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
         Ok(Self {
             response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            members: c.try_get(2)?.try_array()?.iter().map(|x| LocalFamilyMemberEntry::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
         })
     }
 }

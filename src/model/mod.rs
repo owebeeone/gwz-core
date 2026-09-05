@@ -73,6 +73,11 @@ pub enum ErrorCode {
     TerminalEvidenceMismatch,
     RecoveryEvidenceMismatch,
     TerminalRollbackMismatch,
+    /// The family-only merge miss: `gwz merge --remote <name>` named no ready
+    /// family member -- absent, reserved (`origin`) or creating/disposing --
+    /// and merge has no Git-remote fallback (gwz-dev
+    /// dev-docs/GwzLocalCloneDesign.md §6/§7; wire `unknown_local` = 62).
+    UnknownLocal,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

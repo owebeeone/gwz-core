@@ -43,7 +43,22 @@ from taut.ir.load import load_schema
 # every added object is one of the items named above; the previous pin below
 # reproduced exactly on the pre-allocation tree (gwz-core 87207c2).
 #   was: 71bf6b9223ba6d2b4d12049e425e567254ca79396d67922be737c86c6dd97a40
-PRE_LOG_WIRE_SHA256 = "3c34bd741b32f366f63928211eec83c920b5b0ca0ed1d847447f4d3428c22031"
+#
+# Moved deliberately again on 2026-09-05 by LCM1.0c follow-up 2 (gwz-dev
+# dev-docs/GwzLocalCloneDesign.md revision 9 §7 and §11 items 11-13, the
+# operator's rulings on the LCM1.0c checkpoint's §7 questions 1-3), which
+# allocates: CloneLocalWorkspaceRequest.copy_source (optional, tag 6, the
+# `--from` selector), LocalFamilyResponse.members (tag 2, the `gwz local
+# list` payload) with its LocalFamilyMemberEntry message and the
+# LocalMemberKind / LocalMemberState / LocalObservedState enums, and
+# GwzErrorCode.unknown_local (62). MEASURED additive, not assumed: the
+# projection was rendered on both trees and diffed -- 128 added lines, 0
+# removed lines, 5 hunks, every added object one of the items named above
+# (the enum members appear as map keys, `unknown_local` among them); the
+# previous pin below reproduced exactly on the pre-allocation tree
+# (gwz-core 0d7b53d).
+#   was: 3c34bd741b32f366f63928211eec83c920b5b0ca0ed1d847447f4d3428c22031
+PRE_LOG_WIRE_SHA256 = "26f0d16ffebdcdc26bbbe682a6347688781cd202694333dbb0c066d087fb6b4e"
 LOG_METHODS = {"log", "log.output"}
 
 

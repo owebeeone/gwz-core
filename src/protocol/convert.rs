@@ -70,6 +70,7 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::TerminalEvidenceMismatch => Self::TerminalEvidenceMismatch,
             model::ErrorCode::RecoveryEvidenceMismatch => Self::RecoveryEvidenceMismatch,
             model::ErrorCode::TerminalRollbackMismatch => Self::TerminalRollbackMismatch,
+            model::ErrorCode::UnknownLocal => Self::UnknownLocal,
         }
     }
 }

@@ -1115,6 +1115,69 @@ fn error_code_wire_values_are_pinned() {
     assert_eq!(GwzErrorCode::TerminalEvidenceMismatch.wire(), 59);
     assert_eq!(GwzErrorCode::RecoveryEvidenceMismatch.wire(), 60);
     assert_eq!(GwzErrorCode::TerminalRollbackMismatch.wire(), 61);
+    // LCM1.0c follow-up 2 (operator ruling 2026-09-05, gwz-dev
+    // dev-docs/GwzLocalCloneDesign.md §7, §11 item 13): the family-only
+    // merge miss.
+    assert_eq!(GwzErrorCode::UnknownLocal.wire(), 62);
+}
+
+/// LCM1.0c follow-up 2 (operator rulings 2026-09-05, gwz-dev
+/// dev-docs/GwzLocalCloneDesign.md revision 9 §7, §11 items 11-12): the
+/// `--from` selector is tag 6 `copy_source`, and the `gwz local list` payload
+/// is `LocalFamilyResponse.members` whose enums mirror
+/// `gwz_family_model::{MemberKind, MemberState, ListState}` one-for-one in
+/// declaration order.
+#[test]
+fn local_clone_follow_up_2_allocations_are_pinned() {
+    use gwz_core::{LocalMemberKind, LocalMemberState, LocalObservedState};
+
+    assert_eq!(LocalMemberKind::Checkout.wire(), 0);
+    assert_eq!(LocalMemberKind::Bare.wire(), 1);
+    assert_eq!(LocalMemberState::Creating.wire(), 0);
+    assert_eq!(LocalMemberState::Ready.wire(), 1);
+    assert_eq!(LocalMemberState::Disposing.wire(), 2);
+    assert_eq!(LocalObservedState::Ready.wire(), 0);
+    assert_eq!(LocalObservedState::Incomplete.wire(), 1);
+    assert_eq!(LocalObservedState::InterruptedDisposal.wire(), 2);
+    assert_eq!(LocalObservedState::Missing.wire(), 3);
+    assert_eq!(LocalObservedState::PointerRemoved.wire(), 4);
+    assert_eq!(LocalObservedState::Mismatched.wire(), 5);
+    assert_eq!(LocalObservedState::Malformed.wire(), 6);
+    assert_eq!(LocalObservedState::Unobserved.wire(), 7);
+
+    let request = gwz_core::CloneLocalWorkspaceRequest {
+        meta: request_meta("req-clone-local"),
+        name: "A".to_owned(),
+        dest: None,
+        mode: gwz_core::LocalCloneMode::Verbatim,
+        branch: None,
+        copy_source: Some("B".to_owned()),
+    };
+    let decoded =
+        gwz_core::CloneLocalWorkspaceRequest::from_cbor(&decode(&encode(&request.to_cbor())))
+            .expect("round trip");
+    assert_eq!(decoded, request);
+
+    let entry = gwz_core::LocalFamilyMemberEntry {
+        name: "A".to_owned(),
+        kind: LocalMemberKind::Checkout,
+        recorded_state: LocalMemberState::Ready,
+        observed_state: LocalObservedState::PointerRemoved,
+        path: "../ws-A".to_owned(),
+        last_error: None,
+    };
+    let bytes = encode(&entry.to_cbor());
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    // Byte-identical to gwz-py's parity pin in src/tests/test_codec.py: six
+    // slots, the three enums by their wire values above, `last_error` null.
+    assert_eq!(hex, "a601614102000301040405672e2e2f77732d4106f6");
+    assert_eq!(
+        gwz_core::LocalFamilyMemberEntry::from_cbor(&decode(&bytes)).expect("round trip"),
+        entry
+    );
 }
 
 #[test]

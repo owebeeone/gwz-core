@@ -4,10 +4,35 @@
 //! existing `GwzErrorCode` registry at this boundary. No new code is
 //! allocated at LCM1.0c (see `docs/ErrorCatalog.md`, "Local Clone Family").
 
-use gwz_family_model::Refusal;
+use gwz_family_model::{MemberState, Refusal};
 use gwz_family_store_contract::StoreError;
 
 use crate::model::{ErrorCode, ModelError};
+
+/// The family-only merge miss (design §6/§7; `GwzErrorCode.unknown_local`,
+/// operator ruling 2026-09-05): `gwz merge --remote <token>` named no ready
+/// family member. `state` is the recorded lifecycle state of a row that
+/// exists but is not ready; `None` means there is no row at all (an absent
+/// or reserved name such as `origin`). The state detail travels in the
+/// message. Merge never falls back to a Git remote, so this is the whole
+/// answer; pull/push keep `missing_remote` for their "neither" case.
+pub(crate) fn unknown_local(token: &str, state: Option<MemberState>) -> ModelError {
+    let detail = match state {
+        Some(state) => format!(
+            "`{token}` is a family member whose row is {}, not ready; only a ready \
+             member is a merge source",
+            state.as_str()
+        ),
+        None => format!(
+            "no ready family member is named `{token}`; `merge --remote` resolves \
+             family names only and never falls back to a Git remote"
+        ),
+    };
+    ModelError::new(
+        ErrorCode::UnknownLocal,
+        format!("local family merge: {detail}"),
+    )
+}
 
 /// A local-family operation or mode that this build does not implement.
 pub(crate) fn unsupported(what: &str) -> ModelError {
@@ -144,5 +169,37 @@ mod tests {
         );
         assert_eq!(unsupported("x").code, ErrorCode::UnsupportedOperation);
         assert_eq!(invalid("x").code, ErrorCode::InvalidRequest);
+    }
+
+    /// Design §6/§7 (operator ruling 2026-09-05): the family-only merge miss
+    /// is `unknown_local`, and the message carries the state detail -- a
+    /// row's lifecycle state when one exists, "no ready family member" when
+    /// none does -- with no Git-remote fallback in either case.
+    #[test]
+    fn the_family_merge_miss_is_unknown_local_with_the_state_detail() {
+        let absent = unknown_local("origin", None);
+        assert_eq!(absent.code, ErrorCode::UnknownLocal);
+        assert!(absent.message.contains("`origin`"), "{}", absent.message);
+        assert!(
+            absent.message.contains("never falls back to a Git remote"),
+            "{}",
+            absent.message
+        );
+        for state in [MemberState::Creating, MemberState::Disposing] {
+            let not_ready = unknown_local("B", Some(state));
+            assert_eq!(not_ready.code, ErrorCode::UnknownLocal);
+            assert!(not_ready.message.contains("`B`"), "{}", not_ready.message);
+            assert!(
+                not_ready.message.contains(state.as_str()),
+                "{}: {}",
+                state.as_str(),
+                not_ready.message
+            );
+            assert!(
+                not_ready.message.contains("not ready"),
+                "{}",
+                not_ready.message
+            );
+        }
     }
 }

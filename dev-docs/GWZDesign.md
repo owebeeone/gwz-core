@@ -1754,21 +1754,31 @@ lands.
 | --- | --- |
 | `ActionKind.clone_local_workspace` | 27 |
 | `ActionKind.local_family` | 28 |
-| `CloneLocalWorkspaceRequest` | `meta`(1), `name`(2), `dest`(3, optional), `mode`(4, `LocalCloneMode`), `branch`(5, optional); tag 6 held for the source selector, tag 7 never a family-id input |
+| `CloneLocalWorkspaceRequest` | `meta`(1), `name`(2), `dest`(3, optional), `mode`(4, `LocalCloneMode`), `branch`(5, optional), `copy_source`(6, optional; the `--from <name\|path>` selector, named so because `from` is a keyword in both generated languages — operator ruling 2026-09-05, design §11 item 11; decoded and shape-checked by core, refused as unsupported until LCM3.2); tag 7 never a family-id input |
 | `LocalCloneMode` | `verbatim`=0, `clean`=1, `bare`=2 |
 | `LocalFamilyRequest` | `meta`(1), `op`(2, `LocalFamilyOp`), `name`(3, optional), `keep`(4, optional), `force_hazards`(5, list) |
 | `LocalFamilyOp` | `list`=0, `dispose`=1, `disband`=2 |
 | `MergeRequest.local_source_name` | tag 9, optional, start only; tag 8 is `filesystem_strict` |
-| `CloneLocalWorkspaceResponse`, `LocalFamilyResponse` | envelope only at LCM1.0c |
+| `CloneLocalWorkspaceResponse` | envelope only |
+| `LocalFamilyResponse` | `response`(1), `members`(2, list of `LocalFamilyMemberEntry`): the `gwz local list` projection — the root first, then every member in name order; empty for every other op and whenever the envelope carries an error (operator ruling 2026-09-05, design §11 item 12) |
+| `LocalFamilyMemberEntry` | `name`(1), `kind`(2, `LocalMemberKind`), `recorded_state`(3, `LocalMemberState`), `observed_state`(4, `LocalObservedState`), `path`(5, root-relative), `last_error`(6, optional); mirrors `gwz_family_model::ListRow` field for field |
+| `LocalMemberKind` | `checkout`=0, `bare`=1 (mirrors `gwz_family_model::MemberKind`) |
+| `LocalMemberState` | `creating`=0, `ready`=1, `disposing`=2 (mirrors `gwz_family_model::MemberState`) |
+| `LocalObservedState` | `ready`=0, `incomplete`=1, `interrupted_disposal`=2, `missing`=3, `pointer_removed`=4, `mismatched`=5, `malformed`=6, `unobserved`=7 (mirrors `gwz_family_model::ListState` in declaration order; `unobserved` is the model's "core supplied no observation for this row", never a guess) |
+| `GwzErrorCode.unknown_local` | 62: the family-only merge miss — `gwz merge --remote <name>` named no ready family member (absent, reserved such as `origin`, or creating/disposing); the state detail travels in the message; never a Git-remote fallback (operator ruling 2026-09-05, design §6/§7, §11 item 13). Pull/push keep `missing_remote` for a token that is neither a ready member nor a Git remote |
 
 `CloneWorkspaceRequest.url` stays required. Hazard names for
 `force_hazards` are `open-merge`, `dirty` and `unpreserved-history`;
 there is no boolean force, `keep` with any hazard refuses, and an unknown
-hazard refuses. Two allocations are deliberately open operator decisions:
-the wire name of the `--from` selector (the product design's `from` is a
-keyword in both generated languages) and the `list` payload shape of
-`LocalFamilyResponse`. Neither blocks LCM1.0c, where every handler refuses
-before it would need them.
+hazard refuses. The two allocations LCM1.0c left open — the wire name of
+the `--from` selector and the `list` payload shape of `LocalFamilyResponse`
+— were ruled by the operator on 2026-09-05 (design revision 9, §11 items
+11–13) and allocated by LCM1.0c follow-up 2 as the table records, together
+with `unknown_local`. Core decodes `copy_source` and refuses a present value
+as unsupported until LCM3.2; the `list` projection
+(`local_clone::list`) is wired into `workspace_ops::handle_local_family`,
+whose member target observation is not implemented yet, so every handler
+still refuses before any effect.
 
 ### Family files
 
@@ -1795,8 +1805,8 @@ resolver for merge, pull and push:
 | Family observation | Merge selector | Pull/push remote token |
 | --- | --- | --- |
 | ready row (including `root`) | bound member | bound member |
-| creating/disposing row | `UnknownLocal` with the state | lifecycle refusal, never Git fallback |
-| no row for the token | `UnknownLocal` | Git-remote candidate; the existing per-repository lookup decides existence |
+| creating/disposing row | `UnknownLocal` with the state → `unknown_local` (62), the state in the message | lifecycle refusal, never Git fallback |
+| no row for the token | `UnknownLocal` → `unknown_local` (62) | Git-remote candidate; the existing per-repository lookup decides existence |
 | no token | ordinary Git-ref merge | existing defaults and request-over-policy precedence |
 
 Core validates request shape first and refuses unsupported family dry-run,

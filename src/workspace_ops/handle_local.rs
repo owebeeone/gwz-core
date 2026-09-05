@@ -17,7 +17,7 @@ use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::local_clone::request::{
     ValidatedLocalFamily, validate_clone_local, validate_local_family,
 };
-use crate::local_clone::{errors, family_merge};
+use crate::local_clone::{errors, family_merge, list};
 use crate::model::ModelResult;
 use crate::operation::{EventEmitter, EventSink, OperationRequest};
 
@@ -52,6 +52,17 @@ where
 }
 
 /// `gwz local list | dispose <name> [--keep | --force <hazards>] | disband`.
+///
+/// `list` is observation-only (design §3.1): on an observed family it
+/// projects the model's listing -- the root first, then every member in name
+/// order with its recorded and observed state -- into
+/// `LocalFamilyResponse.members` (design §7, operator ruling 2026-09-05); a
+/// workspace that holds neither an index nor a pointer lists nothing. The
+/// member target observation the projection needs is not implemented at
+/// this checkpoint (`local_clone::list::observe_members`), and the composed
+/// store refuses before it, so today every op still stops at the family
+/// observation with `unsupported_operation`; the projection itself is
+/// exercised by `local_clone::list`'s unit tests over a fake view.
 pub fn handle_local_family<B>(
     _backend: &B,
     start: &Path,
@@ -67,17 +78,35 @@ where
     emitter.operation_started();
     let result = (|| {
         let validated = validate_local_family(&request)?;
-        let what = match validated {
+        let what = match &validated {
             ValidatedLocalFamily::List => "local family list",
             ValidatedLocalFamily::Dispose { keep: true, .. } => "local dispose --keep",
             ValidatedLocalFamily::Dispose { .. } => "local dispose",
             ValidatedLocalFamily::Disband => "local disband",
         };
         let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
-        let _observation = family_merge::family_store()
+        let observation = family_merge::family_store()
             .read_view(&FamilyLocation::new(&root))
             .map_err(|error| errors::store_in(what, &error))?;
-        Err(errors::unsupported(what))
+        match validated {
+            ValidatedLocalFamily::List => {
+                let members = match observation.view() {
+                    Some(view) => list::members(view, &list::observe_members(&root, view)?),
+                    None => Vec::new(),
+                };
+                Ok(crate::LocalFamilyResponse {
+                    response: response_envelope(
+                        context.clone(),
+                        crate::AggregateStatus::Ok,
+                        Vec::new(),
+                    ),
+                    members,
+                })
+            }
+            ValidatedLocalFamily::Dispose { .. } | ValidatedLocalFamily::Disband => {
+                Err(errors::unsupported(what))
+            }
+        }
     })();
     emitter.operation_finished();
     result

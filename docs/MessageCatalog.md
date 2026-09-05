@@ -211,6 +211,34 @@ has no service method and no handler that executes commands.
 | dispose | 1 |
 | disband | 2 |
 
+### LocalMemberKind
+
+| Member | Wire |
+| --- | --- |
+| checkout | 0 |
+| bare | 1 |
+
+### LocalMemberState
+
+| Member | Wire |
+| --- | --- |
+| creating | 0 |
+| ready | 1 |
+| disposing | 2 |
+
+### LocalObservedState
+
+| Member | Wire |
+| --- | --- |
+| ready | 0 |
+| incomplete | 1 |
+| interrupted_disposal | 2 |
+| missing | 3 |
+| pointer_removed | 4 |
+| mismatched | 5 |
+| malformed | 6 |
+| unobserved | 7 |
+
 ### MergeAnalysisKind
 
 | Member | Wire |
@@ -688,6 +716,7 @@ has no service method and no handler that executes commands.
 | terminal_evidence_mismatch | 59 |
 | recovery_evidence_mismatch | 60 |
 | terminal_rollback_mismatch | 61 |
+| unknown_local | 62 |
 
 ### MergeRecordRequiredWave
 
@@ -1745,6 +1774,7 @@ has no service method and no handler that executes commands.
 | dest | 3 | str | yes | no | - |
 | mode | 4 | LocalCloneMode | no | no | - |
 | branch | 5 | str | yes | no | - |
+| copy_source | 6 | str | yes | no | - |
 
 ### LocalFamilyRequest
 
@@ -1931,11 +1961,23 @@ has no service method and no handler that executes commands.
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
 
+### LocalFamilyMemberEntry
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| name | 1 | str | no | no | - |
+| kind | 2 | LocalMemberKind | no | no | - |
+| recorded_state | 3 | LocalMemberState | no | no | - |
+| observed_state | 4 | LocalObservedState | no | no | - |
+| path | 5 | str | no | no | - |
+| last_error | 6 | str | yes | no | - |
+
 ### LocalFamilyResponse
 
 | Field | Tag | Type | Optional | Transient | Merge |
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
+| members | 2 | List<LocalFamilyMemberEntry> | no | no | - |
 
 ### DiffComparison
 

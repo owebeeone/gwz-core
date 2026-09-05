@@ -255,6 +255,49 @@ SCHEMA = schema(
          dispose=1,
          disband=2),
 
+    # `gwz local list` payload vocabulary (GwzLocalCloneDesign.md §3, §3.1,
+    # §7 and §11 item 12; operator ruling 2026-09-05, allocated by LCM1.0c
+    # follow-up 2). Each enum mirrors the pure model's projection
+    # (`gwz_family_model::{MemberKind, MemberState, ListState}`) one-for-one,
+    # in the model's declaration order, with its `snake_case` spelling. A
+    # model variant added later gets the next wire value here in the same
+    # regeneration; nothing is renumbered.
+    #
+    # A member's recorded kind (index row `kind`).
+    LocalMemberKind=Enum(
+         checkout=0,
+         bare=1),
+
+    # A member's recorded lifecycle state (index row `state`). Only `ready`
+    # rows are family endpoints.
+    LocalMemberState=Enum(
+         creating=0,
+         ready=1,
+         disposing=2),
+
+    # The observation-only state `gwz local list` reports beside the recorded
+    # one (design §3.1 table). Reporting never repairs, promotes, removes or
+    # deletes anything.
+    LocalObservedState=Enum(
+         # Ready row with a matching pointer and marker: a usable member.
+         ready=0,
+         # Creating row, present or not: incomplete; never auto-promoted.
+         incomplete=1,
+         # Disposing row with the directory still present.
+         interrupted_disposal=2,
+         # Row present, target absent; only an explicit dispose removes it.
+         missing=3,
+         # Present and still carrying this row's allocation, but its pointer
+         # to the family is gone: an interrupted pointer-only detach or
+         # disband. An explicit repeat may finish removing pointers and rows.
+         pointer_removed=4,
+         # Present, but pointer or marker disagree with the row.
+         mismatched=5,
+         # Present, but its metadata could not be decoded.
+         malformed=6,
+         # Core supplied no observation for this row.
+         unobserved=7),
+
     # Read-only prediction returned by merge analysis and dry-run planning.
     MergeAnalysisKind=Enum(
          up_to_date=0,
@@ -653,7 +696,15 @@ SCHEMA = schema(
          unexpected_publication_evidence=58,
          terminal_evidence_mismatch=59,
          recovery_evidence_mismatch=60,
-         terminal_rollback_mismatch=61),
+         terminal_rollback_mismatch=61,
+         # The family-only merge miss (GwzLocalCloneDesign.md §6/§7, §11 item
+         # 13; operator ruling 2026-09-05, allocated by LCM1.0c follow-up 2):
+         # `gwz merge --remote <name>` named no ready family member -- the
+         # name is absent from the index, reserved (`origin`), or its row is
+         # creating/disposing; the state detail travels in the message. Never
+         # a Git-remote fallback. Pull/push keep `missing_remote` for a token
+         # that is neither a ready member nor a Git remote.
+         unknown_local=62),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(
@@ -1730,13 +1781,18 @@ SCHEMA = schema(
         mode=F(4, Ref.LocalCloneMode),
         # `-b <branch>`: clean/bare only, created in every member before the
         # row becomes ready (design §4.2).
-        branch=F(5, STR, optional=True)),
-        # Tag 6 is HELD, not allocated: the design names the explicit source
-        # selector (`--from <name|path>`, LCM3.2) `from`, which is a keyword
-        # in both generated languages; its wire name is an open operator
-        # decision recorded in the LCM1.0c checkpoint. Tag 7 is not a public
-        # family_id input (design §7). Neither tag may be reused for another
-        # purpose.
+        branch=F(5, STR, optional=True),
+        # `--from <name|path>`: the explicit copy source, a family name or a
+        # path (design §7, §11 item 11; operator ruling 2026-09-05, allocated
+        # by LCM1.0c follow-up 2). The design's `from` is a keyword in both
+        # generated languages, hence this wire name. Absent means the
+        # addressed workspace itself. Decoded and shape-checked by core; the
+        # selector is implemented at LCM3.2, so until then a present value is
+        # refused as `unsupported_operation`.
+        copy_source=F(6, STR, optional=True)),
+        # Tag 7 is not a public family_id input (design §7): core derives
+        # family identity from the admitted index or pointer, and the tag
+        # may not be reused for another purpose.
 
     # Observe or retire local-family members (GwzLocalCloneDesign.md §3.1,
     # §5, §7; allocated 2026-09-05 for LCM1.0c).
@@ -1859,12 +1915,33 @@ SCHEMA = schema(
     # Response wrapper for clone_local_workspace (LCM1.0c, 2026-09-05).
     CloneLocalWorkspaceResponse=Msg(
         response=F(1, Ref.ResponseEnvelope)),
-    # Response wrapper for local_family (LCM1.0c, 2026-09-05). The `list`
-    # projection payload is not allocated yet: its wire shape is an open
-    # operator decision recorded in the LCM1.0c checkpoint, and every
-    # LCM1.0c handler refuses before it would need one.
+    # One row of the `gwz local list` projection (GwzLocalCloneDesign.md
+    # §3.1, §7, §8.1, §11 item 12; operator ruling 2026-09-05, allocated by
+    # LCM1.0c follow-up 2). Mirrors `gwz_family_model::ListRow`: the root is
+    # the first row (`root`, checkout, ready, ready, `.`), then every member
+    # in name order. Observation-only: nothing in producing it writes.
+    LocalFamilyMemberEntry=Msg(
+        # `root` or the clone name.
+        name=F(1, STR),
+        kind=F(2, Ref.LocalMemberKind),
+        # The lifecycle state recorded in the index.
+        recorded_state=F(3, Ref.LocalMemberState),
+        # What core observed at the recorded path, classified by the model.
+        observed_state=F(4, Ref.LocalObservedState),
+        # Root-relative path (`.` for the root).
+        path=F(5, STR),
+        # The diagnostic recorded when the row was left incomplete.
+        last_error=F(6, STR, optional=True)),
+
+    # Response wrapper for local_family (LCM1.0c, 2026-09-05; `members`
+    # allocated by LCM1.0c follow-up 2 after the operator's ruling of
+    # 2026-09-05, design §7 and §11 item 12).
     LocalFamilyResponse=Msg(
-        response=F(1, Ref.ResponseEnvelope)),
+        response=F(1, Ref.ResponseEnvelope),
+        # The `list` projection: the root first, then every member in name
+        # order. Empty for every other op and whenever the envelope carries
+        # an error.
+        members=F(2, List(Ref.LocalFamilyMemberEntry))),
 
     # ---- diff request messages --------------------------------------------
     # One resolved comparison for one target repo: kind + resolved endpoints.

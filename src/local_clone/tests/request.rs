@@ -16,6 +16,7 @@ fn clone_request(name: &str, dry_run: Option<bool>) -> crate::CloneLocalWorkspac
         dest: None,
         mode: crate::LocalCloneMode::Verbatim,
         branch: None,
+        copy_source: None,
     };
     request.meta.dry_run = dry_run;
     request
@@ -82,6 +83,16 @@ fn clone_local_refuses_unsupported_after_shape_and_before_any_family_file() {
     )
     .unwrap_err();
     assert_eq!(reserved.code, ErrorCode::InvalidRequest);
+    assert!(family_files_absent(&root));
+
+    // Tag 6 (`copy_source`, `--from`; operator ruling 2026-09-05) is
+    // decoded and refused as unsupported until LCM3.2, before any family
+    // file and before the copy it would otherwise redirect.
+    let mut from = clone_request("A", None);
+    from.copy_source = Some("B".to_owned());
+    let from = handle_clone_local_workspace(&backend, &root, from, "op-3b", &NullSink).unwrap_err();
+    assert_eq!(from.code, ErrorCode::UnsupportedOperation);
+    assert!(from.message.contains("--from"), "{}", from.message);
     assert!(family_files_absent(&root));
 
     let outside = handle_clone_local_workspace(

@@ -6,9 +6,10 @@
 //! the typed refusal order, the translation of library errors to
 //! `ModelError`, the [`transport::BackendLocalTransport`] adapter that
 //! implements `gwz_local_import::LocalTransport` over the anonymous local
-//! ports of [`crate::git::GitBackend`], and the family-merge wrapper that
+//! ports of [`crate::git::GitBackend`], the family-merge wrapper that
 //! resolves and imports under the family lock before delegating once to the
-//! public merge engine entry.
+//! public merge engine entry, and the [`list`] projection of the model's
+//! observation-only listing onto the `LocalFamilyResponse.members` payload.
 //!
 //! Refusal order, which every dispatch slot preserves (design §6.2, plan
 //! LCM1.0c): attribution and request shape first; an unsupported family
@@ -21,6 +22,7 @@
 
 pub mod errors;
 pub mod family_merge;
+pub mod list;
 pub mod request;
 pub mod transport;
 

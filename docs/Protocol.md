@@ -27,9 +27,17 @@ checkpoint: `CloneLocalWorkspaceRequest` creates a named local clone
 or disbands family members (`LocalFamilyOp`, named `force_hazards`
 waivers), and the optional `MergeRequest.local_source_name` (tag 9) selects
 a family member as a merge source. `CloneWorkspaceRequest.url` stays
-required. At LCM1.0c every local-family handler refuses with
-`unsupported_operation` before any effect; the product contract is the
-gwz-dev `dev-docs/GwzLocalCloneDesign.md`.
+required. LCM1.0c follow-up 2 (operator rulings 2026-09-05) adds
+`CloneLocalWorkspaceRequest.copy_source` (tag 6, the `--from <name|path>`
+selector; refused as unsupported until LCM3.2), the `gwz local list`
+payload `LocalFamilyResponse.members` (a list of `LocalFamilyMemberEntry`:
+`name`, `kind`, `recorded_state`, `observed_state`, `path`, optional
+`last_error`, whose enums `LocalMemberKind`, `LocalMemberState` and
+`LocalObservedState` mirror the pure family model one-for-one) and
+`GwzErrorCode.unknown_local` (62), the family-only merge miss. Every
+local-family handler still refuses with `unsupported_operation` before any
+effect; the product contract is the gwz-dev
+`dev-docs/GwzLocalCloneDesign.md`.
 
 Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
 fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is
