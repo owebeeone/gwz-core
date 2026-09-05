@@ -337,6 +337,11 @@ pub enum ListState {
     InterruptedDisposal,
     /// Row present, target absent; only an explicit dispose removes the row.
     Missing,
+    /// Present and still carrying this row's allocation, but its pointer to
+    /// the family is gone: an interrupted pointer-only detach or disband.
+    /// An explicit repeat may finish removing the remaining pointers and
+    /// rows; nothing here removes directory contents (design §3.1).
+    PointerRemoved,
     /// Present, but pointer or marker disagree with the row.
     Mismatched,
     /// Present, but its metadata could not be decoded.
@@ -353,16 +358,23 @@ pub fn classify_target(row: &MemberRow, target: Option<&TargetObservation>) -> L
         Some(TargetObservation::Missing) => ListState::Missing,
         Some(TargetObservation::Malformed { .. }) => ListState::Malformed,
         Some(TargetObservation::Present { pointer, marker }) => match row.state {
+            // A `creating` row is incomplete whatever stands at its path:
+            // its pointer may never have been written, and an apparently
+            // complete tree is still not a family endpoint.
             MemberState::Creating => ListState::Incomplete,
             MemberState::Disposing => ListState::InterruptedDisposal,
-            MemberState::Ready => {
-                if *pointer == PointerObservation::Matches && *marker == MarkerObservation::Matches
-                {
-                    ListState::Ready
-                } else {
-                    ListState::Mismatched
-                }
-            }
+            MemberState::Ready => match (pointer, marker) {
+                (PointerObservation::Matches, MarkerObservation::Matches) => ListState::Ready,
+                // Detach removes the pointer and marker of a ready member;
+                // interrupted, it leaves the tree, the row and possibly the
+                // marker. The pointer is the membership record, so only its
+                // absence reads as a detach.
+                (
+                    PointerObservation::Absent,
+                    MarkerObservation::Matches | MarkerObservation::Absent,
+                ) => ListState::PointerRemoved,
+                _ => ListState::Mismatched,
+            },
         },
     }
 }
@@ -420,7 +432,15 @@ pub(crate) mod fixtures {
         }
     }
 
-    /// A ready `A`, a creating `B` and a disposing `C`.
+    pub(crate) fn bare_row(path: &str) -> MemberRow {
+        MemberRow {
+            kind: MemberKind::Bare,
+            mode: CloneMode::Bare,
+            ..row(path, MemberState::Ready)
+        }
+    }
+
+    /// A ready `A`, a creating `B`, a disposing `C` and a ready bare `hub`.
     pub(crate) fn view() -> FamilyView {
         let mut view = FamilyView::founded(
             FamilyId::new("fam_test").unwrap(),
@@ -438,6 +458,8 @@ pub(crate) mod fixtures {
             MemberName::parse("C").unwrap(),
             row("../ws-C", MemberState::Disposing),
         );
+        view.members
+            .insert(MemberName::parse("hub").unwrap(), bare_row("../ws-hub"));
         view
     }
 }
@@ -552,5 +574,150 @@ mod tests {
         );
         assert!(refusal.to_string().contains("1048577"));
         assert!(refusal.to_string().contains("1048576"));
+    }
+}
+
+#[cfg(test)]
+mod list_table_tests {
+    use super::*;
+
+    fn present(pointer: PointerObservation, marker: MarkerObservation) -> TargetObservation {
+        TargetObservation::Present { pointer, marker }
+    }
+
+    fn observed(state: MemberState, target: Option<TargetObservation>) -> ListState {
+        classify_target(&fixtures::row("../ws-X", state), target.as_ref())
+    }
+
+    /// Design §3.1's observed-state table, one case per row, plus the
+    /// combinations the table's wording leaves to this model.
+    #[test]
+    fn every_observed_state_row_has_one_list_state() {
+        use MarkerObservation as Marker;
+        use MemberState::{Creating, Disposing, Ready};
+        use PointerObservation as Pointer;
+
+        // `ready`, valid pointer/path -> use normally.
+        assert_eq!(
+            observed(Ready, Some(present(Pointer::Matches, Marker::Matches))),
+            ListState::Ready
+        );
+
+        // `creating`, whether partial or apparently complete -> incomplete.
+        for target in [
+            present(Pointer::Matches, Marker::Matches),
+            present(Pointer::Absent, Marker::Absent),
+            present(Pointer::OtherFamily, Marker::Mismatch),
+            TargetObservation::Malformed {
+                detail: "half written".to_owned(),
+            },
+        ] {
+            let malformed = matches!(target, TargetObservation::Malformed { .. });
+            let state = observed(Creating, Some(target));
+            assert_eq!(
+                state,
+                if malformed {
+                    ListState::Malformed
+                } else {
+                    ListState::Incomplete
+                },
+                "a creating row is never promoted by what is observed at it"
+            );
+        }
+
+        // `disposing`, target still present -> interrupted deletion.
+        assert_eq!(
+            observed(Disposing, Some(present(Pointer::Matches, Marker::Matches))),
+            ListState::InterruptedDisposal
+        );
+
+        // row present, target absent -> missing, in every recorded state.
+        for state in [Ready, Creating, Disposing] {
+            assert_eq!(
+                observed(state, Some(TargetObservation::Missing)),
+                ListState::Missing,
+                "{state:?}"
+            );
+        }
+
+        // mismatched id, unexpected path, malformed metadata.
+        for (pointer, marker) in [
+            (Pointer::OtherFamily, Marker::Matches),
+            (Pointer::IsIndex, Marker::Matches),
+            (Pointer::Malformed, Marker::Matches),
+            (Pointer::Matches, Marker::Mismatch),
+            (Pointer::Matches, Marker::Malformed),
+            (Pointer::Matches, Marker::Absent),
+            (Pointer::Absent, Marker::Mismatch),
+        ] {
+            assert_eq!(
+                observed(Ready, Some(present(pointer, marker))),
+                ListState::Mismatched,
+                "{pointer:?}/{marker:?}"
+            );
+        }
+        assert_eq!(
+            observed(
+                Ready,
+                Some(TargetObservation::Malformed {
+                    detail: "bad yaml".to_owned()
+                })
+            ),
+            ListState::Malformed
+        );
+
+        // interrupted pointer-only detach/disband: the tree and the row
+        // stand, the pointer to this family does not.
+        for marker in [Marker::Matches, Marker::Absent] {
+            assert_eq!(
+                observed(Ready, Some(present(Pointer::Absent, marker))),
+                ListState::PointerRemoved,
+                "{marker:?}"
+            );
+        }
+
+        // No observation supplied is its own answer, never a guess.
+        assert_eq!(observed(Ready, None), ListState::Unobserved);
+    }
+
+    /// The projection reports; it never promotes, repairs or removes.
+    #[test]
+    fn the_projection_is_a_pure_reading_of_the_index() {
+        let view = fixtures::view();
+        let before = view.clone();
+        let mut observations = BTreeMap::new();
+        observations.insert(
+            MemberName::parse("hub").unwrap(),
+            present(PointerObservation::Absent, MarkerObservation::Matches),
+        );
+        observations.insert(
+            MemberName::parse("B").unwrap(),
+            present(PointerObservation::Matches, MarkerObservation::Matches),
+        );
+        let rows = project_list(&view, &observations);
+        assert_eq!(view, before, "projecting changes nothing");
+        assert_eq!(rows, project_list(&view, &observations), "and repeats");
+
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, vec!["root", "A", "B", "C", "hub"]);
+        assert_eq!(rows[0].path, ROOT_PATH);
+        assert_eq!(rows[0].kind, MemberKind::Checkout);
+        assert_eq!(rows[0].observed, ListState::Ready);
+
+        let hub = rows.last().unwrap();
+        assert_eq!(hub.kind, MemberKind::Bare, "a bare row lists as bare");
+        assert_eq!(hub.recorded, MemberState::Ready);
+        assert_eq!(
+            hub.observed,
+            ListState::PointerRemoved,
+            "an interrupted detach is reported, not finished"
+        );
+        assert_eq!(
+            rows[2].recorded,
+            MemberState::Creating,
+            "the recorded state is reported beside the observation"
+        );
+        assert_eq!(rows[2].observed, ListState::Incomplete);
+        assert_eq!(rows[3].observed, ListState::Unobserved);
     }
 }

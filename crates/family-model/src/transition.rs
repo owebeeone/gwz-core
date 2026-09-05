@@ -379,9 +379,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(ok.next.members.len(), 4);
+        assert_eq!(ok.next.members.len(), 5);
         assert_eq!(ok.next.members[&name("D")].state, MemberState::Creating);
-        assert_eq!(view.members.len(), 3, "the input view is untouched");
+        assert_eq!(view.members.len(), 4, "the input view is untouched");
 
         let collision = validate_transition(
             &view,
