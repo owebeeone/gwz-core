@@ -4,6 +4,7 @@
 //! here, and writes `next`. Nothing here touches a file; refusals are typed
 //! and name the row and the state that refused.
 
+use crate::path::{MemberPath, PathError, PathRelation, relate};
 use crate::{AllocationId, FamilyView, MemberName, MemberRow, MemberState, ROOT_PATH};
 
 /// One index change. Pointer and marker files are separate store session
@@ -159,27 +160,10 @@ pub fn validate_transition(
                     detail: format!("an allocation must be creating, not {}", row.state.as_str()),
                 });
             }
-            validate_path(name, &row.path)?;
-            if let Some(holder) = view.members.get(name) {
-                return Err(Refusal::NameCollision {
-                    name: name.clone(),
-                    holder_path: holder.path.clone(),
-                });
-            }
-            for (other_name, other) in &view.members {
-                if other.path == row.path {
-                    return Err(Refusal::PathCollision {
-                        path: row.path.clone(),
-                        holder: other_name.as_str().to_owned(),
-                    });
-                }
-                if nested(&row.path, &other.path) {
-                    return Err(Refusal::NestedPath {
-                        path: row.path.clone(),
-                        other: other.path.clone(),
-                    });
-                }
-            }
+            let path = validate_row_path(name, &row.path)?;
+            validate_source_path(name, row, &path)?;
+            check_name_available(view, name)?;
+            check_path_available(view, &path)?;
             next.members.insert(name.clone(), row.clone());
         }
         FamilyChange::RecordError { name, last_error } => {
@@ -258,35 +242,120 @@ fn expect_allocation(
     Ok(())
 }
 
-/// A member path is root-relative, non-empty, not the root itself, not an
-/// absolute path, and outside the root directory.
-fn validate_path(name: &MemberName, path: &str) -> Result<(), Refusal> {
-    let normalized = path.replace('\\', "/");
-    if normalized.is_empty() || normalized == ROOT_PATH || normalized == "./" {
-        return Err(Refusal::InvalidRow {
+/// Is `name` free in `view`? A taken name refuses naming its holder's path
+/// (design §2, "collision refuses, typed, names the holder path").
+pub fn check_name_available(view: &FamilyView, name: &MemberName) -> Result<(), Refusal> {
+    match view.members.get(name) {
+        Some(holder) => Err(Refusal::NameCollision {
             name: name.clone(),
-            detail: "a member path must not be empty or the root".to_owned(),
-        });
+            holder_path: holder.path.clone(),
+        }),
+        None => Ok(()),
     }
-    if normalized.starts_with('/') || normalized.chars().nth(1) == Some(':') {
-        return Err(Refusal::InvalidRow {
-            name: name.clone(),
-            detail: "a member path must be root-relative".to_owned(),
-        });
-    }
-    if !(normalized == ".." || normalized.starts_with("../")) {
-        return Err(Refusal::NestedPath {
-            path: path.to_owned(),
-            other: ROOT_PATH.to_owned(),
-        });
+}
+
+/// Is `path` free in `view`? Refuses an occupied path naming its holder, and
+/// a path that contains or is inside a recorded one (design §2, "dest paths
+/// are unique. Nested dest ... refuses"). `path` is already known to escape
+/// the root; a recorded row whose own path does not validate refuses here,
+/// naming that row rather than admitting a comparison it cannot make.
+pub fn check_path_available(view: &FamilyView, path: &MemberPath) -> Result<(), Refusal> {
+    for (other_name, other) in &view.members {
+        let recorded = validate_row_path(other_name, &other.path)?;
+        match relate(path, &recorded) {
+            PathRelation::Same => {
+                return Err(Refusal::PathCollision {
+                    path: path.as_str().to_owned(),
+                    holder: other_name.as_str().to_owned(),
+                });
+            }
+            PathRelation::Inside | PathRelation::Contains => {
+                return Err(Refusal::NestedPath {
+                    path: path.as_str().to_owned(),
+                    other: recorded.as_str().to_owned(),
+                });
+            }
+            PathRelation::Disjoint => {}
+        }
     }
     Ok(())
 }
 
-fn nested(a: &str, b: &str) -> bool {
-    let a = a.trim_end_matches('/');
-    let b = b.trim_end_matches('/');
-    a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
+/// Validate a whole decoded index: every recorded path is a normalised
+/// root-relative member path, every source path is the root or a member
+/// path, and no two members overlap. The store calls this after decoding,
+/// before it admits the view (design §3.1, "malformed input refuses before
+/// mutation"). Refusals are deterministic: rows are checked in name order.
+pub fn validate_view(view: &FamilyView) -> Result<(), Refusal> {
+    let mut admitted: Vec<(&MemberName, MemberPath)> = Vec::new();
+    for (name, row) in &view.members {
+        let path = validate_row_path(name, &row.path)?;
+        validate_source_path(name, row, &path)?;
+        for (other_name, other) in &admitted {
+            match relate(&path, other) {
+                PathRelation::Same => {
+                    return Err(Refusal::PathCollision {
+                        path: path.as_str().to_owned(),
+                        holder: other_name.as_str().to_owned(),
+                    });
+                }
+                PathRelation::Inside | PathRelation::Contains => {
+                    return Err(Refusal::NestedPath {
+                        path: path.as_str().to_owned(),
+                        other: other.as_str().to_owned(),
+                    });
+                }
+                PathRelation::Disjoint => {}
+            }
+        }
+        admitted.push((name, path));
+    }
+    Ok(())
+}
+
+/// A recorded member path: normalised, root-relative, and outside the root.
+fn validate_row_path(name: &MemberName, path: &str) -> Result<MemberPath, Refusal> {
+    crate::path::validate(path).map_err(|error| path_refusal(name, path, &error))
+}
+
+/// Being the root, inside it or an ancestor of it is a nesting refusal that
+/// names the root; every other rejected spelling is an invalid row.
+fn path_refusal(name: &MemberName, path: &str, error: &PathError) -> Refusal {
+    match error {
+        PathError::RootItself { .. }
+        | PathError::InsideRoot { .. }
+        | PathError::ContainsRoot { .. } => Refusal::NestedPath {
+            path: path.to_owned(),
+            other: ROOT_PATH.to_owned(),
+        },
+        other => Refusal::InvalidRow {
+            name: name.clone(),
+            detail: other.to_string(),
+        },
+    }
+}
+
+/// `source_path` is the root (`.`) or another member's path. A row is never
+/// its own source, and a host path never enters the model (design §3).
+fn validate_source_path(
+    name: &MemberName,
+    row: &MemberRow,
+    path: &MemberPath,
+) -> Result<(), Refusal> {
+    if row.source_path == ROOT_PATH {
+        return Ok(());
+    }
+    let source = crate::path::validate(&row.source_path).map_err(|error| Refusal::InvalidRow {
+        name: name.clone(),
+        detail: format!("source {error}"),
+    })?;
+    if relate(&source, path) == PathRelation::Same {
+        return Err(Refusal::InvalidRow {
+            name: name.clone(),
+            detail: format!("member path `{path}` is also its own source path"),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -551,5 +620,196 @@ mod tests {
             last_error: None,
         };
         assert_eq!(row.mode, CloneMode::Bare);
+    }
+}
+
+#[cfg(test)]
+mod path_policy_tests {
+    use super::*;
+    use crate::fixtures::{row, view};
+
+    fn name(value: &str) -> MemberName {
+        MemberName::parse(value).unwrap()
+    }
+
+    fn allocate(path: &str) -> Result<ValidatedChange, Refusal> {
+        validate_transition(
+            &view(),
+            &FamilyChange::Allocate {
+                name: name("N"),
+                row: row(path, MemberState::Creating),
+            },
+        )
+    }
+
+    #[test]
+    fn a_path_that_contains_the_root_is_refused() {
+        for path in ["..", "../", "../.", "../..", "ws/.."] {
+            let refusal =
+                allocate(path).expect_err("a path that is the root or contains it must be refused");
+            assert!(
+                matches!(refusal, Refusal::NestedPath { .. }),
+                "{path}: {refusal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unnormalised_path_is_refused_with_its_normal_form() {
+        for path in [
+            "../ws-N/",
+            "../ws-N/.",
+            ".././ws-N",
+            "../x/../ws-N",
+            "..//ws-N",
+        ] {
+            let refusal =
+                allocate(path).expect_err("an un-normalised path must be refused, not recorded");
+            assert!(
+                matches!(refusal, Refusal::InvalidRow { .. }),
+                "{path}: {refusal:?}"
+            );
+            assert!(
+                refusal.to_string().contains("../ws-N"),
+                "{path}: the refusal names the normalised form: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn collisions_and_nesting_are_decided_after_normalisation() {
+        let same = allocate("../ws-A/").expect_err("`../ws-A/` is `../ws-A`");
+        assert!(matches!(same, Refusal::InvalidRow { .. }), "{same:?}");
+        let nested = allocate("../ws-A/inner/").expect_err("still inside A");
+        assert!(matches!(nested, Refusal::InvalidRow { .. }), "{nested:?}");
+        assert!(allocate("../ws-N").is_ok());
+        assert!(allocate("../../elsewhere/ws-N").is_ok());
+    }
+
+    #[test]
+    fn a_source_path_is_the_root_or_another_member_and_never_a_host_path() {
+        let mut candidate = row("../ws-N", MemberState::Creating);
+        candidate.source_path = "../ws-A".to_owned();
+        assert!(
+            validate_transition(
+                &view(),
+                &FamilyChange::Allocate {
+                    name: name("N"),
+                    row: candidate.clone(),
+                },
+            )
+            .is_ok(),
+            "a clone of a clone records its source member's path"
+        );
+        for bad in ["/Users/me/ws-A", "../ws-A/", "", "sub/dir"] {
+            candidate.source_path = bad.to_owned();
+            let refusal = validate_transition(
+                &view(),
+                &FamilyChange::Allocate {
+                    name: name("N"),
+                    row: candidate.clone(),
+                },
+            )
+            .expect_err("a host or unnormalised source path is refused");
+            assert!(
+                matches!(&refusal, Refusal::InvalidRow { detail, .. } if detail.starts_with("source")),
+                "{bad}: {refusal:?}"
+            );
+        }
+        candidate.source_path = "../ws-N".to_owned();
+        let itself = validate_transition(
+            &view(),
+            &FamilyChange::Allocate {
+                name: name("N"),
+                row: candidate,
+            },
+        )
+        .expect_err("a member is never its own source");
+        assert!(matches!(itself, Refusal::InvalidRow { .. }), "{itself:?}");
+    }
+
+    #[test]
+    fn the_name_and_path_decisions_name_their_holder() {
+        let view = view();
+        assert_eq!(
+            check_name_available(&view, &name("A")).unwrap_err(),
+            Refusal::NameCollision {
+                name: name("A"),
+                holder_path: "../ws-A".to_owned(),
+            }
+        );
+        assert!(check_name_available(&view, &name("N")).is_ok());
+        assert!(
+            check_name_available(&view, &name("a")).is_ok(),
+            "names are compared exactly: `a` is not `A`"
+        );
+
+        let taken = crate::path::normalize("../ws-A/").unwrap();
+        assert_eq!(
+            check_path_available(&view, &taken).unwrap_err(),
+            Refusal::PathCollision {
+                path: "../ws-A".to_owned(),
+                holder: "A".to_owned(),
+            },
+            "the holder is named after normalisation"
+        );
+        let inner = crate::path::normalize("../ws-A/inner").unwrap();
+        assert_eq!(
+            check_path_available(&view, &inner).unwrap_err(),
+            Refusal::NestedPath {
+                path: "../ws-A/inner".to_owned(),
+                other: "../ws-A".to_owned(),
+            }
+        );
+        let outer = crate::path::normalize("..///").ok();
+        assert!(outer.is_none(), "the root's parent is never a candidate");
+        assert!(check_path_available(&view, &crate::path::normalize("../ws-N").unwrap()).is_ok());
+    }
+
+    #[test]
+    fn a_decoded_index_is_validated_whole_before_it_is_admitted() {
+        let mut view = view();
+        assert!(validate_view(&view).is_ok());
+
+        view.members
+            .insert(name("Same"), row("../ws-A/", MemberState::Ready));
+        let refusal = validate_view(&view).unwrap_err();
+        assert!(
+            matches!(refusal, Refusal::InvalidRow { .. }),
+            "an unnormalised recorded path refuses on its own row: {refusal:?}"
+        );
+
+        view.members
+            .insert(name("Same"), row("../ws-A", MemberState::Ready));
+        assert_eq!(
+            validate_view(&view).unwrap_err(),
+            Refusal::PathCollision {
+                path: "../ws-A".to_owned(),
+                holder: "A".to_owned(),
+            },
+            "two rows on one directory refuse, naming the first in name order"
+        );
+
+        view.members
+            .insert(name("Same"), row("../ws-A/inner", MemberState::Ready));
+        assert_eq!(
+            validate_view(&view).unwrap_err(),
+            Refusal::NestedPath {
+                path: "../ws-A/inner".to_owned(),
+                other: "../ws-A".to_owned(),
+            }
+        );
+
+        view.members.remove(&name("Same"));
+        view.members
+            .insert(name("Up"), row("..", MemberState::Ready));
+        assert_eq!(
+            validate_view(&view).unwrap_err(),
+            Refusal::NestedPath {
+                path: "..".to_owned(),
+                other: ".".to_owned(),
+            },
+            "a row that contains the root refuses even after it was recorded"
+        );
     }
 }

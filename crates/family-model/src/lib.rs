@@ -16,11 +16,19 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+mod path;
 mod resolve;
 mod transition;
 
+pub use path::{
+    MemberPath, PathError, PathRelation, normalize as normalize_member_path,
+    relate as relate_member_paths, validate as validate_member_path,
+};
 pub use resolve::{BoundMember, RemoteToken, Resolution, Verb, resolve_remote_token};
-pub use transition::{FamilyChange, Refusal, RemovalReason, ValidatedChange, validate_transition};
+pub use transition::{
+    FamilyChange, Refusal, RemovalReason, ValidatedChange, check_name_available,
+    check_path_available, validate_transition, validate_view,
+};
 
 /// `schema:` value of the root index (`.gwz/local-family.yml`), format 1.
 pub const INDEX_SCHEMA: &str = "gwz.local-family/v1";
