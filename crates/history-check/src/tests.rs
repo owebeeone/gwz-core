@@ -576,6 +576,93 @@ fn unknown_nested_repository_evidence_is_unknown_before_any_read() {
 }
 
 #[test]
+fn the_root_cap_counts_the_witness_roots_too() {
+    let mut reader = InMemoryObjectReader::new();
+    let head = commit(&mut reader, SHA1, 0x10, Vec::new());
+    reader.root(ref_source("refs/heads/main"), head.clone());
+    reader.root(ref_source("refs/heads/other"), head.clone());
+
+    let protected = roots(vec![root(ref_source("refs/heads/main"), head)]);
+    let limits = Limits {
+        max_roots: 2,
+        ..Limits::default()
+    };
+    let outcome = check_history(
+        &protected,
+        &[member("hub")],
+        &reader,
+        limits,
+        &NeverCancelled,
+    );
+    invariants(&protected, &outcome);
+
+    let reasons = expect_unknown(outcome);
+    assert_eq!(reasons[0].kind, UnknownKind::LimitExceeded);
+    assert!(
+        reasons[0].detail.contains("witness roots"),
+        "the reason names both counts: {}",
+        reasons[0].detail
+    );
+    assert!(
+        reader.reads().is_empty(),
+        "the cap is checked before reading"
+    );
+}
+
+#[test]
+fn a_reader_that_does_not_read_is_unknown_never_unpreserved() {
+    let head = oid(SHA1, 0x10);
+    let reader = BrokenReader::reading(
+        roots(vec![root(ref_source("refs/heads/main"), head.clone())]),
+        ReadError::Unimplemented {
+            operation: "read_object",
+        },
+    );
+
+    let protected = roots(vec![root(ref_source("refs/heads/main"), head)]);
+    let outcome = check_history(
+        &protected,
+        &[member("hub")],
+        &reader,
+        Limits::default(),
+        &NeverCancelled,
+    );
+    invariants(&protected, &outcome);
+
+    let reasons = expect_unknown(outcome);
+    assert_eq!(reasons[0].kind, UnknownKind::Unimplemented);
+}
+
+#[test]
+fn different_targets_are_checked_against_their_own_witnesses() {
+    // Two surviving repositories, each retaining a different history.
+    let mut hub = InMemoryObjectReader::new();
+    let hub_head = commit(&mut hub, SHA1, 0x10, Vec::new());
+    hub.root(ref_source("refs/heads/main"), hub_head.clone());
+
+    let mut workspace_root = InMemoryObjectReader::new();
+    let root_head = commit(&mut workspace_root, SHA1, 0x40, Vec::new());
+    workspace_root.root(ref_source("refs/heads/main"), root_head.clone());
+
+    let app = roots(vec![root(ref_source("refs/heads/main"), hub_head)]);
+    let shell = roots(vec![root(ref_source("refs/heads/main"), root_head)]);
+
+    let app_coverage = expect_verified(check(&app, &[member("hub")], &hub));
+    assert_eq!(
+        app_coverage.covered[0].witness,
+        Some(RepoKey::Member {
+            id: "hub".to_owned()
+        })
+    );
+    let shell_coverage = expect_verified(check(&shell, &[root_witness()], &workspace_root));
+    assert_eq!(shell_coverage.covered[0].witness, Some(RepoKey::Root));
+
+    // Nothing carries over between calls: each target needs its own witness.
+    expect_unpreserved(check(&app, &[root_witness()], &workspace_root));
+    expect_unpreserved(check(&shell, &[member("hub")], &hub));
+}
+
+#[test]
 fn more_protected_roots_than_the_cap_is_unknown_before_any_read() {
     let mut reader = InMemoryObjectReader::new();
     let head = commit(&mut reader, SHA1, 0x10, Vec::new());
