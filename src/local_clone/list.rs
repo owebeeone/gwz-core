@@ -19,7 +19,6 @@ use gwz_family_model::{
 };
 use gwz_family_store_contract::FamilyObservation;
 
-use super::errors::unsupported;
 use crate::model::ModelResult;
 
 pub fn member_kind(kind: MemberKind) -> crate::LocalMemberKind {
@@ -88,25 +87,28 @@ pub fn root_path(observation: &FamilyObservation) -> Option<String> {
 /// pointer and the allocation marker at `root.join(row.path)` -- as
 /// `gwz_family_model::TargetObservation` values for `classify_target`.
 ///
-/// Not implemented at this checkpoint: the pointer and marker reads belong
-/// to the store (lane S) and directory presence to the inspector (lane I).
-/// Until they land this refuses `unsupported_operation` rather than hand
-/// the projection an empty map, which would list every member as
-/// `unobserved` without saying why. Since W2 the store returns a real view,
-/// so this is reached: a `list` in a workspace that *is* a family member
-/// refuses here. A workspace in no family never arrives -- the caller
-/// answers `Ok` with an empty member list before this point.
+/// `root` is the family root as the store observed it (the index holder,
+/// reached through the pointer when the addressed workspace is a clone);
+/// the rows' recorded paths are relative to it. Observation-only (design
+/// §3.1): the store reads the metadata files and never writes, repairs,
+/// promotes or removes; a path that no longer exists is `Missing`, metadata
+/// that cannot be read is `Malformed` with the reason, and every row gets
+/// an observation, so nothing lists as `unobserved`. Infallible today; the
+/// `ModelResult` stays for the dispatch slot's `?`.
 pub(crate) fn observe_members(
-    _root: &Path,
-    _view: &FamilyView,
+    root: &Path,
+    view: &FamilyView,
 ) -> ModelResult<BTreeMap<MemberName, TargetObservation>> {
-    Err(unsupported("local family list: member target observation"))
+    Ok(super::adapters::store::member_targets(
+        &super::family_merge::family_store(),
+        root,
+        view,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ErrorCode;
     use gwz_family_model::{
         AllocationId, CloneMode, FamilyId, MarkerObservation, MemberRow, PointerObservation,
     };
@@ -298,14 +300,73 @@ mod tests {
         assert_eq!(root_path(&FamilyObservation::NoFamily), None);
     }
 
+    /// LCM1.1: every recorded row gets a real observation through the
+    /// store -- a present member with its pointer and marker, a path that
+    /// is gone -- and observing writes nothing.
     #[test]
-    fn observing_member_targets_is_refused_unsupported_at_this_checkpoint() {
-        let view = FamilyView::founded(
-            FamilyId::new("fam_test").unwrap(),
-            AllocationId::new("alloc-root").unwrap(),
+    fn observing_member_targets_reads_each_recorded_path_through_the_store() {
+        use gwz_family_model::{FamilyChange, MarkerObservation, PointerObservation};
+        use gwz_family_store_contract::{FamilyLocation, FamilySession, FamilyStore};
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = gwz_family_store::YamlFamilyStore::new();
+        let mut session = store.try_lock(&FamilyLocation::new(&root)).unwrap();
+        session
+            .found(
+                FamilyId::new("fam_list").unwrap(),
+                AllocationId::new("alloc-root").unwrap(),
+            )
+            .unwrap();
+        for member in ["A", "gone"] {
+            session
+                .apply(&FamilyChange::Allocate {
+                    name: name(member),
+                    row: row(
+                        &format!("../ws-{member}"),
+                        MemberKind::Checkout,
+                        MemberState::Creating,
+                    ),
+                })
+                .unwrap();
+        }
+        let destination = root.join("../ws-A");
+        std::fs::create_dir_all(&destination).unwrap();
+        session.install_pointer(&name("A"), &destination).unwrap();
+        let view = session.reread().unwrap().unwrap();
+        drop(session);
+
+        let before = std::fs::read(root.join(gwz_family_model::INDEX_RELATIVE_PATH)).unwrap();
+        let observed = observe_members(&root, &view).unwrap();
+        assert_eq!(
+            observed.get(&name("A")),
+            Some(&present(
+                PointerObservation::Matches,
+                MarkerObservation::Matches
+            ))
         );
-        let error = observe_members(Path::new("/nowhere"), &view).unwrap_err();
-        assert_eq!(error.code, ErrorCode::UnsupportedOperation);
-        assert!(error.message.contains("member target observation"));
+        assert_eq!(
+            observed.get(&name("gone")),
+            Some(&TargetObservation::Missing)
+        );
+        assert_eq!(
+            std::fs::read(root.join(gwz_family_model::INDEX_RELATIVE_PATH)).unwrap(),
+            before,
+            "observing writes nothing"
+        );
+        let listed = members(&view, &observed);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.observed_state))
+                .collect::<Vec<_>>(),
+            vec![
+                ("root", crate::LocalObservedState::Ready),
+                ("A", crate::LocalObservedState::Incomplete),
+                ("gone", crate::LocalObservedState::Missing),
+            ],
+            "a creating row stays incomplete whatever stands at its path"
+        );
     }
 }
