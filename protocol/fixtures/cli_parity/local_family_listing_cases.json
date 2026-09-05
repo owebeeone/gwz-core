@@ -1,0 +1,118 @@
+{
+  "_schema": {
+    "purpose": "The cross-driver rendering fixture for the `gwz local list` path column (LCM1.1 fix 3, lane C, 2026-09-06). Both drivers join `LocalFamilyResponse.root_path` (the family root as core observed it, design section 7 tag 3) with each member's root-relative `path` for the human table, and both implement the join lexically -- a parent reference cancels the named segment before it, nothing is read from the filesystem, no symlink is followed, no path is canonicalised. Nothing tested that the two joins agree; this file does. Both drivers read THIS file and assert every case against their own join; neither restates the cases inline and neither keeps a copy. Add a case here, not in a driver's test module.",
+    "authority": "gwz-dev dev-docs/GwzLocalCloneDesign.md revision 11 section 8.1 (the absolute paths in the sample listing are the two wire halves joined, never a guess) and section 11 item 19 (`root_path`, operator ruling 3 of 2026-09-06); the checkpoint record GwzLocalClone-LCM1.0c-Checkpoint.md section 14.",
+    "location": {
+      "this_file": "gwz-core/protocol/fixtures/cli_parity/local_family_listing_cases.json, beside local_family_cases.json (the argv -> request parity fixture) and the merge fixtures",
+      "gwz_cli": "include_str!(\"../../../gwz-core/protocol/fixtures/cli_parity/local_family_listing_cases.json\") from src/tests/g12.rs, the same sibling path the argv fixture already uses; the join under test is `local_list_render::member_path`",
+      "gwz_py": "Path(__file__).resolve().parents[3] / \"gwz-core\" / \"protocol\" / \"fixtures\" / \"cli_parity\" / \"local_family_listing_cases.json\" from src/tests/test_cli_local_family.py, the same sibling the argv fixture already resolves; the join under test is `cli_local_family.member_display_path`"
+    },
+    "rule": "`expected` is the display path for the row: `root_path` joined with `path`, then parent and current-directory references resolved lexically. An absent (null) or empty `root_path` leaves `path` exactly as the wire carried it (a driver that does not know the root does not invent one). A `path` that is already absolute replaces the root rather than nesting under it. A parent reference cancels a preceding named segment only; above a relative root it stays in the answer, and at a filesystem root it is the root itself.",
+    "separators": "Paths are spelled with `/`, the wire's own spelling of a member path (`gwz_family_model::normalize`). A driver whose native separator differs renders with its own separator and compares after mapping it to `/`; neither driver's suites run on such a host today (both Windows CI legs build and package only), so the mapping is a stated allowance, not a measured one.",
+    "cases": {
+      "id": "stable, unique, kebab-case",
+      "root_path": "`LocalFamilyResponse.root_path` as core sent it: a string, or null for absent",
+      "path": "`LocalFamilyMemberEntry.path`, root-relative as the wire carries it",
+      "expected": "the display path both drivers must render",
+      "note": "optional prose"
+    },
+    "stability": "Keys and case ids are stable. Append cases; do not renumber, rename or reorder existing ones. If the two drivers disagree on a case, that is a finding to report, never a reason to bend the expected value to one of them."
+  },
+  "cases": [
+    {
+      "id": "plain-child",
+      "root_path": "/Users/limbo/gwz-dev",
+      "path": "clones/A",
+      "expected": "/Users/limbo/gwz-dev/clones/A",
+      "note": "A path with no parent reference nests under the root. The join does not judge whether such a member is admissible; core did that when it recorded the row."
+    },
+    {
+      "id": "the-root-itself",
+      "root_path": "/Users/limbo/gwz-dev",
+      "path": ".",
+      "expected": "/Users/limbo/gwz-dev",
+      "note": "Design section 8.1: the root's own row carries `.`, and renders as the root's directory."
+    },
+    {
+      "id": "sibling-through-parent",
+      "root_path": "/Users/limbo/gwz-dev",
+      "path": "../gwz-dev-A",
+      "expected": "/Users/limbo/gwz-dev-A",
+      "note": "The default destination `../<root-dirname>-<Name>` (design section 4, section 11 item 3): one parent reference cancels the root's last segment."
+    },
+    {
+      "id": "nested-member",
+      "root_path": "/Users/limbo/gwz-dev",
+      "path": "../lanes/gwz-dev-E",
+      "expected": "/Users/limbo/lanes/gwz-dev-E"
+    },
+    {
+      "id": "two-level-escape",
+      "root_path": "/Users/limbo/gwz-dev",
+      "path": "../../elsewhere/ws",
+      "expected": "/Users/elsewhere/ws",
+      "note": "Each parent reference cancels one named segment; the model records such a path normalised, and the join resolves the run it records."
+    },
+    {
+      "id": "absent-root",
+      "root_path": null,
+      "path": "../gwz-dev-A",
+      "expected": "../gwz-dev-A",
+      "note": "`root_path` is present exactly when `members` is (design section 7); a populated listing without one is a core that has not caught up, and the relative path is shown unchanged rather than joined with a guess."
+    },
+    {
+      "id": "absent-root-for-the-root-row",
+      "root_path": null,
+      "path": ".",
+      "expected": "."
+    },
+    {
+      "id": "empty-root",
+      "root_path": "",
+      "path": "../gwz-dev-A",
+      "expected": "../gwz-dev-A",
+      "note": "An empty root is treated as absent: nothing to join against."
+    },
+    {
+      "id": "already-absolute-member-path",
+      "root_path": "/Users/limbo/gwz-dev",
+      "path": "/tmp/lanes/A",
+      "expected": "/tmp/lanes/A",
+      "note": "The wire never carries an absolute member path (the model records root-relative paths only), but a join must not nest one under the root if it ever does."
+    },
+    {
+      "id": "root-with-trailing-slash",
+      "root_path": "/Users/limbo/gwz-dev/",
+      "path": "../gwz-dev-A",
+      "expected": "/Users/limbo/gwz-dev-A",
+      "note": "A trailing separator on the observed root is not a segment."
+    },
+    {
+      "id": "parent-reference-inside-the-member-path",
+      "root_path": "/Users/limbo/gwz-dev",
+      "path": "../gwz-dev-A/../gwz-dev-B",
+      "expected": "/Users/limbo/gwz-dev-B",
+      "note": "Not a normalised member path, but the join resolves every parent reference lexically, wherever it sits."
+    },
+    {
+      "id": "current-directory-segments",
+      "root_path": "/Users/limbo/gwz-dev",
+      "path": "./clones/./A",
+      "expected": "/Users/limbo/gwz-dev/clones/A"
+    },
+    {
+      "id": "escape-above-a-relative-root",
+      "root_path": "gwz-dev",
+      "path": "../../x",
+      "expected": "../x",
+      "note": "A relative observed root: the first parent reference cancels `gwz-dev`, the second has nothing named to cancel and stays in the answer."
+    },
+    {
+      "id": "escape-at-the-filesystem-root",
+      "root_path": "/",
+      "path": "../x",
+      "expected": "/x",
+      "note": "At a filesystem root a parent reference is the root itself, as the operating system resolves it."
+    }
+  ]
+}
