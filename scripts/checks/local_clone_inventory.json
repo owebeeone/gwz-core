@@ -276,7 +276,7 @@
         "gwz-repo-contract"
       ],
       "dev_third_party": [],
-      "expected": "pending"
+      "expected": "present"
     }
   }
 }

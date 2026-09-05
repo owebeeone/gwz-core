@@ -1,0 +1,49 @@
+# Harness crate: tiny real Git / temporary-tree fixtures for the real-I/O
+# adapter tests of the local clone family. Owner lane T. Allowed first-party
+# dependencies: repo-contract (gwz-dev
+# dev-docs/GwzLocalCloneLibraryBoundaries.md §2). `git2` and `tempfile` are
+# the inventoried third-party dependencies for this package
+# (scripts/checks/local_clone_inventory.json, role `harness`), declared with
+# the versions in gwz-core's own manifest so no feature lane races on the
+# workspace lock.
+#
+# DEV-ONLY. The boundary gate refuses a normal (non-dev) dependency on a
+# harness package, so nothing here can become a production dependency of any
+# crate. Consumers add it as:
+#
+#     gwz-local-testrepo = { path = "../local-testrepo", features = ["contract-tests"] }
+#
+# under `[dev-dependencies]`.
+[package]
+name = "gwz-local-testrepo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "GWZ local clone: dev-only real Git and temporary-tree fixtures (test harness)."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `TestRepo::graph_fixture` and the `GraphFixture` re-export. Off by default so
+# an ordinary build of this crate never enables `gwz-repo-contract`'s
+# conformance helpers (boundaries §2: those helpers are enabled by dev
+# dependencies only). Consumers that run `object_reader_conformance` against a
+# real repository turn it on in their `[dev-dependencies]` entry.
+contract-tests = ["gwz-repo-contract/contract-tests"]
+
+[dependencies]
+gwz-repo-contract = { path = "../repo-contract" }
+# `unstable-sha256` is what makes a SHA-256 fixture repository constructible
+# (`ObjectFormat::Sha256`); `default-features = false` keeps the https/ssh
+# transports out of a fixture build, exactly as `gwz-repo-inspect` declares it.
+git2 = { version = "0.21", default-features = false, features = ["unstable-sha256"] }
+tempfile = "3"
+
+[dev-dependencies]
+# The conformance helpers this crate's own tests hold `graph_fixture` to. A
+# dev edge, exactly as boundaries §2 requires of the `contract-tests` feature,
+# and the `dev_first_party` entry the inventory allows.
+gwz-repo-contract = { path = "../repo-contract", features = ["contract-tests"] }

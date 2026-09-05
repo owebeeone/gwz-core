@@ -314,7 +314,13 @@ class LocalCloneBoundaryTest(unittest.TestCase):
             self.assertEqual(entry["owner"], owner, name)
             self.assertEqual(entry["role"], role, name)
             self.assertEqual(entry["first_party"], first_party, name)
-        self.assertEqual(inventory["packages"]["gwz-local-testrepo"]["expected"], "pending")
+        # Lane T landed `crates/local-testrepo`, so the last pending row is
+        # gone and every classified package must now be present.
+        self.assertEqual(inventory["packages"]["gwz-local-testrepo"]["expected"], "present")
+        self.assertEqual(
+            [name for name, entry in inventory["packages"].items() if entry["expected"] != "present"],
+            [],
+        )
         self.assertEqual(
             inventory["policy"]["canonical_policy_sha256"],
             "dcc4fbd2b45caf928978a090208951ef14759ef0589e820b94f8475fccf07c10",
@@ -575,7 +581,9 @@ class LocalCloneBoundaryTest(unittest.TestCase):
         # The S-P3-3 guard's retirement, measured on the real tree: the real
         # workflow's Tier A command is recognised, locked, and driven by
         # `--list-present`, which names every present classified package in
-        # inventory order and no pending one; the retired flag is gone.
+        # inventory order; the retired flag is gone. Since lane T landed
+        # `crates/local-testrepo` there is no pending row left, so the list is
+        # the whole inventory.
         gate = load_gate()
         inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
         self.assertNotIn("ci_tier_a_unlocked", inventory)
@@ -600,8 +608,8 @@ class LocalCloneBoundaryTest(unittest.TestCase):
             if (ROOT / "crates" / entry["directory"] / "Cargo.toml").exists()
         ]
         self.assertEqual(names, expected)
-        self.assertEqual(len(names), 13)
-        self.assertNotIn("gwz-local-testrepo", names)
+        self.assertEqual(len(names), 14)
+        self.assertIn("gwz-local-testrepo", names)
 
     def test_tier_a_command_split_across_continuations_is_unlocked_and_refused(self) -> None:
         # LCM1.0c-fu1 (State S2-P3-2): the workflow-parsing half of the

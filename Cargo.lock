@@ -391,6 +391,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gwz-local-testrepo"
+version = "0.1.0"
+dependencies = [
+ "git2",
+ "gwz-repo-contract",
+ "tempfile",
+]
+
+[[package]]
 name = "gwz-refcopy"
 version = "0.1.0"
 dependencies = [
