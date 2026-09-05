@@ -1,5 +1,10 @@
-//! `gwz-local-disposal`: explicit keep, disband and one-shot disposal
-//! (lane D).
+//! `gwz-local-disposal`: explicit keep and one-shot disposal (lane D).
+//!
+//! Disband has no entry point here and never will: it removes pointers and
+//! the index and no directory contents, so it is core's own composition over
+//! `gwz_family_model::FamilyChange::Disband` and the store session, and it
+//! must never route a remaining row through this crate's removal path
+//! (design §5.2, last paragraph).
 //!
 //! [`dispose`] is the only local-clone service that removes directory
 //! contents (gwz-dev `dev-docs/GwzLocalCloneImplementationArchitecture.md`
@@ -320,6 +325,11 @@ pub enum DisposeError {
         remaining: Vec<PathBuf>,
         detail: String,
     },
+    /// **Never returned.** [`dispose`] implements the whole design §5.2
+    /// sequence; a port that implements nothing surfaces as
+    /// [`Port`](Self::Port)`(`[`PortError::Unimplemented`]`)` instead. The
+    /// variant is retained only so a consumer written against the LCM1.0c
+    /// stub still compiles; drop that arm and this variant goes with it.
     Unimplemented,
 }
 
@@ -449,7 +459,22 @@ fn run(
         // Step 5's second half: the contents are already gone, so an
         // explicit dispose may remove the stale row. No file is touched, so
         // no work or history check applies.
-        ListState::Missing => return detach(request, session, effects, RemovalReason::Stale),
+        ListState::Missing => {
+            // An observer that reports the target absent and repositories
+            // inside it contradicts itself. This is the one path that
+            // removes a row with no work or history check, so an
+            // inconsistent observation refuses rather than being reconciled.
+            if !evidence.repositories.is_empty() {
+                return Err(DisposeError::PathMismatch {
+                    expected: plan.target,
+                    observed: format!(
+                        "the target is absent, yet {} repositor(y|ies) were observed in it",
+                        evidence.repositories.len()
+                    ),
+                });
+            }
+            return detach(request, session, effects, RemovalReason::Stale);
+        }
         state @ (ListState::Incomplete | ListState::InterruptedDisposal) => {
             debug_assert_ne!(plan.row.state, MemberState::Ready, "{state:?}");
             return Err(DisposeError::Refused(Refusal::WrongState {
@@ -599,13 +624,13 @@ fn inspect(
         }
 
         let report = classify_observed_work(&repository.work, &repository.gwz);
-        unknown.extend(report.unknown);
-        if report.verdict == WorkVerdict::Unknown && unknown.is_empty() {
+        if report.verdict == WorkVerdict::Unknown && report.unknown.is_empty() {
             unknown.push(UnknownReason::new(
                 UnknownKind::Unimplemented,
                 format!("`{}`: an unknown verdict with no reason", repository.key),
             ));
         }
+        unknown.extend(report.unknown);
         let mut grouped: BTreeMap<HazardWaiver, Vec<Hazard>> = BTreeMap::new();
         for hazard in report.hazards {
             // The classifier's force name and this crate's waiver vocabulary
@@ -1738,6 +1763,32 @@ mod tests {
         assert!(ports.calls().is_empty(), "no port was consulted");
     }
 
+    /// Design §8.4: `--keep` detaches C's metadata and leaves its entire
+    /// tree, open merge and history on disk. It consults no port at all.
+    #[test]
+    fn keep_detaches_a_ready_member_without_consulting_any_port() {
+        let (store, mut session) = ready();
+        let mut ports = scripted(clean_evidence(), HistoryAnswer::Preserved);
+        let report = dispose(&keep(), &mut session, &mut ports).expect("keep detaches");
+        assert_eq!(
+            report.effects,
+            vec![DisposeEffect::PointerRemoved, DisposeEffect::RowDetached],
+            "the pointer goes strictly before the row"
+        );
+        assert!(
+            ports.calls().is_empty(),
+            "no evidence, history or removal call: every file stays"
+        );
+        assert!(session.reread().unwrap().unwrap().members.is_empty());
+        assert!(store.pointers().is_empty());
+        // A detached tree is no longer a member, so a repeat has no row.
+        let failure = dispose(&keep(), &mut session, &mut ports).unwrap_err();
+        assert_eq!(
+            failure.error,
+            DisposeError::Refused(Refusal::NotFound { name: name("A") })
+        );
+    }
+
     /// Design §12: a clean intact lane whose protected history lives in a
     /// survivor is deleted once, with no archive and no second removal.
     #[test]
@@ -1956,6 +2007,29 @@ mod tests {
         );
         assert!(store.pointers().is_empty());
         assert!(session.reread().unwrap().unwrap().members.is_empty());
+    }
+
+    /// The stale exit is the only one that removes a row with no work or
+    /// history check, so a self-contradicting observation refuses there.
+    #[test]
+    fn an_absent_target_holding_repositories_refuses() {
+        let (store, mut session) = ready();
+        let mut ports = scripted(
+            TargetEvidence {
+                target: TargetObservation::Missing,
+                ..clean_evidence()
+            },
+            HistoryAnswer::Preserved,
+        );
+        let failure = dispose(&delete(&HazardWaiver::ALL), &mut session, &mut ports).unwrap_err();
+        assert!(
+            matches!(failure.error, DisposeError::PathMismatch { .. }),
+            "{:?}",
+            failure.error
+        );
+        assert!(failure.effects.is_empty());
+        assert_no_removal(&ports);
+        assert_eq!(store.pointers().len(), 1, "the row and pointer stand");
     }
 
     /// Checkpoint §11 (lane D): a pointer the store cannot physically remove
