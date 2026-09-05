@@ -2,11 +2,18 @@
 //!
 //! A *family* is one original workspace (`root`) plus its named local
 //! clones. This crate owns the deterministic values and decisions of that
-//! model: names, ids, rows, the frozen metadata format (format 1), the
-//! observed-state vocabulary, the one remote-token resolver shared by
+//! model: names, root-relative member paths, ids, rows, the frozen
+//! metadata format (format 1) and its size limit, the observed-state
+//! vocabulary, the one remote-token resolver shared by
 //! `merge`, `pull` and `push`, and the index transitions. It performs no
 //! I/O, holds no lock and repairs nothing; `gwz-family-store` reads and
 //! writes the files, and core supplies observations.
+//!
+//! What the model cannot decide, it does not pretend to: it never resolves
+//! a host path, so equivalence that needs canonicalisation, symlink
+//! resolution or a filesystem's case rules belongs to the store, as
+//! [`validate_member_path`] states. Observations arrive as values;
+//! nothing here goes looking.
 //!
 //! Product contract: gwz-dev `dev-docs/GwzLocalCloneDesign.md` §2, §3, §6
 //! (revision 8); boundary: `GwzLocalCloneLibraryBoundaries.md` §3.
@@ -31,8 +38,8 @@ pub use path::{
 };
 pub use resolve::{BoundMember, RemoteToken, Resolution, Verb, resolve_remote_token};
 pub use transition::{
-    FamilyChange, Refusal, RemovalReason, ValidatedChange, check_name_available,
-    check_path_available, validate_transition, validate_view,
+    FamilyChange, Refusal, RemovalReason, ValidatedChange, check_allocation_available,
+    check_name_available, check_path_available, validate_transition, validate_view,
 };
 
 /// `schema:` value of the root index (`.gwz/local-family.yml`), format 1.
@@ -53,6 +60,28 @@ pub const MAX_ENCODED_INDEX_BYTES: u64 = 1024 * 1024;
 /// [`INDEX_SCHEMA`] and [`POINTER_SCHEMA`]; a file carrying any other
 /// version is not this format and refuses rather than being upgraded.
 pub const INDEX_FORMAT_VERSION: u32 = 1;
+
+/// The original workspace's own name; never a clone name.
+pub const ROOT_NAME: &str = "root";
+/// The root's own root-relative path.
+pub const ROOT_PATH: &str = ".";
+
+/// Field names of the frozen format-1 index and pointer files. The store
+/// encodes and decodes with exactly these keys.
+pub mod fields {
+    pub const SCHEMA: &str = "schema";
+    pub const FAMILY_ID: &str = "family_id";
+    pub const ROOT: &str = "root";
+    pub const ROOT_PATH: &str = "root_path";
+    pub const MEMBERS: &str = "members";
+    pub const PATH: &str = "path";
+    pub const KIND: &str = "kind";
+    pub const STATE: &str = "state";
+    pub const ALLOCATION_ID: &str = "allocation_id";
+    pub const SOURCE_PATH: &str = "source_path";
+    pub const MODE: &str = "mode";
+    pub const LAST_ERROR: &str = "last_error";
+}
 
 /// The encoded index is larger than the model admits (design §3, "maximum
 /// encoded size 1 MiB; oversize or malformed input refuses before
@@ -85,27 +114,6 @@ pub fn check_encoded_size(bytes: u64) -> Result<(), IndexOversize> {
         });
     }
     Ok(())
-}
-/// The original workspace's own name; never a clone name.
-pub const ROOT_NAME: &str = "root";
-/// The root's own root-relative path.
-pub const ROOT_PATH: &str = ".";
-
-/// Field names of the frozen format-1 index and pointer files. The store
-/// encodes and decodes with exactly these keys.
-pub mod fields {
-    pub const SCHEMA: &str = "schema";
-    pub const FAMILY_ID: &str = "family_id";
-    pub const ROOT: &str = "root";
-    pub const ROOT_PATH: &str = "root_path";
-    pub const MEMBERS: &str = "members";
-    pub const PATH: &str = "path";
-    pub const KIND: &str = "kind";
-    pub const STATE: &str = "state";
-    pub const ALLOCATION_ID: &str = "allocation_id";
-    pub const SOURCE_PATH: &str = "source_path";
-    pub const MODE: &str = "mode";
-    pub const LAST_ERROR: &str = "last_error";
 }
 
 /// The core-minted family identity. Never a request input.
@@ -554,6 +562,55 @@ mod tests {
                 })
             ),
             ListState::InterruptedDisposal
+        );
+    }
+
+    /// The format-1 file names and field keys are frozen (design §3): the
+    /// store encodes and decodes with exactly these, so a rename here is a
+    /// format change, not a refactor.
+    #[test]
+    fn the_frozen_format_1_files_and_fields_are_pinned() {
+        assert_eq!(INDEX_SCHEMA, "gwz.local-family/v1");
+        assert_eq!(POINTER_SCHEMA, "gwz.family-root/v1");
+        assert_eq!(INDEX_RELATIVE_PATH, ".gwz/local-family.yml");
+        assert_eq!(LOCK_RELATIVE_PATH, ".gwz/local-family.lock");
+        assert_eq!(POINTER_RELATIVE_PATH, ".gwz/family-root");
+        assert_eq!(
+            ALLOCATION_MARKER_RELATIVE_PATH,
+            ".gwz/local-clone-allocation"
+        );
+        assert_eq!(ROOT_NAME, "root");
+        assert_eq!(ROOT_PATH, ".");
+        assert_eq!(
+            [
+                fields::SCHEMA,
+                fields::FAMILY_ID,
+                fields::ROOT,
+                fields::ROOT_PATH,
+                fields::MEMBERS,
+            ],
+            ["schema", "family_id", "root", "root_path", "members"]
+        );
+        assert_eq!(
+            [
+                fields::PATH,
+                fields::KIND,
+                fields::STATE,
+                fields::ALLOCATION_ID,
+                fields::SOURCE_PATH,
+                fields::MODE,
+                fields::LAST_ERROR,
+            ],
+            [
+                "path",
+                "kind",
+                "state",
+                "allocation_id",
+                "source_path",
+                "mode",
+                "last_error"
+            ],
+            "the conceptual row of design §3"
         );
     }
 

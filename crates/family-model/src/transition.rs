@@ -164,6 +164,7 @@ pub fn validate_transition(
             validate_source_path(name, row, &path)?;
             check_name_available(view, name)?;
             check_path_available(view, &path)?;
+            check_allocation_available(view, name, &row.allocation_id)?;
             next.members.insert(name.clone(), row.clone());
         }
         FamilyChange::RecordError { name, last_error } => {
@@ -281,6 +282,35 @@ pub fn check_path_available(view: &FamilyView, path: &MemberPath) -> Result<(), 
     Ok(())
 }
 
+/// Is `allocation` free in `view`? One marker value must identify one
+/// destination, or a marker that matches proves nothing about which row it
+/// belongs to (design §3, "the allocation marker detects ordinary
+/// mix-ups"). The root's own allocation is taken too. A row is never
+/// compared against itself, so this holds for a recorded index as well.
+pub fn check_allocation_available(
+    view: &FamilyView,
+    name: &MemberName,
+    allocation: &AllocationId,
+) -> Result<(), Refusal> {
+    if &view.root.allocation_id == allocation {
+        return Err(Refusal::InvalidRow {
+            name: name.clone(),
+            detail: format!("allocation `{allocation}` is the root's"),
+        });
+    }
+    for (other_name, other) in &view.members {
+        if other_name != name && &other.allocation_id == allocation {
+            return Err(Refusal::InvalidRow {
+                name: name.clone(),
+                detail: format!(
+                    "allocation `{allocation}` is already held by member `{other_name}`"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Validate a whole decoded index: every recorded path is a normalised
 /// root-relative member path, every source path is the root or a member
 /// path, and no two members overlap. The store calls this after decoding,
@@ -291,6 +321,7 @@ pub fn validate_view(view: &FamilyView) -> Result<(), Refusal> {
     for (name, row) in &view.members {
         let path = validate_row_path(name, &row.path)?;
         validate_source_path(name, row, &path)?;
+        check_allocation_available(view, name, &row.allocation_id)?;
         for (other_name, other) in &admitted {
             match relate(&path, other) {
                 PathRelation::Same => {
@@ -766,21 +797,28 @@ mod path_policy_tests {
         assert!(check_path_available(&view, &crate::path::normalize("../ws-N").unwrap()).is_ok());
     }
 
+    /// A row with its own allocation, so a path case is not answered by the
+    /// allocation rule first.
+    fn distinct(path: &str) -> MemberRow {
+        MemberRow {
+            allocation_id: AllocationId::new(format!("alloc-distinct-{path}")).unwrap(),
+            ..row(path, MemberState::Ready)
+        }
+    }
+
     #[test]
     fn a_decoded_index_is_validated_whole_before_it_is_admitted() {
         let mut view = view();
         assert!(validate_view(&view).is_ok());
 
-        view.members
-            .insert(name("Same"), row("../ws-A/", MemberState::Ready));
+        view.members.insert(name("Same"), distinct("../ws-A/"));
         let refusal = validate_view(&view).unwrap_err();
         assert!(
             matches!(refusal, Refusal::InvalidRow { .. }),
             "an unnormalised recorded path refuses on its own row: {refusal:?}"
         );
 
-        view.members
-            .insert(name("Same"), row("../ws-A", MemberState::Ready));
+        view.members.insert(name("Same"), distinct("../ws-A"));
         assert_eq!(
             validate_view(&view).unwrap_err(),
             Refusal::PathCollision {
@@ -790,8 +828,7 @@ mod path_policy_tests {
             "two rows on one directory refuse, naming the first in name order"
         );
 
-        view.members
-            .insert(name("Same"), row("../ws-A/inner", MemberState::Ready));
+        view.members.insert(name("Same"), distinct("../ws-A/inner"));
         assert_eq!(
             validate_view(&view).unwrap_err(),
             Refusal::NestedPath {
@@ -801,8 +838,7 @@ mod path_policy_tests {
         );
 
         view.members.remove(&name("Same"));
-        view.members
-            .insert(name("Up"), row("..", MemberState::Ready));
+        view.members.insert(name("Up"), distinct(".."));
         assert_eq!(
             validate_view(&view).unwrap_err(),
             Refusal::NestedPath {
@@ -811,5 +847,49 @@ mod path_policy_tests {
             },
             "a row that contains the root refuses even after it was recorded"
         );
+    }
+
+    #[test]
+    fn an_allocation_marker_identifies_exactly_one_destination() {
+        let view = view();
+        let mut candidate = row("../ws-N", MemberState::Creating);
+        for (taken, holder) in [
+            (view.members[&name("A")].allocation_id.clone(), "member `A`"),
+            (view.root.allocation_id.clone(), "the root"),
+        ] {
+            candidate.allocation_id = taken;
+            let refusal = validate_transition(
+                &view,
+                &FamilyChange::Allocate {
+                    name: name("N"),
+                    row: candidate.clone(),
+                },
+            )
+            .expect_err("one marker value must not match two destinations");
+            assert!(
+                matches!(&refusal, Refusal::InvalidRow { detail, .. } if detail.contains(holder)),
+                "{holder}: {refusal:?}"
+            );
+        }
+        candidate.allocation_id = AllocationId::new("alloc-N").unwrap();
+        assert!(
+            validate_transition(
+                &view,
+                &FamilyChange::Allocate {
+                    name: name("N"),
+                    row: candidate,
+                },
+            )
+            .is_ok()
+        );
+
+        let mut decoded = view.clone();
+        let duplicate = decoded.members[&name("A")].allocation_id.clone();
+        decoded.members.get_mut(&name("B")).unwrap().allocation_id = duplicate;
+        assert!(
+            validate_view(&decoded).is_err(),
+            "a decoded index carrying one marker on two rows refuses"
+        );
+        assert!(validate_view(&view).is_ok());
     }
 }
