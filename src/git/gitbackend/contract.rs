@@ -739,6 +739,24 @@ pub trait GitBackend {
     fn remotes(&self, path: &Path) -> ModelResult<Vec<GitRemote>>;
     fn add_remote(&self, path: &Path, name: &str, url: &str) -> ModelResult<GitRemoteResult>;
     fn push(&self, path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult>;
+    /// Anonymous local fetch (LCM1.0c, local clone family; gwz-dev
+    /// `dev-docs/GwzLocalCloneDesign.md` §6.2). `url` must be an existing
+    /// local repository path, never a URL; `refspecs` are explicit and
+    /// required. The backend creates an anonymous in-memory remote, attaches
+    /// no credential or network helper, persists no remote name, does not
+    /// update `FETCH_HEAD` and follows no tags. Refuses before any effect on
+    /// a non-local peer or an empty refspec list.
+    fn fetch_anonymous(
+        &self,
+        path: &Path,
+        url: &str,
+        refspecs: &[&str],
+    ) -> ModelResult<GitFetchResult>;
+    /// Anonymous local push with one explicit refspec, same peer rules as
+    /// [`GitBackend::fetch_anonymous`]. A per-ref rejection reported by the
+    /// receiving side (for example a non-fast-forward update without `+`)
+    /// is a typed `remote_rejected` error, never a silent success.
+    fn push_anonymous(&self, path: &Path, url: &str, refspec: &str) -> ModelResult<GitPushResult>;
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>>;
     fn is_ancestor(&self, path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool>;
     /// Return the best merge base for two commits, when one exists.

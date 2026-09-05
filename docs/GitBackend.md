@@ -46,6 +46,44 @@ Credential behavior is intentionally bounded:
 No protocol field carries secret material. `OperationAttribution.credential_ref`
 is only a driver-local handle.
 
+## Anonymous Local Transport
+
+`fetch_anonymous(path, url, refspecs)` and `push_anonymous(path, url,
+refspec)` are the local clone family's transfer ports (LCM1.0c, 2026-09-05;
+gwz-dev `dev-docs/GwzLocalCloneDesign.md` §6.2). Every behavior below is
+observed by `cargo test -p gwz-core --lib local_clone::tests::transport`.
+They differ from `fetch` and `push` in every way that matters for a family
+exchange:
+
+- `url` is an existing local repository path. A URL scheme, scp-like
+  syntax or a missing directory refuses with `invalid_request` before any
+  effect; libgit2's local transport is the only one that can run.
+- Refspecs are explicit and required; nothing is inferred from a remote's
+  configuration because no remote is configured. The peer is an anonymous
+  in-memory remote and nothing is persisted in `.git/config`.
+- No credential, ssh-agent or progress callbacks are attached, and tags are
+  not followed. `update_fetchhead(false)` is requested, but the bundled
+  libgit2 still wrote `FETCH_HEAD` for a local transfer in
+  `local_clone::tests::transport`; the file is outside the port contract
+  and nothing reads it.
+- A rejected ref update is `remote_rejected`, never a silent success:
+  libgit2 refuses a non-fast-forward update without `+` before the transfer
+  (`NotFastForward`, mapped here), and any per-ref rejection the receiving
+  side reports through the push status callback is collected and mapped the
+  same way; `push` ignores that callback today.
+- libgit2's local transport refuses every push into a **non-bare**
+  repository ("local push doesn't (yet) support pushing to non-bare repos";
+  observed by `local_clone::tests::transport`, reported as
+  `git_command_failed` with the receiver unchanged). A family push through
+  this port therefore reaches a bare hub only; publishing into a checkout
+  member is the receiver-side `fetch_anonymous` form of the same transfer,
+  and the checked-out-branch protection of design §6.1 belongs to the
+  family push wrapper, not to the port.
+
+The family import wrapper fetches into
+`refs/gwz/local-imports/<transfer-id>`, a namespace separate from
+`refs/gwz/merge/...`, and retains those refs.
+
 ## Transfer Progress
 
 Backends that support transfer progress emit `GitTransferProgress` values. The

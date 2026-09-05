@@ -130,6 +130,8 @@ impl GitBackend for Git2Backend {
     delegate!(remotes(path: &Path) -> ModelResult<Vec<GitRemote>> => transport::remotes);
     delegate!(add_remote(path: &Path, name: &str, url: &str) -> ModelResult<GitRemoteResult> => transport::add_remote);
     delegate!(push(path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult> => transport::push);
+    delegate!(fetch_anonymous(path: &Path, url: &str, refspecs: &[&str]) -> ModelResult<GitFetchResult> => transport::fetch_anonymous);
+    delegate!(push_anonymous(path: &Path, url: &str, refspec: &str) -> ModelResult<GitPushResult> => transport::push_anonymous);
     delegate!(stage_paths(path: &Path, pathspecs: &[&str]) -> ModelResult<GitStageResult> => repository::stage_paths);
     delegate!(stage_paths_allowing_other_conflicts(path: &Path, pathspecs: &[&str],) -> ModelResult<GitStageResult> => repository::stage_paths_allowing_other_conflicts);
     delegate!(commit(path: &Path, message: &str, all: bool) -> ModelResult<GitCommitResult> => repository::commit);

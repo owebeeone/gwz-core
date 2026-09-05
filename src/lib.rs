@@ -20,6 +20,12 @@ mod checked_artifact;
 pub mod diff;
 mod durable_fs;
 pub mod git;
+// LCM1.0c (gwz-dev dev-docs/GwzLocalClonePlan.md §3 "1.0c",
+// GwzLocalCloneLibraryBoundaries.md §4): the local clone family's thin
+// composition adapters. Library logic lives in the crates under `crates/`;
+// this module holds request validation, the transport adapter and the
+// family-merge wrapper only.
+pub mod local_clone;
 pub mod model;
 pub mod operation;
 pub mod protocol;

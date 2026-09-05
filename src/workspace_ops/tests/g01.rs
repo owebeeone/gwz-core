@@ -8,7 +8,59 @@ use super::*;
 
 mod tracking_backend;
 
-use tracking_backend::{TEST_COMMIT, TrackingBackend};
+use tracking_backend::{AnonymousTransfer, TEST_COMMIT, TrackingBackend};
+
+/// LCM1.0c: the test double observes the anonymous local ports the family
+/// transport adapter uses, so orchestration tests can assert exact
+/// transfers and inject a failure without a real repository.
+#[test]
+fn tracking_backend_records_anonymous_transfers_and_injected_failures() {
+    let backend = TrackingBackend::new(1);
+    let fetched = backend
+        .fetch_anonymous(
+            Path::new("/recv"),
+            "/src",
+            &["+refs/heads/main:refs/gwz/local-imports/t1"],
+        )
+        .unwrap();
+    assert_eq!(fetched.remote, "/src");
+    backend.fail_next_anonymous("disk gone");
+    let error = backend
+        .push_anonymous(Path::new("/src"), "/hub", "refs/heads/main:refs/heads/lane")
+        .unwrap_err();
+    assert_eq!(error.code, crate::model::ErrorCode::GitCommandFailed);
+    assert!(
+        backend
+            .push_anonymous(Path::new("/src"), "/hub", "refs/heads/main:refs/heads/lane")
+            .is_ok(),
+        "the injected failure is consumed once"
+    );
+    assert_eq!(
+        backend.anonymous_transfers(),
+        vec![
+            AnonymousTransfer::Fetch {
+                path: "/recv".into(),
+                url: "/src".to_owned(),
+                refspecs: vec!["+refs/heads/main:refs/gwz/local-imports/t1".to_owned()],
+            },
+            AnonymousTransfer::Push {
+                path: "/src".into(),
+                url: "/hub".to_owned(),
+                refspec: "refs/heads/main:refs/heads/lane".to_owned(),
+            },
+            AnonymousTransfer::Push {
+                path: "/src".into(),
+                url: "/hub".to_owned(),
+                refspec: "refs/heads/main:refs/heads/lane".to_owned(),
+            },
+        ]
+    );
+    assert_eq!(
+        backend.fetch_peak(),
+        0,
+        "anonymous transfers are not overlap-tracked"
+    );
+}
 
 fn force_push_unrelated_main(fixture: &RemoteFixture, backend: &Git2Backend) -> String {
     let oid = create_orphan_ref(&fixture.source, "refs/heads/main", "unrelated remote\n");

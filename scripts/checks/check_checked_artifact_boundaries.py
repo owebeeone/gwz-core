@@ -25,8 +25,22 @@ PROTECTED_COMPILER_ROOT_DIGESTS = {
     # anchor under F-3's redefined floor below. Verified a re-measure and not
     # a cover-up: the 69ee990 file hashed to the pinned value exactly.
     #   was: e035f8a53ddb589362972c85593cc0dff4b590129de38fe0fdb72ca1880f544e
-    "src/lib.rs": "6928a62dfe4ab90eb8f7e69b60544b7be9942afb184233f8277af73c7896e423",
-    "src/workspace_ops/mod.rs": "663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124",
+    # LCM1.0c (2026-09-05, gwz-dev dev-docs/GwzLocalClonePlan.md §3 "1.0c",
+    # GwzLocalCloneLibraryBoundaries.md §4 lane C row): the ONE coordinated
+    # skeleton registration. `src/lib.rs` gains exactly one loaded module,
+    # `pub mod local_clone;` (with its comment) -- the local clone family's
+    # thin composition adapters; nothing under the protected v1 tree moves.
+    # `src/workspace_ops/mod.rs` gains `mod handle_local;` and
+    # `pub use handle_local::*;` -- the clone_local_workspace / local_family
+    # dispatch slots and the family-merge wrapper that calls the existing
+    # public `handle_merge_with_events`; `merge/mod.rs` is untouched. Every
+    # other flat and tree digest was recomputed in the same pass and is
+    # unchanged. Later lanes own package directories under crates/ only; a
+    # further protected edit still comes through lane C with its own reason.
+    #   was: 6928a62dfe4ab90eb8f7e69b60544b7be9942afb184233f8277af73c7896e423
+    "src/lib.rs": "d322c0629cb60417f5ae9bd0e123e7c6516d82c909f820b89ba31eced9c718af",
+    #   was: 663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124
+    "src/workspace_ops/mod.rs": "8ade3832fae05070388bce760a9ea8bafa925fc4720eb7e3c20b31b5259e4de9",
     # M5d close (2026-09-03): the v0 lifecycle re-exports left; open-record
     # occupancy and the retained archive/GC store are what remain.
     # M5d(10): one added row, `#[cfg(test)] pub(crate) use
@@ -141,7 +155,16 @@ PROTECTED_SOURCE_DIGESTS = {
     "checked_artifact/residue.rs": "8894be425ddd6755aa053a4e42aca540611ba45c688b42c4757343be5142349a",
     "checked_artifact/transition.rs": "13b483bc0dc3099082727a5d499b97f627ba7d41a65b929ec557416ac59b37ca",
     "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
-    "git/gitbackend.rs": "b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb",
+    # LCM1.0c (2026-09-05, GwzLocalCloneLibraryBoundaries.md §3 "Writes,
+    # locks and transport"; F51 P2-3): two added `delegate!` rows,
+    # `fetch_anonymous` and `push_anonymous`, the local clone family's
+    # anonymous local transport ports, delegating to `transport.rs` bodies
+    # that take an existing local path and explicit refspecs, create an
+    # anonymous remote, attach no credential or network helper and persist
+    # nothing. No observer, preservation or authority row moves; the
+    # concrete preservation observer still terminates in its protected leaf.
+    #   was: b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb
+    "git/gitbackend.rs": "e444155a019b75fc1bebcfa4af97a77aec13c1c40780f883d237b493c1f9aae1",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "b45057e105a74d50c5163886d3346e9ea859464971c4cd03fc49392c5b67bac5",
     # M5d close: v0 preserve arms left; the v1 owner plan and its artifacts

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -8,10 +8,27 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 
 pub(crate) const TEST_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+/// One anonymous local transfer observed by the double (LCM1.0c).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AnonymousTransfer {
+    Fetch {
+        path: PathBuf,
+        url: String,
+        refspecs: Vec<String>,
+    },
+    Push {
+        path: PathBuf,
+        url: String,
+        refspec: String,
+    },
+}
+
 #[derive(Clone)]
 pub(crate) struct TrackingBackend {
     fetch: Arc<OverlapTracker>,
     push: Arc<OverlapTracker>,
+    anonymous: Arc<Mutex<Vec<AnonymousTransfer>>>,
+    anonymous_failure: Arc<Mutex<Option<String>>>,
 }
 
 impl TrackingBackend {
@@ -19,6 +36,8 @@ impl TrackingBackend {
         Self {
             fetch: Arc::new(OverlapTracker::new(expected_overlap)),
             push: Arc::new(OverlapTracker::new(expected_overlap)),
+            anonymous: Arc::new(Mutex::new(Vec::new())),
+            anonymous_failure: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -28,6 +47,24 @@ impl TrackingBackend {
 
     pub(crate) fn push_peak(&self) -> usize {
         self.push.peak()
+    }
+
+    /// Every anonymous fetch/push the double received, in order.
+    pub(crate) fn anonymous_transfers(&self) -> Vec<AnonymousTransfer> {
+        self.anonymous.lock().unwrap().clone()
+    }
+
+    /// Make the next anonymous transfer fail with `git_command_failed`.
+    pub(crate) fn fail_next_anonymous(&self, detail: &str) {
+        *self.anonymous_failure.lock().unwrap() = Some(detail.to_owned());
+    }
+
+    fn record_anonymous(&self, transfer: AnonymousTransfer) -> ModelResult<()> {
+        self.anonymous.lock().unwrap().push(transfer);
+        match self.anonymous_failure.lock().unwrap().take() {
+            Some(detail) => Err(ModelError::new(ErrorCode::GitCommandFailed, detail)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -341,6 +378,39 @@ impl GitBackend for TrackingBackend {
         self.push.run();
         Ok(crate::git::GitPushResult {
             remote: remote.to_owned(),
+            refspec: refspec.to_owned(),
+        })
+    }
+
+    fn fetch_anonymous(
+        &self,
+        path: &Path,
+        url: &str,
+        refspecs: &[&str],
+    ) -> ModelResult<crate::git::GitFetchResult> {
+        self.record_anonymous(AnonymousTransfer::Fetch {
+            path: path.to_path_buf(),
+            url: url.to_owned(),
+            refspecs: refspecs.iter().map(|spec| (*spec).to_owned()).collect(),
+        })?;
+        Ok(crate::git::GitFetchResult {
+            remote: url.to_owned(),
+        })
+    }
+
+    fn push_anonymous(
+        &self,
+        path: &Path,
+        url: &str,
+        refspec: &str,
+    ) -> ModelResult<crate::git::GitPushResult> {
+        self.record_anonymous(AnonymousTransfer::Push {
+            path: path.to_path_buf(),
+            url: url.to_owned(),
+            refspec: refspec.to_owned(),
+        })?;
+        Ok(crate::git::GitPushResult {
+            remote: url.to_owned(),
             refspec: refspec.to_owned(),
         })
     }

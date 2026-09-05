@@ -1,0 +1,103 @@
+//! Tiny real fixtures for the adapter slices: a temporary directory, a Git
+//! repository with one commit, and a GWZ workspace created through the public
+//! handler. Small on purpose; the shared fixture crate (lane T) is for the
+//! library lanes.
+
+use std::path::{Path, PathBuf};
+
+use crate::workspace_ops::handle_create_workspace;
+
+pub(super) struct TempDir {
+    inner: tempfile::TempDir,
+}
+
+impl TempDir {
+    pub(super) fn new(label: &str) -> Self {
+        Self {
+            inner: tempfile::Builder::new()
+                .prefix(&format!("gwz-local-clone-{label}-"))
+                .tempdir()
+                .expect("create temp dir"),
+        }
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        self.inner.path()
+    }
+}
+
+/// A repository whose `main` holds one commit unique to `label`; returns
+/// its hex id. Identities and times are fixed, so two repositories with the
+/// same label hold the same commit and two labels never do.
+pub(super) fn init_repo_with_commit(path: &Path, bare: bool, label: &str) -> String {
+    let repo = if bare {
+        git2::Repository::init_bare(path).expect("init bare")
+    } else {
+        git2::Repository::init(path).expect("init")
+    };
+    let signature = git2::Signature::new(
+        "GWZ Fixture",
+        "fixture@example.invalid",
+        &git2::Time::new(1_700_000_000, 0),
+    )
+    .unwrap();
+    let tree_id = {
+        let mut builder = repo.treebuilder(None).unwrap();
+        let blob = repo.blob(format!("fixture {label}\n").as_bytes()).unwrap();
+        builder.insert("README", blob, 0o100644).unwrap();
+        builder.write().unwrap()
+    };
+    let tree = repo.find_tree(tree_id).unwrap();
+    let commit = repo
+        .commit(
+            Some("refs/heads/main"),
+            &signature,
+            &signature,
+            &format!("fixture {label}"),
+            &tree,
+            &[],
+        )
+        .unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    if !bare {
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+    }
+    commit.to_string()
+}
+
+pub(super) fn meta(request_id: &str) -> crate::RequestMeta {
+    crate::RequestMeta {
+        request_id: request_id.to_owned(),
+        schema_version: "gwz.v0".to_owned(),
+        ..crate::RequestMeta::default()
+    }
+}
+
+/// A GWZ workspace root created through the public handler.
+pub(super) fn workspace(temp: &TempDir) -> PathBuf {
+    let root = temp.path().join("ws");
+    handle_create_workspace(
+        crate::CreateWorkspaceRequest {
+            meta: meta("req-create"),
+            workspace_root: root.to_string_lossy().into_owned(),
+            workspace_id: None,
+        },
+        "op-create",
+    )
+    .expect("create workspace");
+    root
+}
+
+pub(super) fn lock_file(root: &Path) -> PathBuf {
+    root.join(gwz_family_model::LOCK_RELATIVE_PATH)
+}
+
+pub(super) fn family_files_absent(root: &Path) -> bool {
+    !lock_file(root).exists()
+        && !root.join(gwz_family_model::INDEX_RELATIVE_PATH).exists()
+        && !root.join(gwz_family_model::POINTER_RELATIVE_PATH).exists()
+        && !root
+            .join(gwz_family_model::ALLOCATION_MARKER_RELATIVE_PATH)
+            .exists()
+}

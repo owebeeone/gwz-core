@@ -36,6 +36,8 @@ pub enum ActionKind {
     AttachRepoMember,
     Merge,
     Log,
+    CloneLocalWorkspace,
+    LocalFamily,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +121,8 @@ pub enum OperationRequest {
     AttachRepoMember(crate::AttachRepoMemberRequest),
     Merge(crate::MergeRequest),
     Log(crate::LogRequest),
+    CloneLocalWorkspace(crate::CloneLocalWorkspaceRequest),
+    LocalFamily(crate::LocalFamilyRequest),
 }
 
 impl OperationRequest {
@@ -149,6 +153,8 @@ impl OperationRequest {
             Self::AttachRepoMember(request) => (ActionKind::AttachRepoMember, &request.meta),
             Self::Merge(request) => (ActionKind::Merge, &request.meta),
             Self::Log(request) => (ActionKind::Log, &request.meta),
+            Self::CloneLocalWorkspace(request) => (ActionKind::CloneLocalWorkspace, &request.meta),
+            Self::LocalFamily(request) => (ActionKind::LocalFamily, &request.meta),
         };
         OperationContext::from_meta(operation_id.into(), action, meta)
     }
@@ -676,6 +682,8 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::AttachRepoMember => Self::AttachRepoMember,
             ActionKind::Merge => Self::Merge,
             ActionKind::Log => Self::Log,
+            ActionKind::CloneLocalWorkspace => Self::CloneLocalWorkspace,
+            ActionKind::LocalFamily => Self::LocalFamily,
         }
     }
 }
