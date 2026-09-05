@@ -46,6 +46,36 @@ jobs:
         # each battery's expected count is pinned, not just its exit code.
         run: |
           python scripts/checks/run_r4bg_aggregate_gates.py privacy call-graph
+  local-clone-boundary:
+    # LCM1.0c (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §6): the
+    # local clone family's package classification and declared-edge gate,
+    # its negative fixtures, and each library's Tier A command from a
+    # standalone core checkout (this runner is exactly that checkout).
+    name: Local clone library boundaries
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Classification and dependency-edge gate
+        run: |
+          python scripts/checks/check_local_clone_boundaries.py
+          python -m unittest scripts/checks/test_check_local_clone_boundaries.py -v
+      - name: Each library's Tier A command from a standalone core checkout
+        run: |
+          for package in gwz-copy-contract gwz-repo-contract gwz-family-model \
+              gwz-family-store-contract gwz-refcopy gwz-repo-inspect gwz-work-detector \
+              gwz-history-check gwz-family-store gwz-local-import gwz-workspace-install \
+              gwz-repo-factory gwz-local-disposal; do
+            cargo test --locked -p "$package" --lib --all-features
+          done
       # check_m4_scenario_map.py is NOT wired here — corrective un-wiring
       # 2026-08-25 after the landing-commit run (32749441874) failed on it:
       # its MAP_DOC resolves `dev-docs/GwzM5-8R4bG-Evidence.md` ONE LEVEL
