@@ -101,6 +101,17 @@ SCHEMA = schema(
         method("merge", role="in",
                params=Params(request=Ref.MergeRequest),
                out=Ref.MergeResponse),
+        # Create a named local clone of this workspace inside its local
+        # family (gwz-dev dev-docs/GwzLocalCloneDesign.md §4/§7, allocated
+        # 2026-09-05 for LCM1.0c). The URL clone above is unchanged.
+        method("clone_local_workspace", role="in",
+               params=Params(request=Ref.CloneLocalWorkspaceRequest),
+               out=Ref.CloneLocalWorkspaceResponse),
+        # Observe or retire local-family members: list, dispose, disband
+        # (design §3.1/§5/§7).
+        method("local_family", role="in",
+               params=Params(request=Ref.LocalFamilyRequest),
+               out=Ref.LocalFamilyResponse),
         # Stream operation events by operation id.
         method("events.subscribe", role="out", shape="log",
                params=Params(operation_id=STR),
@@ -166,7 +177,10 @@ SCHEMA = schema(
          detach_repo_member=23,
          attach_repo_member=24,
          merge=25,
-         log=26),
+         log=26,
+         # Local clone family (GwzLocalCloneDesign.md §7; allocated 2026-09-05).
+         clone_local_workspace=27,
+         local_family=28),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -227,6 +241,19 @@ SCHEMA = schema(
          normal=0,
          ff_only=1,
          no_ff=2),
+
+    # Local clone construction mode for `gwz clone --local`
+    # (GwzLocalCloneDesign.md §4.1-§4.3; allocated 2026-09-05 for LCM1.0c).
+    LocalCloneMode=Enum(
+         verbatim=0,
+         clean=1,
+         bare=2),
+
+    # Operation kind for the `gwz local` verb (GwzLocalCloneDesign.md §5).
+    LocalFamilyOp=Enum(
+         list=0,
+         dispose=1,
+         disband=2),
 
     # Read-only prediction returned by merge analysis and dry-run planning.
     MergeAnalysisKind=Enum(
@@ -1673,7 +1700,60 @@ SCHEMA = schema(
         # Refuse the merge when crash recovery is unsupported on this volume.
         # Start only; refused on every other op. Added 2026-09-03 for DR-1
         # ship (1) (charter §3.1/§3.7).
-        filesystem_strict=F(8, BOOL, optional=True)),
+        filesystem_strict=F(8, BOOL, optional=True),
+        # Local-family source selector (`gwz merge --remote <name> [<ref>]`).
+        # Start only and family-only: core resolves the name through the
+        # family index before the merge engine runs, imports the paired
+        # source commits under a retained local ref, and hands the engine an
+        # ordinary `source_ref`; the engine itself refuses a request that
+        # still carries this field. No Git-remote fallback (an unknown name
+        # is `UnknownLocal`). Added 2026-09-05 for LCM1.0c
+        # (gwz-dev dev-docs/GwzLocalCloneDesign.md §6/§7). F(8) is
+        # filesystem_strict (ship 1); do not reuse either tag.
+        local_source_name=F(9, STR, optional=True)),
+
+    # Create a named local clone of the current workspace inside its local
+    # family (GwzLocalCloneDesign.md §2/§4/§7; allocated 2026-09-05 for
+    # LCM1.0c). The URL clone is CloneWorkspaceRequest; `url` stays required
+    # there. Family identity is derived by core from the admitted index or
+    # pointer and is never a request input.
+    CloneLocalWorkspaceRequest=Msg(
+        meta=F(1, Ref.RequestMeta),
+        # Family-unique clone name; required. Reserved: `root`, `origin`,
+        # `HEAD`, `FETCH_HEAD`, the empty name, and any name containing `/`
+        # or `:`; a name that is already a Git remote in any source member
+        # also refuses.
+        name=F(2, STR),
+        # Destination directory. Absent means the sibling default
+        # `../<root-dir>-<name>` (design §11 item 3).
+        dest=F(3, STR, optional=True),
+        mode=F(4, Ref.LocalCloneMode),
+        # `-b <branch>`: clean/bare only, created in every member before the
+        # row becomes ready (design §4.2).
+        branch=F(5, STR, optional=True)),
+        # Tag 6 is HELD, not allocated: the design names the explicit source
+        # selector (`--from <name|path>`, LCM3.2) `from`, which is a keyword
+        # in both generated languages; its wire name is an open operator
+        # decision recorded in the LCM1.0c checkpoint. Tag 7 is not a public
+        # family_id input (design §7). Neither tag may be reused for another
+        # purpose.
+
+    # Observe or retire local-family members (GwzLocalCloneDesign.md §3.1,
+    # §5, §7; allocated 2026-09-05 for LCM1.0c).
+    LocalFamilyRequest=Msg(
+        meta=F(1, Ref.RequestMeta),
+        op=F(2, Ref.LocalFamilyOp),
+        # Member name; required for dispose, refused for list and disband.
+        name=F(3, STR, optional=True),
+        # Dispose only: detach the matching row and pointer and retain every
+        # file (`--keep`). Refused together with force_hazards.
+        keep=F(4, BOOL, optional=True),
+        # Dispose only: named hazard waivers for an intact ready tree
+        # (`open-merge`, `dirty`, `unpreserved-history`; design §5.2).
+        # Absent or empty means no force. The CLI rejects a bare `--force`
+        # before encoding; core rejects unknown hazard names and keep+force.
+        # There is no boolean force field.
+        force_hazards=F(5, List(STR))),
 
     # ---- action responses -------------------------------------------------
     # Response wrapper for create_workspace.
@@ -1775,6 +1855,16 @@ SCHEMA = schema(
         # resume/continue); absent otherwise. Added 2026-09-03 for DR-1
         # ship (1) (charter §3.4/§3.7).
         crash_recovery=F(11, Ref.MergeCrashRecovery, optional=True)),
+
+    # Response wrapper for clone_local_workspace (LCM1.0c, 2026-09-05).
+    CloneLocalWorkspaceResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope)),
+    # Response wrapper for local_family (LCM1.0c, 2026-09-05). The `list`
+    # projection payload is not allocated yet: its wire shape is an open
+    # operator decision recorded in the LCM1.0c checkpoint, and every
+    # LCM1.0c handler refuses before it would need one.
+    LocalFamilyResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope)),
 
     # ---- diff request messages --------------------------------------------
     # One resolved comparison for one target repo: kind + resolved endpoints.

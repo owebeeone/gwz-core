@@ -4,6 +4,7 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
     validate_common_meta(request)?;
     validate_optional_id(request.merge_id.as_deref())?;
     validate_filesystem_strict(request)?;
+    validate_no_local_source_name(request)?;
 
     match request.op {
         crate::MergeOp::Start => {
@@ -67,6 +68,26 @@ fn validate_filesystem_strict(request: &crate::MergeRequest) -> ModelResult<()> 
             ErrorCode::InvalidRequest,
             "--filesystem-strict is accepted only when starting a merge",
         ));
+    }
+    Ok(())
+}
+
+/// The local-family selector never reaches the merge engine.
+///
+/// LCM1.0c (gwz-dev `dev-docs/GwzLocalCloneDesign.md` §3.2/§6.2, 2026-09-05):
+/// `MergeRequest.local_source_name` is resolved by the family wrapper
+/// (`workspace_ops::handle_merge_with_local_family`), which imports the
+/// paired source commits under the family lock, clears the selector and
+/// delegates once with an ordinary `source_ref`. The engine therefore refuses
+/// a request that still carries the field on every op, so it can never
+/// resolve a family name, reacquire the family lock, or silently merge
+/// `source_ref` resolved in the wrong repository.
+fn validate_no_local_source_name(request: &crate::MergeRequest) -> ModelResult<()> {
+    if request.local_source_name.is_some() {
+        return invalid(
+            "local_source_name must be resolved by the local-family merge wrapper \
+             before the merge engine runs",
+        );
     }
     Ok(())
 }
@@ -167,6 +188,7 @@ mod tests {
             message: None,
             preserve: None,
             filesystem_strict: None,
+            local_source_name: None,
         }
     }
 
@@ -227,6 +249,30 @@ mod tests {
                 validate_merge_request(&value).unwrap_err().code,
                 ErrorCode::MergeValidationFailed,
                 "{op:?}.{field}"
+            );
+        }
+    }
+
+    /// LCM1.0c: the family selector is wrapper-owned; the engine refuses it
+    /// on every op, start included, so a driver that bypasses the wrapper
+    /// gets a typed refusal instead of a wrong-repository merge.
+    #[test]
+    fn local_source_name_is_refused_by_the_engine_on_every_op() {
+        for op in [
+            crate::MergeOp::Start,
+            crate::MergeOp::Resume,
+            crate::MergeOp::Abort,
+            crate::MergeOp::Status,
+            crate::MergeOp::Gc,
+        ] {
+            let mut value = request(op);
+            value.local_source_name = Some("A".to_owned());
+            let error = validate_merge_request(&value).unwrap_err();
+            assert_eq!(error.code, ErrorCode::MergeValidationFailed, "{op:?}");
+            assert!(
+                error.message.contains("local-family merge wrapper"),
+                "{op:?}: {}",
+                error.message
             );
         }
     }

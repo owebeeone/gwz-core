@@ -45,3 +45,16 @@
 
 Errors can appear as a returned `ModelError`, an operation-level `GwzError` in
 `ResponseEnvelope.errors`, or a member-scoped `MemberResponse.error`.
+
+## Local Clone Family
+
+The LCM1.0c checkpoint (2026-09-05) allocates no new error code. Local
+family requests reuse `invalid_request` (malformed name, missing dispose
+name, unknown hazard, `keep` with hazards, `local_source_name` on a
+non-start merge), `merge_validation_failed` (a `local_source_name` that
+reaches the merge engine instead of the family wrapper), `unsupported_operation`
+(family dry-run, and every mode or operation not yet implemented), and
+`missing_remote` (pull/push token that is neither a ready family member nor
+a Git remote). The product design's `UnknownLocal` outcome for a family-only
+merge selector has no `GwzErrorCode` yet; its allocation is an open
+operator decision recorded in the LCM1.0c checkpoint.

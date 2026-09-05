@@ -489,7 +489,16 @@ stash_list(repo) -> GitStashListResult
 stash_apply(repo, stash_identity, options) -> GitStashResult
 stash_pop(repo, stash_identity, options) -> GitStashResult
 stash_drop(repo, stash_identity) -> GitStashResult
+fetch_anonymous(repo, local_url, refspecs) -> GitFetchResult   # LCM1.0c
+push_anonymous(repo, local_url, refspec) -> GitPushResult      # LCM1.0c
 ```
+
+The two anonymous ports (added 2026-09-05 for the local clone family, see
+[Local Clone Family](#local-clone-family)) accept only an existing local
+repository path as the peer, use an anonymous in-memory remote with explicit
+refspecs, attach no credential or network helpers, persist no remote name,
+do not update `FETCH_HEAD`, and surface a per-ref push rejection as a typed
+error instead of reporting success.
 
 Backend calls should receive operation attribution context. Calls that create
 Git objects should accept explicit Git object identities instead of reading only
@@ -1722,6 +1731,101 @@ with reason `tag_missing` and a diagnostic naming its missing tags. The
 operation returns `TagNotFound` when any requested tag occurs in no candidate,
 or when no candidate contains their intersection. This opt-in behavior does not
 change ordinary diff's strict per-repository revision resolution.
+
+## Local Clone Family
+
+The product contract is the gwz-dev workspace document
+`dev-docs/GwzLocalCloneDesign.md` (revision 8), delivered by
+`GwzLocalClonePlan.md` (revision 4) through the independently compiled
+libraries of `GwzLocalCloneImplementationArchitecture.md` (revision 3) and
+`GwzLocalCloneLibraryBoundaries.md` (revision 1). This section records what
+that contract fixes inside `gwz-core`. Status: LCM1.0c interface checkpoint
+(2026-09-05) — the protocol, crates, ports and dispatch slots below exist;
+every local-clone operation refuses as unsupported until its feature lane
+lands.
+
+### Protocol surface
+
+| Wire item | Allocation |
+| --- | --- |
+| `ActionKind.clone_local_workspace` | 27 |
+| `ActionKind.local_family` | 28 |
+| `CloneLocalWorkspaceRequest` | `meta`(1), `name`(2), `dest`(3, optional), `mode`(4, `LocalCloneMode`), `branch`(5, optional); tag 6 held for the source selector, tag 7 never a family-id input |
+| `LocalCloneMode` | `verbatim`=0, `clean`=1, `bare`=2 |
+| `LocalFamilyRequest` | `meta`(1), `op`(2, `LocalFamilyOp`), `name`(3, optional), `keep`(4, optional), `force_hazards`(5, list) |
+| `LocalFamilyOp` | `list`=0, `dispose`=1, `disband`=2 |
+| `MergeRequest.local_source_name` | tag 9, optional, start only; tag 8 is `filesystem_strict` |
+| `CloneLocalWorkspaceResponse`, `LocalFamilyResponse` | envelope only at LCM1.0c |
+
+`CloneWorkspaceRequest.url` stays required. Hazard names for
+`force_hazards` are `open-merge`, `dirty` and `unpreserved-history`;
+there is no boolean force, `keep` with any hazard refuses, and an unknown
+hazard refuses. Two allocations are deliberately open operator decisions:
+the wire name of the `--from` selector (the product design's `from` is a
+keyword in both generated languages) and the `list` payload shape of
+`LocalFamilyResponse`. Neither blocks LCM1.0c, where every handler refuses
+before it would need them.
+
+### Family files
+
+| Path | Holder | Content |
+| --- | --- | --- |
+| `.gwz/local-family.yml` | root only | format 1 index: core-minted `family_id`, root entry, member map (`path`, `kind`, `state`, `allocation_id`, `source_path`, `mode`, optional `last_error`) |
+| `.gwz/local-family.lock` | root only | advisory family lock; ordinary OS try-lock, released with the handle |
+| `.gwz/family-root` | every clone | pointer: `family_id` plus the registering root path |
+| `.gwz/local-clone-allocation` | every clone | ordinary allocation-id marker |
+
+Member paths are root-relative; states are `creating`, `ready` and
+`disposing`; kinds are `checkout` and `bare`. The encoded index is limited
+to 1 MiB. The data types and field names are frozen in the
+`gwz-family-model` crate; `gwz-family-store` is the sole writer through its
+locked session. These files are local runtime state under `.gwz/`, never
+`gwz.conf/` content, and none of them are copied into a clone (design
+§4.1).
+
+### Resolution and refusal order
+
+`gwz-family-model::resolve_remote_token(view, token, verb)` is the one
+resolver for merge, pull and push:
+
+| Family observation | Merge selector | Pull/push remote token |
+| --- | --- | --- |
+| ready row (including `root`) | bound member | bound member |
+| creating/disposing row | `UnknownLocal` with the state | lifecycle refusal, never Git fallback |
+| no row for the token | `UnknownLocal` | Git-remote candidate; the existing per-repository lookup decides existence |
+| no token | ordinary Git-ref merge | existing defaults and request-over-policy precedence |
+
+Core validates request shape first and refuses unsupported family dry-run,
+malformed family start requests and unimplemented modes before creating the
+family lock file, reserving metadata, copying, or importing refs. The family
+merge wrapper (`workspace_ops::handle_merge_with_local_family`) holds only
+the family lock, imports under `refs/gwz/local-imports/<transfer-id>`,
+verifies every received object id, clears the selector and calls the public
+`handle_merge_with_events` once; `validate_merge_request` refuses a request
+that still carries `local_source_name`, so the engine never resolves a
+family name. `WorkspaceMutationGuard`, `V1MutationLease` and the lifecycle
+lock handoff are untouched.
+
+### Core composition
+
+Core keeps thin adapters only: `workspace_ops::handle_local` owns the
+`clone_local_workspace`, `local_family` and family-merge dispatch slots;
+`local_clone/` owns request-shape validation, the family-merge wrapper and
+the adapter that implements the import library's `LocalTransport` port over
+`GitBackend` (`fetch_anonymous`, `push_anonymous`). Later adapters (copy,
+store, installation helpers, decoded GWZ evidence, removal) are added there
+by the integration lane as their libraries land; no library logic moves
+into core. The
+independently compiled crates under `crates/` (three contracts, one pure
+model, seven implementation/integration packages, one dev-only fixture
+harness) are inventoried by `scripts/checks/local_clone_inventory.json` and
+gated by `scripts/checks/check_local_clone_boundaries.py`; the boundary
+document owns their roles, allowed edges and owners.
+
+Not designed here, by product decision: a checked-artifact catalog for
+family files, a filesystem identity framework, a durable transaction
+journal, a merge-record version, deletion replay, a global mutator-admission
+change, and automatic pruning of import refs.
 
 ## Error Model
 

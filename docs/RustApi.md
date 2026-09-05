@@ -10,7 +10,8 @@ operations.
 | Module | Purpose |
 | --- | --- |
 | `artifact` | Read/write manifest, lock, and snapshot YAML artifacts. |
-| `git` | `GitBackend`, `Git2Backend`, Git status/head/remote/result types, transfer progress, and timeout configuration. |
+| `git` | `GitBackend`, `Git2Backend`, Git status/head/remote/result types, transfer progress, timeout configuration, and the anonymous local fetch/push ports. |
+| `local_clone` | Thin local clone family adapters: request-shape validation, the `LocalTransport` adapter over `GitBackend`, and the family-merge wrapper. Library logic lives in the crates under `crates/`. |
 | `model` | Core ids, model errors, source kinds, desired refs, selection, policy, and attribution validation. |
 | `operation` | Operation runtime, events, aggregate/member execution helpers, concurrency helpers, and response envelope helpers. |
 | `protocol` | Generated taut protocol module and conversion helpers. |
@@ -54,6 +55,16 @@ use gwz_core::{RequestMeta, Selection, WorkspaceRef};
 | `PullHeadRequest` | `workspace_ops::handle_pull_head` or `handle_pull_head_with_events` |
 | `PullSnapshotRequest` | `workspace_ops::handle_pull_snapshot` |
 | `PushRequest` | `workspace_ops::handle_push` or `handle_push_with_events` |
+| `MergeRequest` | `workspace_ops::handle_merge_with_local_family` (routes a `local_source_name` selector through the family wrapper, otherwise `handle_merge_with_events`) |
+| `CloneLocalWorkspaceRequest` | `workspace_ops::handle_clone_local_workspace` |
+| `LocalFamilyRequest` | `workspace_ops::handle_local_family` |
+
+`handle_merge_with_events` remains the public merge engine entry; it refuses
+a request that still carries `local_source_name`, so drivers dispatch merges
+through `handle_merge_with_local_family`. At the LCM1.0c checkpoint the two
+local-family handlers and the family branch of the merge wrapper validate
+request shape and then refuse with `unsupported_operation` before any
+effect.
 
 `handle_clone_workspace` is a Rust convenience entrypoint for clone +
 materialize-lock. It records the operation as materialization and does not add a

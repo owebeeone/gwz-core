@@ -20,6 +20,17 @@ merges report the resulting commit per member; conflicted merges report
 native Git merge state intact for user resolution. `StashRequest` supports
 push/list/apply/pop/drop coordinated bundle behavior.
 
+`clone_local_workspace` (`ActionKind` 27) and `local_family` (`ActionKind`
+28) are the local clone family methods allocated 2026-09-05 for the LCM1.0c
+checkpoint: `CloneLocalWorkspaceRequest` creates a named local clone
+(`LocalCloneMode` verbatim/clean/bare), `LocalFamilyRequest` lists, disposes
+or disbands family members (`LocalFamilyOp`, named `force_hazards`
+waivers), and the optional `MergeRequest.local_source_name` (tag 9) selects
+a family member as a merge source. `CloneWorkspaceRequest.url` stays
+required. At LCM1.0c every local-family handler refuses with
+`unsupported_operation` before any effect; the product contract is the
+gwz-dev `dev-docs/GwzLocalCloneDesign.md`.
+
 Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
 fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is
 double-quoted; quotes, backslashes, and familiar control bytes use backslash

@@ -30,7 +30,20 @@ from taut.ir.load import load_schema
 # delta is the one new `handles_ok` field object, and the previous pin below
 # reproduced exactly on the pre-change tree.
 #   was: 7a66e301c5c0147a12c59b2cddb6f2ebc1515ef4d65297ec53c3b312a3769697
-PRE_LOG_WIRE_SHA256 = "71bf6b9223ba6d2b4d12049e425e567254ca79396d67922be737c86c6dd97a40"
+#
+# Moved deliberately again on 2026-09-05 by LCM1.0c (gwz-dev
+# dev-docs/GwzLocalCloneDesign.md §7, GwzLocalClonePlan.md §3 "1.0c"), which
+# allocates the local-clone surface: ActionKind.clone_local_workspace (27) and
+# local_family (28), the LocalCloneMode and LocalFamilyOp enums, the
+# CloneLocalWorkspaceRequest/Response and LocalFamilyRequest/Response
+# messages, the two matching GwzCore service methods, and one optional
+# request field, MergeRequest.local_source_name (slot 9). MEASURED additive,
+# not assumed: the projection was rendered on both trees and diffed -- 242
+# added lines, 0 removed lines (249 diff lines with the 7 hunk headers), and
+# every added object is one of the items named above; the previous pin below
+# reproduced exactly on the pre-allocation tree (gwz-core 87207c2).
+#   was: 71bf6b9223ba6d2b4d12049e425e567254ca79396d67922be737c86c6dd97a40
+PRE_LOG_WIRE_SHA256 = "3c34bd741b32f366f63928211eec83c920b5b0ca0ed1d847447f4d3428c22031"
 LOG_METHODS = {"log", "log.output"}
 
 

@@ -943,6 +943,92 @@ storage backends.
 
 Public APIs MUST remain independent from storage backend choice.
 
+## Local Clone Family Requirements
+
+The product contract for local clones is the gwz-dev workspace document
+`dev-docs/GwzLocalCloneDesign.md` (revision 8) with its delivery plan,
+implementation architecture and library-boundary adoption. This section
+records the core-facing requirements that document imposes on `gwz-core`.
+Allocated 2026-09-05 for the LCM1.0c interface checkpoint; no local-clone
+behavior beyond typed refusal is claimed implemented by this text.
+
+### REQ-160: Local Clone Actions
+
+GWZ Core MUST define the taut actions `clone_local_workspace` (`ActionKind`
+27) and `local_family` (`ActionKind` 28) with the request messages
+`CloneLocalWorkspaceRequest` and `LocalFamilyRequest`, and the optional
+`MergeRequest.local_source_name` selector (tag 9).
+
+`CloneWorkspaceRequest.url` MUST stay required; local creation is a distinct
+request, never a URL-less variant of the network clone.
+
+### REQ-161: Family Metadata
+
+A local family is one original workspace (`root`) plus zero or more named
+clones. The family index MUST live only at `root`
+(`.gwz/local-family.yml`); every clone MUST store only a pointer
+(`.gwz/family-root`) and an allocation marker (`.gwz/local-clone-allocation`).
+A workspace MUST NOT contain both an index and a pointer.
+
+Core MUST derive family identity from the admitted index or pointer. No
+request field grants family membership. Host paths MUST NOT enter `gwz.conf/`
+or persisted Git remotes. The encoded index MUST NOT exceed 1 MiB; oversize
+or malformed metadata MUST refuse before mutation.
+
+### REQ-162: Family Lock And Refusal Order
+
+Local create, dispose, disband and family exchanges MUST serialize on one
+root advisory lock (`.gwz/local-family.lock`) and refuse busy. Ordinary
+operations keep their existing locks; `WorkspaceMutationGuard`,
+`V1MutationLease` and the merge lifecycle lock handoff are unchanged.
+
+Core MUST validate request shape and refuse unsupported family dry-run and
+malformed family start requests before any write, including before creating
+the family lock file, reserving metadata, copying, or importing refs. A mode
+or operation that is not implemented MUST refuse with
+`unsupported_operation` before any effect; it MUST NOT return success.
+
+### REQ-163: Name Resolution
+
+`gwz merge --remote <name>` (`local_source_name`) is family-only: a name that
+is not a ready family member is `UnknownLocal` (a non-ready row carries its
+lifecycle state as detail); there is no Git-remote fallback.
+
+`gwz pull --head --remote <name>` and `gwz push --remote <name>` MUST bind a
+ready family member, refuse a non-ready row on its lifecycle state without
+falling through, and otherwise resolve today's Git remote; neither yields
+the existing `missing_remote`.
+
+One pure resolver (`gwz-family-model::resolve_remote_token`) MUST decide all
+three verbs; core wrappers only supply the family observation and the Git
+remote lookup. Family bindings MUST NOT be persisted as Git remotes.
+
+### REQ-164: Anonymous Local Transport
+
+`GitBackend` MUST provide anonymous local fetch and push ports that take an
+admitted local repository path and explicit refspecs, create no named
+remote, use no credential helpers or network transport, and report per-ref
+rejection as an error. Family exchanges MUST import through
+`refs/gwz/local-imports/<transfer-id>` in every paired receiver, verify every
+received object id before engine entry, and retain the import refs.
+
+The family merge wrapper MUST resolve and import under the family lock only,
+clear the selector, and delegate once to the existing public merge entry with
+an ordinary local `source_ref`; the merge engine MUST refuse a request that
+still carries `local_source_name`.
+
+### REQ-165: Independent Local-Clone Libraries
+
+New local-clone copy, inspection, policy, storage and orchestration logic
+MUST live in separate private path crates under `crates/`, classified and
+dependency-gated by `scripts/checks/check_local_clone_boundaries.py`. No such
+crate MAY depend on `gwz-core`, a driver, generated protocol types,
+checked-artifact code, or the full-system test harness, in any dependency
+kind. Core keeps only thin composition adapters under `local_clone/`.
+
+Every such crate MUST expose `cargo test -p <crate> --lib` as its fast test
+command from both the outer workspace and a standalone core checkout.
+
 ## Testability Requirements
 
 ### REQ-150: In-Memory Tests

@@ -38,10 +38,14 @@ API and from workspace artifact YAML schemas.
 | GwzCore | stash | in | unary | request: StashRequest | value: StashResponse |
 | GwzCore | branch | in | unary | request: BranchRequest | value: BranchResponse |
 | GwzCore | merge | in | unary | request: MergeRequest | value: MergeResponse |
+| GwzCore | clone_local_workspace | in | unary | request: CloneLocalWorkspaceRequest | value: CloneLocalWorkspaceResponse |
+| GwzCore | local_family | in | unary | request: LocalFamilyRequest | value: LocalFamilyResponse |
 | GwzCore | events.subscribe | out | log | operation_id: str | append: OperationEvent |
 | GwzCore | operation.result | out | unary | operation_id: str | value: OperationResult |
 | GwzCore | diff | in | unary | request: DiffRequest | value: DiffManifestResponse |
 | GwzCore | diff.output | out | log | log_id: str | append: DiffOutputRecord |
+| GwzCore | log | in | unary | request: LogRequest | value: LogResponse |
+| GwzCore | log.output | out | log | log_id: str | append: LogOutputRecord |
 
 ## CLI-Local Protocol Values
 
@@ -74,6 +78,9 @@ has no service method and no handler that executes commands.
 | PushRequest | PushResponse | workspace_ops::handle_push | push | core service |
 | StashRequest | StashResponse | workspace_ops::handle_stash | stash | core service |
 | BranchRequest | BranchResponse | workspace_ops::handle_branch | branch | core service |
+| MergeRequest | MergeResponse | workspace_ops::handle_merge_with_local_family | merge | core service |
+| CloneLocalWorkspaceRequest | CloneLocalWorkspaceResponse | workspace_ops::handle_clone_local_workspace | clone --local | core service |
+| LocalFamilyRequest | LocalFamilyResponse | workspace_ops::handle_local_family | local | core service |
 | ExecRequest | ExecResponse | none | forall | CLI-local support data |
 
 ## Enums
@@ -108,6 +115,9 @@ has no service method and no handler that executes commands.
 | detach_repo_member | 23 |
 | attach_repo_member | 24 |
 | merge | 25 |
+| log | 26 |
+| clone_local_workspace | 27 |
+| local_family | 28 |
 
 ### TagOp
 
@@ -185,6 +195,22 @@ has no service method and no handler that executes commands.
 | ff_only | 1 |
 | no_ff | 2 |
 
+### LocalCloneMode
+
+| Member | Wire |
+| --- | --- |
+| verbatim | 0 |
+| clean | 1 |
+| bare | 2 |
+
+### LocalFamilyOp
+
+| Member | Wire |
+| --- | --- |
+| list | 0 |
+| dispose | 1 |
+| disband | 2 |
+
 ### MergeAnalysisKind
 
 | Member | Wire |
@@ -193,6 +219,24 @@ has no service method and no handler that executes commands.
 | fast_forward | 1 |
 | true_merge | 2 |
 | unknown | 3 |
+
+### MergePendingActionKind
+
+| Member | Wire |
+| --- | --- |
+| verify_up_to_date | 0 |
+| fast_forward | 1 |
+| true_merge | 2 |
+| resolve_conflict | 3 |
+
+### MergePendingActionState
+
+| Member | Wire |
+| --- | --- |
+| not_started | 0 |
+| expected_conflict | 1 |
+| completed_exactly | 2 |
+| ambiguous | 3 |
 
 ### MergeParticipantState
 
@@ -238,6 +282,10 @@ has no service method and no handler that executes commands.
 | merge_head_changed | 7 |
 | new_integration_state | 8 |
 | repository_missing | 9 |
+| head_diverged | 10 |
+| object_missing | 11 |
+| foreign_integration_state | 12 |
+| pending_action_ambiguous | 13 |
 
 ### MergeOperationDriftKind
 
@@ -260,6 +308,126 @@ has no service method and no handler that executes commands.
 | publishing_candidate | 4 |
 | verifying_publication | 5 |
 | complete | 6 |
+
+### MergeRecordVersion
+
+| Member | Wire |
+| --- | --- |
+| v0 | 0 |
+| v1 | 1 |
+
+### MergeTerminalOutcome
+
+| Member | Wire |
+| --- | --- |
+| completed | 0 |
+| aborted | 1 |
+
+### MergeAcceptanceKind
+
+| Member | Wire |
+| --- | --- |
+| supported_persisted | 0 |
+| legacy_complete | 1 |
+| legacy_unavailable | 2 |
+| not_accepted | 3 |
+
+### MergeInstalledAcceptedWorkspaceKind
+
+| Member | Wire |
+| --- | --- |
+| v1 | 0 |
+
+### MergeLegacyAcceptanceSource
+
+| Member | Wire |
+| --- | --- |
+| candidate | 0 |
+| baseline_no_publication | 1 |
+
+### MergeLegacyAcceptanceGap
+
+| Member | Wire |
+| --- | --- |
+| exact_lock_bytes | 0 |
+| complete_member_audit | 1 |
+| accepted_root_input | 2 |
+| publication_evidence | 3 |
+
+### MergeAcceptedMemberKind
+
+| Member | Wire |
+| --- | --- |
+| selected | 0 |
+| unselected_present | 1 |
+| absent | 2 |
+
+### MergeAcceptedRootKind
+
+| Member | Wire |
+| --- | --- |
+| born_attached | 0 |
+| born_detached | 1 |
+| unborn_attached | 2 |
+
+### MergeAcceptedMetadataSource
+
+| Member | Wire |
+| --- | --- |
+| operation_baseline | 0 |
+| selected_root_result | 1 |
+
+### MergeRecoveryOriginState
+
+| Member | Wire |
+| --- | --- |
+| executing | 0 |
+| awaiting_resolution | 1 |
+| halted | 2 |
+| finalizing | 3 |
+| preserving | 4 |
+| rolling_back | 5 |
+
+### MergeCompatibilityBasePhase
+
+| Member | Wire |
+| --- | --- |
+| pre_acceptance | 0 |
+| pre_candidate | 1 |
+| candidate_persisted | 2 |
+| evidence_unrecorded | 3 |
+| evidence_recorded | 4 |
+| publishing_prefix | 5 |
+| published | 6 |
+| no_publication_complete | 7 |
+
+### MergeCompatibilityNextAction
+
+| Member | Wire |
+| --- | --- |
+| reconcile_pending_participant | 0 |
+| execute_next_participant | 1 |
+| await_resolution | 2 |
+| validate_results | 3 |
+| persist_acceptance | 4 |
+| prepare_candidate | 5 |
+| create_or_adopt_evidence | 6 |
+| publish_candidate | 7 |
+| verify_publication | 8 |
+| complete_no_publication | 9 |
+| resume_preservation | 10 |
+| resume_rollback | 11 |
+| archive_completed | 12 |
+| archive_aborted | 13 |
+| report_recovery_required | 14 |
+
+### MergeCrashRecoveryGap
+
+| Member | Wire |
+| --- | --- |
+| no_durable_identity | 0 |
+| remote_filesystem | 1 |
+| volatile_filesystem | 2 |
 
 ### BranchActionResult
 
@@ -443,6 +611,7 @@ has no service method and no handler that executes commands.
 | operation_finished | 5 |
 | reset | 6 |
 | operation_state_changed | 7 |
+| diagnostic | 8 |
 
 ### Severity
 
@@ -503,6 +672,31 @@ has no service method and no handler that executes commands.
 | merge_phase_unsupported | 43 |
 | root_merge_not_yet_supported | 44 |
 | merge_record_unreadable | 45 |
+| unsupported_record_version | 46 |
+| unsupported_legacy_mode | 47 |
+| archived_record_unreadable | 48 |
+| unexpected_acceptance_evidence | 49 |
+| acceptance_input_drift | 50 |
+| candidate_integrity_mismatch | 51 |
+| ambiguous_evidence_commit | 52 |
+| recorded_evidence_drift | 53 |
+| publication_prefix_mismatch | 54 |
+| published_candidate_mismatch | 55 |
+| preservation_evidence_mismatch | 56 |
+| rollback_evidence_mismatch | 57 |
+| unexpected_publication_evidence | 58 |
+| terminal_evidence_mismatch | 59 |
+| recovery_evidence_mismatch | 60 |
+| terminal_rollback_mismatch | 61 |
+
+### MergeRecordRequiredWave
+
+| Member | Wire |
+| --- | --- |
+| a1 | 0 |
+| a2 | 1 |
+| a3 | 2 |
+| a4 | 3 |
 
 ### DiffComparisonKind
 
@@ -591,6 +785,34 @@ has no service method and no handler that executes commands.
 | snapshot_missing | 0 |
 | snapshot_missing_commit | 1 |
 | root_not_in_snapshot | 2 |
+| tag_missing | 3 |
+
+### LogMergeKind
+
+| Member | Wire |
+| --- | --- |
+| none | 0 |
+| marker | 1 |
+| heuristic | 2 |
+
+### LogDegradationReason
+
+| Member | Wire |
+| --- | --- |
+| repository_unreadable | 0 |
+| repository_missing | 1 |
+| unborn | 2 |
+| revision_unresolved | 3 |
+| snapshot_entry_missing | 4 |
+| lock_entry_missing | 5 |
+| unsupported_source_kind | 6 |
+
+### LogOutputRecordKind
+
+| Member | Wire |
+| --- | --- |
+| entry | 0 |
+| degradation | 1 |
 
 ## Messages
 
@@ -675,6 +897,16 @@ has no service method and no handler that executes commands.
 | message | 6 | str | yes | no | - |
 | attribution | 7 | OperationAttribution | yes | no | - |
 
+### MergeRecordCompatibilityContext
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| merge_id | 1 | str | no | no | - |
+| schema | 2 | str | yes | no | - |
+| record_schema_version | 3 | int | yes | no | - |
+| required_wave | 4 | MergeRecordRequiredWave | yes | no | - |
+| legacy_mode | 5 | str | yes | no | - |
+
 ### GwzError
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -685,6 +917,7 @@ has no service method and no handler that executes commands.
 | member_path | 4 | str | yes | no | - |
 | detail | 5 | str | yes | no | - |
 | target_kind | 6 | TargetKind | yes | no | - |
+| record_context | 7 | MergeRecordCompatibilityContext | yes | no | - |
 
 ### RemoteSpec
 
@@ -996,6 +1229,173 @@ has no service method and no handler that executes commands.
 | stash_id | 5 | str | yes | no | - |
 | stash_object_id | 6 | str | yes | no | - |
 
+### MergePendingActionSummary
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | MergePendingActionKind | no | no | - |
+| state | 2 | MergePendingActionState | no | no | - |
+| message | 3 | str | yes | no | - |
+
+### MergeRecordProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| source_version | 1 | MergeRecordVersion | no | no | - |
+| archived | 2 | bool | no | no | - |
+| terminal_outcome | 3 | MergeTerminalOutcome | yes | no | - |
+| acceptance | 4 | MergeAcceptanceProjection | yes | no | - |
+| recovery | 5 | MergeRecoveryProjection | yes | no | - |
+
+### MergeAcceptanceProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | MergeAcceptanceKind | no | no | - |
+| supported_persisted | 2 | MergeInstalledAcceptedWorkspaceProjection | yes | no | - |
+| legacy_complete | 3 | MergeLegacyAcceptedWorkspace | yes | no | - |
+| legacy_source | 4 | MergeLegacyAcceptanceSource | yes | no | - |
+| legacy_evidence | 5 | MergeLegacyAcceptanceEvidence | yes | no | - |
+| missing_gaps | 6 | List<MergeLegacyAcceptanceGap> | no | no | - |
+
+### MergeInstalledAcceptedWorkspaceProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | MergeInstalledAcceptedWorkspaceKind | no | no | - |
+| v1 | 2 | MergeAcceptedWorkspaceV1Projection | yes | no | - |
+
+### MergeRecoveryProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| origin_state | 1 | MergeRecoveryOriginState | no | no | - |
+| base_phase | 2 | MergeCompatibilityBasePhase | no | no | - |
+| next_action | 3 | MergeCompatibilityNextAction | no | no | - |
+| resume_action | 4 | MergeCompatibilityNextAction | no | no | - |
+
+### MergeAcceptedWorkspaceV1Projection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| operation_baseline_lock_sha256 | 1 | str | no | no | - |
+| metadata_base | 2 | MergeAcceptedMetadataBaseProjection | no | no | - |
+| lock_yaml | 3 | str | no | no | - |
+| lock_sha256 | 4 | str | no | no | - |
+| members | 5 | List<MergeAcceptedMemberV1Projection> | no | no | - |
+| root | 6 | MergeAcceptedRootProjection | no | no | - |
+
+### MergeAcceptedMetadataBaseProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| source | 1 | MergeAcceptedMetadataSource | no | no | - |
+| source_commit | 2 | str | yes | no | - |
+| manifest_yaml | 3 | str | no | no | - |
+| manifest_sha256 | 4 | str | no | no | - |
+| lock_yaml | 5 | str | no | no | - |
+| lock_sha256 | 6 | str | no | no | - |
+
+### MergeAcceptedMemberV1Projection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| member_id | 1 | str | no | no | - |
+| kind | 2 | MergeAcceptedMemberKind | no | no | - |
+| integration | 3 | MergeAcceptedIntegrationProjection | yes | no | - |
+| final_checkout | 4 | MergeAcceptedCheckoutProjection | yes | no | - |
+| lock_member | 5 | MergeAcceptedLockMemberProjection | yes | no | - |
+
+### MergeAcceptedIntegrationProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| branch | 1 | str | no | no | - |
+| before_commit | 2 | str | no | no | - |
+| resulting_commit | 3 | str | no | no | - |
+
+### MergeAcceptedCheckoutProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| branch | 1 | str | no | no | - |
+| commit | 2 | str | no | no | - |
+
+### MergeAcceptedLockMemberProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| path | 1 | str | no | no | - |
+| source_id | 2 | str | no | no | - |
+| source_kind | 3 | SourceKind | no | no | - |
+| commit | 4 | str | yes | no | - |
+| branch | 5 | str | yes | no | - |
+| detached | 6 | bool | yes | no | - |
+| upstream | 7 | str | yes | no | - |
+| dirty | 8 | bool | yes | no | - |
+| materialized | 9 | bool | yes | no | - |
+
+### MergeAcceptedRootProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | MergeAcceptedRootKind | no | no | - |
+| commit | 2 | str | yes | no | - |
+| symbolic_branch | 3 | str | yes | no | - |
+| publication_branch | 4 | str | yes | no | - |
+| lock_worktree_sha256 | 5 | str | no | no | - |
+| manifest_worktree_sha256 | 6 | str | no | no | - |
+| lock_commit_sha256 | 7 | str | yes | no | - |
+| manifest_commit_sha256 | 8 | str | yes | no | - |
+
+### MergeLegacyAcceptedWorkspace
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| baseline_lock_sha256 | 1 | str | no | no | - |
+| lock_yaml | 2 | str | no | no | - |
+| lock_sha256 | 3 | str | no | no | - |
+| members | 4 | List<MergeAcceptedMemberV1Projection> | no | no | - |
+| root | 5 | MergeAcceptedRootProjection | no | no | - |
+
+### MergeLegacyAcceptanceEvidence
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| lock_yaml | 1 | str | yes | no | - |
+| lock_sha256 | 2 | str | yes | no | - |
+| members | 3 | List<MergeLegacyMemberEvidence> | no | no | - |
+| root | 4 | MergeAcceptedRootProjection | yes | no | - |
+| composition_commit | 5 | str | yes | no | - |
+| composition_tree | 6 | str | yes | no | - |
+| candidate_hashes | 7 | List<MergeAcceptedCandidateHashProjection> | no | no | - |
+
+### MergeLegacyMemberEvidence
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| member_id | 1 | str | no | no | - |
+| selected | 2 | bool | no | no | - |
+| state | 3 | MergeParticipantState | yes | no | - |
+| integration | 4 | MergeAcceptedIntegrationProjection | yes | no | - |
+| lock_member | 5 | MergeAcceptedLockMemberProjection | yes | no | - |
+
+### MergeAcceptedCandidateHashProjection
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| path | 1 | str | no | no | - |
+| sha256 | 2 | str | no | no | - |
+
+### MergeCrashRecovery
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| supported | 1 | bool | no | no | - |
+| filesystem | 2 | str | yes | no | - |
+| gap | 3 | MergeCrashRecoveryGap | yes | no | - |
+| handles_ok | 4 | bool | yes | no | - |
+
 ### MergeRepoSummary
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -1017,6 +1417,7 @@ has no service method and no handler that executes commands.
 | abort_eligible | 15 | bool | yes | no | - |
 | drift | 16 | List<MergeParticipantDrift> | no | no | - |
 | error | 17 | GwzError | yes | no | - |
+| pending_action | 18 | MergePendingActionSummary | yes | no | - |
 
 ### PlannedChange
 
@@ -1069,6 +1470,8 @@ has no service method and no handler that executes commands.
 | progress | 13 | GitTransferProgress | yes | no | - |
 | target_kind | 14 | TargetKind | yes | no | - |
 | merge_state | 15 | MergeOperationState | yes | no | - |
+| merge_member | 16 | MergeRepoSummary | yes | no | - |
+| artifact_path | 17 | str | yes | no | - |
 
 ### OperationResult
 
@@ -1330,6 +1733,28 @@ has no service method and no handler that executes commands.
 | mode | 5 | MergeMode | yes | no | - |
 | message | 6 | str | yes | no | - |
 | preserve | 7 | bool | yes | no | - |
+| filesystem_strict | 8 | bool | yes | no | - |
+| local_source_name | 9 | str | yes | no | - |
+
+### CloneLocalWorkspaceRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+| name | 2 | str | no | no | - |
+| dest | 3 | str | yes | no | - |
+| mode | 4 | LocalCloneMode | no | no | - |
+| branch | 5 | str | yes | no | - |
+
+### LocalFamilyRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+| op | 2 | LocalFamilyOp | no | no | - |
+| name | 3 | str | yes | no | - |
+| keep | 4 | bool | yes | no | - |
+| force_hazards | 5 | List<str> | no | no | - |
 
 ### CreateWorkspaceResponse
 
@@ -1497,6 +1922,20 @@ has no service method and no handler that executes commands.
 | operation_drift | 7 | List<MergeOperationDrift> | no | no | - |
 | preservation | 8 | List<MergePreservation> | yes | no | - |
 | publication_step | 9 | MergePublicationStep | yes | no | - |
+| record | 10 | MergeRecordProjection | yes | no | - |
+| crash_recovery | 11 | MergeCrashRecovery | yes | no | - |
+
+### CloneLocalWorkspaceResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+
+### LocalFamilyResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
 
 ### DiffComparison
 
@@ -1546,6 +1985,7 @@ has no service method and no handler that executes commands.
 | options | 5 | DiffOptions | yes | no | - |
 | cached | 6 | bool | yes | no | - |
 | merge_base | 7 | bool | yes | no | - |
+| tagged | 8 | bool | yes | no | - |
 
 ### DiffRepoScope
 
@@ -1648,6 +2088,97 @@ has no service method and no handler that executes commands.
 | data | 5 | bytes | yes | no | - |
 | stale | 6 | bool | yes | no | - |
 | diagnostic | 7 | str | yes | no | - |
+
+### LogOptions
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| max_entries | 1 | int | yes | no | - |
+| since | 2 | str | yes | no | - |
+| until | 3 | str | yes | no | - |
+| author | 4 | str | yes | no | - |
+| grep | 5 | str | yes | no | - |
+| no_merges | 6 | bool | yes | no | - |
+| first_parent | 7 | bool | yes | no | - |
+| strict | 8 | bool | yes | no | - |
+| coalesce | 9 | bool | yes | no | - |
+| include_body | 10 | bool | yes | no | - |
+
+### LogRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+| workspace_cwd | 2 | str | yes | no | - |
+| operands | 3 | List<str> | no | no | - |
+| explicit_pathspecs | 4 | List<str> | no | no | - |
+| options | 5 | LogOptions | yes | no | - |
+| tagged | 6 | bool | yes | no | - |
+
+### LogEntryMember
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| member_id | 1 | str | no | no | - |
+| member_path | 2 | str | no | no | - |
+| source_kind | 3 | SourceKind | yes | no | - |
+| commit | 4 | str | no | no | - |
+| parents | 5 | List<str> | no | no | - |
+
+### LogMergeProvenance
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | LogMergeKind | no | no | - |
+| gwz_commit_id | 2 | str | yes | no | - |
+
+### LogEntry
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| members | 1 | List<LogEntryMember> | no | no | - |
+| provenance | 2 | LogMergeProvenance | no | no | - |
+| author | 3 | GitObjectIdentity | no | no | - |
+| committer | 4 | GitObjectIdentity | no | no | - |
+| subject | 5 | str | no | no | - |
+| body | 6 | str | yes | no | - |
+| ordering_timestamp_ms | 7 | int | yes | no | - |
+| author_timestamp_seconds | 8 | int | no | no | - |
+| committer_timestamp_seconds | 9 | int | no | no | - |
+| ordering_timestamp_seconds | 10 | int | no | no | - |
+| lossy | 11 | bool | yes | no | - |
+
+### LogDegradation
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| member_id | 1 | str | no | no | - |
+| member_path | 2 | str | no | no | - |
+| source_kind | 3 | SourceKind | yes | no | - |
+| reason | 4 | LogDegradationReason | no | no | - |
+| operand | 5 | str | yes | no | - |
+| message | 6 | str | yes | no | - |
+
+### LogOutputRecord
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| kind | 1 | LogOutputRecordKind | no | no | - |
+| entry | 2 | LogEntry | yes | no | - |
+| degradation | 3 | LogDegradation | yes | no | - |
+
+### LogOutputLogRef
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| log_id | 1 | str | no | no | - |
+
+### LogResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+| output | 2 | LogOutputLogRef | no | no | - |
 
 ## Evolution Notes
 

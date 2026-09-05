@@ -14,6 +14,10 @@ portable workspace intent.
 | `gwz.conf/.tmp/` | local only | Reserved temporary area excluded from the root Git repository. |
 | `.gwz/stash/bundles/<stash-id>.yaml` | `gwz.stash-bundle/v0` | Local coordinated stash bundle registry metadata. |
 | `.gwz/locks/workspace-mutator.lock` | local only | Workspace-wide advisory lock used by branch and stash mutations. |
+| `.gwz/local-family.yml` | `gwz.local-family/v1`, local only | Local clone family index; exists only at the family root. |
+| `.gwz/local-family.lock` | local only | Advisory family lock for local create, dispose, disband and family exchanges; exists only at the family root. |
+| `.gwz/family-root` | `gwz.family-root/v1`, local only | Clone pointer to the registering root (`family_id` plus root path). |
+| `.gwz/local-clone-allocation` | local only | Ordinary allocation-id marker written for a clone destination. |
 | `.git/info/exclude` | local only | Workspace boundary excludes for member repos, `gwz.conf/.tmp/`, and `.gwz/`. |
 
 There is no live `gwz.conf/tags` path in v0.3.0. Older design history may
@@ -135,6 +139,54 @@ without the catalog, and `--filesystem-strict` turns that warning back into a
 refusal at the start — see
 [Checked Merge Artifacts And Filesystem Identity](OperationModel.md#checked-merge-artifacts-and-filesystem-identity).
 No other workspace mutation requires them.
+
+## Local Clone Family Files
+
+A local family is the original workspace (`root`) plus its named local
+clones. The family index lives only at `root`; every clone stores a pointer
+and an allocation marker. A workspace never holds both an index and a
+pointer. These are local runtime files under `.gwz/`: they are never
+copied into a clone, never enter `gwz.conf/`, and never record a family
+member as a Git remote. Format 1 was frozen 2026-09-05 for the LCM1.0c
+checkpoint; the field names are constants of the `gwz-family-model` crate
+and `gwz-family-store` is the only writer.
+
+```yaml
+# .gwz/local-family.yml (root only)
+schema: gwz.local-family/v1
+family_id: fam_01
+root:
+  allocation_id: alloc_root
+members:
+  A:
+    path: ../gwz-dev-A        # root-relative
+    kind: checkout            # checkout | bare
+    state: ready              # creating | ready | disposing
+    allocation_id: alloc_a
+    source_path: .            # root-relative path of the source member
+    mode: verbatim            # verbatim | clean | bare
+    last_error: null          # optional diagnostic for an incomplete row
+```
+
+```yaml
+# .gwz/family-root (every clone)
+schema: gwz.family-root/v1
+family_id: fam_01
+root_path: /Users/me/limbo/gwz-dev
+```
+
+```text
+# .gwz/local-clone-allocation (every clone; one line)
+alloc_a
+```
+
+The encoded index is limited to 1 MiB; an oversize or malformed file refuses
+mutation and is retained for inspection. The store rereads and validates
+the index under `.gwz/local-family.lock` (an ordinary OS advisory try-lock
+released with its handle) and publishes it by same-directory temporary
+write and rename. This is best-effort metadata publication, not a
+power-loss-safe multi-file transaction, and reads never create the lock
+file. `gwz local list` is observation-only.
 
 ## Atomic Writes
 

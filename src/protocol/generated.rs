@@ -31,6 +31,8 @@ pub enum ActionKind {
     AttachRepoMember,
     Merge,
     Log,
+    CloneLocalWorkspace,
+    LocalFamily,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -61,6 +63,8 @@ impl ActionKind {
         Self::AttachRepoMember => 24,
         Self::Merge => 25,
         Self::Log => 26,
+        Self::CloneLocalWorkspace => 27,
+        Self::LocalFamily => 28,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::CreateWorkspace,
@@ -90,6 +94,8 @@ impl ActionKind {
         24 => Self::AttachRepoMember,
         25 => Self::Merge,
         26 => Self::Log,
+        27 => Self::CloneLocalWorkspace,
+        28 => Self::LocalFamily,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "ActionKind", value: v }),
     }) }
 }
@@ -287,6 +293,46 @@ impl MergeMode {
         1 => Self::FfOnly,
         2 => Self::NoFf,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "MergeMode", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LocalCloneMode {
+    #[default] Verbatim,
+    Clean,
+    Bare,
+}
+impl LocalCloneMode {
+    pub fn wire(self) -> i64 { match self {
+        Self::Verbatim => 0,
+        Self::Clean => 1,
+        Self::Bare => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Verbatim,
+        1 => Self::Clean,
+        2 => Self::Bare,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LocalCloneMode", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LocalFamilyOp {
+    #[default] List,
+    Dispose,
+    Disband,
+}
+impl LocalFamilyOp {
+    pub fn wire(self) -> i64 { match self {
+        Self::List => 0,
+        Self::Dispose => 1,
+        Self::Disband => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::List,
+        1 => Self::Dispose,
+        2 => Self::Disband,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LocalFamilyOp", value: v }),
     }) }
 }
 
@@ -4523,6 +4569,7 @@ pub struct MergeRequest {
     pub message: Option<String>,
     pub preserve: Option<bool>,
     pub filesystem_strict: Option<bool>,
+    pub local_source_name: Option<String>,
 }
 impl MergeRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -4535,6 +4582,7 @@ impl MergeRequest {
             (6, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (7, match &self.preserve { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (8, match &self.filesystem_strict { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (9, match &self.local_source_name { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4547,6 +4595,65 @@ impl MergeRequest {
             message: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             preserve: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             filesystem_strict: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            local_source_name: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CloneLocalWorkspaceRequest {
+    pub meta: RequestMeta,
+    pub name: String,
+    pub dest: Option<String>,
+    pub mode: LocalCloneMode,
+    pub branch: Option<String>,
+}
+impl CloneLocalWorkspaceRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+            (2, Cbor::Text(self.name.clone())),
+            (3, match &self.dest { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, Cbor::Int(self.mode.wire())),
+            (5, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            name: c.try_get(2)?.try_text()?,
+            dest: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            mode: LocalCloneMode::from_wire(c.try_get(4)?.try_int()?)?,
+            branch: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LocalFamilyRequest {
+    pub meta: RequestMeta,
+    pub op: LocalFamilyOp,
+    pub name: Option<String>,
+    pub keep: Option<bool>,
+    pub force_hazards: Vec<String>,
+}
+impl LocalFamilyRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+            (2, Cbor::Int(self.op.wire())),
+            (3, match &self.name { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.keep { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (5, Cbor::Array(self.force_hazards.iter().map(|x| Cbor::Text(x.clone())).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            op: LocalFamilyOp::from_wire(c.try_get(2)?.try_int()?)?,
+            name: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            keep: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            force_hazards: c.try_get(5)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
         })
     }
 }
@@ -5029,6 +5136,40 @@ impl MergeResponse {
             publication_step: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(MergePublicationStep::from_wire(v.try_int()?)?) } },
             record: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(MergeRecordProjection::from_cbor(v)?) } },
             crash_recovery: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(MergeCrashRecovery::from_cbor(v)?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CloneLocalWorkspaceResponse {
+    pub response: ResponseEnvelope,
+}
+impl CloneLocalWorkspaceResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LocalFamilyResponse {
+    pub response: ResponseEnvelope,
+}
+impl LocalFamilyResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
         })
     }
 }

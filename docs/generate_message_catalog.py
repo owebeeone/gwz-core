@@ -42,6 +42,13 @@ REQUEST_MATRIX = {
     "PushRequest": ("PushResponse", "workspace_ops::handle_push", "push"),
     "StashRequest": ("StashResponse", "workspace_ops::handle_stash", "stash"),
     "BranchRequest": ("BranchResponse", "workspace_ops::handle_branch", "branch"),
+    "MergeRequest": ("MergeResponse", "workspace_ops::handle_merge_with_local_family", "merge"),
+    "CloneLocalWorkspaceRequest": (
+        "CloneLocalWorkspaceResponse",
+        "workspace_ops::handle_clone_local_workspace",
+        "clone --local",
+    ),
+    "LocalFamilyRequest": ("LocalFamilyResponse", "workspace_ops::handle_local_family", "local"),
     "ExecRequest": ("ExecResponse", "none", "forall"),
 }
 

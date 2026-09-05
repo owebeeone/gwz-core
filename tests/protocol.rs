@@ -403,6 +403,7 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
         message: None,
         preserve: None,
         filesystem_strict: None,
+        local_source_name: None,
     };
     assert_eq!(
         round_trip(
@@ -429,9 +430,14 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
     // a7 to a8 and a trailing `08 f6` (slot 8 = null) is appended. Every
     // pre-existing slot is byte-identical.
     //   was: a701a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f6
+    // Moved 2026-09-05 by LCM1.0c (gwz-dev dev-docs/GwzLocalCloneDesign.md §7):
+    // MergeRequest gained the optional `local_source_name` in slot 9, so the
+    // map header grows from a8 to a9 and a trailing `09 f6` (slot 9 = null)
+    // is appended. Every pre-existing slot is byte-identical.
+    //   was: a801a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f608f6
     assert_eq!(
         hex,
-        "a801a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f608f6"
+        "a901a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f608f609f6"
     );
 
     let response = gwz_core::MergeResponse {
@@ -504,6 +510,7 @@ fn merge_request_round_trips_filesystem_strict() {
         message: None,
         preserve: None,
         filesystem_strict: Some(true),
+        local_source_name: None,
     };
     assert_eq!(
         round_trip(
