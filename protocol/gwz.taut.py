@@ -741,7 +741,27 @@ SCHEMA = schema(
          # checkpoint, which leaves the same shape. The `creating` row and
          # the directory are retained; `gwz local list` shows the row as
          # `creating/incomplete`.
-         destination_incomplete=66),
+         destination_incomplete=66,
+         # The two family-merge import outcomes below (LCM1.2, lane C,
+         # 2026-09-06; GwzLocalCloneDesign.md §6, §6.2, §12 -- gwz-dev
+         # dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md §16). `gwz merge
+         # --remote <name> [<ref>]` pairs every selected receiver with the
+         # named member's repository by lock member id (design §6) and
+         # fetches each captured source id into one fresh retained ref,
+         # `refs/gwz/local-imports/<transfer-id>`, before the engine sees
+         # anything (§6.2).
+         #
+         # The two workspaces' member sets do not correspond: a member id on
+         # one side only, the same id at different recorded paths, or the
+         # same id with a different source identity; a selected `@root`
+         # with no root to pair. Refused before any fetch; nothing written.
+         pairing_mismatch=67,
+         # The import stopped before the engine was entered: a fetch or a
+         # receiver read failed, or the import was cancelled. The import
+         # refs created before the stop are retained (the message names
+         # each with its object id; design §6.2: never pruned) and the
+         # engine was not entered; a retry mints a fresh transfer id.
+         import_incomplete=68),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(

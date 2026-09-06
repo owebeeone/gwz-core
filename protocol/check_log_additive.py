@@ -83,7 +83,18 @@ from taut.ir.load import load_schema
 # keys; the previous pin below reproduced exactly on the pre-allocation tree
 # (gwz-core 81fcaf2).
 #   was: 2eca6469ed1281e77a95f1e419aa4065002aa94c77507a73ada6f6f9c8bb5503
-PRE_LOG_WIRE_SHA256 = "0a173de982aaa93225e26581d678b4722356afc967fb4543de531708900cf981"
+#
+# Moved deliberately again on 2026-09-06 by LCM1.2 (lane C, gwz-dev
+# dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md §16; GwzLocalCloneDesign.md
+# §6, §6.2, §12), which allocates exactly two more `GwzErrorCode` members
+# for the family-merge import outcomes: pairing_mismatch (67) and
+# import_incomplete (68). No message, field or slot changed. MEASURED
+# additive, not assumed: the projection was rendered on both trees and
+# diffed -- 2 added lines, 0 removed lines, 2 hunks, the added lines being
+# the two enum members as map keys; the previous pin below reproduced
+# exactly on the pre-allocation tree (gwz-core 63f1332).
+#   was: 0a173de982aaa93225e26581d678b4722356afc967fb4543de531708900cf981
+PRE_LOG_WIRE_SHA256 = "ba55594fa54123b865e06eb4bedfbf1eba4c9f52467a468831f9b699df0763a2"
 LOG_METHODS = {"log", "log.output"}
 
 

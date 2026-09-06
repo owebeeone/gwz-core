@@ -721,6 +721,8 @@ has no service method and no handler that executes commands.
 | copy_failed | 64 |
 | source_drift | 65 |
 | destination_incomplete | 66 |
+| pairing_mismatch | 67 |
+| import_incomplete | 68 |
 
 ### MergeRecordRequiredWave
 

@@ -75,6 +75,8 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::CopyFailed => Self::CopyFailed,
             model::ErrorCode::SourceDrift => Self::SourceDrift,
             model::ErrorCode::DestinationIncomplete => Self::DestinationIncomplete,
+            model::ErrorCode::PairingMismatch => Self::PairingMismatch,
+            model::ErrorCode::ImportIncomplete => Self::ImportIncomplete,
         }
     }
 }

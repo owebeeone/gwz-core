@@ -1137,6 +1137,40 @@ fn error_code_wire_values_are_pinned() {
         assert_ne!(code, GwzErrorCode::IoError);
         assert_eq!(GwzErrorCode::from_wire(code.wire()).ok(), Some(code));
     }
+    // LCM1.2 (lane C, 2026-09-06, gwz-dev
+    // dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md §16): the two
+    // family-merge import outcomes, each distinct from the codes they would
+    // have folded into and from the create codes beside them.
+    assert_eq!(GwzErrorCode::PairingMismatch.wire(), 67);
+    assert_eq!(GwzErrorCode::ImportIncomplete.wire(), 68);
+    for code in [
+        GwzErrorCode::PairingMismatch,
+        GwzErrorCode::ImportIncomplete,
+    ] {
+        for other in [
+            GwzErrorCode::InvalidRequest,
+            GwzErrorCode::MemberNotFound,
+            GwzErrorCode::GitCommandFailed,
+            GwzErrorCode::IoError,
+            GwzErrorCode::SourceDrift,
+            GwzErrorCode::DestinationIncomplete,
+        ] {
+            assert_ne!(code, other);
+        }
+        assert_eq!(GwzErrorCode::from_wire(code.wire()).ok(), Some(code));
+    }
+    assert_ne!(
+        GwzErrorCode::PairingMismatch,
+        GwzErrorCode::ImportIncomplete
+    );
+    assert_eq!(
+        gwz_core::GwzErrorCode::from(gwz_core::model::ErrorCode::PairingMismatch),
+        GwzErrorCode::PairingMismatch
+    );
+    assert_eq!(
+        gwz_core::GwzErrorCode::from(gwz_core::model::ErrorCode::ImportIncomplete),
+        GwzErrorCode::ImportIncomplete
+    );
 }
 
 /// LCM1.0c follow-up 2 (operator rulings 2026-09-05, gwz-dev

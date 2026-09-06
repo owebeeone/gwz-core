@@ -97,6 +97,18 @@ pub enum ErrorCode {
     /// regeneration -- or the install was cancelled; the row and directory
     /// are retained for inspection (wire `destination_incomplete` = 66).
     DestinationIncomplete,
+    /// A family merge's two workspaces are no longer the same shape: a
+    /// member id on one side only, the same id at different recorded paths
+    /// or with a different source identity, or a selected `@root` with no
+    /// root to pair (design §6). Refused before any fetch; nothing written
+    /// (wire `pairing_mismatch` = 67; LCM1.2).
+    PairingMismatch,
+    /// A family merge's import stopped before the engine was entered -- a
+    /// fetch or receiver read failed, or the import was cancelled. The
+    /// import refs created before the stop are retained and named; the
+    /// engine was not entered; a retry mints a fresh transfer id (wire
+    /// `import_incomplete` = 68; LCM1.2).
+    ImportIncomplete,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

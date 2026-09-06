@@ -1550,6 +1550,8 @@ pub enum GwzErrorCode {
     CopyFailed,
     SourceDrift,
     DestinationIncomplete,
+    PairingMismatch,
+    ImportIncomplete,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1620,6 +1622,8 @@ impl GwzErrorCode {
         Self::CopyFailed => 64,
         Self::SourceDrift => 65,
         Self::DestinationIncomplete => 66,
+        Self::PairingMismatch => 67,
+        Self::ImportIncomplete => 68,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1689,6 +1693,8 @@ impl GwzErrorCode {
         64 => Self::CopyFailed,
         65 => Self::SourceDrift,
         66 => Self::DestinationIncomplete,
+        67 => Self::PairingMismatch,
+        68 => Self::ImportIncomplete,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }
