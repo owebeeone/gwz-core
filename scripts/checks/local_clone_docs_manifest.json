@@ -1,0 +1,254 @@
+{
+  "manifest_version": 1,
+  "description": "Local clone family documentation assertions. Every row pins a statement the user-facing local-clone documentation must (or must not) make about what the CURRENT build serves and refuses. This is a second manifest for the same instrument as merge_docs_manifest.json (check_merge_docs.py's engine, run by check_local_clone_docs.py), kept separate so the merge gate's pinned counts do not move when a local-clone sentence changes and so these rows retire on their own schedule: when a refused mode is served, the row that pins its refusal is moved to `retired` with the reason, never loosened in place. Every forbidden row carries `fires_on`, a sentence it must match; test_check_local_clone_docs.py asserts each one fires, so no row is vacuous.",
+  "global_forbidden": [
+    {
+      "id": "no_removed_clone_local_spelling",
+      "match": "regex",
+      "value": "(?i)\\bclone\\s+--(?:local|name)\\b",
+      "fires_on": "gwz clone --local --name A ../gwz-dev-A",
+      "comment": "Creation is `gwz local clone <name> [dest]`; the earlier `--local`/`--name` form on `gwz clone` was removed without an alias before any release and the parser rejects it. It may be mentioned as removed (local.md does), but never spelled as a command. `ls --local` is a different flag and does not match."
+    },
+    {
+      "id": "unserved_modes_must_not_be_claimed_working",
+      "match": "regex",
+      "value": "(?i)`?--(?:clean|bare|from)`?(?:\\s*(?:,|and|or)\\s*`?--(?:clean|bare|from)`?)*[^.\\n]{0,60}?\\b(?:is|are|now|both)\\s+(?:now\\s+|fully\\s+)?(?:available|supported|served|implemented|working|honou?red|landed|live)\\b",
+      "fires_on": "`--clean` and `--bare` are now supported.",
+      "comment": "The current build parses `--clean`, `--bare` and `--from` and refuses each with UnsupportedOperation before anything is written. A negated form (`is not supported`, `are refused`) does not match because `not`/`refused` are not in the alternation. RETIRE this row, do not loosen it, when the modes land."
+    },
+    {
+      "id": "family_pull_push_must_not_be_claimed_served",
+      "match": "regex",
+      "value": "(?i)\\bfamily\\s+(?:pull|push)\\b[^.\\n]{0,60}?\\b(?:is|are|now|both)\\s+(?:now\\s+|fully\\s+)?(?:available|supported|served|implemented|working|honou?red|landed|live)\\b",
+      "fires_on": "Family pull and push are served by this build.",
+      "comment": "A family name on `gwz pull` and `gwz push` falls through to Git remote resolution in the current build and answers MissingRemote. `are not served` does not match. RETIRE when family pull/push land."
+    },
+    {
+      "id": "no_milestone_vocabulary_in_user_prose",
+      "match": "regex",
+      "value": "(?i)\\bLCM\\s?\\d|\\boperator ruling\\b",
+      "fires_on": "LCM2.2 landed ordinary dispose by operator ruling.",
+      "comment": "Milestone ids and review vocabulary belong to dev-docs; local.md carried an `operator ruling 2026-09-06` parenthesis until this package."
+    }
+  ],
+  "sources": [
+    {
+      "id": "local_clones_guide",
+      "path": "gwz-cli/docs/LocalClones.md",
+      "required": [
+        {"id": "guide_title", "value": "# Local Clones"},
+        {"id": "guide_keep_deletes_nothing", "value": "`--keep` deletes nothing"},
+        {"id": "guide_clean_tree_is_not_proof", "value": "A clean working tree is not preservation proof."},
+        {"id": "guide_unserved_modes_are_refused", "value": "`--clean`, `--bare` and `--from` are refused by this build"},
+        {"id": "guide_family_pull_push_not_served", "value": "Family pull and push are not served by this build."},
+        {"id": "guide_unknown_evidence_is_never_waivable", "value": "no force name waives unknown evidence"},
+        {"id": "guide_names_never_in_conf", "value": "never written into `gwz.conf/`"},
+        {"id": "guide_names_never_git_remotes", "value": "never become Git remotes"},
+        {"id": "guide_import_ref_namespace", "value": "refs/gwz/local-imports/<transfer-id>"},
+        {"id": "guide_merge_by_name", "value": "gwz merge --remote <name>"},
+        {"id": "guide_root_not_a_participant_by_default", "value": "The root is not a participant unless you select it."},
+        {"id": "guide_no_archive", "value": "GWZ makes no archive of a lane it deletes"},
+        {"id": "guide_force_is_a_loss_waiver", "value": "an operator's loss waiver, not crash recovery"},
+        {"id": "guide_unsupported_message", "comment": "The refusal sentence the current build prints for a clean, bare or --from create; the page must show what the user actually sees.", "value": "is not supported by this gwz-core build"},
+        {"id": "guide_missing_remote_message", "value": "gwz: MissingRemote: missing remote 'A'"},
+        {"id": "guide_not_yet_section", "value": "## Not Yet"},
+        {"id": "guide_about_section", "value": "## About This Page"}
+      ],
+      "forbidden": [
+        {
+          "id": "deletion_must_not_promise_an_archive",
+          "match": "regex",
+          "value": "(?i)\\b(?:dispos\\w*|delet\\w*|retir\\w*)\\b[^.\\n]{0,80}?\\b(?:archives|archived|backs\\s+up|backed\\s+up|moves?\\s+(?:it|them|the\\s+\\w+)\\s+to\\s+(?:an?\\s+)?(?:archive|trash|backup)|(?:an?|the)\\s+(?:automatic\\s+)?(?:archive|backup)\\s+(?:is|gets)\\s+(?:made|written|kept|taken))\\b",
+          "fires_on": "dispose archives the lane before deleting it",
+          "comment": "Ordinary dispose deletes; nothing is kept for the user and no retention runs. Scoped per source rather than globally because the merge pages legitimately say `gwz merge --gc` deletes archived merge records."
+        },
+        {
+          "id": "guide_must_not_promise_dates",
+          "match": "regex",
+          "value": "(?i)\\b(?:in|by)\\s+(?:the\\s+)?next\\s+release\\b|\\bcoming\\s+soon\\b|\\bplanned\\s+for\\b|\\bscheduled\\s+for\\b|\\bETA\\b",
+          "fires_on": "`--clean` is planned for the next release.",
+          "comment": "The page says what refuses, never when it stops refusing."
+        }
+      ]
+    },
+    {
+      "id": "local_command",
+      "path": "gwz-cli/docs/commands/local.md",
+      "required": [
+        {"id": "local_command_clone_synopsis", "value": "gwz local clone <name> [dest] [--clean | --bare] [-b <branch>] [--from <name|path>]"},
+        {"id": "local_command_dispose_synopsis", "value": "gwz local dispose <name> [--keep | --force <hazard,...>]"},
+        {"id": "local_command_keep_deletes_nothing", "value": "`--keep` deletes nothing"},
+        {"id": "local_command_marks_refused_modes", "value": "**Refused by this build.**"},
+        {"id": "local_command_refused_modes_section", "value": "### Modes this build refuses"},
+        {"id": "local_command_clean_tree_is_not_proof", "value": "A clean working tree is not preservation proof"},
+        {"id": "local_command_pull_push_answer_missing_remote", "value": "answer `MissingRemote`"},
+        {"id": "local_command_clone_rejects_local_flag", "value": "rejects `--local` as an unknown argument"},
+        {"id": "local_command_links_the_guide", "value": "[Local Clones](../LocalClones.md)"}
+      ],
+      "forbidden": [
+        {
+          "id": "deletion_must_not_promise_an_archive",
+          "match": "regex",
+          "value": "(?i)\\b(?:dispos\\w*|delet\\w*|retir\\w*)\\b[^.\\n]{0,80}?\\b(?:archives|archived|backs\\s+up|backed\\s+up|moves?\\s+(?:it|them|the\\s+\\w+)\\s+to\\s+(?:an?\\s+)?(?:archive|trash|backup)|(?:an?|the)\\s+(?:automatic\\s+)?(?:archive|backup)\\s+(?:is|gets)\\s+(?:made|written|kept|taken))\\b",
+          "fires_on": "dispose archives the lane before deleting it"
+        },
+        {
+          "id": "local_command_must_not_promise_the_engine_lands",
+          "value": "while the engine behind them lands",
+          "fires_on": "still answer `UnsupportedOperation` while the engine behind them lands",
+          "comment": "The sentence this package replaced: a refusal described as temporary is a promise."
+        },
+        {
+          "id": "local_command_must_not_claim_a_bare_share_point_exists",
+          "value": "including a bare share point",
+          "fires_on": "work from any ready family member, including a bare share point",
+          "comment": "`--bare` is refused, so no bare member can exist for these commands to run from."
+        }
+      ]
+    },
+    {
+      "id": "clone_command",
+      "path": "gwz-cli/docs/commands/clone.md",
+      "required": [
+        {"id": "clone_command_url_synopsis", "value": "gwz clone <url> [directory]"},
+        {"id": "clone_command_points_at_local_clone", "value": "[`gwz local clone`](local.md)"}
+      ],
+      "forbidden": [
+        {
+          "id": "clone_command_must_not_mention_a_local_flag",
+          "match": "regex",
+          "value": "--local\\b",
+          "fires_on": "gwz clone --local",
+          "comment": "The URL form's page says nothing about local clones beyond the pointer; the note that the flag was removed lives on local.md."
+        }
+      ]
+    },
+    {
+      "id": "merge_command",
+      "path": "gwz-cli/docs/commands/merge.md",
+      "required": [
+        {"id": "merge_command_family_section", "value": "## Merging from a local clone (`--remote <name>`)"},
+        {"id": "merge_command_family_only", "value": "never falls back to a Git remote"},
+        {"id": "merge_command_import_ref_namespace", "value": "refs/gwz/local-imports/<transfer-id>"},
+        {"id": "merge_command_root_selection", "value": "gwz --target @root merge --remote A"},
+        {"id": "merge_command_links_the_guide", "value": "../LocalClones.md"}
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "pull_command",
+      "path": "gwz-cli/docs/commands/pull.md",
+      "required": [
+        {"id": "pull_command_not_served", "value": "**This build does not serve it.**"},
+        {"id": "pull_command_missing_remote_message", "value": "MissingRemote: missing remote 'C'"},
+        {"id": "pull_command_links_the_guide", "value": "../LocalClones.md"}
+      ],
+      "forbidden": [
+        {
+          "id": "pull_command_must_not_claim_binding",
+          "match": "regex",
+          "value": "(?i)\\bname\\s+binds\\s+to\\b|\\bstill\\s+landing\\b",
+          "fires_on": "A ready family name binds to that workspace",
+          "comment": "The binding sentence this package removed; scoped to the pages it was on, because the generated CLI reference carries the same claim in Rust help text this package cannot change."
+        }
+      ]
+    },
+    {
+      "id": "push_command",
+      "path": "gwz-cli/docs/commands/push.md",
+      "required": [
+        {"id": "push_command_not_served", "value": "**This build does not serve it.**"},
+        {"id": "push_command_missing_remote_message", "value": "MissingRemote: missing remote 'hub'"},
+        {"id": "push_command_links_the_guide", "value": "../LocalClones.md"}
+      ],
+      "forbidden": [
+        {
+          "id": "push_command_must_not_claim_binding",
+          "match": "regex",
+          "value": "(?i)\\bname\\s+binds\\s+to\\b|\\bstill\\s+landing\\b",
+          "fires_on": "A ready family name binds to that workspace"
+        }
+      ]
+    },
+    {
+      "id": "generated_cli",
+      "path": "gwz-cli/docs/CLI.md",
+      "required": [
+        {"id": "generated_cli_local_clone_section", "value": "### `gwz local clone`"},
+        {"id": "generated_cli_local_clone_usage", "value": "Usage: gwz local clone <name> [dest] [--clean | --bare] [-b <branch>] [--from <name|path>]", "comment": "Generated from the clap definitions in gwz-cli; regenerate with `python scripts/generate_cli_reference.py --write` rather than editing CLI.md."},
+        {"id": "generated_cli_clone_usage", "value": "Usage: gwz clone <url> [directory]"},
+        {"id": "generated_cli_dispose_force_usage", "value": "gwz local dispose <name> --force <hazard,...>"},
+        {"id": "generated_cli_hazard_names", "value": "Known names: open-merge, dirty, unpreserved-history"}
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "readme",
+      "path": "gwz-cli/docs/README.md",
+      "required": [
+        {"id": "readme_links_the_guide", "value": "[Local Clones](LocalClones.md)"}
+      ],
+      "forbidden": []
+    },
+    {
+      "id": "concepts",
+      "path": "gwz-cli/docs/Concepts.md",
+      "required": [
+        {"id": "concepts_family_section", "value": "## Local Clone Family"},
+        {"id": "concepts_names_never_git_remotes", "value": "never become Git remotes"},
+        {"id": "concepts_links_the_guide", "value": "[Local Clones](LocalClones.md)"}
+      ],
+      "forbidden": [
+        {
+          "id": "deletion_must_not_promise_an_archive",
+          "match": "regex",
+          "value": "(?i)\\b(?:dispos\\w*|delet\\w*|retir\\w*)\\b[^.\\n]{0,80}?\\b(?:archives|archived|backs\\s+up|backed\\s+up|moves?\\s+(?:it|them|the\\s+\\w+)\\s+to\\s+(?:an?\\s+)?(?:archive|trash|backup)|(?:an?|the)\\s+(?:automatic\\s+)?(?:archive|backup)\\s+(?:is|gets)\\s+(?:made|written|kept|taken))\\b",
+          "fires_on": "dispose archives the lane before deleting it"
+        }
+      ]
+    },
+    {
+      "id": "workflows",
+      "path": "gwz-cli/docs/Workflows.md",
+      "required": [
+        {"id": "workflows_lane_recipe", "value": "## Work In An Isolated Lane"},
+        {"id": "workflows_root_selection", "value": "gwz --target @root merge --remote A"},
+        {"id": "workflows_links_the_guide", "value": "[Local Clones](LocalClones.md)"}
+      ],
+      "forbidden": [
+        {
+          "id": "deletion_must_not_promise_an_archive",
+          "match": "regex",
+          "value": "(?i)\\b(?:dispos\\w*|delet\\w*|retir\\w*)\\b[^.\\n]{0,80}?\\b(?:archives|archived|backs\\s+up|backed\\s+up|moves?\\s+(?:it|them|the\\s+\\w+)\\s+to\\s+(?:an?\\s+)?(?:archive|trash|backup)|(?:an?|the)\\s+(?:automatic\\s+)?(?:archive|backup)\\s+(?:is|gets)\\s+(?:made|written|kept|taken))\\b",
+          "fires_on": "dispose archives the lane before deleting it"
+        }
+      ]
+    },
+    {
+      "id": "troubleshooting",
+      "path": "gwz-cli/docs/Troubleshooting.md",
+      "required": [
+        {"id": "troubleshooting_dispose_section", "value": "## A Local Clone Will Not Dispose"},
+        {"id": "troubleshooting_unknown_evidence", "value": "unknown evidence cannot be waived"}
+      ],
+      "forbidden": [
+        {
+          "id": "deletion_must_not_promise_an_archive",
+          "match": "regex",
+          "value": "(?i)\\b(?:dispos\\w*|delet\\w*|retir\\w*)\\b[^.\\n]{0,80}?\\b(?:archives|archived|backs\\s+up|backed\\s+up|moves?\\s+(?:it|them|the\\s+\\w+)\\s+to\\s+(?:an?\\s+)?(?:archive|trash|backup)|(?:an?|the)\\s+(?:automatic\\s+)?(?:archive|backup)\\s+(?:is|gets)\\s+(?:made|written|kept|taken))\\b",
+          "fires_on": "dispose archives the lane before deleting it"
+        }
+      ]
+    },
+    {
+      "id": "releases",
+      "path": "gwz-cli/docs/Releases.md",
+      "required": [
+        {"id": "releases_local_clone_note", "value": "are parsed but refused by this build"},
+        {"id": "releases_links_the_guide", "value": "[Local Clones](LocalClones.md)"}
+      ],
+      "forbidden": []
+    }
+  ],
+  "retired": []
+}

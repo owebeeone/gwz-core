@@ -939,6 +939,21 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # volume's reverse doors name (GwzM5-8M5d-Charter.md §3/§3(b)).
         ("merge-doc assertions", check("check_merge_docs.py"), "ok (13 sources, 183 assertions)"),
         ("merge-doc checker suite", suite("test_check_merge_docs.py"), "OK"),
+        # Local-clone documentation gate (2026-09-06, the local clone
+        # family's user-documentation package): the SAME instrument --
+        # `check_local_clone_docs.py` imports check_merge_docs' engine -- read
+        # against a second manifest, `local_clone_docs_manifest.json`, so the
+        # two merge-doc markers above keep their pinned counts while the
+        # local-clone rows retire on their own schedule as the modes the build
+        # refuses (`--clean`, `--bare`, `--from`, family pull/push) land.
+        # MEASURED on this step's own tree: 12 sources (the guide, the local/
+        # clone/merge/pull/push command pages, the generated reference, and
+        # the five pages that cross-link the guide), 114 assertions. Not
+        # wired on the single-repo CI runners for exactly the reason the two
+        # rows above are not: every source lives in the sibling gwz-cli tree.
+        ("local-clone doc assertions", check("check_local_clone_docs.py"),
+         "ok (12 sources, 114 assertions)"),
+        ("local-clone doc checker suite", suite("test_check_local_clone_docs.py"), "OK"),
     ]),
     "byte-equivalence": ("byte-equivalence gate, both halves of O8 (rows 2.3a/2.3b, §12)", [
         # R2-E E5 LANDED (2026-08-28). The two dev-docs companion edits to
