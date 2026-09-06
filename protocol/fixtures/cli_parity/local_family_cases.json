@@ -1,14 +1,14 @@
 {
   "_schema": {
     "purpose": "The one cross-driver CLI parity fixture for the local clone family surface (operator ruling 1 of 2026-09-06, LCM1.0c follow-up 3). Both drivers -- gwz-cli and gwz-py -- read THIS file and assert against it; neither restates these cases inline and neither keeps a copy. Add a case here, not in a driver's test module. A row pins the command line a person types, the protocol message it must build and the field values that message must carry; nothing here reaches core, the assertion is on the encoded request (or on the refusal that precedes any request).",
-    "authority": "gwz-dev dev-docs/GwzLocalCloneDesign.md revision 10 section 7 (CLI -> live message) and section 11 items 11-15, plus the operator's cross-driver rulings of 2026-09-06 recorded in GwzLocalClone-LCM1.0c-Checkpoint.md section 12: (1) this file is the single source; (2) machine output spells enum values in snake_case; (3) LocalFamilyResponse.root_path; (4) `push --remote` encodes the token once, in PushRequest.remote, and an empty `--name` refuses at the driver. Where the two drivers' former copies disagreed, the design section 7 table decided.",
+    "authority": "gwz-dev dev-docs/GwzLocalCloneDesign.md revision 10 section 7 (CLI -> live message) and section 11 items 11-15, plus the operator's cross-driver rulings of 2026-09-06 recorded in GwzLocalClone-LCM1.0c-Checkpoint.md section 12: (1) this file is the single source; (2) machine output spells enum values in snake_case; (3) LocalFamilyResponse.root_path; (4) `push --remote` encodes the token once, in PushRequest.remote, and an empty `--name` refuses at the driver. Where the two drivers' former copies disagreed, the design section 7 table decided. (5) The operator ruling of 2026-09-06 on the command surface (design revision 15, section 4, section 7 and section 11 item 28): local-clone creation is `gwz local clone <name> [dest] [--clean | --bare] [-b <branch>] [--from <name|path>]`, a subcommand of the family's own verb with the member name positional like `dispose <name>`; `gwz clone --local` was REMOVED without an alias, because nothing had been released or pushed and an alias born that day would be documented forever. The wire did not move: CloneLocalWorkspaceRequest, ActionKind 27, copy_source (tag 6) and every field are unchanged, so every `message` and every `fields` value below is byte-identical to the row that pinned the old spelling -- only the argv moved. Exchange stayed where it was: `merge --remote`, `pull --head --remote` and `push --remote` are not local subcommands.",
     "location": {
       "this_file": "gwz-core/protocol/fixtures/cli_parity/local_family_cases.json (beside merge_response.json and merge_event.json, the existing cross-driver fixtures)",
       "gwz_cli": "../gwz-core/protocol/fixtures/cli_parity/local_family_cases.json relative to the gwz-cli checkout: from src/tests/g12.rs that is include_str!(\"../../../gwz-core/protocol/fixtures/cli_parity/local_family_cases.json\"), the same sibling path src/tests/g02.rs already resolves for merge_response.json through CARGO_MANIFEST_DIR. gwz-cli reaches gwz-core as a path dependency, so the sibling exists wherever gwz-cli builds.",
       "gwz_py": "../gwz-core/protocol/fixtures/cli_parity/local_family_cases.json relative to the gwz-py checkout: from src/tests/test_cli_local_family.py that is Path(__file__).resolve().parents[3] / \"gwz-core\" / \"protocol\" / \"fixtures\" / \"cli_parity\" / \"local_family_cases.json\", the same sibling scripts/check_protocol_drift.py already resolves for the schema."
     },
     "provenance": "Merged 2026-09-06 from gwz-py src/tests/fixtures/cli_parity/parser_cases.json (30 message cases, 15 refusals; its `accept`/`parse_reject`/`semantic_reject`/`rust_accept`/`rust_version` argv lists are that driver's general parser fixture and stay there) and gwz-cli tests/fixtures/cli_parity/local_family_cases.json (24 accept, 17 reject). Ids are gwz-py's where a row existed there; rows only gwz-cli carried got new ids. Folded: gwz-cli's `--force wat` row into local-dispose-force-unknown-name (same case, one token); gwz-py's python-only push-remote-python-clears-the-policy-binding into push-remote-family-hub, now both drivers, per ruling 4. Values that changed for a driver: gwz-cli's two push rows (policy_remote \"hub\"/\"origin\" -> meta.policy.remote null, ruling 4 and design section 7, which names only PushRequest.remote); clone-local-empty-name is no longer python-only (ruling 4).",
-    "stability": "Keys and case ids are stable. Append cases; do not renumber, rename or reorder existing ones. A case a driver cannot express is scoped with `drivers`, never deleted.",
+    "stability": "Keys and case ids are stable. Append cases; do not renumber, rename or reorder existing ones. A case a driver cannot express is scoped with `drivers`, never deleted. A case the surface itself can no longer express is scoped `\"drivers\": []` with a note saying why, so its id and its history stay readable.",
     "message_cases": {
       "what": "One entry per design section 7 'CLI -> live message' row, plus the section 4 `--from` selector rows and the dry-run pass-throughs. Each pins the command line a person types, the protocol message it must build, and the field values that message must carry.",
       "id": "stable, unique, kebab-case",
@@ -24,7 +24,7 @@
       "what": "Command lines a driver must refuse before encoding any request. `refused_by` says whose refusal it is.",
       "id": "stable, unique, kebab-case",
       "argv": "argv without the program name",
-      "refused_by": "`cli` -- the driver refuses before any core call",
+      "refused_by": "`cli` -- the driver refuses before any core call: a typed usage refusal from the driver's own validation, or the argument parser's own rejection (an unknown flag, a missing or surplus operand), which both drivers' harnesses read the message of since the 2026-09-06 surface ruling",
       "message_contains": "substrings BOTH drivers' refusal messages contain. Every listed substring must appear; the wording around them differs per driver, so keep these short. May be empty when the two drivers share no wording, in which case `driver_message_contains` carries each driver's own needle.",
       "driver_message_contains": "optional; {\"rust\": [...], \"python\": [...]} -- extra substrings one driver's message must contain, on top of `message_contains` (gwz-cli's former `rust_needle` lives here).",
       "drivers": "optional; default both",
@@ -34,8 +34,8 @@
   "message_cases": [
     {
       "id": "clone-local-verbatim",
-      "design_row": "gwz clone --local --name A ../gwz-dev-A",
-      "argv": ["clone", "--local", "--name", "A", "../gwz-dev-A"],
+      "design_row": "gwz local clone A ../gwz-dev-A",
+      "argv": ["local", "clone", "A", "../gwz-dev-A"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "A",
@@ -48,8 +48,8 @@
     },
     {
       "id": "clone-local-verbatim-explicit",
-      "design_row": "gwz clone --local --name A ../gwz-dev-A (--verbatim is the default, spelled out)",
-      "argv": ["clone", "--local", "--verbatim", "--name", "A", "../gwz-dev-A"],
+      "design_row": "gwz local clone A ../gwz-dev-A (--verbatim is the default, spelled out)",
+      "argv": ["local", "clone", "--verbatim", "A", "../gwz-dev-A"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "A",
@@ -62,7 +62,7 @@
     {
       "id": "clone-local-default-dest",
       "design_row": "Dest defaults to ../<root-dirname>-<Name> (design section 4, section 11 item 3)",
-      "argv": ["clone", "--local", "--name", "A"],
+      "argv": ["local", "clone", "A"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "A",
@@ -75,8 +75,8 @@
     },
     {
       "id": "clone-local-clean-branch",
-      "design_row": "gwz clone --local --clean -b lane/x --name C dest",
-      "argv": ["clone", "--local", "--clean", "-b", "lane/x", "--name", "C", "dest"],
+      "design_row": "gwz local clone C dest --clean -b lane/x",
+      "argv": ["local", "clone", "C", "dest", "--clean", "-b", "lane/x"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "C",
@@ -88,8 +88,8 @@
     },
     {
       "id": "clone-local-bare",
-      "design_row": "gwz clone --local --bare --name hub dest",
-      "argv": ["clone", "--local", "--bare", "--name", "hub", "dest"],
+      "design_row": "gwz local clone hub dest --bare",
+      "argv": ["local", "clone", "hub", "dest", "--bare"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "hub",
@@ -102,7 +102,7 @@
     {
       "id": "clone-local-bare-branch",
       "design_row": "-b is accepted with --bare as well as --clean (design section 4.3)",
-      "argv": ["clone", "--local", "--bare", "-b", "lane/x", "--name", "hub", "dest"],
+      "argv": ["local", "clone", "--bare", "-b", "lane/x", "hub", "dest"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "hub",
@@ -110,12 +110,13 @@
         "mode": "bare",
         "branch": "lane/x",
         "copy_source": null
-      }
+      },
+      "note": "The flags may precede the positionals as well as follow them (both parsers interleave); the design's own command lines put them after, as the section 4 usage does."
     },
     {
       "id": "clone-local-from-name",
       "design_row": "Copy source is cwd (or --from <name|path>) (design section 4; wire field copy_source, section 7 and section 11 item 11)",
-      "argv": ["clone", "--local", "--clean", "--from", "A", "--name", "B", "../gwz-dev-B"],
+      "argv": ["local", "clone", "--clean", "--from", "A", "B", "../gwz-dev-B"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "B",
@@ -129,7 +130,7 @@
     {
       "id": "clone-local-from-path",
       "design_row": "--from <name|path>: the path form, dest defaulting in core",
-      "argv": ["clone", "--local", "--from", "../gwz-dev-A", "--name", "B"],
+      "argv": ["local", "clone", "--from", "../gwz-dev-A", "B"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "B",
@@ -141,7 +142,7 @@
     {
       "id": "clone-local-from-path-with-dest",
       "design_row": "--from <name|path>: the path form with an explicit dest (section 7 copy_source, tag 6, section 11 item 11)",
-      "argv": ["clone", "--local", "--from", "../gwz-dev-C", "--name", "D", "../gwz-dev-D"],
+      "argv": ["local", "clone", "D", "../gwz-dev-D", "--from", "../gwz-dev-C"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "D",
@@ -154,7 +155,7 @@
     {
       "id": "clone-local-dry-run",
       "design_row": "v0 local create refuses an unsupported dry-run in core (design section 6.2)",
-      "argv": ["--dry-run", "clone", "--local", "--name", "A"],
+      "argv": ["--dry-run", "local", "clone", "A"],
       "message": "CloneLocalWorkspaceRequest",
       "fields": {
         "name": "A",
@@ -398,43 +399,59 @@
         "remote": "origin",
         "meta.policy.remote": null
       }
+    },
+    {
+      "id": "local-clone-single-operand-is-the-name",
+      "design_row": "gwz local clone <name> [dest]: the first operand is the name, the second the destination (section 4; operator ruling 2026-09-06)",
+      "argv": ["local", "clone", "dest"],
+      "message": "CloneLocalWorkspaceRequest",
+      "fields": {
+        "name": "dest",
+        "dest": null,
+        "mode": "verbatim",
+        "branch": null,
+        "copy_source": null
+      },
+      "note": "Under the old spelling this argv shape (`clone --local dest`) was the refusal clone-local-dest-without-name. With the name positional a lone operand IS the name and the destination defaults in core; a destination is always the second operand. A path typed in the name's place is caught by core's name rules (no `/` or `:`), not by the driver."
     }
   ],
   "message_refusals": [
     {
       "id": "clone-local-without-name",
-      "argv": ["clone", "--local"],
+      "argv": ["local", "clone"],
       "refused_by": "cli",
-      "message_contains": ["--name"]
+      "message_contains": ["required", "name"],
+      "note": "The name is a required positional, the shape `dispose <name>` already has (operator ruling 2026-09-06), so this is each parser's own required-argument error: Clap names `<name>`, argparse names `name`. Formerly `clone --local` without `--name`, a driver refusal."
     },
     {
       "id": "clone-local-dest-without-name",
       "argv": ["clone", "--local", "dest"],
       "refused_by": "cli",
       "message_contains": ["--name"],
-      "note": "--local requires --name whether or not a destination is given."
+      "note": "Not expressible since the 2026-09-06 ruling: with the name positional, a lone operand is the name, never a destination without one -- the same argv shape is now the message case local-clone-single-operand-is-the-name. Kept, scoped to no driver, so the id and its history stay readable.",
+      "drivers": []
     },
     {
       "id": "clone-local-empty-name",
-      "argv": ["clone", "--local", "--name", ""],
+      "argv": ["local", "clone", ""],
       "refused_by": "cli",
-      "message_contains": ["--name"],
-      "note": "Ruling 4 (2026-09-06): both drivers refuse an empty --name before encoding. Core's own shape check (validate_clone_local) refuses the empty name and the reserved names too, so the driver's refusal is the earlier answer, not the only one; the CLI answers for the shape that would otherwise cost a workspace discovery and a family read to learn the same thing. Formerly python-only."
+      "message_contains": ["local clone", "<name>", "must not be empty"],
+      "note": "Ruling 4 (2026-09-06): both drivers refuse an empty name before encoding, typed, with the same words. Core's own shape check (validate_clone_local) refuses the empty name and the reserved names too, so the driver's refusal is the earlier answer, not the only one; the CLI answers for the shape that would otherwise cost a workspace discovery and a family read to learn the same thing. Formerly python-only; formerly `--name \"\"`."
     },
     {
       "id": "clone-local-url-and-dest",
-      "argv": ["clone", "--local", "--name", "A", "url", "dest"],
+      "argv": ["local", "clone", "A", "url", "dest"],
       "refused_by": "cli",
-      "message_contains": ["clone --local"],
+      "message_contains": [],
       "driver_message_contains": {
-        "rust": ["not a workspace URL"],
-        "python": ["one destination path"]
+        "rust": ["unexpected argument 'dest'"],
+        "python": ["unrecognized arguments: dest"]
       },
-      "note": "--local takes a single destination, never a URL plus a directory."
+      "note": "`local clone` takes a name and one optional destination; a third operand is each parser's own surplus-argument error. Formerly `clone --local --name A url dest`, a driver refusal (`not a workspace URL` / `one destination path`)."
     },
     {
       "id": "clone-local-verbatim-and-clean",
-      "argv": ["clone", "--local", "--verbatim", "--clean", "--name", "A"],
+      "argv": ["local", "clone", "--verbatim", "--clean", "A"],
       "refused_by": "cli",
       "message_contains": ["--verbatim", "--clean"],
       "driver_message_contains": {
@@ -443,7 +460,7 @@
     },
     {
       "id": "clone-local-verbatim-and-bare",
-      "argv": ["clone", "--local", "--verbatim", "--bare", "--name", "A"],
+      "argv": ["local", "clone", "--verbatim", "--bare", "A"],
       "refused_by": "cli",
       "message_contains": ["--verbatim", "--bare"],
       "driver_message_contains": {
@@ -452,7 +469,7 @@
     },
     {
       "id": "clone-local-branch-without-clean-or-bare",
-      "argv": ["clone", "--local", "-b", "lane/x", "--name", "A"],
+      "argv": ["local", "clone", "-b", "lane/x", "A"],
       "refused_by": "cli",
       "message_contains": ["--clean", "--bare"],
       "driver_message_contains": {
@@ -461,7 +478,7 @@
     },
     {
       "id": "clone-local-empty-from",
-      "argv": ["clone", "--local", "--from", "", "--name", "B"],
+      "argv": ["local", "clone", "--from", "", "B"],
       "refused_by": "cli",
       "message_contains": ["--from", "must not be empty"],
       "note": "An empty copy_source is not `the cwd workspace`: the absent field means that. Encoding an empty string would ask core to resolve a nameless source."
@@ -470,20 +487,22 @@
       "id": "clone-local-flags-without-local",
       "argv": ["clone", "--from", "A", "https://example.invalid/ws.git"],
       "refused_by": "cli",
-      "message_contains": ["--local"],
-      "note": "--name, --verbatim, --clean, --bare, -b and --from all mean nothing without --local; each refuses the same way."
+      "message_contains": ["--from"],
+      "note": "`clone` declares none of the local flags any more (operator ruling 2026-09-06): --name, --verbatim, --clean, --bare, -b and --from are each an unknown argument to the parser, named in its own error. Formerly `is accepted only with --local`, a driver refusal."
     },
     {
       "id": "clone-clean-without-local",
       "argv": ["clone", "https://example.invalid/ws.git", "--clean"],
       "refused_by": "cli",
-      "message_contains": ["--local"]
+      "message_contains": ["--clean"],
+      "note": "An unknown argument to the URL clone's parser (operator ruling 2026-09-06)."
     },
     {
       "id": "clone-from-without-local",
       "argv": ["clone", "https://example.invalid/ws.git", "--from", "A"],
       "refused_by": "cli",
-      "message_contains": ["--local"]
+      "message_contains": ["--from"],
+      "note": "An unknown argument to the URL clone's parser (operator ruling 2026-09-06)."
     },
     {
       "id": "url-clone-dry-run",
@@ -535,9 +554,12 @@
       "id": "local-dispose-hazards-without-force",
       "argv": ["local", "dispose", "C", "dirty"],
       "refused_by": "cli",
-      "message_contains": ["--force"],
-      "drivers": ["rust"],
-      "note": "Hazard names without --force never become a waiver. Scoped to rust because gwz-py's argparse rejects the extra operand as unrecognized before any handler runs -- a parser exit, not the driver's typed usage refusal, so its harness cannot read a message from it. Both drivers refuse before encoding."
+      "message_contains": [],
+      "note": "Hazard names without --force never become a waiver. gwz-cli's typed refusal names --force; gwz-py's argparse rejects the extra operand as unrecognized before any handler runs. Both drivers refuse before encoding, and since the 2026-09-06 surface ruling both harnesses read the parser's message too, so the row is no longer scoped to rust.",
+      "driver_message_contains": {
+        "rust": ["--force"],
+        "python": ["unrecognized arguments: dirty"]
+      }
     },
     {
       "id": "local-dispose-keep-and-force",
@@ -585,6 +607,20 @@
       "driver_message_contains": {
         "rust": ["starting a merge"]
       }
+    },
+    {
+      "id": "clone-local-spelling-is-removed",
+      "argv": ["clone", "--local", "--name", "A", "../gwz-dev-A"],
+      "refused_by": "cli",
+      "message_contains": ["--local"],
+      "note": "The old create spelling, verbatim from design revision 14 section 7, is rejected by both parsers naming `--local` (operator ruling 2026-09-06). It is not an alias, hidden or otherwise, and it must not parse as a URL clone of `A` into `../gwz-dev-A`: the harnesses fail this row if any request is built."
+    },
+    {
+      "id": "clone-local-clean-spelling-is-removed",
+      "argv": ["clone", "--local", "--clean", "-b", "lane/x", "--name", "C", "dest"],
+      "refused_by": "cli",
+      "message_contains": ["--local"],
+      "note": "The old clean-with-branch spelling (design revision 14 section 7), rejected the same way."
     }
   ]
 }

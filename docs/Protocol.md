@@ -54,8 +54,10 @@ adds three for ordinary disposal: `unwaived_hazard` (69, a known hazard
 `--force` did not name; nothing removed), `unknown_evidence` (70, evidence
 that could not be established; no force name waives it) and
 `disposal_incomplete` (71, the removal stopped part-way; the row is
-`disposing` and the remainder is named). Since LCM1.1 `gwz clone --local`
-(verbatim), `gwz local list`, `dispose --keep` and `disband` run end to
+`disposing` and the remainder is named). Since LCM1.1 the verbatim local
+create (`gwz local clone <name> [dest]` since the operator's 2026-09-06
+surface ruling; `gwz clone --local` before it, removed without an alias),
+`gwz local list`, `dispose --keep` and `disband` run end to
 end, and since LCM1.2 so does `gwz merge --remote <name> [<ref>]` -- the
 import through one retained `refs/gwz/local-imports/<transfer-id>` per
 paired receiver, then one delegation to the public merge engine entry --

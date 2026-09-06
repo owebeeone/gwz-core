@@ -43,7 +43,8 @@ pub(crate) fn open_merge_probe(root: &Path) -> ModelResult<Option<String>> {
     Ok(super::merge::classify_open_record(root)?.map(|envelope| envelope.merge_id))
 }
 
-/// `gwz clone --local --name <name> [dest]`.
+/// `gwz local clone <name> [dest]` (until the operator's 2026-09-06 surface
+/// ruling, `gwz clone --local --name <name> [dest]`; the request is the same).
 pub fn handle_clone_local_workspace<B>(
     backend: &B,
     start: &Path,

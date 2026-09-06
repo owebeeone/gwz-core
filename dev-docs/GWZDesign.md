@@ -1744,7 +1744,9 @@ The product contract is the gwz-dev workspace document
 libraries of `GwzLocalCloneImplementationArchitecture.md` (revision 3) and
 `GwzLocalCloneLibraryBoundaries.md` (revision 1). This section records what
 that contract fixes inside `gwz-core`. Status: LCM2.2 (2026-09-06, lane C)
-— `gwz clone --local --name <Name> [dest]` (verbatim), `gwz local list`,
+— `gwz local clone <Name> [dest]` (verbatim; spelled `gwz clone --local
+--name <Name> [dest]` until the operator's 2026-09-06 surface ruling moved
+creation under the family's own verb, without an alias), `gwz local list`,
 `gwz local dispose <name>` (ordinary deletion after fresh work and history
 checks of every repository in the deletion tree, refusing unless every
 protected root is preserved whole in a surviving family repository or the
