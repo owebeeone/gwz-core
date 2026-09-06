@@ -68,6 +68,24 @@ jobs:
         run: |
           python scripts/checks/check_local_clone_boundaries.py
           python -m unittest scripts/checks/test_check_local_clone_boundaries.py -v
+      - name: Bazel pin-drift gate, its unit tests and negative fixtures
+        # LCM1.0c follow-up 4 (lane C, 2026-09-06). Under workspace layout
+        # Option A the outer gwz-dev workspace's Bazel hub for gwz-cli
+        # (`@crates`, MODULE.bazel) is `from_specs` with the three direct
+        # crates.io dependencies pinned BY HAND to //:Cargo.lock;
+        # `check_bazel_pin_drift.py` refuses when a version, a feature set
+        # or the dependency set drifts. Its inputs are the gwz-dev ROOT's
+        # MODULE.bazel and Cargo.lock plus gwz-cli/Cargo.toml -- none of
+        # which exists on this single-repo checkout -- so the LIVE check
+        # cannot resolve here (the same blocker class as L2-05 below) and
+        # runs in the landing gate set from the gwz-dev root, where its
+        # inputs are; it is deliberately not guarded by a file-exists test,
+        # because a gate that passes when its inputs are absent is no gate.
+        # What runs here is the checker's own suite: every negative fixture
+        # (bumped version, changed feature, added and removed dependency,
+        # inexact pin, unscoped spec, BUILD label drift, missing input) is
+        # synthetic, and the real-tree row skips naming its reason.
+        run: python -m unittest scripts/checks/test_check_bazel_pin_drift.py -v
       - name: Each library's Tier A command, locked against gwz-core's workspace lock
         # Workspace layout Option A (LCM1.0c follow-up 2; operator ruling
         # 2026-09-05, gwz-dev dev-docs/GwzLocalCloneDesign.md §11 item 14,
