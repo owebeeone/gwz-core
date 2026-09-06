@@ -761,7 +761,38 @@ SCHEMA = schema(
          # refs created before the stop are retained (the message names
          # each with its object id; design §6.2: never pruned) and the
          # engine was not entered; a retry mints a fresh transfer id.
-         import_incomplete=68),
+         import_incomplete=68,
+         # The three ordinary-disposal outcomes below (LCM2.1/LCM2.2, lane C,
+         # 2026-09-06; GwzLocalCloneDesign.md §5, §5.1, §5.2, §12 -- gwz-dev
+         # dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md §17). `gwz local
+         # dispose <name>` without `--keep` inspects every repository in the
+         # deletion tree, asks the surviving family repositories whether
+         # every protected root is preserved whole, and refuses unless it
+         # is (the operator's standing default, design §5).
+         #
+         # One or more KNOWN hazards were found and not named by `--force`:
+         # an open merge or unfinished native operation (`open-merge`),
+         # uncommitted, untracked, ignored, suppressed or stashed work
+         # (`dirty`), or history preserved whole in no surviving family
+         # repository (`unpreserved-history`). The message lists every
+         # finding per repository. Refused before `disposing`; nothing
+         # removed. Naming each accepted loss with `--force <hazard,...>`
+         # is an operator loss waiver; `--keep` detaches and retains.
+         unwaived_hazard=69,
+         # The work or history evidence of the deletion tree could not be
+         # established: an unreadable path or store, an unsupported index
+         # flag, an uninterpretable layout or coordination record, a
+         # verifier limit. Refused before `disposing`; nothing removed; and
+         # NO force name waives it (design §5.1: unknown evidence refuses).
+         # `--keep` still detaches.
+         unknown_evidence=70,
+         # The directory removal stopped part-way. The row is `disposing`
+         # (`gwz local list`: disposing/interrupted_disposal) and the
+         # message names what remains; there is no replay and a repeat is
+         # refused (design §5.2: an interrupted deletion is not forceable).
+         # Manual cleanup, then an explicit dispose removes the stale row;
+         # `--keep` detaches the remainder.
+         disposal_incomplete=71),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(

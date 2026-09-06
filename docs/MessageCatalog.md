@@ -723,6 +723,9 @@ has no service method and no handler that executes commands.
 | destination_incomplete | 66 |
 | pairing_mismatch | 67 |
 | import_incomplete | 68 |
+| unwaived_hazard | 69 |
+| unknown_evidence | 70 |
+| disposal_incomplete | 71 |
 
 ### MergeRecordRequiredWave
 

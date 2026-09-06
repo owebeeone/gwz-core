@@ -1171,6 +1171,49 @@ fn error_code_wire_values_are_pinned() {
         gwz_core::GwzErrorCode::from(gwz_core::model::ErrorCode::ImportIncomplete),
         GwzErrorCode::ImportIncomplete
     );
+    // LCM2.1/LCM2.2 (lane C, 2026-09-06, gwz-dev
+    // dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md §17): the three
+    // ordinary-disposal outcomes, each distinct from the codes they would
+    // have folded into (`permission_denied`, `unsupported_operation`,
+    // `io_error`, `invalid_request`) and from each other.
+    assert_eq!(GwzErrorCode::UnwaivedHazard.wire(), 69);
+    assert_eq!(GwzErrorCode::UnknownEvidence.wire(), 70);
+    assert_eq!(GwzErrorCode::DisposalIncomplete.wire(), 71);
+    let disposal = [
+        GwzErrorCode::UnwaivedHazard,
+        GwzErrorCode::UnknownEvidence,
+        GwzErrorCode::DisposalIncomplete,
+    ];
+    for (index, code) in disposal.iter().enumerate() {
+        for other in [
+            GwzErrorCode::PermissionDenied,
+            GwzErrorCode::UnsupportedOperation,
+            GwzErrorCode::IoError,
+            GwzErrorCode::InvalidRequest,
+            GwzErrorCode::DestinationIncomplete,
+            GwzErrorCode::ImportIncomplete,
+        ] {
+            assert_ne!(*code, other);
+        }
+        assert!(disposal[index + 1..].iter().all(|later| later != code));
+        assert_eq!(GwzErrorCode::from_wire(code.wire()).ok(), Some(*code));
+    }
+    for (model, wire) in [
+        (
+            gwz_core::model::ErrorCode::UnwaivedHazard,
+            GwzErrorCode::UnwaivedHazard,
+        ),
+        (
+            gwz_core::model::ErrorCode::UnknownEvidence,
+            GwzErrorCode::UnknownEvidence,
+        ),
+        (
+            gwz_core::model::ErrorCode::DisposalIncomplete,
+            GwzErrorCode::DisposalIncomplete,
+        ),
+    ] {
+        assert_eq!(gwz_core::GwzErrorCode::from(model), wire);
+    }
 }
 
 /// LCM1.0c follow-up 2 (operator rulings 2026-09-05, gwz-dev

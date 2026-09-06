@@ -109,6 +109,28 @@ pub enum ErrorCode {
     /// engine was not entered; a retry mints a fresh transfer id (wire
     /// `import_incomplete` = 68; LCM1.2).
     ImportIncomplete,
+    /// Ordinary `gwz local dispose` found one or more known deletion
+    /// hazards that `--force` did not name -- an open merge or unfinished
+    /// native operation (`open-merge`), uncommitted, untracked, ignored,
+    /// suppressed or stashed work (`dirty`), or history preserved whole in
+    /// no surviving family repository (`unpreserved-history`; design §5,
+    /// §5.1). The message lists every finding per repository; refused
+    /// before `disposing`, nothing removed (wire `unwaived_hazard` = 69;
+    /// LCM2.2).
+    UnwaivedHazard,
+    /// The deletion tree's work or history evidence could not be
+    /// established -- an unreadable path or store, an unsupported index
+    /// flag, an uninterpretable layout or coordination record, a verifier
+    /// limit -- so ordinary `dispose` refuses and no force name waives it
+    /// (design §5.1); `--keep` still detaches. Nothing removed (wire
+    /// `unknown_evidence` = 70; LCM2.1).
+    UnknownEvidence,
+    /// The directory removal of an ordinary `dispose` stopped part-way: the
+    /// row is `disposing`, what remains is named, there is no replay and a
+    /// repeat is refused (design §5.2); manual cleanup, then an explicit
+    /// dispose removes the stale row, or `--keep` detaches the remainder
+    /// (wire `disposal_incomplete` = 71; LCM2.2).
+    DisposalIncomplete,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
