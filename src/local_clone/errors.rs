@@ -10,11 +10,17 @@
 //! `unsupported_operation` means exactly "not built yet" and `io_error`
 //! exactly an I/O failure. The install mappings live here, in one table,
 //! so a driver-facing code is decided in one place ([`install_error_code`],
-//! [`install_port_code`], [`install_refusal_code`]).
+//! [`install_port_code`], [`install_refusal_code`]). LCM1.2 (2026-09-06)
+//! allocated the two family-merge import outcomes that would otherwise have
+//! folded into `invalid_request`/`member_not_found` and
+//! `git_command_failed` -- `pairing_mismatch` (67) and `import_incomplete`
+//! (68) -- and maps the rest of `gwz_local_import::ImportError` onto codes
+//! that already mean the same thing ([`import_error_code`]).
 
 use gwz_copy_contract::CopyErrorCategory;
 use gwz_family_model::{MemberState, Refusal};
 use gwz_family_store_contract::StoreError;
+use gwz_local_import::ImportError;
 use gwz_repo_contract::LayoutError;
 use gwz_workspace_install::{InstallError, InstallPortError, InstallRefusal};
 
@@ -198,6 +204,40 @@ pub(crate) fn install_error_code(error: &InstallError) -> ErrorCode {
     }
 }
 
+/// The code behind a family-merge import failure (design §6, §6.2; LCM1.2).
+/// Every arm is decided by the typed cause; the message (built by the
+/// caller) names the step, the cause and every retained import ref.
+///
+/// - a request shape the library refuses is `invalid_request`;
+/// - the two workspaces no longer being the same shape is
+///   `pairing_mismatch` (67): refused before any fetch, nothing written;
+/// - a source ref that does not resolve in a paired source is the merge
+///   engine's own start-validation code, `merge_validation_failed` -- the
+///   family merge validates its source before transfer (design §6.1),
+///   where the ordinary merge lets libgit2 answer at planning time;
+/// - the fresh, collision-checked import name already existing in a
+///   receiver is `path_collision`: a namespace collision at a target that
+///   exists, nothing written, the next invocation mints another id;
+/// - a received id that differs from the captured one is `source_drift`
+///   (65): the source moved between capture and fetch, the cure is the
+///   quiescence design §2 asks for, and the refs created so far are
+///   retained;
+/// - a transfer that stopped, a receiver that could not be read, or a
+///   cancellation is `import_incomplete` (68): the refs created so far are
+///   retained and the engine was not entered.
+pub(crate) fn import_error_code(error: &ImportError) -> ErrorCode {
+    match error {
+        ImportError::InvalidRequest { .. } => ErrorCode::InvalidRequest,
+        ImportError::PairingIncomplete { .. } => ErrorCode::PairingMismatch,
+        ImportError::SourceMissing { .. } => ErrorCode::MergeValidationFailed,
+        ImportError::RefCollision { .. } => ErrorCode::PathCollision,
+        ImportError::VectorMismatch { .. } => ErrorCode::SourceDrift,
+        ImportError::TransferFailed { .. } | ImportError::Cancelled { .. } => {
+            ErrorCode::ImportIncomplete
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +365,94 @@ mod tests {
                 not_ready.message
             );
         }
+    }
+
+    /// LCM1.2 (2026-09-06): every `ImportError` variant has one code, the two
+    /// allocated ones are distinct from each other, from the create codes and
+    /// from the codes they would have folded into, and the reused codes are
+    /// the ones whose meaning already fits (see `import_error_code`).
+    #[test]
+    fn import_failures_map_onto_the_family_merge_codes() {
+        use gwz_local_import::{ImportEffect, MovedMember, SourceProblem};
+        use gwz_repo_contract::{ObjectFormat, ObjectId, RepoKey};
+        let app = RepoKey::Member {
+            id: "mem_app".to_owned(),
+        };
+        let oid = ObjectId::parse_hex(ObjectFormat::Sha1, &"ab".repeat(20)).unwrap();
+        let effects = vec![ImportEffect::RefCreated {
+            key: app.clone(),
+            import_ref: "refs/gwz/local-imports/xfer_1".to_owned(),
+            oid: oid.clone(),
+        }];
+        assert_eq!(
+            import_error_code(&ImportError::InvalidRequest {
+                detail: "x".to_owned()
+            }),
+            ErrorCode::InvalidRequest
+        );
+        assert_eq!(
+            import_error_code(&ImportError::PairingIncomplete {
+                missing: vec![app.clone()],
+                moved: vec![MovedMember {
+                    key: app.clone(),
+                    receiver_path: "app".to_owned(),
+                    source_path: "lib/app".to_owned(),
+                }],
+            }),
+            ErrorCode::PairingMismatch
+        );
+        assert_eq!(
+            import_error_code(&ImportError::SourceMissing {
+                missing: vec![SourceProblem {
+                    key: app.clone(),
+                    detail: "refs/heads/lane/x does not resolve".to_owned(),
+                }],
+            }),
+            ErrorCode::MergeValidationFailed
+        );
+        assert_eq!(
+            import_error_code(&ImportError::RefCollision {
+                key: app.clone(),
+                import_ref: "refs/gwz/local-imports/xfer_1".to_owned(),
+            }),
+            ErrorCode::PathCollision
+        );
+        assert_eq!(
+            import_error_code(&ImportError::VectorMismatch {
+                key: app.clone(),
+                expected: oid.clone(),
+                received: None,
+                effects: effects.clone(),
+            }),
+            ErrorCode::SourceDrift
+        );
+        assert_eq!(
+            import_error_code(&ImportError::TransferFailed {
+                key: app,
+                detail: "x".to_owned(),
+                effects: effects.clone(),
+            }),
+            ErrorCode::ImportIncomplete
+        );
+        assert_eq!(
+            import_error_code(&ImportError::Cancelled { effects }),
+            ErrorCode::ImportIncomplete
+        );
+        // The two allocated codes overload nothing they replace.
+        for code in [ErrorCode::PairingMismatch, ErrorCode::ImportIncomplete] {
+            for other in [
+                ErrorCode::InvalidRequest,
+                ErrorCode::MemberNotFound,
+                ErrorCode::GitCommandFailed,
+                ErrorCode::IoError,
+                ErrorCode::UnsupportedOperation,
+                ErrorCode::SourceDrift,
+                ErrorCode::DestinationIncomplete,
+            ] {
+                assert_ne!(code, other);
+            }
+        }
+        assert_ne!(ErrorCode::PairingMismatch, ErrorCode::ImportIncomplete);
     }
 
     fn copy_error(category: CopyErrorCategory) -> InstallError {

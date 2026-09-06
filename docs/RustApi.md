@@ -75,8 +75,24 @@ through the store, detaches a member with `--keep` and disbands a family
 (`local_clone::dispose`). Still refusing with `unsupported_operation` after
 request shape and the family observation, before any effect: `--clean` and
 `--bare` clones (LCM3.1 / LCM2.3), ordinary `dispose` without `--keep`
-(its fresh work/history checks are LCM2.1), `--from` (LCM3.2), and the
-family branch of the merge wrapper past resolution (LCM1.2).
+(its fresh work/history checks are LCM2.1) and `--from` (LCM3.2). Since
+LCM1.2 (lane C, 2026-09-06) the family branch of the merge wrapper
+(`local_clone::family_merge`) runs end to end: after the family observation
+and resolution it reads the addressed workspace's manifest and lock, the
+verb's selection and the open-merge envelope (read-only), takes the family
+lock, pairs every selected receiver with the named member's repository by
+lock member id (the root separately, when `@root` is selected explicitly),
+captures each source id, fetches it through the anonymous local transport
+into one fresh `refs/gwz/local-imports/<transfer-id>` per receiver,
+verifies the received vector (`gwz_local_import::prepare_import`), then
+clears the selector, sets that ref as `source_ref` and calls
+`handle_merge_with_events` exactly once, still under the family lock and
+holding no receiver workspace lock. The response is the engine's, with the
+import summarised in `meta.message` when the engine left it empty; an
+engine refusal after the import carries the retained refs after its own
+message. The import outcomes are `pairing_mismatch` (67) and
+`import_incomplete` (68), plus `merge_validation_failed`, `path_collision`
+and `source_drift` reused (`docs/ErrorCatalog.md`, "Local Clone Family").
 
 `handle_clone_workspace` is a Rust convenience entrypoint for clone +
 materialize-lock. It records the operation as materialization and does not add a

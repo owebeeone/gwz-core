@@ -45,9 +45,16 @@ the wiring had folded into `unsupported_operation` and `io_error`:
 reservation), `copy_failed` (64), `source_drift` (65) and
 `destination_incomplete` (66, a failed completion rule or a cancelled
 install, the row and directory retained); `docs/ErrorCatalog.md` carries
-the causes and recoveries. Since LCM1.1 `gwz clone --local` (verbatim),
-`gwz local list`, `dispose --keep` and `disband` run end to end; the other
-modes and operations still refuse `unsupported_operation` before any
+the causes and recoveries. LCM1.2 (lane C, 2026-09-06) adds two more for
+the family merge's import outcomes: `pairing_mismatch` (67, the two
+workspaces are no longer the same shape; refused before any fetch) and
+`import_incomplete` (68, the import stopped before the engine was entered;
+the retained import refs are named). Since LCM1.1 `gwz clone --local`
+(verbatim), `gwz local list`, `dispose --keep` and `disband` run end to
+end, and since LCM1.2 so does `gwz merge --remote <name> [<ref>]` -- the
+import through one retained `refs/gwz/local-imports/<transfer-id>` per
+paired receiver, then one delegation to the public merge engine entry; the
+other modes and operations still refuse `unsupported_operation` before any
 effect. The product contract is the gwz-dev
 `dev-docs/GwzLocalCloneDesign.md`.
 

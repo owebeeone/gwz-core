@@ -11,10 +11,11 @@
 //! through `local_clone::create` (`gwz_workspace_install::install` over the
 //! real adapters); `local list` observes every member's target through the
 //! store; `dispose --keep` and `disband` are composed over
-//! `gwz_local_disposal::dispose` and the store session. Still refusing:
-//! clean and bare clones (LCM3.1 / LCM2.3), ordinary `dispose` (its fresh
-//! work/history checks are LCM2.1) and a family merge's import and
-//! delegation (LCM1.2), each as `unsupported_operation` after the family
+//! `gwz_local_disposal::dispose` and the store session. LCM1.2 (lane C):
+//! a family merge imports through `local_clone::family_merge` and delegates
+//! once to the public merge engine entry. Still refusing: clean and bare
+//! clones (LCM3.1 / LCM2.3) and ordinary `dispose` (its fresh work/history
+//! checks are LCM2.1), each as `unsupported_operation` after the family
 //! observation and before any effect.
 
 use std::path::Path;

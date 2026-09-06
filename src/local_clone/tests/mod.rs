@@ -3,6 +3,7 @@
 
 mod create;
 mod dispose;
+mod family_merge;
 mod fixture;
 mod list;
 mod privacy;

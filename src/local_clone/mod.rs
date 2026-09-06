@@ -21,10 +21,13 @@
 //! `unsupported_operation`; `list` answers with an empty member list outside
 //! a family and refuses inside one at [`list::observe_members`]; a family
 //! merge refuses `unknown_local` for a token that names no ready member and
-//! `unsupported_operation` for one that does, until lane X lands the import.
-//! Every one of those paths still creates nothing -- observing a family is a
-//! read. Later adapters (copy, installation, disposal, evidence) are added
-//! here by the integration lane as their libraries land.
+//! since LCM1.2 (lane C, 2026-09-06) imports from one that does and
+//! delegates once to the public merge engine entry ([`family_merge`]).
+//! Every refusal before the family lock still creates nothing -- observing a
+//! family is a read -- and a refused import names every retained import ref
+//! (design §6.2: ordinary Git refs, never pruned by gwz). Later adapters
+//! (copy, installation, disposal, evidence) are added here by the
+//! integration lane as their libraries land.
 //!
 //! # History-check adapter rule (lane H proposal H2, LCM1.0c follow-up 2)
 //!

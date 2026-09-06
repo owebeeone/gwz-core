@@ -792,6 +792,41 @@ def _fault_count(darwin: str, linux: str) -> str:
         on a unix host) from the LCM1.1 fixes 1-2 linux value,
         FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
         measured number wins.
+
+    LCM1.2 (2026-09-06, lane C: `gwz merge --remote <name> [<ref>]` served
+    end to end -- the import through one retained
+    `refs/gwz/local-imports/<transfer-id>` per paired receiver, then one
+    delegation to the public merge engine entry; `GwzErrorCode` 67-68
+    allocated) moves the LIB REMAINDER and only it, by 11 rows, all under
+    `local_clone::`: the new Tier B slice `local_clone::tests::family_merge::`
+    8 (a family merge by name integrating the clone's commits; an explicit
+    source ref and the root as source; one common import name with
+    per-receiver ids; a conflicting merge kept open, the source advanced and
+    detached, then continued from the imported commit; abort keeping the
+    import ref, which holds the objects through `git gc` with the source
+    gone; a pairing set mismatch refused before any fetch; a partial import
+    leaving its refs and a retry under a fresh id; an ordinary merge being
+    the engine's own answer) -- one of them `#[cfg(unix)]`, which every
+    pinned host is -- plus `local_clone::family_merge::tests::` 2 (the
+    selector qualified once; a refused import naming what it left behind)
+    and `local_clone::errors::tests::` 1 (every `ImportError` variant's
+    code). The merge engine's own partitions are untouched: no file under
+    `workspace_ops/merge/` changed.
+
+      checked_artifact:: 459 / 476: UNMOVED (`--list` re-measured 459 on this
+        tree, 2026-09-06).
+      v1_lifecycle:: 266 listed / 265 executed: UNMOVED (`--list` 266).
+      lib remainder darwin 1067 -> 1078: MEASURED on this tree from the
+        `--list` census (1804 rows in all, was 1793; 1804 - 459 - 266 = 1079
+        listed = 1078 executed + the one ignored row) and by execution
+        (`cargo test -p gwz-core --lib --locked -- --skip checked_artifact::
+        --skip workspace_ops::merge::v1_lifecycle::` -> `1078 passed; 1
+        ignored`, 2026-09-06, from gwz-core under the Option A workspace), in
+        the same commit as the rows. 1067 + 11 = 1078.
+      lib remainder linux  1068 -> 1079: DERIVED (+11; the one cfg-gated row
+        is `#[cfg(unix)]`, which linux satisfies) from the LCM1.0c follow-up
+        4 linux value, FIRST-DISPATCH-EXPECTED at the lane owner's landing
+        dispatch; a measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -830,7 +865,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1067 passed", "1068 passed")),
+         _fault_count("1078 passed", "1079 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

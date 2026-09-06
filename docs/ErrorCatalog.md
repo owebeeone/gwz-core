@@ -47,6 +47,8 @@
 | `copy_failed` | The local clone's tree copy stopped: permission, space, I/O, metadata, or an entry the copier does not copy (FIFO, socket, device). The `creating` row and the partial destination are retained; the source is unchanged. | Read the row's `last_error` (`gwz local list`), fix the cause, detach the remains with `gwz local dispose <name> --keep`, retry. |
 | `source_drift` | The source changed between the local clone's snapshot and its publication (a ref, HEAD, branch, remote or the manifest/lock digest moved, or a gwz merge opened): the destination is a copy of a moving source and was not marked ready. The row and directory are retained. | Quiesce the source's writers (design §2), `gwz local dispose <name> --keep` the retained destination, retry. |
 | `destination_incomplete` | The local clone's destination failed a completion rule before `ready`: an object missing from its own store, HEAD off the frozen source HEAD, an inadmissible layout or a connectivity walk past the verification ceiling (§4.0 dest-complete), a §4.1 residual, a pointer or `.gwz/merge/` fault, an unrecaptured lock or marker -- or the install was cancelled, which leaves the same shape. The `creating` row and the directory are retained; `gwz local list` shows `creating/incomplete`. | Read the row's `last_error`, inspect the destination, `gwz local dispose <name> --keep`, retry; a ceiling refusal names the limit and the store's object count. |
+| `pairing_mismatch` | `gwz merge --remote <name>` found the two workspaces no longer the same shape: a lock member id present on one side only, the same id recorded at different paths, the same id with a different `source_id`, or a selected `@root` with no root to pair (design §6). Refused before any fetch; nothing written. | Align the family (`gwz local list`, `gwz ls` in both workspaces): re-add or detach the odd member, or clone afresh; then retry. |
+| `import_incomplete` | The family merge's import stopped before the engine was entered: a fetch into a receiver or a receiver read failed, or the import was cancelled. The import refs created before the stop (`refs/gwz/local-imports/<transfer-id>`) are retained and named in the message; no merge record was opened. | Fix the cause the message names (the receiver's repository, permissions, disk), then retry: the next invocation mints a fresh transfer id. The retained refs are ordinary Git refs; gwz never prunes them. |
 
 Errors can appear as a returned `ModelError`, an operation-level `GwzError` in
 `ResponseEnvelope.errors`, or a member-scoped `MemberResponse.error`.
@@ -106,3 +108,32 @@ destination that cannot be spelled root-relative) and `member_not_found`
 member; the workspace is in no family), `invalid_request` (the root, a
 target containing the working directory, a path mismatch), `open_operation`
 (the family lock is held) and the store's codes.
+
+LCM1.2 (lane C, 2026-09-06; gwz-dev
+`dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md` §16) serves `gwz merge
+--remote <name> [<ref>]` end to end -- the import through one retained ref
+`refs/gwz/local-imports/<transfer-id>` in every paired receiver, then one
+delegation to the public merge engine entry -- and allocated two codes for
+the import outcomes that would otherwise have folded into
+`invalid_request`/`member_not_found` and `git_command_failed`. The one
+table is `local_clone::errors::import_error_code`, over
+`gwz_local_import::ImportError`:
+
+| Outcome | Code | Typed cause (call site) |
+| --- | --- | --- |
+| the two workspaces' member sets do not correspond (missing or extra id, the same id at different recorded paths), or the same id has a different `source_id` | `pairing_mismatch` (67) | `ImportError::PairingIncomplete` from `pair_participants` (before the first transport call), and the wrapper's own `source_id` cross-check (`family_merge::identity_mismatches`) |
+| the selected source ref does not resolve in one or more paired sources | `merge_validation_failed` (reused) | `ImportError::SourceMissing` at capture; the family merge validates its source before transfer (design §6.1), where the ordinary merge lets libgit2 answer `git_command_failed` at planning time |
+| the fresh, collision-checked import name already exists in a receiver | `path_collision` (reused) | `ImportError::RefCollision`: a namespace collision at a target that exists, nothing written; the next invocation mints another id |
+| a received object id differs from the captured one | `source_drift` (65, reused) | `ImportError::VectorMismatch`: the source moved between capture and fetch; the refs created so far are retained and named |
+| the transfer stopped, a receiver could not be read, or the import was cancelled | `import_incomplete` (68) | `ImportError::TransferFailed`, `ImportError::Cancelled` (no producer in the wired slot, as for the create's cancellation) |
+
+Every import refusal's message names the step, the source, the import
+name, the typed cause and every retained import ref (or that nothing was
+written), and says that the engine was not entered. A refusal the engine
+makes after the import -- a dirty member, an open merge it finds, drift --
+travels unchanged with the retained refs named after it; the import refs
+are ordinary Git refs that nothing in gwz prunes (design §6.2). Before any
+fetch the wrapper also refuses `open_operation` when the addressed
+workspace already has an open merge record ("nothing was imported"), so a
+start the engine's own gate would refuse leaves no ref behind; the family
+`dry_run` stays `unsupported_operation`.

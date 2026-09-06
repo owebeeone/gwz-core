@@ -1743,12 +1743,14 @@ The product contract is the gwz-dev workspace document
 `GwzLocalClonePlan.md` (revision 4) through the independently compiled
 libraries of `GwzLocalCloneImplementationArchitecture.md` (revision 3) and
 `GwzLocalCloneLibraryBoundaries.md` (revision 1). This section records what
-that contract fixes inside `gwz-core`. Status: LCM1.1 (2026-09-06, lane C
-wiring) — `gwz clone --local --name <Name> [dest]` (verbatim), `gwz local
-list`, `gwz local dispose <name> --keep` and `gwz local disband` run end to
-end over the libraries; `--clean`/`--bare`, ordinary `dispose`, `--from`
-and the family merge's import and delegation (LCM1.2) still refuse as
-unsupported after the family observation and before any effect.
+that contract fixes inside `gwz-core`. Status: LCM1.2 (2026-09-06, lane C)
+— `gwz clone --local --name <Name> [dest]` (verbatim), `gwz local list`,
+`gwz local dispose <name> --keep`, `gwz local disband` and `gwz merge
+--remote <name> [<ref>]` (the import through one retained
+`refs/gwz/local-imports/<transfer-id>` per paired receiver, then one
+delegation to the public merge engine entry) run end to end over the
+libraries; `--clean`/`--bare`, ordinary `dispose` and `--from` still refuse
+as unsupported after the family observation and before any effect.
 
 ### Protocol surface
 
@@ -1768,6 +1770,8 @@ unsupported after the family observation and before any effect.
 | `LocalMemberState` | `creating`=0, `ready`=1, `disposing`=2 (mirrors `gwz_family_model::MemberState`) |
 | `LocalObservedState` | `ready`=0, `incomplete`=1, `interrupted_disposal`=2, `missing`=3, `pointer_removed`=4, `mismatched`=5, `malformed`=6, `unobserved`=7 (mirrors `gwz_family_model::ListState` in declaration order; `unobserved` is the model's "core supplied no observation for this row", never a guess) |
 | `GwzErrorCode.unknown_local` | 62: the family-only merge miss — `gwz merge --remote <name>` named no ready family member (absent, reserved such as `origin`, or creating/disposing); the state detail travels in the message; never a Git-remote fallback (operator ruling 2026-09-05, design §6/§7, §11 item 13). Pull/push keep `missing_remote` for a token that is neither a ready member nor a Git remote |
+| `GwzErrorCode.pairing_mismatch` | 67: `gwz merge --remote <name>` found the two workspaces no longer the same shape — a lock member id on one side only, the same id at different recorded paths or with a different `source_id`, a selected `@root` with no root to pair (design §6); refused before any fetch, nothing written (LCM1.2, lane C, 2026-09-06) |
+| `GwzErrorCode.import_incomplete` | 68: the family merge's import stopped before the engine was entered — a fetch or receiver read failed, or the import was cancelled; the import refs created before the stop are retained and named, no record was opened, a retry mints a fresh transfer id (LCM1.2) |
 | `GwzErrorCode.unsupported_source_layout` | 63: a design §4.0 source-layout hazard (gitfile, external common directory, alternates, escaping metadata or configuration, partial clone, environment override) or a `.git` entry that is not a repository, refused before reservation with nothing written; v0 refuses, never rewrites (LCM1.1 fix 1, lane C, 2026-09-06). Until then folded into `unsupported_operation`, which now means exactly "not built yet" |
 | `GwzErrorCode.copy_failed` | 64: the tree copy stopped (permission, space, I/O, metadata, an uncopyable entry); the `creating` row and the partial destination are retained, the source unchanged (design §4, §12). Until then `io_error` |
 | `GwzErrorCode.source_drift` | 65: the source moved between the snapshot and publication (design §4 step 3's recheck, §12); the destination is not marked ready and is retained. Until then `io_error` |

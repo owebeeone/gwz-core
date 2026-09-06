@@ -10,6 +10,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use gwz_family_model::{AllocationId, FamilyId, MemberName, MemberPath, normalize_member_path};
+use gwz_local_import::TransferId;
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
@@ -21,6 +22,17 @@ pub fn mint_family_id() -> ModelResult<FamilyId> {
 /// `alloc_<32 hex>`: an ordinary allocation marker value (design §3).
 pub fn mint_allocation_id() -> ModelResult<AllocationId> {
     AllocationId::new(format!("alloc_{}", random_hex()?)).map_err(internal)
+}
+
+/// `xfer_<32 hex>`: a fresh transfer id for one family import (design
+/// §6.2: "one fresh collision-checked import name in every paired receiver",
+/// `refs/gwz/local-imports/<transfer-id>`). Minted like the family and
+/// allocation ids, from the same source of randomness, because the import
+/// ref outlives the process that made it: an id derived from an operation
+/// counter would repeat on the next invocation and collide with its own
+/// retained ref.
+pub fn mint_transfer_id() -> ModelResult<TransferId> {
+    TransferId::new(format!("xfer_{}", random_hex()?)).map_err(internal)
 }
 
 fn random_hex() -> ModelResult<String> {
@@ -191,6 +203,18 @@ mod tests {
         let allocation = mint_allocation_id().unwrap();
         assert!(allocation.as_str().starts_with("alloc_"), "{allocation}");
         assert_ne!(mint_allocation_id().unwrap(), allocation);
+        let transfer = mint_transfer_id().unwrap();
+        assert!(
+            transfer.as_str().starts_with("xfer_"),
+            "{}",
+            transfer.as_str()
+        );
+        assert_eq!(transfer.as_str().len(), 5 + 32);
+        assert_eq!(
+            transfer.import_ref(),
+            format!("refs/gwz/local-imports/{}", transfer.as_str())
+        );
+        assert_ne!(mint_transfer_id().unwrap(), transfer);
     }
 
     #[test]
