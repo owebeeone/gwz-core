@@ -827,6 +827,44 @@ def _fault_count(darwin: str, linux: str) -> str:
         is `#[cfg(unix)]`, which linux satisfies) from the LCM1.0c follow-up
         4 linux value, FIRST-DISPATCH-EXPECTED at the lane owner's landing
         dispatch; a measured number wins.
+
+    LCM2.1/LCM2.2 (lane C, 2026-09-06; ordinary `gwz local dispose <name>`
+    served end to end: the evidence completed, the slot flipped, three
+    `GwzErrorCode` members allocated) moves the LIB REMAINDER and only it,
+    by 15 rows, all under `local_clone::`: the Tier B slice
+    `local_clone::tests::dispose::` 5 -> 15 (+10: a dirty lane refusing and
+    naming the dirt; a unique commit, a reflog-only commit and a native
+    stash refusing as unpreserved history; unknown evidence -- a gwz stash
+    record, a skip-worktree absence, a nested gitfile layout -- refusing
+    under every force name; each known hazard refusing without its name and
+    the lane deleting with all three; empty, unknown and repeated force
+    names; the root, the working directory, a moved root and a replaced
+    target; creating and disposing rows refusing deletion and accepting
+    keep; a removal error part-way leaving the row disposing, `#[cfg(unix)]`;
+    a stale row removed after validation; a clean preserved lane deleted with
+    the index forgetting it, and preservation through a surviving lane; a
+    nested bare repository inventoried and protected) plus
+    `local_clone::adapters::disposal::tests::` 2 (structural entries
+    stripped, layout errors as unknown reasons),
+    `local_clone::dispose::tests::` 2 (the success messages; every refusal's
+    findings, recovery and effects) and `local_clone::errors::tests::` 1
+    (every `DisposeError` variant's code). The merge engine's own partitions
+    are untouched: no file under `workspace_ops/merge/` changed.
+
+      checked_artifact:: 459 / 476: UNMOVED (`--list` re-measured 459 on this
+        tree, 2026-09-06).
+      v1_lifecycle:: 266 listed / 265 executed: UNMOVED (`--list` 266).
+      lib remainder darwin 1078 -> 1093: MEASURED on this tree from the
+        `--list` census (1819 rows in all, was 1804; 1819 - 459 - 266 = 1094
+        listed = 1093 executed + the one ignored row) and by execution
+        (`cargo test -p gwz-core --lib --locked -- --skip checked_artifact::
+        --skip workspace_ops::merge::v1_lifecycle::` -> `1093 passed; 1
+        ignored`, 2026-09-06, from gwz-core under the Option A workspace), in
+        the same commit as the rows. 1078 + 15 = 1093.
+      lib remainder linux  1079 -> 1094: DERIVED (+15; the one cfg-gated row
+        is `#[cfg(unix)]`, which linux satisfies) from the LCM1.2 linux
+        value, FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch;
+        a measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -865,7 +903,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1078 passed", "1079 passed")),
+         _fault_count("1093 passed", "1094 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

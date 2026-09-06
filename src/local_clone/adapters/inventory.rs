@@ -30,14 +30,26 @@ pub struct IncludedRepository {
     pub key: RepoKey,
     /// Workspace-relative; empty for the root.
     pub relative: PathBuf,
-    /// The repository path (its `.git` entry's parent).
+    /// The repository path (its `.git` entry's parent, or the Git directory
+    /// itself when `bare`).
     pub path: PathBuf,
+    /// The directory *is* a Git directory (no `.git` entry): a bare
+    /// repository, or a nested `.git` moved out of its worktree. Found by
+    /// Git's own test -- a `HEAD` file beside `objects/` and `refs/` -- and,
+    /// when nested, never descended into (design §4.0 "unmanaged/ignored
+    /// nested repositories"; LCM2.1, closing §13.8's recorded gap).
+    pub bare: bool,
 }
 
 impl IncludedRepository {
-    /// The `.git` entry, workspace-relative.
+    /// The Git directory, workspace-relative: the `.git` entry, or the
+    /// directory itself for a bare repository.
     pub fn relative_git_dir(&self) -> PathBuf {
-        self.relative.join(".git")
+        if self.bare {
+            self.relative.clone()
+        } else {
+            self.relative.join(".git")
+        }
     }
 
     /// `@root`, the member id, or `nested:<path>`.
@@ -96,8 +108,12 @@ pub fn included_repositories(
             }
             children.push(child);
         }
-        if is_repository {
-            let key = if relative.as_os_str().is_empty() {
+        // A directory that is itself a Git directory is a repository too,
+        // and its contents (objects, refs) are not a tree to walk.
+        let bare = !is_repository && is_git_directory(&directory);
+        let at_root = relative.as_os_str().is_empty();
+        if is_repository || bare {
+            let key = if at_root {
                 RepoKey::Root
             } else if let Some(id) = members.get(&relative) {
                 RepoKey::Member { id: id.clone() }
@@ -110,7 +126,14 @@ pub fn included_repositories(
                 key,
                 path: workspace.join(&relative),
                 relative,
+                bare,
             });
+        }
+        // A nested bare repository's contents are objects and refs, not a
+        // tree to walk; the root is walked whatever it is, because a bare
+        // hub root (design §4.3) still holds its members beneath it.
+        if bare && !at_root {
+            continue;
         }
         // Depth-first in sorted order: push in reverse so the first child
         // is visited first.
@@ -122,6 +145,18 @@ pub fn included_repositories(
             .then_with(|| left.relative.cmp(&right.relative))
     });
     Ok(found)
+}
+
+/// Git's own test for a Git directory (`is_git_directory` in `setup.c`): a
+/// `HEAD` file beside an `objects` directory and a `refs` directory. Only
+/// real entries count -- a symbolic link is never followed.
+fn is_git_directory(directory: &Path) -> bool {
+    let real = |name: &str, want_dir: bool| {
+        std::fs::symlink_metadata(directory.join(name)).is_ok_and(|metadata| {
+            !metadata.file_type().is_symlink() && metadata.is_dir() == want_dir
+        })
+    };
+    real("HEAD", false) && real("objects", true) && real("refs", true)
 }
 
 /// Capture the source (design §4 step 2): inspect every included

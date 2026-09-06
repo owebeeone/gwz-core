@@ -13,10 +13,13 @@
 //! store; `dispose --keep` and `disband` are composed over
 //! `gwz_local_disposal::dispose` and the store session. LCM1.2 (lane C):
 //! a family merge imports through `local_clone::family_merge` and delegates
-//! once to the public merge engine entry. Still refusing: clean and bare
-//! clones (LCM3.1 / LCM2.3) and ordinary `dispose` (its fresh work/history
-//! checks are LCM2.1), each as `unsupported_operation` after the family
-//! observation and before any effect.
+//! once to the public merge engine entry. LCM2.1/LCM2.2 (lane C): ordinary
+//! `dispose` runs the library's fresh work and history checks over the real
+//! ports and deletes only a lane whose history is verifiably preserved
+//! elsewhere, or whose every known hazard the operator named. Still
+//! refusing: clean and bare clones (LCM3.1 / LCM2.3), as
+//! `unsupported_operation` after the family observation and before any
+//! effect.
 
 use std::path::Path;
 
@@ -27,7 +30,7 @@ use crate::local_clone::request::{
     ValidatedLocalFamily, validate_clone_local, validate_local_family,
 };
 use crate::local_clone::{create, dispose, errors, family_merge, list};
-use crate::model::{ModelError, ModelResult};
+use crate::model::ModelResult;
 use crate::operation::{EventEmitter, EventSink, OperationRequest};
 
 use super::*;
@@ -142,11 +145,20 @@ where
                     root_path: None,
                 })
             }
-            // Ordinary deletion's fresh work and history checks are LCM2.1;
-            // the ports behind them are wired (`local_clone::adapters::
-            // disposal`) but the slot refuses before any effect.
-            ValidatedLocalFamily::Dispose { .. } => {
-                Err::<crate::LocalFamilyResponse, ModelError>(errors::unsupported(what))
+            // Ordinary deletion (LCM2.1/LCM2.2): fresh work and history
+            // checks under the family lock, refusing unless every protected
+            // root is preserved elsewhere or the operator named the loss.
+            ValidatedLocalFamily::Dispose {
+                name,
+                keep: false,
+                waivers,
+            } => {
+                let report = dispose::delete(start, &root, &name, &waivers, open_merge_probe)?;
+                Ok(crate::LocalFamilyResponse {
+                    response: envelope(crate::AggregateStatus::Ok, Some(report.message(&name))),
+                    members: Vec::new(),
+                    root_path: None,
+                })
             }
             ValidatedLocalFamily::Disband => {
                 let (status, message) = match dispose::disband(&root)? {

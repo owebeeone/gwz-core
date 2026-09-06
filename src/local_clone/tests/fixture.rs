@@ -125,6 +125,29 @@ impl FamilyFixture {
 }
 
 pub(super) fn family_workspace(label: &str) -> FamilyFixture {
+    let fixture = registered_family_workspace(label);
+    fixture
+        .workspace
+        .member("app")
+        .work_untracked("notes.txt", b"scratch\n");
+    fixture
+        .workspace
+        .root()
+        .work_unstaged("README", b"edited\n");
+    fixture
+}
+
+/// The same family root with **no unsaved work anywhere**: the root's
+/// registration files (`gwz.conf/`) are committed, so a verbatim clone of it
+/// is the clean, preserved lane ordinary deletion accepts (design §12
+/// "Clean intact lane with all protected history elsewhere").
+pub(super) fn clean_family_workspace(label: &str) -> FamilyFixture {
+    let fixture = registered_family_workspace(label);
+    commit_root_configuration(&fixture.root);
+    fixture
+}
+
+fn registered_family_workspace(label: &str) -> FamilyFixture {
     let tree = gwz_local_testrepo::TempTree::new(label);
     let workspace = tree.workspace("root", &["app"]);
     workspace.commit_all("init");
@@ -152,13 +175,39 @@ pub(super) fn family_workspace(label: &str) -> FamilyFixture {
         "op-add",
     )
     .expect("register the member repository");
-    workspace
-        .member("app")
-        .work_untracked("notes.txt", b"scratch\n");
-    workspace.root().work_unstaged("README", b"edited\n");
     FamilyFixture {
         tree,
         workspace,
         root,
     }
+}
+
+/// Commit everything the registration left untracked at the root (the
+/// manifest, the lock and the marker under `gwz.conf/`), as an operator
+/// does; the managed exclude block keeps `.gwz/` and the member paths out.
+fn commit_root_configuration(root: &Path) {
+    let repository = git2::Repository::open(root).expect("open the root repository");
+    let mut index = repository.index().expect("index");
+    index
+        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+        .expect("stage the registration files");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repository.find_tree(tree_id).expect("tree");
+    let parent = repository
+        .head()
+        .expect("HEAD")
+        .peel_to_commit()
+        .expect("HEAD commit");
+    let signature = gwz_local_testrepo::fixture_signature();
+    repository
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "register app",
+            &tree,
+            &[&parent],
+        )
+        .expect("commit the registration");
 }

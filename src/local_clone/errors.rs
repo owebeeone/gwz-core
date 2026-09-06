@@ -20,6 +20,7 @@
 use gwz_copy_contract::CopyErrorCategory;
 use gwz_family_model::{MemberState, Refusal};
 use gwz_family_store_contract::StoreError;
+use gwz_local_disposal::{DisposeError, PortError};
 use gwz_local_import::ImportError;
 use gwz_repo_contract::LayoutError;
 use gwz_workspace_install::{InstallError, InstallPortError, InstallRefusal};
@@ -238,6 +239,51 @@ pub(crate) fn import_error_code(error: &ImportError) -> ErrorCode {
     }
 }
 
+/// The code behind a disposal failure (design §5, §5.1, §5.2; LCM2.1 and
+/// LCM2.2), `--keep` and ordinary deletion alike. Allocated after
+/// `import_incomplete` (68), following §14.1's precedent -- each has a
+/// call site, and each would otherwise have folded into a code whose
+/// recovery points the operator the wrong way:
+///
+/// - known hazards that `--force` did not name are `unwaived_hazard` (69):
+///   `permission_denied` would say the operator lacks a permission, when
+///   the recovery is to preserve the history, finish the operation or move
+///   the work -- or to name each accepted loss;
+/// - evidence that could not be established is `unknown_evidence` (70):
+///   `unsupported_operation` means exactly "not built yet" since fix 1, and
+///   `io_error` would suggest a retry, when no force name waives it and the
+///   recovery is to make the evidence interpretable, or `--keep`;
+/// - a removal that stopped part-way is `disposal_incomplete` (71):
+///   `io_error` would suggest a retry, which design §5.2 refuses (an
+///   interrupted deletion is not forceable); the recovery is manual cleanup
+///   and then the stale-row removal, or `--keep`.
+///
+/// Reused: the model's refusals (`member_not_found`, `path_collision`,
+/// `invalid_request` for an incomplete or interrupted row), the store's
+/// codes, `invalid_request` for the root, a target containing the working
+/// directory and a path mismatch (the metadata and the disk disagree; `gwz
+/// local list` shows which), `io_error` for a removal port that could not
+/// even start, `unsupported_operation` for a port that does not implement
+/// its operation.
+pub(crate) fn dispose_error_code(error: &DisposeError) -> ErrorCode {
+    match error {
+        DisposeError::Refused(refusal) => self::refusal(refusal).code,
+        DisposeError::RootImmutable
+        | DisposeError::TargetContainsCwd { .. }
+        | DisposeError::PathMismatch { .. } => ErrorCode::InvalidRequest,
+        DisposeError::Hazards(_) => ErrorCode::UnwaivedHazard,
+        DisposeError::Unknown(_) | DisposeError::Port(PortError::Evidence { .. }) => {
+            ErrorCode::UnknownEvidence
+        }
+        DisposeError::Port(PortError::Removal { .. }) => ErrorCode::IoError,
+        DisposeError::Port(PortError::Unimplemented { .. }) | DisposeError::Unimplemented => {
+            ErrorCode::UnsupportedOperation
+        }
+        DisposeError::Store(error) => store(error).code,
+        DisposeError::RemovalStopped { .. } => ErrorCode::DisposalIncomplete,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +499,116 @@ mod tests {
             }
         }
         assert_ne!(ErrorCode::PairingMismatch, ErrorCode::ImportIncomplete);
+    }
+
+    /// LCM2.1/LCM2.2 (2026-09-06): every `DisposeError` variant has one
+    /// code, the three allocated ones are distinct from each other and from
+    /// the codes they would have folded into, and the reused codes are the
+    /// ones whose meaning already fits (see `dispose_error_code`).
+    #[test]
+    fn disposal_failures_map_onto_the_three_disposal_codes() {
+        use gwz_local_disposal::{HazardFinding, HazardWaiver};
+        use gwz_repo_contract::{RepoKey, UnknownKind, UnknownReason};
+        let name = MemberName::parse("A").unwrap();
+        assert_eq!(
+            dispose_error_code(&DisposeError::Refused(Refusal::NotFound {
+                name: name.clone()
+            })),
+            ErrorCode::MemberNotFound
+        );
+        assert_eq!(
+            dispose_error_code(&DisposeError::Refused(Refusal::WrongState {
+                name,
+                expected: MemberState::Ready,
+                actual: MemberState::Disposing,
+            })),
+            ErrorCode::InvalidRequest
+        );
+        for error in [
+            DisposeError::RootImmutable,
+            DisposeError::TargetContainsCwd {
+                target: PathBuf::from("/fam/ws-A"),
+            },
+            DisposeError::PathMismatch {
+                expected: PathBuf::from("/fam/ws-A"),
+                observed: "its family pointer is gone".to_owned(),
+            },
+        ] {
+            assert_eq!(
+                dispose_error_code(&error),
+                ErrorCode::InvalidRequest,
+                "{error}"
+            );
+        }
+        assert_eq!(
+            dispose_error_code(&DisposeError::Hazards(vec![HazardFinding {
+                waiver: HazardWaiver::UnpreservedHistory,
+                repository: RepoKey::Root,
+                hazards: Vec::new(),
+                detail: Some("unique".to_owned()),
+            }])),
+            ErrorCode::UnwaivedHazard
+        );
+        let unreadable = UnknownReason::new(UnknownKind::Unreadable, "x");
+        assert_eq!(
+            dispose_error_code(&DisposeError::Unknown(vec![unreadable])),
+            ErrorCode::UnknownEvidence
+        );
+        assert_eq!(
+            dispose_error_code(&DisposeError::Port(PortError::Evidence {
+                detail: "x".to_owned()
+            })),
+            ErrorCode::UnknownEvidence
+        );
+        assert_eq!(
+            dispose_error_code(&DisposeError::Port(PortError::Removal {
+                path: PathBuf::from("/fam/ws-A"),
+                detail: "x".to_owned()
+            })),
+            ErrorCode::IoError
+        );
+        assert_eq!(
+            dispose_error_code(&DisposeError::Port(PortError::Unimplemented {
+                operation: "x"
+            })),
+            ErrorCode::UnsupportedOperation
+        );
+        assert_eq!(
+            dispose_error_code(&DisposeError::Unimplemented),
+            ErrorCode::UnsupportedOperation
+        );
+        assert_eq!(
+            dispose_error_code(&DisposeError::Store(StoreError::Busy {
+                lock_path: PathBuf::from("/fam/root/.gwz/local-family.lock")
+            })),
+            ErrorCode::OpenOperation
+        );
+        assert_eq!(
+            dispose_error_code(&DisposeError::RemovalStopped {
+                remaining: vec![PathBuf::from("/fam/ws-A")],
+                detail: "resource busy".to_owned()
+            }),
+            ErrorCode::DisposalIncomplete
+        );
+        // The three allocated codes overload nothing they replace.
+        let three = [
+            ErrorCode::UnwaivedHazard,
+            ErrorCode::UnknownEvidence,
+            ErrorCode::DisposalIncomplete,
+        ];
+        for (index, code) in three.iter().enumerate() {
+            for other in [
+                ErrorCode::PermissionDenied,
+                ErrorCode::UnsupportedOperation,
+                ErrorCode::IoError,
+                ErrorCode::InvalidRequest,
+                ErrorCode::DestinationIncomplete,
+                ErrorCode::ImportIncomplete,
+            ] {
+                assert_ne!(*code, other);
+            }
+            assert!(three[index + 1..].iter().all(|other| other != code));
+        }
     }
 
     fn copy_error(category: CopyErrorCategory) -> InstallError {

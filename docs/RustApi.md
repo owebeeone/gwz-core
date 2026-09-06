@@ -74,8 +74,7 @@ and the family), `handle_local_family` lists every member's observed target
 through the store, detaches a member with `--keep` and disbands a family
 (`local_clone::dispose`). Still refusing with `unsupported_operation` after
 request shape and the family observation, before any effect: `--clean` and
-`--bare` clones (LCM3.1 / LCM2.3), ordinary `dispose` without `--keep`
-(its fresh work/history checks are LCM2.1) and `--from` (LCM3.2). Since
+`--bare` clones (LCM3.1 / LCM2.3) and `--from` (LCM3.2). Since
 LCM1.2 (lane C, 2026-09-06) the family branch of the merge wrapper
 (`local_clone::family_merge`) runs end to end: after the family observation
 and resolution it reads the addressed workspace's manifest and lock, the
@@ -93,6 +92,26 @@ engine refusal after the import carries the retained refs after its own
 message. The import outcomes are `pairing_mismatch` (67) and
 `import_incomplete` (68), plus `merge_validation_failed`, `path_collision`
 and `source_drift` reused (`docs/ErrorCatalog.md`, "Local Clone Family").
+Since LCM2.1/LCM2.2 (lane C, 2026-09-06) ordinary `gwz local dispose
+<name>` runs end to end (`local_clone::dispose::delete`): under the family
+lock `gwz_local_disposal::dispose` validates the name, the root and the
+working directory, observes every repository in the deletion tree through
+the real ports (`local_clone::adapters::disposal`: the root, every member
+and every unmanaged nested repository, bare ones included -- layout, work
+with ignored entries, byte-compared suppressed paths, sparse absence and
+native operation state, and the protected-root inventory; GWZ's own
+runtime directory and separately inspected repositories are not the
+root's work), classifies the work, asks `gwz-history-check` once per
+surviving family repository whether every protected root is preserved
+whole, and refuses on any known hazard `--force` did not name and on any
+unknown evidence whatever was named; only then does it write `disposing`,
+remove the validated directory once and remove the row. An absent target
+is the stale-row exit; an interrupted removal stops and is reported, never
+replayed. The disposal outcomes are `unwaived_hazard` (69),
+`unknown_evidence` (70) and `disposal_incomplete` (71)
+(`local_clone::errors::dispose_error_code`; `docs/ErrorCatalog.md`).
+Present gwz stash records still refuse as unknown evidence: decoding them
+is deferred, and the message says so and that `--keep` detaches.
 
 `handle_clone_workspace` is a Rust convenience entrypoint for clone +
 materialize-lock. It records the operation as materialization and does not add a

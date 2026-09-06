@@ -138,9 +138,9 @@ fn local_family_ops_refuse_unsupported_without_writing() {
     assert_eq!(listing.root_path, None);
     assert!(family_files_absent(&root));
 
-    // LCM1.1: ordinary deletion still refuses as unsupported after the
-    // family observation (its fresh checks are LCM2.1); `dispose --keep` and
-    // `disband` run for real (`local_clone::tests::dispose`), and a disband
+    // LCM2.1/LCM2.2: ordinary deletion is served (`local_clone::tests::
+    // dispose`); outside any family it refuses at the family observation
+    // like `--keep` does, naming the verb, and writes nothing. `disband`
     // outside any family is a no-op that writes nothing.
     let error = handle_local_family(
         &backend,
@@ -150,7 +150,7 @@ fn local_family_ops_refuse_unsupported_without_writing() {
         &NullSink,
     )
     .unwrap_err();
-    assert_eq!(error.code, ErrorCode::UnsupportedOperation);
+    assert_eq!(error.code, ErrorCode::MemberNotFound, "{}", error.message);
     assert!(error.message.contains("local dispose"), "{}", error.message);
     assert!(family_files_absent(&root));
     let disband = handle_local_family(

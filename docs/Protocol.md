@@ -49,11 +49,18 @@ the causes and recoveries. LCM1.2 (lane C, 2026-09-06) adds two more for
 the family merge's import outcomes: `pairing_mismatch` (67, the two
 workspaces are no longer the same shape; refused before any fetch) and
 `import_incomplete` (68, the import stopped before the engine was entered;
-the retained import refs are named). Since LCM1.1 `gwz clone --local`
+the retained import refs are named). LCM2.1/LCM2.2 (lane C, 2026-09-06)
+adds three for ordinary disposal: `unwaived_hazard` (69, a known hazard
+`--force` did not name; nothing removed), `unknown_evidence` (70, evidence
+that could not be established; no force name waives it) and
+`disposal_incomplete` (71, the removal stopped part-way; the row is
+`disposing` and the remainder is named). Since LCM1.1 `gwz clone --local`
 (verbatim), `gwz local list`, `dispose --keep` and `disband` run end to
 end, and since LCM1.2 so does `gwz merge --remote <name> [<ref>]` -- the
 import through one retained `refs/gwz/local-imports/<transfer-id>` per
-paired receiver, then one delegation to the public merge engine entry; the
+paired receiver, then one delegation to the public merge engine entry --
+and since LCM2.2 ordinary `gwz local dispose <name>` deletes a lane whose
+history is verifiably preserved elsewhere and refuses every other; the
 other modes and operations still refuse `unsupported_operation` before any
 effect. The product contract is the gwz-dev
 `dev-docs/GwzLocalCloneDesign.md`.

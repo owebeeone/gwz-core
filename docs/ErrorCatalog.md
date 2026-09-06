@@ -89,9 +89,8 @@ install_error_code}`:
 | a completion rule failed, or the install was cancelled | `destination_incomplete` (66) | `InstallError::Incomplete` (every `CompletionFault`: §4.0 dest-complete as `NotIndependent`, §4.1 residuals, pointer and merge-store faults, `LockNotRecaptured`, `MarkerNotRegenerated`), `InstallError::Cancelled` and a copy cancelled between entries -- an interruption leaves exactly the shape a failed rule leaves (design §4 step 4), the one `local list` reports as `creating/incomplete`; the message says which |
 
 `unsupported_operation` now means exactly "not built yet": the clean and
-bare modes, `--from` (LCM3.2), ordinary `dispose` (LCM2.1), a family
-`dry_run`, an `Unimplemented` port, store or copier, and
-`LayoutError::Unimplemented`. `io_error` now means exactly an I/O failure:
+bare modes, `--from` (LCM3.2), a family `dry_run`, an `Unimplemented`
+port, store or copier, and `LayoutError::Unimplemented`. `io_error` now means exactly an I/O failure:
 an inspector that could not read far enough to classify
 (`LayoutError::ReadFailed`, lane I proposal I-3), a destination that could
 not be allocated or observed, a configuration that could not be read or
@@ -137,3 +136,34 @@ fetch the wrapper also refuses `open_operation` when the addressed
 workspace already has an open merge record ("nothing was imported"), so a
 start the engine's own gate would refuse leaves no ref behind; the family
 `dry_run` stays `unsupported_operation`.
+
+LCM2.1/LCM2.2 (lane C, 2026-09-06; gwz-dev
+`dev-docs/GwzLocalClone-LCM1.0c-Checkpoint.md` §17) serves ordinary `gwz
+local dispose <name>` end to end -- fresh work and history checks of every
+repository in the deletion tree under the family lock, refusing unless
+every protected root is preserved whole in a surviving family repository
+or the operator named the loss (the standing default of design §5) -- and
+allocated three codes for the disposal outcomes that would otherwise have
+folded into `permission_denied`, `unsupported_operation` and `io_error`.
+The one table is `local_clone::errors::dispose_error_code`, over
+`gwz_local_disposal::DisposeError`, and it serves `--keep` too:
+
+| Outcome | Code | Typed cause (call site) |
+| --- | --- | --- |
+| one or more **known** hazards were found and not named by `--force`: an open merge or unfinished native operation (`open-merge`), uncommitted, untracked, ignored, suppressed or stashed work (`dirty`), or history preserved whole in no surviving family repository (`unpreserved-history`); the message lists every finding per repository; nothing removed | `unwaived_hazard` (69) | `DisposeError::Hazards` -- `permission_denied` would point at a missing permission, when the recovery is to preserve the history, finish the operation or move the work, or to name each accepted loss with `--force <hazard,...>`, or `--keep` |
+| the work or history evidence could not be established: an unreadable path or store, an unsupported index flag, an uninterpretable layout or coordination record (a gwz stash record, which this build does not decode), a verifier limit; nothing removed; **no force name waives it** | `unknown_evidence` (70) | `DisposeError::Unknown`, `DisposeError::Port(PortError::Evidence)` -- `unsupported_operation` means exactly "not built yet" and `io_error` would suggest a retry; the recovery is to make the evidence interpretable, or `--keep` |
+| the directory removal stopped part-way; the row is `disposing` (`local list`: disposing/interrupted_disposal) and what remains is named; no replay, and a repeat is refused | `disposal_incomplete` (71) | `DisposeError::RemovalStopped` -- `io_error` would suggest a retry, which design §5.2 refuses (an interrupted deletion is not forceable); the recovery is manual cleanup and then the stale-row removal, or `--keep` |
+
+Reused, deliberately: `member_not_found` (no such row; the workspace is in
+no family), `invalid_request` (the root; a target containing the working
+directory; a path mismatch -- a moved root, a replaced or foreign target,
+an interrupted detach -- where `gwz local list` shows what was observed;
+an incomplete or interrupted row, `creating` or `disposing`, which is not
+forced past; an empty, unknown or repeated force name; `--keep` with a
+force name), `path_collision` (a recorded path overlapping the root or
+another member), `open_operation` (the family lock is held) and the
+store's codes (a store error after the directory is gone leaves the row
+`disposing`, and the message says so). A stale row -- nothing at the
+recorded path -- is removed without any check and answers `Ok`. Every
+disposal refusal's message names the typed cause, every finding (capped at
+sixteen, the rest counted), the recovery and every completed effect.

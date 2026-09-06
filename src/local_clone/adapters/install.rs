@@ -211,7 +211,14 @@ impl<'a, B: GitBackend> CoreInstallPorts<'a, B> {
         let mut details = Vec::new();
         for repository in &self.capture.repositories {
             let path = destination.join(&repository.relative);
-            if fs::symlink_metadata(path.join(".git")).is_err() {
+            // A bare repository is its own Git directory; every other one
+            // is marked by its `.git` entry.
+            let git_entry = if repository.bare {
+                path.clone()
+            } else {
+                path.join(".git")
+            };
+            if fs::symlink_metadata(git_entry).is_err() {
                 details.push(format!(
                     "{}: no repository at {}",
                     repository.key,
