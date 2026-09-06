@@ -764,6 +764,34 @@ def _fault_count(darwin: str, linux: str) -> str:
       lib remainder linux  1053 -> 1062: DERIVED (+9, every added row runs
         on a unix host) from the LCM1.1 linux value, FIRST-DISPATCH-EXPECTED
         at the lane owner's landing dispatch; a measured number wins.
+
+    LCM1.0c follow-up 4 (2026-09-06, lane C: the family record's git privacy
+    enforced -- the destination install and every create write the managed
+    `.git/info/exclude` block through `workspace_ops::ensure_workspace_exclude`
+    instead of inheriting it) moves the LIB REMAINDER and only it, by 6 rows,
+    all under `local_clone::` and none carrying a cfg gate: the new Tier B
+    slice `local_clone::tests::privacy::` 5 (every family file ignored at the
+    destination and the root; the tracked configuration free of family
+    data; the block written by the install, not inherited; every create
+    regenerating the root's; no family binding as a git remote before or
+    after capture and repo sync) and `local_clone::adapters::git_config::
+    tests::` 1 (the block needs a root repository and is idempotent). The
+    Bazel pin-drift gate of the same follow-up is Python and moves nothing.
+
+      checked_artifact:: 459 / 476: UNMOVED (`--list` re-measured 459 on this
+        tree, 2026-09-06).
+      v1_lifecycle:: 266 listed / 265 executed: UNMOVED (`--list` 266).
+      lib remainder darwin 1061 -> 1067: MEASURED on this tree (`cargo test -p
+        gwz-core --lib --locked -- --skip checked_artifact:: --skip
+        workspace_ops::merge::v1_lifecycle::` -> `1067 passed; 1 ignored`,
+        2026-09-06, run from gwz-core under the Option A workspace) and
+        cross-checked against `--list` (1793 rows in all, was 1787; 1793 -
+        459 - 266 = 1068 listed = 1067 executed + the one ignored row), in
+        the same commit as the rows. 1061 + 6 = 1067.
+      lib remainder linux  1062 -> 1068: DERIVED (+6, every added row runs
+        on a unix host) from the LCM1.1 fixes 1-2 linux value,
+        FIRST-DISPATCH-EXPECTED at the lane owner's landing dispatch; a
+        measured number wins.
     """
     if sys.platform == "darwin":
         return darwin
@@ -802,7 +830,7 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1061 passed", "1062 passed")),
+         _fault_count("1067 passed", "1068 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone

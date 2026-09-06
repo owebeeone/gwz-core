@@ -4,7 +4,11 @@
 //! store (`gwz-family-store`) behind the destination's family metadata
 //! reading; the conf-integrity helpers (`crate::artifact`) behind recapture
 //! and manifest publication; [`super::git_config`] behind the destination's
-//! Git configuration; and `gwz-history-check::check_connectivity` behind
+//! Git configuration -- the remote-URL strip and, in every mode, the managed
+//! `.git/info/exclude` block that keeps the family record out of the
+//! destination's own `git status` and index (through
+//! `workspace_ops::ensure_workspace_exclude`, with the backend the handler
+//! was given); and `gwz-history-check::check_connectivity` behind
 //! the destination's object-connectivity check (design §4.0 dest-complete),
 //! bounded by [`super::object_census`] and reported per repository
 //! ([`RepositoryVerification`]; LCM1.1 fix 2, 2026-09-06).
@@ -37,10 +41,11 @@ use gwz_workspace_install::{
 };
 
 use super::exclusions::{FIXED_EXCLUSIONS, verbatim_exclusions, worktrees_of};
-use super::git_config::{DestinationRepository, install_destination_git};
+use super::git_config::{DestinationRepository, ensure_managed_exclude, install_destination_git};
 use super::inventory::{IncludedRepository, included_repositories, recheck, snapshot};
 use super::object_census::{ObjectCensus, census_of, connectivity_limits};
 use crate::artifact::{self, ConfIntegrityVerdict, ManifestArtifact};
+use crate::git::GitBackend;
 use crate::model::ModelResult;
 use crate::workspace::{RUNTIME_DIR, WORKSPACE_MANIFEST};
 
@@ -119,7 +124,10 @@ pub struct RepositoryVerification {
 }
 
 /// The real install ports for one create.
-pub struct CoreInstallPorts {
+pub struct CoreInstallPorts<'a, B: GitBackend> {
+    /// The handler's backend, for the destination's managed exclude block
+    /// (the helper asks it whether an inactive member is still a checkout).
+    backend: &'a B,
     inspector: LocalRepoInspector,
     store: YamlFamilyStore,
     /// The family root, canonical.
@@ -135,10 +143,11 @@ pub struct CoreInstallPorts {
     verifications: Vec<RepositoryVerification>,
 }
 
-impl CoreInstallPorts {
+impl<'a, B: GitBackend> CoreInstallPorts<'a, B> {
     /// Ports for one create of the family `family_id` at `root`, copying
     /// `source` as captured by [`capture_source`].
     pub fn new(
+        backend: &'a B,
         root: PathBuf,
         family_id: FamilyId,
         allocation: AllocationId,
@@ -147,6 +156,7 @@ impl CoreInstallPorts {
         capture: SourceCapture,
     ) -> Self {
         Self {
+            backend,
             inspector: LocalRepoInspector::new(),
             store: YamlFamilyStore::new(),
             root,
@@ -339,7 +349,7 @@ impl CoreInstallPorts {
     }
 }
 
-impl InstallPorts for CoreInstallPorts {
+impl<B: GitBackend> InstallPorts for CoreInstallPorts<'_, B> {
     fn snapshot_source(&mut self, source: &Path) -> Result<SourceSnapshot, InstallPortError> {
         let same_source = fs::canonicalize(source)
             .map(|resolved| resolved == self.source)
@@ -460,11 +470,17 @@ impl InstallPorts for CoreInstallPorts {
         })
     }
 
+    /// The remote-URL strip, then the managed exclude block in the
+    /// destination's root repository -- in every mode, so a constructed
+    /// destination (clean, bare) is as private as a copied one, and
+    /// idempotent on the file a verbatim copy inherited.
     fn install_destination_git(
         &mut self,
         destination: &Path,
     ) -> Result<GitInstallReport, InstallPortError> {
-        install_destination_git(destination, &self.destination_repositories())
+        let report = install_destination_git(destination, &self.destination_repositories())?;
+        ensure_managed_exclude(self.backend, destination, &self.capture.manifest)?;
+        Ok(report)
     }
 
     fn recheck_source(&mut self, snapshot: &SourceSnapshot) -> Result<(), InstallPortError> {

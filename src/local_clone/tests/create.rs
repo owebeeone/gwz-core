@@ -244,6 +244,7 @@ fn an_interrupted_create_leaves_a_creating_row_and_an_inspectable_directory() {
     let dest = fixture.sibling("A");
     let validated = validate_clone_local(&clone_request("A")).unwrap();
     let error = create::clone_local(
+        &Git2Backend::without_credential_helpers(),
         &fixture.root,
         &fixture.root,
         &validated,
@@ -468,6 +469,7 @@ fn source_drift_before_publication_is_source_drift_with_the_row_retained() {
     let dest = fixture.sibling("A");
     let validated = validate_clone_local(&clone_request("A")).unwrap();
     let error = create::clone_local(
+        &Git2Backend::without_credential_helpers(),
         &fixture.root,
         &fixture.root,
         &validated,
@@ -558,6 +560,7 @@ fn an_object_missing_from_the_destination_store_is_destination_incomplete() {
         .join(&tree[2..]);
     let validated = validate_clone_local(&clone_request("A")).unwrap();
     let error = create::clone_local(
+        &Git2Backend::without_credential_helpers(),
         &fixture.root,
         &fixture.root,
         &validated,
@@ -685,6 +688,7 @@ fn a_source_with_reflog_only_history_creates_and_reports_the_verified_objects() 
 
     let validated = validate_clone_local(&clone_request("A")).unwrap();
     let report = create::clone_local(
+        &Git2Backend::without_credential_helpers(),
         &fixture.root,
         &fixture.root,
         &validated,

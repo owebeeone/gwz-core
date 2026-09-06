@@ -13,10 +13,14 @@
 //! 3. the destination and its root-relative recorded path, minted by core;
 //! 4. the source inventory and snapshot, **before the family lock**, so a
 //!    design §4.0 hazard refuses with nothing written at all;
-//! 5. the family lock; founding when there is no index yet;
+//! 5. the family lock; the root's managed `.git/info/exclude` block,
+//!    regenerated on every create so the index is ignored by the root's own
+//!    repository by enforcement (idempotent when already there); founding
+//!    when there is no index yet;
 //! 6. `install`: admission (name, path, destination, open merge), the
 //!    `creating` row, the destination directory, the copy with §4.1's
-//!    exclusions, the destination's Git configuration, the pointer and
+//!    exclusions, the destination's Git configuration (the remote-URL strip
+//!    and its own managed exclude block, in every mode), the pointer and
 //!    marker, the completion check, the source recheck, the manifest last,
 //!    then `ready`.
 //!
@@ -39,6 +43,7 @@ use gwz_workspace_install::{
     InstallEffect, InstallFailure, InstallPortError, InstallReport, InstallRequest, install,
 };
 
+use super::adapters::git_config::ensure_managed_exclude;
 use super::adapters::install::{
     CoreInstallPorts, OpenMergeProbe, RepositoryVerification, capture_source,
 };
@@ -48,6 +53,8 @@ use super::adapters::member_paths::{
 use super::errors::{self, invalid, unsupported};
 use super::family_merge::family_store;
 use super::request::ValidatedCloneLocal;
+use crate::artifact;
+use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 /// What one create produced.
@@ -147,8 +154,10 @@ struct Placement {
 
 /// Create the clone `request` names from the workspace at `workspace`
 /// (the addressed workspace, as `resolve_workspace_root` found it), with
-/// `start` as the invocation's own directory.
-pub(crate) fn clone_local(
+/// `start` as the invocation's own directory and `backend` the handler's
+/// Git backend (it writes the managed exclude blocks, nothing else).
+pub(crate) fn clone_local<B: GitBackend>(
+    backend: &B,
     start: &Path,
     workspace: &Path,
     request: &ValidatedCloneLocal,
@@ -174,14 +183,46 @@ pub(crate) fn clone_local(
     let capture = capture_source(&placement.source, open_merge)
         .map_err(|error| port_error(&request.name, &destination, &error))?;
 
+    // The root's manifest, for its exclude block below: the capture's when
+    // the root is the copy source, read otherwise (a clone of a clone).
+    let read_root_manifest;
+    let root_manifest = if placement.source_path.is_none() {
+        &capture.manifest
+    } else {
+        read_root_manifest = artifact::read_manifest(&placement.root).map_err(|error| {
+            ModelError::new(
+                error.code,
+                format!(
+                    "local clone `{}` -> {}: the family root's manifest at {}: {}; nothing was \
+                     reserved",
+                    request.name,
+                    destination.display(),
+                    placement.root.display(),
+                    error.message
+                ),
+            )
+        })?;
+        &read_root_manifest
+    };
+
     // Step 5: the family lock, founding when there is no index yet.
     let mut session = store
         .try_lock(&FamilyLocation::new(&placement.source))
         .map_err(|error| errors::store_in(&what, &error))?;
-    let (family_id, founded) = match session
+    let existing = session
         .reread()
-        .map_err(|error| errors::store_in(&what, &error))?
-    {
+        .map_err(|error| errors::store_in(&what, &error))?;
+    // The record is ignored by the root's own repository by enforcement,
+    // not by the root's history of other verbs: under the lock and before
+    // the index is founded or rewritten, the root's managed
+    // `.git/info/exclude` block is regenerated (idempotent when present).
+    // Every other mutation verb regenerates it as a side effect of its own
+    // writes; this is the one verb that writes at the root without them. A
+    // failure refuses here with nothing founded and nothing reserved.
+    ensure_managed_exclude(backend, &placement.root, root_manifest).map_err(|error| {
+        root_boundary_error(&request.name, &destination, &placement.root, &error)
+    })?;
+    let (family_id, founded) = match existing {
         Some(view) => (view.family_id, false),
         None => {
             let family_id = placement
@@ -209,6 +250,7 @@ pub(crate) fn clone_local(
         copy_mode: CopyMode::Auto,
     };
     let mut ports = CoreInstallPorts::new(
+        backend,
         placement.root.clone(),
         family_id.clone(),
         allocation,
@@ -328,6 +370,26 @@ fn port_error(name: &MemberName, destination: &Path, error: &InstallPortError) -
         format!(
             "local clone `{name}` -> {}: inventory source failed: {error}; nothing was reserved",
             destination.display()
+        ),
+    )
+}
+
+/// The root's exclude block could not be regenerated: the same mapping as
+/// any other port error (`Configuration` is `io_error`), before founding
+/// and before reservation.
+fn root_boundary_error(
+    name: &MemberName,
+    destination: &Path,
+    root: &Path,
+    error: &InstallPortError,
+) -> ModelError {
+    ModelError::new(
+        errors::install_port_code(error),
+        format!(
+            "local clone `{name}` -> {}: the family root's git boundary at {}: {error}; nothing \
+             was reserved",
+            destination.display(),
+            root.display()
         ),
     )
 }

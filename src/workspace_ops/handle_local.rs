@@ -41,7 +41,7 @@ pub(crate) fn open_merge_probe(root: &Path) -> ModelResult<Option<String>> {
 
 /// `gwz clone --local --name <name> [dest]`.
 pub fn handle_clone_local_workspace<B>(
-    _backend: &B,
+    backend: &B,
     start: &Path,
     request: crate::CloneLocalWorkspaceRequest,
     operation_id: impl Into<String>,
@@ -58,6 +58,7 @@ where
         let validated = validate_clone_local(&request)?;
         let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
         let report = create::clone_local(
+            backend,
             start,
             &root,
             &validated,

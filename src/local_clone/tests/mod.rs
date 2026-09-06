@@ -5,5 +5,6 @@ mod create;
 mod dispose;
 mod fixture;
 mod list;
+mod privacy;
 mod request;
 mod transport;

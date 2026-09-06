@@ -178,6 +178,7 @@ fn keep_detaches_an_incomplete_target_and_retains_its_remainder() {
     let dest = fixture.sibling("A");
     let validated = validate_clone_local(&clone_request("A")).unwrap();
     create::clone_local(
+        &Git2Backend::without_credential_helpers(),
         &fixture.root,
         &fixture.root,
         &validated,

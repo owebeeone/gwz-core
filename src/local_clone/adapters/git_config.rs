@@ -14,11 +14,24 @@
 //! Only the URL keys go (`remote.<name>.url`, `remote.<name>.pushurl`); the
 //! remote's fetch refspecs and its `refs/remotes/<name>/*` tracking refs are
 //! copied history and stay.
+//!
+//! The same port also makes the family record private to the destination's
+//! own root repository ([`ensure_managed_exclude`]): the managed block in
+//! `.git/info/exclude` that every gwz mutation verb regenerates at a
+//! workspace root (`/.gwz/`, `/gwz.conf/.tmp/`, every member path) is
+//! written through the existing helper, so the pointer and marker install
+//! writes next -- and the index and lock a root holds -- are ignored by
+//! `git status` and never reach an index, whatever the source's exclude
+//! held. Local and never committed, unlike `.gitignore`.
 
 use std::path::{Path, PathBuf};
 
 use gwz_repo_factory::origin_is_kept;
 use gwz_workspace_install::{GitInstallReport, InstallPortError};
+
+use crate::artifact::ManifestArtifact;
+use crate::git::GitBackend;
+use crate::workspace_ops::{ensure_workspace_exclude, read_lock_or_empty};
 
 /// One repository to install: a label for the report (`@root`, a member
 /// id, a nested path) and its destination-relative path.
@@ -101,6 +114,55 @@ fn remote_of_url_key(name: &str) -> Option<&str> {
     let rest = name.strip_prefix("remote.")?;
     rest.strip_suffix(".url")
         .or_else(|| rest.strip_suffix(".pushurl"))
+}
+
+/// Regenerate gwz's managed block in `<workspace>/.git/info/exclude` from
+/// `manifest` and the workspace's lock when it holds one
+/// (`read_lock_or_empty`), through the one writer every other verb uses
+/// (`workspace_ops::ensure_workspace_exclude`): idempotent, preserving
+/// every non-gwz line, never committed.
+///
+/// Two callers, one rule. The destination install runs it in **every**
+/// mode after the copy or the construction: a verbatim copy inherited the
+/// source's file and the write is a no-op, while a constructed destination
+/// (clean, bare; LCM3.1 / LCM2.3) inherits nothing and would otherwise show
+/// its pointer and marker as untracked. Every create runs it at the family
+/// root under the family lock, before the index is founded or rewritten,
+/// so the record is ignored by enforcement rather than by the root's
+/// history of other verbs.
+///
+/// The workspace root must already hold its repository (`.git` present):
+/// the helper bootstraps `.git/info` but never a `.git`, so a root with no
+/// repository is a configuration error rather than a stray directory. A
+/// bare root (design §4.3) has a `.git` and no working tree; the block is
+/// written inside it and hides nothing, harmlessly.
+pub fn ensure_managed_exclude<B: GitBackend>(
+    backend: &B,
+    workspace: &Path,
+    manifest: &ManifestArtifact,
+) -> Result<(), InstallPortError> {
+    if std::fs::symlink_metadata(workspace.join(".git")).is_err() {
+        return Err(InstallPortError::Configuration {
+            detail: format!(
+                "{}: no root repository to hold the managed exclude block",
+                workspace.display()
+            ),
+        });
+    }
+    let lock = read_lock_or_empty(workspace, &manifest.workspace.id).map_err(|error| {
+        InstallPortError::Configuration {
+            detail: format!("{}: lock: {}", workspace.display(), error.message),
+        }
+    })?;
+    ensure_workspace_exclude(backend, workspace, manifest, &lock).map_err(|error| {
+        InstallPortError::Configuration {
+            detail: format!(
+                "{}: managed exclude block: {}",
+                workspace.display(),
+                error.message
+            ),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -197,6 +259,77 @@ mod tests {
         )
         .unwrap();
         assert!(again.removed_remotes.is_empty());
+    }
+
+    /// The managed block goes into an existing root repository, once, with
+    /// the operator's own lines kept; a directory with no repository is
+    /// refused typed and gains no `.git`.
+    #[test]
+    fn the_managed_exclude_block_needs_a_root_repository_and_is_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = crate::git::Git2Backend::without_credential_helpers();
+        let manifest = ManifestArtifact {
+            schema: crate::artifact::WORKSPACE_SCHEMA.to_owned(),
+            workspace: crate::artifact::WorkspaceHeader {
+                id: "ws_test".to_owned(),
+            },
+            members: vec![crate::artifact::ManifestMember {
+                id: "mem_app".to_owned(),
+                path: "app".to_owned(),
+                source_kind: crate::artifact::ArtifactSourceKind::Git,
+                source_id: "src_app".to_owned(),
+                active: true,
+                desired: None,
+                remotes: Vec::new(),
+            }],
+        };
+        let bare_directory = temp.path().join("no-repository");
+        std::fs::create_dir(&bare_directory).unwrap();
+        let error = ensure_managed_exclude(&backend, &bare_directory, &manifest).unwrap_err();
+        assert!(
+            matches!(error, InstallPortError::Configuration { .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("no root repository"), "{error}");
+        assert!(
+            !bare_directory.join(".git").exists(),
+            "a refusal creates no repository directory"
+        );
+
+        let workspace = temp.path().join("ws");
+        git2::Repository::init(&workspace).unwrap();
+        let exclude = workspace.join(".git/info/exclude");
+        std::fs::write(&exclude, "# operator line\n/scratch/\n").unwrap();
+        ensure_managed_exclude(&backend, &workspace, &manifest).unwrap();
+        let once = std::fs::read_to_string(&exclude).unwrap();
+        assert!(once.contains("# operator line\n/scratch/\n"), "{once}");
+        assert!(once.contains("/.gwz/\n"), "{once}");
+        assert!(once.contains("/app/\n"), "{once}");
+        assert_eq!(
+            once.matches("# BEGIN GWZ managed member repositories")
+                .count(),
+            1
+        );
+        ensure_managed_exclude(&backend, &workspace, &manifest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&exclude).unwrap(),
+            once,
+            "a second run changes nothing"
+        );
+        let repository = git2::Repository::open(&workspace).unwrap();
+        for private in [
+            ".gwz/local-family.yml",
+            ".gwz/local-family.lock",
+            ".gwz/family-root",
+            ".gwz/local-clone-allocation",
+            "app/anything",
+        ] {
+            assert!(
+                repository.is_path_ignored(Path::new(private)).unwrap(),
+                "{private} is ignored"
+            );
+        }
+        assert!(!repository.is_path_ignored(Path::new("README")).unwrap());
     }
 
     #[test]

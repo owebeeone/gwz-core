@@ -156,6 +156,7 @@ fn an_interrupted_create_lists_as_incomplete_and_a_removed_tree_as_missing() {
     let dest = fixture.sibling("A");
     let validated = validate_clone_local(&clone_request("A")).unwrap();
     create::clone_local(
+        &Git2Backend::without_credential_helpers(),
         &fixture.root,
         &fixture.root,
         &validated,
