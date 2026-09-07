@@ -36,6 +36,7 @@ pub use authority_backend::MergeAuthorityBackend;
 pub use backend::*;
 pub use contract::*;
 pub use transport_support::set_server_timeout_ms;
+pub(crate) use transport_support::identity::has_options as has_transport_options;
 pub use types::*;
 
 pub(crate) use repository_support::open_repo;
@@ -66,6 +67,21 @@ macro_rules! delegate {
 }
 
 impl GitBackend for Git2Backend {
+    fn with_transport(&self, start: &Path, options: Option<&crate::TransportOptions>) -> ModelResult<Option<Self>> {
+        let Some(options) = options.filter(|options| transport_support::identity::has_options(Some(options))) else { return Ok(None); };
+        let identities = transport_support::identity::Selection::from_options(start, options)?;
+        identities.validate_files()?;
+        Ok(Some(Self { credential_helpers: self.credential_helpers, identities }))
+    }
+    fn validate_transport_remotes(&self, names: &[String]) -> ModelResult<()> {
+        self.identities.validate_remote_names(names)
+    }
+    fn validate_remote_identity(&self, path: &Path, remote: &str, push: bool) -> ModelResult<()> {
+        let repo = open_repo(path)?;
+        let handle = repo.find_remote(remote).map_err(git_error)?;
+        let url = if push { handle.pushurl().map_err(git_error)?.unwrap_or(handle.url().map_err(git_error)?) } else { handle.url().map_err(git_error)? };
+        transport_support::identity::for_remote(self, Some(&repo), Some(remote), url).map(|_| ())
+    }
     delegate!(is_repository(path: &Path) -> ModelResult<bool> => repository::is_repository);
     delegate!(commit_exists(path: &Path, oid: &str) -> ModelResult<bool> => repository::commit_exists);
     delegate!(read_file_at_commit(path: &Path, commit: &str, relative_path: &str,) -> ModelResult<Option<Vec<u8>>> => repository::read_file_at_commit);
@@ -77,6 +93,7 @@ impl GitBackend for Git2Backend {
     delegate!(fetch(path: &Path, remote: &str) -> ModelResult<GitFetchResult> => transport::fetch);
     delegate!(tag_fetch(path: &Path, remote: &str) -> ModelResult<GitFetchResult> => transport::tag_fetch);
     delegate!(ls_remote(path: &Path, remote: &str) -> ModelResult<Vec<GitRemoteRef>> => transport::ls_remote);
+    delegate!(ls_remote_url(path: &Path, url: &str, remote_name: &str, identity_repo: Option<&Path>) -> ModelResult<Vec<GitRemoteRef>> => transport::ls_remote_url);
     delegate!(fast_forward(path: &Path, branch: &str, upstream_ref: &str,) -> ModelResult<GitUpdateResult> => refs::fast_forward);
     delegate!(merge_upstream(path: &Path, branch: &str, upstream_ref: &str,) -> ModelResult<GitIntegrateResult> => merge_prepared::merge_upstream);
     delegate!(merge_upstream_checked(path: &Path, branch: &str, expected_before: &str, source_commit: &str, message: &str, attribution: Option<&crate::model::OperationAttribution>,) -> ModelResult<GitIntegrateResult> => merge_prepared::merge_upstream_checked);

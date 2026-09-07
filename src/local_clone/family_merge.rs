@@ -68,8 +68,8 @@ use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, EventSink, OperationRequest};
 use crate::workspace_ops::{
-    CommandDefaultTargets, RootSelectionPolicy, SelectedTarget, assert_workspace_id,
-    handle_merge_with_events, open_merge_probe, resolve_targets, resolve_workspace_root,
+    SelectedTarget, assert_workspace_id, handle_merge_with_events, open_merge_probe,
+    resolve_merge_targets, resolve_workspace_root,
 };
 
 /// Step 4: resolve the family selector against the observed family
@@ -121,33 +121,19 @@ pub(crate) fn qualify_selector(source_ref: Option<&str>) -> SourceSelector {
 
 /// The receivers this merge selected, by identity, exactly as the engine's
 /// planner selects them (`workspace_ops::merge::plan`): the verb's default
-/// is every active member, and the root joins only when the selection names
-/// `@root` explicitly -- `@all` alone never selects it.
+/// is the root and every active member. Explicit includes remain partial.
 pub(crate) fn selected_keys(
     manifest: &ManifestArtifact,
     selection: Option<&crate::Selection>,
 ) -> ModelResult<Vec<RepoKey>> {
-    let targets = resolve_targets(
-        manifest,
-        selection,
-        CommandDefaultTargets::Members,
-        RootSelectionPolicy::Allow,
-    )?;
-    let explicitly_selected_root = selection.is_some_and(|selection| {
-        selection
-            .member_ids
-            .iter()
-            .chain(&selection.paths)
-            .chain(&selection.targets)
-            .any(|target| target == "@root")
-    });
+    let targets = resolve_merge_targets(manifest, selection)?;
     Ok(targets
         .into_iter()
-        .filter_map(|target| match target {
-            SelectedTarget::Member(member) => Some(RepoKey::Member {
+        .map(|target| match target {
+            SelectedTarget::Member(member) => RepoKey::Member {
                 id: member.id.clone(),
-            }),
-            SelectedTarget::Root => explicitly_selected_root.then_some(RepoKey::Root),
+            },
+            SelectedTarget::Root => RepoKey::Root,
         })
         .collect())
 }
@@ -397,14 +383,22 @@ fn summary(source: &BoundMember, selector: &SourceSelector, imported: &ImportedS
         .iter()
         .map(|commit| format!("{}={}", commit.key, commit.oid.to_hex()))
         .collect();
-    format!(
+    let mut message = format!(
         "imported {} of family member `{}` as {} ({}); the import ref is retained in every \
          receiver and never pruned by gwz",
         describe_selector(selector),
         source.name,
         imported.import_ref,
         ids.join(", ")
-    )
+    );
+    if !imported
+        .vector
+        .iter()
+        .any(|commit| commit.key == RepoKey::Root)
+    {
+        message.push_str("; root history was not integrated by this partial merge. Before disposing the source lane, select @root in a family merge from the same source/ref to integrate its root commits, or preserve that history in another retained lane. Disposal still checks all history");
+    }
+    message
 }
 
 /// The engine's sink with its `OperationStarted` withheld: the wrapper has
@@ -463,9 +457,10 @@ where
     drop(session);
     match result {
         Ok(mut response) => {
-            if response.response.meta.message.is_none() {
-                response.response.meta.message = Some(summary);
-            }
+            response.response.meta.message = Some(match response.response.meta.message.take() {
+                Some(message) => format!("{message}; {summary}"),
+                None => summary,
+            });
             Ok(response)
         }
         Err(mut error) => {

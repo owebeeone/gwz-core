@@ -45,6 +45,8 @@ where
 {
     let context =
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
+    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let backend = scoped_backend.as_ref().unwrap_or(backend);
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root(
         start,
@@ -542,51 +544,13 @@ pub(crate) fn verify_source_identity_reuse<B: GitBackend>(
 }
 
 fn validate_single_detach_selector(selection: Option<&crate::Selection>) -> ModelResult<String> {
-    validate_single_literal_selector(selection, false)
+    super::target_selection::validate_single_literal_selector(selection, false)
 }
 
 fn validate_single_attach_selector(selection: Option<&crate::Selection>) -> ModelResult<String> {
-    let selector = validate_single_literal_selector(selection, true)?;
+    let selector = super::target_selection::validate_single_literal_selector(selection, true)?;
     MemberId::parse_str(&selector)?;
     Ok(selector)
-}
-
-fn validate_single_literal_selector(
-    selection: Option<&crate::Selection>,
-    member_id_only: bool,
-) -> ModelResult<String> {
-    let selection = selection.ok_or_else(|| {
-        invalid(if member_id_only {
-            "repo attach requires exactly one literal member id"
-        } else {
-            "repo detach requires exactly one literal member id or path"
-        })
-    })?;
-    if selection.all == Some(true) || !selection.exclude_targets.is_empty() {
-        return Err(invalid(
-            "repo lifecycle selectors do not support sets or exclusions",
-        ));
-    }
-    if member_id_only && !selection.paths.is_empty() {
-        return Err(invalid(
-            "repo attach requires a literal member id, not a path",
-        ));
-    }
-    let mut selectors = Vec::new();
-    selectors.extend(selection.member_ids.iter().cloned());
-    selectors.extend(selection.paths.iter().cloned());
-    selectors.extend(selection.targets.iter().cloned());
-    if selectors.len() != 1 || selectors[0].starts_with('@') {
-        return Err(invalid(if member_id_only {
-            "repo attach requires exactly one literal member id"
-        } else {
-            "repo detach requires exactly one literal member id or path"
-        }));
-    }
-    if member_id_only && !selectors[0].starts_with("mem_") {
-        return Err(invalid("repo attach requires a literal mem_... member id"));
-    }
-    Ok(selectors.remove(0))
 }
 
 fn resolve_detach_member_index(manifest: &ManifestArtifact, selector: &str) -> ModelResult<usize> {

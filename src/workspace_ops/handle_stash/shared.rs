@@ -292,36 +292,7 @@ pub(super) fn resolve_stash_selection(
     lock: &artifact::LockArtifact,
     selection: Option<&crate::Selection>,
 ) -> ModelResult<Vec<String>> {
-    let Some(selection) = selection else {
-        return resolve_locked_selection(manifest, lock, None);
-    };
-    let mut members = selection.clone();
-    let root_selected = members.targets.iter().any(|target| target == "@root");
-    let root_excluded = members
-        .exclude_targets
-        .iter()
-        .any(|target| target == "@root");
-    if root_selected && root_excluded {
-        return Err(ModelError::new(
-            ErrorCode::InvalidRequest,
-            "@root cannot be both selected and excluded",
-        ));
-    }
-    members.targets.retain(|target| target != "@root");
-    members.exclude_targets.retain(|target| target != "@root");
-    let has_member_selector = members.all == Some(true)
-        || !members.member_ids.is_empty()
-        || !members.paths.is_empty()
-        || !members.targets.is_empty();
-    let mut selected = if has_member_selector {
-        resolve_locked_selection(manifest, lock, Some(&members))?
-    } else {
-        Vec::new()
-    };
-    if root_selected {
-        selected.push("@root".to_owned());
-    }
-    Ok(selected)
+    resolve_locked_action_selection(manifest, lock, selection, crate::ActionKind::Stash)
 }
 
 pub(super) fn ensure_git_member(member: &ManifestMember) -> ModelResult<()> {
@@ -360,14 +331,14 @@ pub(super) fn restore_target_error(
 }
 
 pub(super) fn initial_bundle_member(
-    plan: &StashMemberPlan<'_>,
+    plan: &StashMemberPlan,
     full_message: &str,
 ) -> StashBundleMember {
     let dirty = dirty_summary(&plan.status);
     let empty = !plan.status.is_dirty;
     StashBundleMember {
-        member_id: plan.member.id.clone(),
-        path: plan.member.path.clone(),
+        member_id: plan.id.clone(),
+        path: plan.path.clone(),
         participation: if empty {
             StashParticipation::Empty
         } else {

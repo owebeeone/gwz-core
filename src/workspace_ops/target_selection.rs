@@ -17,13 +17,114 @@ pub(crate) enum CommandDefaultTargets {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RootSelectionPolicy {
     Allow,
-    Reject,
+    SupportedMembers,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SelectedTarget<'a> {
     Root,
     Member(&'a ManifestMember),
+}
+
+/// Exhaustive action policy: adding a wire action requires a selection decision.
+/// Suboperations retain this scope; lifecycle handlers additionally validate
+/// their frozen participants and whether selectors are meaningful at that step.
+fn action_policy(
+    action: crate::ActionKind,
+) -> Option<(CommandDefaultTargets, RootSelectionPolicy, &'static str)> {
+    use crate::ActionKind as A;
+    use CommandDefaultTargets::{All, Members};
+    use RootSelectionPolicy::{Allow, SupportedMembers};
+    Some(match action {
+        A::Status => (All, Allow, "status"),
+        A::Diff => (All, Allow, "diff"),
+        A::Log => (All, Allow, "log"),
+        A::Commit => (All, Allow, "commit"),
+        A::Stage => (All, Allow, "stage"),
+        A::Push => (All, Allow, "push"),
+        A::PullHead => (All, Allow, "pull"),
+        A::Merge => (All, Allow, "merge"),
+        A::Ls => (Members, Allow, "ls"),
+        A::Forall => (Members, Allow, "forall"),
+        A::Branch => (Members, Allow, "branch"),
+        A::Tag => (Members, Allow, "tag"),
+        A::Stash => (Members, Allow, "stash"),
+        A::Materialize => (Members, SupportedMembers, "materialize"),
+        A::Snapshot => (Members, SupportedMembers, "snapshot"),
+        A::Capture => (Members, SupportedMembers, "capture"),
+        A::PullSnapshot => (Members, SupportedMembers, "pull snapshot"),
+        A::RepoSync => (Members, SupportedMembers, "repo sync"),
+        A::CreateWorkspace
+        | A::InitFromSources
+        | A::AddExistingRepo
+        | A::CreateRepo
+        | A::CloneWorkspace
+        | A::ListSnapshots
+        | A::CloneRepoMember
+        | A::DetachRepoMember
+        | A::AttachRepoMember
+        | A::CloneLocalWorkspace
+        | A::LocalFamily => return None,
+    })
+}
+
+pub(crate) fn resolve_action_targets<'a>(
+    manifest: &'a ManifestArtifact,
+    selection: Option<&crate::Selection>,
+    action: crate::ActionKind,
+) -> ModelResult<Vec<SelectedTarget<'a>>> {
+    let Some((default, root, name)) = action_policy(action) else {
+        if has_explicit_target_selection(selection) {
+            return Err(invalid(format!(
+                "{action:?} operates on a whole workspace and does not accept target selection"
+            )));
+        }
+        return Ok(Vec::new());
+    };
+    resolve_targets(manifest, selection, default, root).map_err(|mut error| {
+        if error.message == "selected command does not support @root" {
+            error.message =
+                format!("{name} does not support an explicit @root target; select members instead");
+        }
+        error
+    })
+}
+
+/// Ordinary and family merge share one participant policy. Explicit includes
+/// replace the default; exclusions are applied by the common resolver.
+pub(crate) fn resolve_merge_targets<'a>(
+    manifest: &'a ManifestArtifact,
+    selection: Option<&crate::Selection>,
+) -> ModelResult<Vec<SelectedTarget<'a>>> {
+    resolve_action_targets(manifest, selection, crate::ActionKind::Merge)
+}
+
+pub(crate) fn resolve_locked_action_selection(
+    manifest: &ManifestArtifact,
+    lock: &crate::artifact::LockArtifact,
+    selection: Option<&crate::Selection>,
+    action: crate::ActionKind,
+) -> ModelResult<Vec<String>> {
+    let mut ids = Vec::new();
+    let mut root = false;
+    for target in resolve_action_targets(manifest, selection, action)? {
+        match target {
+            SelectedTarget::Root => root = true,
+            SelectedTarget::Member(member) => {
+                if !lock.members.contains_key(&member.id) {
+                    return Err(ModelError::new(
+                        ErrorCode::LockNotFound,
+                        format!("lock record missing for member '{}'", member.id),
+                    ));
+                }
+                ids.push(member.id.clone());
+            }
+        }
+    }
+    if root {
+        ids.push(ROOT.to_owned());
+    }
+    Ok(ids)
 }
 
 pub(crate) fn resolve_targets<'a>(
@@ -38,12 +139,14 @@ pub(crate) fn resolve_targets<'a>(
     } else {
         normalized.include
     };
+    let explicit_root = includes.iter().any(|token| token == ROOT);
     let mut selected = expand_tokens(manifest, default, &includes)?;
     let excluded = expand_tokens(manifest, default, &normalized.exclude)?;
 
     selected.retain(|target| !excluded.iter().any(|exclude| same_target(target, exclude)));
 
-    if root_policy == RootSelectionPolicy::Reject
+    if root_policy == RootSelectionPolicy::SupportedMembers
+        && explicit_root
         && selected
             .iter()
             .any(|target| matches!(target, SelectedTarget::Root))
@@ -51,33 +154,21 @@ pub(crate) fn resolve_targets<'a>(
         return Err(invalid("selected command does not support @root"));
     }
 
+    if root_policy == RootSelectionPolicy::SupportedMembers {
+        selected.retain(|target| !matches!(target, SelectedTarget::Root));
+    }
+
     Ok(selected)
 }
 
-pub(crate) fn resolve_member_targets<'a>(
-    manifest: &'a ManifestArtifact,
-    selection: Option<&crate::Selection>,
-    default: CommandDefaultTargets,
-) -> ModelResult<Vec<&'a ManifestMember>> {
-    resolve_targets(manifest, selection, default, RootSelectionPolicy::Reject).map(|targets| {
-        targets
-            .into_iter()
-            .filter_map(|target| match target {
-                SelectedTarget::Root => None,
-                SelectedTarget::Member(member) => Some(member),
-            })
-            .collect()
-    })
-}
-
-pub(crate) fn resolve_member_ids(
+pub(crate) fn resolve_action_ids(
     manifest: &ManifestArtifact,
     selection: Option<&crate::Selection>,
-    default: CommandDefaultTargets,
+    action: crate::ActionKind,
 ) -> ModelResult<Vec<String>> {
-    Ok(resolve_member_targets(manifest, selection, default)?
-        .into_iter()
-        .map(|member| member.id.clone())
+    Ok(resolve_action_targets(manifest, selection, action)?
+        .iter()
+        .map(target_key)
         .collect())
 }
 
@@ -263,6 +354,120 @@ fn invalid(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::InvalidRequest, message)
 }
 
+// Literal lifecycle selectors intentionally have a narrower grammar than target sets.
+pub(crate) fn validate_single_literal_selector(
+    selection: Option<&crate::Selection>,
+    member_id_only: bool,
+) -> ModelResult<String> {
+    let selection = selection.ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::InvalidRequest,
+            if member_id_only {
+                "repo attach requires exactly one literal member id"
+            } else {
+                "repo detach requires exactly one literal member id or path"
+            },
+        )
+    })?;
+    if selection.all == Some(true) || !selection.exclude_targets.is_empty() {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "repo lifecycle selectors do not support sets or exclusions",
+        ));
+    }
+    if member_id_only && !selection.paths.is_empty() {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "repo attach requires a literal member id, not a path",
+        ));
+    }
+    let mut selectors = Vec::new();
+    selectors.extend(selection.member_ids.iter().cloned());
+    selectors.extend(selection.paths.iter().cloned());
+    selectors.extend(selection.targets.iter().cloned());
+    if selectors.len() != 1 || selectors[0].starts_with('@') {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            if member_id_only {
+                "repo attach requires exactly one literal member id"
+            } else {
+                "repo detach requires exactly one literal member id or path"
+            },
+        ));
+    }
+    if member_id_only && !selectors[0].starts_with("mem_") {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "repo attach requires a literal mem_... member id",
+        ));
+    }
+    Ok(selectors.remove(0))
+}
+
+// An open merge resolves against its frozen participant vector, not a moving manifest.
+pub(super) fn resolve_open_merge_stage_ids(
+    record: super::merge::MergeStatusRecordView<'_>,
+    selection: &crate::Selection,
+) -> ModelResult<Vec<String>> {
+    let included = selection
+        .member_ids
+        .iter()
+        .chain(&selection.paths)
+        .chain(&selection.targets)
+        .collect::<Vec<_>>();
+    let excluded = selection.exclude_targets.iter().collect::<Vec<_>>();
+    let token_matches = |target_id: &str, token: &str| {
+        matches!(token, "@all" | "@default")
+            || target_id == token
+            || record
+                .participants()
+                .get(target_id)
+                .is_some_and(|participant| {
+                    participant.target_kind == super::merge::MergeTargetKind::Member
+                        && participant.path == token
+                })
+    };
+    let known = |token: &str| {
+        matches!(token, "@all" | "@default")
+            || record
+                .selected_targets()
+                .iter()
+                .any(|target_id| token_matches(target_id, token))
+    };
+    for token in included.iter().chain(&excluded) {
+        if !known(token) {
+            return Err(ModelError::new(
+                ErrorCode::OpenOperation,
+                format!(
+                    "merge '{}' is open; selected add target '{}' is not a frozen merge participant",
+                    record.merge_id(),
+                    token
+                ),
+            ));
+        }
+    }
+    let include_all = selection.all.unwrap_or(false)
+        || included.is_empty()
+        || included
+            .iter()
+            .any(|target| matches!(target.as_str(), "@all" | "@default"));
+    Ok(record
+        .selected_targets()
+        .iter()
+        .filter_map(|target_id| {
+            record.participants().get(target_id)?;
+            let selected = include_all
+                || included
+                    .iter()
+                    .any(|target| token_matches(target_id, target));
+            let rejected = excluded
+                .iter()
+                .any(|target| token_matches(target_id, target));
+            (selected && !rejected).then(|| target_id.clone())
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::artifact::{ArtifactSourceKind, ManifestArtifact, ManifestMember, WorkspaceHeader};
@@ -310,6 +515,35 @@ mod tests {
 
     fn keys(targets: &[SelectedTarget<'_>]) -> Vec<String> {
         targets.iter().map(target_key).collect()
+    }
+
+    #[test]
+    fn materialize_all_means_supported_members_but_explicit_root_refuses() {
+        let manifest = manifest();
+        let all = make_selection(false, &["@all"], &[]);
+        assert_eq!(
+            keys(
+                &resolve_action_targets(&manifest, Some(&all), crate::ActionKind::Materialize)
+                    .unwrap()
+            ),
+            ["mem_app", "mem_lib"]
+        );
+        let root = make_selection(false, &["@root"], &[]);
+        let error = resolve_action_targets(&manifest, Some(&root), crate::ActionKind::Materialize)
+            .unwrap_err();
+        assert!(error.message.contains("materialize"));
+        let cancelled = make_selection(false, &["@all", "@root"], &["@root"]);
+        assert_eq!(
+            keys(
+                &resolve_action_targets(
+                    &manifest,
+                    Some(&cancelled),
+                    crate::ActionKind::Materialize
+                )
+                .unwrap()
+            ),
+            ["mem_app", "mem_lib"]
+        );
     }
 
     #[test]
@@ -386,18 +620,18 @@ mod tests {
                 &manifest,
                 Some(&selection),
                 CommandDefaultTargets::All,
-                RootSelectionPolicy::Reject,
+                RootSelectionPolicy::SupportedMembers,
             )
             .is_ok()
         );
 
-        let selection = make_selection(true, &[], &[]);
+        let selection = make_selection(true, &["@root"], &[]);
         assert!(
             resolve_targets(
                 &manifest,
                 Some(&selection),
                 CommandDefaultTargets::All,
-                RootSelectionPolicy::Reject,
+                RootSelectionPolicy::SupportedMembers,
             )
             .is_err()
         );

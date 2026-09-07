@@ -13,6 +13,7 @@ use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 mod conf_integrity;
 mod merge_marker;
 
+pub(crate) use conf_integrity::canonical_conf_integrity_marker;
 pub(crate) use conf_integrity::sha256_hex;
 pub use conf_integrity::{
     CONF_BANNER, CONF_INTEGRITY_MARKER_PATH, CONF_INTEGRITY_SCHEMA, ConfIntegrityVerdict,

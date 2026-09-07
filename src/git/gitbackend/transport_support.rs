@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) mod identity;
+
 /// Set libgit2's server (SSH/network) read timeout, process-wide, in milliseconds.
 /// libssh2/libgit2 default to NO timeout, so a stalled SSH handshake — an empty ssh-agent
 /// or an unreachable host — hangs forever; a positive value makes it a fast `Timeout`
@@ -15,15 +17,17 @@ pub fn set_server_timeout_ms(ms: i32) {
 
 pub(crate) fn remote_fetch_options(
     credential_helpers: CredentialHelperPolicy,
+    identity: Option<identity::SelectedIdentity>,
 ) -> git2::FetchOptions<'static> {
-    fetch_options_with_progress(credential_helpers, None)
+    fetch_options_with_progress(credential_helpers, identity, None)
 }
 
 pub(crate) fn fetch_options_with_progress<'a>(
     credential_helpers: CredentialHelperPolicy,
+    identity: Option<identity::SelectedIdentity>,
     progress: Option<&'a dyn Fn(crate::GitTransferProgress)>,
 ) -> git2::FetchOptions<'a> {
-    let mut callbacks = remote_callbacks(credential_helpers);
+    let mut callbacks = remote_callbacks(credential_helpers, identity);
     if let Some(progress) = progress {
         callbacks.transfer_progress(move |stats| {
             progress(git_transfer_progress(&stats));
@@ -37,20 +41,40 @@ pub(crate) fn fetch_options_with_progress<'a>(
 
 pub(crate) fn remote_push_options(
     credential_helpers: CredentialHelperPolicy,
-) -> git2::PushOptions<'static> {
+    identity: Option<identity::SelectedIdentity>,
+    rejected: &std::cell::RefCell<Vec<(String, String)>>,
+) -> git2::PushOptions<'_> {
+    let mut callbacks = remote_callbacks(credential_helpers, identity);
+    callbacks.push_update_reference(|refname, status| {
+        if let Some(message) = status {
+            rejected
+                .borrow_mut()
+                .push((refname.to_owned(), message.to_owned()));
+        }
+        Ok(())
+    });
     let mut options = git2::PushOptions::new();
-    options.remote_callbacks(remote_callbacks(credential_helpers));
+    options.remote_callbacks(callbacks);
     options
 }
 
 pub(crate) fn remote_callbacks<'a>(
     credential_helpers: CredentialHelperPolicy,
+    identity: Option<identity::SelectedIdentity>,
 ) -> git2::RemoteCallbacks<'a> {
     let mut callbacks = git2::RemoteCallbacks::new();
     // libgit2 re-invokes this after each auth rejection; track SSH attempts so we offer
     // the agent once and then fail, instead of re-offering a dead credential forever.
     let mut ssh_attempts = 0u32;
     callbacks.credentials(move |url, username_from_url, allowed_types| {
+        if let Some(identity) = &identity {
+            return explicit_credential(
+                identity,
+                username_from_url,
+                allowed_types,
+                &mut ssh_attempts,
+            );
+        }
         remote_credential(
             url,
             username_from_url,
@@ -60,6 +84,31 @@ pub(crate) fn remote_callbacks<'a>(
         )
     });
     callbacks
+}
+
+/// Explicit authority never enters the ambient agent/helper credential path.
+pub(crate) fn explicit_credential(
+    identity: &identity::SelectedIdentity,
+    username_from_url: Option<&str>,
+    allowed_types: git2::CredentialType,
+    ssh_attempts: &mut u32,
+) -> Result<git2::Cred, git2::Error> {
+    let username = username_from_url.unwrap_or("git");
+    if allowed_types.is_ssh_key() {
+        if *ssh_attempts != 0 {
+            return Err(git2::Error::from_str(
+                "selected SSH identity was rejected or unavailable (encrypted file keys require exact-agent support, which is unavailable); no agent fallback was attempted",
+            ));
+        }
+        *ssh_attempts = 1;
+        return git2::Cred::ssh_key(username, None, &identity.path, None);
+    }
+    if allowed_types.is_username() {
+        return git2::Cred::username(username);
+    }
+    Err(git2::Error::from_str(
+        "remote did not accept selected SSH authentication; no credential fallback was attempted",
+    ))
 }
 
 pub(crate) fn remote_credential(

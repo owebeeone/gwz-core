@@ -45,6 +45,8 @@ pub use cbor::{Cbor, decode, encode};
 pub use protocol::generated::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Build-time source identity; never inferred from the running checkout.
+pub const BUILD_PROVENANCE: &str = env!("GWZ_BUILD_PROVENANCE");
 
 pub fn version() -> &'static str {
     VERSION

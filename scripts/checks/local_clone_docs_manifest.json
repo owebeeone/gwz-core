@@ -46,7 +46,7 @@
         {"id": "guide_names_never_git_remotes", "value": "never become Git remotes"},
         {"id": "guide_import_ref_namespace", "value": "refs/gwz/local-imports/<transfer-id>"},
         {"id": "guide_merge_by_name", "value": "gwz merge --remote <name>"},
-        {"id": "guide_root_not_a_participant_by_default", "value": "The root is not a participant unless you select it."},
+        {"id": "guide_root_participates_by_default", "value": "Root and members participate by default."},
         {"id": "guide_no_archive", "value": "GWZ makes no archive of a lane it deletes"},
         {"id": "guide_force_is_a_loss_waiver", "value": "an operator's loss waiver, not crash recovery"},
         {"id": "guide_unsupported_message", "comment": "The refusal sentence the current build prints for a clean, bare or --from create; the page must show what the user actually sees.", "value": "is not supported by this gwz-core build"},
@@ -250,5 +250,5 @@
       "forbidden": []
     }
   ],
-  "retired": []
+  "retired": [{"id": "guide_root_not_a_participant_by_default", "reason": "Debt recovery adopts root-inclusive ordinary and family merge defaults; replaced by guide_root_participates_by_default."}]
 }

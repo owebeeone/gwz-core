@@ -50,11 +50,10 @@ where
     let narrowed = has_explicit_target_selection(request.meta.selection.as_ref());
 
     let targets = if all && narrowed {
-        let selected = resolve_targets(
+        let selected = resolve_action_targets(
             &manifest,
             request.meta.selection.as_ref(),
-            CommandDefaultTargets::All,
-            RootSelectionPolicy::Allow,
+            crate::ActionKind::Stage,
         )?;
         selected
             .into_iter()
@@ -208,12 +207,7 @@ impl SelectionScope {
         manifest: &artifact::ManifestArtifact,
         selection: Option<&crate::Selection>,
     ) -> ModelResult<Self> {
-        let selected = resolve_targets(
-            manifest,
-            selection,
-            CommandDefaultTargets::All,
-            RootSelectionPolicy::Allow,
-        )?;
+        let selected = resolve_action_targets(manifest, selection, crate::ActionKind::Stage)?;
         let mut root = false;
         let mut member_paths = BTreeSet::new();
         let mut labels = Vec::with_capacity(selected.len());
@@ -273,61 +267,11 @@ fn selected_open_merge_targets(
     record: merge::MergeStatusRecordView<'_>,
     selection: &crate::Selection,
 ) -> ModelResult<Vec<StageTarget>> {
-    let included = selection
-        .member_ids
-        .iter()
-        .chain(&selection.paths)
-        .chain(&selection.targets)
-        .collect::<Vec<_>>();
-    let excluded = selection.exclude_targets.iter().collect::<Vec<_>>();
-    let token_matches = |target_id: &str, token: &str| {
-        matches!(token, "@all" | "@default")
-            || target_id == token
-            || record
-                .participants()
-                .get(target_id)
-                .is_some_and(|participant| {
-                    participant.target_kind == merge::MergeTargetKind::Member
-                        && participant.path == token
-                })
-    };
-    let known = |token: &str| {
-        matches!(token, "@all" | "@default")
-            || record
-                .selected_targets()
-                .iter()
-                .any(|target_id| token_matches(target_id, token))
-    };
-    for token in included.iter().chain(&excluded) {
-        if !known(token) {
-            return Err(ModelError::new(
-                ErrorCode::OpenOperation,
-                format!(
-                    "merge '{}' is open; selected add target '{}' is not a frozen merge participant",
-                    record.merge_id(),
-                    token
-                ),
-            ));
-        }
-    }
-    let include_all = selection.all.unwrap_or(false)
-        || included.is_empty()
-        || included
-            .iter()
-            .any(|target| matches!(target.as_str(), "@all" | "@default"));
-    Ok(record
-        .selected_targets()
-        .iter()
-        .filter_map(|target_id| {
-            let participant = record.participants().get(target_id)?;
-            let selected = include_all
-                || included
-                    .iter()
-                    .any(|target| token_matches(target_id, target));
-            let rejected = excluded
-                .iter()
-                .any(|target| token_matches(target_id, target));
-            (selected && !rejected).then(|| StageTarget {
+    super::target_selection::resolve_open_merge_stage_ids(record, selection)?
+        .into_iter()
+        .map(|target_id| {
+            let participant = &record.participants()[&target_id];
+            Ok(StageTarget {
                 member_path: match participant.target_kind {
                     merge::MergeTargetKind::Member => Some(participant.path.clone()),
                     merge::MergeTargetKind::Root => None,
@@ -336,7 +280,7 @@ fn selected_open_merge_targets(
                 explicit: true,
             })
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]

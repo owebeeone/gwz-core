@@ -10,18 +10,21 @@ pub enum CredentialHelperPolicy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Git2Backend {
     pub(crate) credential_helpers: CredentialHelperPolicy,
+    pub(crate) identities: super::transport_support::identity::Selection,
 }
 
 impl Git2Backend {
     pub fn new() -> Self {
         Self {
             credential_helpers: CredentialHelperPolicy::AllowConfigured,
+            identities: Default::default(),
         }
     }
 
     pub fn without_credential_helpers() -> Self {
         Self {
             credential_helpers: CredentialHelperPolicy::Disabled,
+            identities: Default::default(),
         }
     }
 

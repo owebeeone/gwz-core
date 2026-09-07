@@ -80,7 +80,7 @@ LCM1.2 (lane C, 2026-09-06) the family branch of the merge wrapper
 and resolution it reads the addressed workspace's manifest and lock, the
 verb's selection and the open-merge envelope (read-only), takes the family
 lock, pairs every selected receiver with the named member's repository by
-lock member id (the root separately, when `@root` is selected explicitly),
+lock member id (the root separately, included by default and by `@all`),
 captures each source id, fetches it through the anonymous local transport
 into one fresh `refs/gwz/local-imports/<transfer-id>` per receiver,
 verifies the received vector (`gwz_local_import::prepare_import`), then

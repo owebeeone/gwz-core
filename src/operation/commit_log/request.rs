@@ -10,8 +10,8 @@ use crate::diff::{
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::{
-    CommandDefaultTargets, RootSelectionPolicy, SelectedTarget, assert_workspace_id, join_cwd,
-    lexical_normalize, owning_member, resolve_targets, resolve_workspace_root, route_pathspec,
+    SelectedTarget, assert_workspace_id, join_cwd, lexical_normalize, owning_member,
+    resolve_action_targets, resolve_workspace_root, route_pathspec,
 };
 
 use super::{
@@ -117,11 +117,10 @@ pub(super) fn open_request_histories(
     }
     let snapshots =
         read_referenced_snapshots(&root, &manifest.workspace.id, &snapshot_ids(&revision_args))?;
-    let selected = resolve_targets(
+    let selected = resolve_action_targets(
         &manifest,
         request.meta.selection.as_ref(),
-        CommandDefaultTargets::All,
-        RootSelectionPolicy::Allow,
+        crate::ActionKind::Log,
     )?;
     let plans = validate_selected_operands(
         selected_plans(&root, selected),

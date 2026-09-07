@@ -6,6 +6,54 @@ use crate::model::ErrorCode;
 
 use super::*;
 
+#[test]
+fn root_branch_create_switch_list_and_delete_preserve_member_scope() {
+    let temp = TempDir::new("root-branch-recovery");
+    let backend = crate::git::Git2Backend::without_credential_helpers();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "root-branch-source");
+    set_identity(temp.path());
+    backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+    backend.commit(temp.path(), "root baseline", false).unwrap();
+    let member_before = backend.head(&temp.path().join("remote")).unwrap();
+    let mut request = create_request("root-topic");
+    request.meta.selection = Some(crate::Selection {
+        targets: vec!["@root".into()],
+        ..Default::default()
+    });
+    request.switch_after_create = Some(true);
+    handle_branch(&backend, temp.path(), request.clone(), "op_root_branch").unwrap();
+    assert_eq!(
+        backend.head(temp.path()).unwrap().branch.as_deref(),
+        Some("root-topic")
+    );
+    assert_eq!(
+        backend.head(&temp.path().join("remote")).unwrap(),
+        member_before
+    );
+    assert!(
+        !read_lock(temp.path())
+            .unwrap()
+            .members
+            .contains_key("@root")
+    );
+    request.op = crate::BranchOp::List;
+    request.name = None;
+    request.start_ref = None;
+    request.switch_after_create = None;
+    handle_branch(&backend, temp.path(), request.clone(), "op_root_list").unwrap();
+    backend.switch_branch(temp.path(), "main").unwrap();
+    request.op = crate::BranchOp::Delete;
+    request.name = Some("root-topic".into());
+    handle_branch(&backend, temp.path(), request, "op_root_delete").unwrap();
+    assert!(
+        !backend
+            .branch_list(temp.path())
+            .unwrap()
+            .iter()
+            .any(|branch| branch.name == "root-topic")
+    );
+}
+
 fn branch_request(op: crate::BranchOp, name: Option<&str>) -> crate::BranchRequest {
     crate::BranchRequest {
         meta: request_meta(),
@@ -391,4 +439,50 @@ fn branch_merge_protocol_is_deprecated_before_workspace_resolution() {
 
     assert_eq!(error.code, ErrorCode::DeprecatedOperation);
     assert!(error.message.contains("first-class merge"));
+}
+
+#[test]
+fn mixed_root_branch_switch_refuses_changed_member_identity_before_effects() {
+    let temp = TempDir::new("root-branch-identity");
+    let backend = crate::git::Git2Backend::without_credential_helpers();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "root-branch-identity-source");
+    set_identity(temp.path());
+    backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+    backend.commit(temp.path(), "root baseline", false).unwrap();
+    let member = temp.path().join("remote");
+    backend.branch_create(&member, "source", "HEAD").unwrap();
+    backend
+        .branch_create(temp.path(), "source", "HEAD")
+        .unwrap();
+    backend.switch_branch(temp.path(), "source").unwrap();
+    let mut manifest = crate::artifact::read_manifest(temp.path()).unwrap();
+    manifest.members[0].source_id = "src_different".into();
+    crate::artifact::write_manifest(temp.path(), &manifest).unwrap();
+    crate::artifact::refresh_conf_integrity_marker(temp.path()).unwrap();
+    backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+    backend
+        .commit(temp.path(), "different source identity", false)
+        .unwrap();
+    backend.switch_branch(temp.path(), "main").unwrap();
+    let root_before = backend.head(temp.path()).unwrap();
+    let member_before = backend.head(&member).unwrap();
+    let mut request = create_request("new-topic");
+    request.start_ref = Some("source".into());
+    request.switch_after_create = Some(true);
+    request.meta.selection = Some(crate::Selection {
+        targets: vec!["@all".into()],
+        ..Default::default()
+    });
+    let error = handle_branch(&backend, temp.path(), request, "mixed-switch").unwrap_err();
+    assert_eq!(error.code, ErrorCode::SourceIdentityMismatch);
+    assert_eq!(backend.head(temp.path()).unwrap(), root_before);
+    assert_eq!(backend.head(&member).unwrap(), member_before);
+    for path in [temp.path(), member.as_path()] {
+        assert!(
+            backend
+                .read_ref(path, "refs/heads/new-topic")
+                .unwrap()
+                .is_none()
+        );
+    }
 }

@@ -25,6 +25,7 @@
 
 pub mod disposal;
 pub mod exclusions;
+mod generated_marker;
 pub mod git_config;
 pub mod install;
 pub mod inventory;

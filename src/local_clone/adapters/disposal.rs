@@ -25,8 +25,9 @@
 //! from the root's observation here: the runtime directory is GWZ's, not
 //! user data, and its coordination records reach the classifier through the
 //! GWZ evidence channel instead; a repository beneath is inspected on its
-//! own. Nothing else is filtered -- "ignored does not mean disposable" holds
-//! for every ignored entry a user put there.
+//! own. An unstaged canonical integrity marker has a separate byte-and-index
+//! proof in `generated_marker`, rechecked before removal. No other user work
+//! is filtered -- "ignored does not mean disposable" still holds.
 //!
 //! # One `check_history` call per witness store (lane H proposal H2)
 //!
@@ -85,6 +86,7 @@ pub struct CoreDisposalPorts {
     view: FamilyView,
     name: MemberName,
     open_merge: OpenMergeProbe,
+    generated_marker_head: Option<String>,
 }
 
 impl CoreDisposalPorts {
@@ -101,6 +103,7 @@ impl CoreDisposalPorts {
             view,
             name,
             open_merge,
+            generated_marker_head: None,
         }
     }
 
@@ -297,6 +300,10 @@ impl DisposalPorts for CoreDisposalPorts {
                 GwzEvidence::default()
             };
             let mut work = self.inspector.observe_work(&info);
+            if repository.key == RepoKey::Root {
+                self.generated_marker_head =
+                    super::generated_marker::discount_generated_marker(&repository.path, &mut work);
+            }
             strip_structural_work(&mut work, &structural_paths(repository, &repositories));
             observed.push(RepositoryEvidence {
                 key: repository.key.clone(),
@@ -389,6 +396,18 @@ impl DisposalPorts for CoreDisposalPorts {
     }
 
     fn remove_directory(&mut self, target: &Path) -> Result<(), RemovalFailure> {
+        if let Some(head) = &self.generated_marker_head
+            && super::generated_marker::admitted_marker_head(target).as_ref() != Some(head)
+        {
+            return Err(RemovalFailure {
+                error: PortError::Removal {
+                    path: target.to_path_buf(),
+                    detail: "generated marker evidence changed after observation; no files removed"
+                        .into(),
+                },
+                remaining: vec![target.to_path_buf()],
+            });
+        }
         remove_tree(target)
     }
 }

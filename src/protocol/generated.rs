@@ -2197,6 +2197,46 @@ impl OperationPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct RemoteSshIdentity {
+    pub remote: String,
+    pub private_key_path: String,
+}
+impl RemoteSshIdentity {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.remote.clone())),
+            (2, Cbor::Text(self.private_key_path.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            remote: c.try_get(1)?.try_text()?,
+            private_key_path: c.try_get(2)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TransportOptions {
+    pub default_identity: Option<String>,
+    pub remote_identities: Vec<RemoteSshIdentity>,
+}
+impl TransportOptions {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, match &self.default_identity { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (2, Cbor::Array(self.remote_identities.iter().map(|x| x.to_cbor()).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            default_identity: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            remote_identities: c.try_get(2)?.try_array()?.iter().map(|x| RemoteSshIdentity::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct RequestMeta {
     pub request_id: String,
     pub schema_version: String,
@@ -2205,6 +2245,7 @@ pub struct RequestMeta {
     pub policy: Option<OperationPolicy>,
     pub dry_run: Option<bool>,
     pub attribution: Option<OperationAttribution>,
+    pub transport: Option<TransportOptions>,
 }
 impl RequestMeta {
     pub fn to_cbor(&self) -> Cbor {
@@ -2216,6 +2257,7 @@ impl RequestMeta {
             (5, match &self.policy { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (6, match &self.dry_run { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (7, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (8, match &self.transport { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2227,6 +2269,7 @@ impl RequestMeta {
             policy: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(OperationPolicy::from_cbor(v)?) } },
             dry_run: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             attribution: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
+            transport: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(TransportOptions::from_cbor(v)?) } },
         })
     }
 }

@@ -45,11 +45,10 @@ where
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
-    let selected_targets = resolve_targets(
+    let selected_targets = resolve_action_targets(
         &manifest,
         request.meta.selection.as_ref(),
-        CommandDefaultTargets::All,
-        RootSelectionPolicy::Allow,
+        crate::ActionKind::Commit,
     )?;
     let mut selected = Vec::new();
     let mut commit_root_selected = false;

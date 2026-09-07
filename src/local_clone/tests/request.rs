@@ -9,6 +9,58 @@ use crate::workspace_ops::{
     handle_clone_local_workspace, handle_local_family, handle_merge_with_local_family,
 };
 
+#[test]
+fn whole_workspace_local_operations_reject_selection_before_effects() {
+    let temp = TempDir::new("local-selection-refusal");
+    let root = workspace(&temp);
+    let backend = Git2Backend::without_credential_helpers();
+    for selection in [
+        crate::Selection {
+            targets: vec!["@all".into()],
+            ..Default::default()
+        },
+        crate::Selection {
+            exclude_targets: vec!["@root".into()],
+            ..Default::default()
+        },
+        crate::Selection {
+            member_ids: vec!["mem_app".into()],
+            ..Default::default()
+        },
+        crate::Selection {
+            all: Some(true),
+            ..Default::default()
+        },
+    ] {
+        let mut clone = clone_request("A", None);
+        clone.meta.selection = Some(selection.clone());
+        let error = handle_clone_local_workspace(&backend, &root, clone, "op_select", &NullSink)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("selection"), "{error:?}");
+        for op in [
+            crate::LocalFamilyOp::List,
+            crate::LocalFamilyOp::Dispose,
+            crate::LocalFamilyOp::Disband,
+        ] {
+            let mut request = family_request(
+                op,
+                if op == crate::LocalFamilyOp::Dispose {
+                    Some("A")
+                } else {
+                    None
+                },
+            );
+            request.meta.selection = Some(selection.clone());
+            let error =
+                handle_local_family(&backend, &root, request, "op_select", &NullSink).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidRequest);
+            assert!(error.message.contains("selection"), "{error:?}");
+        }
+        assert!(family_files_absent(&root));
+    }
+}
+
 /// A **clean** clone request: since LCM1.1 a verbatim create runs for real
 /// (`local_clone::tests::create`), so the mode that still refuses as
 /// unsupported before any family file is the one this slice pins.

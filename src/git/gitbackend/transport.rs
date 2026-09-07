@@ -1,6 +1,6 @@
 use super::repository_support::{open_repo, pin_creation_time_filter_neutralization};
 use super::transport_support::{
-    fetch_options_with_progress, remote_callbacks, remote_fetch_options, remote_push_options,
+    fetch_options_with_progress, remote_callbacks, remote_fetch_options, remote_push_options, identity,
 };
 use super::*;
 
@@ -32,6 +32,7 @@ pub(super) fn clone_repo_with_progress(
     builder.with_checkout(checkout);
     builder.fetch_options(fetch_options_with_progress(
         backend.credential_helpers,
+        identity::for_remote(backend, None, Some("origin"), url)?,
         Some(progress),
     ));
     let repo = builder.clone(url, path).map_err(git_error)?;
@@ -49,11 +50,12 @@ pub(super) fn fetch(
 ) -> ModelResult<GitFetchResult> {
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
+    let identity = identity::for_remote(backend, Some(&repo), Some(remote), remote_handle.url().map_err(git_error)?)?;
     let refspecs: [&str; 0] = [];
     remote_handle
         .fetch(
             &refspecs,
-            Some(&mut remote_fetch_options(backend.credential_helpers)),
+            Some(&mut remote_fetch_options(backend.credential_helpers, identity)),
             Some("gwz fetch"),
         )
         .map_err(git_error)?;
@@ -70,11 +72,12 @@ pub(super) fn tag_fetch(
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
     // Fetch every tag, force-updating local copies.
+    let identity = identity::for_remote(backend, Some(&repo), Some(remote), remote_handle.url().map_err(git_error)?)?;
     let refspec = "+refs/tags/*:refs/tags/*";
     remote_handle
         .fetch(
             &[refspec],
-            Some(&mut remote_fetch_options(backend.credential_helpers)),
+            Some(&mut remote_fetch_options(backend.credential_helpers, identity)),
             Some("gwz tag fetch"),
         )
         .map_err(git_error)?;
@@ -90,10 +93,33 @@ pub(super) fn ls_remote(
 ) -> ModelResult<Vec<GitRemoteRef>> {
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
+    let identity = identity::for_remote(backend, Some(&repo), Some(remote), remote_handle.url().map_err(git_error)?)?;
+    advertised_refs(backend, &mut remote_handle, identity)
+}
+
+pub(super) fn ls_remote_url(
+    backend: &Git2Backend,
+    path: &Path,
+    url: &str,
+    remote_name: &str,
+    identity_repo: Option<&Path>,
+) -> ModelResult<Vec<GitRemoteRef>> {
+    let repo = open_repo(path)?;
+    let mut remote = repo.remote_anonymous(url).map_err(git_error)?;
+    let identity_repo = identity_repo.map(open_repo).transpose()?;
+    let identity = identity::for_remote(backend, identity_repo.as_ref(), Some(remote_name), url)?;
+    advertised_refs(backend, &mut remote, identity)
+}
+
+fn advertised_refs(
+    backend: &Git2Backend,
+    remote_handle: &mut git2::Remote<'_>,
+    identity: Option<identity::SelectedIdentity>,
+) -> ModelResult<Vec<GitRemoteRef>> {
     let connection = remote_handle
         .connect_auth(
             git2::Direction::Fetch,
-            Some(remote_callbacks(backend.credential_helpers)),
+            Some(remote_callbacks(backend.credential_helpers, identity)),
             None,
         )
         .map_err(git_error)?;
@@ -287,12 +313,31 @@ pub(super) fn push(
 ) -> ModelResult<GitPushResult> {
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
+    let url = remote_handle.pushurl().map_err(git_error)?.unwrap_or(remote_handle.url().map_err(git_error)?);
+    let identity = identity::for_remote(backend, Some(&repo), Some(remote), url)?;
+    let rejected = std::cell::RefCell::new(Vec::new());
     remote_handle
         .push(
             &[refspec],
-            Some(&mut remote_push_options(backend.credential_helpers)),
+            Some(&mut remote_push_options(
+                backend.credential_helpers,
+                identity,
+                &rejected,
+            )),
         )
-        .map_err(git_error)?;
+        .map_err(|error| {
+            if error.code() == git2::ErrorCode::NotFastForward {
+                ModelError::new(ErrorCode::RemoteRejected, error.message())
+            } else {
+                git_error(error)
+            }
+        })?;
+    if let Some((refname, message)) = rejected.borrow().first() {
+        return Err(ModelError::new(
+            ErrorCode::RemoteRejected,
+            format!("{remote} rejected {refname}: {message}"),
+        ));
+    }
     Ok(GitPushResult {
         remote: remote.to_owned(),
         refspec: refspec.to_owned(),

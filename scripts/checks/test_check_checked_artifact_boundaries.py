@@ -28,7 +28,7 @@ def run(source: Path) -> subprocess.CompletedProcess[str]:
 # and per-crate `Cargo.lock`) so the documented standalone Tier A command's
 # leftovers are not copied into every compiler probe.
 def copy_probe_dir(src: Path, dst: Path) -> None:
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "Cargo.lock"))
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "Cargo.lock", ".regen-venv", ".venv", "__pycache__"))
 
 
 def run_compiler_probe(mutator) -> subprocess.CompletedProcess[str]:
@@ -36,10 +36,10 @@ def run_compiler_probe(mutator) -> subprocess.CompletedProcess[str]:
     target = Path(temporary.name) / "gwz-core"
     # LCM1.0c: `crates/` holds the local clone family's path dependencies;
     # the compiler probe copies them so the mutated copy still resolves.
-    for name in (".github", "dev-docs", "scripts", "src", "tests", "protocol", "crates"):
+    for name in (".github", "dev-docs", "scripts", "src", "tests", "protocol", "crates", "build_support"):
         copy_probe_dir(ROOT / name, target / name)
     target.mkdir(exist_ok=True)
-    for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
+    for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml", "build.rs"):
         shutil.copy2(ROOT / name, target / name)
     mutator(target)
     env = os.environ.copy()
@@ -94,10 +94,13 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
             (src / "x" / "target").mkdir()
             (src / "x" / "target" / "marker").write_text("build", encoding="utf-8")
             (src / "x" / "Cargo.lock").write_text("lock", encoding="utf-8")
+            (src / ".regen-venv").mkdir()
+            (src / ".regen-venv" / "interpreter").write_text("tool", encoding="utf-8")
             dst = Path(scratch) / "copy"
             copy_probe_dir(src, dst)
             self.assertTrue((dst / "x" / "src" / "lib.rs").exists())
             self.assertTrue((dst / "x" / "Cargo.toml").exists())
+            self.assertFalse((dst / ".regen-venv").exists())
             self.assertFalse((dst / "x" / "target").exists())
             self.assertFalse((dst / "x" / "Cargo.lock").exists())
 
@@ -773,7 +776,7 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         target = Path(temporary.name) / "src"
         shutil.copytree(SOURCE, target)
-        shutil.copytree(ROOT / "protocol", target.parent / "protocol")
+        copy_probe_dir(ROOT / "protocol", target.parent / "protocol")
         shutil.copy2(ROOT / "Cargo.toml", target.parent / "Cargo.toml")
         return temporary, target
 

@@ -2,6 +2,20 @@
 
 Status: complete
 
+## Debt recovery requirements adopted 2026-09-06
+
+The accepted debt recovery amendment in `GWZDesign.md` supersedes conflicting
+earlier selection defaults. An untouched local lane MUST be disposable when all
+its history is preserved and its sole difference is a freshly proved canonical
+generated integrity marker. Genuine configuration, staged and uncertain work
+MUST remain protected, and clone installation MUST preserve source work.
+Default merge MUST include root and members; explicitly partial merge MUST stay
+partial. Supported root operations and selector refusals MUST use common core
+policy. Root publication MUST NOT proceed until the committed lock's member
+dependencies are available remotely. Explicit SSH identity MUST fail closed,
+without Git CLI fallback or core-owned credential storage. Local and CI evidence
+MUST identify the source tuple actually tested.
+
 GWZ Core is a standalone library for defining, materializing, observing, and
 operating on a workspace made from independently owned sources.
 

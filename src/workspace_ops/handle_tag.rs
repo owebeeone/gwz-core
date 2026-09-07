@@ -22,6 +22,8 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
+    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let backend = scoped_backend.as_ref().unwrap_or(backend);
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_access, root) = if request.op == crate::TagOp::List {
         (
@@ -44,12 +46,18 @@ where
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
-    let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
-
-    // Root tag behavior is not specified in the target-selection rollout. Local and remote
-    // tag operations span selected members only; explicit @root is rejected by selection.
+    let selected = resolve_locked_action_selection(
+        &manifest,
+        &lock,
+        request.meta.selection.as_ref(),
+        crate::ActionKind::Tag,
+    )?;
     let mut member_roots: Vec<PathBuf> = Vec::new();
     for member_id in &selected {
+        if member_id == "@root" {
+            member_roots.push(root.clone());
+            continue;
+        }
         let member = manifest
             .members
             .iter()
@@ -163,29 +171,28 @@ where
             if dry_run {
                 return ok_envelope(context);
             }
-            for member_root in &member_roots {
-                if !backend.is_repository(member_root)? {
-                    continue;
-                }
-                // libgit2 does NOT expand a glob refspec on push, so resolve concrete tags first:
-                // a named tag pushes itself (when present); no name pushes every tag — each via
-                // its own concrete refspec.
-                let to_push: Vec<String> = match &request.name {
-                    Some(name) => {
-                        if backend.tag_list(member_root)?.contains(name) {
-                            vec![name.clone()]
-                        } else {
-                            Vec::new()
-                        }
-                    }
-                    None => backend.tag_list(member_root)?,
+            // Capture every tag object before the first transfer. Root checks below
+            // inspect that captured object even if a local tag moves meanwhile.
+            let plans = plan_tag_pushes(backend, &member_roots, request.name.as_deref())?;
+            for (member_root, refspec) in plans {
+                let refspec = if member_root == root {
+                    super::publication::checked_root_request(
+                        backend,
+                        &root,
+                        &crate::PushRequest {
+                            meta: request.meta.clone(),
+                            remote: Some(remote.into()),
+                            refspec: Some(refspec),
+                        },
+                    )?
+                    .refspec
+                    .expect("checked root publication has a refspec")
+                } else {
+                    refspec
                 };
-                for git_name in to_push {
-                    let refspec = format!("refs/tags/{git_name}:refs/tags/{git_name}");
-                    backend
-                        .push(member_root, remote, &refspec)
-                        .map_err(tag_error)?;
-                }
+                backend
+                    .push(&member_root, remote, &refspec)
+                    .map_err(tag_error)?;
             }
             ok_envelope(context)
         }
@@ -255,4 +262,33 @@ fn ok_envelope(context: crate::operation::OperationContext) -> ModelResult<crate
         response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
         tags: None,
     })
+}
+
+/// Enumerate concrete tag objects without transferring anything. Keep annotated
+/// tag objects intact and preserve the resolver's member-before-root ordering.
+pub(super) fn plan_tag_pushes<B: GitBackend>(
+    backend: &B,
+    repos: &[PathBuf],
+    name: Option<&str>,
+) -> ModelResult<Vec<(PathBuf, String)>> {
+    let mut plans = Vec::new();
+    for repo in repos {
+        if !backend.is_repository(repo)? {
+            continue;
+        }
+        for tag in backend.tag_list(repo)? {
+            if name.is_some_and(|name| name != tag) {
+                continue;
+            }
+            let reference = format!("refs/tags/{tag}");
+            let object = backend.read_ref(repo, &reference)?.ok_or_else(|| {
+                ModelError::new(
+                    ErrorCode::GitCommandFailed,
+                    "tag disappeared while preparing publication; retry",
+                )
+            })?;
+            plans.push((repo.clone(), format!("{object}:{reference}")));
+        }
+    }
+    Ok(plans)
 }

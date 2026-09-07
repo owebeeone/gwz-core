@@ -21,6 +21,8 @@ use crate::workspace_ops::{
     handle_merge_with_events, handle_merge_with_local_family,
 };
 
+mod recovery;
+
 /// A real family: a workspace root with the given members, each with one
 /// commit, registered through the public handlers, and its verbatim clone
 /// `A` at the root's sibling `root-A`.
@@ -165,7 +167,16 @@ fn import_refs(path: &Path) -> Vec<String> {
 
 fn family_merge_request(token: &str, source_ref: Option<&str>) -> crate::MergeRequest {
     crate::MergeRequest {
-        meta: meta("req-family-merge"),
+        // These import/recovery scenarios deliberately exercise members only.
+        // The default root-inclusive lifecycle is covered in recovery.rs.
+        meta: crate::RequestMeta {
+            selection: Some(crate::Selection {
+                targets: vec!["@all".into()],
+                exclude_targets: vec!["@root".into()],
+                ..Default::default()
+            }),
+            ..meta("req-family-merge")
+        },
         op: crate::MergeOp::Start,
         source_ref: source_ref.map(str::to_owned),
         local_source_name: Some(token.to_owned()),
@@ -286,6 +297,8 @@ fn a_family_merge_by_name_integrates_the_clones_commits_through_a_retained_impor
         "{message}"
     );
     assert!(message.contains("never pruned"), "{message}");
+    assert!(message.contains("root history was not integrated"), "{message}");
+    assert!(message.contains("select @root"), "{message}");
 
     // The receiver holds the work, the retained ref and no remote.
     assert_eq!(head(backend, &family.member("app")), in_clone);
@@ -765,6 +778,10 @@ fn an_aborted_family_merge_keeps_its_import_ref_which_holds_the_objects_through_
         crate::MergeRequest {
             meta: crate::RequestMeta {
                 dry_run: Some(true),
+                selection: Some(crate::Selection {
+                    targets: vec!["mem_app".into()],
+                    ..Default::default()
+                }),
                 ..meta("req-plain-merge")
             },
             op: crate::MergeOp::Start,
@@ -961,7 +978,13 @@ fn an_ordinary_merge_is_the_engines_own_answer_and_touches_no_family_state() {
         })
         .collect();
     let request = crate::MergeRequest {
-        meta: meta("req-ordinary-merge"),
+        meta: crate::RequestMeta {
+            selection: Some(crate::Selection {
+                targets: vec!["mem_app".into()],
+                ..Default::default()
+            }),
+            ..meta("req-ordinary-merge")
+        },
         op: crate::MergeOp::Start,
         source_ref: Some("feature/x".to_owned()),
         ..Default::default()

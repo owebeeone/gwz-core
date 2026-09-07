@@ -2,6 +2,13 @@ use super::*;
 
 pub(super) fn request(dry_run: bool) -> crate::MergeRequest {
     let mut meta = request_meta();
+    // Member lifecycle fixtures have no source branch in the root repository.
+    // Root and mixed scenarios replace this explicit selection themselves.
+    meta.selection = Some(crate::Selection {
+        targets: vec!["@all".into()],
+        exclude_targets: vec!["@root".into()],
+        ..Default::default()
+    });
     meta.dry_run = dry_run.then_some(true);
     crate::MergeRequest {
         meta,

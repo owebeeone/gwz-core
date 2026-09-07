@@ -176,6 +176,15 @@ pub fn conf_hand_edit_error(paths: &[String]) -> ModelError {
 /// blesses exactly the bytes that are there now. Writing no marker at all when neither
 /// conf file exists keeps a bare directory from sprouting one.
 pub fn refresh_conf_integrity_marker(root: &Path) -> ModelResult<()> {
+    let Some(contents) = canonical_conf_integrity_marker(root)? else {
+        return Ok(());
+    };
+    super::write_atomic(&root.join(CONF_INTEGRITY_MARKER_PATH), contents)
+}
+
+/// Render the derived marker without changing the workspace. Consumers still
+/// need independent evidence that the underlying configuration is protected.
+pub(crate) fn canonical_conf_integrity_marker(root: &Path) -> ModelResult<Option<String>> {
     let mut files = BTreeMap::new();
     for relative in GUARDED_CONF_PATHS {
         if let Some(digest) = file_digest(&root.join(relative))? {
@@ -183,7 +192,7 @@ pub fn refresh_conf_integrity_marker(root: &Path) -> ModelResult<()> {
         }
     }
     if files.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let marker = ConfIntegrityMarker {
         schema: CONF_INTEGRITY_SCHEMA.to_owned(),
@@ -195,10 +204,7 @@ pub fn refresh_conf_integrity_marker(root: &Path) -> ModelResult<()> {
             format!("failed to serialize the conf-integrity marker: {err}"),
         )
     })?;
-    super::write_atomic(
-        &root.join(CONF_INTEGRITY_MARKER_PATH),
-        format!("{MARKER_BANNER}{yaml}"),
-    )
+    Ok(Some(format!("{MARKER_BANNER}{yaml}")))
 }
 
 fn read_marker(root: &Path) -> Result<Option<ConfIntegrityMarker>, String> {

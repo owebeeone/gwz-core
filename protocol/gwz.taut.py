@@ -53,6 +53,10 @@ SCHEMA = schema(
         method("ls", role="in",
                params=Params(request=Ref.LsRequest),
                out=Ref.LsResponse),
+        # Shared target-list schema, resolved with Forall policy; never executes.
+        method("resolve_forall_targets", role="in",
+               params=Params(request=Ref.LsRequest),
+               out=Ref.LsResponse),
         # Capture selected member state by snapshot id.
         method("snapshot", role="in",
                params=Params(request=Ref.SnapshotRequest),
@@ -1003,6 +1007,14 @@ SCHEMA = schema(
         # be parsed are bounded only by `concurrency`.
         max_connections_per_host=F(8, INT, optional=True)),
 
+    # Invocation-scoped SSH authority, distinct from descriptive attribution.
+    RemoteSshIdentity=Msg(
+        remote=F(1, STR),
+        private_key_path=F(2, STR)),
+    TransportOptions=Msg(
+        default_identity=F(1, STR, optional=True),
+        remote_identities=F(2, List(Ref.RemoteSshIdentity))),
+
     # Common operation metadata supplied by every request.
     RequestMeta=Msg(
         # Caller-owned correlation id; echoed in every response/event.
@@ -1014,7 +1026,8 @@ SCHEMA = schema(
         policy=F(5, Ref.OperationPolicy, optional=True),
         # Plan without mutation when supported by the handler.
         dry_run=F(6, BOOL, optional=True),
-        attribution=F(7, Ref.OperationAttribution, optional=True)),
+        attribution=F(7, Ref.OperationAttribution, optional=True),
+        transport=F(8, Ref.TransportOptions, optional=True)),
 
     # Common operation metadata returned by responses.
     ResponseMeta=Msg(

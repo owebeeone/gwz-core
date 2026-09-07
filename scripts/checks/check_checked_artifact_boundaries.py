@@ -17,6 +17,12 @@ ROOT = Path(__file__).resolve().parents[2]
 # target is checked semantically below; each exact parent then selects the next
 # canonical module. Hashing only the descendant tree would prove resident
 # bytes without proving that rustc actually loads them.
+# Debt recovery (2026-09-07): measured against HEAD before advancing these
+# four pins. The complete diff adds only BUILD_PROVENANCE; publication and
+# target_listing registrations plus resolve_forall_targets; the crate-private
+# canonical marker renderer re-export; and read-only ls_remote_url delegation.
+# No protected v1 subtree, compiler route, or write-capability export changed.
+# See gwz-dev/dev-docs/GwzDebtRecoveryContracts.md and the recovery ledger.
 PROTECTED_COMPILER_ROOT_DIGESTS = {
     # M5d step (3) (2026-09-03): one added line, `mod verified_write;` -- the
     # NEUTRAL home of the merge record's raw publication primitive on a
@@ -38,9 +44,9 @@ PROTECTED_COMPILER_ROOT_DIGESTS = {
     # unchanged. Later lanes own package directories under crates/ only; a
     # further protected edit still comes through lane C with its own reason.
     #   was: 6928a62dfe4ab90eb8f7e69b60544b7be9942afb184233f8277af73c7896e423
-    "src/lib.rs": "d322c0629cb60417f5ae9bd0e123e7c6516d82c909f820b89ba31eced9c718af",
+    "src/lib.rs": "7609b870f4ee384a5799ed1900391809890d5443d69f6071536d270966f6dc8a",
     #   was: 663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124
-    "src/workspace_ops/mod.rs": "8ade3832fae05070388bce760a9ea8bafa925fc4720eb7e3c20b31b5259e4de9",
+    "src/workspace_ops/mod.rs": "457c78a7e2091d0500658abacc4769980d6880f15624b650db074dccc7565f06",
     # M5d close (2026-09-03): the v0 lifecycle re-exports left; open-record
     # occupancy and the retained archive/GC store are what remain.
     # M5d(10): one added row, `#[cfg(test)] pub(crate) use
@@ -110,7 +116,7 @@ PROTECTED_SOURCE_DIGESTS = {
     # the capability-free inventory counts its CALLERS, so converting THIS file would
     # convert every carved `:277`/`:278`/`:279` writer while moving no count there
     # (round 1 [P3-5]). Not a boundary module -- pinned solely as that backstop.
-    "artifact/mod.rs": "22bce8182daf6865512c639957dcb16d3c91af15972bb34b25e9fdd9ae546d11",
+    "artifact/mod.rs": "b388a557c3fd9118f71f58e2cd6bde5373ff1dd311e73d17090cba37c708c90f",
     "checked_artifact/bootstrap.rs": "f098ff7a655f7506d47b7e9088c21354f6b918e3bd96e75b301e205189e618f5",
     "checked_artifact/bootstrap/runtime/mod.rs": "7fd727db2ff621f525e232e3e43ad15a020c07fcf6be8f8ab6048a882cc05c92",
     # R2-E E4.1 commit (b) re-pins this entry for precondition 1: the SUBSTRATE
@@ -164,7 +170,7 @@ PROTECTED_SOURCE_DIGESTS = {
     # nothing. No observer, preservation or authority row moves; the
     # concrete preservation observer still terminates in its protected leaf.
     #   was: b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb
-    "git/gitbackend.rs": "e444155a019b75fc1bebcfa4af97a77aec13c1c40780f883d237b493c1f9aae1",
+    "git/gitbackend.rs": "d321fedfdd8b34b0ea96cf549cad48aa30518b8c017ae1592bdf065aa92a37cd",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "b45057e105a74d50c5163886d3346e9ea859464971c4cd03fc49392c5b67bac5",
     # M5d close: v0 preserve arms left; the v1 owner plan and its artifacts

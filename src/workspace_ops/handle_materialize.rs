@@ -43,7 +43,12 @@ where
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
-    let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
+    let selected = resolve_locked_action_selection(
+        &manifest,
+        &lock,
+        request.meta.selection.as_ref(),
+        crate::ActionKind::Snapshot,
+    )?;
     let members = snapshot_member_map(
         backend,
         &root,
@@ -104,7 +109,12 @@ where
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
-    let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
+    let selected = resolve_locked_action_selection(
+        &manifest,
+        &lock,
+        request.meta.selection.as_ref(),
+        crate::ActionKind::Capture,
+    )?;
     let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
     // Everything above is observation; a dry run stops before the lock rewrite.
     if request.meta.dry_run.unwrap_or(false) {
@@ -146,6 +156,8 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
+    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let backend = scoped_backend.as_ref().unwrap_or(backend);
     let (_guard, root) = guarded_workspace_root(
         start,
         request.meta.workspace.as_ref(),
@@ -225,7 +237,12 @@ where
     // selection still validates against the tagged set (a selected-but-untagged member errors).
     let selected = match (&request.target.kind, request.meta.selection.as_ref()) {
         (crate::MaterializeTargetKind::Tag, None) => target_lock.members.keys().cloned().collect(),
-        _ => resolve_locked_selection(manifest, &target_lock, request.meta.selection.as_ref())?,
+        _ => resolve_locked_action_selection(
+            manifest,
+            &target_lock,
+            request.meta.selection.as_ref(),
+            crate::ActionKind::Materialize,
+        )?,
     };
     let destructive_allowed = request
         .meta
@@ -417,7 +434,12 @@ where
         .as_ref()
         .ok_or_else(|| invalid("branch target requires a name"))?;
     let lock = artifact::read_lock(&root)?;
-    let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
+    let selected = resolve_locked_action_selection(
+        &manifest,
+        &lock,
+        request.meta.selection.as_ref(),
+        crate::ActionKind::Materialize,
+    )?;
     let plans = branch_switch_preflight(backend, &root, &manifest, &lock, &selected, branch)?;
     if request.meta.dry_run.unwrap_or(false) {
         return Ok(crate::MaterializeResponse {
@@ -470,6 +492,9 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::CloneWorkspace(request.clone()).context(operation_id.into())?;
+    let start = std::env::current_dir().map_err(|_| ModelError::new(ErrorCode::IoError, "cannot resolve clone invocation directory"))?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
+    let backend = scoped_backend.as_ref().unwrap_or(backend);
     if request.meta.dry_run.unwrap_or(false) {
         return Err(ModelError::new(
             ErrorCode::InvalidRequest,
@@ -606,6 +631,8 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::PullSnapshot(request.clone()).context(operation_id.into())?;
+    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let backend = scoped_backend.as_ref().unwrap_or(backend);
     let materialize = crate::MaterializeRequest {
         meta: request.meta,
         target: crate::MaterializeTarget {
@@ -632,23 +659,6 @@ where
         attribution: context.attribution.as_ref().map(Into::into),
     };
     Ok(crate::PullSnapshotResponse { response })
-}
-
-pub(crate) fn resolve_locked_selection(
-    manifest: &ManifestArtifact,
-    lock: &LockArtifact,
-    selection: Option<&crate::Selection>,
-) -> ModelResult<Vec<String>> {
-    let selected = resolve_manifest_selection(manifest, selection)?;
-    for member_id in &selected {
-        if !lock.members.contains_key(member_id) {
-            return Err(ModelError::new(
-                ErrorCode::LockNotFound,
-                format!("lock record missing for member '{member_id}'"),
-            ));
-        }
-    }
-    Ok(selected)
 }
 
 pub(crate) fn observed_member_map<B: GitBackend>(

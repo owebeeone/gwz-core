@@ -483,7 +483,11 @@ where
     )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let selected = resolve_manifest_selection(&manifest, request.meta.selection.as_ref())?;
+    let selected = resolve_action_ids(
+        &manifest,
+        request.meta.selection.as_ref(),
+        crate::ActionKind::RepoSync,
+    )?;
 
     let mut plans = Vec::new();
     let mut responses = Vec::new();

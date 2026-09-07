@@ -98,6 +98,31 @@ fn ids(response: &crate::LsResponse) -> Vec<String> {
 }
 
 #[test]
+fn forall_resolves_root_and_members_with_its_own_action() {
+    let temp = TempDir::new("forall-target-service");
+    write_workspace(
+        temp.path(),
+        vec![
+            member("mem_app", "repos/app"),
+            member("mem_lib", "repos/lib"),
+        ],
+        &["mem_app"],
+    );
+    let mut request = ls_request(&[], false);
+    request.meta.selection = Some(crate::Selection {
+        targets: vec!["@all".into()],
+        ..Default::default()
+    });
+    let listed = resolve_forall_targets(temp.path(), request, "op_forall_targets").unwrap();
+    assert_eq!(listed.response.meta.action, crate::ActionKind::Forall);
+    assert_eq!(ids(&listed), ["@root", "mem_app"]);
+    assert_eq!(
+        listed.members.as_ref().unwrap()[0].target_kind,
+        Some(crate::TargetKind::Root)
+    );
+}
+
+#[test]
 fn lists_materialized_members_by_default() {
     let temp = TempDir::new("ls-default");
     write_workspace(

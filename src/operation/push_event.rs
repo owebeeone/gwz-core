@@ -156,7 +156,31 @@ impl OperationRequest {
             Self::CloneLocalWorkspace(request) => (ActionKind::CloneLocalWorkspace, &request.meta),
             Self::LocalFamily(request) => (ActionKind::LocalFamily, &request.meta),
         };
+        let transport_supported = matches!(self,
+            Self::Push(_) | Self::PullHead(_) | Self::PullSnapshot(_) |
+            Self::CloneWorkspace(_) | Self::CloneRepoMember(_) |
+            Self::InitFromSources(_) | Self::Materialize(_))
+            || matches!(self, Self::Tag(request) if matches!(request.op, crate::TagOp::Push | crate::TagOp::Fetch) || request.remote.is_some());
+        if crate::git::has_transport_options(meta.transport.as_ref()) && !transport_supported {
+            return Err(model::ModelError::new(model::ErrorCode::UnsupportedOperation,
+                "SSH identity options require a network operation; this operation does not use network credentials"));
+        }
         OperationContext::from_meta(operation_id.into(), action, meta)
+    }
+}
+
+#[cfg(test)]
+mod transport_selection_tests {
+    #[test]
+    fn local_requests_refuse_nonempty_transport_options() {
+        let request = super::OperationRequest::Status(crate::StatusRequest {
+            meta: crate::RequestMeta {
+                transport: Some(crate::TransportOptions { default_identity: Some("unused-key".into()), ..Default::default() }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(request.context("local-auth-refusal").is_err());
     }
 }
 
@@ -166,6 +190,13 @@ impl OperationContext {
         action: ActionKind,
         meta: &crate::RequestMeta,
     ) -> model::ModelResult<Self> {
+        if crate::git::has_transport_options(meta.transport.as_ref()) && !matches!(action,
+            ActionKind::Push | ActionKind::PullHead | ActionKind::PullSnapshot |
+            ActionKind::CloneWorkspace | ActionKind::CloneRepoMember |
+            ActionKind::InitFromSources | ActionKind::Materialize | ActionKind::Tag) {
+            return Err(model::ModelError::new(model::ErrorCode::UnsupportedOperation,
+                "SSH identity options require a network operation"));
+        }
         let attribution = meta
             .attribution
             .as_ref()

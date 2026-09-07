@@ -10,10 +10,11 @@ pub(super) fn handle_stash_push<B>(
 where
     B: GitBackend,
 {
-    let selected = resolve_locked_selection(
+    let selected = resolve_locked_action_selection(
         &manifest,
         &artifact::read_lock(&root)?,
         request.meta.selection.as_ref(),
+        crate::ActionKind::Stash,
     )?;
     let include_ignored = request.include_ignored.unwrap_or(false);
     let include_untracked = request.include_untracked.unwrap_or(false) || include_ignored;
@@ -78,11 +79,7 @@ where
             bundle.members[index].participation = StashParticipation::Empty;
             bundle.members[index].push_lifecycle = StashPushLifecycle::Empty;
             bundle.members[index].restore_state = StashRestoreState::Noop;
-            responses.push(stash_member_response(
-                plan.member,
-                crate::MemberStatus::Noop,
-                None,
-            ));
+            responses.push(stash_member_response(plan, crate::MemberStatus::Noop, None));
             stash::write_bundle(&root, &bundle)?;
             continue;
         }
@@ -99,11 +96,7 @@ where
                 bundle.members[index].native_stash_object_id = Some(result.object_id);
                 bundle.members[index].native_stash_display_ref =
                     Some(format!("stash@{{{}}}", native.index));
-                responses.push(stash_member_response(
-                    plan.member,
-                    crate::MemberStatus::Ok,
-                    None,
-                ));
+                responses.push(stash_member_response(plan, crate::MemberStatus::Ok, None));
             }
             Err(error) => {
                 bundle.members[index].push_lifecycle = StashPushLifecycle::Failed;
@@ -113,7 +106,7 @@ where
                     message: error.message.clone(),
                 });
                 responses.push(stash_member_response(
-                    plan.member,
+                    plan,
                     crate::MemberStatus::Failed,
                     Some(error),
                 ));
@@ -143,7 +136,9 @@ where
 {
     let selected = resolve_stash_selection(&manifest, lock, request.meta.selection.as_ref())?;
     let selected_set = selected.iter().cloned().collect::<BTreeSet<_>>();
-    let include_root = request.meta.selection.is_none() || selected_set.contains("@root");
+    let include_root = !super::super::target_selection::has_explicit_target_selection(
+        request.meta.selection.as_ref(),
+    ) || selected_set.contains("@root");
     let selected_members = selected_set
         .iter()
         .filter(|target_id| target_id.as_str() != "@root")
@@ -201,7 +196,9 @@ pub(super) fn handle_stash_restore<B>(
 where
     B: GitBackend,
 {
-    let explicit_selection = request.meta.selection.is_some();
+    let explicit_selection = super::super::target_selection::has_explicit_target_selection(
+        request.meta.selection.as_ref(),
+    );
     let mut bundle = resolve_requested_bundle(&root, request.stash_id.as_deref(), request.op)?;
     let selected = if explicit_selection {
         resolve_stash_selection(&manifest, lock, request.meta.selection.as_ref())?
@@ -335,37 +332,50 @@ where
     ))
 }
 
-pub(super) struct StashMemberPlan<'a> {
-    pub(super) member: &'a ManifestMember,
+pub(super) struct StashMemberPlan {
+    pub(super) id: String,
+    pub(super) path: String,
+    pub(super) kind: crate::TargetKind,
     pub(super) root: PathBuf,
     pub(super) status: GitStatus,
     pub(super) branch: Option<String>,
     pub(super) head: Option<String>,
 }
 
-fn stash_member_plans<'a, B: GitBackend>(
+fn stash_member_plans<B: GitBackend>(
     backend: &B,
     root: &Path,
-    manifest: &'a ManifestArtifact,
+    manifest: &ManifestArtifact,
     selected: &[String],
     include_ignored: bool,
-) -> ModelResult<Vec<StashMemberPlan<'a>>> {
+) -> ModelResult<Vec<StashMemberPlan>> {
     let mut plans = Vec::with_capacity(selected.len());
     for member_id in selected {
-        let member = manifest_member(manifest, member_id)?;
-        ensure_git_member(member)?;
-        let member_root = root.join(&member.path);
+        let (id, path, kind) = if member_id == "@root" {
+            ("@root".to_owned(), ".".to_owned(), crate::TargetKind::Root)
+        } else {
+            let member = manifest_member(manifest, member_id)?;
+            ensure_git_member(member)?;
+            (
+                member.id.clone(),
+                member.path.clone(),
+                crate::TargetKind::Member,
+            )
+        };
+        let member_root = root.join(&path);
         if !backend.is_repository(&member_root)? {
             return Err(ModelError::new(
                 ErrorCode::MemberNotFound,
-                format!("selected member '{}' is not materialized", member.id),
+                format!("selected target '{id}' is not materialized"),
             ));
         }
         let head = backend.head(&member_root)?;
         let status =
             backend.status_with_options(&member_root, GitStatusOptions { include_ignored })?;
         plans.push(StashMemberPlan {
-            member,
+            id,
+            path,
+            kind,
             root: member_root,
             status,
             branch: head.branch,

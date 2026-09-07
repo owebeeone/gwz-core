@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# DR-5 (2026-09-07): measured additive RemoteSshIdentity, TransportOptions,
+# and optional RequestMeta.transport slot 8. Removing exactly these additions
+# reproduced prior projection 6fd2f8829a920d6e4264a102f995a28ccc5d3dc47b25c66eca98980ad5488ca7.
 """Prove the gwz-log schema growth leaves every pre-log wire shape unchanged."""
 
 from __future__ import annotations
@@ -105,7 +108,11 @@ from taut.ir.load import load_schema
 # added lines being the three enum members as map keys; the previous pin
 # below reproduced exactly on the pre-allocation tree (gwz-core 6d1a28e).
 #   was: ba55594fa54123b865e06eb4bedfbf1eba4c9f52467a468831f9b699df0763a2
-PRE_LOG_WIRE_SHA256 = "e99ce51a85b439fb03bb43df5beb3a33156048b8212d3f2fc609ba2db163db32"
+# Debt recovery DR-3 (2026-09-07) adds only GwzCore.resolve_forall_targets,
+# reusing LsRequest/LsResponse. Measured: removing that single method from the
+# new IR reproduces e99ce51a85b439fb03bb43df5beb3a33156048b8212d3f2fc609ba2db163db32
+# exactly. No message, enum, field or existing method changes.
+PRE_LOG_WIRE_SHA256 = "09f98f645608b84b2eb9dbaede79f2b0d3750e8e6c337f2b254eca2b0da990ce"
 LOG_METHODS = {"log", "log.output"}
 
 

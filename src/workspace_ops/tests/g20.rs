@@ -9,6 +9,51 @@ use super::*;
 
 mod m3_review;
 
+#[test]
+fn root_stash_push_list_and_pop_use_the_coordinated_bundle() {
+    let temp = TempDir::new("root-stash-recovery");
+    let backend = crate::git::Git2Backend::without_credential_helpers();
+    let _fixture = init_one_member_workspace(temp.path(), &backend, "root-stash-source");
+    set_identity(temp.path());
+    fs::write(temp.path().join("root.txt"), "before\n").unwrap();
+    backend
+        .stage_paths(temp.path(), &["gwz.conf", "root.txt"])
+        .unwrap();
+    backend.commit(temp.path(), "root baseline", false).unwrap();
+    fs::write(temp.path().join("root.txt"), "saved root work\n").unwrap();
+    let mut request = stash_request(crate::StashOp::Push, "stash_root_recovery");
+    request.meta.selection = Some(crate::Selection {
+        targets: vec!["@root".into()],
+        ..Default::default()
+    });
+    let pushed = handle_stash(&backend, temp.path(), request.clone(), "op_root_stash").unwrap();
+    assert_eq!(
+        pushed.response.members.single().target_kind,
+        Some(crate::TargetKind::Root)
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("root.txt")).unwrap(),
+        "before\n"
+    );
+    assert_eq!(backend.stash_list(temp.path()).unwrap().len(), 1);
+    assert!(
+        backend
+            .stash_list(&temp.path().join("remote"))
+            .unwrap()
+            .is_empty()
+    );
+    request.op = crate::StashOp::List;
+    handle_stash(&backend, temp.path(), request.clone(), "op_list_root_stash").unwrap();
+    request.op = crate::StashOp::Pop;
+    request.meta.selection = Some(crate::Selection::default());
+    handle_stash(&backend, temp.path(), request, "op_pop_root_stash").unwrap();
+    assert_eq!(
+        fs::read_to_string(temp.path().join("root.txt")).unwrap(),
+        "saved root work\n"
+    );
+    assert!(backend.stash_list(temp.path()).unwrap().is_empty());
+}
+
 fn stash_request(op: crate::StashOp, stash_id: &str) -> crate::StashRequest {
     crate::StashRequest {
         meta: request_meta(),

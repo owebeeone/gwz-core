@@ -52,7 +52,12 @@ where
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let lock = artifact::read_lock(&root)?;
-    let selected = resolve_locked_selection(&manifest, &lock, request.meta.selection.as_ref())?;
+    let selected = resolve_locked_action_selection(
+        &manifest,
+        &lock,
+        request.meta.selection.as_ref(),
+        crate::ActionKind::Branch,
+    )?;
     let repos = selected_member_repos(backend, &root, &manifest, &selected)?;
 
     match request.op {
@@ -67,7 +72,7 @@ where
 struct BranchRepo {
     member_id: String,
     member_path: String,
-    member: ManifestMember,
+    member: Option<ManifestMember>,
     path: PathBuf,
 }
 
@@ -86,6 +91,21 @@ fn selected_member_repos<B: GitBackend>(
 ) -> ModelResult<Vec<BranchRepo>> {
     let mut repos = Vec::with_capacity(selected.len());
     for member_id in selected {
+        if member_id == "@root" {
+            if !backend.is_repository(root)? {
+                return Err(ModelError::new(
+                    ErrorCode::MemberNotFound,
+                    "workspace root is not a Git repository",
+                ));
+            }
+            repos.push(BranchRepo {
+                member_id: "@root".into(),
+                member_path: ".".into(),
+                member: None,
+                path: root.to_path_buf(),
+            });
+            continue;
+        }
         let member = manifest_member(manifest, member_id)?;
         let path = root.join(&member.path);
         if !path.exists() || !backend.is_repository(&path)? {
@@ -97,7 +117,7 @@ fn selected_member_repos<B: GitBackend>(
         repos.push(BranchRepo {
             member_id: member.id.clone(),
             member_path: member.path.clone(),
-            member: member.clone(),
+            member: Some(member.clone()),
             path,
         });
     }
@@ -152,6 +172,9 @@ fn create_branch<B: GitBackend>(
     let start_ref = request.start_ref.as_deref().unwrap_or("HEAD");
     let switch_after_create = request.switch_after_create.unwrap_or(false);
     let plans = create_preflight(backend, repos, &branch, start_ref, switch_after_create)?;
+    if switch_after_create {
+        validate_root_branch_participants(backend, root, &plans)?;
+    }
 
     if request.meta.dry_run.unwrap_or(false) {
         let summaries = plans
@@ -183,7 +206,7 @@ fn create_branch<B: GitBackend>(
     let mut summaries = Vec::with_capacity(plans.len());
     let mut observed_states = BTreeMap::new();
     for plan in &plans {
-        let created = match backend.branch_create(&plan.repo.path, &branch, start_ref) {
+        let created = match backend.branch_create(&plan.repo.path, &branch, &plan.start_commit) {
             Ok(result) => result.created,
             Err(error) => {
                 rollback_created_branches(backend, &created_by_this_op, &branch);
@@ -201,8 +224,10 @@ fn create_branch<B: GitBackend>(
             }
             let head = backend.head(&plan.repo.path)?;
             let status = backend.status(&plan.repo.path)?;
-            let observed = resolved_member(&plan.repo.member, &head, &status);
-            observed_states.insert(plan.repo.member_id.clone(), observed.clone());
+            if let Some(member) = &plan.repo.member {
+                let observed = resolved_member(member, &head, &status);
+                observed_states.insert(plan.repo.member_id.clone(), observed);
+            }
             summaries.push(summary_from_head(
                 &plan.repo,
                 crate::BranchActionResult::Switched,
@@ -224,7 +249,7 @@ fn create_branch<B: GitBackend>(
         }
     }
 
-    let response_members = if switch_after_create {
+    let response_members = if switch_after_create && !observed_states.is_empty() {
         let manifest = artifact::read_manifest(root)?;
         let mut next = read_lock_or_empty(root, &manifest.workspace.id)?;
         for (member_id, observed) in &observed_states {
@@ -295,6 +320,50 @@ fn delete_branch<B: GitBackend>(
         summaries,
         Vec::new(),
     ))
+}
+
+fn validate_root_branch_participants<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    plans: &[CreatePlan],
+) -> ModelResult<()> {
+    let Some(root_plan) = plans.iter().find(|plan| plan.repo.member.is_none()) else {
+        return Ok(());
+    };
+    if !plans.iter().any(|plan| plan.repo.member.is_some()) {
+        return Ok(());
+    }
+    let refused = || {
+        ModelError::new(
+            ErrorCode::SourceIdentityMismatch,
+            "combined root/member branch switch changes selected member identities; switch the root separately, inspect its manifest and materialize the intended workspace",
+        )
+    };
+    let bytes = backend
+        .read_file_at_commit(
+            root,
+            &root_plan.start_commit,
+            crate::workspace::WORKSPACE_MANIFEST,
+        )?
+        .ok_or_else(refused)?;
+    let destination =
+        ManifestArtifact::from_yaml(std::str::from_utf8(&bytes).map_err(|_| refused())?)?;
+    let current = artifact::read_manifest(root)?;
+    if destination.workspace.id != current.workspace.id {
+        return Err(refused());
+    }
+    for member in plans.iter().filter_map(|plan| plan.repo.member.as_ref()) {
+        if !destination.members.iter().any(|other| {
+            other.id == member.id
+                && other.path == member.path
+                && other.source_id == member.source_id
+                && other.source_kind == member.source_kind
+                && other.active
+        }) {
+            return Err(refused());
+        }
+    }
+    Ok(())
 }
 
 fn create_preflight<B: GitBackend>(

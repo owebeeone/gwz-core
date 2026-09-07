@@ -146,6 +146,21 @@ pub enum GitPreparedMergeMode {
 }
 
 pub trait GitBackend {
+    /// Bind invocation credentials to a new backend value. The default refuses
+    /// explicit authority rather than silently ignoring it. No global state.
+    fn with_transport(&self, _start: &Path, options: Option<&crate::TransportOptions>) -> ModelResult<Option<Self>>
+    where Self: Sized {
+        if super::transport_support::identity::has_options(options) {
+            return Err(ModelError::new(ErrorCode::UnsupportedOperation, "this Git backend does not support explicit SSH identity selection"));
+        }
+        Ok(None)
+    }
+
+    fn validate_transport_remotes(&self, _names: &[String]) -> ModelResult<()> { Ok(()) }
+
+    /// Local-only credential preflight; this does not establish write access.
+    fn validate_remote_identity(&self, _path: &Path, _remote: &str, _push: bool) -> ModelResult<()> { Ok(()) }
+
     fn is_repository(&self, path: &Path) -> ModelResult<bool>;
     /// Return whether `oid` exists locally and resolves to a commit object.
     /// This never fetches and returns `false` for malformed, missing, or
@@ -211,6 +226,11 @@ pub trait GitBackend {
     /// `git ls-remote`): connect, read the advertised refs, disconnect. Non-mutating
     /// — used to plan a selection before any fetch (Q1).
     fn ls_remote(&self, path: &Path, remote: &str) -> ModelResult<Vec<GitRemoteRef>>;
+    /// Read advertised refs from an exact URL without persisting a remote or
+    /// fetching objects. Used to prove committed-lock publication dependencies.
+    fn ls_remote_url(&self, _path: &Path, _url: &str, _remote_name: &str, _identity_repo: Option<&Path>) -> ModelResult<Vec<GitRemoteRef>> {
+        unsupported_backend("ls_remote_url")
+    }
     fn fast_forward(
         &self,
         path: &Path,

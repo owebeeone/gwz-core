@@ -2,6 +2,68 @@
 
 Status: accepted
 
+## Accepted debt recovery amendment (2026-09-06)
+
+The operator approved the workspace `dev-docs/GwzDebtRecovery.md` plan.
+The following decisions supersede conflicting earlier defaults. Ordinary and
+family merge default to root plus active members; explicit member selections
+remain partial. Branch, tag and coordinated stash support root selection while
+retaining member defaults. A combined root/member branch switch must preserve
+the selected members' identities and paths in the destination root manifest;
+otherwise it refuses before creating or switching any branch. Root-only switches
+remain available for intentional workspace-topology changes. `@all` denotes all supported targets; materialize
+supports members and refuses an explicit surviving root selector. Whole-workspace
+local operations refuse nonempty selectors before effects. Drivers consume the
+same core selection policy, including forall.
+
+`GwzCore.resolve_forall_targets` is a read-only additive service method using
+the existing `LsRequest`/`LsResponse` target-list wire shapes. It resolves with
+Forall policy and reports action Forall; it never invokes the ls command or
+executes a process. Both drivers execute only the returned targets. This reuses
+`MemberEntry` and `TargetKind` without introducing another target schema.
+
+Disposal may discount only a canonical regenerated configuration-integrity
+marker, freshly proved against unchanged HEAD, index and worktree configuration.
+Staged, suppressed, conflicted, malformed or otherwise unproved state remains
+protected. Installation must preserve source work and manifest bytes; it must
+not overwrite uncommitted marker work without refusal. No hidden commits or
+relaxation of history preservation are permitted.
+
+Root publication captures its source object before transfers and checks the lock
+from that exact committed object. It waits for successful member transfers and proof that all member
+objects named by the committed root lock are available at their destinations,
+including partial and root-only pushes. Non-Git dependencies refuse with `UnsupportedSourceKind` until their availability
+contract has an implementation. A committed manifest/lock source-kind mismatch
+also refuses publication. Tag publication captures all selected tag objects
+before transfers, preserving annotated tags while checking their peeled commits.
+Failure leaves the root remote unchanged; earlier successful member transfers
+need not be rolled back. Explicit SSH identity
+must fail closed without trying unrelated keys, using native transport only.
+Core does not own secret storage. Exact authentication capabilities must be
+verified before claiming support. The recovery plan defines verification and
+provenance gates; writing a workflow alone does not establish a passing gate.
+
+DR-5 transport selection uses `RequestMeta.transport`, separate from descriptive
+attribution. `TransportOptions` carries an optional default private-key path and
+repeated `RemoteSshIdentity` name/path overrides; it never carries key bytes or a
+passphrase. One core resolver owns validation and precedence: invocation remote
+override, invocation default, repository-local remote configuration, existing
+agent behavior. Relative invocation paths resolve against the request's starting
+directory; `~/` resolves against the account home directory. Configuration writes
+store an absolute path in repository-local Git configuration through a GWZ core
+operation, never in shared workspace artifacts. A name override applies to each
+selected repository using that remote name. Duplicate or unknown names refuse.
+Drivers use separate `--identity PATH` and repeatable `--remote-identity NAME=PATH`
+flags, splitting the latter at its first `=` so paths may contain `=`.
+
+Explicit file credentials offer only the selected file, once. An encrypted or
+otherwise unavailable file cannot fall back to the agent. Exact encrypted-agent
+selection remains unsupported until a safe binding implementation passes the
+controlled capability fixture. Transport options are scoped to one operation's
+backend value, never process-global mutable state. Local-only operations refuse
+nonempty options; anonymous family transports remain credential-free. Existing
+HTTPS helper policy and host-key verification remain in effect.
+
 This document describes how GWZ Core satisfies the accepted v0 direction.
 
 `GWZRequirements.md` is the baseline for required behavior. This accepted design

@@ -41,6 +41,8 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::PullHead(request.clone()).context(operation_id.into())?;
+    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let backend = scoped_backend.as_ref().unwrap_or(backend);
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root(
         start,
@@ -57,11 +59,10 @@ where
     let manifest_for_selection = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest_for_selection, request.meta.workspace.as_ref())?;
     let lock_for_selection = artifact::read_lock(&root)?;
-    let selected_for_root = resolve_targets(
+    let selected_for_root = resolve_action_targets(
         &manifest_for_selection,
         request.meta.selection.as_ref(),
-        CommandDefaultTargets::All,
-        RootSelectionPolicy::Allow,
+        crate::ActionKind::PullHead,
     )?;
     let pull_root_selected = selected_for_root
         .iter()
@@ -99,11 +100,10 @@ where
         .map(|plan| plan.lock.clone())
         .map(Ok)
         .unwrap_or_else(|| artifact::read_lock(&root))?;
-    let selected_targets = resolve_targets(
+    let selected_targets = resolve_action_targets(
         &manifest,
         request.meta.selection.as_ref(),
-        CommandDefaultTargets::All,
-        RootSelectionPolicy::Allow,
+        crate::ActionKind::PullHead,
     )?;
     let mut selected = Vec::new();
     for target in selected_targets {

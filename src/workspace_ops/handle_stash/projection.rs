@@ -1,17 +1,11 @@
 use super::*;
 
 pub(super) fn stash_member_response(
-    member: &ManifestMember,
+    plan: &StashMemberPlan,
     status: crate::MemberStatus,
     error: Option<ModelError>,
 ) -> crate::MemberResponse {
-    stash_target_response(
-        &member.id,
-        &member.path,
-        crate::TargetKind::Member,
-        status,
-        error,
-    )
+    stash_target_response(&plan.id, &plan.path, plan.kind, status, error)
 }
 
 pub(super) fn stash_target_response(
@@ -43,12 +37,10 @@ pub(super) fn stash_target_response(
     }
 }
 
-pub(super) fn planned_member_responses(
-    plans: &[StashMemberPlan<'_>],
-) -> Vec<crate::MemberResponse> {
+pub(super) fn planned_member_responses(plans: &[StashMemberPlan]) -> Vec<crate::MemberResponse> {
     plans
         .iter()
-        .map(|plan| stash_member_response(plan.member, crate::MemberStatus::Planned, None))
+        .map(|plan| stash_member_response(plan, crate::MemberStatus::Planned, None))
         .collect()
 }
 

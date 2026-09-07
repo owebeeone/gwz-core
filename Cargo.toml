@@ -73,3 +73,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 # only -- the boundary gate refuses a normal dependency on a harness package,
 # and nothing in src/ outside cfg(test) may name it.
 gwz-local-testrepo = { path = "crates/local-testrepo" }
+
+[build-dependencies]
+sha2 = "0.10"

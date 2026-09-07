@@ -188,7 +188,7 @@ fn selection_freezes_active_members_in_manifest_order() {
     let fixture = fixture();
     let backend = FakeBackend::default();
     let plan = build(&backend, &fixture, &request(None, false)).unwrap();
-    assert_eq!(ids(&plan), ["mem_z", "mem_a"]);
+    assert_eq!(ids(&plan), ["mem_z", "mem_a", "@root"]);
     assert_eq!(plan.participants[0].before_commit, "before-z");
     assert_eq!(plan.participants[0].source_commit, "source-z");
     let reversed = crate::Selection {
@@ -253,6 +253,15 @@ fn explicit_root_is_appended_after_frozen_member_order() {
             ..Default::default()
         },
     ] {
+        let expected = if selection
+            .exclude_targets
+            .iter()
+            .any(|token| token == "@root")
+        {
+            vec!["mem_z", "mem_a"]
+        } else {
+            vec!["mem_z", "mem_a", "@root"]
+        };
         assert_eq!(
             ids(&build(
                 &Default::default(),
@@ -260,7 +269,7 @@ fn explicit_root_is_appended_after_frozen_member_order() {
                 &request(Some(selection), false)
             )
             .unwrap()),
-            ["mem_z", "mem_a"]
+            expected
         );
     }
 }
@@ -315,7 +324,7 @@ fn dry_run_is_advisory_and_full_preflight_precedes_any_execution() {
     );
     backend.calls.borrow_mut().clear();
     let predicted = build(&backend, &fixture, &request(None, true)).unwrap();
-    assert_eq!(*backend.simulations.borrow(), ["z", "a"]);
+    assert_eq!(*backend.simulations.borrow(), ["z", "a", "root"]);
     assert!(
         predicted
             .participants
@@ -354,7 +363,7 @@ fn ff_only_rejects_the_complete_preflight_before_execution() {
     assert_eq!(error.code, ErrorCode::MergeValidationFailed);
     assert_eq!(error.member_id.as_deref(), Some("mem_z"));
     assert_eq!(error.member_path.as_deref(), Some("z"));
-    assert_eq!(*backend.calls.borrow(), ["z", "a"]);
+    assert_eq!(*backend.calls.borrow(), ["z", "a", "root"]);
     assert!(backend.simulations.borrow().is_empty());
 }
 

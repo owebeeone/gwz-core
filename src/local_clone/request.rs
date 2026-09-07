@@ -25,6 +25,7 @@ pub struct ValidatedCloneLocal {
 pub fn validate_clone_local(
     request: &crate::CloneLocalWorkspaceRequest,
 ) -> ModelResult<ValidatedCloneLocal> {
+    reject_selection(&request.meta)?;
     let name = MemberName::parse(&request.name)
         .map_err(|error| invalid(format!("invalid clone name: {error}")))?;
     let mode = match request.mode {
@@ -93,6 +94,7 @@ pub enum ValidatedLocalFamily {
 pub fn validate_local_family(
     request: &crate::LocalFamilyRequest,
 ) -> ModelResult<ValidatedLocalFamily> {
+    reject_selection(&request.meta)?;
     let validated = match request.op {
         crate::LocalFamilyOp::List => {
             reject_present("name", request.name.is_some())?;
@@ -144,6 +146,15 @@ pub fn validate_local_family(
         return Err(unsupported("local family operations with dry_run"));
     }
     Ok(validated)
+}
+
+fn reject_selection(meta: &crate::RequestMeta) -> ModelResult<()> {
+    if crate::workspace_ops::has_explicit_target_selection(meta.selection.as_ref()) {
+        return Err(invalid(
+            "local operations address a whole workspace and do not accept target selection",
+        ));
+    }
+    Ok(())
 }
 
 /// The family selector of a `MergeRequest` whose shape core accepted.

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::artifact::{self, ArtifactSourceKind, ManifestArtifact, ManifestMember};
+use crate::artifact::{self, ArtifactSourceKind, ManifestMember};
 use crate::git::{GitBackend, GitHeadState, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
@@ -33,6 +33,8 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::Push(request.clone()).context(operation_id.into())?;
+    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let backend = scoped_backend.as_ref().unwrap_or(backend);
     let (_guard, root) = guarded_workspace_root(
         start,
         request.meta.workspace.as_ref(),
@@ -47,11 +49,10 @@ where
     )?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let selected = resolve_targets(
+    let selected = resolve_action_targets(
         &manifest,
         request.meta.selection.as_ref(),
-        CommandDefaultTargets::All,
-        RootSelectionPolicy::Allow,
+        crate::ActionKind::Push,
     )?;
     let mut selected_members = Vec::new();
     let mut push_root_selected = false;
@@ -115,6 +116,15 @@ where
         });
     }
 
+    // Capture the exact root object before transfers or user event callbacks.
+    let root_request = if push_root_selected {
+        Some(super::publication::freeze_root_request(
+            backend, &root, &request,
+        )?)
+    } else {
+        None
+    };
+
     let progress_interval = request
         .meta
         .policy
@@ -162,7 +172,38 @@ where
     .collect::<ModelResult<Vec<_>>>()?;
     if push_root_selected {
         emitter.member_started("@root", ".");
-        responses.push(push_root(backend, &root, &request, false));
+        let failed: Vec<&str> = responses
+            .iter()
+            .filter(|response| {
+                matches!(
+                    response.status,
+                    crate::MemberStatus::Failed | crate::MemberStatus::Rejected
+                )
+            })
+            .map(|response| response.member_id.as_str())
+            .collect();
+        let root_response = if failed.is_empty() {
+            match super::publication::checked_root_request(
+                backend,
+                &root,
+                root_request.as_ref().expect("selected root was captured"),
+            ) {
+                Ok(pinned) => push_root(backend, &root, &pinned, false),
+                Err(error) => push_root_error(error, crate::MemberStatus::Rejected),
+            }
+        } else {
+            push_root_error(
+                ModelError::new(
+                    ErrorCode::RemoteRejected,
+                    format!(
+                        "root publication was not attempted because member push failed: {}; resolve the member failures and retry",
+                        failed.join(", ")
+                    ),
+                ),
+                crate::MemberStatus::Rejected,
+            )
+        };
+        responses.push(root_response);
         emitter.member_finished("@root", ".");
     }
     emitter.operation_finished();
@@ -170,13 +211,6 @@ where
     Ok(crate::PushResponse {
         response: response_envelope(context, push_aggregate_status(&responses), responses),
     })
-}
-
-pub(crate) fn resolve_manifest_selection(
-    manifest: &ManifestArtifact,
-    selection: Option<&crate::Selection>,
-) -> ModelResult<Vec<String>> {
-    resolve_member_ids(manifest, selection, CommandDefaultTargets::Members)
 }
 
 pub(crate) fn push_remote_host(
@@ -244,6 +278,9 @@ where
         Ok(refspec) => refspec,
         Err(error) => return push_policy_member_error(member, source_kind, request, error),
     };
+    if let Err(error) = backend.validate_remote_identity(&member_root, &remote, true) {
+        return push_policy_member_error(member, source_kind, request, error);
+    }
     if dry_run {
         return crate::MemberResponse {
             member_id: member.id.clone(),
@@ -323,6 +360,9 @@ where
         Ok(refspec) => refspec,
         Err(error) => return push_root_error(error, crate::MemberStatus::Rejected),
     };
+    if let Err(error) = backend.validate_remote_identity(root, &remote, true) {
+        return push_root_error(error, crate::MemberStatus::Rejected);
+    }
     if dry_run {
         return crate::MemberResponse {
             member_id: "@root".to_owned(),

@@ -64,6 +64,9 @@ pub struct SourceCapture {
     pub exclusions: Vec<Exclusion>,
     pub snapshot: SourceSnapshot,
     pub manifest: ManifestArtifact,
+    manifest_bytes: String,
+    marker_bytes: Option<Vec<u8>>,
+    regenerate_marker: bool,
 }
 
 /// Inventory and capture `source` (canonical). A design §4.0 hazard
@@ -97,11 +100,38 @@ pub fn capture_source(
         artifact::read_manifest(source).map_err(|error| InstallPortError::Configuration {
             detail: format!("source manifest: {}", error.message),
         })?;
+    let conf_error = |error: std::io::Error| InstallPortError::Configuration {
+        detail: format!("source configuration bytes: {error}"),
+    };
+    let manifest_bytes = fs::read_to_string(source.join(WORKSPACE_MANIFEST)).map_err(conf_error)?;
+    let marker_bytes = match fs::read(source.join(artifact::CONF_INTEGRITY_MARKER_PATH)) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(conf_error(error)),
+    };
+    // Uncommitted marker bytes belong to the source and must survive verbatim.
+    // Unknown status likewise never authorizes regeneration.
+    let regenerate_marker = super::generated_marker::source_marker_is_committed(source);
+    // The install contract requires a verified final marker. Refuse before
+    // allocation when satisfying it would overwrite source marker work.
+    if !regenerate_marker
+        && !matches!(
+            artifact::inspect_conf_integrity(source),
+            ConfIntegrityVerdict::Verified
+        )
+    {
+        return Err(InstallPortError::Configuration {
+            detail: "source integrity marker is not verified and cannot be regenerated without overwriting source work; reconcile the source configuration before cloning".into(),
+        });
+    }
     Ok(SourceCapture {
         repositories,
         exclusions,
         snapshot,
         manifest,
+        manifest_bytes,
+        marker_bytes,
+        regenerate_marker,
     })
 }
 
@@ -492,6 +522,15 @@ impl<B: GitBackend> InstallPorts for CoreInstallPorts<'_, B> {
 
     fn recheck_source(&mut self, snapshot: &SourceSnapshot) -> Result<(), InstallPortError> {
         let fresh = capture_source(&self.source, self.open_merge)?;
+        if fresh.manifest_bytes != self.capture.manifest_bytes
+            || fresh.marker_bytes != self.capture.marker_bytes
+            || fresh.regenerate_marker != self.capture.regenerate_marker
+        {
+            return Err(InstallPortError::Configuration {
+                detail: "source configuration changed during clone; retry from a stable source"
+                    .into(),
+            });
+        }
         recheck(snapshot, &fresh.snapshot)
     }
 
@@ -529,13 +568,22 @@ impl<B: GitBackend> InstallPorts for CoreInstallPorts<'_, B> {
                 operation: "publish_manifest for clean and bare clones",
             });
         }
-        // The typed writer regenerates the conf-integrity marker over the
-        // final manifest and the copied lock bytes (design §4.1).
-        artifact::write_manifest(&plan.destination, &self.capture.manifest).map_err(|error| {
-            InstallPortError::Configuration {
-                detail: format!("destination manifest: {}", error.message),
-            }
+        // Publish the validated source bytes exactly, preserving comments and
+        // formatting. Only committed marker state may be regenerated.
+        artifact::write_atomic(
+            &plan.destination.join(WORKSPACE_MANIFEST),
+            &self.capture.manifest_bytes,
+        )
+        .map_err(|error| InstallPortError::Configuration {
+            detail: format!("destination manifest: {}", error.message),
         })?;
+        if self.capture.regenerate_marker {
+            artifact::refresh_conf_integrity_marker(&plan.destination).map_err(|error| {
+                InstallPortError::Configuration {
+                    detail: error.message,
+                }
+            })?;
+        }
         let marker_regenerated = matches!(
             artifact::inspect_conf_integrity(&plan.destination),
             ConfIntegrityVerdict::Verified

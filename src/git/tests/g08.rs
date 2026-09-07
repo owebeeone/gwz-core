@@ -117,3 +117,84 @@ fn ssh_clone_times_out_instead_of_hanging() {
         "must terminate quickly via the timeout (took {elapsed:?})"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn named_push_reports_server_hook_rejection() {
+    use std::net::{TcpListener, TcpStream};
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    struct Daemon(std::process::Child);
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let temp = TempDir::new("named-push-rejected");
+    let remote_path = temp.path().join("remote.git");
+    let remote = git2::Repository::init_bare(&remote_path).unwrap();
+    let hook = remote_path.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\necho policy-refusal >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut daemon = Daemon(
+        Command::new("git")
+            .args([
+                "daemon",
+                "--reuseaddr",
+                "--export-all",
+                "--enable=receive-pack",
+                "--listen=127.0.0.1",
+            ])
+            .arg(format!("--port={port}"))
+            .arg(format!("--base-path={}", temp.path().display()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(daemon.0.try_wait().unwrap().is_none(), "git daemon exited");
+        assert!(Instant::now() < deadline, "git daemon did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let backend = Git2Backend::new();
+    let source = temp.path().join("source");
+    backend.create_repo(&source).unwrap();
+    commit_file(&source, "file", "content", "work", &[]).unwrap();
+    backend
+        .add_remote(
+            &source,
+            "origin",
+            &format!("git://127.0.0.1:{port}/remote.git"),
+        )
+        .unwrap();
+    let error = backend
+        .push(&source, "origin", "HEAD:refs/heads/main")
+        .unwrap_err();
+    assert_eq!(error.code, crate::model::ErrorCode::RemoteRejected);
+    assert!(remote.find_reference("refs/heads/main").is_err());
+    std::fs::remove_file(hook).unwrap();
+    backend
+        .push(&source, "origin", "HEAD:refs/heads/main")
+        .unwrap();
+    assert_eq!(
+        remote.find_reference("refs/heads/main").unwrap().target(),
+        Some(
+            backend
+                .head(&source)
+                .unwrap()
+                .commit
+                .unwrap()
+                .parse()
+                .unwrap()
+        )
+    );
+}

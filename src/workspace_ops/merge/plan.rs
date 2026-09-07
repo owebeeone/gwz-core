@@ -11,10 +11,7 @@ use crate::git::{
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
-use crate::workspace_ops::{
-    CommandDefaultTargets, RootSelectionPolicy, SelectedTarget, assert_workspace_id,
-    resolve_targets,
-};
+use crate::workspace_ops::{SelectedTarget, assert_workspace_id, resolve_merge_targets};
 
 use super::{MergeBaseline, MergeParticipantPlan, MergePlan, MergeTargetKind};
 
@@ -146,24 +143,10 @@ fn build_merge_plan<P: PlanningBackend>(
     lock: &LockArtifact,
     mut baseline: MergeBaseline,
 ) -> ModelResult<MergePlan> {
-    let targets = resolve_targets(
-        manifest,
-        request.meta.selection.as_ref(),
-        CommandDefaultTargets::Members,
-        RootSelectionPolicy::Allow,
-    )?;
-    let explicitly_selected_root = request.meta.selection.as_ref().is_some_and(|selection| {
-        selection
-            .member_ids
-            .iter()
-            .chain(&selection.paths)
-            .chain(&selection.targets)
-            .any(|target| target == "@root")
-    });
-    let root_selected = explicitly_selected_root
-        && targets
-            .iter()
-            .any(|target| matches!(target, SelectedTarget::Root));
+    let targets = resolve_merge_targets(manifest, request.meta.selection.as_ref())?;
+    let root_selected = targets
+        .iter()
+        .any(|target| matches!(target, SelectedTarget::Root));
     let selected: BTreeSet<&str> = targets
         .iter()
         .filter_map(|target| match target {

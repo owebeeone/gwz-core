@@ -29,6 +29,8 @@ where
 {
     let context =
         OperationRequest::InitFromSources(request.clone()).context(operation_id.into())?;
+    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let backend = scoped_backend.as_ref().unwrap_or(backend);
     let root = if request.workspace_root.trim().is_empty() {
         start.to_path_buf()
     } else {

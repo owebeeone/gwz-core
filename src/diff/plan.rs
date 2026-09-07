@@ -34,8 +34,8 @@ use crate::protocol::generated::{
     SourceKind,
 };
 use crate::workspace_ops::{
-    CommandDefaultTargets, RootSelectionPolicy, SelectedTarget, has_explicit_target_selection,
-    join_cwd, lexical_normalize, resolve_targets, route_pathspec,
+    SelectedTarget, has_explicit_target_selection, join_cwd, lexical_normalize,
+    resolve_action_targets, route_pathspec,
 };
 
 use super::operands::{Endpoint, ParsedComparison};
@@ -189,12 +189,7 @@ pub fn plan_diff(
 
     // (1) Candidate set from GWZ selection (AD7): root + active members by
     // default; explicit selectors honored literally.
-    let selected = resolve_targets(
-        manifest,
-        selection,
-        CommandDefaultTargets::All,
-        RootSelectionPolicy::Allow,
-    )?;
+    let selected = resolve_action_targets(manifest, selection, crate::ActionKind::Diff)?;
     let mut include_root = selected.iter().any(|t| matches!(t, SelectedTarget::Root));
     let candidate_members: Vec<&ManifestMember> = selected
         .iter()

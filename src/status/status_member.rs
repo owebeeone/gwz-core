@@ -34,11 +34,10 @@ where
     }
 
     let lock = read_lock_optional(&workspace_root)?;
-    let selected = crate::workspace_ops::resolve_targets(
+    let selected = crate::workspace_ops::resolve_action_targets(
         &manifest,
         request.meta.selection.as_ref(),
-        crate::workspace_ops::CommandDefaultTargets::All,
-        crate::workspace_ops::RootSelectionPolicy::Allow,
+        crate::ActionKind::Status,
     )?;
     let include_root = selected
         .iter()

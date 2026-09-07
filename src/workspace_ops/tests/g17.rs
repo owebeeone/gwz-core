@@ -2,6 +2,102 @@ use crate::git::{Git2Backend, GitBackend};
 
 use super::*;
 
+#[test]
+fn tag_publication_plan_pins_objects_before_any_transfer() {
+    let temp = TempDir::new("tag-frozen-source");
+    let backend = Git2Backend::without_credential_helpers();
+    backend.create_repo(temp.path()).unwrap();
+    set_identity(temp.path());
+    commit_file(temp.path(), "first.txt", "first", "first", &[]).unwrap();
+    backend
+        .tag_create(temp.path(), "v1", Some("original annotation"), false)
+        .unwrap();
+    let original = backend
+        .read_ref(temp.path(), "refs/tags/v1")
+        .unwrap()
+        .unwrap();
+    let plans = super::super::handle_tag::plan_tag_pushes(
+        &backend,
+        &[temp.path().to_path_buf()],
+        Some("v1"),
+    )
+    .unwrap();
+    backend.tag_delete(temp.path(), "v1").unwrap();
+    let parent = backend.head(temp.path()).unwrap().commit.unwrap();
+    commit_file(
+        temp.path(),
+        "second.txt",
+        "second",
+        "second",
+        &[git2::Oid::from_str(&parent).unwrap()],
+    )
+    .unwrap();
+    backend
+        .tag_create(temp.path(), "v1", Some("replacement annotation"), false)
+        .unwrap();
+    assert_ne!(
+        backend.read_ref(temp.path(), "refs/tags/v1").unwrap(),
+        Some(original.clone())
+    );
+    assert_eq!(
+        plans,
+        vec![(
+            temp.path().to_path_buf(),
+            format!("{original}:refs/tags/v1")
+        )]
+    );
+}
+
+#[test]
+fn root_tag_create_list_push_and_delete_use_root_selection() {
+    let temp = TempDir::new("root-tag-recovery");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let remote = temp.path().join("root.git");
+    init_bare_main(&remote);
+    backend
+        .add_remote(temp.path(), "origin", remote.to_str().unwrap())
+        .unwrap();
+    set_identity(temp.path());
+    commit_file(temp.path(), "root.txt", "root", "root", &[]).unwrap();
+    let mut request = tag_request(crate::TagOp::Create, Some("v-root"), None);
+    request.message = Some("annotated root tag".into());
+    request.meta.selection = Some(crate::Selection {
+        targets: vec!["@root".into()],
+        ..Default::default()
+    });
+    handle_tag(&backend, temp.path(), request.clone(), "op_tag_root").unwrap();
+    assert!(
+        backend
+            .tag_list(temp.path())
+            .unwrap()
+            .contains(&"v-root".into())
+    );
+    request.op = crate::TagOp::List;
+    handle_tag(&backend, temp.path(), request.clone(), "op_list_root").unwrap();
+    request.op = crate::TagOp::Push;
+    handle_tag(&backend, temp.path(), request.clone(), "op_push_root_tag").unwrap();
+    assert!(read_repo_ref(&remote, "refs/tags/v-root").is_some());
+    request.op = crate::TagOp::Delete;
+    request.remote = Some("origin".into());
+    handle_tag(
+        &backend,
+        temp.path(),
+        request.clone(),
+        "op_delete_remote_root_tag",
+    )
+    .unwrap();
+    assert!(read_repo_ref(&remote, "refs/tags/v-root").is_none());
+    request.remote = None;
+    handle_tag(&backend, temp.path(), request, "op_delete_root_tag").unwrap();
+    assert!(
+        !backend
+            .tag_list(temp.path())
+            .unwrap()
+            .contains(&"v-root".into())
+    );
+}
+
 // GWZTag Phase 3: handle_tag remote ops — push, list --remote, delete --remote, fetch — fanned
 // out over the members (whose origin is the bare RemoteFixture); the root is local-only.
 
