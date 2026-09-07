@@ -74,6 +74,13 @@ jobs:
             echo "  cargo fmt"
             exit 1
           fi
+      - name: Privacy compile probes
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if [ -f scripts/checks/run_r4bg_aggregate_gates.py ]; then
+            python scripts/checks/run_r4bg_aggregate_gates.py privacy
+          fi
       - name: Checked-artifact boundary
         if: runner.os == 'Linux'
         shell: bash
@@ -163,7 +170,7 @@ jobs:
         # failed there. Per selected command:
         #   * fault, unknown-field, byte-equivalence — cargo test over this
         #     repo's own lib; no path leaves the checkout.
-        #   * privacy — a python checker whose ROOT is the repo
+        #   * privacy (early step above) — a python checker whose ROOT is the repo
         #     (run_r4bg_aggregate_gates.py:47; REGISTRY is in-repo dev-docs).
         #     §17 already verified it has no workspace-root reads.
         #   * byte-equivalence runs WHOLE. It was selected as `:2` to skip
@@ -181,8 +188,9 @@ jobs:
         #     call-graph 1240.2s (11.0 + 1228.9 + 0.3), essentially all of it
         #     the boundary suite's compiler probes, against privacy's 334.0s.
         #     Selecting call-graph would re-pay ~20 minutes for no added
-        #     signal; privacy has no other release-lane coverage at all and
-        #     is kept. If the boundary step is ever removed or narrowed, add
+        #     signal. Privacy now runs in its own early step, so missing
+        #     compiler-fixture inputs fail before the expensive suites. If the
+        #     boundary step is ever removed or narrowed, add
         #     `call-graph` back to the selection below in the same change.
         #
         # LINUX ONLY — and not merely by house style. These markers are exact
@@ -217,12 +225,12 @@ jobs:
           # skip-loudly convention as the presence guard above: the fault
           # battery is withheld for such tags with the reason stated; the
           # remaining selection still runs and counts.
-          SELECTION="fault byte-equivalence unknown-field privacy"
+          SELECTION="fault byte-equivalence unknown-field"
           if ! grep -q "_fault_count" scripts/checks/run_r4bg_aggregate_gates.py; then
             echo "this tag's driver predates per-OS fault-battery count pins (no _fault_count);"
             echo "its Darwin-measured counts cannot match a Linux runner. Skipping the fault"
             echo "battery for this tag; the Test step above already ran the full suite green."
-            SELECTION="byte-equivalence unknown-field privacy"
+            SELECTION="byte-equivalence unknown-field"
           fi
           python scripts/checks/run_r4bg_aggregate_gates.py $SELECTION
       # NOT WIRED HERE, deliberately — the two workspace-root-reading checkers,

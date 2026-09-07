@@ -103,9 +103,9 @@ def probe_text(label: str, path: str) -> str:
 # LCM1.0c-rem1 (State P3-2): `crates/` carries git-ignored per-crate `target/`
 # and `Cargo.lock` after a developer runs the documented standalone Tier A
 # command; copying them into every probe grows unbounded on disk and time.
-# Ignore build output on every copied directory (only `crates/` ever holds it).
+# Ignore build output and local Python environments in every copied directory.
 def copy_probe_dir(src: Path, dst: Path) -> None:
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "Cargo.lock"))
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "Cargo.lock", ".regen-venv", ".venv", "__pycache__"))
 
 
 def compile_with_probe(
@@ -118,10 +118,11 @@ def compile_with_probe(
     # fails to build for reasons that have nothing to do with privacy.
     # LCM1.0c: `crates/` holds the local clone family's path dependencies;
     # without it the copied manifest cannot resolve and every probe fails
-    # for a reason that has nothing to do with privacy either.
-    for name in (".github", "dev-docs", "protocol", "scripts", "src", "tests", "crates"):
+    # for a reason that has nothing to do with privacy either. The real build
+    # script and support module must supply the library's compile-time provenance.
+    for name in (".github", "dev-docs", "protocol", "scripts", "src", "tests", "crates", "build_support"):
         copy_probe_dir(ROOT / name, target / name)
-    for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
+    for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml", "build.rs"):
         shutil.copy2(ROOT / name, target / name)
     probed = target / relative
     probed.write_text(
@@ -194,12 +195,17 @@ class V1LifecyclePrivacyProbeTest(unittest.TestCase):
             (src / "x" / "target").mkdir()
             (src / "x" / "target" / "marker").write_text("build", encoding="utf-8")
             (src / "x" / "Cargo.lock").write_text("lock", encoding="utf-8")
+            for generated in (".regen-venv", ".venv", "__pycache__"):
+                (src / generated).mkdir()
+                (src / generated / "marker").write_text("generated", encoding="utf-8")
             dst = Path(scratch) / "copy"
             copy_probe_dir(src, dst)
             self.assertTrue((dst / "x" / "src" / "lib.rs").exists())
             self.assertTrue((dst / "x" / "Cargo.toml").exists())
             self.assertFalse((dst / "x" / "target").exists())
             self.assertFalse((dst / "x" / "Cargo.lock").exists())
+            for generated in (".regen-venv", ".venv", "__pycache__"):
+                self.assertFalse((dst / generated).exists())
 
     def test_prepared_v1_rewrite_is_unnameable_outside_the_perimeter(self) -> None:
         self.assert_sealed(OUTSIDE, "prepared_rewrite", "transition")
