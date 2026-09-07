@@ -27,3 +27,6 @@ bazel-*
 
 # Compiled Rust artifacts left in the tree
 *.rlib
+
+# Cargo creates this empty checkout-completion marker for Git dependencies.
+/.cargo-ok

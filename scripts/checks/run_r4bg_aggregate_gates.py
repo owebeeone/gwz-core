@@ -900,10 +900,15 @@ BATTERIES: dict[str, tuple[str, list[tuple[str, list[str], str]]]] = {
         # count so the dispatch cannot forget one and remember the other.
         ("checked-artifact fault census (165 keys)",
          lib("checked_artifact::"), _fault_count("459 passed", "476 passed")),
+        # Debt recovery, 2026-09-07: 48 added identities since 7b9ee456.
+        # macOS: 1867 listed - 459 artifact - 266 lifecycle - 1 ignored = 1141.
+        # Linux: executed census 1884 - 476 artifact - 266 lifecycle = 1142.
+        # Linux receipt: gwz-dev run 34103026631; execution_checked=true.
+        # Both full suites passed; keep the four partitions/count assertions.
         ("lib remainder, completing the four disjoint partitions",
          lib("--", "--skip", "checked_artifact::",
              "--skip", "workspace_ops::merge::v1_lifecycle::"),
-         _fault_count("1093 passed", "1094 passed")),
+         _fault_count("1141 passed", "1142 passed")),
     ]),
     "compatibility": ("v0 compatibility gate (evidence row 2.2)", [
         # R2-E Phase E5.2 (2026-08-28): the marker gains the standalone
