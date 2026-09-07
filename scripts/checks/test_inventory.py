@@ -99,6 +99,27 @@ def check_execution(expected: set[str], ignored: set[str], output: str) -> dict[
     return {"executed": sorted(passed), "ignored": sorted(skipped), "isolated_child_helpers": nested}
 
 
+def check_harness_execution(expected: set[str], ignored: set[str], harness: str,
+                            output: str) -> dict[str, list[str]]:
+    # libtest owns this file; child stdout cannot splice its result records.
+    # --logfile is supported by the pinned stable toolchain. Retain the raw
+    # transcript separately, including proof of the isolated nested helper.
+    rows = []
+    for line in harness.splitlines():
+        match = re.fullmatch(r"(ok|failed|ignored) (\S+)", line)
+        if not match:
+            raise ValueError(f"unrecognized harness record: {line!r}")
+        result, name = match.groups()
+        rows.append(f"test {name} ... {'FAILED' if result == 'failed' else result}")
+    for helper, parent in CHILD_HELPERS.items():
+        if helper in ignored and parent in expected:
+            matches = re.findall(rf"^test {re.escape(helper)} \.\.\. ok$", output, re.MULTILINE)
+            if len(matches) != 1:
+                raise ValueError(f"required isolated child helper did not execute once: {helper}")
+            rows.extend(matches)
+    return check_execution(expected, ignored, "\n".join(rows))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -152,7 +173,8 @@ def main() -> int:
             "remainder": ["--skip", "checked_artifact::", "--skip", LIFECYCLE],
         }
         args.execution_log = args.output.with_suffix(".execution.log")
-        command = [binary, *filters[args.partition], "--color", "never"]
+        harness_log = args.output.with_suffix(".harness.log")
+        command = [binary, *filters[args.partition], "--color", "never", "--logfile", str(harness_log.resolve())]
         report["command"] = [str(source_binary), *command[1:]]
         # Keep the exact inventory even when execution or reconciliation fails.
         args.output.write_text(json.dumps(report, indent=2) + "\n")
@@ -163,7 +185,12 @@ def main() -> int:
             raise ValueError(f"test binary failed; inspect {args.execution_log}")
     if args.execution_log:
         selected = names if args.partition == "all" else groups[args.partition]
-        report["execution"] = check_execution(selected, ignored & selected, args.execution_log.read_text())
+        if args.run:
+            report["execution"] = check_harness_execution(
+                selected, ignored & selected, harness_log.read_text(), args.execution_log.read_text())
+            report["harness_log"] = str(harness_log)
+        else:
+            report["execution"] = check_execution(selected, ignored & selected, args.execution_log.read_text())
         report["execution_checked"] = True
         report["executed_partition"] = args.partition
     args.output.write_text(json.dumps(report, indent=2) + "\n")

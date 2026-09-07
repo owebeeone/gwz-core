@@ -51,6 +51,23 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inventory.check_execution({"a", "helper"}, set(), "test a ... ok\ntest helper ... ignored\n")
 
+    def test_harness_log_avoids_child_stdout_interleaving(self):
+        raw = "test a ... [main abc] child output\nok\n"
+        result = inventory.check_harness_execution({"a"}, set(), "ok a\n", raw)
+        self.assertEqual(result["executed"], ["a"])
+        for log in ["", "ok a\nok a\n", "failed a\n", "ok b\n", "garbage\n"]:
+            with self.subTest(log=log), self.assertRaises(ValueError):
+                inventory.check_harness_execution({"a"}, set(), log, raw)
+
+    def test_harness_log_still_requires_isolated_child_execution(self):
+        helper, parent = next(iter(inventory.CHILD_HELPERS.items()))
+        harness = f"ignored {helper}\nok {parent}\n"
+        with self.assertRaises(ValueError):
+            inventory.check_harness_execution({helper, parent}, {helper}, harness, "")
+        result = inventory.check_harness_execution({helper, parent}, {helper}, harness,
+                                                  f"test {helper} ... ok\n")
+        self.assertEqual(result["isolated_child_helpers"], [helper])
+
     def test_empty_inventory_fails(self):
         with self.assertRaises(ValueError):
             inventory.parse_listing("0 tests, 0 benchmarks")
