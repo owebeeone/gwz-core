@@ -35,35 +35,90 @@ where
     let context = OperationRequest::Push(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    let (_guard, root) = guarded_workspace_root(
-        start,
-        request.meta.workspace.as_ref(),
-        OpenMergeCommand::Push,
-        request.meta.dry_run.unwrap_or(false),
-    )?;
-    assert_conf_unmodified_for(
-        backend,
-        &root,
-        OpenMergeCommand::Push,
-        reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
-    )?;
-    let manifest = artifact::read_manifest(&root)?;
-    assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let selected = resolve_action_targets(
-        &manifest,
-        request.meta.selection.as_ref(),
-        crate::ActionKind::Push,
-    )?;
-    let mut selected_members = Vec::new();
-    let mut push_root_selected = false;
-    for target in selected {
-        match target {
-            SelectedTarget::Root => push_root_selected = true,
-            SelectedTarget::Member(member) => selected_members.push(member.id.clone()),
+    let error_context = context.clone();
+    let result: ModelResult<crate::PushResponse> = (|| {
+        let (_guard, root) = guarded_workspace_root(
+            start,
+            request.meta.workspace.as_ref(),
+            OpenMergeCommand::Push,
+            request.meta.dry_run.unwrap_or(false),
+        )?;
+        assert_conf_unmodified_for(
+            backend,
+            &root,
+            OpenMergeCommand::Push,
+            reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
+        )?;
+        let manifest = artifact::read_manifest(&root)?;
+        assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
+        let selected = resolve_action_targets(
+            &manifest,
+            request.meta.selection.as_ref(),
+            crate::ActionKind::Push,
+        )?;
+        let mut selected_members = Vec::new();
+        let mut push_root_selected = false;
+        for target in selected {
+            match target {
+                SelectedTarget::Root => push_root_selected = true,
+                SelectedTarget::Member(member) => selected_members.push(member.id.clone()),
+            }
         }
-    }
-    if request.meta.dry_run.unwrap_or(false) {
-        let mut responses = selected_members
+        if request
+            .meta
+            .transport
+            .as_ref()
+            .is_some_and(|options| !options.remote_identities.is_empty())
+        {
+            let mut names: Vec<String> = manifest
+                .members
+                .iter()
+                .filter(|member| selected_members.contains(&member.id))
+                .filter_map(|member| resolve_push_remote(member, &request).ok())
+                .collect();
+            if push_root_selected {
+                if let Ok(remote) = resolve_root_push_remote(backend, &root, &request) {
+                    names.push(remote);
+                }
+                let pinned = super::publication::freeze_root_request(backend, &root, &request)?;
+                names.extend(
+                    super::publication::root_dependencies(backend, &root, &pinned)?
+                        .into_iter()
+                        .map(|dependency| dependency.remote),
+                );
+            }
+            backend.validate_transport_remotes(&names)?;
+        }
+        if request.meta.dry_run.unwrap_or(false) {
+            let mut responses = selected_members
+                .iter()
+                .map(|member_id| {
+                    let member = manifest
+                        .members
+                        .iter()
+                        .find(|member| &member.id == member_id)
+                        .ok_or_else(|| {
+                            ModelError::new(ErrorCode::MemberNotFound, "member not found")
+                        })?;
+                    Ok(push_member(backend, &root, member, &request, true))
+                })
+                .collect::<ModelResult<Vec<_>>>()?;
+            if push_root_selected {
+                responses.push(push_root(backend, &root, &request, true));
+            }
+
+            return Ok(crate::PushResponse {
+                response: response_envelope(context, push_aggregate_status(&responses), responses),
+            });
+        }
+
+        // F7 (Q2): preflight every selected member before pushing any. The dry-run
+        // path validates remote/refspec and materialization without mutating; if any
+        // member would be Rejected or Failed, reject the whole push so no remote is
+        // advanced. Skipped members are intentional policy, not a failure. A remote
+        // rejecting an otherwise-valid push is a genuine push-time outcome and is still
+        // reported per member in the loop below.
+        let mut preflight = selected_members
             .iter()
             .map(|member_id| {
                 let member = manifest
@@ -77,152 +132,227 @@ where
             })
             .collect::<ModelResult<Vec<_>>>()?;
         if push_root_selected {
-            responses.push(push_root(backend, &root, &request, true));
+            preflight.push(push_root(backend, &root, &request, true));
+        }
+        if preflight.iter().any(|response| {
+            matches!(
+                response.status,
+                crate::MemberStatus::Rejected | crate::MemberStatus::Failed
+            )
+        }) {
+            return Ok(crate::PushResponse {
+                response: response_envelope(context, push_aggregate_status(&preflight), preflight),
+            });
         }
 
-        return Ok(crate::PushResponse {
-            response: response_envelope(context, push_aggregate_status(&responses), responses),
-        });
-    }
-
-    // F7 (Q2): preflight every selected member before pushing any. The dry-run
-    // path validates remote/refspec and materialization without mutating; if any
-    // member would be Rejected or Failed, reject the whole push so no remote is
-    // advanced. Skipped members are intentional policy, not a failure. A remote
-    // rejecting an otherwise-valid push is a genuine push-time outcome and is still
-    // reported per member in the loop below.
-    let mut preflight = selected_members
-        .iter()
-        .map(|member_id| {
-            let member = manifest
-                .members
-                .iter()
-                .find(|member| &member.id == member_id)
-                .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
-            Ok(push_member(backend, &root, member, &request, true))
-        })
-        .collect::<ModelResult<Vec<_>>>()?;
-    if push_root_selected {
-        preflight.push(push_root(backend, &root, &request, true));
-    }
-    if preflight.iter().any(|response| {
-        matches!(
-            response.status,
-            crate::MemberStatus::Rejected | crate::MemberStatus::Failed
-        )
-    }) {
-        return Ok(crate::PushResponse {
-            response: response_envelope(context, push_aggregate_status(&preflight), preflight),
-        });
-    }
-
-    // Capture the exact root object before transfers or user event callbacks.
-    let root_request = if push_root_selected {
-        Some(super::publication::freeze_root_request(
-            backend, &root, &request,
-        )?)
-    } else {
-        None
-    };
-
-    let progress_interval = request
-        .meta
-        .policy
-        .as_ref()
-        .and_then(|policy| policy.progress_min_interval_ms)
-        .unwrap_or(0);
-    let emitter = EventEmitter::new(&context, events, progress_interval);
-    emitter.operation_started();
-    let mut responses = par_map_per_host(
-        selected_members,
-        resolve_jobs(
-            request
-                .meta
-                .policy
-                .as_ref()
-                .and_then(|policy| policy.concurrency),
-        ),
-        resolve_per_host(
-            request
-                .meta
-                .policy
-                .as_ref()
-                .and_then(|policy| policy.max_connections_per_host),
-        ),
-        |member_id| {
-            manifest
-                .members
-                .iter()
-                .find(|member| member.id == *member_id)
-                .and_then(|member| push_remote_host(member, &request))
-        },
-        |member_id| {
-            let member = manifest
-                .members
-                .iter()
-                .find(|member| member.id == member_id)
-                .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
-            emitter.member_started(&member.id, &member.path);
-            let response = push_member(backend, &root, member, &request, false);
-            emitter.member_finished(&member.id, &member.path);
-            Ok(response)
-        },
-    )
-    .into_iter()
-    .collect::<ModelResult<Vec<_>>>()?;
-    if push_root_selected {
-        emitter.member_started("@root", ".");
-        let failed: Vec<&str> = responses
-            .iter()
-            .filter(|response| {
-                matches!(
-                    response.status,
-                    crate::MemberStatus::Failed | crate::MemberStatus::Rejected
-                )
-            })
-            .map(|response| response.member_id.as_str())
-            .collect();
-        let root_response = if failed.is_empty() {
-            match super::publication::checked_root_request(
-                backend,
-                &root,
-                root_request.as_ref().expect("selected root was captured"),
-            ) {
-                Ok(pinned) => push_root(backend, &root, &pinned, false),
-                Err(error) => push_root_error(error, crate::MemberStatus::Rejected),
-            }
+        // Capture the exact root object before transfers or user event callbacks.
+        let root_request = if push_root_selected {
+            Some(super::publication::freeze_root_request(
+                backend, &root, &request,
+            )?)
         } else {
-            push_root_error(
-                ModelError::new(
-                    ErrorCode::RemoteRejected,
-                    format!(
-                        "root publication was not attempted because member push failed: {}; resolve the member failures and retry",
-                        failed.join(", ")
-                    ),
-                ),
-                crate::MemberStatus::Rejected,
-            )
+            None
         };
-        responses.push(root_response);
-        emitter.member_finished("@root", ".");
-    }
-    emitter.operation_finished();
 
-    Ok(crate::PushResponse {
-        response: response_envelope(context, push_aggregate_status(&responses), responses),
-    })
-}
+        let mut plans = std::collections::BTreeMap::new();
+        for response in &mut preflight {
+            if response.status != crate::MemberStatus::Planned {
+                continue;
+            }
+            let path = root.join(&response.member_path);
+            let planned_request = if response.member_id == "@root" {
+                root_request.as_ref().expect("selected root captured")
+            } else {
+                &request
+            };
+            let remote = if response.member_id == "@root" {
+                resolve_root_push_remote(backend, &root, planned_request)
+            } else {
+                let member = manifest
+                    .members
+                    .iter()
+                    .find(|member| member.id == response.member_id)
+                    .expect("selected member");
+                resolve_push_remote(member, planned_request)
+            };
+            let captured = remote.and_then(|remote| {
+                let head = backend.head(&path)?;
+                let refspec = resolve_push_refspec(&head, planned_request)?;
+                backend.prepare_push(&path, &remote, &refspec)
+            });
+            match captured {
+                Ok(plan) => {
+                    plans.insert(response.member_id.clone(), plan);
+                }
+                Err(error) => {
+                    response.status = crate::MemberStatus::Rejected;
+                    response.planned = None;
+                    response.error = Some(crate::GwzError::from(
+                        &error.with_member(&response.member_id, &response.member_path),
+                    ));
+                }
+            }
+        }
+        if preflight
+            .iter()
+            .any(|row| row.status == crate::MemberStatus::Rejected)
+        {
+            return Ok(crate::PushResponse {
+                response: response_envelope(context, crate::AggregateStatus::Rejected, preflight),
+            });
+        }
 
-pub(crate) fn push_remote_host(
-    member: &ManifestMember,
-    request: &crate::PushRequest,
-) -> Option<String> {
-    let remote = resolve_push_remote(member, request).ok()?;
-    member
-        .remotes
-        .iter()
-        .find(|candidate| candidate.name == remote)
-        .and_then(|candidate| git_host(&candidate.url))
+        // No member transfer starts until every selected destination and root-lock
+        // dependency has passed read authentication. Aggregate failures per target.
+        for response in &mut preflight {
+            if response.status != crate::MemberStatus::Planned {
+                continue;
+            }
+            let plan = plans
+                .get(&response.member_id)
+                .expect("selected publication captured");
+            let path = root.join(&response.member_path);
+            let result = backend
+                .ls_remote_url(&path, &plan.url, &plan.remote, Some(&path))
+                .and_then(|_| {
+                    if response.member_id == "@root" {
+                        super::publication::preflight_dependencies(
+                            backend,
+                            &root,
+                            root_request.as_ref().expect("selected root captured"),
+                        )
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(error) = result {
+                response.status = crate::MemberStatus::Rejected;
+                response.planned = None;
+                response.error = Some(crate::GwzError::from(
+                    &error.with_member(&response.member_id, &response.member_path),
+                ));
+            }
+        }
+        if preflight
+            .iter()
+            .any(|response| response.status == crate::MemberStatus::Rejected)
+        {
+            return Ok(crate::PushResponse {
+                response: response_envelope(context, crate::AggregateStatus::Rejected, preflight),
+            });
+        }
+
+        let progress_interval = request
+            .meta
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.progress_min_interval_ms)
+            .unwrap_or(0);
+        let emitter = EventEmitter::new(&context, events, progress_interval);
+        emitter.operation_started();
+        let mut responses = par_map_per_host(
+            selected_members,
+            resolve_jobs(
+                request
+                    .meta
+                    .policy
+                    .as_ref()
+                    .and_then(|policy| policy.concurrency),
+            ),
+            resolve_per_host(
+                request
+                    .meta
+                    .policy
+                    .as_ref()
+                    .and_then(|policy| policy.max_connections_per_host),
+            ),
+            |member_id| plans.get(member_id).and_then(|plan| git_host(&plan.url)),
+            |member_id| {
+                let member = manifest
+                    .members
+                    .iter()
+                    .find(|member| member.id == member_id)
+                    .ok_or_else(|| {
+                        ModelError::new(ErrorCode::MemberNotFound, "member not found")
+                    })?;
+                emitter.member_started(&member.id, &member.path);
+                let mut response = preflight
+                    .iter()
+                    .find(|row| row.member_id == member.id)
+                    .expect("selected preflight row")
+                    .clone();
+                if let Some(plan) = plans.get(&member.id) {
+                    finish_prepared_push(
+                        backend.push_prepared(&root.join(&member.path), plan),
+                        &mut response,
+                    );
+                }
+                emitter.member_finished(&member.id, &member.path);
+                Ok(response)
+            },
+        )
+        .into_iter()
+        .collect::<ModelResult<Vec<_>>>()?;
+        if push_root_selected {
+            emitter.member_started("@root", ".");
+            let failed: Vec<&str> = responses
+                .iter()
+                .filter(|response| {
+                    matches!(
+                        response.status,
+                        crate::MemberStatus::Failed | crate::MemberStatus::Rejected
+                    )
+                })
+                .map(|response| response.member_id.as_str())
+                .collect();
+            let root_response = if failed.is_empty() {
+                match super::publication::checked_root_request(
+                    backend,
+                    &root,
+                    root_request.as_ref().expect("selected root was captured"),
+                ) {
+                    Ok(_) => {
+                        let mut response = preflight
+                            .iter()
+                            .find(|row| row.member_id == "@root")
+                            .expect("root preflight row")
+                            .clone();
+                        finish_prepared_push(
+                            backend
+                                .push_prepared(&root, plans.get("@root").expect("root captured")),
+                            &mut response,
+                        );
+                        response
+                    }
+                    Err(error) => push_root_error(error, crate::MemberStatus::Rejected),
+                }
+            } else {
+                push_root_error(
+                    ModelError::new(
+                        ErrorCode::RemoteRejected,
+                        format!(
+                            "root publication was not attempted because member push failed: {}; resolve the member failures and retry",
+                            failed.join(", ")
+                        ),
+                    ),
+                    crate::MemberStatus::Rejected,
+                )
+            };
+            responses.push(root_response);
+            emitter.member_finished("@root", ".");
+        }
+        emitter.operation_finished();
+
+        Ok(crate::PushResponse {
+            response: response_envelope(context, push_aggregate_status(&responses), responses),
+        })
+    })();
+    result
+        .map_err(|error| super::publication::attach_transport_error(backend, error, &error_context))
+        .map(|mut response| {
+            super::publication::attach_transport(backend, &mut response.response);
+            response
+        })
 }
 
 pub(crate) fn push_member<B>(
@@ -364,6 +494,17 @@ where
         return push_root_error(error, crate::MemberStatus::Rejected);
     }
     if dry_run {
+        let dependencies = super::publication::freeze_root_request(backend, root, request)
+            .and_then(|pinned| super::publication::root_dependencies(backend, root, &pinned));
+        let validated = dependencies.and_then(|dependencies| {
+            for dependency in dependencies {
+                super::publication::validate_dependency_identity(backend, &dependency)?;
+            }
+            Ok(())
+        });
+        if let Err(error) = validated {
+            return push_root_error(error, crate::MemberStatus::Rejected);
+        }
         return crate::MemberResponse {
             member_id: "@root".to_owned(),
             member_path: ".".to_owned(),
@@ -592,5 +733,26 @@ pub(crate) fn artifact_source_kind_to_protocol(
         ArtifactSourceKind::Package => crate::SourceKind::Package,
         ArtifactSourceKind::Local => crate::SourceKind::Local,
         ArtifactSourceKind::Generated => crate::SourceKind::Generated,
+    }
+}
+
+fn finish_prepared_push(
+    result: ModelResult<crate::git::GitPushResult>,
+    response: &mut crate::MemberResponse,
+) {
+    response.planned = None;
+    match result {
+        Ok(_) => response.status = crate::MemberStatus::Ok,
+        Err(error) => {
+            response.status = crate::MemberStatus::Failed;
+            let error = if error.code == ErrorCode::MissingRemote {
+                error
+            } else {
+                ModelError::new(ErrorCode::RemoteRejected, error.message)
+            };
+            response.error = Some(crate::GwzError::from(
+                &error.with_member(&response.member_id, &response.member_path),
+            ));
+        }
     }
 }

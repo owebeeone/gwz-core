@@ -3,6 +3,60 @@ use super::*;
 // The CLI-backed commit primitive (WS6) and SSH fail-fast behavior.
 
 #[test]
+fn prepared_push_preserves_wildcards_annotated_tags_shorthand_and_deletion() {
+    let temp = TempDir::new("prepared-refspecs");
+    let backend = Git2Backend::without_credential_helpers();
+    let path = temp.path().join("source");
+    backend.create_repo(&path).unwrap();
+    run_git(&path, &["config", "user.name", "GWZ"]);
+    run_git(&path, &["config", "user.email", "gwz@example.invalid"]);
+    let commit = commit_file(&path, "file", "one", "one", &[]).unwrap();
+    let repo = git2::Repository::open(&path).unwrap();
+    let branch = repo.head().unwrap().shorthand().unwrap().to_owned();
+    let remote_path = temp.path().join("remote.git");
+    let remote_repo = git2::Repository::init_bare(&remote_path).unwrap();
+    backend
+        .add_remote(&path, "origin", remote_path.to_str().unwrap())
+        .unwrap();
+    let object = repo
+        .find_object(git2::Oid::from_str(&commit).unwrap(), None)
+        .unwrap();
+    let tag = repo
+        .tag(
+            "release",
+            &object,
+            &repo.signature().unwrap(),
+            "annotated",
+            false,
+        )
+        .unwrap();
+    let plan = backend
+        .prepare_push(&path, "origin", "+refs/tags/*:refs/tags/*")
+        .unwrap();
+    assert_eq!(plan.refspecs, vec![format!("+{tag}:refs/tags/release")]);
+    repo.tag_lightweight("later", &object, false).unwrap();
+    backend.push_prepared(&path, &plan).unwrap();
+    assert_eq!(remote_repo.refname_to_id("refs/tags/release").unwrap(), tag);
+    assert!(remote_repo.find_reference("refs/tags/later").is_err());
+    let plan = backend.prepare_push(&path, "origin", &branch).unwrap();
+    assert_eq!(plan.refspecs, vec![format!("{commit}:refs/heads/{branch}")]);
+    backend.push_prepared(&path, &plan).unwrap();
+    assert_eq!(
+        repo.refname_to_id(&format!("refs/remotes/origin/{branch}"))
+            .unwrap()
+            .to_string(),
+        commit,
+        "an unchanged configured destination retains ordinary tracking updates"
+    );
+    let plan = backend.prepare_push(&path, "origin", ":release").unwrap();
+    assert_eq!(plan.refspecs, vec![":refs/tags/release"]);
+    backend.push_prepared(&path, &plan).unwrap();
+    assert!(remote_repo.find_reference("refs/tags/release").is_err());
+    let plan = backend.prepare_push(&path, "origin", ":").unwrap();
+    assert_eq!(plan.refspecs, vec![format!("{commit}:refs/heads/{branch}")]);
+}
+
+#[test]
 fn commit_creates_a_commit_and_self_verifies_head_advanced() {
     let temp = TempDir::new("commit-prim");
     let backend = Git2Backend::new();
@@ -102,7 +156,8 @@ fn ssh_clone_times_out_instead_of_hanging() {
         }
     });
 
-    set_server_timeout_ms(500);
+    // Exercise the bounded native default without mutating process globals
+    // while other tests may have active transports.
     let temp = TempDir::new("ssh-timeout");
     let url = format!("ssh://git@127.0.0.1:{port}/x.git");
     let start = Instant::now();

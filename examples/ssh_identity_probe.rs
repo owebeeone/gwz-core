@@ -14,10 +14,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mode = std::env::var("GWZ_PROBE_MODE")?;
     let key = std::env::var("GWZ_PROBE_KEY").ok();
-    if !matches!(mode.as_str(), "agent" | "file") {
+    if !matches!(
+        mode.as_str(),
+        "agent" | "file" | "remote-file" | "configured-file"
+    ) {
         return Err("unknown probe mode".into());
     }
     gwz_core::git::set_server_timeout_ms(5000);
+    if std::env::var_os("GWZ_PROBE_PRODUCT").is_some() {
+        return product_probe(&url, &mode, key.as_deref());
+    }
     let calls = Rc::new(Cell::new(0));
     let callback_calls = calls.clone();
     let callback_mode = mode.clone();
@@ -66,6 +72,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{{\"mode\":\"{mode}\",\"credential_callbacks\":{},\"authenticated\":{authenticated}}}",
         calls.get()
+    );
+    Ok(())
+}
+
+fn product_probe(
+    url: &str,
+    mode: &str,
+    key: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use gwz_core::git::{Git2Backend, GitBackend};
+    let path = std::path::PathBuf::from(std::env::var("GWZ_PROBE_REPOSITORY")?);
+    let repo = git2::Repository::init_bare(&path)?;
+    repo.remote("origin", url)?;
+    let fixture_home = std::ffi::CString::new(std::env::var("GWZ_PROBE_HOME")?)?;
+    // SAFETY: this standalone fixture process has no worker threads. Only
+    // libgit2's test-process home is changed, never HOME or the user's files.
+    let result = unsafe {
+        libgit2_sys::git_libgit2_opts(libgit2_sys::GIT_OPT_SET_HOMEDIR as _, fixture_home.as_ptr())
+    };
+    if result != 0 {
+        return Err("could not configure isolated known-hosts fixture".into());
+    }
+    let base = Git2Backend::without_credential_helpers();
+    if mode == "configured-file" {
+        base.set_remote_identity(&path, "origin", Some(key.ok_or("missing key")?))?;
+    }
+    let options = gwz_core::TransportOptions {
+        default_identity: if mode == "file" {
+            Some(key.ok_or("missing key")?.to_owned())
+        } else {
+            None
+        },
+        remote_identities: if mode == "remote-file" {
+            vec![gwz_core::RemoteSshIdentity {
+                remote: "origin".into(),
+                private_key_path: key.ok_or("missing key")?.into(),
+            }]
+        } else {
+            vec![]
+        },
+    };
+    let scoped = base.with_transport(&path, Some(&options));
+    let (authenticated, observations) = match scoped {
+        Ok(scoped) => {
+            let backend = scoped.as_ref().unwrap_or(&base);
+            let authenticated = backend.ls_remote(&path, "origin").is_ok();
+            let rows = backend.transport_observations().unwrap().snapshot();
+            let observations: Vec<_> = rows
+                .iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "credential_method": format!("{:?}", row.credential_method),
+                        "selection_source": format!("{:?}", row.selection_source),
+                        "credential_offered": row.credential_offered,
+                        "authenticated": row.authenticated,
+                        "public_key_fingerprint": row.public_key_fingerprint,
+                    })
+                })
+                .collect();
+            (authenticated, observations)
+        }
+        Err(_) => (false, Vec::new()),
+    };
+    println!(
+        "{}",
+        serde_json::json!({ "mode": mode, "authenticated": authenticated, "observations": observations })
     );
     Ok(())
 }

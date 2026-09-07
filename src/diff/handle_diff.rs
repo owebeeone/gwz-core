@@ -624,6 +624,7 @@ impl super::MaterializationOracle for FsMaterializationOracle {
 fn envelope(request: &DiffRequest) -> ResponseEnvelope {
     ResponseEnvelope {
         meta: ResponseMeta {
+            transport: None,
             request_id: request.meta.request_id.clone(),
             schema_version: request.meta.schema_version.clone(),
             action: crate::protocol::generated::ActionKind::Diff,

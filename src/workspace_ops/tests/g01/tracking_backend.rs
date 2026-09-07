@@ -382,6 +382,40 @@ impl GitBackend for TrackingBackend {
         })
     }
 
+    fn prepare_push(
+        &self,
+        path: &Path,
+        remote: &str,
+        refspec: &str,
+    ) -> ModelResult<crate::git::GitPreparedPush> {
+        Ok(crate::git::GitPreparedPush {
+            remote: remote.to_owned(),
+            url: format!(
+                "ssh://{}.invalid/repo.git",
+                path.file_name().unwrap().to_string_lossy()
+            ),
+            refspecs: vec![refspec.to_owned()],
+        })
+    }
+
+    fn ls_remote_url(
+        &self,
+        path: &Path,
+        _url: &str,
+        remote: &str,
+        _identity_repo: Option<&Path>,
+    ) -> ModelResult<Vec<crate::git::GitRemoteRef>> {
+        self.ls_remote(path, remote)
+    }
+
+    fn push_prepared(
+        &self,
+        path: &Path,
+        plan: &crate::git::GitPreparedPush,
+    ) -> ModelResult<crate::git::GitPushResult> {
+        self.push(path, &plan.remote, &plan.refspecs[0])
+    }
+
     fn fetch_anonymous(
         &self,
         path: &Path,

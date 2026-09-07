@@ -205,10 +205,10 @@ mod tests {
                 schema: "gwz.merge-operation/v1".to_owned(),
                 record_schema_version: 1,
             },
-            error: ModelError::new(
+            error: Box::new(ModelError::new(
                 ErrorCode::UnexpectedAcceptanceEvidence,
                 "accepted evidence is contradictory",
-            ),
+            )),
         }
     }
 

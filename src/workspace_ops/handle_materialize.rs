@@ -158,60 +158,71 @@ where
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    let (_guard, root) = guarded_workspace_root(
-        start,
-        request.meta.workspace.as_ref(),
-        OpenMergeCommand::Materialize,
-        request.meta.dry_run.unwrap_or(false),
-    )?;
-    assert_conf_unmodified_for(
-        backend,
-        &root,
-        OpenMergeCommand::Materialize,
-        reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
-    )?;
-    let manifest = artifact::read_manifest(&root)?;
-    assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    if request.target.kind == crate::MaterializeTargetKind::Branch {
-        return handle_materialize_branch(backend, root, manifest, request, context);
-    }
-    let (plans, rewrite_lock) = prepare_materialize_execution(backend, &root, &manifest, &request)?;
-    let dry_run = request.meta.dry_run.unwrap_or(false);
-    if dry_run {
-        return Ok(crate::MaterializeResponse {
-            response: response_envelope(
-                context,
-                crate::AggregateStatus::Accepted,
-                plans.into_iter().map(|plan| plan.response).collect(),
-            ),
-        });
-    }
+    let error_context = context.clone();
+    let result: ModelResult<crate::MaterializeResponse> = (|| {
+        let (_guard, root) = guarded_workspace_root(
+            start,
+            request.meta.workspace.as_ref(),
+            OpenMergeCommand::Materialize,
+            request.meta.dry_run.unwrap_or(false),
+        )?;
+        assert_conf_unmodified_for(
+            backend,
+            &root,
+            OpenMergeCommand::Materialize,
+            reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
+        )?;
+        let manifest = artifact::read_manifest(&root)?;
+        assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
+        if request.target.kind == crate::MaterializeTargetKind::Branch {
+            return handle_materialize_branch(backend, root, manifest, request, context);
+        }
+        let (plans, rewrite_lock) =
+            prepare_materialize_execution(backend, &root, &manifest, &request)?;
+        validate_materialize_identities(backend, &manifest, &plans, &[])?;
+        let dry_run = request.meta.dry_run.unwrap_or(false);
+        if dry_run {
+            return Ok(crate::MaterializeResponse {
+                response: response_envelope(
+                    context,
+                    crate::AggregateStatus::Accepted,
+                    plans.into_iter().map(|plan| plan.response).collect(),
+                ),
+            });
+        }
 
-    let progress_interval = request
-        .meta
-        .policy
-        .as_ref()
-        .and_then(|policy| policy.progress_min_interval_ms)
-        .unwrap_or(0);
-    let emitter = EventEmitter::new(&context, events, progress_interval);
-    emitter.operation_started();
-    // Lock target tracks branch heads for detached:false members; snapshot/tag/head pin.
-    let follow_branch_head = request.target.kind == crate::MaterializeTargetKind::Lock;
-    let response = apply_materialize_plans(
-        backend,
-        &root,
-        &manifest,
-        plans,
-        MaterializeApplyOptions {
-            rewrite_lock,
-            follow_branch_head,
-            policy: request.meta.policy.as_ref(),
-        },
-        context,
-        &emitter,
-    );
-    emitter.operation_finished();
-    response
+        let progress_interval = request
+            .meta
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.progress_min_interval_ms)
+            .unwrap_or(0);
+        let emitter = EventEmitter::new(&context, events, progress_interval);
+        emitter.operation_started();
+        // Lock target tracks branch heads for detached:false members; snapshot/tag/head pin.
+        let follow_branch_head = request.target.kind == crate::MaterializeTargetKind::Lock;
+        let response = apply_materialize_plans(
+            backend,
+            &root,
+            &manifest,
+            plans,
+            MaterializeApplyOptions {
+                rewrite_lock,
+                follow_branch_head,
+                policy: request.meta.policy.as_ref(),
+            },
+            context,
+            &emitter,
+        );
+        emitter.operation_finished();
+        response
+    })();
+    result
+        .map_err(|error| super::publication::attach_transport_error(backend, error, &error_context))
+        .map(|mut response| {
+            super::publication::attach_transport(backend, &mut response.response);
+            response
+        })
 }
 
 fn prepare_materialize_execution<B>(
@@ -302,7 +313,8 @@ where
             let member_root = root.join(&plan.state.path);
             emitter.member_started(&plan.member_id, &plan.state.path);
             if let Some(url) = plan.clone_url.as_deref() {
-                backend.clone_repo_with_progress(url, &member_root, &|progress| {
+                let remote = materialize_clone_remote(manifest, &plan.member_id)?;
+                backend.clone_repo_named(url, &member_root, &remote.name, &|progress| {
                     emitter.member_progress(&plan.member_id, &plan.state.path, progress)
                 })?;
             }
@@ -492,34 +504,84 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::CloneWorkspace(request.clone()).context(operation_id.into())?;
-    let start = std::env::current_dir().map_err(|_| ModelError::new(ErrorCode::IoError, "cannot resolve clone invocation directory"))?;
+    let start = std::env::current_dir().map_err(|_| {
+        ModelError::new(
+            ErrorCode::IoError,
+            "cannot resolve clone invocation directory",
+        )
+    })?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    if request.meta.dry_run.unwrap_or(false) {
-        return Err(ModelError::new(
-            ErrorCode::InvalidRequest,
-            "--dry-run is not supported for clone",
-        ));
-    }
-    let target_path = PathBuf::from(&request.target);
-    // Refuse to clone over an existing workspace rather than corrupt it.
-    if target_path.join(WORKSPACE_MANIFEST).exists() {
-        return Err(ModelError::new(
-            ErrorCode::WorkspaceAlreadyExists,
-            "clone target already contains a GWZ workspace",
-        ));
-    }
-    let progress_interval = request
-        .meta
-        .policy
-        .as_ref()
-        .and_then(|policy| policy.progress_min_interval_ms)
-        .unwrap_or(0);
-    let emitter = EventEmitter::new(&context, events, progress_interval);
-    emitter.operation_started();
-    let response = clone_workspace_with_emitter(backend, request, target_path, context, &emitter);
-    emitter.operation_finished();
-    response
+    let error_context = context.clone();
+    let result: ModelResult<crate::CloneWorkspaceResponse> = (|| {
+        if request.meta.dry_run.unwrap_or(false) {
+            return Err(ModelError::new(
+                ErrorCode::InvalidRequest,
+                "--dry-run is not supported for clone",
+            ));
+        }
+        let target_path = PathBuf::from(&request.target);
+        // Refuse to clone over an existing workspace rather than corrupt it.
+        if target_path.join(WORKSPACE_MANIFEST).exists() {
+            return Err(ModelError::new(
+                ErrorCode::WorkspaceAlreadyExists,
+                "clone target already contains a GWZ workspace",
+            ));
+        }
+        backend.validate_url_identity(None, "origin", &request.url)?;
+        if has_explicit_target_selection(request.meta.selection.as_ref())
+            || request
+                .meta
+                .transport
+                .as_ref()
+                .is_some_and(|options| !options.remote_identities.is_empty())
+        {
+            let bytes = backend
+                .read_remote_file(&request.url, "origin", WORKSPACE_MANIFEST)?
+                .ok_or_else(|| {
+                    ModelError::new(
+                        ErrorCode::WorkspaceNotFound,
+                        "remote has no workspace manifest",
+                    )
+                })?;
+            let manifest = ManifestArtifact::from_yaml(
+                std::str::from_utf8(&bytes)
+                    .map_err(|_| invalid("remote workspace manifest is not UTF-8"))?,
+            )?;
+            let selected = resolve_action_targets(
+                &manifest,
+                request.meta.selection.as_ref(),
+                crate::ActionKind::CloneWorkspace,
+            )?;
+            let mut names = vec!["origin".to_owned()];
+            for target in selected {
+                if let SelectedTarget::Member(member) = target
+                    && let Some(remote) = member.remotes.iter().find(|remote| remote.fetch)
+                {
+                    names.push(remote.name.clone());
+                }
+            }
+            backend.validate_transport_remotes(&names)?;
+        }
+        let progress_interval = request
+            .meta
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.progress_min_interval_ms)
+            .unwrap_or(0);
+        let emitter = EventEmitter::new(&context, events, progress_interval);
+        emitter.operation_started();
+        let response =
+            clone_workspace_with_emitter(backend, request, target_path, context, &emitter);
+        emitter.operation_finished();
+        response
+    })();
+    result
+        .map_err(|error| super::publication::attach_transport_error(backend, error, &error_context))
+        .map(|mut response| {
+            super::publication::attach_transport(backend, &mut response.response);
+            response
+        })
 }
 
 fn clone_workspace_with_emitter<B>(
@@ -574,6 +636,7 @@ where
     assert_workspace_id(&manifest, materialize.meta.workspace.as_ref())?;
     let (plans, rewrite_lock) =
         prepare_materialize_execution(backend, &target_path, &manifest, &materialize)?;
+    validate_materialize_identities(backend, &manifest, &plans, &["origin".into()])?;
     // Clone materializes the lock target: detached:false members land on their branch head.
     let response = apply_materialize_plans(
         backend,
@@ -633,32 +696,42 @@ where
     let context = OperationRequest::PullSnapshot(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    let materialize = crate::MaterializeRequest {
-        meta: request.meta,
-        target: crate::MaterializeTarget {
-            kind: crate::MaterializeTargetKind::Snapshot,
-            name: Some(request.snapshot_id),
-            commit: None,
-        },
-    };
-    let mut response = handle_materialize(
-        backend,
-        start,
-        materialize,
-        context.operation_id.clone(),
-        events,
-    )?
-    .response;
-    response.meta = crate::ResponseMeta {
-        request_id: context.request_id,
-        schema_version: context.schema_version,
-        action: context.action.into(),
-        aggregate_status: response.meta.aggregate_status,
-        operation_id: Some(context.operation_id),
-        message: response.meta.message,
-        attribution: context.attribution.as_ref().map(Into::into),
-    };
-    Ok(crate::PullSnapshotResponse { response })
+    let error_context = context.clone();
+    let result: ModelResult<crate::PullSnapshotResponse> = (|| {
+        let materialize = crate::MaterializeRequest {
+            meta: request.meta,
+            target: crate::MaterializeTarget {
+                kind: crate::MaterializeTargetKind::Snapshot,
+                name: Some(request.snapshot_id),
+                commit: None,
+            },
+        };
+        let mut response = handle_materialize(
+            backend,
+            start,
+            materialize,
+            context.operation_id.clone(),
+            events,
+        )?
+        .response;
+        response.meta = crate::ResponseMeta {
+            transport: response.meta.transport,
+            request_id: context.request_id,
+            schema_version: context.schema_version,
+            action: context.action.into(),
+            aggregate_status: response.meta.aggregate_status,
+            operation_id: Some(context.operation_id),
+            message: response.meta.message,
+            attribution: context.attribution.as_ref().map(Into::into),
+        };
+        Ok(crate::PullSnapshotResponse { response })
+    })();
+    result
+        .map_err(|error| super::publication::attach_transport_error(backend, error, &error_context))
+        .map(|mut response| {
+            super::publication::attach_transport(backend, &mut response.response);
+            response
+        })
 }
 
 pub(crate) fn observed_member_map<B: GitBackend>(
@@ -1036,4 +1109,44 @@ pub(crate) fn tag_error(error: ModelError) -> ModelError {
     } else {
         error
     }
+}
+
+fn materialize_clone_remote<'a>(
+    manifest: &'a ManifestArtifact,
+    id: &str,
+) -> ModelResult<&'a crate::artifact::RemoteArtifact> {
+    manifest
+        .members
+        .iter()
+        .find(|member| member.id == id)
+        .and_then(|member| member.remotes.iter().find(|remote| remote.fetch))
+        .ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::MissingRemote,
+                "materialize clone has no declared fetch remote",
+            )
+        })
+}
+
+fn validate_materialize_identities<B: GitBackend>(
+    backend: &B,
+    manifest: &ManifestArtifact,
+    plans: &[MaterializePlan],
+    previous_names: &[String],
+) -> ModelResult<()> {
+    let remotes = plans
+        .iter()
+        .filter(|plan| plan.clone_url.is_some())
+        .map(|plan| materialize_clone_remote(manifest, &plan.member_id))
+        .collect::<ModelResult<Vec<_>>>()?;
+    let names = previous_names
+        .iter()
+        .cloned()
+        .chain(remotes.iter().map(|remote| remote.name.clone()))
+        .collect::<Vec<_>>();
+    backend.validate_transport_remotes(&names)?;
+    for remote in remotes {
+        backend.validate_url_identity(None, &remote.name, &remote.url)?;
+    }
+    Ok(())
 }

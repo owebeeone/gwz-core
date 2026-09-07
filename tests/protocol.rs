@@ -213,6 +213,7 @@ fn repo_sync_request_and_response_round_trip() {
     let response = RepoSyncResponse {
         response: ResponseEnvelope {
             meta: ResponseMeta {
+                transport: None,
                 request_id: "req-sync".to_owned(),
                 schema_version: "gwz.v0".to_owned(),
                 action: ActionKind::RepoSync,
@@ -435,9 +436,10 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
     // map header grows from a8 to a9 and a trailing `09 f6` (slot 9 = null)
     // is appended. Every pre-existing slot is byte-identical.
     //   was: a801a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f608f6
+    // DR-5: RequestMeta adds optional transport at tag 8 (null); older tags unchanged.
     assert_eq!(
         hex,
-        "a901a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f608f609f6"
+        "a901a801697265715f6d65726765026667777a2e763003f604f605f606f607f608f602000369666561747572652f7804f6050006f607f608f609f6"
     );
 
     let response = gwz_core::MergeResponse {
@@ -932,6 +934,7 @@ fn status_response_round_trips_combined_workspace_status() {
     let response = StatusResponse {
         response: ResponseEnvelope {
             meta: ResponseMeta {
+                transport: None,
                 request_id: "req-1".to_owned(),
                 schema_version: "gwz.v0".to_owned(),
                 action: ActionKind::Status,
@@ -1010,6 +1013,7 @@ fn status_response_round_trips_combined_workspace_status() {
 fn response_envelope_round_trips_with_member_error() {
     let response = ResponseEnvelope {
         meta: ResponseMeta {
+            transport: None,
             request_id: "req-1".to_owned(),
             schema_version: "gwz.v0".to_owned(),
             action: ActionKind::Status,
@@ -1572,6 +1576,7 @@ fn log_request() -> LogRequest {
 fn response_envelope(request_id: &str, action: ActionKind) -> ResponseEnvelope {
     ResponseEnvelope {
         meta: ResponseMeta {
+            transport: None,
             request_id: request_id.to_owned(),
             schema_version: "gwz.v0".to_owned(),
             action,

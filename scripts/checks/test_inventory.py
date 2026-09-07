@@ -24,6 +24,22 @@ CHILD_HELPERS = {
 }
 
 
+def cargo_test_binary(output: str, package: str) -> Path:
+    matches = []
+    for line in output.splitlines():
+        row = json.loads(line)
+        target = row.get("target", {})
+        if (row.get("reason") == "compiler-artifact"
+                and target.get("name") == package.replace("-", "_")
+                and target.get("kind") == ["lib"]
+                and row.get("profile", {}).get("test") is True
+                and row.get("executable")):
+            matches.append(Path(row["executable"]))
+    if len(matches) != 1:
+        raise ValueError("expected exactly one compiled package library test executable")
+    return matches[0]
+
+
 def parse_listing(output: str) -> set[str]:
     rows = [line.removesuffix(": test") for line in output.splitlines() if line.endswith(": test")]
     if not rows or len(rows) != len(set(rows)):
@@ -85,7 +101,9 @@ def check_execution(expected: set[str], ignored: set[str], output: str) -> dict[
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--binary", type=Path)
+    source.add_argument("--cargo-artifacts", type=Path)
     parser.add_argument("--package", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--baseline", type=Path)
@@ -97,7 +115,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.run and args.execution_log:
         parser.error("--run and --execution-log are mutually exclusive")
-    binary = str(args.binary.resolve(strict=True))
+    source_binary = args.binary or cargo_test_binary(args.cargo_artifacts.read_text(), args.package)
+    binary = str(source_binary.resolve(strict=True))
     # A concurrent rebuild replaces Cargo's output path. List and execute one
     # immutable copy so evidence cannot accidentally mix two compiled trees.
     snapshot = tempfile.TemporaryDirectory(prefix="gwz-test-inventory-")
@@ -134,7 +153,7 @@ def main() -> int:
         }
         args.execution_log = args.output.with_suffix(".execution.log")
         command = [binary, *filters[args.partition], "--color", "never"]
-        report["command"] = [str(args.binary), *command[1:]]
+        report["command"] = [str(source_binary), *command[1:]]
         # Keep the exact inventory even when execution or reconciliation fails.
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         with args.execution_log.open("w") as log:

@@ -33,6 +33,7 @@ pub enum ActionKind {
     Log,
     CloneLocalWorkspace,
     LocalFamily,
+    RemoteIdentity,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -65,6 +66,7 @@ impl ActionKind {
         Self::Log => 26,
         Self::CloneLocalWorkspace => 27,
         Self::LocalFamily => 28,
+        Self::RemoteIdentity => 29,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::CreateWorkspace,
@@ -96,6 +98,7 @@ impl ActionKind {
         26 => Self::Log,
         27 => Self::CloneLocalWorkspace,
         28 => Self::LocalFamily,
+        29 => Self::RemoteIdentity,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "ActionKind", value: v }),
     }) }
 }
@@ -2031,6 +2034,95 @@ impl LogOutputRecordKind {
     }) }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum RemoteIdentityOp {
+    #[default] Get,
+    Set,
+    Unset,
+}
+impl RemoteIdentityOp {
+    pub fn wire(self) -> i64 { match self {
+        Self::Get => 0,
+        Self::Set => 1,
+        Self::Unset => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Get,
+        1 => Self::Set,
+        2 => Self::Unset,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "RemoteIdentityOp", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum TransportCredentialMethod {
+    #[default] Unknown,
+    File,
+    Agent,
+    Helper,
+}
+impl TransportCredentialMethod {
+    pub fn wire(self) -> i64 { match self {
+        Self::Unknown => 0,
+        Self::File => 1,
+        Self::Agent => 2,
+        Self::Helper => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Unknown,
+        1 => Self::File,
+        2 => Self::Agent,
+        3 => Self::Helper,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "TransportCredentialMethod", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum TransportSelectionSource {
+    #[default] Ambient,
+    InvocationRemote,
+    InvocationDefault,
+    LocalConfiguration,
+}
+impl TransportSelectionSource {
+    pub fn wire(self) -> i64 { match self {
+        Self::Ambient => 0,
+        Self::InvocationRemote => 1,
+        Self::InvocationDefault => 2,
+        Self::LocalConfiguration => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Ambient,
+        1 => Self::InvocationRemote,
+        2 => Self::InvocationDefault,
+        3 => Self::LocalConfiguration,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "TransportSelectionSource", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum TransportOperation {
+    #[default] Clone,
+    Fetch,
+    Push,
+    ReadAdvertisement,
+}
+impl TransportOperation {
+    pub fn wire(self) -> i64 { match self {
+        Self::Clone => 0,
+        Self::Fetch => 1,
+        Self::Push => 2,
+        Self::ReadAdvertisement => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Clone,
+        1 => Self::Fetch,
+        2 => Self::Push,
+        3 => Self::ReadAdvertisement,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "TransportOperation", value: v }),
+    }) }
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct WorkspaceRef {
     pub root: Option<String>,
@@ -2217,6 +2309,190 @@ impl RemoteSshIdentity {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct RemoteIdentityRequest {
+    pub meta: RequestMeta,
+    pub remote: String,
+    pub op: RemoteIdentityOp,
+    pub private_key_path: Option<String>,
+}
+impl RemoteIdentityRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+            (2, Cbor::Text(self.remote.clone())),
+            (3, Cbor::Int(self.op.wire())),
+            (4, match &self.private_key_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            remote: c.try_get(2)?.try_text()?,
+            op: RemoteIdentityOp::from_wire(c.try_get(3)?.try_int()?)?,
+            private_key_path: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RemoteIdentityEntry {
+    pub member_id: String,
+    pub member_path: String,
+    pub remote: String,
+    pub private_key_path: Option<String>,
+}
+impl RemoteIdentityEntry {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.member_id.clone())),
+            (2, Cbor::Text(self.member_path.clone())),
+            (3, Cbor::Text(self.remote.clone())),
+            (4, match &self.private_key_path { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            member_path: c.try_get(2)?.try_text()?,
+            remote: c.try_get(3)?.try_text()?,
+            private_key_path: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RemoteIdentityResponse {
+    pub response: ResponseEnvelope,
+    pub identities: Vec<RemoteIdentityEntry>,
+}
+impl RemoteIdentityResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+            (2, Cbor::Array(self.identities.iter().map(|x| x.to_cbor()).collect())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            identities: c.try_get(2)?.try_array()?.iter().map(|x| RemoteIdentityEntry::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TransportRuntimeRequest {
+    pub server_timeout_ms: i64,
+    pub schema_version: String,
+}
+impl TransportRuntimeRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.server_timeout_ms)),
+            (2, Cbor::Text(self.schema_version.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            server_timeout_ms: c.try_get(1)?.try_int()?,
+            schema_version: c.try_get(2)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TransportRuntimeResponse {
+    pub server_timeout_ms: i64,
+}
+impl TransportRuntimeResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.server_timeout_ms)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            server_timeout_ms: c.try_get(1)?.try_int()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TransportCapabilitiesRequest {
+    pub schema_version: String,
+}
+impl TransportCapabilitiesRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.schema_version.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            schema_version: c.try_get(1)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TransportCapabilitiesResponse {
+    pub file_identity: bool,
+    pub exact_agent_identity: bool,
+}
+impl TransportCapabilitiesResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Bool(self.file_identity)),
+            (2, Cbor::Bool(self.exact_agent_identity)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            file_identity: c.try_get(1)?.try_bool()?,
+            exact_agent_identity: c.try_get(2)?.try_bool()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TransportObservation {
+    pub repository_path: String,
+    pub remote: String,
+    pub operation: TransportOperation,
+    pub credential_method: TransportCredentialMethod,
+    pub selection_source: TransportSelectionSource,
+    pub credential_offered: bool,
+    pub authenticated: Option<bool>,
+    pub public_key_fingerprint: Option<String>,
+}
+impl TransportObservation {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.repository_path.clone())),
+            (2, Cbor::Text(self.remote.clone())),
+            (3, Cbor::Int(self.operation.wire())),
+            (4, Cbor::Int(self.credential_method.wire())),
+            (5, Cbor::Int(self.selection_source.wire())),
+            (6, Cbor::Bool(self.credential_offered)),
+            (7, match &self.authenticated { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
+            (8, match &self.public_key_fingerprint { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            repository_path: c.try_get(1)?.try_text()?,
+            remote: c.try_get(2)?.try_text()?,
+            operation: TransportOperation::from_wire(c.try_get(3)?.try_int()?)?,
+            credential_method: TransportCredentialMethod::from_wire(c.try_get(4)?.try_int()?)?,
+            selection_source: TransportSelectionSource::from_wire(c.try_get(5)?.try_int()?)?,
+            credential_offered: c.try_get(6)?.try_bool()?,
+            authenticated: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
+            public_key_fingerprint: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TransportOptions {
     pub default_identity: Option<String>,
     pub remote_identities: Vec<RemoteSshIdentity>,
@@ -2283,6 +2559,7 @@ pub struct ResponseMeta {
     pub operation_id: Option<String>,
     pub message: Option<String>,
     pub attribution: Option<OperationAttribution>,
+    pub transport: Option<Vec<TransportObservation>>,
 }
 impl ResponseMeta {
     pub fn to_cbor(&self) -> Cbor {
@@ -2294,6 +2571,7 @@ impl ResponseMeta {
             (5, match &self.operation_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (6, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (7, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (8, match &self.transport { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2305,6 +2583,7 @@ impl ResponseMeta {
             operation_id: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             message: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             attribution: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
+            transport: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| TransportObservation::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
         })
     }
 }
@@ -3997,6 +4276,7 @@ pub struct OperationResult {
     pub members: Vec<MemberResponse>,
     pub errors: Vec<GwzError>,
     pub attribution: Option<OperationAttribution>,
+    pub transport: Option<Vec<TransportObservation>>,
 }
 impl OperationResult {
     pub fn to_cbor(&self) -> Cbor {
@@ -4010,6 +4290,7 @@ impl OperationResult {
             (7, Cbor::Array(self.members.iter().map(|x| x.to_cbor()).collect())),
             (8, Cbor::Array(self.errors.iter().map(|x| x.to_cbor()).collect())),
             (9, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (10, match &self.transport { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4023,6 +4304,7 @@ impl OperationResult {
             members: c.try_get(7)?.try_array()?.iter().map(|x| MemberResponse::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
             errors: c.try_get(8)?.try_array()?.iter().map(|x| GwzError::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
             attribution: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
+            transport: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| TransportObservation::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
         })
     }
 }

@@ -20,6 +20,7 @@ mod merge_support;
 mod preservation;
 mod preservation_image;
 mod preservation_root;
+mod push_plan;
 mod recovery_support;
 mod refs;
 mod repository;
@@ -29,14 +30,19 @@ mod scoped_support;
 mod stash;
 mod stash_support;
 mod transport;
+mod transport_observations;
 mod transport_support;
 mod types;
 
 pub use authority_backend::MergeAuthorityBackend;
 pub use backend::*;
 pub use contract::*;
-pub use transport_support::set_server_timeout_ms;
+pub use transport_observations::TransportObservations;
 pub(crate) use transport_support::identity::has_options as has_transport_options;
+pub(crate) use transport_support::identity::{
+    resolve_path as resolve_ssh_identity_path, validate_file as validate_ssh_identity_file,
+};
+pub use transport_support::{configure_server_timeout_ms, set_server_timeout_ms};
 pub use types::*;
 
 pub(crate) use repository_support::open_repo;
@@ -67,11 +73,34 @@ macro_rules! delegate {
 }
 
 impl GitBackend for Git2Backend {
-    fn with_transport(&self, start: &Path, options: Option<&crate::TransportOptions>) -> ModelResult<Option<Self>> {
-        let Some(options) = options.filter(|options| transport_support::identity::has_options(Some(options))) else { return Ok(None); };
-        let identities = transport_support::identity::Selection::from_options(start, options)?;
+    fn transport_observations(&self) -> Option<TransportObservations> {
+        Some(self.observations.clone())
+    }
+    fn remote_identity(&self, path: &Path, remote: &str) -> ModelResult<Option<String>> {
+        transport_support::identity::configured_identity(path, remote)
+    }
+    fn set_remote_identity(
+        &self,
+        path: &Path,
+        remote: &str,
+        value: Option<&str>,
+    ) -> ModelResult<()> {
+        transport_support::identity::set_configured_identity(path, remote, value)
+    }
+    fn with_transport(
+        &self,
+        start: &Path,
+        options: Option<&crate::TransportOptions>,
+    ) -> ModelResult<Option<Self>> {
+        let empty = crate::TransportOptions::default();
+        let identities =
+            transport_support::identity::Selection::from_options(start, options.unwrap_or(&empty))?;
         identities.validate_files()?;
-        Ok(Some(Self { credential_helpers: self.credential_helpers, identities }))
+        Ok(Some(Self {
+            credential_helpers: self.credential_helpers,
+            identities,
+            observations: Default::default(),
+        }))
     }
     fn validate_transport_remotes(&self, names: &[String]) -> ModelResult<()> {
         self.identities.validate_remote_names(names)
@@ -79,8 +108,24 @@ impl GitBackend for Git2Backend {
     fn validate_remote_identity(&self, path: &Path, remote: &str, push: bool) -> ModelResult<()> {
         let repo = open_repo(path)?;
         let handle = repo.find_remote(remote).map_err(git_error)?;
-        let url = if push { handle.pushurl().map_err(git_error)?.unwrap_or(handle.url().map_err(git_error)?) } else { handle.url().map_err(git_error)? };
+        let url = if push {
+            handle
+                .pushurl()
+                .map_err(git_error)?
+                .unwrap_or(handle.url().map_err(git_error)?)
+        } else {
+            handle.url().map_err(git_error)?
+        };
         transport_support::identity::for_remote(self, Some(&repo), Some(remote), url).map(|_| ())
+    }
+    fn validate_url_identity(
+        &self,
+        identity_repo: Option<&Path>,
+        remote: &str,
+        url: &str,
+    ) -> ModelResult<()> {
+        let repo = identity_repo.map(open_repo).transpose()?;
+        transport_support::identity::for_remote(self, repo.as_ref(), Some(remote), url).map(|_| ())
     }
     delegate!(is_repository(path: &Path) -> ModelResult<bool> => repository::is_repository);
     delegate!(commit_exists(path: &Path, oid: &str) -> ModelResult<bool> => repository::commit_exists);
@@ -90,6 +135,8 @@ impl GitBackend for Git2Backend {
     delegate!(create_repo(path: &Path) -> ModelResult<GitCreateResult> => repository::create_repo);
     delegate!(clone_repo(url: &str, path: &Path) -> ModelResult<GitCloneResult> => transport::clone_repo);
     delegate!(clone_repo_with_progress(url: &str, path: &Path, progress: &dyn Fn(crate::GitTransferProgress),) -> ModelResult<GitCloneResult> => transport::clone_repo_with_progress);
+    delegate!(clone_repo_named(url: &str, path: &Path, remote: &str, progress: &dyn Fn(crate::GitTransferProgress)) -> ModelResult<GitCloneResult> => transport::clone_repo_named);
+    delegate!(read_remote_file(url: &str, remote: &str, relative_path: &str) -> ModelResult<Option<Vec<u8>>> => transport::read_remote_file);
     delegate!(fetch(path: &Path, remote: &str) -> ModelResult<GitFetchResult> => transport::fetch);
     delegate!(tag_fetch(path: &Path, remote: &str) -> ModelResult<GitFetchResult> => transport::tag_fetch);
     delegate!(ls_remote(path: &Path, remote: &str) -> ModelResult<Vec<GitRemoteRef>> => transport::ls_remote);
@@ -147,6 +194,8 @@ impl GitBackend for Git2Backend {
     delegate!(remotes(path: &Path) -> ModelResult<Vec<GitRemote>> => transport::remotes);
     delegate!(add_remote(path: &Path, name: &str, url: &str) -> ModelResult<GitRemoteResult> => transport::add_remote);
     delegate!(push(path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult> => transport::push);
+    delegate!(prepare_push(path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPreparedPush> => push_plan::prepare);
+    delegate!(push_prepared(path: &Path, plan: &GitPreparedPush) -> ModelResult<GitPushResult> => transport::push_prepared);
     delegate!(fetch_anonymous(path: &Path, url: &str, refspecs: &[&str]) -> ModelResult<GitFetchResult> => transport::fetch_anonymous);
     delegate!(push_anonymous(path: &Path, url: &str, refspec: &str) -> ModelResult<GitPushResult> => transport::push_anonymous);
     delegate!(stage_paths(path: &Path, pathspecs: &[&str]) -> ModelResult<GitStageResult> => repository::stage_paths);

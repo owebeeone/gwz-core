@@ -24,192 +24,288 @@ where
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_access, root) = if request.op == crate::TagOp::List {
-        (
-            None,
-            resolve_workspace_root(start, request.meta.workspace.as_ref())?,
-        )
-    } else {
-        let access = acquire_workspace_mutation_guard(
-            start,
-            request.meta.workspace.as_ref(),
-            OpenMergeCommand::TagMutate,
-            dry_run,
-        )?;
-        let root = access.root().to_path_buf();
-        (Some(access), root)
-    };
-    if let Some(access) = _access.as_ref() {
-        assert_conf_unmodified_for(backend, &root, OpenMergeCommand::TagMutate, access.writes())?;
-    }
-    let manifest = artifact::read_manifest(&root)?;
-    assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let lock = artifact::read_lock(&root)?;
-    let selected = resolve_locked_action_selection(
-        &manifest,
-        &lock,
-        request.meta.selection.as_ref(),
-        crate::ActionKind::Tag,
-    )?;
-    let mut member_roots: Vec<PathBuf> = Vec::new();
-    for member_id in &selected {
-        if member_id == "@root" {
-            member_roots.push(root.clone());
-            continue;
+    let error_context = context.clone();
+    let result: ModelResult<crate::TagResponse> = (|| {
+        let dry_run = request.meta.dry_run.unwrap_or(false);
+        let (_access, root) = if request.op == crate::TagOp::List {
+            (
+                None,
+                resolve_workspace_root(start, request.meta.workspace.as_ref())?,
+            )
+        } else {
+            let access = acquire_workspace_mutation_guard(
+                start,
+                request.meta.workspace.as_ref(),
+                OpenMergeCommand::TagMutate,
+                dry_run,
+            )?;
+            let root = access.root().to_path_buf();
+            (Some(access), root)
+        };
+        if let Some(access) = _access.as_ref() {
+            assert_conf_unmodified_for(
+                backend,
+                &root,
+                OpenMergeCommand::TagMutate,
+                access.writes(),
+            )?;
         }
-        let member = manifest
-            .members
-            .iter()
-            .find(|member| &member.id == member_id)
-            .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
-        member_roots.push(root.join(&member.path));
-    }
-    let repos: Vec<PathBuf> = member_roots.clone();
-
-    match request.op {
-        crate::TagOp::Create => {
-            let git_name = require_name(&request)?;
-            // `git tag -s` with no message fails non-interactively; reject it with one clear
-            // error instead of an opaque per-repo git failure during the fan-out.
-            if request.signed.unwrap_or(false) && request.message.is_none() {
-                return Err(ModelError::new(
-                    ErrorCode::InvalidRequest,
-                    "a signed tag requires a message (-m)",
-                ));
+        let manifest = artifact::read_manifest(&root)?;
+        assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
+        let lock = artifact::read_lock(&root)?;
+        let selected = resolve_locked_action_selection(
+            &manifest,
+            &lock,
+            request.meta.selection.as_ref(),
+            crate::ActionKind::Tag,
+        )?;
+        let mut member_roots: Vec<PathBuf> = Vec::new();
+        for member_id in &selected {
+            if member_id == "@root" {
+                member_roots.push(root.clone());
+                continue;
             }
-            // Validation is done; a dry run stops before the fan-out.
-            if dry_run {
-                return ok_envelope(context);
-            }
+            let member = manifest
+                .members
+                .iter()
+                .find(|member| &member.id == member_id)
+                .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
+            member_roots.push(root.join(&member.path));
+        }
+        let repos: Vec<PathBuf> = member_roots.clone();
+        let push_plans = if request.op == crate::TagOp::Push {
+            plan_tag_pushes(backend, &member_roots, request.name.as_deref())?
+        } else {
+            Vec::new()
+        };
+        let uses_remote = matches!(request.op, crate::TagOp::Push | crate::TagOp::Fetch)
+            || (matches!(request.op, crate::TagOp::List | crate::TagOp::Delete)
+                && request.remote.is_some());
+        let prepared_pushes = if !dry_run && request.op == crate::TagOp::Push {
+            let remote = request.remote.as_deref().unwrap_or("origin");
+            push_plans
+                .iter()
+                .map(|(repo, refspec)| backend.prepare_push(repo, remote, refspec))
+                .collect::<ModelResult<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        if uses_remote {
+            let remote = request.remote.as_deref().unwrap_or("origin");
+            let mut names = Vec::new();
             for repo in &repos {
-                // Tag a repo only if it has a commit (skip unborn) and does not already carry the
-                // tag — keeping create idempotent and symmetric with delete/push.
-                if backend.is_repository(repo)?
-                    && backend.head(repo)?.commit.is_some()
-                    && !backend.tag_list(repo)?.contains(&git_name)
-                {
+                if backend.is_repository(repo)? {
+                    names.push(remote.to_owned());
+                }
+            }
+            for (repo, refspec) in &push_plans {
+                if repo == &root {
+                    let frozen = crate::PushRequest {
+                        meta: request.meta.clone(),
+                        remote: Some(remote.into()),
+                        refspec: Some(refspec.clone()),
+                    };
+                    for dependency in
+                        super::publication::root_dependencies(backend, &root, &frozen)?
+                    {
+                        super::publication::validate_dependency_identity(backend, &dependency)?;
+                        names.push(dependency.remote);
+                    }
+                }
+            }
+            backend.validate_transport_remotes(&names)?;
+            for repo in &repos {
+                if backend.is_repository(repo)? {
+                    backend.validate_remote_identity(
+                        repo,
+                        remote,
+                        matches!(request.op, crate::TagOp::Push | crate::TagOp::Delete),
+                    )?;
+                }
+            }
+            if !dry_run {
+                for repo in &repos {
+                    if backend.is_repository(repo)? {
+                        if request.op == crate::TagOp::Push {
+                            if let Some(index) =
+                                push_plans.iter().position(|(path, _)| path == repo)
+                            {
+                                let plan = &prepared_pushes[index];
+                                backend.ls_remote_url(repo, &plan.url, &plan.remote, Some(repo))?;
+                            }
+                        } else {
+                            super::publication::preflight_remote(
+                                backend,
+                                repo,
+                                remote,
+                                request.op == crate::TagOp::Delete,
+                            )?;
+                        }
+                    }
+                }
+                for (repo, refspec) in &push_plans {
+                    if repo == &root {
+                        super::publication::preflight_dependencies(
+                            backend,
+                            &root,
+                            &crate::PushRequest {
+                                meta: request.meta.clone(),
+                                remote: Some(remote.into()),
+                                refspec: Some(refspec.clone()),
+                            },
+                        )?;
+                    }
+                }
+            }
+        }
+
+        match request.op {
+            crate::TagOp::Create => {
+                let git_name = require_name(&request)?;
+                // `git tag -s` with no message fails non-interactively; reject it with one clear
+                // error instead of an opaque per-repo git failure during the fan-out.
+                if request.signed.unwrap_or(false) && request.message.is_none() {
+                    return Err(ModelError::new(
+                        ErrorCode::InvalidRequest,
+                        "a signed tag requires a message (-m)",
+                    ));
+                }
+                // Validation is done; a dry run stops before the fan-out.
+                if dry_run {
+                    return ok_envelope(context);
+                }
+                for repo in &repos {
+                    // Tag a repo only if it has a commit (skip unborn) and does not already carry the
+                    // tag — keeping create idempotent and symmetric with delete/push.
+                    if backend.is_repository(repo)?
+                        && backend.head(repo)?.commit.is_some()
+                        && !backend.tag_list(repo)?.contains(&git_name)
+                    {
+                        backend
+                            .tag_create(
+                                repo,
+                                &git_name,
+                                request.message.as_deref(),
+                                request.signed.unwrap_or(false),
+                            )
+                            .map_err(tag_error)?;
+                    }
+                }
+                ok_envelope(context)
+            }
+            crate::TagOp::Delete => {
+                let git_name = require_name(&request)?;
+                // Validation is done; a dry run stops before the fan-out — including the
+                // `ls_remote` probe the remote arm would otherwise make.
+                if dry_run {
+                    return ok_envelope(context);
+                }
+                match request.remote.as_deref() {
+                    // Remote delete: push a delete refspec to each member's remote that has the tag.
+                    Some(remote) => {
+                        let delete_refspec = format!(":refs/tags/{git_name}");
+                        for member_root in &member_roots {
+                            if backend.is_repository(member_root)?
+                                && remote_has_tag(backend, member_root, remote, &git_name)?
+                            {
+                                backend
+                                    .push(member_root, remote, &delete_refspec)
+                                    .map_err(tag_error)?;
+                            }
+                        }
+                        ok_envelope(context)
+                    }
+                    None => {
+                        for repo in &repos {
+                            if backend.is_repository(repo)?
+                                && backend.tag_list(repo)?.contains(&git_name)
+                            {
+                                backend.tag_delete(repo, &git_name).map_err(tag_error)?;
+                            }
+                        }
+                        ok_envelope(context)
+                    }
+                }
+            }
+            crate::TagOp::List => match request.remote.as_deref() {
+                // Remote list: ls-remote each member and keep the tag refs.
+                Some(remote) => {
+                    let mut counts: BTreeMap<String, i64> = BTreeMap::new();
+                    for member_root in &member_roots {
+                        if !backend.is_repository(member_root)? {
+                            continue;
+                        }
+                        for advertised in
+                            backend.ls_remote(member_root, remote).map_err(tag_error)?
+                        {
+                            if let Some(name) = remote_tag_name(&advertised.name) {
+                                *counts.entry(name).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                    Ok(list_response(context, counts))
+                }
+                // Local list: count every tag across root + members.
+                None => {
+                    let mut counts: BTreeMap<String, i64> = BTreeMap::new();
+                    for repo in &repos {
+                        if !backend.is_repository(repo)? {
+                            continue;
+                        }
+                        for full in backend.tag_list(repo)? {
+                            *counts.entry(full).or_insert(0) += 1;
+                        }
+                    }
+                    Ok(list_response(context, counts))
+                }
+            },
+            crate::TagOp::Push => {
+                let remote = request.remote.as_deref().unwrap_or("origin");
+                // A dry run stops before any remote traffic.
+                if dry_run {
+                    return ok_envelope(context);
+                }
+                // Capture every tag object before the first transfer. Root checks below
+                // inspect that captured object even if a local tag moves meanwhile.
+                for ((member_root, refspec), plan) in push_plans.into_iter().zip(prepared_pushes) {
+                    if member_root == root {
+                        super::publication::checked_root_request(
+                            backend,
+                            &root,
+                            &crate::PushRequest {
+                                meta: request.meta.clone(),
+                                remote: Some(remote.into()),
+                                refspec: Some(refspec),
+                            },
+                        )?;
+                    }
                     backend
-                        .tag_create(
-                            repo,
-                            &git_name,
-                            request.message.as_deref(),
-                            request.signed.unwrap_or(false),
-                        )
+                        .push_prepared(&member_root, &plan)
                         .map_err(tag_error)?;
                 }
+                ok_envelope(context)
             }
-            ok_envelope(context)
-        }
-        crate::TagOp::Delete => {
-            let git_name = require_name(&request)?;
-            // Validation is done; a dry run stops before the fan-out — including the
-            // `ls_remote` probe the remote arm would otherwise make.
-            if dry_run {
-                return ok_envelope(context);
-            }
-            match request.remote.as_deref() {
-                // Remote delete: push a delete refspec to each member's remote that has the tag.
-                Some(remote) => {
-                    let delete_refspec = format!(":refs/tags/{git_name}");
-                    for member_root in &member_roots {
-                        if backend.is_repository(member_root)?
-                            && remote_has_tag(backend, member_root, remote, &git_name)?
-                        {
-                            backend
-                                .push(member_root, remote, &delete_refspec)
-                                .map_err(tag_error)?;
-                        }
-                    }
-                    ok_envelope(context)
+            crate::TagOp::Fetch => {
+                let remote = request.remote.as_deref().unwrap_or("origin");
+                // A dry run stops before any remote traffic.
+                if dry_run {
+                    return ok_envelope(context);
                 }
-                None => {
-                    for repo in &repos {
-                        if backend.is_repository(repo)?
-                            && backend.tag_list(repo)?.contains(&git_name)
-                        {
-                            backend.tag_delete(repo, &git_name).map_err(tag_error)?;
-                        }
-                    }
-                    ok_envelope(context)
-                }
-            }
-        }
-        crate::TagOp::List => match request.remote.as_deref() {
-            // Remote list: ls-remote each member and keep the tag refs.
-            Some(remote) => {
-                let mut counts: BTreeMap<String, i64> = BTreeMap::new();
                 for member_root in &member_roots {
-                    if !backend.is_repository(member_root)? {
-                        continue;
-                    }
-                    for advertised in backend.ls_remote(member_root, remote).map_err(tag_error)? {
-                        if let Some(name) = remote_tag_name(&advertised.name) {
-                            *counts.entry(name).or_insert(0) += 1;
-                        }
+                    if backend.is_repository(member_root)? {
+                        backend.tag_fetch(member_root, remote).map_err(tag_error)?;
                     }
                 }
-                Ok(list_response(context, counts))
+                ok_envelope(context)
             }
-            // Local list: count every tag across root + members.
-            None => {
-                let mut counts: BTreeMap<String, i64> = BTreeMap::new();
-                for repo in &repos {
-                    if !backend.is_repository(repo)? {
-                        continue;
-                    }
-                    for full in backend.tag_list(repo)? {
-                        *counts.entry(full).or_insert(0) += 1;
-                    }
-                }
-                Ok(list_response(context, counts))
-            }
-        },
-        crate::TagOp::Push => {
-            let remote = request.remote.as_deref().unwrap_or("origin");
-            // A dry run stops before any remote traffic.
-            if dry_run {
-                return ok_envelope(context);
-            }
-            // Capture every tag object before the first transfer. Root checks below
-            // inspect that captured object even if a local tag moves meanwhile.
-            let plans = plan_tag_pushes(backend, &member_roots, request.name.as_deref())?;
-            for (member_root, refspec) in plans {
-                let refspec = if member_root == root {
-                    super::publication::checked_root_request(
-                        backend,
-                        &root,
-                        &crate::PushRequest {
-                            meta: request.meta.clone(),
-                            remote: Some(remote.into()),
-                            refspec: Some(refspec),
-                        },
-                    )?
-                    .refspec
-                    .expect("checked root publication has a refspec")
-                } else {
-                    refspec
-                };
-                backend
-                    .push(&member_root, remote, &refspec)
-                    .map_err(tag_error)?;
-            }
-            ok_envelope(context)
         }
-        crate::TagOp::Fetch => {
-            let remote = request.remote.as_deref().unwrap_or("origin");
-            // A dry run stops before any remote traffic.
-            if dry_run {
-                return ok_envelope(context);
-            }
-            for member_root in &member_roots {
-                if backend.is_repository(member_root)? {
-                    backend.tag_fetch(member_root, remote).map_err(tag_error)?;
-                }
-            }
-            ok_envelope(context)
-        }
-    }
+    })();
+    result
+        .map_err(|error| super::publication::attach_transport_error(backend, error, &error_context))
+        .map(|mut response| {
+            super::publication::attach_transport(backend, &mut response.response);
+            response
+        })
 }
 
 /// Map an advertised remote ref (`refs/tags/v1`) to its bare tag name (`v1`), skipping peeled

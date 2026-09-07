@@ -133,14 +133,19 @@ pub enum ErrorCode {
     DisposalIncomplete,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ModelError {
     pub code: ErrorCode,
     pub message: String,
     pub member_id: Option<String>,
     pub member_path: Option<String>,
     pub record_context: Option<Box<crate::MergeRecordCompatibilityContext>>,
+    /// Typed operation metadata retained when failure precedes an envelope.
+    pub response_meta: Option<Box<crate::ResponseMeta>>,
 }
+
+// Response metadata contains only equivalence-comparable values (no floats).
+impl Eq for ModelError {}
 
 impl ModelError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
@@ -150,6 +155,7 @@ impl ModelError {
             member_id: None,
             member_path: None,
             record_context: None,
+            response_meta: None,
         }
     }
 

@@ -37,6 +37,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--product', action='store_true', help='Exercise the production Git2Backend with isolated native known-host validation')
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     processes = []
@@ -55,6 +56,9 @@ def main():
         listener.bind(('127.0.0.1', 0))
         port = listener.getsockname()[1]
         listener.close()
+        fixture_home = directory / 'fixture-home'
+        (fixture_home / '.ssh').mkdir(parents=True)
+        (fixture_home / '.ssh' / 'known_hosts').write_text(f'[127.0.0.1]:{port} {host[1]}')
         config = directory / 'sshd_config'
         config.write_text(f'''Port {port}
 ListenAddress 127.0.0.1
@@ -95,27 +99,56 @@ ForceCommand {shlex.quote(shutil.which('git'))} upload-pack {shlex.quote(str(bar
                     except OSError: pass
                     if time.monotonic() >= deadline: raise RuntimeError('fixture startup timed out')
                     time.sleep(0.02)
-                for label, order, mode, explicit, expected in [
+                cases = [
                     ('agent-a-first', [identity_a, identity_b], 'agent', None, True),
                     ('agent-b-first', [identity_b, identity_a], 'agent', None, True),
                     ('explicit-a-with-b-first', [identity_b, identity_a], 'file', identity_a[0], True),
                     ('explicit-wrong-no-fallback', [identity_b], 'file', wrong[0], False),
                     ('explicit-missing-no-fallback', [identity_b], 'file', directory / 'missing', False),
                     ('encrypted-file-with-unlocked-agent', [identity_b, encrypted], 'file', encrypted[0], False),
-                ]:
+                ]
+                if args.product:
+                    cases.extend([
+                        ('explicit-a-with-a-first', [identity_a, identity_b], 'file', identity_a[0], True),
+                        ('remote-override-a-with-b-first', [identity_b, identity_a], 'remote-file', identity_a[0], True),
+                        ('configured-a-with-b-first', [identity_b, identity_a], 'configured-file', identity_a[0], True),
+                        ('host-key-mismatch', [identity_b, identity_a], 'file', identity_a[0], False),
+                    ])
+                for label, order, mode, explicit, expected in cases:
                     run('ssh-add', '-D', env=environment)
                     for item in order: run('ssh-add', str(item[0]), env=environment)
                     offset = log_path.stat().st_size
+                    if label == 'host-key-mismatch':
+                        (fixture_home / '.ssh' / 'known_hosts').write_text(f'[127.0.0.1]:{port} {wrong[1]}')
                     env = {**environment, 'GWZ_PROBE_URL': f'ssh://{getpass.getuser()}@127.0.0.1:{port}/remote.git',
                            'GWZ_PROBE_HOST_SHA256': host[3], 'GWZ_PROBE_MODE': mode,
                            'GWZ_PROBE_REPOSITORY': str(directory / f'client-{label}')}
                     if explicit is not None: env['GWZ_PROBE_KEY'] = str(explicit)
+                    if args.product:
+                        env['GWZ_PROBE_PRODUCT'] = '1'
+                        env['GWZ_PROBE_HOME'] = str(fixture_home)
                     result = json.loads(run(str(binary), env=env))
                     if result['authenticated'] != expected: raise AssertionError((label, result, log_path.read_text()[offset:]))
                     accepted = [line.split('SHA256:', 1)[1].split()[0] for line in log_path.read_text()[offset:].splitlines()
                                 if 'Accepted publickey' in line and 'SHA256:' in line]
                     row = {'case': label, **result, 'accepted_fingerprints': ['SHA256:' + value for value in accepted]}
                     rows.append(row)
+                    if expected and mode != 'agent':
+                        assert row['accepted_fingerprints'] == [identity_a[2]], row
+                    if not expected:
+                        assert not row['accepted_fingerprints'], row
+                    if args.product:
+                        observations = result['observations']
+                        if expected:
+                            assert len(observations) == 1, observations
+                            assert observations[0]['credential_offered'] is True, observations
+                            assert observations[0]['authenticated'] is True, observations
+                            expected_method = 'Agent' if mode == 'agent' else 'File'
+                            assert observations[0]['credential_method'] == expected_method, observations
+                        else:
+                            assert not any(item['authenticated'] is True for item in observations), observations
+                        if label == 'host-key-mismatch':
+                            assert not any(item['credential_offered'] for item in observations), observations
                 assert rows[0]['accepted_fingerprints'] == [identity_a[2]], rows[0]
                 assert rows[1]['accepted_fingerprints'] == [identity_b[2]], rows[1]
                 assert rows[2]['accepted_fingerprints'] == [identity_a[2]], rows[2]
@@ -125,7 +158,8 @@ ForceCommand {shlex.quote(shutil.which('git'))} upload-pack {shlex.quote(str(bar
                 try: process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill(); process.wait()
-        args.output.write_text(json.dumps({'scope': 'native library capability, not product acceptance', 'cases': rows}, indent=2) + '\n')
+        scope = 'production Git2Backend read authentication; not full driver acceptance' if args.product else 'native library capability, not product acceptance'
+        args.output.write_text(json.dumps({'scope': scope, 'cases': rows}, indent=2) + '\n')
         print(f'controlled SSH capability probe: {len(rows)} cases passed')
 
 

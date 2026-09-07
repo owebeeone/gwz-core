@@ -59,7 +59,8 @@ pub(crate) enum RecordDecodeError {
     },
     Validation {
         header: MergeRecordHeader,
-        error: ModelError,
+        // Keep the decoder's error enum compact as optional model diagnostics grow.
+        error: Box<ModelError>,
     },
     UnknownFields {
         header: MergeRecordHeader,
@@ -228,7 +229,7 @@ fn decode_v1_body(
     let validated =
         validate_v1_record(record.clone()).map_err(|error| RecordDecodeError::Validation {
             header: header.clone(),
-            error,
+            error: Box::new(error),
         })?;
     let unknown_fields = UnknownFieldManifest::extract_v1(&raw).map_err(|error| {
         RecordDecodeError::UnknownFields {

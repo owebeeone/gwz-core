@@ -5,6 +5,7 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 /// participant checks for conditionally allowed recovery operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpenMergeCommand {
+    RemoteIdentity,
     StageConflictResolution,
     BranchList,
     BranchMutate,
@@ -49,7 +50,8 @@ impl OpenMergeCommand {
 
         match self {
             Command::StageConflictResolution => Decision::Conditional,
-            Command::BranchList
+            Command::RemoteIdentity
+            | Command::BranchList
             | Command::Diff
             | Command::InitExistingPlan
             | Command::Ls
@@ -109,6 +111,7 @@ mod tests {
         use OpenMergeGateDecision as Decision;
 
         let rows = [
+            (Command::RemoteIdentity, Decision::Allow),
             (Command::StageConflictResolution, Decision::Conditional),
             (Command::BranchList, Decision::Allow),
             (Command::BranchMutate, Decision::Block),

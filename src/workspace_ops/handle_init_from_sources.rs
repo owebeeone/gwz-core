@@ -31,188 +31,207 @@ where
         OperationRequest::InitFromSources(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    let root = if request.workspace_root.trim().is_empty() {
-        start.to_path_buf()
-    } else {
-        PathBuf::from(&request.workspace_root)
-    };
-    if request.sources.is_empty() {
-        return Err(invalid("init from sources requires at least one source"));
-    }
-    assert_init_target_is_head(request.target.as_ref())?;
-    let force_bootstrap = force_bootstrap_overwrite(&request.meta);
-
-    if root.join(WORKSPACE_MANIFEST).exists() {
-        let manifest = artifact::read_manifest(&root)?;
-        if let Some(expected) = &request.workspace_id
-            && expected != &manifest.workspace.id
-        {
-            return Err(ModelError::new(
-                ErrorCode::WorkspaceNotFound,
-                "workspace id does not match manifest",
-            ));
+    let error_context = context.clone();
+    let result: ModelResult<crate::InitFromSourcesResponse> = (|| {
+        let root = if request.workspace_root.trim().is_empty() {
+            start.to_path_buf()
+        } else {
+            PathBuf::from(&request.workspace_root)
+        };
+        if request.sources.is_empty() {
+            return Err(invalid("init from sources requires at least one source"));
         }
-        let plans = init_source_plans(&manifest, &request.sources)?;
-        return Ok(crate::InitFromSourcesResponse {
-            response: response_envelope(
-                context,
-                crate::AggregateStatus::Accepted,
-                plans.iter().map(InitSourcePlan::planned_response).collect(),
-            ),
-        });
-    }
+        assert_init_target_is_head(request.target.as_ref())?;
+        let force_bootstrap = force_bootstrap_overwrite(&request.meta);
 
-    preflight_create_workspace(&root)?;
-    preflight_workspace_bootstrap_files(&root, force_bootstrap)?;
-    let workspace_id = request
-        .workspace_id
-        .clone()
-        .unwrap_or_else(|| "ws_default".to_owned());
-    crate::model::WorkspaceId::parse_str(&workspace_id)?;
-    let mut manifest = ManifestArtifact {
-        schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-        workspace: WorkspaceHeader {
-            id: workspace_id.clone(),
-        },
-        members: Vec::new(),
-    };
-    let plans = init_source_plans(&manifest, &request.sources)?;
-    preflight_init_execution_targets(&root, &plans)?;
-
-    if request.meta.dry_run.unwrap_or(false) {
-        return Ok(crate::InitFromSourcesResponse {
-            response: response_envelope(
-                context,
-                crate::AggregateStatus::Accepted,
-                plans.iter().map(InitSourcePlan::planned_response).collect(),
-            ),
-        });
-    }
-
-    ensure_workspace_git_repo(&root)?;
-    let _guard = WorkspaceMutatorLock::acquire(&root)?;
-    let mut lock = LockArtifact {
-        schema: artifact::LOCK_SCHEMA.to_owned(),
-        workspace_id,
-        manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
-        members: BTreeMap::new(),
-    };
-    let progress_interval = request
-        .meta
-        .policy
-        .as_ref()
-        .and_then(|policy| policy.progress_min_interval_ms)
-        .unwrap_or(0);
-    let emitter = EventEmitter::new(&context, events, progress_interval);
-    emitter.operation_started();
-    // F2: every init member is a fresh clone — rolled back on any mid-batch
-    // failure (Q6 reject-partial) so no orphan repos are left behind.
-    let fresh_clone_paths: Vec<_> = plans
-        .iter()
-        .map(|plan| root.join(plan.path.as_str()))
-        .collect();
-    type InitOutcome = (
-        ManifestMember,
-        ResolvedMemberArtifact,
-        crate::MemberResponse,
-    );
-    let outcomes = par_map_per_host(
-        plans,
-        resolve_jobs(
-            request
-                .meta
-                .policy
-                .as_ref()
-                .and_then(|policy| policy.concurrency),
-        ),
-        resolve_per_host(
-            request
-                .meta
-                .policy
-                .as_ref()
-                .and_then(|policy| policy.max_connections_per_host),
-        ),
-        |plan| git_host(&plan.source.url),
-        |plan| -> ModelResult<InitOutcome> {
-            let member_root = root.join(plan.path.as_str());
-            emitter.member_started(&plan.member_id, plan.path.as_str());
-            backend.clone_repo_with_progress(&plan.source.url, &member_root, &|progress| {
-                emitter.member_progress(&plan.member_id, plan.path.as_str(), progress)
-            })?;
-            let head = backend.head(&member_root)?;
-            let status = backend.status(&member_root)?;
-            emitter.member_finished(&plan.member_id, plan.path.as_str());
-            let remotes = backend.remotes(&member_root)?;
-            let manifest_member = ManifestMember {
-                id: plan.member_id.clone(),
-                path: plan.path.as_str().to_owned(),
-                source_kind: ArtifactSourceKind::Git,
-                source_id: plan.source_id.clone(),
-                active: true,
-                desired: Some(desired_from_head(&head)),
-                remotes: remotes
-                    .iter()
-                    .map(|remote| RemoteArtifact {
-                        name: remote.name.clone(),
-                        url: remote.url.clone().unwrap_or_default(),
-                        fetch: true,
-                        push: true,
-                    })
-                    .collect(),
-            };
-            let locked = resolved_member(&manifest_member, &head, &status);
-            let response = crate::MemberResponse {
-                member_id: plan.member_id,
-                member_path: manifest_member.path.clone(),
-                source_kind: crate::SourceKind::Git,
-                status: crate::MemberStatus::Ok,
-                error: None,
-                planned: None,
-                state: Some(protocol_state(&manifest_member, &locked)),
-                git_status: None,
-                target_kind: Some(crate::TargetKind::Member),
-                lock_match: Some(crate::LockMatch::Matches),
-            };
-            Ok((manifest_member, locked, response))
-        },
-    );
-    let mut members = Vec::with_capacity(outcomes.len());
-    let mut first_error = None;
-    for outcome in outcomes {
-        match outcome {
-            Ok((manifest_member, locked, response)) => {
-                lock.members.insert(manifest_member.id.clone(), locked);
-                members.push(response);
-                manifest.members.push(manifest_member);
+        if root.join(WORKSPACE_MANIFEST).exists() {
+            if crate::git::has_transport_options(request.meta.transport.as_ref()) {
+                return Err(ModelError::new(
+                    ErrorCode::UnsupportedOperation,
+                    "init planning in an existing workspace does not use network credentials",
+                ));
             }
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(error);
+            let manifest = artifact::read_manifest(&root)?;
+            if let Some(expected) = &request.workspace_id
+                && expected != &manifest.workspace.id
+            {
+                return Err(ModelError::new(
+                    ErrorCode::WorkspaceNotFound,
+                    "workspace id does not match manifest",
+                ));
+            }
+            let plans = init_source_plans(&manifest, &request.sources)?;
+            return Ok(crate::InitFromSourcesResponse {
+                response: response_envelope(
+                    context,
+                    crate::AggregateStatus::Accepted,
+                    plans.iter().map(InitSourcePlan::planned_response).collect(),
+                ),
+            });
+        }
+
+        preflight_create_workspace(&root)?;
+        preflight_workspace_bootstrap_files(&root, force_bootstrap)?;
+        let workspace_id = request
+            .workspace_id
+            .clone()
+            .unwrap_or_else(|| "ws_default".to_owned());
+        crate::model::WorkspaceId::parse_str(&workspace_id)?;
+        let mut manifest = ManifestArtifact {
+            schema: artifact::WORKSPACE_SCHEMA.to_owned(),
+            workspace: WorkspaceHeader {
+                id: workspace_id.clone(),
+            },
+            members: Vec::new(),
+        };
+        let plans = init_source_plans(&manifest, &request.sources)?;
+        preflight_init_execution_targets(&root, &plans)?;
+        backend.validate_transport_remotes(&["origin".into()])?;
+        for plan in &plans {
+            backend.validate_url_identity(None, "origin", &plan.source.url)?;
+        }
+
+        if request.meta.dry_run.unwrap_or(false) {
+            return Ok(crate::InitFromSourcesResponse {
+                response: response_envelope(
+                    context,
+                    crate::AggregateStatus::Accepted,
+                    plans.iter().map(InitSourcePlan::planned_response).collect(),
+                ),
+            });
+        }
+
+        ensure_workspace_git_repo(&root)?;
+        let _guard = WorkspaceMutatorLock::acquire(&root)?;
+        let mut lock = LockArtifact {
+            schema: artifact::LOCK_SCHEMA.to_owned(),
+            workspace_id,
+            manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
+            members: BTreeMap::new(),
+        };
+        let progress_interval = request
+            .meta
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.progress_min_interval_ms)
+            .unwrap_or(0);
+        let emitter = EventEmitter::new(&context, events, progress_interval);
+        emitter.operation_started();
+        // F2: every init member is a fresh clone — rolled back on any mid-batch
+        // failure (Q6 reject-partial) so no orphan repos are left behind.
+        let fresh_clone_paths: Vec<_> = plans
+            .iter()
+            .map(|plan| root.join(plan.path.as_str()))
+            .collect();
+        type InitOutcome = (
+            ManifestMember,
+            ResolvedMemberArtifact,
+            crate::MemberResponse,
+        );
+        let outcomes = par_map_per_host(
+            plans,
+            resolve_jobs(
+                request
+                    .meta
+                    .policy
+                    .as_ref()
+                    .and_then(|policy| policy.concurrency),
+            ),
+            resolve_per_host(
+                request
+                    .meta
+                    .policy
+                    .as_ref()
+                    .and_then(|policy| policy.max_connections_per_host),
+            ),
+            |plan| git_host(&plan.source.url),
+            |plan| -> ModelResult<InitOutcome> {
+                let member_root = root.join(plan.path.as_str());
+                emitter.member_started(&plan.member_id, plan.path.as_str());
+                backend.clone_repo_with_progress(&plan.source.url, &member_root, &|progress| {
+                    emitter.member_progress(&plan.member_id, plan.path.as_str(), progress)
+                })?;
+                let head = backend.head(&member_root)?;
+                let status = backend.status(&member_root)?;
+                emitter.member_finished(&plan.member_id, plan.path.as_str());
+                let remotes = backend.remotes(&member_root)?;
+                let manifest_member = ManifestMember {
+                    id: plan.member_id.clone(),
+                    path: plan.path.as_str().to_owned(),
+                    source_kind: ArtifactSourceKind::Git,
+                    source_id: plan.source_id.clone(),
+                    active: true,
+                    desired: Some(desired_from_head(&head)),
+                    remotes: remotes
+                        .iter()
+                        .map(|remote| RemoteArtifact {
+                            name: remote.name.clone(),
+                            url: remote.url.clone().unwrap_or_default(),
+                            fetch: true,
+                            push: true,
+                        })
+                        .collect(),
+                };
+                let locked = resolved_member(&manifest_member, &head, &status);
+                let response = crate::MemberResponse {
+                    member_id: plan.member_id,
+                    member_path: manifest_member.path.clone(),
+                    source_kind: crate::SourceKind::Git,
+                    status: crate::MemberStatus::Ok,
+                    error: None,
+                    planned: None,
+                    state: Some(protocol_state(&manifest_member, &locked)),
+                    git_status: None,
+                    target_kind: Some(crate::TargetKind::Member),
+                    lock_match: Some(crate::LockMatch::Matches),
+                };
+                Ok((manifest_member, locked, response))
+            },
+        );
+        let mut members = Vec::with_capacity(outcomes.len());
+        let mut first_error = None;
+        for outcome in outcomes {
+            match outcome {
+                Ok((manifest_member, locked, response)) => {
+                    lock.members.insert(manifest_member.id.clone(), locked);
+                    members.push(response);
+                    manifest.members.push(manifest_member);
+                }
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
                 }
             }
         }
-    }
-    if let Some(error) = first_error {
-        // F2/Q6 reject-partial: a source failed mid-batch. Roll back this op's
-        // fresh clones and write no manifest/lock — failed = nothing changed.
-        for path in &fresh_clone_paths {
-            let _ = std::fs::remove_dir_all(path);
+        if let Some(error) = first_error {
+            // F2/Q6 reject-partial: a source failed mid-batch. Roll back this op's
+            // fresh clones and write no manifest/lock — failed = nothing changed.
+            for path in &fresh_clone_paths {
+                let _ = std::fs::remove_dir_all(path);
+            }
+            emitter.operation_finished();
+            return Err(error);
         }
+        // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `init-from-sources` is named on E0.2 §5.2's list, so this writer pair stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
+        artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
+        sync_workspace_boundary(backend, &root, &manifest, &lock)?;
+        let bootstrap = ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;
         emitter.operation_finished();
-        return Err(error);
-    }
-    // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `init-from-sources` is named on E0.2 §5.2's list, so this writer pair stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
-    artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-    sync_workspace_boundary(backend, &root, &manifest, &lock)?;
-    let bootstrap = ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;
-    emitter.operation_finished();
 
-    let mut response = response_envelope(context, crate::AggregateStatus::Ok, members);
-    // Carry a declined `.claude/settings.json` merge out through the normal channel.
-    if !bootstrap.notes.is_empty() {
-        response.meta.message = Some(bootstrap.notes.join("; "));
-    }
-    Ok(crate::InitFromSourcesResponse { response })
+        let mut response = response_envelope(context, crate::AggregateStatus::Ok, members);
+        // Carry a declined `.claude/settings.json` merge out through the normal channel.
+        if !bootstrap.notes.is_empty() {
+            response.meta.message = Some(bootstrap.notes.join("; "));
+        }
+        Ok(crate::InitFromSourcesResponse { response })
+    })();
+    result
+        .map_err(|error| super::publication::attach_transport_error(backend, error, &error_context))
+        .map(|mut response| {
+            super::publication::attach_transport(backend, &mut response.response);
+            response
+        })
 }
 
 pub(crate) fn desired_from_head(head: &GitHeadState) -> DesiredRefArtifact {

@@ -221,6 +221,58 @@ pub(crate) fn materialize_lock_clones_missing_member_and_checks_out_recorded_com
 }
 
 #[test]
+fn materialize_uses_the_named_fetch_remote_for_clone_identity() {
+    let temp = TempDir::new("materialize-named-identity");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+    let fixture = RemoteFixture::new("named-identity-source");
+    let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
+    write_materialize_fixture(temp.path(), fixture.remote_url(), &commit);
+    let mut manifest = crate::artifact::read_manifest(temp.path()).unwrap();
+    manifest.members[0].remotes[0].name = "upstream".into();
+    crate::artifact::write_manifest(temp.path(), &manifest).unwrap();
+    crate::artifact::refresh_conf_integrity_marker(temp.path()).unwrap();
+    let key = temp.path().join("fixture-key");
+    std::fs::write(
+        &key,
+        "fixture key: must refuse explicit SSH on this local URL",
+    )
+    .unwrap();
+    let mut request = materialize_lock_request(false);
+    request.meta.transport = Some(crate::TransportOptions {
+        default_identity: None,
+        remote_identities: vec![crate::RemoteSshIdentity {
+            remote: "upstream".into(),
+            private_key_path: key.to_str().unwrap().into(),
+        }],
+    });
+    let result = handle_materialize(
+        &backend,
+        temp.path(),
+        request,
+        "materialize",
+        &CollectingSink::default(),
+    );
+    assert!(
+        !temp.path().join("repos/app").exists(),
+        "explicit upstream identity must not be ignored"
+    );
+    assert!(result.is_err());
+    // With no identity selected, the same local source remains usable and is
+    // registered under the manifest's fetch name rather than a guessed origin.
+    handle_materialize(
+        &backend,
+        temp.path(),
+        materialize_lock_request(false),
+        "ordinary",
+        &CollectingSink::default(),
+    )
+    .unwrap();
+    let remotes = backend.remotes(&temp.path().join("repos/app")).unwrap();
+    assert_eq!(remotes[0].name, "upstream");
+}
+
+#[test]
 pub(crate) fn clone_workspace_clones_root_and_materializes_missing_members() {
     let temp = TempDir::new("clone-workspace");
     let backend = Git2Backend::new();
@@ -234,7 +286,59 @@ pub(crate) fn clone_workspace_clones_root_and_materializes_missing_members() {
     write_materialize_fixture(&source_ws, fixture.remote_url(), &commit);
     commit_workspace_root(&source_ws);
 
+    for token in ["@root", "missing-member"] {
+        let target = temp.path().join(format!("invalid-{token}"));
+        let result = handle_clone_workspace(
+            &backend,
+            crate::RequestMeta {
+                selection: Some(crate::Selection {
+                    targets: vec![token.into()],
+                    ..Default::default()
+                }),
+                ..request_meta()
+            },
+            source_ws.to_str().unwrap(),
+            target.to_str().unwrap(),
+            "invalid-selection",
+            &CollectingSink::default(),
+        );
+        assert!(result.is_err());
+        assert!(
+            !target.exists(),
+            "invalid selection must refuse before allocating the clone"
+        );
+    }
+
     // Clone the workspace from its root URL into a fresh target.
+    let invalid_target = temp.path().join("invalid-clone");
+    let key = temp.path().join("unused-key");
+    fs::write(&key, "unused fixture").unwrap();
+    let invalid_meta = crate::RequestMeta {
+        transport: Some(crate::TransportOptions {
+            default_identity: None,
+            remote_identities: vec![crate::RemoteSshIdentity {
+                remote: "typo".into(),
+                private_key_path: key.to_str().unwrap().into(),
+            }],
+        }),
+        ..request_meta()
+    };
+    let invalid = handle_clone_workspace(
+        &backend,
+        invalid_meta,
+        source_ws.to_str().unwrap(),
+        invalid_target.to_str().unwrap(),
+        "invalid",
+        &CollectingSink::default(),
+    );
+    assert!(
+        !invalid_target.exists(),
+        "unused override must refuse before allocating the workspace clone"
+    );
+    assert_eq!(
+        invalid.unwrap_err().code,
+        crate::model::ErrorCode::InvalidRequest
+    );
     let target = temp.path().join("clone");
     let events = CollectingSink::default();
     let response = handle_clone_workspace(

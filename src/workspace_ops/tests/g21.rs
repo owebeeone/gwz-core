@@ -21,6 +21,19 @@ fn root_branch_create_switch_list_and_delete_preserve_member_scope() {
         ..Default::default()
     });
     request.switch_after_create = Some(true);
+    let mut dry = request.clone();
+    dry.meta.dry_run = Some(true);
+    handle_branch(&backend, temp.path(), dry, "root-branch-dry").unwrap();
+    assert_eq!(
+        backend.head(temp.path()).unwrap().branch.as_deref(),
+        Some("main")
+    );
+    assert!(
+        backend
+            .read_ref(temp.path(), "refs/heads/root-topic")
+            .unwrap()
+            .is_none()
+    );
     handle_branch(&backend, temp.path(), request.clone(), "op_root_branch").unwrap();
     assert_eq!(
         backend.head(temp.path()).unwrap().branch.as_deref(),

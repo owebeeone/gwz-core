@@ -3,12 +3,26 @@
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+type ResolutionKey = (Option<PathBuf>, Option<String>, String);
+type Resolutions = BTreeMap<ResolutionKey, Option<SelectedIdentity>>;
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Selection {
     default: Option<PathBuf>,
     remotes: BTreeMap<String, PathBuf>,
+    resolved: Option<Arc<Mutex<Resolutions>>>,
 }
+
+// Backend equality describes configured authority, not observations made while
+// executing an operation. Clones within one operation share its frozen choices.
+impl PartialEq for Selection {
+    fn eq(&self, other: &Self) -> bool {
+        self.default == other.default && self.remotes == other.remotes
+    }
+}
+impl Eq for Selection {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Source {
@@ -56,7 +70,11 @@ impl Selection {
                 return Err(invalid("duplicate remote SSH identity override"));
             }
         }
-        Ok(Self { default, remotes })
+        Ok(Self {
+            default,
+            remotes,
+            resolved: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+        })
     }
 
     pub(crate) fn validate_remote_names(&self, names: &[String]) -> ModelResult<()> {
@@ -143,8 +161,54 @@ pub(crate) fn for_remote(
     remote: Option<&str>,
     url: &str,
 ) -> ModelResult<Option<SelectedIdentity>> {
-    let configured = match (repo, remote) {
-        (Some(repo), Some(remote)) => {
+    let key = (
+        repo.map(|repo| repo.path().to_path_buf()),
+        remote.map(str::to_owned),
+        url.to_owned(),
+    );
+    if let Some(cache) = &backend.identities.resolved {
+        let mut cache = cache.lock().map_err(|_| {
+            ModelError::new(
+                ErrorCode::InternalError,
+                "identity resolution lock poisoned",
+            )
+        })?;
+        if let Some(identity) = cache.get(&key) {
+            if let Some(identity) = identity {
+                validate_file(&identity.path)?;
+            }
+            return Ok(identity.clone());
+        }
+        let identity = resolve_remote(backend, repo, remote, url)?;
+        cache.insert(key, identity.clone());
+        return Ok(identity);
+    }
+    resolve_remote(backend, repo, remote, url)
+}
+
+fn resolve_remote(
+    backend: &super::super::Git2Backend,
+    repo: Option<&git2::Repository>,
+    remote: Option<&str>,
+    url: &str,
+) -> ModelResult<Option<SelectedIdentity>> {
+    let scp = !url.contains("://")
+        && !Path::new(url).is_absolute()
+        && url
+            .split_once(':')
+            .is_some_and(|(host, _)| host.len() > 1 && !host.contains('/'));
+    if !url.starts_with("ssh://") && !scp {
+        if remote.is_some_and(|remote| backend.identities.remotes.contains_key(remote)) {
+            return Err(invalid(
+                "a per-remote SSH identity override names a non-SSH destination",
+            ));
+        }
+        // An invocation-wide SSH default does not change HTTPS authentication.
+        return Ok(None);
+    }
+    let invocation = backend.identities.resolve(remote, None);
+    let configured = match (invocation.is_none(), repo, remote) {
+        (true, Some(repo), Some(remote)) => {
             let config = repo.config().map_err(crate::git::git_error)?;
             let local = config
                 .open_level(git2::ConfigLevel::Local)
@@ -157,18 +221,8 @@ pub(crate) fn for_remote(
         }
         _ => None,
     };
-    let identity = backend.identities.resolve(remote, configured.as_deref());
+    let identity = invocation.or_else(|| backend.identities.resolve(remote, configured.as_deref()));
     if let Some(identity) = &identity {
-        let scp = !url.contains("://")
-            && !Path::new(url).is_absolute()
-            && url
-                .split_once(':')
-                .is_some_and(|(host, _)| host.len() > 1 && !host.contains('/'));
-        if !url.starts_with("ssh://") && !scp {
-            return Err(invalid(
-                "an explicit SSH identity was selected for a non-SSH remote",
-            ));
-        }
         validate_file(&identity.path)?;
     }
     Ok(identity)
@@ -180,6 +234,44 @@ fn unavailable() -> ModelError {
         "selected SSH identity is unavailable or not a regular file; no agent fallback was attempted",
     )
 }
+
+pub(crate) fn configured_identity(path: &Path, remote: &str) -> ModelResult<Option<String>> {
+    let repo = super::super::open_repo(path)?;
+    repo.find_remote(remote).map_err(crate::git::git_error)?;
+    let local = repo
+        .config()
+        .map_err(crate::git::git_error)?
+        .open_level(git2::ConfigLevel::Local)
+        .map_err(crate::git::git_error)?;
+    match local.get_string(&format!("remote.{remote}.gwzSshIdentity")) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(crate::git::git_error(error)),
+    }
+}
+
+pub(crate) fn set_configured_identity(
+    path: &Path,
+    remote: &str,
+    value: Option<&str>,
+) -> ModelResult<()> {
+    let repo = super::super::open_repo(path)?;
+    repo.find_remote(remote).map_err(crate::git::git_error)?;
+    let mut local = repo
+        .config()
+        .map_err(crate::git::git_error)?
+        .open_level(git2::ConfigLevel::Local)
+        .map_err(crate::git::git_error)?;
+    let key = format!("remote.{remote}.gwzSshIdentity");
+    match value {
+        Some(value) => local.set_str(&key, value).map_err(crate::git::git_error),
+        None => match local.remove(&key) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+            Err(error) => Err(crate::git::git_error(error)),
+        },
+    }
+}
 fn invalid(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::InvalidRequest, message)
 }
@@ -187,6 +279,101 @@ fn invalid(message: impl Into<String>) -> ModelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_identity_is_frozen_and_scopes_do_not_share_configured_keys() {
+        use crate::git::{Git2Backend, GitBackend};
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        let a = temp.path().join("key-a");
+        let b = temp.path().join("key-b");
+        std::fs::write(&a, "fixture a").unwrap();
+        std::fs::write(&b, "fixture b").unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("remote.origin.gwzSshIdentity", a.to_str().unwrap())
+            .unwrap();
+        let base = Git2Backend::without_credential_helpers();
+        let scoped_a = base.with_transport(temp.path(), None).unwrap();
+        let backend_a = scoped_a.as_ref().unwrap_or(&base);
+        let url = "ssh://git@example.invalid/repo";
+        assert_eq!(
+            for_remote(backend_a, Some(&repo), Some("origin"), url)
+                .unwrap()
+                .unwrap()
+                .path,
+            a
+        );
+        repo.config()
+            .unwrap()
+            .set_str("remote.origin.gwzSshIdentity", b.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            for_remote(backend_a, Some(&repo), Some("origin"), url)
+                .unwrap()
+                .unwrap()
+                .path,
+            a
+        );
+        let scoped_b = base.with_transport(temp.path(), None).unwrap();
+        assert_eq!(
+            for_remote(
+                scoped_b.as_ref().unwrap_or(&base),
+                Some(&repo),
+                Some("origin"),
+                url
+            )
+            .unwrap()
+            .unwrap()
+            .path,
+            b
+        );
+    }
+
+    #[test]
+    fn invocation_identity_beats_invalid_local_config_and_leaves_https_helpers_unchanged() {
+        use crate::git::{Git2Backend, GitBackend};
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("remote.origin.gwzSshIdentity", "")
+            .unwrap();
+        std::fs::write(
+            temp.path().join("key"),
+            "fixture: only local selection is tested",
+        )
+        .unwrap();
+        let backend = Git2Backend::without_credential_helpers()
+            .with_transport(
+                temp.path(),
+                Some(&crate::TransportOptions {
+                    default_identity: Some("key".into()),
+                    remote_identities: vec![],
+                }),
+            )
+            .unwrap()
+            .unwrap();
+        let identity = for_remote(
+            &backend,
+            Some(&repo),
+            Some("origin"),
+            "ssh://git@example.invalid/repo",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(identity.source, Source::InvocationDefault);
+        assert!(
+            for_remote(
+                &backend,
+                Some(&repo),
+                Some("origin"),
+                "https://example.invalid/repo"
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
 
     #[test]
     fn explicit_credentials_never_fall_back_after_rejection_or_other_challenge() {
@@ -292,5 +479,19 @@ mod tests {
         selection
             .validate_remote_names(&["origin".into(), "origin".into()])
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    #[test]
+    fn native_backends_install_bounded_default_timeouts() {
+        let _backend = crate::git::Git2Backend::without_credential_helpers();
+        // Backend construction must finish the one-time startup configuration
+        // before a worker can observe libgit2's process-wide timeout values.
+        unsafe {
+            assert!(git2::opts::get_server_connect_timeout_in_milliseconds().unwrap() > 0);
+            assert!(git2::opts::get_server_timeout_in_milliseconds().unwrap() > 0);
+        }
     }
 }

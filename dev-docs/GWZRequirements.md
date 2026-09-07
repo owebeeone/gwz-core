@@ -16,6 +16,14 @@ dependencies are available remotely. Explicit SSH identity MUST fail closed,
 without Git CLI fallback or core-owned credential storage. Local and CI evidence
 MUST identify the source tuple actually tested.
 
+Push MUST capture selected source objects and effective destinations before
+transfer callbacks; later local ref or remote configuration edits MUST NOT
+redirect publication. Structural commands MUST reject unused target selectors
+before effects, while URL clone MUST consume them through materialize policy.
+Transport observations MUST distinguish offered credentials from authenticated
+credentials and survive ordinary, streamed and early-error reporting. Process
+timeout configuration MUST freeze before backend work begins.
+
 GWZ Core is a standalone library for defining, materializing, observing, and
 operating on a workspace made from independently owned sources.
 

@@ -10,6 +10,7 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActionKind {
+    RemoteIdentity,
     CreateWorkspace,
     InitFromSources,
     AddExistingRepo,
@@ -96,6 +97,7 @@ pub struct MemberPlan {
 }
 
 pub enum OperationRequest {
+    RemoteIdentity(crate::RemoteIdentityRequest),
     CreateWorkspace(crate::CreateWorkspaceRequest),
     InitFromSources(crate::InitFromSourcesRequest),
     AddExistingRepo(crate::AddExistingRepoRequest),
@@ -128,6 +130,7 @@ pub enum OperationRequest {
 impl OperationRequest {
     pub fn context(&self, operation_id: impl Into<String>) -> model::ModelResult<OperationContext> {
         let (action, meta) = match self {
+            Self::RemoteIdentity(request) => (ActionKind::RemoteIdentity, &request.meta),
             Self::CreateWorkspace(request) => (ActionKind::CreateWorkspace, &request.meta),
             Self::InitFromSources(request) => (ActionKind::InitFromSources, &request.meta),
             Self::AddExistingRepo(request) => (ActionKind::AddExistingRepo, &request.meta),
@@ -156,31 +159,27 @@ impl OperationRequest {
             Self::CloneLocalWorkspace(request) => (ActionKind::CloneLocalWorkspace, &request.meta),
             Self::LocalFamily(request) => (ActionKind::LocalFamily, &request.meta),
         };
-        let transport_supported = matches!(self,
-            Self::Push(_) | Self::PullHead(_) | Self::PullSnapshot(_) |
-            Self::CloneWorkspace(_) | Self::CloneRepoMember(_) |
-            Self::InitFromSources(_) | Self::Materialize(_))
-            || matches!(self, Self::Tag(request) if matches!(request.op, crate::TagOp::Push | crate::TagOp::Fetch) || request.remote.is_some());
+        crate::workspace_ops::validate_structural_selection(
+            action.into(),
+            meta.selection.as_ref(),
+        )?;
+        let transport_supported = matches!(
+            self,
+            Self::Push(_)
+                | Self::PullHead(_)
+                | Self::PullSnapshot(_)
+                | Self::CloneWorkspace(_)
+                | Self::CloneRepoMember(_)
+                | Self::InitFromSources(_)
+        ) || matches!(self, Self::Materialize(request) if request.target.kind != crate::MaterializeTargetKind::Branch)
+            || matches!(self, Self::Tag(request) if matches!(request.op, crate::TagOp::Push | crate::TagOp::Fetch) || (matches!(request.op, crate::TagOp::List | crate::TagOp::Delete) && request.remote.is_some()));
         if crate::git::has_transport_options(meta.transport.as_ref()) && !transport_supported {
-            return Err(model::ModelError::new(model::ErrorCode::UnsupportedOperation,
-                "SSH identity options require a network operation; this operation does not use network credentials"));
+            return Err(model::ModelError::new(
+                model::ErrorCode::UnsupportedOperation,
+                "SSH identity options require a network operation; this operation does not use network credentials",
+            ));
         }
         OperationContext::from_meta(operation_id.into(), action, meta)
-    }
-}
-
-#[cfg(test)]
-mod transport_selection_tests {
-    #[test]
-    fn local_requests_refuse_nonempty_transport_options() {
-        let request = super::OperationRequest::Status(crate::StatusRequest {
-            meta: crate::RequestMeta {
-                transport: Some(crate::TransportOptions { default_identity: Some("unused-key".into()), ..Default::default() }),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        assert!(request.context("local-auth-refusal").is_err());
     }
 }
 
@@ -190,12 +189,23 @@ impl OperationContext {
         action: ActionKind,
         meta: &crate::RequestMeta,
     ) -> model::ModelResult<Self> {
-        if crate::git::has_transport_options(meta.transport.as_ref()) && !matches!(action,
-            ActionKind::Push | ActionKind::PullHead | ActionKind::PullSnapshot |
-            ActionKind::CloneWorkspace | ActionKind::CloneRepoMember |
-            ActionKind::InitFromSources | ActionKind::Materialize | ActionKind::Tag) {
-            return Err(model::ModelError::new(model::ErrorCode::UnsupportedOperation,
-                "SSH identity options require a network operation"));
+        if crate::git::has_transport_options(meta.transport.as_ref())
+            && !matches!(
+                action,
+                ActionKind::Push
+                    | ActionKind::PullHead
+                    | ActionKind::PullSnapshot
+                    | ActionKind::CloneWorkspace
+                    | ActionKind::CloneRepoMember
+                    | ActionKind::InitFromSources
+                    | ActionKind::Materialize
+                    | ActionKind::Tag
+            )
+        {
+            return Err(model::ModelError::new(
+                model::ErrorCode::UnsupportedOperation,
+                "SSH identity options require a network operation",
+            ));
         }
         let attribution = meta
             .attribution
@@ -219,6 +229,7 @@ impl ResponseBuilder {
     pub fn accepted(context: &OperationContext, members: &[MemberPlan]) -> crate::ResponseEnvelope {
         crate::ResponseEnvelope {
             meta: crate::ResponseMeta {
+                transport: None,
                 request_id: context.request_id.clone(),
                 schema_version: context.schema_version.clone(),
                 action: context.action.into(),
@@ -239,6 +250,7 @@ impl ResponseBuilder {
         finished_at_ms: TimestampMs,
     ) -> crate::OperationResult {
         crate::OperationResult {
+            transport: None,
             operation_id: context.operation_id.clone(),
             request_id: context.request_id.clone(),
             action: context.action.into(),
@@ -671,6 +683,7 @@ pub fn response_envelope_for(
     let context = OperationContext::from_meta(operation_id.into(), action, meta)?;
     Ok(crate::ResponseEnvelope {
         meta: crate::ResponseMeta {
+            transport: None,
             request_id: context.request_id,
             schema_version: context.schema_version,
             action: action.into(),
@@ -715,6 +728,7 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::Log => Self::Log,
             ActionKind::CloneLocalWorkspace => Self::CloneLocalWorkspace,
             ActionKind::LocalFamily => Self::LocalFamily,
+            ActionKind::RemoteIdentity => Self::RemoteIdentity,
         }
     }
 }
@@ -755,4 +769,102 @@ pub fn handle_log(
     output_registry: &CommitLogOutputRegistry,
 ) -> model::ModelResult<crate::LogResponse> {
     super::commit_log::handle_log(start, request, operation_id, output_registry)
+}
+
+#[cfg(test)]
+mod transport_selection_tests {
+    #[test]
+    fn structural_requests_refuse_unused_selection_but_accept_empty_envelopes() {
+        for selected in [false, true] {
+            let meta = crate::RequestMeta {
+                selection: Some(crate::Selection {
+                    targets: if selected {
+                        vec!["@root".into()]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let requests = [
+                super::OperationRequest::CreateWorkspace(crate::CreateWorkspaceRequest {
+                    meta: meta.clone(),
+                    ..Default::default()
+                }),
+                super::OperationRequest::InitFromSources(crate::InitFromSourcesRequest {
+                    meta: meta.clone(),
+                    ..Default::default()
+                }),
+                super::OperationRequest::AddExistingRepo(crate::AddExistingRepoRequest {
+                    meta: meta.clone(),
+                    ..Default::default()
+                }),
+                super::OperationRequest::CreateRepo(crate::CreateRepoRequest {
+                    meta: meta.clone(),
+                    ..Default::default()
+                }),
+                super::OperationRequest::CloneRepoMember(crate::CloneRepoMemberRequest {
+                    meta: meta.clone(),
+                    ..Default::default()
+                }),
+                super::OperationRequest::ListSnapshots(crate::ListSnapshotsRequest { meta }),
+            ];
+            for request in requests {
+                let result = request.context("unused-selection");
+                if selected {
+                    assert_eq!(
+                        result.unwrap_err().code,
+                        crate::model::ErrorCode::InvalidRequest
+                    );
+                } else {
+                    assert!(result.is_ok());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn local_requests_refuse_nonempty_transport_options() {
+        let request = super::OperationRequest::Status(crate::StatusRequest {
+            meta: crate::RequestMeta {
+                transport: Some(crate::TransportOptions {
+                    default_identity: Some("unused-key".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(request.context("local-auth-refusal").is_err());
+        let meta = crate::RequestMeta {
+            transport: Some(crate::TransportOptions {
+                default_identity: Some("unused-key".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for request in [
+            super::OperationRequest::Tag(crate::TagRequest {
+                meta: meta.clone(),
+                op: crate::TagOp::Create,
+                remote: Some("origin".into()),
+                ..Default::default()
+            }),
+            super::OperationRequest::Materialize(crate::MaterializeRequest {
+                meta: meta.clone(),
+                target: crate::MaterializeTarget {
+                    kind: crate::MaterializeTargetKind::Branch,
+                    name: Some("local".into()),
+                    commit: None,
+                },
+            }),
+        ] {
+            assert!(request.context("local-suboperation").is_err());
+        }
+        assert!(
+            super::OperationContext::from_meta("forall".into(), super::ActionKind::Forall, &meta)
+                .is_err()
+        );
+    }
 }

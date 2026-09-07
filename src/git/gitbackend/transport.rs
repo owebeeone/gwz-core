@@ -1,6 +1,7 @@
 use super::repository_support::{open_repo, pin_creation_time_filter_neutralization};
 use super::transport_support::{
-    fetch_options_with_progress, remote_callbacks, remote_fetch_options, remote_push_options, identity,
+    fetch_options_with_progress, identity, remote_callbacks, remote_fetch_options,
+    remote_push_options,
 };
 use super::*;
 
@@ -18,8 +19,19 @@ pub(super) fn clone_repo_with_progress(
     path: &Path,
     progress: &dyn Fn(crate::GitTransferProgress),
 ) -> ModelResult<GitCloneResult> {
+    clone_repo_named(backend, url, path, "origin", progress)
+}
+
+pub(super) fn clone_repo_named(
+    backend: &Git2Backend,
+    url: &str,
+    path: &Path,
+    remote: &str,
+    progress: &dyn Fn(crate::GitTransferProgress),
+) -> ModelResult<GitCloneResult> {
     ensure_clone_target_is_empty(path)?;
     let mut builder = git2::build::RepoBuilder::new();
+    builder.remote_create(move |repo, _default_name, url| repo.remote(remote, url));
     // Creation-time filter neutralization (Decision 1 Option B), clone edge:
     // this is the single production clone funnel, and `RepoBuilder::clone`
     // materializes the initial worktree itself — so the initial checkout runs
@@ -30,12 +42,21 @@ pub(super) fn clone_repo_with_progress(
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout.disable_filters(true);
     builder.with_checkout(checkout);
+    let identity = identity::for_remote(backend, None, Some(remote), url)?;
+    let attempt = backend.observations.begin(
+        path,
+        remote,
+        crate::TransportOperation::Clone,
+        identity.as_ref(),
+    );
     builder.fetch_options(fetch_options_with_progress(
         backend.credential_helpers,
-        identity::for_remote(backend, None, Some("origin"), url)?,
+        identity,
+        Some(attempt.clone()),
         Some(progress),
     ));
     let repo = builder.clone(url, path).map_err(git_error)?;
+    attempt.succeeded();
     pin_creation_time_filter_neutralization(&repo)?;
     Ok(GitCloneResult {
         path: path.to_path_buf(),
@@ -50,15 +71,31 @@ pub(super) fn fetch(
 ) -> ModelResult<GitFetchResult> {
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
-    let identity = identity::for_remote(backend, Some(&repo), Some(remote), remote_handle.url().map_err(git_error)?)?;
+    let identity = identity::for_remote(
+        backend,
+        Some(&repo),
+        Some(remote),
+        remote_handle.url().map_err(git_error)?,
+    )?;
     let refspecs: [&str; 0] = [];
+    let attempt = backend.observations.begin(
+        path,
+        remote,
+        crate::TransportOperation::Fetch,
+        identity.as_ref(),
+    );
     remote_handle
         .fetch(
             &refspecs,
-            Some(&mut remote_fetch_options(backend.credential_helpers, identity)),
+            Some(&mut remote_fetch_options(
+                backend.credential_helpers,
+                identity,
+                Some(attempt.clone()),
+            )),
             Some("gwz fetch"),
         )
         .map_err(git_error)?;
+    attempt.succeeded();
     Ok(GitFetchResult {
         remote: remote.to_owned(),
     })
@@ -72,15 +109,31 @@ pub(super) fn tag_fetch(
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
     // Fetch every tag, force-updating local copies.
-    let identity = identity::for_remote(backend, Some(&repo), Some(remote), remote_handle.url().map_err(git_error)?)?;
+    let identity = identity::for_remote(
+        backend,
+        Some(&repo),
+        Some(remote),
+        remote_handle.url().map_err(git_error)?,
+    )?;
     let refspec = "+refs/tags/*:refs/tags/*";
+    let attempt = backend.observations.begin(
+        path,
+        remote,
+        crate::TransportOperation::Fetch,
+        identity.as_ref(),
+    );
     remote_handle
         .fetch(
             &[refspec],
-            Some(&mut remote_fetch_options(backend.credential_helpers, identity)),
+            Some(&mut remote_fetch_options(
+                backend.credential_helpers,
+                identity,
+                Some(attempt.clone()),
+            )),
             Some("gwz tag fetch"),
         )
         .map_err(git_error)?;
+    attempt.succeeded();
     Ok(GitFetchResult {
         remote: remote.to_owned(),
     })
@@ -93,8 +146,19 @@ pub(super) fn ls_remote(
 ) -> ModelResult<Vec<GitRemoteRef>> {
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
-    let identity = identity::for_remote(backend, Some(&repo), Some(remote), remote_handle.url().map_err(git_error)?)?;
-    advertised_refs(backend, &mut remote_handle, identity)
+    let identity = identity::for_remote(
+        backend,
+        Some(&repo),
+        Some(remote),
+        remote_handle.url().map_err(git_error)?,
+    )?;
+    let attempt = backend.observations.begin(
+        path,
+        remote,
+        crate::TransportOperation::ReadAdvertisement,
+        identity.as_ref(),
+    );
+    advertised_refs(backend, &mut remote_handle, identity, attempt)
 }
 
 pub(super) fn ls_remote_url(
@@ -106,20 +170,32 @@ pub(super) fn ls_remote_url(
 ) -> ModelResult<Vec<GitRemoteRef>> {
     let repo = open_repo(path)?;
     let mut remote = repo.remote_anonymous(url).map_err(git_error)?;
+    let report_path = identity_repo.unwrap_or(Path::new("")).to_path_buf();
     let identity_repo = identity_repo.map(open_repo).transpose()?;
     let identity = identity::for_remote(backend, identity_repo.as_ref(), Some(remote_name), url)?;
-    advertised_refs(backend, &mut remote, identity)
+    let attempt = backend.observations.begin(
+        &report_path,
+        remote_name,
+        crate::TransportOperation::ReadAdvertisement,
+        identity.as_ref(),
+    );
+    advertised_refs(backend, &mut remote, identity, attempt)
 }
 
 fn advertised_refs(
     backend: &Git2Backend,
     remote_handle: &mut git2::Remote<'_>,
     identity: Option<identity::SelectedIdentity>,
+    attempt: super::transport_observations::TransportAttempt,
 ) -> ModelResult<Vec<GitRemoteRef>> {
     let connection = remote_handle
         .connect_auth(
             git2::Direction::Fetch,
-            Some(remote_callbacks(backend.credential_helpers, identity)),
+            Some(remote_callbacks(
+                backend.credential_helpers,
+                identity,
+                Some(attempt.clone()),
+            )),
             None,
         )
         .map_err(git_error)?;
@@ -133,6 +209,7 @@ fn advertised_refs(
         })
         .collect::<Vec<_>>();
     // `connection` disconnects on drop.
+    attempt.succeeded();
     Ok(refs)
 }
 
@@ -312,16 +389,77 @@ pub(super) fn push(
     refspec: &str,
 ) -> ModelResult<GitPushResult> {
     let repo = open_repo(path)?;
-    let mut remote_handle = find_remote(&repo, remote)?;
-    let url = remote_handle.pushurl().map_err(git_error)?.unwrap_or(remote_handle.url().map_err(git_error)?);
-    let identity = identity::for_remote(backend, Some(&repo), Some(remote), url)?;
+    let mut handle = find_remote(&repo, remote)?;
+    let url = handle
+        .pushurl()
+        .map_err(git_error)?
+        .unwrap_or(handle.url().map_err(git_error)?)
+        .to_owned();
+    perform_push(
+        backend,
+        &repo,
+        &mut handle,
+        path,
+        &GitPreparedPush {
+            remote: remote.to_owned(),
+            url,
+            refspecs: vec![refspec.to_owned()],
+        },
+    )
+}
+
+pub(super) fn push_prepared(
+    backend: &Git2Backend,
+    path: &Path,
+    plan: &GitPreparedPush,
+) -> ModelResult<GitPushResult> {
+    let repo = open_repo(path)?;
+    // A named handle snapshots its URL on load and preserves normal tracking
+    // updates. If configuration moved, use the captured endpoint in memory.
+    let configured = repo.find_remote(&plan.remote).ok().filter(|remote| {
+        remote
+            .pushurl()
+            .ok()
+            .flatten()
+            .or_else(|| remote.url().ok())
+            == Some(plan.url.as_str())
+    });
+    let mut remote_handle = match configured {
+        Some(remote) => remote,
+        None => repo.remote_anonymous(&plan.url).map_err(git_error)?,
+    };
+    perform_push(backend, &repo, &mut remote_handle, path, plan)
+}
+
+fn perform_push(
+    backend: &Git2Backend,
+    repo: &git2::Repository,
+    remote_handle: &mut git2::Remote<'_>,
+    path: &Path,
+    plan: &GitPreparedPush,
+) -> ModelResult<GitPushResult> {
+    let remote = plan.remote.as_str();
+    let identity = identity::for_remote(backend, Some(repo), Some(remote), &plan.url)?;
+    if plan.refspecs.is_empty() {
+        return Ok(GitPushResult {
+            remote: remote.to_owned(),
+            refspec: String::new(),
+        });
+    }
+    let attempt = backend.observations.begin(
+        path,
+        remote,
+        crate::TransportOperation::Push,
+        identity.as_ref(),
+    );
     let rejected = std::cell::RefCell::new(Vec::new());
     remote_handle
         .push(
-            &[refspec],
+            &plan.refspecs,
             Some(&mut remote_push_options(
                 backend.credential_helpers,
                 identity,
+                Some(attempt.clone()),
                 &rejected,
             )),
         )
@@ -332,6 +470,7 @@ pub(super) fn push(
                 git_error(error)
             }
         })?;
+    attempt.succeeded();
     if let Some((refname, message)) = rejected.borrow().first() {
         return Err(ModelError::new(
             ErrorCode::RemoteRejected,
@@ -340,6 +479,51 @@ pub(super) fn push(
     }
     Ok(GitPushResult {
         remote: remote.to_owned(),
-        refspec: refspec.to_owned(),
+        refspec: plan.refspecs.join(" "),
     })
+}
+
+pub(super) fn read_remote_file(
+    backend: &Git2Backend,
+    url: &str,
+    remote: &str,
+    relative_path: &str,
+) -> ModelResult<Option<Vec<u8>>> {
+    let scratch = tempfile::tempdir().map_err(crate::git::io_error)?;
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.bare(true);
+    let identity = identity::for_remote(backend, None, Some(remote), url)?;
+    let attempt = backend.observations.begin(
+        Path::new(""),
+        remote,
+        crate::TransportOperation::Clone,
+        identity.as_ref(),
+    );
+    builder.fetch_options(remote_fetch_options(
+        backend.credential_helpers,
+        identity,
+        Some(attempt.clone()),
+    ));
+    let repo = builder
+        .clone(url, &scratch.path().join("probe.git"))
+        .map_err(git_error)?;
+    attempt.succeeded();
+    let tree = repo
+        .head()
+        .map_err(git_error)?
+        .peel_to_commit()
+        .map_err(git_error)?
+        .tree()
+        .map_err(git_error)?;
+    let entry = match tree.get_path(Path::new(relative_path)) {
+        Ok(entry) => entry,
+        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(error) => return Err(git_error(error)),
+    };
+    Ok(Some(
+        repo.find_blob(entry.id())
+            .map_err(git_error)?
+            .content()
+            .to_vec(),
+    ))
 }

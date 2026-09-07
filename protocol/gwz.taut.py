@@ -5,6 +5,15 @@ from taut.ir.dsl import BOOL, BYTES, INT, STR, Enum, F, List, Msg, Params, Ref, 
 SCHEMA = schema(
     # ---- service ----------------------------------------------------------
     service("GwzCore",
+        method("configure_transport_runtime", role="in",
+               params=Params(request=Ref.TransportRuntimeRequest),
+               out=Ref.TransportRuntimeResponse),
+        method("remote_identity", role="in",
+               params=Params(request=Ref.RemoteIdentityRequest),
+               out=Ref.RemoteIdentityResponse),
+        method("transport_capabilities", role="in",
+               params=Params(request=Ref.TransportCapabilitiesRequest),
+               out=Ref.TransportCapabilitiesResponse),
         # Create an empty workspace artifact set.
         method("create_workspace", role="in",
                params=Params(request=Ref.CreateWorkspaceRequest),
@@ -184,7 +193,8 @@ SCHEMA = schema(
          log=26,
          # Local clone family (GwzLocalCloneDesign.md §7; allocated 2026-09-05).
          clone_local_workspace=27,
-         local_family=28),
+         local_family=28,
+         remote_identity=29),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -1011,6 +1021,42 @@ SCHEMA = schema(
     RemoteSshIdentity=Msg(
         remote=F(1, STR),
         private_key_path=F(2, STR)),
+    RemoteIdentityOp=Enum(get=0, set=1, unset=2),
+    RemoteIdentityRequest=Msg(
+        meta=F(1, Ref.RequestMeta),
+        remote=F(2, STR),
+        op=F(3, Ref.RemoteIdentityOp),
+        private_key_path=F(4, STR, optional=True)),
+    RemoteIdentityEntry=Msg(
+        member_id=F(1, STR),
+        member_path=F(2, STR),
+        remote=F(3, STR),
+        private_key_path=F(4, STR, optional=True)),
+    RemoteIdentityResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope),
+        identities=F(2, List(Ref.RemoteIdentityEntry))),
+    TransportRuntimeRequest=Msg(
+        server_timeout_ms=F(1, INT),
+        schema_version=F(2, STR)),
+    TransportRuntimeResponse=Msg(
+        server_timeout_ms=F(1, INT)),
+    TransportCapabilitiesRequest=Msg(
+        schema_version=F(1, STR)),
+    TransportCapabilitiesResponse=Msg(
+        file_identity=F(1, BOOL),
+        exact_agent_identity=F(2, BOOL)),
+    TransportCredentialMethod=Enum(unknown=0, file=1, agent=2, helper=3),
+    TransportSelectionSource=Enum(ambient=0, invocation_remote=1, invocation_default=2, local_configuration=3),
+    TransportOperation=Enum(clone=0, fetch=1, push=2, read_advertisement=3),
+    TransportObservation=Msg(
+        repository_path=F(1, STR),
+        remote=F(2, STR),
+        operation=F(3, Ref.TransportOperation),
+        credential_method=F(4, Ref.TransportCredentialMethod),
+        selection_source=F(5, Ref.TransportSelectionSource),
+        credential_offered=F(6, BOOL),
+        authenticated=F(7, BOOL, optional=True),
+        public_key_fingerprint=F(8, STR, optional=True)),
     TransportOptions=Msg(
         default_identity=F(1, STR, optional=True),
         remote_identities=F(2, List(Ref.RemoteSshIdentity))),
@@ -1041,7 +1087,8 @@ SCHEMA = schema(
         operation_id=F(5, STR, optional=True),
         # Human-readable summary, not a machine contract.
         message=F(6, STR, optional=True),
-        attribution=F(7, Ref.OperationAttribution, optional=True)),
+        attribution=F(7, Ref.OperationAttribution, optional=True),
+        transport=F(8, List(Ref.TransportObservation), optional=True)),
 
     # Durable merge-record header context for compatibility and recovery errors.
     MergeRecordCompatibilityContext=Msg(
@@ -1601,7 +1648,8 @@ SCHEMA = schema(
         finished_at_ms=F(6, INT),
         members=F(7, List(Ref.MemberResponse)),
         errors=F(8, List(Ref.GwzError)),
-        attribution=F(9, Ref.OperationAttribution, optional=True)),
+        attribution=F(9, Ref.OperationAttribution, optional=True),
+        transport=F(10, List(Ref.TransportObservation), optional=True)),
 
     # ---- action requests --------------------------------------------------
     # Create an empty workspace at workspace_root.

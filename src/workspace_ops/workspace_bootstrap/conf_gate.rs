@@ -196,7 +196,8 @@ mod tests {
                 C::MergeStatus => Some(C::MergeRecovery),
                 C::MergeRecovery => Some(C::MergeGc),
                 C::MergeGc => Some(C::MergeStart),
-                C::MergeStart => None,
+                C::MergeStart => Some(C::RemoteIdentity),
+                C::RemoteIdentity => None,
             };
         }
         all
@@ -490,7 +491,7 @@ mod tests {
         let commands = every_command();
         assert_eq!(
             commands.len(),
-            27,
+            28,
             "the enum grew; classify the new variant"
         );
 

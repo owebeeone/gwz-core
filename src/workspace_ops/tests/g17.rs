@@ -3,6 +3,49 @@ use crate::git::{Git2Backend, GitBackend};
 use super::*;
 
 #[test]
+fn remote_tag_operations_refuse_unused_identity_overrides() {
+    let temp = TempDir::new("tag-unused-identity");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+    let remote = temp.path().join("root.git");
+    init_bare_main(&remote);
+    backend
+        .add_remote(temp.path(), "origin", remote.to_str().unwrap())
+        .unwrap();
+    set_identity(temp.path());
+    commit_file(temp.path(), "root.txt", "root", "root", &[]).unwrap();
+    backend.tag_create(temp.path(), "v1", None, false).unwrap();
+    let key = temp.path().join("unused-key");
+    std::fs::write(&key, "unused fixture").unwrap();
+    for op in [
+        crate::TagOp::Push,
+        crate::TagOp::Fetch,
+        crate::TagOp::List,
+        crate::TagOp::Delete,
+    ] {
+        let mut request = tag_request(op, Some("v1"), Some("origin"));
+        request.meta.selection = Some(crate::Selection {
+            targets: vec!["@root".into()],
+            ..Default::default()
+        });
+        request.meta.transport = Some(crate::TransportOptions {
+            default_identity: None,
+            remote_identities: vec![crate::RemoteSshIdentity {
+                remote: "typo".into(),
+                private_key_path: key.to_str().unwrap().into(),
+            }],
+        });
+        let result = handle_tag(&backend, temp.path(), request, "tag");
+        assert_eq!(read_repo_ref(&remote, "refs/tags/v1"), None, "{op:?}");
+        assert_eq!(
+            result.unwrap_err().code,
+            crate::model::ErrorCode::InvalidRequest,
+            "{op:?}"
+        );
+    }
+}
+
+#[test]
 fn tag_publication_plan_pins_objects_before_any_transfer() {
     let temp = TempDir::new("tag-frozen-source");
     let backend = Git2Backend::without_credential_helpers();
@@ -66,6 +109,10 @@ fn root_tag_create_list_push_and_delete_use_root_selection() {
         targets: vec!["@root".into()],
         ..Default::default()
     });
+    let mut dry = request.clone();
+    dry.meta.dry_run = Some(true);
+    handle_tag(&backend, temp.path(), dry, "root-tag-dry").unwrap();
+    assert!(backend.tag_list(temp.path()).unwrap().is_empty());
     handle_tag(&backend, temp.path(), request.clone(), "op_tag_root").unwrap();
     assert!(
         backend
@@ -98,8 +145,7 @@ fn root_tag_create_list_push_and_delete_use_root_selection() {
     );
 }
 
-// GWZTag Phase 3: handle_tag remote ops — push, list --remote, delete --remote, fetch — fanned
-// out over the members (whose origin is the bare RemoteFixture); the root is local-only.
+// Remote tag operations cover member remotes and explicitly selected root remotes.
 
 fn tag_request(op: crate::TagOp, name: Option<&str>, remote: Option<&str>) -> crate::TagRequest {
     crate::TagRequest {

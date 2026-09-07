@@ -233,6 +233,27 @@ fn default_merge_pull_applies_a_planned_root_fast_forward_after_member_preflight
         .push(&peer, "origin", "refs/heads/main:refs/heads/main")
         .unwrap();
 
+    let key = root_remote.path().join("unused-key");
+    fs::write(&key, "unused identity fixture").unwrap();
+    let mut invalid = pull_head_request_with_sync(crate::SyncBehavior::Merge);
+    invalid.meta.transport = Some(crate::TransportOptions {
+        default_identity: None,
+        remote_identities: vec![crate::RemoteSshIdentity {
+            remote: "typo".into(),
+            private_key_path: key.to_str().unwrap().into(),
+        }],
+    });
+    let rejected = handle_pull_head(&backend, temp.path(), invalid, "invalid_identity");
+    assert_eq!(
+        backend.head(temp.path()).unwrap().commit.as_deref(),
+        Some(root_before.as_str()),
+        "invalid override must refuse before root integration"
+    );
+    assert_eq!(
+        rejected.unwrap_err().code,
+        crate::model::ErrorCode::InvalidRequest
+    );
+
     let response = handle_pull_head(
         &backend,
         temp.path(),

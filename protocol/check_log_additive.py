@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# DR-5 startup timeout: removing the service method and two messages exactly
+# reproduces prior projection 9f338f2287cf7127b760b5dfaf4e86a5f5152fb38234fb9c5ca94949db3e271d.
+# DR-5 observation fields: removing the message, three enums and two optional
+# slots exactly reproduces prior projection f45ebbb8cfa1ed81f29cf18c4e6df03314ee45d4584229d2a8daa1b9e16bdc73.
+# DR-5 local configuration: removing method, three messages, op enum and action 29
+# exactly reproduces prior projection ab44d75d4ef6bca60864c7150c44f381c318aaa642db143aad619951fa4ff44a.
+# DR-5 capability query: removing only its service method and two messages
+# exactly reproduces previous projection 09f98f645608b84b2eb9dbaede79f2b0d3750e8e6c337f2b254eca2b0da990ce.
 # DR-5 (2026-09-07): measured additive RemoteSshIdentity, TransportOptions,
 # and optional RequestMeta.transport slot 8. Removing exactly these additions
 # reproduced prior projection 6fd2f8829a920d6e4264a102f995a28ccc5d3dc47b25c66eca98980ad5488ca7.
@@ -112,7 +120,7 @@ from taut.ir.load import load_schema
 # reusing LsRequest/LsResponse. Measured: removing that single method from the
 # new IR reproduces e99ce51a85b439fb03bb43df5beb3a33156048b8212d3f2fc609ba2db163db32
 # exactly. No message, enum, field or existing method changes.
-PRE_LOG_WIRE_SHA256 = "09f98f645608b84b2eb9dbaede79f2b0d3750e8e6c337f2b254eca2b0da990ce"
+PRE_LOG_WIRE_SHA256 = "8aa25038218daf2d085b62bb37fb4438afd06bb77628746dac80efe53a56e76c"
 LOG_METHODS = {"log", "log.output"}
 
 

@@ -8,6 +8,16 @@ inventory = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(inventory)
 
 class InventoryTests(unittest.TestCase):
+    def test_cargo_artifacts_select_exactly_one_package_library_test(self):
+        import json
+        row = {"reason": "compiler-artifact", "target": {"name": "gwz_core", "kind": ["lib"]},
+               "profile": {"test": True}, "executable": "/tmp/core-tests"}
+        self.assertEqual(inventory.cargo_test_binary(json.dumps(row), "gwz-core"), Path("/tmp/core-tests"))
+        for rows in [[], [row, row], [{**row, "executable": None}],
+                     [{**row, "target": {"name": "other", "kind": ["lib"]}}]]:
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                inventory.cargo_test_binary("\n".join(map(json.dumps, rows)), "gwz-core")
+
     def test_baselines_require_the_same_known_build_profile(self):
         identity = {"package": "gwz-core", "platform": "Darwin", "architecture": "arm64", "profile": "debug"}
         inventory.check_baseline_identity(identity, identity)

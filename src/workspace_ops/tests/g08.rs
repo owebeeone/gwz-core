@@ -5,6 +5,50 @@ use crate::git::{Git2Backend, GitBackend};
 use super::*;
 
 #[test]
+fn unknown_identity_override_refuses_before_root_publication() {
+    let temp = TempDir::new("push-unknown-identity");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+    let remote = temp.path().join("root.git");
+    init_bare_main(&remote);
+    backend
+        .add_remote(temp.path(), "origin", remote.to_str().unwrap())
+        .unwrap();
+    set_identity(temp.path());
+    commit_file(temp.path(), "root.txt", "work", "work", &[]).unwrap();
+    let key = temp.path().join("unused-key");
+    std::fs::write(&key, "fixture: this unused key must never be offered").unwrap();
+    let result = handle_push(
+        &backend,
+        temp.path(),
+        crate::PushRequest {
+            meta: crate::RequestMeta {
+                selection: Some(crate::Selection {
+                    targets: vec!["@root".into()],
+                    ..Default::default()
+                }),
+                transport: Some(crate::TransportOptions {
+                    default_identity: None,
+                    remote_identities: vec![crate::RemoteSshIdentity {
+                        remote: "typo".into(),
+                        private_key_path: key.to_str().unwrap().into(),
+                    }],
+                }),
+                ..request_meta_with_workspace()
+            },
+            remote: None,
+            refspec: None,
+        },
+        "push",
+    );
+    assert_eq!(read_repo_ref(&remote, "refs/heads/main"), None);
+    assert_eq!(
+        result.unwrap_err().code,
+        crate::model::ErrorCode::InvalidRequest
+    );
+}
+
+#[test]
 fn member_rejection_leaves_selected_root_remote_unchanged() {
     let temp = TempDir::new("push-root-barrier");
     let backend = Git2Backend::without_credential_helpers();
@@ -86,103 +130,110 @@ fn member_rejection_leaves_selected_root_remote_unchanged() {
 
 #[test]
 fn root_only_push_requires_the_committed_locks_member_objects() {
-    let temp = TempDir::new("push-root-only-dependencies");
-    let backend = Git2Backend::without_credential_helpers();
-    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
-    let root_remote = temp.path().join("root.git");
-    let member_remote = temp.path().join("app.git");
-    init_bare_main(&root_remote);
-    init_bare_main(&member_remote);
-    backend
-        .add_remote(temp.path(), "origin", root_remote.to_str().unwrap())
+    for active in [true, false] {
+        let temp = TempDir::new("push-root-only-dependencies");
+        let backend = Git2Backend::without_credential_helpers();
+        handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+        let root_remote = temp.path().join("root.git");
+        let member_remote = temp.path().join("app.git");
+        init_bare_main(&root_remote);
+        init_bare_main(&member_remote);
+        backend
+            .add_remote(temp.path(), "origin", root_remote.to_str().unwrap())
+            .unwrap();
+        let app = temp.path().join("repos/app");
+        backend.create_repo(&app).unwrap();
+        backend
+            .add_remote(&app, "origin", member_remote.to_str().unwrap())
+            .unwrap();
+        let member_commit = commit_file(&app, "README.md", "one", "one", &[]).unwrap();
+        write_pull_fixture(
+            temp.path(),
+            vec![(
+                "mem_app",
+                "repos/app",
+                member_remote.to_str().unwrap(),
+                &member_commit,
+            )],
+        );
+        let mut manifest = crate::artifact::read_manifest(temp.path()).unwrap();
+        manifest.members[0].active = active;
+        manifest.members[0].remotes[0].push = active;
+        crate::artifact::write_manifest(temp.path(), &manifest).unwrap();
+        set_identity(temp.path());
+        backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+        let root_commit = backend
+            .commit(temp.path(), "locked member", false)
+            .unwrap()
+            .commit;
+        let request = crate::PushRequest {
+            meta: crate::RequestMeta {
+                selection: Some(crate::Selection {
+                    targets: vec!["@root".into()],
+                    ..Default::default()
+                }),
+                ..request_meta_with_workspace()
+            },
+            remote: None,
+            refspec: None,
+        };
+        let refused = handle_push(
+            &backend,
+            temp.path(),
+            request.clone(),
+            "op_missing_dependency",
+        )
         .unwrap();
-    let app = temp.path().join("repos/app");
-    backend.create_repo(&app).unwrap();
-    backend
-        .add_remote(&app, "origin", member_remote.to_str().unwrap())
+        assert_eq!(read_repo_ref(&root_remote, "refs/heads/main"), None);
+        assert_eq!(
+            refused.response.members.single().status,
+            crate::MemberStatus::Rejected
+        );
+        // A newer worktree lock pointing to an unrelated published commit cannot
+        // stand in for the lock inside the root commit being published.
+        git2::Repository::open(&app)
+            .unwrap()
+            .set_head("refs/heads/unrelated")
+            .unwrap();
+        let unrelated = commit_file(&app, "README.md", "unrelated", "unrelated", &[]).unwrap();
+        backend
+            .push(&app, "origin", "refs/heads/unrelated:refs/heads/main")
+            .unwrap();
+        write_pull_fixture(
+            temp.path(),
+            vec![(
+                "mem_app",
+                "repos/app",
+                member_remote.to_str().unwrap(),
+                &unrelated,
+            )],
+        );
+        let still_refused = handle_push(
+            &backend,
+            temp.path(),
+            request.clone(),
+            "op_committed_dependency",
+        )
         .unwrap();
-    let member_commit = commit_file(&app, "README.md", "one", "one", &[]).unwrap();
-    write_pull_fixture(
-        temp.path(),
-        vec![(
-            "mem_app",
-            "repos/app",
-            member_remote.to_str().unwrap(),
-            &member_commit,
-        )],
-    );
-    set_identity(temp.path());
-    backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
-    let root_commit = backend
-        .commit(temp.path(), "locked member", false)
-        .unwrap()
-        .commit;
-    let request = crate::PushRequest {
-        meta: crate::RequestMeta {
-            selection: Some(crate::Selection {
-                targets: vec!["@root".into()],
-                ..Default::default()
-            }),
-            ..request_meta_with_workspace()
-        },
-        remote: None,
-        refspec: None,
-    };
-    let refused = handle_push(
-        &backend,
-        temp.path(),
-        request.clone(),
-        "op_missing_dependency",
-    )
-    .unwrap();
-    assert_eq!(read_repo_ref(&root_remote, "refs/heads/main"), None);
-    assert_eq!(
-        refused.response.members.single().status,
-        crate::MemberStatus::Rejected
-    );
-    // A newer worktree lock pointing to an unrelated published commit cannot
-    // stand in for the lock inside the root commit being published.
-    git2::Repository::open(&app)
-        .unwrap()
-        .set_head("refs/heads/unrelated")
-        .unwrap();
-    let unrelated = commit_file(&app, "README.md", "unrelated", "unrelated", &[]).unwrap();
-    backend
-        .push(&app, "origin", "refs/heads/unrelated:refs/heads/main")
-        .unwrap();
-    write_pull_fixture(
-        temp.path(),
-        vec![(
-            "mem_app",
-            "repos/app",
-            member_remote.to_str().unwrap(),
-            &unrelated,
-        )],
-    );
-    let still_refused = handle_push(
-        &backend,
-        temp.path(),
-        request.clone(),
-        "op_committed_dependency",
-    )
-    .unwrap();
-    assert_eq!(
-        still_refused.response.members.single().status,
-        crate::MemberStatus::Rejected
-    );
-    assert_eq!(read_repo_ref(&root_remote, "refs/heads/main"), None);
-    backend
-        .push(&app, "origin", &format!("+{member_commit}:refs/heads/main"))
-        .unwrap();
-    let accepted = handle_push(&backend, temp.path(), request, "op_published_dependency").unwrap();
-    assert_eq!(
-        accepted.response.members.single().status,
-        crate::MemberStatus::Ok
-    );
-    assert_eq!(
-        read_repo_ref(&root_remote, "refs/heads/main"),
-        Some(root_commit)
-    );
+        assert_eq!(
+            still_refused.response.members.single().status,
+            crate::MemberStatus::Rejected
+        );
+        assert_eq!(read_repo_ref(&root_remote, "refs/heads/main"), None);
+        backend
+            .push(&app, "origin", &format!("+{member_commit}:refs/heads/main"))
+            .unwrap();
+        let accepted =
+            handle_push(&backend, temp.path(), request, "op_published_dependency").unwrap();
+        assert_eq!(
+            accepted.response.members.single().status,
+            crate::MemberStatus::Ok
+        );
+        assert_eq!(
+            read_repo_ref(&root_remote, "refs/heads/main"),
+            Some(root_commit)
+        );
+    }
 }
 
 #[test]
@@ -204,6 +255,13 @@ pub(crate) fn push_selected_member_to_local_bare_remote_succeeds() {
     );
 
     let response = handle_push(&backend, temp.path(), push_request(None, None), "op_push").unwrap();
+    let observations = response.response.meta.transport.as_ref().unwrap();
+    assert_eq!(observations.len(), 2);
+    assert!(
+        observations
+            .iter()
+            .all(|row| !row.credential_offered && row.authenticated.is_none())
+    );
 
     assert_eq!(
         response.response.meta.aggregate_status,
@@ -709,4 +767,260 @@ fn root_publication_refuses_unimplemented_source_availability_contracts() {
             expected
         );
     }
+}
+
+#[test]
+fn root_dependency_identity_is_checked_before_member_publication() {
+    for missing_key in [true, false] {
+        let temp = TempDir::new("push-dependency-identity");
+        let backend = Git2Backend::without_credential_helpers();
+        handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+        let root_remote = temp.path().join("root.git");
+        init_bare_main(&root_remote);
+        backend
+            .add_remote(temp.path(), "origin", root_remote.to_str().unwrap())
+            .unwrap();
+        let fixture = RemoteFixture::new("push-dependency-identity-member");
+        let initial = fixture.commit_and_push("README.md", "one", "initial", &backend);
+        let app = temp.path().join("repos/app");
+        backend.clone_repo(fixture.remote_url(), &app).unwrap();
+        let local = commit_file(
+            &app,
+            "README.md",
+            "two",
+            "local",
+            &[git2::Oid::from_str(&initial).unwrap()],
+        )
+        .unwrap();
+        // The member push is local; the committed lock's availability check uses SSH.
+        write_pull_fixture(
+            temp.path(),
+            vec![(
+                "mem_app",
+                "repos/app",
+                "ssh://git@127.0.0.1:1/app.git",
+                &local,
+            )],
+        );
+        if missing_key {
+            git2::Repository::open(&app)
+                .unwrap()
+                .config()
+                .unwrap()
+                .set_str(
+                    "remote.origin.gwzSshIdentity",
+                    temp.path().join("missing-key").to_str().unwrap(),
+                )
+                .unwrap();
+        }
+        set_identity(temp.path());
+        backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+        backend.commit(temp.path(), "lock", false).unwrap();
+        let response = handle_push(
+            &backend,
+            temp.path(),
+            crate::PushRequest {
+                meta: request_meta_with_workspace(),
+                remote: None,
+                refspec: None,
+            },
+            "push",
+        )
+        .unwrap();
+        assert_eq!(
+            read_repo_ref(&fixture.remote, "refs/heads/main"),
+            Some(initial)
+        );
+        assert_eq!(read_repo_ref(&root_remote, "refs/heads/main"), None);
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Rejected
+        );
+    }
+}
+
+#[test]
+fn member_push_freezes_source_and_destination_before_transfer_events() {
+    struct MoveSource {
+        path: std::path::PathBuf,
+        other: std::path::PathBuf,
+    }
+    impl crate::operation::EventSink for MoveSource {
+        fn deliver(&self, event: crate::OperationEvent) {
+            if event.kind == crate::EventKind::OperationStarted {
+                let backend = Git2Backend::without_credential_helpers();
+                std::fs::write(self.path.join("late.txt"), "late").unwrap();
+                backend.stage_paths(&self.path, &["late.txt"]).unwrap();
+                backend.commit(&self.path, "late", false).unwrap();
+                git2::Repository::open(&self.path)
+                    .unwrap()
+                    .remote_set_pushurl("origin", Some(self.other.to_str().unwrap()))
+                    .unwrap();
+            }
+        }
+    }
+    let temp = TempDir::new("push-frozen-member");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+    let fixture = RemoteFixture::new("push-captured-destination");
+    fixture.commit_and_push("README.md", "initial", "initial", &backend);
+    let app = temp.path().join("repos/app");
+    backend.clone_repo(fixture.remote_url(), &app).unwrap();
+    set_identity(&app);
+    std::fs::write(app.join("ready.txt"), "ready").unwrap();
+    backend.stage_paths(&app, &["ready.txt"]).unwrap();
+    let captured = backend.commit(&app, "captured", false).unwrap().commit;
+    write_pull_fixture(
+        temp.path(),
+        vec![("mem_app", "repos/app", fixture.remote_url(), &captured)],
+    );
+    let other = temp.path().join("other.git");
+    init_bare_main(&other);
+    let response = handle_push_with_events(
+        &backend,
+        temp.path(),
+        push_request(None, None),
+        "push",
+        &MoveSource {
+            path: app.clone(),
+            other: other.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert_eq!(
+        read_repo_ref(&other, "refs/heads/main"),
+        None,
+        "a callback must not redirect publication"
+    );
+    assert_eq!(
+        read_repo_ref(&fixture.remote, "refs/heads/main"),
+        Some(captured.clone())
+    );
+    assert_ne!(backend.head(&app).unwrap().commit, Some(captured));
+}
+
+#[test]
+fn root_rejection_preserves_member_publication_and_root_retry_is_cloneable() {
+    let temp = TempDir::new("push-root-retry-clone");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+    set_identity(temp.path());
+    let root_remote = temp.path().join("root.git");
+    init_bare_main(&root_remote);
+    backend
+        .add_remote(temp.path(), "origin", root_remote.to_str().unwrap())
+        .unwrap();
+    backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+    backend.commit(temp.path(), "base", false).unwrap();
+    backend
+        .push(temp.path(), "origin", "refs/heads/main:refs/heads/main")
+        .unwrap();
+    let worker = temp.path().join("root-worker");
+    backend
+        .clone_repo(root_remote.to_str().unwrap(), &worker)
+        .unwrap();
+    set_identity(&worker);
+    std::fs::write(worker.join("other.txt"), "other").unwrap();
+    backend.stage_paths(&worker, &["other.txt"]).unwrap();
+    let remote_root = backend.commit(&worker, "other", false).unwrap().commit;
+    backend
+        .push(&worker, "origin", "refs/heads/main:refs/heads/main")
+        .unwrap();
+
+    let fixture = RemoteFixture::new("retry-member");
+    fixture.commit_and_push("README.md", "base", "base", &backend);
+    let app = temp.path().join("repos/app");
+    backend.clone_repo(fixture.remote_url(), &app).unwrap();
+    set_identity(&app);
+    std::fs::write(app.join("next.txt"), "next").unwrap();
+    backend.stage_paths(&app, &["next.txt"]).unwrap();
+    let member_commit = backend.commit(&app, "next", false).unwrap().commit;
+    write_pull_fixture(
+        temp.path(),
+        vec![("mem_app", "repos/app", fixture.remote_url(), &member_commit)],
+    );
+    backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+    let root_commit = backend.commit(temp.path(), "lock", false).unwrap().commit;
+    let response = handle_push(
+        &backend,
+        temp.path(),
+        crate::PushRequest {
+            meta: request_meta_with_workspace(),
+            remote: None,
+            refspec: None,
+        },
+        "push",
+    )
+    .unwrap();
+    assert_eq!(
+        read_repo_ref(&root_remote, "refs/heads/main"),
+        Some(remote_root)
+    );
+    assert_eq!(
+        read_repo_ref(&fixture.remote, "refs/heads/main"),
+        Some(member_commit.clone())
+    );
+    assert_eq!(
+        response
+            .response
+            .members
+            .iter()
+            .find(|row| row.member_id == "mem_app")
+            .unwrap()
+            .status,
+        crate::MemberStatus::Ok
+    );
+    assert_eq!(
+        response
+            .response
+            .members
+            .iter()
+            .find(|row| row.member_id == "@root")
+            .unwrap()
+            .status,
+        crate::MemberStatus::Failed
+    );
+    let retry = handle_push(
+        &backend,
+        temp.path(),
+        crate::PushRequest {
+            meta: crate::RequestMeta {
+                selection: Some(crate::Selection {
+                    targets: vec!["@root".into()],
+                    ..Default::default()
+                }),
+                ..request_meta_with_workspace()
+            },
+            remote: None,
+            refspec: Some("+refs/heads/main:refs/heads/main".into()),
+        },
+        "explicit-force-retry",
+    )
+    .unwrap();
+    assert_eq!(
+        retry.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert_eq!(
+        read_repo_ref(&root_remote, "refs/heads/main"),
+        Some(root_commit)
+    );
+    let fresh = temp.path().join("fresh-clone");
+    handle_clone_workspace(
+        &backend,
+        request_meta(),
+        root_remote.to_str().unwrap(),
+        fresh.to_str().unwrap(),
+        "fresh",
+        &crate::operation::NullSink,
+    )
+    .unwrap();
+    assert_eq!(
+        backend.head(&fresh.join("repos/app")).unwrap().commit,
+        Some(member_commit)
+    );
 }

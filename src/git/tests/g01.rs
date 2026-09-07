@@ -294,7 +294,9 @@ fn filter_neutralization_pin_is_reachable_only_from_the_two_creation_time_sites(
         1,
         "creation-time-only guard: transport.rs must pin exactly once"
     );
-    let funnel = function_slice(&transport, "fn clone_repo_with_progress(");
+    let wrapper = function_slice(&transport, "fn clone_repo_with_progress(");
+    assert!(wrapper.contains("clone_repo_named(backend, url, path, \"origin\", progress)"));
+    let funnel = function_slice(&transport, "fn clone_repo_named(");
     assert!(
         funnel.contains("disable_filters(true)"),
         "creation-time-only guard: the clone funnel's initial materialization \

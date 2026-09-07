@@ -45,7 +45,110 @@ pub(super) fn checked_root_request<B: GitBackend>(
     request: &crate::PushRequest,
 ) -> ModelResult<crate::PushRequest> {
     let pinned = freeze_root_request(backend, root, request)?;
-    let refspec = pinned
+    for dependency in root_dependencies(backend, root, &pinned)? {
+        let materialized = backend.is_repository(&dependency.path)?;
+        let advertised = backend.ls_remote_url(
+            root,
+            &dependency.url,
+            &dependency.remote,
+            materialized.then_some(dependency.path.as_path()),
+        )?;
+        let mut available = advertised
+            .iter()
+            .any(|reference| reference.target == dependency.commit);
+        if !available && materialized {
+            for reference in &advertised {
+                if backend
+                    .is_ancestor(&dependency.path, &dependency.commit, &reference.target)
+                    .unwrap_or(false)
+                {
+                    available = true;
+                    break;
+                }
+            }
+        }
+        if !available {
+            return Err(refused(format!(
+                "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}; publish the member, or fetch its advertised history and retry",
+                dependency.member_id, dependency.commit, dependency.remote
+            )));
+        }
+    }
+    Ok(pinned)
+}
+
+pub(super) struct PublicationDependency {
+    pub member_id: String,
+    pub path: std::path::PathBuf,
+    pub commit: String,
+    pub remote: String,
+    pub url: String,
+}
+
+pub(super) fn validate_dependency_identity<B: GitBackend>(
+    backend: &B,
+    dependency: &PublicationDependency,
+) -> ModelResult<()> {
+    let materialized = backend.is_repository(&dependency.path)?;
+    backend.validate_url_identity(
+        materialized.then_some(dependency.path.as_path()),
+        &dependency.remote,
+        &dependency.url,
+    )
+}
+
+/// Advertise refs from the effective destination with the same identity owner.
+/// Read access is deliberately not presented as proof of push permission.
+pub(super) fn preflight_remote<B: GitBackend>(
+    backend: &B,
+    path: &Path,
+    name: &str,
+    push: bool,
+) -> ModelResult<()> {
+    let remote = backend
+        .remotes(path)?
+        .into_iter()
+        .find(|remote| remote.name == name)
+        .ok_or_else(|| ModelError::new(ErrorCode::MissingRemote, "remote is not configured"))?;
+    let url = if push {
+        remote.push_url.or(remote.url)
+    } else {
+        remote.url
+    }
+    .ok_or_else(|| ModelError::new(ErrorCode::MissingRemote, "remote has no destination URL"))?;
+    backend
+        .ls_remote_url(path, &url, name, Some(path))
+        .map(|_| ())
+}
+
+pub(super) fn preflight_dependencies<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    request: &crate::PushRequest,
+) -> ModelResult<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for dependency in root_dependencies(backend, root, request)? {
+        let materialized = backend.is_repository(&dependency.path)?;
+        let identity_repo = materialized.then_some(dependency.path.as_path());
+        if seen.insert((
+            identity_repo.map(Path::to_path_buf),
+            dependency.remote.clone(),
+            dependency.url.clone(),
+        )) {
+            backend.ls_remote_url(root, &dependency.url, &dependency.remote, identity_repo)?;
+        }
+    }
+    Ok(())
+}
+
+/// Read-only dependencies from an already frozen root source. Preflight and
+/// publication share this interpretation; neither consults the worktree lock.
+pub(super) fn root_dependencies<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    request: &crate::PushRequest,
+) -> ModelResult<Vec<PublicationDependency>> {
+    let refspec = request
         .refspec
         .as_deref()
         .ok_or_else(|| refused("missing root refspec"))?;
@@ -55,13 +158,14 @@ pub(super) fn checked_root_request<B: GitBackend>(
         .split_once(':')
         .ok_or_else(|| refused("invalid frozen root refspec"))?;
     if source_object.is_empty() {
-        return Ok(pinned);
+        return Ok(Vec::new());
     }
     // Inspect the commit behind an annotated tag but publish the tag object,
     // preserving its annotation/signature and its exact source identity.
     let commit = backend
         .read_ref(root, &format!("{source_object}^{{commit}}"))?
         .ok_or_else(|| refused("root publication source does not resolve to a commit"))?;
+    let mut dependencies = Vec::new();
     if let Some(lock_bytes) = backend.read_file_at_commit(root, &commit, artifact::LOCK_PATH)? {
         let lock = LockArtifact::from_yaml(
             std::str::from_utf8(&lock_bytes).map_err(|_| refused("committed lock is not UTF-8"))?,
@@ -110,34 +214,56 @@ pub(super) fn checked_root_request<B: GitBackend>(
             }
             let remote = member.remotes.iter().find(|remote| remote.fetch)
                 .ok_or_else(|| refused(format!("committed lock member {id} has no fetch URL; publish it and record its remote before publishing root")))?;
-            let member_path = root.join(&member.path);
-            let materialized = backend.is_repository(&member_path)?;
-            let advertised = backend.ls_remote_url(root, &remote.url, &remote.name, materialized.then_some(member_path.as_path()))?;
-            let mut available = advertised.iter().any(|reference| reference.target == oid);
-            if !available && materialized {
-                // A known descendant advertised by the server proves the pinned
-                // ancestor is reachable there. Unknown graph evidence never passes.
-                for reference in &advertised {
-                    if backend
-                        .is_ancestor(&member_path, oid, &reference.target)
-                        .unwrap_or(false)
-                    {
-                        available = true;
-                        break;
-                    }
-                }
-            }
-            if !available {
-                return Err(refused(format!(
-                    "root publication blocked: cannot prove member {id} commit {oid} is available at its committed fetch remote {}; publish the member, or fetch its advertised history and retry",
-                    remote.name
-                )));
-            }
+            dependencies.push(PublicationDependency {
+                member_id: id.clone(),
+                path: root.join(&member.path),
+                commit: oid.to_owned(),
+                remote: remote.name.clone(),
+                url: remote.url.clone(),
+            });
         }
     }
-    Ok(pinned)
+    Ok(dependencies)
 }
 
 fn refused(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::RemoteRejected, message)
+}
+
+pub(super) fn attach_transport<B: GitBackend>(backend: &B, response: &mut crate::ResponseEnvelope) {
+    let Some(observations) = backend.transport_observations() else {
+        return;
+    };
+    let mut rows = observations.snapshot();
+    rows.extend(response.meta.transport.take().unwrap_or_default());
+    if !rows.is_empty() {
+        response.meta.transport = Some(rows);
+    }
+}
+
+pub(super) fn attach_transport_error<B: GitBackend>(
+    backend: &B,
+    mut error: ModelError,
+    context: &crate::operation::OperationContext,
+) -> ModelError {
+    let mut rows = backend
+        .transport_observations()
+        .map(|value| value.snapshot())
+        .unwrap_or_default();
+    if let Some(meta) = error.response_meta.as_mut() {
+        rows.extend(meta.transport.take().unwrap_or_default());
+    }
+    if !rows.is_empty() {
+        error.response_meta = Some(Box::new(crate::ResponseMeta {
+            request_id: context.request_id.clone(),
+            schema_version: context.schema_version.clone(),
+            action: context.action.into(),
+            aggregate_status: crate::AggregateStatus::Failed,
+            operation_id: Some(context.operation_id.clone()),
+            message: None,
+            attribution: context.attribution.as_ref().map(Into::into),
+            transport: Some(rows),
+        }));
+    }
+    error
 }

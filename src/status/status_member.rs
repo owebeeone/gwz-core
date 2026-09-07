@@ -82,6 +82,7 @@ where
     Ok(crate::StatusResponse {
         response: crate::ResponseEnvelope {
             meta: crate::ResponseMeta {
+                transport: None,
                 request_id: context.request_id,
                 schema_version: context.schema_version,
                 action: ActionKind::Status.into(),

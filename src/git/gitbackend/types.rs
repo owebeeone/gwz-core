@@ -306,6 +306,14 @@ pub struct GitPushResult {
     pub refspec: String,
 }
 
+/// Publication inputs captured before transfer callbacks or member mutations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitPreparedPush {
+    pub remote: String,
+    pub url: String,
+    pub refspecs: Vec<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitStageResult {
     /// Top-level *file* pathspecs confirmed present in the index by the self-verify

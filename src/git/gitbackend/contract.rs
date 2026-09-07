@@ -148,18 +148,71 @@ pub enum GitPreparedMergeMode {
 pub trait GitBackend {
     /// Bind invocation credentials to a new backend value. The default refuses
     /// explicit authority rather than silently ignoring it. No global state.
-    fn with_transport(&self, _start: &Path, options: Option<&crate::TransportOptions>) -> ModelResult<Option<Self>>
-    where Self: Sized {
+    fn with_transport(
+        &self,
+        _start: &Path,
+        options: Option<&crate::TransportOptions>,
+    ) -> ModelResult<Option<Self>>
+    where
+        Self: Sized,
+    {
         if super::transport_support::identity::has_options(options) {
-            return Err(ModelError::new(ErrorCode::UnsupportedOperation, "this Git backend does not support explicit SSH identity selection"));
+            return Err(ModelError::new(
+                ErrorCode::UnsupportedOperation,
+                "this Git backend does not support explicit SSH identity selection",
+            ));
         }
         Ok(None)
     }
 
-    fn validate_transport_remotes(&self, _names: &[String]) -> ModelResult<()> { Ok(()) }
+    fn transport_observations(
+        &self,
+    ) -> Option<super::transport_observations::TransportObservations> {
+        None
+    }
+
+    fn validate_transport_remotes(&self, _names: &[String]) -> ModelResult<()> {
+        Ok(())
+    }
+    fn remote_identity(&self, _path: &Path, _remote: &str) -> ModelResult<Option<String>> {
+        unsupported_backend("remote_identity")
+    }
+    fn set_remote_identity(
+        &self,
+        _path: &Path,
+        _remote: &str,
+        _value: Option<&str>,
+    ) -> ModelResult<()> {
+        unsupported_backend("set_remote_identity")
+    }
 
     /// Local-only credential preflight; this does not establish write access.
-    fn validate_remote_identity(&self, _path: &Path, _remote: &str, _push: bool) -> ModelResult<()> { Ok(()) }
+    fn validate_remote_identity(
+        &self,
+        _path: &Path,
+        _remote: &str,
+        _push: bool,
+    ) -> ModelResult<()> {
+        Ok(())
+    }
+    fn validate_url_identity(
+        &self,
+        _identity_repo: Option<&Path>,
+        _remote: &str,
+        _url: &str,
+    ) -> ModelResult<()> {
+        Ok(())
+    }
+    /// Inspect a committed file using temporary native storage, without creating
+    /// the caller's destination checkout or persisting a remote in it.
+    fn read_remote_file(
+        &self,
+        _url: &str,
+        _remote: &str,
+        _relative_path: &str,
+    ) -> ModelResult<Option<Vec<u8>>> {
+        unsupported_backend("read_remote_file")
+    }
 
     fn is_repository(&self, path: &Path) -> ModelResult<bool>;
     /// Return whether `oid` exists locally and resolves to a commit object.
@@ -221,6 +274,19 @@ pub trait GitBackend {
     ) -> ModelResult<GitCloneResult> {
         self.clone_repo(url, path)
     }
+    /// Clone using the source's declared fetch remote, including its identity.
+    fn clone_repo_named(
+        &self,
+        url: &str,
+        path: &Path,
+        remote: &str,
+        progress: &dyn Fn(crate::GitTransferProgress),
+    ) -> ModelResult<GitCloneResult> {
+        if remote != "origin" {
+            return unsupported_backend("clone_repo_named");
+        }
+        self.clone_repo_with_progress(url, path, progress)
+    }
     fn fetch(&self, path: &Path, remote: &str) -> ModelResult<GitFetchResult>;
     /// List the refs a remote advertises WITHOUT fetching objects (porcelain
     /// `git ls-remote`): connect, read the advertised refs, disconnect. Non-mutating
@@ -228,7 +294,13 @@ pub trait GitBackend {
     fn ls_remote(&self, path: &Path, remote: &str) -> ModelResult<Vec<GitRemoteRef>>;
     /// Read advertised refs from an exact URL without persisting a remote or
     /// fetching objects. Used to prove committed-lock publication dependencies.
-    fn ls_remote_url(&self, _path: &Path, _url: &str, _remote_name: &str, _identity_repo: Option<&Path>) -> ModelResult<Vec<GitRemoteRef>> {
+    fn ls_remote_url(
+        &self,
+        _path: &Path,
+        _url: &str,
+        _remote_name: &str,
+        _identity_repo: Option<&Path>,
+    ) -> ModelResult<Vec<GitRemoteRef>> {
         unsupported_backend("ls_remote_url")
     }
     fn fast_forward(
@@ -759,6 +831,23 @@ pub trait GitBackend {
     fn remotes(&self, path: &Path) -> ModelResult<Vec<GitRemote>>;
     fn add_remote(&self, path: &Path, name: &str, url: &str) -> ModelResult<GitRemoteResult>;
     fn push(&self, path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult>;
+    fn prepare_push(
+        &self,
+        _path: &Path,
+        _remote: &str,
+        _refspec: &str,
+    ) -> ModelResult<GitPreparedPush> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "captured publication is not implemented by this GitBackend",
+        ))
+    }
+    fn push_prepared(&self, _path: &Path, _plan: &GitPreparedPush) -> ModelResult<GitPushResult> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "captured publication is not implemented by this GitBackend",
+        ))
+    }
     /// Anonymous local fetch (LCM1.0c, local clone family; gwz-dev
     /// `dev-docs/GwzLocalCloneDesign.md` §6.2). `url` must be an existing
     /// local repository path, never a URL (the backend hands libgit2 its

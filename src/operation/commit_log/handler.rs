@@ -367,6 +367,7 @@ pub(in crate::operation) fn handle_log(
     Ok(crate::LogResponse {
         response: crate::ResponseEnvelope {
             meta: crate::ResponseMeta {
+                transport: None,
                 request_id: context.request_id,
                 schema_version: context.schema_version,
                 action: crate::ActionKind::Log,

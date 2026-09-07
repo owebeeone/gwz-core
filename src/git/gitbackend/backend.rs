@@ -7,24 +7,36 @@ pub enum CredentialHelperPolicy {
     AllowConfigured,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Git2Backend {
     pub(crate) credential_helpers: CredentialHelperPolicy,
     pub(crate) identities: super::transport_support::identity::Selection,
+    pub(crate) observations: super::transport_observations::TransportObservations,
 }
+
+impl PartialEq for Git2Backend {
+    fn eq(&self, other: &Self) -> bool {
+        self.credential_helpers == other.credential_helpers && self.identities == other.identities
+    }
+}
+impl Eq for Git2Backend {}
 
 impl Git2Backend {
     pub fn new() -> Self {
+        super::transport_support::ensure_server_timeout();
         Self {
             credential_helpers: CredentialHelperPolicy::AllowConfigured,
             identities: Default::default(),
+            observations: Default::default(),
         }
     }
 
     pub fn without_credential_helpers() -> Self {
+        super::transport_support::ensure_server_timeout();
         Self {
             credential_helpers: CredentialHelperPolicy::Disabled,
             identities: Default::default(),
+            observations: Default::default(),
         }
     }
 

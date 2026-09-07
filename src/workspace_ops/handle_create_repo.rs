@@ -931,6 +931,7 @@ pub(crate) fn response_envelope(
 ) -> crate::ResponseEnvelope {
     crate::ResponseEnvelope {
         meta: crate::ResponseMeta {
+            transport: None,
             request_id: context.request_id,
             schema_version: context.schema_version,
             action: context.action.into(),

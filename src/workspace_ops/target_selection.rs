@@ -46,10 +46,12 @@ fn action_policy(
         A::Merge => (All, Allow, "merge"),
         A::Ls => (Members, Allow, "ls"),
         A::Forall => (Members, Allow, "forall"),
+        A::RemoteIdentity => (Members, Allow, "auth identity"),
         A::Branch => (Members, Allow, "branch"),
         A::Tag => (Members, Allow, "tag"),
         A::Stash => (Members, Allow, "stash"),
         A::Materialize => (Members, SupportedMembers, "materialize"),
+        A::CloneWorkspace => (Members, SupportedMembers, "clone"),
         A::Snapshot => (Members, SupportedMembers, "snapshot"),
         A::Capture => (Members, SupportedMembers, "capture"),
         A::PullSnapshot => (Members, SupportedMembers, "pull snapshot"),
@@ -58,7 +60,6 @@ fn action_policy(
         | A::InitFromSources
         | A::AddExistingRepo
         | A::CreateRepo
-        | A::CloneWorkspace
         | A::ListSnapshots
         | A::CloneRepoMember
         | A::DetachRepoMember
@@ -184,6 +185,27 @@ pub(crate) fn has_explicit_target_selection(selection: Option<&crate::Selection>
             || !selection.targets.is_empty()
             || !selection.exclude_targets.is_empty()
     })
+}
+
+pub(crate) fn validate_structural_selection(
+    action: crate::ActionKind,
+    selection: Option<&crate::Selection>,
+) -> ModelResult<()> {
+    if matches!(
+        action,
+        crate::ActionKind::CreateWorkspace
+            | crate::ActionKind::InitFromSources
+            | crate::ActionKind::AddExistingRepo
+            | crate::ActionKind::CreateRepo
+            | crate::ActionKind::CloneRepoMember
+            | crate::ActionKind::ListSnapshots
+    ) && has_explicit_target_selection(selection)
+    {
+        return Err(invalid(format!(
+            "{action:?} uses its explicit operands and does not accept target selection"
+        )));
+    }
+    Ok(())
 }
 
 fn expand_tokens<'a>(

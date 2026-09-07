@@ -26,6 +26,14 @@ fn root_stash_push_list_and_pop_use_the_coordinated_bundle() {
         targets: vec!["@root".into()],
         ..Default::default()
     });
+    let mut dry = request.clone();
+    dry.meta.dry_run = Some(true);
+    handle_stash(&backend, temp.path(), dry, "root-stash-dry").unwrap();
+    assert_eq!(
+        fs::read_to_string(temp.path().join("root.txt")).unwrap(),
+        "saved root work\n"
+    );
+    assert!(backend.stash_list(temp.path()).unwrap().is_empty());
     let pushed = handle_stash(&backend, temp.path(), request.clone(), "op_root_stash").unwrap();
     assert_eq!(
         pushed.response.members.single().target_kind,

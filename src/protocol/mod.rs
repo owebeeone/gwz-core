@@ -1,4 +1,5 @@
 pub mod convert;
+pub mod transport_capabilities;
 
 #[allow(clippy::redundant_closure)]
 // The 0.8.0 emitter wraps fallible decode arms as `Ok(...?)`.

@@ -47,128 +47,132 @@ where
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root(
-        start,
-        request.meta.workspace.as_ref(),
-        OpenMergeCommand::RepoMutate,
-        dry_run,
-    )?;
-    assert_conf_unmodified_for(
-        backend,
-        &root,
-        OpenMergeCommand::RepoMutate,
-        reconcile_authority(_guard.as_ref(), dry_run),
-    )?;
-    let mut manifest = artifact::read_manifest(&root)?;
-    assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let plan = single_source_plan(&manifest, &request)?;
-    let member_root = root.join(plan.path.as_str());
-    ensure_member_target_available(&member_root)?;
-
-    if dry_run {
-        return Ok(crate::CloneRepoMemberResponse {
-            response: response_envelope(
-                context,
-                crate::AggregateStatus::Accepted,
-                vec![planned_member(
-                    &plan.member_id,
-                    plan.path.as_str(),
-                    crate::PlannedAction::Clone,
-                    format!("clone {}", plan.source.url),
-                )],
-            ),
-        });
-    }
-
-    let interval = request
-        .meta
-        .policy
-        .as_ref()
-        .and_then(|policy| policy.progress_min_interval_ms)
-        .unwrap_or(0);
-    let emitter = EventEmitter::new(&context, events, interval);
-    emitter.operation_started();
-    emitter.member_started(&plan.member_id, plan.path.as_str());
-
-    let inspected = (|| {
-        backend.clone_repo_with_progress(&plan.source.url, &member_root, &|progress| {
-            emitter.member_progress(&plan.member_id, plan.path.as_str(), progress)
-        })?;
-        let head = backend.head(&member_root)?;
-        let status = backend.status(&member_root)?;
-        let remotes = backend.remotes(&member_root)?;
-        let (verified_commits, warning) = verify_source_identity_reuse(
+    let error_context = context.clone();
+    let result: ModelResult<crate::CloneRepoMemberResponse> = (|| {
+        let dry_run = request.meta.dry_run.unwrap_or(false);
+        let (_guard, root) = guarded_workspace_root(
+            start,
+            request.meta.workspace.as_ref(),
+            OpenMergeCommand::RepoMutate,
+            dry_run,
+        )?;
+        assert_conf_unmodified_for(
             backend,
             &root,
-            &member_root,
-            &plan.source_id,
-            &plan.reused_source_members,
+            OpenMergeCommand::RepoMutate,
+            reconcile_authority(_guard.as_ref(), dry_run),
         )?;
-        let member = ManifestMember {
-            id: plan.member_id.clone(),
-            path: plan.path.as_str().to_owned(),
-            source_kind: ArtifactSourceKind::Git,
-            source_id: plan.source_id.clone(),
-            active: true,
-            desired: Some(desired_from_head(&head)),
-            remotes: observed_remotes(&remotes),
+        let mut manifest = artifact::read_manifest(&root)?;
+        assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
+        let plan = single_source_plan(&manifest, &request)?;
+        let member_root = root.join(plan.path.as_str());
+        ensure_member_target_available(&member_root)?;
+        backend.validate_transport_remotes(&["origin".into()])?;
+        backend.validate_url_identity(None, "origin", &plan.source.url)?;
+
+        if dry_run {
+            return Ok(crate::CloneRepoMemberResponse {
+                response: response_envelope(
+                    context,
+                    crate::AggregateStatus::Accepted,
+                    vec![planned_member(
+                        &plan.member_id,
+                        plan.path.as_str(),
+                        crate::PlannedAction::Clone,
+                        format!("clone {}", plan.source.url),
+                    )],
+                ),
+            });
+        }
+
+        let interval = request
+            .meta
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.progress_min_interval_ms)
+            .unwrap_or(0);
+        let emitter = EventEmitter::new(&context, events, interval);
+        emitter.operation_started();
+        emitter.member_started(&plan.member_id, plan.path.as_str());
+
+        let inspected = (|| {
+            backend.clone_repo_with_progress(&plan.source.url, &member_root, &|progress| {
+                emitter.member_progress(&plan.member_id, plan.path.as_str(), progress)
+            })?;
+            let head = backend.head(&member_root)?;
+            let status = backend.status(&member_root)?;
+            let remotes = backend.remotes(&member_root)?;
+            let (verified_commits, warning) = verify_source_identity_reuse(
+                backend,
+                &root,
+                &member_root,
+                &plan.source_id,
+                &plan.reused_source_members,
+            )?;
+            let member = ManifestMember {
+                id: plan.member_id.clone(),
+                path: plan.path.as_str().to_owned(),
+                source_kind: ArtifactSourceKind::Git,
+                source_id: plan.source_id.clone(),
+                active: true,
+                desired: Some(desired_from_head(&head)),
+                remotes: observed_remotes(&remotes),
+            };
+            let locked = resolved_member(&member, &head, &status);
+            Ok::<_, ModelError>((member, locked, verified_commits, warning))
+        })();
+
+        let (member, locked, verified_commits, warning) = match inspected {
+            Ok(inspected) => inspected,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&member_root);
+                emitter.operation_finished();
+                return Err(error);
+            }
         };
-        let locked = resolved_member(&member, &head, &status);
-        Ok::<_, ModelError>((member, locked, verified_commits, warning))
-    })();
 
-    let (member, locked, verified_commits, warning) = match inspected {
-        Ok(inspected) => inspected,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&member_root);
+        manifest.members.push(member.clone());
+        let lock = (|| {
+            manifest.validate()?;
+            let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+            lock.members.insert(member.id.clone(), locked.clone());
+            Ok::<_, ModelError>(lock)
+        })();
+        let lock = match lock {
+            Ok(lock) => lock,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&member_root);
+                emitter.operation_finished();
+                return Err(error);
+            }
+        };
+        // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: repo lifecycle runs under `guarded_workspace_root(RepoMutate)`, so all three writer pairs stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
+        if let Err(error) = artifact::write_manifest_and_lock(&root, &manifest, &lock) {
+            let published = artifact::read_manifest(&root)
+                .map(|current| current.members.iter().any(|item| item.id == member.id))
+                .unwrap_or(false);
+            if !published {
+                let _ = fs::remove_dir_all(&member_root);
+            }
             emitter.operation_finished();
             return Err(error);
         }
-    };
-
-    manifest.members.push(member.clone());
-    let lock = (|| {
-        manifest.validate()?;
-        let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
-        lock.members.insert(member.id.clone(), locked.clone());
-        Ok::<_, ModelError>(lock)
-    })();
-    let lock = match lock {
-        Ok(lock) => lock,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&member_root);
+        if let Err(error) = sync_workspace_boundary(backend, &root, &manifest, &lock) {
             emitter.operation_finished();
             return Err(error);
         }
-    };
-    // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: repo lifecycle runs under `guarded_workspace_root(RepoMutate)`, so all three writer pairs stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
-    if let Err(error) = artifact::write_manifest_and_lock(&root, &manifest, &lock) {
-        let published = artifact::read_manifest(&root)
-            .map(|current| current.members.iter().any(|item| item.id == member.id))
-            .unwrap_or(false);
-        if !published {
-            let _ = fs::remove_dir_all(&member_root);
+        emitter.member_finished(&member.id, &member.path);
+
+        if let Some(message) = &warning {
+            emit_warning(&emitter, &member, message);
         }
         emitter.operation_finished();
-        return Err(error);
-    }
-    if let Err(error) = sync_workspace_boundary(backend, &root, &manifest, &lock) {
-        emitter.operation_finished();
-        return Err(error);
-    }
-    emitter.member_finished(&member.id, &member.path);
-
-    if let Some(message) = &warning {
-        emit_warning(&emitter, &member, message);
-    }
-    emitter.operation_finished();
-    let mut response = response_envelope(
-        context,
-        crate::AggregateStatus::Ok,
-        vec![ok_member(&member, &locked, crate::MemberStatus::Ok)],
-    );
-    response.meta.message = warning.or_else(|| {
+        let mut response = response_envelope(
+            context,
+            crate::AggregateStatus::Ok,
+            vec![ok_member(&member, &locked, crate::MemberStatus::Ok)],
+        );
+        response.meta.message = warning.or_else(|| {
         (!plan.reused_source_members.is_empty()).then(|| {
             format!(
                 "cloned {}; verified {verified_commits} historical commit(s) for source identity {}",
@@ -176,7 +180,14 @@ where
             )
         })
     });
-    Ok(crate::CloneRepoMemberResponse { response })
+        Ok(crate::CloneRepoMemberResponse { response })
+    })();
+    result
+        .map_err(|error| super::publication::attach_transport_error(backend, error, &error_context))
+        .map(|mut response| {
+            super::publication::attach_transport(backend, &mut response.response);
+            response
+        })
 }
 
 pub fn handle_detach_repo_member<B>(

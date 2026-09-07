@@ -16,6 +16,13 @@ supports members and refuses an explicit surviving root selector. Whole-workspac
 local operations refuse nonempty selectors before effects. Drivers consume the
 same core selection policy, including forall.
 
+Structural requests whose source/path operands define the work (create workspace,
+init, repo add/create/clone), and snapshot listing, refuse nonempty target
+selection before effects. Empty/default selection envelopes remain accepted.
+URL workspace clone consumes selectors through the materialize policy and checks
+explicit selectors against the remote manifest before destination allocation.
+Detach and attach retain their single-member operand grammar.
+
 `GwzCore.resolve_forall_targets` is a read-only additive service method using
 the existing `LsRequest`/`LsResponse` target-list wire shapes. It resolves with
 Forall policy and reports action Forall; it never invokes the ls command or
@@ -30,7 +37,13 @@ not overwrite uncommitted marker work without refusal. No hidden commits or
 relaxation of history preservation are permitted.
 
 Root publication captures its source object before transfers and checks the lock
-from that exact committed object. It waits for successful member transfers and proof that all member
+from that exact committed object. Push planning also captures every selected
+member's source objects, destination refs and effective push URL before transfer
+events. Wildcard refspecs expand against the captured local refs; later local
+branch or remote-configuration edits cannot redirect the planned publication.
+Native transport retains the configured remote name for identity selection and
+reporting while using the captured URL, without rewriting repository configuration.
+It waits for successful member transfers and proof that all member
 objects named by the committed root lock are available at their destinations,
 including partial and root-only pushes. Non-Git dependencies refuse with `UnsupportedSourceKind` until their availability
 contract has an implementation. A committed manifest/lock source-kind mismatch
@@ -42,6 +55,42 @@ must fail closed without trying unrelated keys, using native transport only.
 Core does not own secret storage. Exact authentication capabilities must be
 verified before claiming support. The recovery plan defines verification and
 provenance gates; writing a workflow alone does not establish a passing gate.
+The Python native module exposes the core's compiled build provenance alongside
+its version metadata. It returns the same core-owned string used by the Rust
+driver; it does not inspect the caller's current checkout at runtime.
+
+Before a separately installed driver sends nonempty transport
+options, it must query the read-only `transport_capabilities` service. The
+taut-defined request carries the protocol schema version; its response reports
+file identity support and exact agent identity support separately. An older
+core without this method, or a core reporting no file identity support, refuses
+the request before operation submission. Ordinary requests need no probe.
+The current native backend reports file support and no exact agent support.
+
+Transport reporting uses taut-defined `TransportObservation` rows in optional
+`ResponseMeta.transport` (tag 8) and `OperationResult.transport` (tag 10).
+Each network attempt records repository path, remote name, operation, credential
+method and selection source, whether a credential was offered to libgit2, and
+optional authentication proof. A successful network operation after offering a
+credential proves authentication; constructing a credential alone does not.
+Repeated credential rejection can record false; other failed network operations
+leave authentication unknown. Public-key fingerprints remain absent unless
+proved from the actual credential. Rows contain no key bytes, passphrases or
+remote URL secrets. A preflight read and a later transfer are separate attempts.
+The operation-scoped backend owns the observations and frozen identity choices;
+no credentials or observations flow between independent requests.
+Failures before a response retain the same taut-defined ResponseMeta in the
+model error; the native bridge transfers it as generated CBOR. Drivers render
+that metadata with the error instead of dropping the observations.
+
+Native connection/read timeout configuration is process-wide. A backend freezes
+its startup value (default 3000 ms) before any native work; later requests can
+repeat the same value but cannot change it. The read-only-in-repository-scope
+`configure_transport_runtime` service carries schema version and timeout in
+milliseconds, validates 0 through i32::MAX, and returns the applied value.
+It writes no repository state and must run before backend creation. Both CLIs
+honor `--ssh-timeout` in seconds at startup; 0 explicitly disables the timeout.
+Independent operation credentials never alter this process setting.
 
 DR-5 transport selection uses `RequestMeta.transport`, separate from descriptive
 attribution. `TransportOptions` carries an optional default private-key path and
@@ -56,6 +105,19 @@ selected repository using that remote name. Duplicate or unknown names refuse.
 Drivers use separate `--identity PATH` and repeatable `--remote-identity NAME=PATH`
 flags, splitting the latter at its first `=` so paths may contain `=`.
 
+`gwz auth identity REMOTE [--set PATH | --unset]` invokes the taut-defined
+`remote_identity` operation (ActionKind 29). With neither flag it reads the
+local setting. It defaults to active members and supports explicit `@root` and
+`@all` through the common target owner. Core validates every selected repository
+and remote and the proposed key file before writing any configuration. Set
+resolves the path against the invocation directory; get/unset also work when
+the old path is unavailable, allowing repair. Dry-run reports planned settings
+without writing. Configuration is stored only at Git's Local level under
+`remote.<name>.gwzSshIdentity`. It does not open a network connection or accept
+transport override flags. Local identity changes are allowed during an open
+merge so credentials can be repaired. A later write failure reports which
+repositories changed; there is no cross-repository configuration transaction.
+
 Explicit file credentials offer only the selected file, once. An encrypted or
 otherwise unavailable file cannot fall back to the agent. Exact encrypted-agent
 selection remains unsupported until a safe binding implementation passes the
@@ -63,6 +125,15 @@ controlled capability fixture. Transport options are scoped to one operation's
 backend value, never process-global mutable state. Local-only operations refuse
 nonempty options; anonymous family transports remain credential-free. Existing
 HTTPS helper policy and host-key verification remain in effect.
+An invocation-wide SSH default leaves HTTPS and local transports unchanged;
+a per-remote SSH override naming a non-SSH destination refuses as inapplicable.
+Only the winning precedence level is interpreted, so an invocation override can
+replace a malformed or unavailable locally configured identity.
+Workspace URL clone with named identity overrides first reads the remote's
+committed manifest through a temporary bare native clone. It validates the
+complete remote-name set before allocating the destination workspace, then
+revalidates against the actual cloned manifest before member transfers. This
+extra read is needed because member remote names are not known locally yet.
 
 This document describes how GWZ Core satisfies the accepted v0 direction.
 

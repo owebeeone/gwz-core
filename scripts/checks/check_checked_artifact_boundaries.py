@@ -23,6 +23,10 @@ ROOT = Path(__file__).resolve().parents[2]
 # canonical marker renderer re-export; and read-only ls_remote_url delegation.
 # No protected v1 subtree, compiler route, or write-capability export changed.
 # See gwz-dev/dev-docs/GwzDebtRecoveryContracts.md and the recovery ledger.
+# DR-4/5 2026-09-07: reviewed handler registration and native transport composition.
+# Added RemoteIdentity handler, scoped identity/observation exports, startup timeout,
+# named clone/read-preview and captured push delegates. No protected v1 leaf or
+# preservation/write authority export changed. Only the two measured roots advance.
 PROTECTED_COMPILER_ROOT_DIGESTS = {
     # M5d step (3) (2026-09-03): one added line, `mod verified_write;` -- the
     # NEUTRAL home of the merge record's raw publication primitive on a
@@ -46,7 +50,7 @@ PROTECTED_COMPILER_ROOT_DIGESTS = {
     #   was: 6928a62dfe4ab90eb8f7e69b60544b7be9942afb184233f8277af73c7896e423
     "src/lib.rs": "7609b870f4ee384a5799ed1900391809890d5443d69f6071536d270966f6dc8a",
     #   was: 663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124
-    "src/workspace_ops/mod.rs": "457c78a7e2091d0500658abacc4769980d6880f15624b650db074dccc7565f06",
+    "src/workspace_ops/mod.rs": "67317ec671dea907ccc94cc1e855b835b5e195641c1e60aa1e720e23f869637b",
     # M5d close (2026-09-03): the v0 lifecycle re-exports left; open-record
     # occupancy and the retained archive/GC store are what remain.
     # M5d(10): one added row, `#[cfg(test)] pub(crate) use
@@ -170,7 +174,7 @@ PROTECTED_SOURCE_DIGESTS = {
     # nothing. No observer, preservation or authority row moves; the
     # concrete preservation observer still terminates in its protected leaf.
     #   was: b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb
-    "git/gitbackend.rs": "d321fedfdd8b34b0ea96cf549cad48aa30518b8c017ae1592bdf065aa92a37cd",
+    "git/gitbackend.rs": "3fdb496071a7fd7e277fe572fcfa11b2615639446ef6b9d7e3c1fb15932338ce",
     "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
     "git/gitbackend/preservation_image.rs": "b45057e105a74d50c5163886d3346e9ea859464971c4cd03fc49392c5b67bac5",
     # M5d close: v0 preserve arms left; the v1 owner plan and its artifacts

@@ -1,33 +1,83 @@
+use super::transport_observations::TransportAttempt;
 use super::*;
 
 pub(crate) mod identity;
 
-/// Set libgit2's server (SSH/network) read timeout, process-wide, in milliseconds.
-/// libssh2/libgit2 default to NO timeout, so a stalled SSH handshake — an empty ssh-agent
-/// or an unreachable host — hangs forever; a positive value makes it a fast `Timeout`
-/// error (libgit2 feeds it to `libssh2_session_set_timeout`). `0` disables it. Call ONCE
-/// at startup before any network op spawns threads (mutates a libgit2 global without
-/// synchronization).
-pub fn set_server_timeout_ms(ms: i32) {
-    // SAFETY: invoked once from CLI startup, before any backend operation / thread spawn.
-    unsafe {
-        let _ = git2::opts::set_server_timeout_in_milliseconds(ms);
+#[derive(Default)]
+struct TimeoutState {
+    milliseconds: Option<i32>,
+    frozen: bool,
+}
+static TIMEOUT_STATE: std::sync::Mutex<TimeoutState> = std::sync::Mutex::new(TimeoutState {
+    milliseconds: None,
+    frozen: false,
+});
+
+pub(super) fn ensure_server_timeout() {
+    let mut state = TIMEOUT_STATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if state.milliseconds.is_none() {
+        apply_server_timeout(3000).expect("native transport timeout initialization failed");
+        state.milliseconds = Some(3000);
     }
+    state.frozen = true;
+}
+
+/// Legacy startup entrypoint. Must be called before constructing a backend.
+/// Use `configure_server_timeout_ms` to handle an invalid or late change.
+pub fn set_server_timeout_ms(ms: i32) {
+    configure_server_timeout_ms(ms).expect("transport timeout must be configured at startup");
+}
+
+pub fn configure_server_timeout_ms(ms: i32) -> ModelResult<()> {
+    if ms < 0 {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "transport timeout cannot be negative",
+        ));
+    }
+    let mut state = TIMEOUT_STATE.lock().map_err(|_| {
+        ModelError::new(ErrorCode::InternalError, "transport runtime lock poisoned")
+    })?;
+    if state.frozen && state.milliseconds != Some(ms) {
+        return Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "transport timeout is process-wide and already in use; choose it before creating a backend",
+        ));
+    }
+    if state.milliseconds != Some(ms) {
+        apply_server_timeout(ms)?;
+        state.milliseconds = Some(ms);
+    }
+    Ok(())
+}
+
+fn apply_server_timeout(ms: i32) -> ModelResult<()> {
+    // SAFETY: the runtime lock serializes initialization; a different value is
+    // refused once any backend exists, before native workers can observe it.
+    unsafe {
+        git2::opts::set_server_connect_timeout_in_milliseconds(ms).map_err(git_error)?;
+        git2::opts::set_server_timeout_in_milliseconds(ms).map_err(git_error)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn remote_fetch_options(
     credential_helpers: CredentialHelperPolicy,
     identity: Option<identity::SelectedIdentity>,
+    attempt: Option<TransportAttempt>,
 ) -> git2::FetchOptions<'static> {
-    fetch_options_with_progress(credential_helpers, identity, None)
+    fetch_options_with_progress(credential_helpers, identity, attempt, None)
 }
 
 pub(crate) fn fetch_options_with_progress<'a>(
     credential_helpers: CredentialHelperPolicy,
     identity: Option<identity::SelectedIdentity>,
+    attempt: Option<TransportAttempt>,
     progress: Option<&'a dyn Fn(crate::GitTransferProgress)>,
 ) -> git2::FetchOptions<'a> {
-    let mut callbacks = remote_callbacks(credential_helpers, identity);
+    let mut callbacks = remote_callbacks(credential_helpers, identity, attempt);
     if let Some(progress) = progress {
         callbacks.transfer_progress(move |stats| {
             progress(git_transfer_progress(&stats));
@@ -42,9 +92,10 @@ pub(crate) fn fetch_options_with_progress<'a>(
 pub(crate) fn remote_push_options(
     credential_helpers: CredentialHelperPolicy,
     identity: Option<identity::SelectedIdentity>,
+    attempt: Option<TransportAttempt>,
     rejected: &std::cell::RefCell<Vec<(String, String)>>,
 ) -> git2::PushOptions<'_> {
-    let mut callbacks = remote_callbacks(credential_helpers, identity);
+    let mut callbacks = remote_callbacks(credential_helpers, identity, attempt);
     callbacks.push_update_reference(|refname, status| {
         if let Some(message) = status {
             rejected
@@ -61,27 +112,51 @@ pub(crate) fn remote_push_options(
 pub(crate) fn remote_callbacks<'a>(
     credential_helpers: CredentialHelperPolicy,
     identity: Option<identity::SelectedIdentity>,
+    attempt: Option<TransportAttempt>,
 ) -> git2::RemoteCallbacks<'a> {
     let mut callbacks = git2::RemoteCallbacks::new();
     // libgit2 re-invokes this after each auth rejection; track SSH attempts so we offer
     // the agent once and then fail, instead of re-offering a dead credential forever.
     let mut ssh_attempts = 0u32;
     callbacks.credentials(move |url, username_from_url, allowed_types| {
-        if let Some(identity) = &identity {
-            return explicit_credential(
+        if ssh_attempts != 0
+            && allowed_types.is_ssh_key()
+            && let Some(attempt) = &attempt
+        {
+            attempt.rejected();
+        }
+        let credential = if let Some(identity) = &identity {
+            explicit_credential(
                 identity,
                 username_from_url,
                 allowed_types,
                 &mut ssh_attempts,
-            );
+            )
+        } else {
+            remote_credential(
+                url,
+                username_from_url,
+                allowed_types,
+                credential_helpers,
+                &mut ssh_attempts,
+            )
+        };
+        if let (Some(attempt), Ok(credential)) = (&attempt, &credential) {
+            let kind = git2::CredentialType::from_bits_truncate(credential.credtype());
+            if !kind.is_username() {
+                let method = if identity.is_some() {
+                    crate::TransportCredentialMethod::File
+                } else if kind.is_ssh_key() {
+                    crate::TransportCredentialMethod::Agent
+                } else if kind.is_user_pass_plaintext() {
+                    crate::TransportCredentialMethod::Helper
+                } else {
+                    crate::TransportCredentialMethod::Unknown
+                };
+                attempt.offered(method);
+            }
         }
-        remote_credential(
-            url,
-            username_from_url,
-            allowed_types,
-            credential_helpers,
-            &mut ssh_attempts,
-        )
+        credential
     });
     callbacks
 }
