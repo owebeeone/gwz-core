@@ -653,6 +653,7 @@ fn unknown_work_or_history_refuses_and_no_force_name_waives_it() {
 
     // C: an unmanaged nested repository whose `.git` is a gitfile the
     // inspector refuses (design §4.0), so the tree's layout is unknown.
+    let nested_key = format!("nested:{}", Path::new("vendor").join("thing").display());
     let c = fixture.sibling("C");
     fs::create_dir_all(c.join("vendor/thing")).unwrap();
     fs::write(
@@ -669,7 +670,7 @@ fn unknown_work_or_history_refuses_and_no_force_name_waives_it() {
             &before,
             &error,
             ErrorCode::UnknownEvidence,
-            &["nested:vendor/thing", "no force name waives"],
+            &[&nested_key, "no force name waives"],
         );
     }
 
@@ -1322,6 +1323,10 @@ fn the_disposal_ports_observe_check_history_per_witness_and_remove() {
 /// uninspected.
 #[test]
 fn a_nested_bare_repository_is_inventoried_and_its_history_protected() {
+    let nested_key = format!(
+        "nested:{}",
+        Path::new("vendor").join("mirror.git").display()
+    );
     let fixture = clean_family_workspace("dispose-nested-bare");
     // A bare repository inside the source tree, copied into the lane.
     let bare = fixture.tree.bare_repo("root/vendor/mirror.git");
@@ -1340,9 +1345,7 @@ fn a_nested_bare_repository_is_inventoried_and_its_history_protected() {
     let nested = evidence
         .repositories
         .iter()
-        .find(|repository| {
-            matches!(&repository.key, RepoKey::Member { id } if id == "nested:vendor/mirror.git")
-        })
+        .find(|repository| matches!(&repository.key, RepoKey::Member { id } if id == &nested_key))
         .expect("the nested bare repository is inventoried");
     assert!(nested.info.bare);
     let roots = nested.history.known().expect("its history is known");
@@ -1361,7 +1364,7 @@ fn a_nested_bare_repository_is_inventoried_and_its_history_protected() {
         &before,
         &error,
         ErrorCode::UnwaivedHazard,
-        &["<unpreserved-history>", "nested:vendor/mirror.git"],
+        &["<unpreserved-history>", &nested_key],
     );
     local(&fixture.root, delete_request("A", &["unpreserved-history"]));
     assert!(!dest.exists());
