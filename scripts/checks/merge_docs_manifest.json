@@ -448,8 +448,8 @@
           "value": "Merge responses use the normal response envelope and populate its `merge` field."
         },
         {
-          "id": "machine_output_additive_keys",
-          "value": "GWZ is pre-1.0, so strict consumers must tolerate additive keys"
+          "id": "machine_output_additive_keys_versioned_envelope",
+          "value": "Consumers of these versioned envelopes must tolerate additive keys"
         },
         {
           "id": "machine_output_open_pre_014_never_projects",
@@ -535,6 +535,13 @@
     }
   ],
   "retired": [
+    {
+      "id": "machine_output_additive_keys",
+      "source": "machine_output",
+      "was": "required: GWZ is pre-1.0, so strict consumers must tolerate additive keys",
+      "retired": "2026-09-07, 1.0.0 release candidate preparation",
+      "why": "The pre-1.0 justification is obsolete for this release. Replaced by machine_output_additive_keys_versioned_envelope, preserving the additive-key compatibility requirement without the stale version claim."
+    },
     {
       "id": "releases_must_not_claim_no_ff_yet",
       "source": "releases",
