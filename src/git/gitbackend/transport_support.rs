@@ -142,7 +142,9 @@ pub(crate) fn remote_callbacks<'a>(
             )
         };
         if let (Some(attempt), Ok(credential)) = (&attempt, &credential) {
-            let kind = git2::CredentialType::from_bits_truncate(credential.credtype());
+            // libgit2's C enum is signed on Windows and unsigned on Unix.
+            #[allow(clippy::unnecessary_cast)]
+            let kind = git2::CredentialType::from_bits_truncate(credential.credtype() as u32);
             if !kind.is_username() {
                 let method = if identity.is_some() {
                     crate::TransportCredentialMethod::File
