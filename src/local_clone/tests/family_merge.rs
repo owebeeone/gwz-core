@@ -51,6 +51,14 @@ fn workspace_with_members(
     let workspace = tree.workspace("root", members);
     workspace.commit_all("init");
     let root = workspace.path().to_path_buf();
+    // Finalization commits the root composition through the production backend.
+    // Do not borrow an author identity from the developer's global Git config.
+    let repo = git2::Repository::open(&root).unwrap();
+    let mut config = repo.config().unwrap();
+    config.set_str("user.name", "GWZ Fixture").unwrap();
+    config
+        .set_str("user.email", "fixture@example.invalid")
+        .unwrap();
     handle_create_workspace(
         crate::CreateWorkspaceRequest {
             meta: meta("req-create"),
@@ -297,7 +305,10 @@ fn a_family_merge_by_name_integrates_the_clones_commits_through_a_retained_impor
         "{message}"
     );
     assert!(message.contains("never pruned"), "{message}");
-    assert!(message.contains("root history was not integrated"), "{message}");
+    assert!(
+        message.contains("root history was not integrated"),
+        "{message}"
+    );
     assert!(message.contains("select @root"), "{message}");
 
     // The receiver holds the work, the retained ref and no remote.

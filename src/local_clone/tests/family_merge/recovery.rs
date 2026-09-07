@@ -39,6 +39,12 @@ fn merge_default_and_all_include_root_but_explicit_member_stays_partial() {
 fn default_family_merge_preserves_root_and_member_history_for_disposal() {
     let fixture = super::super::fixture::clean_family_workspace("merge-dispose-recovery");
     let backend = Git2Backend::without_credential_helpers();
+    let root_repo = git2::Repository::open(&fixture.root).unwrap();
+    let mut config = root_repo.config().unwrap();
+    config.set_str("user.name", "GWZ Fixture").unwrap();
+    config
+        .set_str("user.email", "fixture@example.invalid")
+        .unwrap();
     handle_clone_local_workspace(
         &backend,
         &fixture.root,

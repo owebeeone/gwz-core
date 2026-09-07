@@ -432,6 +432,14 @@ def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool):
     else:
         log("skipping `cargo test`")
 
+def release_version(tag: str) -> str:
+    """Accept stable releases and numbered release candidates, with no leading zeroes."""
+    number = r"(?:0|[1-9][0-9]*)"
+    if not re.fullmatch(rf"v{number}\.{number}\.{number}(?:-rc\.[1-9][0-9]*)?", tag):
+        fail(f"tag must look like vX.Y.Z or vX.Y.Z-rc.N, got '{tag}'")
+    return tag[1:]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Cut a gwz-core release tag off main (verify, bump, commit, tag)."
@@ -453,9 +461,7 @@ def main():
     args = parser.parse_args()
 
     tag = args.tag
-    if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
-        fail(f"tag must look like vX.Y.Z, got '{tag}'")
-    version = tag[1:]
+    version = release_version(tag)
 
     for tool in ("git", "cargo"):
         if not shutil.which(tool):
