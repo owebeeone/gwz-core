@@ -9,7 +9,10 @@ use gwz_copy_contract::Cancellation;
 use gwz_family_model::{CloneMode, MemberKind, MemberState, ROOT_PATH};
 use gwz_family_store_contract::{FamilyLocation, FamilyObservation, FamilySource, FamilyStore};
 
-use super::fixture::{FamilyFixture, family_files_absent, family_workspace, meta};
+use super::fixture::{
+    FamilyFixture, TempDir, family_files_absent, family_workspace, meta,
+    uncommitted_configuration_workspace, workspace,
+};
 use crate::artifact::{ConfIntegrityVerdict, inspect_conf_integrity};
 use crate::git::Git2Backend;
 use crate::local_clone::create;
@@ -215,6 +218,67 @@ fn a_source_hazard_refuses_before_reservation_and_leaves_nothing() {
     assert!(
         !fixture.sibling("A").exists(),
         "no destination was allocated"
+    );
+}
+
+#[test]
+fn an_uncommitted_workspace_bootstrap_refuses_before_family_allocation() {
+    let fixture = uncommitted_configuration_workspace("create-uncommitted-bootstrap");
+    let destination = fixture.sibling("A");
+    let error = handle_clone_local_workspace(
+        &Git2Backend::without_credential_helpers(),
+        &fixture.root,
+        clone_request("A"),
+        "op-clone",
+        &NullSink,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error}");
+    assert!(
+        error.message.contains("not ready for a local family"),
+        "{error}"
+    );
+    assert!(error.message.contains("gwz.conf/gwz.yml"), "{error}");
+    assert!(error.message.contains("gwz.conf/gwz.lock.yml"), "{error}");
+    assert!(
+        family_files_absent(&fixture.root),
+        "the incomplete source must not found a family"
+    );
+    assert!(
+        !destination.exists(),
+        "the incomplete source must not allocate a destination"
+    );
+}
+
+#[test]
+fn an_unborn_workspace_root_refuses_before_family_allocation() {
+    let temp = TempDir::new("create-unborn-root");
+    let root = workspace(&temp);
+    let destination = temp.path().join("must-not-exist");
+    let mut request = clone_request("A");
+    request.dest = Some(destination.to_string_lossy().into_owned());
+    let error = handle_clone_local_workspace(
+        &Git2Backend::without_credential_helpers(),
+        &root,
+        request,
+        "op-clone",
+        &NullSink,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error}");
+    assert!(
+        error.message.contains("root has no committed HEAD"),
+        "{error}"
+    );
+    assert!(
+        family_files_absent(&root),
+        "the unborn source must not found a family"
+    );
+    assert!(
+        !destination.exists(),
+        "the unborn source must not allocate a destination"
     );
 }
 

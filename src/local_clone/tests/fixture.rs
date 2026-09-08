@@ -125,7 +125,8 @@ impl FamilyFixture {
 }
 
 pub(super) fn family_workspace(label: &str) -> FamilyFixture {
-    let fixture = registered_family_workspace(label);
+    let fixture = uncommitted_configuration_workspace(label);
+    commit_root_configuration(&fixture.root);
     fixture
         .workspace
         .member("app")
@@ -142,12 +143,15 @@ pub(super) fn family_workspace(label: &str) -> FamilyFixture {
 /// is the clean, preserved lane ordinary deletion accepts (design §12
 /// "Clean intact lane with all protected history elsewhere").
 pub(super) fn clean_family_workspace(label: &str) -> FamilyFixture {
-    let fixture = registered_family_workspace(label);
+    let fixture = uncommitted_configuration_workspace(label);
     commit_root_configuration(&fixture.root);
     fixture
 }
 
-fn registered_family_workspace(label: &str) -> FamilyFixture {
+/// A root whose manifest/lock/marker have been created and staged but not
+/// committed, exactly the incomplete state left after `gwz init` followed by
+/// member registration.
+pub(super) fn uncommitted_configuration_workspace(label: &str) -> FamilyFixture {
     let tree = gwz_local_testrepo::TempTree::new(label);
     let workspace = tree.workspace("root", &["app"]);
     workspace.commit_all("init");

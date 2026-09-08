@@ -56,6 +56,7 @@ use super::request::ValidatedCloneLocal;
 use crate::artifact;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::workspace::WORKSPACE_MANIFEST;
 
 /// What one create produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,6 +171,7 @@ pub(crate) fn clone_local<B: GitBackend>(
     }
     let store = family_store();
     let placement = place(&store, workspace)?;
+    ensure_source_is_ready_for_local_clone(backend, &placement.root, &request.name)?;
     let destination = intended_destination(&destination_path(
         start,
         request.dest.as_deref(),
@@ -293,6 +295,52 @@ pub(crate) fn clone_local<B: GitBackend>(
             ))
         }
     }
+}
+
+/// A local family needs a durable source root. Ordinary worktree dirt is
+/// deliberately copied verbatim, but an unborn root or uncommitted managed
+/// configuration means `gwz init`/member registration has not been completed
+/// yet. Copying that shape manufactures a second incomplete workspace.
+fn ensure_source_is_ready_for_local_clone<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    name: &MemberName,
+) -> ModelResult<()> {
+    let mut findings = Vec::new();
+    if backend.head(root)?.commit.is_none() {
+        findings.push("the workspace root has no committed HEAD".to_owned());
+    }
+
+    let managed = [
+        WORKSPACE_MANIFEST,
+        artifact::LOCK_PATH,
+        artifact::CONF_INTEGRITY_MARKER_PATH,
+    ];
+    let changed: Vec<_> = backend
+        .status(root)?
+        .files
+        .into_iter()
+        .filter(|file| managed.contains(&file.path.as_str()))
+        .map(|file| file.path)
+        .collect();
+    if !changed.is_empty() {
+        findings.push(format!(
+            "managed workspace configuration is uncommitted ({})",
+            changed.join(", ")
+        ));
+    }
+
+    if findings.is_empty() {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "local clone `{name}` refused before reservation: source workspace {} is not ready for a \
+         local family because {}; commit the initial GWZ configuration and its integrity marker \
+         first. Ordinary worktree changes and nested repositories remain valid verbatim clone \
+         input; do not run `gwz init` on another directory to bypass this refusal",
+        root.display(),
+        findings.join("; "),
+    )))
 }
 
 /// Step 2: the family root, the copy source and its recorded path.
