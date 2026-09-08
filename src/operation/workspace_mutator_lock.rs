@@ -53,8 +53,10 @@ impl WorkspaceMutatorLock {
     /// filesystems with broken advisory-lock semantics are unsupported for concurrent
     /// GWZ mutators; run mutating operations serially there.
     pub fn try_acquire(root: &Path) -> ModelResult<Option<Self>> {
-        crate::checked_artifact::try_acquire_workspace_runtime(root)
-            .map(|lease| lease.map(|lease| Self { lease }))
+        Self::try_acquire_in(
+            &crate::operation_context::OperationContext::existing(),
+            root,
+        )
     }
 
     pub fn path(&self) -> &Path {
@@ -82,15 +84,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::operation_context::{OperationContext, TestWorld};
 
     const CHILD_ENV: &str = "GWZ_WORKSPACE_MUTATOR_LOCK_CHILD_ROOT";
     const BOOTSTRAP_GUARD_NAME: &str = "gwz-runtime-bootstrap-v1.lock";
+
+    fn physical_context() -> OperationContext {
+        TestWorld::physical().context()
+    }
 
     #[test]
     fn non_git_root_is_rejected_without_creating_runtime_state() {
         let temp = TempDir::new_plain("mutator-lock-non-git");
 
-        assert!(WorkspaceMutatorLock::try_acquire(temp.path()).is_err());
+        assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
         assert!(!temp.path().join(crate::workspace::RUNTIME_DIR).exists());
         assert!(!temp.path().join(BOOTSTRAP_GUARD_NAME).exists());
     }
@@ -103,7 +110,7 @@ mod tests {
             .path()
             .to_path_buf();
 
-        let lease = WorkspaceMutatorLock::try_acquire(temp.path())
+        let lease = WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path())
             .unwrap()
             .expect("runtime lease acquired");
 
@@ -124,7 +131,7 @@ mod tests {
         let temp = TempDir::new("mutator-lock-wrong-kind-runtime");
         fs::write(temp.path().join(crate::workspace::RUNTIME_DIR), b"foreign").unwrap();
 
-        assert!(WorkspaceMutatorLock::try_acquire(temp.path()).is_err());
+        assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
         assert_eq!(
             fs::read(temp.path().join(crate::workspace::RUNTIME_DIR)).unwrap(),
             b"foreign"
@@ -144,7 +151,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(WorkspaceMutatorLock::try_acquire(temp.path()).is_err());
+        assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
         assert!(!outside.path().join("locks").exists());
     }
 
@@ -162,7 +169,7 @@ mod tests {
             .to_path_buf();
         symlink(&outside, git_dir.join(BOOTSTRAP_GUARD_NAME)).unwrap();
 
-        assert!(WorkspaceMutatorLock::try_acquire(temp.path()).is_err());
+        assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
         assert_eq!(fs::read(outside).unwrap(), b"foreign");
         assert!(!temp.path().join(crate::workspace::RUNTIME_DIR).exists());
     }
@@ -178,7 +185,7 @@ mod tests {
         let outside = TempDir::new_plain("mutator-lock-symlink-locks-target");
         symlink(outside.path(), runtime.join("locks")).unwrap();
 
-        assert!(WorkspaceMutatorLock::try_acquire(temp.path()).is_err());
+        assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
         assert!(!outside.path().join(WORKSPACE_MUTATOR_LOCK_NAME).exists());
     }
 
@@ -197,7 +204,7 @@ mod tests {
         fs::write(&outside, b"foreign").unwrap();
         symlink(&outside, lock_dir.join(WORKSPACE_MUTATOR_LOCK_NAME)).unwrap();
 
-        assert!(WorkspaceMutatorLock::try_acquire(temp.path()).is_err());
+        assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
         assert_eq!(fs::read(outside).unwrap(), b"foreign");
     }
 
@@ -211,7 +218,7 @@ mod tests {
         let linked_repo = git2::Repository::open(&linked_root).unwrap();
         let linked_git_dir = linked_repo.path().to_path_buf();
 
-        let lease = WorkspaceMutatorLock::try_acquire(&linked_root)
+        let lease = WorkspaceMutatorLock::try_acquire_in(&physical_context(), &linked_root)
             .unwrap()
             .expect("linked-worktree lease acquired");
 
@@ -228,16 +235,18 @@ mod tests {
 
         let temp = TempDir::new("mutator-lock-first-race");
         let root = Arc::new(temp.path().to_path_buf());
+        let context = physical_context();
         let start = Arc::new(Barrier::new(CONTENDERS));
         let acquired = Arc::new(Barrier::new(CONTENDERS));
         let threads = (0..CONTENDERS)
             .map(|_| {
                 let root = Arc::clone(&root);
+                let context = context.clone();
                 let start = Arc::clone(&start);
                 let acquired = Arc::clone(&acquired);
                 std::thread::spawn(move || {
                     start.wait();
-                    let lease = WorkspaceMutatorLock::try_acquire(&root);
+                    let lease = WorkspaceMutatorLock::try_acquire_in(&context, &root);
                     acquired.wait();
                     lease
                 })
@@ -259,7 +268,8 @@ mod tests {
     #[test]
     fn lock_file_may_remain_and_be_reacquired_after_release() {
         let temp = TempDir::new("mutator-lock-reacquire");
-        let first = WorkspaceMutatorLock::try_acquire(temp.path())
+        let context = physical_context();
+        let first = WorkspaceMutatorLock::try_acquire_in(&context, temp.path())
             .unwrap()
             .expect("first lock acquired");
         let path = first.path().to_path_buf();
@@ -267,7 +277,7 @@ mod tests {
         drop(first);
 
         assert!(path.is_file(), "lock file remains as runtime state");
-        let second = WorkspaceMutatorLock::try_acquire(temp.path())
+        let second = WorkspaceMutatorLock::try_acquire_in(&context, temp.path())
             .unwrap()
             .expect("released lock can be reacquired");
         drop(second);
@@ -276,7 +286,7 @@ mod tests {
     #[test]
     fn separate_process_cannot_acquire_held_workspace_mutator_lock() {
         let temp = TempDir::new("mutator-lock-process");
-        let _held = WorkspaceMutatorLock::try_acquire(temp.path())
+        let _held = WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path())
             .unwrap()
             .expect("parent lock acquired");
 
@@ -298,7 +308,7 @@ mod tests {
             return;
         };
         assert!(
-            WorkspaceMutatorLock::try_acquire(Path::new(&root))
+            WorkspaceMutatorLock::try_acquire_in(&physical_context(), Path::new(&root))
                 .unwrap()
                 .is_none()
         );

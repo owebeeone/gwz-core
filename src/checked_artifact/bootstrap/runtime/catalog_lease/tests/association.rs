@@ -1,8 +1,14 @@
 use super::*;
 use crate::checked_artifact::bootstrap::runtime::fault::{RuntimeBootstrapFault, run_next_at};
+use crate::checked_artifact::bootstrap::runtime::try_acquire_workspace_runtime_in;
 use crate::checked_artifact::bootstrap::runtime::{
     LOCKS_DIRECTORY_NAME, WORKSPACE_MUTATOR_LOCK_NAME,
 };
+use crate::operation_context::TestWorld;
+
+fn test_world_context() -> crate::operation_context::OperationContext {
+    TestWorld::physical().context()
+}
 
 // Windows denies renaming a directory retained without DELETE sharing; the race is unproducible.
 #[cfg(not(windows))]
@@ -10,7 +16,8 @@ use crate::checked_artifact::bootstrap::runtime::{
 fn post_return_git_target_replacement_invalidates_preflight_authority() {
     let repo = TempRepo::new("post-return-target-replacement");
     let request = CatalogLeaseTargetRequestV1::repository_common_git_directory(repo.path());
-    let set = try_acquire([request.clone()])
+    let context = test_world_context();
+    let set = try_acquire(&context, [request.clone()])
         .unwrap()
         .expect("original target lease");
     let git = fs::canonicalize(git2::Repository::open(repo.path()).unwrap().commondir()).unwrap();
@@ -18,7 +25,7 @@ fn post_return_git_target_replacement_invalidates_preflight_authority() {
     fs::rename(&git, &retired).unwrap();
     git2::Repository::init(repo.path()).unwrap();
 
-    let replacement = try_acquire([request])
+    let replacement = try_acquire(&context, [request])
         .unwrap()
         .expect("replacement target has a distinct lock");
     assert!(set.leases().next().unwrap().begin_preflight().is_err());
@@ -31,7 +38,8 @@ fn post_return_git_target_replacement_invalidates_preflight_authority() {
 fn post_return_git_lock_replacement_invalidates_every_later_edge() {
     let repo = TempRepo::new("post-return-lock-replacement");
     let request = CatalogLeaseTargetRequestV1::repository_common_git_directory(repo.path());
-    let set = try_acquire([request.clone()])
+    let context = test_world_context();
+    let set = try_acquire(&context, [request.clone()])
         .unwrap()
         .expect("original target lease");
     let witness = set
@@ -46,7 +54,7 @@ fn post_return_git_lock_replacement_invalidates_every_later_edge() {
     fs::rename(&lock, &retired).unwrap();
     fs::write(&lock, b"replacement\n").unwrap();
 
-    let replacement = try_acquire([request])
+    let replacement = try_acquire(&context, [request])
         .unwrap()
         .expect("replacement slot is independently lockable");
     assert!(witness.revalidate_for_test().is_err());
@@ -57,7 +65,8 @@ fn post_return_git_lock_replacement_invalidates_every_later_edge() {
 #[test]
 fn workspace_compatibility_borrow_revalidates_its_named_slot() {
     let repo = TempRepo::new("workspace-borrow-lock-replacement");
-    let runtime = try_acquire_workspace_runtime(repo.path())
+    let context = test_world_context();
+    let runtime = try_acquire_workspace_runtime_in(&context, repo.path())
         .unwrap()
         .expect("workspace runtime lease");
     let witness = runtime
@@ -73,9 +82,12 @@ fn workspace_compatibility_borrow_revalidates_its_named_slot() {
     fs::rename(&lock, &retired).unwrap();
     fs::write(&lock, b"replacement\n").unwrap();
 
-    let replacement = try_acquire([CatalogLeaseTargetRequestV1::workspace(repo.path())])
-        .unwrap()
-        .expect("replacement workspace slot is independently lockable");
+    let replacement = try_acquire(
+        &context,
+        [CatalogLeaseTargetRequestV1::workspace(repo.path())],
+    )
+    .unwrap()
+    .expect("replacement workspace slot is independently lockable");
     assert!(witness.revalidate_for_test().is_err());
     drop(replacement);
     assert_catalog_roles_absent(&repo.path().join(crate::workspace::RUNTIME_DIR));
@@ -88,7 +100,8 @@ fn workspace_compatibility_borrow_rejects_post_return_root_replacement() {
     let repo = TempRepo::new("workspace-borrow-root-replacement");
     let root = repo.path().to_path_buf();
     let retired = root.with_extension("retired");
-    let runtime = try_acquire_workspace_runtime(&root)
+    let context = test_world_context();
+    let runtime = try_acquire_workspace_runtime_in(&context, &root)
         .unwrap()
         .expect("workspace runtime lease");
     let witness = runtime
@@ -99,7 +112,7 @@ fn workspace_compatibility_borrow_rejects_post_return_root_replacement() {
     fs::create_dir(&root).unwrap();
     git2::Repository::init(&root).unwrap();
 
-    let replacement = try_acquire([CatalogLeaseTargetRequestV1::workspace(&root)])
+    let replacement = try_acquire(&context, [CatalogLeaseTargetRequestV1::workspace(&root)])
         .unwrap()
         .expect("replacement workspace has a distinct final slot");
     assert!(witness.revalidate_for_test().is_err());
@@ -115,12 +128,13 @@ fn workspace_compatibility_borrow_rejects_post_return_root_replacement() {
 fn duplicate_location_with_changed_identity_rejects_before_preparation_in_both_orders() {
     let repo = TempRepo::new("duplicate-location-identity-race");
     let request = CatalogLeaseTargetRequestV1::repository_common_git_directory(repo.path());
-    let first = RetainedCatalogTargetV1::retain(&OperationContext::existing(), &request).unwrap();
+    let context = test_world_context();
+    let first = RetainedCatalogTargetV1::retain(&context, &request).unwrap();
     let git = first.binding.canonical_path.clone();
     let retired = repo.path().join("retired-before-dedupe");
     fs::rename(&git, &retired).unwrap();
     git2::Repository::init(repo.path()).unwrap();
-    let second = RetainedCatalogTargetV1::retain(&OperationContext::existing(), &request).unwrap();
+    let second = RetainedCatalogTargetV1::retain(&context, &request).unwrap();
     assert_ne!(
         first.binding.durable_identity,
         second.binding.durable_identity
@@ -150,8 +164,8 @@ fn duplicate_location_with_changed_identity_rejects_before_preparation_in_both_o
 fn duplicate_location_requires_exact_live_target_and_repository_bindings() {
     let repo = TempRepo::new("duplicate-location-live-binding");
     let request = CatalogLeaseTargetRequestV1::workspace(repo.path());
-    let retained =
-        RetainedCatalogTargetV1::retain(&OperationContext::existing(), &request).unwrap();
+    let context = test_world_context();
+    let retained = RetainedCatalogTargetV1::retain(&context, &request).unwrap();
 
     for changed in [
         {
@@ -202,7 +216,8 @@ fn linked_membership_drift_after_initial_retention_rejects_before_preparation_in
             move || repoint_worktree_membership(&main, &linked)
         });
 
-        assert!(try_acquire(requests).is_err());
+        let context = test_world_context();
+        assert!(try_acquire(&context, requests).is_err());
         assert!(!common.join(BOOTSTRAP_GUARD_NAME).exists());
         assert!(!common.join(GIT_CATALOG_MUTATOR_LOCK_NAME).exists());
         assert_catalog_roles_absent(&common);
@@ -228,7 +243,8 @@ fn every_deduplicated_linked_membership_is_revalidated_after_return() {
         } else {
             [main_request, linked_request]
         };
-        let set = try_acquire(requests)
+        let context = test_world_context();
+        let set = try_acquire(&context, requests)
             .unwrap()
             .expect("shared common-Git target lease");
         repoint_worktree_membership(main.path(), &linked_root);
@@ -249,10 +265,12 @@ fn single_git_request_membership_is_revalidated_after_return() {
         .unwrap()
         .worktree("linked", &linked_root, None)
         .unwrap();
-    let set =
-        try_acquire([CatalogLeaseTargetRequestV1::repository_common_git_directory(&linked_root)])
-            .unwrap()
-            .expect("single linked-worktree lease");
+    let set = try_acquire(
+        &test_world_context(),
+        [CatalogLeaseTargetRequestV1::repository_common_git_directory(&linked_root)],
+    )
+    .unwrap()
+    .expect("single linked-worktree lease");
     repoint_worktree_membership(main.path(), &linked_root);
 
     assert!(set.leases().next().unwrap().begin_preflight().is_err());
@@ -277,10 +295,13 @@ fn linked_membership_drift_after_preparation_rejects_before_final_acquisition() 
     });
 
     assert!(
-        try_acquire([
-            CatalogLeaseTargetRequestV1::repository_common_git_directory(main.path()),
-            CatalogLeaseTargetRequestV1::repository_common_git_directory(&linked_root),
-        ])
+        try_acquire(
+            &test_world_context(),
+            [
+                CatalogLeaseTargetRequestV1::repository_common_git_directory(main.path()),
+                CatalogLeaseTargetRequestV1::repository_common_git_directory(&linked_root),
+            ],
+        )
         .is_err()
     );
     let common =
@@ -301,8 +322,11 @@ fn symlinked_repository_request_rejects_before_runtime_mutation() {
         fs::canonicalize(git2::Repository::open(repo.path()).unwrap().commondir()).unwrap();
 
     assert!(
-        try_acquire([CatalogLeaseTargetRequestV1::repository_common_git_directory(&link),])
-            .is_err()
+        try_acquire(
+            &test_world_context(),
+            [CatalogLeaseTargetRequestV1::repository_common_git_directory(&link),]
+        )
+        .is_err()
     );
     assert!(!common.join(BOOTSTRAP_GUARD_NAME).exists());
     assert!(!common.join(GIT_CATALOG_MUTATOR_LOCK_NAME).exists());

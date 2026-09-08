@@ -1,6 +1,7 @@
 use super::*;
-use crate::checked_artifact::bootstrap::runtime::retain_ambient_directory;
+use crate::checked_artifact::bootstrap::runtime::paths::retain_ambient_directory_in;
 use crate::checked_artifact::capability::PathComponentMode;
+use crate::operation_context::TestWorld;
 
 #[test]
 fn target_batch_is_nonempty_bounded_and_stops_an_infinite_iterator() {
@@ -33,7 +34,8 @@ fn maximum_batch_orders_and_deduplicates_without_hidden_sort_allocation() {
         MAX_CATALOG_LEASE_TARGETS_V1,
     ))
     .unwrap();
-    let leases = CatalogLeaseSetV1::try_acquire(batch)
+    let context = TestWorld::physical().context();
+    let leases = CatalogLeaseSetV1::try_acquire_in(&context, batch)
         .unwrap()
         .expect("maximum exact-duplicate batch");
     assert_eq!(leases.len(), 1);
@@ -46,7 +48,8 @@ fn batch_allocation_failure_rejects_before_runtime_or_catalog_mutation() {
     let request = CatalogLeaseTargetRequestV1::repository_common_git_directory(repo.path());
     let batch = CatalogLeaseTargetBatchV1::try_new([request]).unwrap();
     fail_next_catalog_batch_allocation_for_test();
-    assert!(CatalogLeaseSetV1::try_acquire(batch).is_err());
+    let context = TestWorld::physical().context();
+    assert!(CatalogLeaseSetV1::try_acquire_in(&context, batch).is_err());
     let git = git2::Repository::open(repo.path())
         .unwrap()
         .commondir()
@@ -64,7 +67,10 @@ fn case_fold_alias_scan_has_literal_lossless_parent_budgets() {
     for ordinal in 0..MAX_CATALOG_ALIAS_PARENT_ENTRIES_V1 {
         fs::write(scan_parent.join(format!("ordinary-{ordinal:04}")), b"").unwrap();
     }
-    let retained = retain_ambient_directory(&scan_parent, "alias test parent").unwrap();
+    let context = TestWorld::physical().context();
+    let retained =
+        retain_ambient_directory_in(context.filesystem(), &scan_parent, "alias test parent")
+            .unwrap();
     assert!(
         reject_equivalent_alias_with_mode_for_test(
             retained.handle(),
@@ -90,7 +96,10 @@ fn case_fold_alias_scan_rejects_non_ascii_names_after_charging_them() {
     let scan_parent = parent.path().join("scan-parent");
     fs::create_dir(&scan_parent).unwrap();
     fs::write(scan_parent.join("ordinary-\u{212a}"), b"").unwrap();
-    let retained = retain_ambient_directory(&scan_parent, "alias test parent").unwrap();
+    let context = TestWorld::physical().context();
+    let retained =
+        retain_ambient_directory_in(context.filesystem(), &scan_parent, "alias test parent")
+            .unwrap();
 
     assert!(
         reject_equivalent_alias_with_mode_for_test(
@@ -198,15 +207,20 @@ fn native_case_sensitive_parent_reports_sensitive_and_bypasses_fold_rejections()
     use crate::checked_artifact::capability::{
         DurableIdentityProvider, HostPlatform, PathEquivalenceProvider,
     };
-    use crate::filesystem::{FileSystem, make_filesystem};
+    use crate::filesystem::FileSystem;
 
     let parent = TempRepo::new("native-case-sensitive");
     let sensitive_parent = parent.path().join("cs-parent");
     fs::create_dir(&sensitive_parent).unwrap();
     enable_case_sensitivity(&sensitive_parent);
 
-    let retained =
-        retain_ambient_directory(&sensitive_parent, "case-sensitive test parent").unwrap();
+    let context = TestWorld::physical().context();
+    let retained = retain_ambient_directory_in(
+        context.filesystem(),
+        &sensitive_parent,
+        "case-sensitive test parent",
+    )
+    .unwrap();
     assert_eq!(
         HostPlatform.parent_mode(retained.handle()).unwrap(),
         PathComponentMode::Sensitive
@@ -216,7 +230,12 @@ fn native_case_sensitive_parent_reports_sensitive_and_bypasses_fold_rejections()
     // an unflagged sibling on the same volume stays case-fold.
     let folded_parent = parent.path().join("fold-parent");
     fs::create_dir(&folded_parent).unwrap();
-    let folded = retain_ambient_directory(&folded_parent, "case-fold test parent").unwrap();
+    let folded = retain_ambient_directory_in(
+        context.filesystem(),
+        &folded_parent,
+        "case-fold test parent",
+    )
+    .unwrap();
     assert_eq!(
         HostPlatform.parent_mode(folded.handle()).unwrap(),
         PathComponentMode::AsciiCaseFold
@@ -234,7 +253,7 @@ fn native_case_sensitive_parent_reports_sensitive_and_bypasses_fold_rejections()
         fs::read(sensitive_parent.join("TARGET")).unwrap(),
         b"upper\n"
     );
-    let filesystem = make_filesystem();
+    let filesystem = context.filesystem();
     let lower = filesystem
         .open_file_at(retained.handle(), OsStr::new("target"))
         .unwrap();

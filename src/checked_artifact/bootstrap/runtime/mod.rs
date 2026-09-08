@@ -23,8 +23,6 @@ pub(in crate::checked_artifact) use catalog_lease::{
     CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
 };
 pub(crate) use catalog_lease::{CatalogLeaseTargetWitnessV1, CatalogMutationLeaseV1};
-#[cfg(test)]
-use paths::retain_ambient_directory;
 use paths::{
     RetainedDirectory, ensure_child_directory, open_or_create_file, resolve_workspace_paths_in,
     retain_ambient_directory_in, revalidate_ambient_directory, revalidate_child_directory,
@@ -87,6 +85,7 @@ impl WorkspaceRuntimeLease {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn try_acquire_workspace_runtime(
     root: &Path,
 ) -> ModelResult<Option<WorkspaceRuntimeLease>> {

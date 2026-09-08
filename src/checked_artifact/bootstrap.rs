@@ -13,6 +13,8 @@ pub(crate) use runtime::CatalogMutationLeaseV1;
 /// DR-1 ship (1) W3 (`GwzM5-8DR1-WarnOrRefuse-Charter.md` §2,
 /// 2026-09-03): the catalog's admission answer without its lease.
 pub(super) use runtime::probe_workspace_admission;
+#[cfg(test)]
+pub(crate) use runtime::try_acquire_workspace_runtime;
 #[allow(
     unused_imports,
     reason = "R2-C0 freezes catalog lease interfaces before the C1 owner consumes them"
@@ -20,9 +22,7 @@ pub(super) use runtime::probe_workspace_admission;
 pub(in crate::checked_artifact) use runtime::{
     CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
 };
-pub(crate) use runtime::{
-    WorkspaceRuntimeLease, try_acquire_workspace_runtime, try_acquire_workspace_runtime_in,
-};
+pub(crate) use runtime::{WorkspaceRuntimeLease, try_acquire_workspace_runtime_in};
 
 pub(super) struct WorkspaceRuntimePaths<'a> {
     workspace_root: &'a Path,

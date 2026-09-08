@@ -81,6 +81,11 @@ pub(crate) struct TestWorld {
 
 #[cfg(test)]
 impl TestWorld {
+    /// A real Git/filesystem world for tests that deliberately exercise OS or libgit2 behavior.
+    pub(crate) fn physical() -> Self {
+        Self::with_backends(false, false)
+    }
+
     pub(crate) fn memory() -> Self {
         Self::with_backends(true, true)
     }

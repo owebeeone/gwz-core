@@ -103,15 +103,19 @@ impl CatalogLeaseTargetRequestV1 {
     }
 
     #[cfg(test)]
-    pub(super) fn canonical_order_key_for_test(&self) -> Result<Vec<u8>, CheckedFsError> {
-        RetainedCatalogTargetV1::retain(&OperationContext::existing(), self)
-            .map(|target| target.binding.order_key)
+    pub(super) fn canonical_order_key_for_test(
+        &self,
+        context: &OperationContext,
+    ) -> Result<Vec<u8>, CheckedFsError> {
+        RetainedCatalogTargetV1::retain(context, self).map(|target| target.binding.order_key)
     }
 
     #[cfg(test)]
-    pub(super) fn canonical_target_path_for_test(&self) -> Result<PathBuf, CheckedFsError> {
-        RetainedCatalogTargetV1::retain(&OperationContext::existing(), self)
-            .map(|target| target.binding.canonical_path)
+    pub(super) fn canonical_target_path_for_test(
+        &self,
+        context: &OperationContext,
+    ) -> Result<PathBuf, CheckedFsError> {
+        RetainedCatalogTargetV1::retain(context, self).map(|target| target.binding.canonical_path)
     }
 }
 
