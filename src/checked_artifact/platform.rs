@@ -1,9 +1,71 @@
 use std::ffi::{OsStr, OsString};
 
-use cap_std::fs::Dir;
-
 use crate::filesystem::{FileSystem, FsDirectory, RenameMode, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
+
+pub(super) struct OpenedRenameSource<'a> {
+    file: crate::filesystem::FsFile,
+    parent: &'a FsDirectory,
+    name: OsString,
+}
+impl OpenedRenameSource<'_> {
+    pub(super) fn file(&self) -> &crate::filesystem::FsFile {
+        &self.file
+    }
+    pub(super) fn file_mut(&mut self) -> &mut crate::filesystem::FsFile {
+        &mut self.file
+    }
+}
+pub(super) fn open_rename_source<'a>(
+    parent: &'a FsDirectory,
+    name: &OsStr,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<OpenedRenameSource<'a>> {
+    let file = make_filesystem()
+        .open_publication_source(parent, name)
+        .map_err(|cause| io_error(code, label, cause))?;
+    Ok(OpenedRenameSource {
+        file,
+        parent,
+        name: name.to_owned(),
+    })
+}
+pub(super) fn rename_open_source(
+    source: &OpenedRenameSource<'_>,
+    destination: &FsDirectory,
+    name: &OsStr,
+    replace: bool,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
+    make_filesystem()
+        .publish_source(
+            crate::filesystem::FsPublicationSource {
+                file: &source.file,
+                parent: source.parent,
+                name: &source.name,
+            },
+            destination,
+            name,
+            if replace {
+                RenameMode::Replace
+            } else {
+                RenameMode::NoReplace
+            },
+            &|| {
+                #[cfg(windows)]
+                super::fault::fault(
+                    super::fault::CheckedArtifactFault::AfterDestinationPathDerivation,
+                    code,
+                    label,
+                )
+                .map_err(|error| std::io::Error::other(error.message))?;
+                Ok(())
+            },
+        )
+        .map_err(|cause| io_error(code, label, cause))
+}
 
 /// The closed durability-anchor protocol (R2-D Phase 4 Step 4.2, freeze §4.3 row
 /// E22). Split out of this file at that step: `platform.rs` keeps the P1 pair,
@@ -11,158 +73,6 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 /// the whole of P5's `AnchoredPrivateArea` machinery — now owns its own module.
 #[cfg(any(windows, test))]
 mod anchor;
-
-pub(super) struct OpenedRenameSource<'a> {
-    file: cap_std::fs::File,
-    source_dir: &'a Dir,
-    source: OsString,
-}
-
-impl OpenedRenameSource<'_> {
-    pub(super) const fn file(&self) -> &cap_std::fs::File {
-        &self.file
-    }
-
-    pub(super) const fn file_mut(&mut self) -> &mut cap_std::fs::File {
-        &mut self.file
-    }
-}
-
-#[cfg(not(windows))]
-pub(super) fn open_rename_source<'a>(
-    source_dir: &'a Dir,
-    source: &OsStr,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<OpenedRenameSource<'a>> {
-    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
-    use cap_std::fs::OpenOptions;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .follow(FollowSymlinks::No)
-        .maybe_dir(true);
-    let file = source_dir
-        .open_with(source, &options)
-        .map_err(|cause| io_error(code, label, cause))?;
-    Ok(OpenedRenameSource {
-        file,
-        source_dir,
-        source: source.to_os_string(),
-    })
-}
-
-#[cfg(windows)]
-pub(super) fn open_rename_source<'a>(
-    source_dir: &'a Dir,
-    source: &OsStr,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<OpenedRenameSource<'a>> {
-    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-    use cap_std::fs::{OpenOptions, OpenOptionsExt};
-    use windows_sys::Win32::Foundation::GENERIC_READ;
-    use windows_sys::Win32::Storage::FileSystem::*;
-
-    let mut options = OpenOptions::new();
-    options
-        .access_mode(GENERIC_READ | DELETE)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(
-            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_BACKUP_SEMANTICS,
-        )
-        .follow(FollowSymlinks::No);
-    let file = source_dir
-        .open_with(source, &options)
-        .map_err(|cause| io_error(code, label, cause))?;
-    Ok(OpenedRenameSource {
-        file,
-        source_dir,
-        source: source.to_os_string(),
-    })
-}
-
-#[cfg(not(windows))]
-pub(super) fn rename_open_source(
-    source: &OpenedRenameSource<'_>,
-    destination_dir: &Dir,
-    destination: &OsStr,
-    replace: bool,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    rename_relative(
-        source.source_dir,
-        &source.source,
-        destination_dir,
-        destination,
-        replace,
-        code,
-        label,
-    )
-}
-
-#[cfg(windows)]
-pub(super) fn rename_open_source(
-    source: &OpenedRenameSource<'_>,
-    destination_dir: &Dir,
-    destination: &OsStr,
-    replace: bool,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::*;
-
-    use super::fault::{CheckedArtifactFault, fault};
-
-    let destination_path = windows_destination_path(destination_dir, destination)
-        .map_err(|cause| io_error(code, label, cause))?;
-    // Destination-window hook (R2-F, amendment §4.1 erratum): the residual
-    // window opens once the absolute destination path is derived and closes
-    // at the handle rename below. Observation-only: outside cfg(test) this
-    // compiles to Ok(()), and no production behavior changes.
-    fault(
-        CheckedArtifactFault::AfterDestinationPathDerivation,
-        code,
-        label,
-    )?;
-    let name = destination_path.encode_wide().collect::<Vec<_>>();
-    // Windows requires at least the fixed structure size plus the variable
-    // name bytes, even though the fixed structure already contains its
-    // one-element FileName placeholder.
-    let size = std::mem::size_of::<FILE_RENAME_INFO>() + name.len() * 2;
-    let mut storage = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
-    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    unsafe {
-        (*info).Anonymous.ReplaceIfExists = replace;
-        // SetFileInformationByHandle rejects a non-null RootDirectory on
-        // supported Windows runners, so the destination is an absolute path
-        // derived from the retained directory handle immediately before the
-        // rename. The handle does NOT prevent a same-user process from
-        // renaming the destination directory or a path ancestor inside this
-        // window (directory opens share FILE_SHARE_DELETE); that residual is
-        // assigned to the amendment's cooperating-same-user boundary, and
-        // the mandatory post-publish verification through the retained
-        // destination handle detects a redirect read-only (§4.1 erratum
-        // 2026-08-15; native window test executes at R2-F).
-        (*info).RootDirectory = std::ptr::null_mut();
-        (*info).FileNameLength = u32::try_from(name.len() * 2)
-            .map_err(|_| error(code, label, "destination name is too long"))?;
-        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        if SetFileInformationByHandle(
-            source.file.as_raw_handle(),
-            FileRenameInfo,
-            info.cast(),
-            u32::try_from(size).map_err(|_| error(code, label, "rename buffer is too large"))?,
-        ) == 0
-        {
-            return Err(io_error(code, label, std::io::Error::last_os_error()));
-        }
-    }
-    Ok(())
-}
 
 /// The exact object a legacy leaf edge proved, restated for the sealed
 /// publication below so the primitive can re-verify it through the very handle
@@ -198,49 +108,6 @@ pub(super) struct LeafPublicationSourceV1<'a> {
 /// adds is the acquisition window: identity and bytes are read back through the
 /// retained handle, so a source substituted after the caller's proof is refused
 /// before any namespace mutation instead of being moved and then rejected.
-pub(super) fn publish_verified_leaf_no_replace(
-    source_dir: &Dir,
-    source: &OsStr,
-    destination_dir: &Dir,
-    destination: &OsStr,
-    expected: &LeafPublicationSourceV1<'_>,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    use std::io::Read;
-
-    let mut handle = open_rename_source(source_dir, source, code, label)?;
-    let observed = super::identity::file_identity(handle.file()).map_err(|cause| {
-        ModelError::new(
-            ErrorCode::UnsupportedOperation,
-            format!("checked {label}: durable filesystem identity is unsupported: {cause}"),
-        )
-    })?;
-    if observed != *expected.identity {
-        return Err(error(code, label, "publication source identity changed"));
-    }
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(expected.bytes.len() + 1)
-        .map_err(|_| {
-            error(
-                code,
-                label,
-                "publication source verification allocation failed",
-            )
-        })?;
-    handle
-        .file_mut()
-        .by_ref()
-        .take(expected.bytes.len() as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|cause| io_error(code, label, cause))?;
-    if bytes != expected.bytes {
-        return Err(error(code, label, "publication source bytes changed"));
-    }
-    rename_open_source(&handle, destination_dir, destination, false, code, label)
-}
-
 pub(super) fn publish_verified_filesystem_leaf_no_replace(
     source_dir: &FsDirectory,
     source: &OsStr,
@@ -251,10 +118,9 @@ pub(super) fn publish_verified_filesystem_leaf_no_replace(
     label: &str,
 ) -> ModelResult<()> {
     let filesystem = make_filesystem();
-    let handle = filesystem
-        .open_file_at(source_dir, source)
-        .map_err(|cause| io_error(code, label, cause))?;
-    let observed = super::identity::filesystem_file_identity(&handle).map_err(|cause| {
+    let retained = open_rename_source(source_dir, source, code, label)?;
+    let handle = retained.file();
+    let observed = super::identity::filesystem_file_identity(handle).map_err(|cause| {
         ModelError::new(
             ErrorCode::UnsupportedOperation,
             format!("checked {label}: durable filesystem identity is unsupported: {cause}"),
@@ -262,13 +128,13 @@ pub(super) fn publish_verified_filesystem_leaf_no_replace(
     })?;
     if observed != *expected.identity
         || !filesystem
-            .file_entry_matches(source_dir, source, &handle)
+            .file_entry_matches(source_dir, source, handle)
             .map_err(|cause| io_error(code, label, cause))?
     {
         return Err(error(code, label, "publication source identity changed"));
     }
     let opened_len = filesystem
-        .file_len(&handle)
+        .file_len(handle)
         .map_err(|cause| io_error(code, label, cause))?;
     let bound = opened_len.saturating_add(1);
     let capacity = usize::try_from(bound)
@@ -286,7 +152,7 @@ pub(super) fn publish_verified_filesystem_leaf_no_replace(
     while offset < bound {
         let remaining = usize::try_from((bound - offset).min(chunk.len() as u64))
             .expect("bounded publication read chunk fits usize");
-        match filesystem.read_at(&handle, offset, &mut chunk[..remaining]) {
+        match filesystem.read_at(handle, offset, &mut chunk[..remaining]) {
             Ok(0) => break,
             Ok(count) => {
                 bytes.extend_from_slice(&chunk[..count]);
@@ -298,161 +164,17 @@ pub(super) fn publish_verified_filesystem_leaf_no_replace(
     }
     if bytes != expected.bytes
         || !filesystem
-            .file_entry_matches(source_dir, source, &handle)
+            .file_entry_matches(source_dir, source, handle)
             .map_err(|cause| io_error(code, label, cause))?
     {
         return Err(error(code, label, "publication source bytes changed"));
     }
-    filesystem
-        .rename_at(
-            source_dir,
-            source,
-            destination_dir,
-            destination,
-            RenameMode::NoReplace,
-        )
-        .map_err(|cause| io_error(code, label, cause))
+    rename_open_source(&retained, destination_dir, destination, false, code, label)
 }
 
+#[cfg(not(windows))]
 pub(super) fn prepare_filesystem_private(
-    dir: &FsDirectory,
-    create: bool,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    if dir.is_memory() {
-        return make_filesystem()
-            .sync_directory_at(dir)
-            .map_err(|cause| io_error(code, label, cause));
-    }
-    crate::filesystem::native::with_directory(dir, |native| {
-        prepare_private(native, create, code, label)
-    })
-    .map_err(|cause| io_error(code, label, cause))?
-}
-
-pub(super) fn filesystem_private_barrier(
-    dir: &FsDirectory,
-    class: DirentBarrierClass<'_>,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    if dir.is_memory() {
-        return make_filesystem()
-            .sync_directory_at(dir)
-            .map_err(|cause| io_error(code, label, cause));
-    }
-    crate::filesystem::native::with_directory(dir, |native| {
-        private_barrier(native, class, code, label)
-    })
-    .map_err(|cause| io_error(code, label, cause))?
-}
-
-#[cfg(not(windows))]
-pub(super) fn open_dir_share_delete(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
-    use cap_fs_ext::DirExt;
-    parent.open_dir_nofollow(name)
-}
-
-#[cfg(windows)]
-pub(super) fn open_dir_share_delete(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
-    // A plain directory open does not request DELETE sharing, so it
-    // collides (os error 32) with the retained rename-source handle, which
-    // holds DELETE access across the publication edge. Mirror the
-    // open_rename_source sharing recipe and no-follow discipline (W4,
-    // GwzWindowsMatrix-Classification.md).
-    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-    use cap_std::fs::{OpenOptions, OpenOptionsExt};
-    use windows_sys::Win32::Foundation::GENERIC_READ;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let mut options = OpenOptions::new();
-    options
-        .access_mode(GENERIC_READ)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .follow(FollowSymlinks::No);
-    let file = parent.open_with(name, &options)?;
-    if !file.metadata()?.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotADirectory,
-            "publication source is not a directory",
-        ));
-    }
-    Ok(Dir::from_std_file(file.into_std()))
-}
-
-#[cfg(windows)]
-fn windows_destination_path(
-    destination_dir: &Dir,
-    destination: &OsStr,
-) -> std::io::Result<OsString> {
-    use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
-    };
-
-    const MAX_PATH_UNITS: usize = 32_768;
-    let mut buffer = Vec::new();
-    buffer
-        .try_reserve_exact(512)
-        .map_err(|_| std::io::Error::other("allocate Windows destination path"))?;
-    buffer.resize(512, 0);
-    loop {
-        let capacity = u32::try_from(buffer.len()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows destination path buffer is too large",
-            )
-        })?;
-        let length = unsafe {
-            GetFinalPathNameByHandleW(
-                destination_dir.as_raw_handle(),
-                buffer.as_mut_ptr(),
-                capacity,
-                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
-            )
-        };
-        if length == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let length = usize::try_from(length).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows destination path length is invalid",
-            )
-        })?;
-        if length < buffer.len() {
-            buffer.truncate(length);
-            let mut path = std::path::PathBuf::from(OsString::from_wide(&buffer));
-            path.push(destination);
-            return Ok(path.into_os_string());
-        }
-        let required = length.checked_add(1).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows destination path length overflowed",
-            )
-        })?;
-        if required > MAX_PATH_UNITS {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows destination path exceeds the platform bound",
-            ));
-        }
-        buffer
-            .try_reserve_exact(required - buffer.len())
-            .map_err(|_| std::io::Error::other("grow Windows destination path"))?;
-        buffer.resize(required, 0);
-    }
-}
-
-#[cfg(not(windows))]
-pub(super) fn prepare_private(
-    _dir: &Dir,
+    _dir: &FsDirectory,
     _create: bool,
     _code: ErrorCode,
     _label: &str,
@@ -599,8 +321,8 @@ pub(super) enum RoamingTargetStateV1 {
 /// first two rows — but keeping it portable is what lets every platform execute
 /// the restart rows for a window only Windows can open, exactly as
 /// `platform/anchor.rs`'s header argues for the protocol it serves.
-pub(super) fn prepare_roaming_target(
-    dir: &Dir,
+pub(super) fn prepare_filesystem_roaming_target(
+    dir: &FsDirectory,
     alias: &OsStr,
     bytes: &[u8],
     code: ErrorCode,
@@ -614,7 +336,7 @@ pub(super) fn prepare_roaming_target(
         (true, _) => Ok(RoamingTargetStateV1::Resident),
         (false, true) => {
             let identity = verify_leaf_bytes(dir, &outbound, bytes, code, label)?;
-            publish_verified_leaf_no_replace(
+            publish_verified_filesystem_leaf_no_replace(
                 dir,
                 &outbound,
                 dir,
@@ -635,23 +357,39 @@ pub(super) fn prepare_roaming_target(
 /// Whether a leaf is resident at all. `observe_leaf_exact` reports a missing
 /// leaf as `Missing` rather than as an error, so this needs no error-kind
 /// inspection of its own.
-fn leaf_is_resident(dir: &Dir, name: &OsStr, code: ErrorCode, label: &str) -> ModelResult<bool> {
-    Ok(
-        super::observation::observe_native_leaf_exact(dir, name, code, label)?.fact
-            != super::CheckedArtifactFact::Missing,
-    )
+fn leaf_is_resident(
+    dir: &FsDirectory,
+    name: &OsStr,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<bool> {
+    Ok(super::observation::observe_leaf_exact(
+        &crate::filesystem::make_filesystem(),
+        dir,
+        name,
+        code,
+        label,
+    )?
+    .fact
+        != super::CheckedArtifactFact::Missing)
 }
 
 /// One lent object re-proved by its frozen bytes, returning the durable identity
 /// the sealed publication re-verifies through the handle it renames.
 fn verify_leaf_bytes(
-    dir: &Dir,
+    dir: &FsDirectory,
     name: &OsStr,
     bytes: &[u8],
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<super::identity::ObjectIdentity> {
-    let observed = super::observation::observe_native_leaf_exact(dir, name, code, label)?;
+    let observed = super::observation::observe_leaf_exact(
+        &crate::filesystem::make_filesystem(),
+        dir,
+        name,
+        code,
+        label,
+    )?;
     if observed.fact != super::CheckedArtifactFact::Bytes(bytes.to_vec()) {
         return Err(error(code, label, "roaming anchor alias bytes are invalid"));
     }
@@ -661,141 +399,20 @@ fn verify_leaf_bytes(
 }
 
 #[cfg(not(windows))]
-pub(super) fn private_barrier(
-    dir: &Dir,
+pub(super) fn filesystem_private_barrier(
+    dir: &FsDirectory,
     _class: DirentBarrierClass<'_>,
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
-    sync_parent(dir).map_err(|cause| io_error(code, label, cause))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn rename_relative(
-    source_dir: &Dir,
-    source: &OsStr,
-    destination_dir: &Dir,
-    destination: &OsStr,
-    replace: bool,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    let flags = if replace {
-        rustix::fs::RenameFlags::empty()
-    } else {
-        rustix::fs::RenameFlags::NOREPLACE
-    };
-    rustix::fs::renameat_with(source_dir, source, destination_dir, destination, flags).map_err(
-        |cause| {
-            io_error(
-                code,
-                label,
-                std::io::Error::from_raw_os_error(cause.raw_os_error()),
-            )
-        },
-    )
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-pub(super) fn rename_relative(
-    source_dir: &Dir,
-    source: &OsStr,
-    destination_dir: &Dir,
-    destination: &OsStr,
-    replace: bool,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    if !replace {
-        return Err(error(
-            code,
-            label,
-            "atomic no-replace publication is unsupported on this Unix target",
-        ));
-    }
-    source_dir
-        .rename(source, destination_dir, destination)
+    make_filesystem()
+        .sync_directory_at(dir)
         .map_err(|cause| io_error(code, label, cause))
 }
 
 #[cfg(windows)]
-pub(super) fn rename_relative(
-    source_dir: &Dir,
-    source: &OsStr,
-    destination_dir: &Dir,
-    destination: &OsStr,
-    replace: bool,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    let source_handle = open_rename_source(source_dir, source, code, label)?;
-    rename_open_source(
-        &source_handle,
-        destination_dir,
-        destination,
-        replace,
-        code,
-        label,
-    )
-}
-
-#[cfg(all(not(unix), not(windows)))]
-pub(super) fn rename_relative(
-    source_dir: &Dir,
-    source: &OsStr,
-    destination_dir: &Dir,
-    destination: &OsStr,
-    replace: bool,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<()> {
-    if !replace {
-        return Err(error(
-            code,
-            label,
-            "atomic no-replace publication is unsupported on this platform",
-        ));
-    }
-    source_dir
-        .rename(source, destination_dir, destination)
-        .map_err(|cause| io_error(code, label, cause))
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn sync_parent(dir: &Dir) -> std::io::Result<()> {
-    // cap-std directory capabilities are `O_PATH` descriptors on Linux, and
-    // the kernel resolves `fsync` through the descriptor lookup that refuses
-    // `O_PATH` files with `EBADF` before any filesystem code runs, so a dup
-    // of the capability cannot carry the barrier. Reopening `.` through the
-    // capability performs no path re-resolution — the descriptor itself
-    // anchors the lookup, so the result names the same directory object —
-    // and yields a descriptor `fsync` accepts. Failures stay closed: a dead
-    // capability reports the raw OS error from the reopen itself.
-    let flushable = rustix::fs::openat(
-        dir,
-        c".",
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )?;
-    rustix::fs::fsync(&flushable)?;
-    Ok(())
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-pub(super) fn sync_parent(dir: &Dir) -> std::io::Result<()> {
-    dir.try_clone()?.into_std_file().sync_all()
-}
-
-#[cfg(windows)]
-pub(super) fn sync_parent(_dir: &Dir) -> std::io::Result<()> {
-    // Relative replacement uses FILE_FLAG_WRITE_THROUGH. A normal directory
-    // handle cannot be flushed portably on Windows.
-    Ok(())
-}
-
-#[cfg(windows)]
-pub(super) fn prepare_private(
-    dir: &Dir,
+pub(super) fn prepare_filesystem_private(
+    dir: &FsDirectory,
     create: bool,
     code: ErrorCode,
     label: &str,
@@ -804,8 +421,8 @@ pub(super) fn prepare_private(
 }
 
 #[cfg(windows)]
-pub(super) fn private_barrier(
-    dir: &Dir,
+pub(super) fn filesystem_private_barrier(
+    dir: &FsDirectory,
     class: DirentBarrierClass<'_>,
     code: ErrorCode,
     label: &str,
@@ -869,9 +486,9 @@ pub(super) fn private_barrier(
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::super::fault::{CheckedArtifactFault, run_next_checked_artifact_at};
-    use super::{hex, open_dir_share_delete, open_rename_source, rename_open_source};
-    use cap_std::{ambient_authority, fs::Dir};
-    use std::ffi::{OsStr, OsString};
+    use super::{hex, open_rename_source, rename_open_source};
+    use crate::filesystem::{FileSystem, make_filesystem};
+    use std::ffi::OsStr;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -899,7 +516,7 @@ mod windows_tests {
         let displaced_path = temporary.join("displaced");
         let destination_path = temporary.join("destination");
         std::fs::write(&source_path, b"checked\n").unwrap();
-        let directory = Dir::open_ambient_dir(&temporary, ambient_authority()).unwrap();
+        let directory = make_filesystem().open_directory(&temporary).unwrap();
         let source = open_rename_source(
             &directory,
             OsStr::new("source"),
@@ -962,11 +579,11 @@ mod windows_tests {
         let displaced = temporary.join("displaced-destination");
         std::fs::write(&source_path, b"checked\n").unwrap();
         std::fs::create_dir(&original).unwrap();
-        let root = Dir::open_ambient_dir(&temporary, ambient_authority()).unwrap();
+        let root = make_filesystem().open_directory(&temporary).unwrap();
         // Production retains destination directories with DELETE sharing
         // (open_dir_share_delete), which is exactly what leaves the window
         // open to a same-user rename of the destination directory.
-        let destination_dir = open_dir_share_delete(&root, OsStr::new("destination-dir")).unwrap();
+        let destination_dir = root.retained_child(OsStr::new("destination-dir")).unwrap();
         let source = open_rename_source(
             &root,
             OsStr::new("source"),
@@ -1004,7 +621,7 @@ mod windows_tests {
         // the published name regardless of where the stale absolute path
         // delivered the object.
         assert!(
-            destination_dir.metadata("delivered").is_err(),
+            destination_dir.entry_metadata("delivered").is_err(),
             "retained-handle verification must reject the redirect"
         );
         assert!(!displaced.join("delivered").exists());
@@ -1054,10 +671,11 @@ mod windows_tests {
         std::fs::write(&source_path, b"checked\n").unwrap();
         std::fs::create_dir(&ancestor).unwrap();
         std::fs::create_dir(ancestor.join("destination-dir")).unwrap();
-        let root = Dir::open_ambient_dir(&temporary, ambient_authority()).unwrap();
-        let ancestor_dir = Dir::open_ambient_dir(&ancestor, ambient_authority()).unwrap();
-        let destination_dir =
-            open_dir_share_delete(&ancestor_dir, OsStr::new("destination-dir")).unwrap();
+        let root = make_filesystem().open_directory(&temporary).unwrap();
+        let ancestor_dir = make_filesystem().open_directory(&ancestor).unwrap();
+        let destination_dir = ancestor_dir
+            .retained_child(OsStr::new("destination-dir"))
+            .unwrap();
         // Release the plain (non-share-delete) ancestor handle before the
         // window; production never retains such a handle across the edge.
         drop(ancestor_dir);
@@ -1124,7 +742,7 @@ mod windows_tests {
                     std::fs::read(ancestor.join("destination-dir").join("delivered")).unwrap(),
                     b"checked\n"
                 );
-                assert!(destination_dir.metadata("delivered").is_ok());
+                assert!(destination_dir.entry_metadata("delivered").is_ok());
             }
             None => {
                 // The substitution landed: the recorded property applies —
@@ -1137,7 +755,7 @@ mod windows_tests {
                 assert_eq!(std::fs::read(&source_path).unwrap(), b"checked\n");
                 assert_eq!(std::fs::read_dir(&ancestor).unwrap().count(), 0);
                 assert!(!displaced.join("destination-dir").join("delivered").exists());
-                assert!(destination_dir.metadata("delivered").is_err());
+                assert!(destination_dir.entry_metadata("delivered").is_err());
             }
         }
     }
@@ -1158,7 +776,7 @@ fn error(code: ErrorCode, label: &str, detail: impl std::fmt::Display) -> ModelE
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
-    use cap_std::fs::Dir;
+    use crate::filesystem::{FileSystem, make_filesystem};
 
     #[test]
     fn sync_parent_flushes_a_live_linux_directory_capability() {
@@ -1172,8 +790,8 @@ mod linux_tests {
             line!()
         ));
         std::fs::create_dir(&root).unwrap();
-        let dir = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
-        let synced = super::sync_parent(&dir);
+        let dir = make_filesystem().open_directory(&root).unwrap();
+        let synced = make_filesystem().sync_directory_at(&dir);
         let _ = std::fs::remove_dir_all(&root);
         synced.expect("sync_parent must flush a live cap-std directory capability on Linux");
     }

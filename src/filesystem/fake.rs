@@ -98,7 +98,196 @@ impl Tree {
         }
     }
 }
+fn memory_persistent_identity(identity: FsIdentity) -> FsObjectIdentity {
+    let namespace = identity.namespace().to_be_bytes();
+    let object = identity.object().wrapping_add(1).to_be_bytes();
+    let mut volume = [0; 16];
+    volume[..8].copy_from_slice(&namespace);
+    volume[8..].copy_from_slice(&namespace);
+    #[cfg(target_os = "macos")]
+    let persistent = FsPersistentIdentity::Mac { volume, object };
+    #[cfg(windows)]
+    let persistent = {
+        let mut file_id = [0; 16];
+        file_id[..8].copy_from_slice(&object);
+        file_id[8..].copy_from_slice(&object);
+        FsPersistentIdentity::Windows {
+            volume: vec![1],
+            file_id,
+        }
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let persistent = FsPersistentIdentity::Linux {
+        volume,
+        handle_type: 1,
+        handle: object.to_vec(),
+    };
+    FsObjectIdentity {
+        persistent,
+        invocation: identity.encode().to_vec(),
+    }
+}
+
 impl FileSystem for FakeFileSystem {
+    fn legacy_directory_identity(&self, value: &FsDirectory) -> io::Result<FsLegacyObjectIdentity> {
+        memory_legacy_identity(self.directory_identity(value)?)
+    }
+    fn legacy_file_identity(&self, value: &FsFile) -> io::Result<FsLegacyObjectIdentity> {
+        memory_legacy_identity(self.file_identity(value)?)
+    }
+    fn legacy_rename_domain(&self, value: &FsDirectory) -> io::Result<FsLegacyRenameDomain> {
+        let namespace = self.directory_identity(value)?.namespace();
+        #[cfg(target_os = "linux")]
+        return Ok(FsLegacyRenameDomain::LinuxMountId(namespace));
+        #[cfg(target_os = "macos")]
+        return Ok(FsLegacyRenameDomain::MacMountedFileSystem(
+            namespace.to_be_bytes(),
+        ));
+        #[cfg(windows)]
+        return Ok(FsLegacyRenameDomain::WindowsMountedVolume(
+            namespace
+                .to_be_bytes()
+                .chunks_exact(2)
+                .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+                .collect(),
+        ));
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    fn legacy_path_identity(&self, value: &FsDirectory, relative: &Path) -> io::Result<Vec<u8>> {
+        self.directory_identity(value)?;
+        super::retained::encode_path_identity(relative, |component| {
+            Ok(component.as_encoded_bytes().to_vec())
+        })
+    }
+    fn directory_names(&self, directory: &FsDirectory) -> io::Result<FsDirectoryNames> {
+        Ok(Box::new(
+            self.read_directory_at(directory)?
+                .into_iter()
+                .map(|entry| Ok(entry.name)),
+        ))
+    }
+    fn create_private_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
+        self.create_file_at(parent, name)
+    }
+    fn open_publication_source(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
+        component(name)?;
+        let parent = directory(parent)?;
+        let tree = parent.tree.lock().unwrap();
+        let id = tree.lookup(parent.id, name)?;
+        if !matches!(
+            tree.nodes.get(&id),
+            Some(Node::File { .. } | Node::Directory(_))
+        ) {
+            return Err(error(io::ErrorKind::InvalidInput));
+        }
+        Ok(FsFile(
+            FileHandle::Memory(Handle {
+                tree: Arc::clone(&parent.tree),
+                id,
+                writable: false,
+            }),
+            0,
+        ))
+    }
+    fn publish_source(
+        &self,
+        source: FsPublicationSource<'_>,
+        destination: &FsDirectory,
+        target: &OsStr,
+        mode: RenameMode,
+        acquired: &dyn Fn() -> io::Result<()>,
+    ) -> io::Result<()> {
+        let _ = file(source.file)?;
+        acquired()?;
+        #[cfg(windows)]
+        {
+            // Windows publishes the captured object even if its old name has
+            // been replaced since acquisition. No hard links are synthesized.
+            let handle = file(source.file)?;
+            let tree = handle.tree.lock().unwrap();
+            tree.check()?;
+            let (parent, name) = tree
+                .nodes
+                .iter()
+                .find_map(|(id, node)| {
+                    let Node::Directory(entries) = node else {
+                        return None;
+                    };
+                    entries
+                        .iter()
+                        .find(|(_, child)| **child == handle.id)
+                        .map(|(name, _)| (*id, name.clone()))
+                })
+                .ok_or(io::ErrorKind::NotFound)?;
+            drop(tree);
+            let parent = FsDirectory(DirectoryHandle::Memory(Handle {
+                tree: Arc::clone(&handle.tree),
+                id: parent,
+                writable: false,
+            }));
+            return self.rename_at(&parent, &name, destination, target, mode);
+        }
+        #[cfg(not(windows))]
+        self.rename_at(source.parent, source.name, destination, target, mode)
+    }
+    fn file_metadata(&self, value: &FsFile) -> io::Result<FsMetadata> {
+        let handle = file(value)?;
+        let tree = handle.tree.lock().unwrap();
+        tree.check()?;
+        let Some(Node::File { bytes, .. }) = tree.nodes.get(&handle.id) else {
+            return Err(error(io::ErrorKind::InvalidInput));
+        };
+        Ok(FsMetadata {
+            kind: FsKind::File,
+            executable: false,
+            identity: FsIdentity {
+                namespace: Arc::as_ptr(&handle.tree) as usize as u64,
+                object: handle.id,
+            },
+            length: bytes.len() as u64,
+        })
+    }
+    fn support_profile(&self) -> FsSupportProfile {
+        #[cfg(target_os = "macos")]
+        return FsSupportProfile::MacPersistentId;
+        #[cfg(windows)]
+        return FsSupportProfile::WindowsFileId;
+        #[cfg(not(any(target_os = "macos", windows)))]
+        FsSupportProfile::LinuxPersistentHandle
+    }
+    fn persistent_directory_identity(
+        &self,
+        value: &FsDirectory,
+    ) -> Result<FsObjectIdentity, FsProbeError> {
+        self.directory_identity(value)
+            .map(memory_persistent_identity)
+            .map_err(|e| FsProbeError::io("identify memory directory", e))
+    }
+    fn persistent_file_identity(&self, value: &FsFile) -> Result<FsObjectIdentity, FsProbeError> {
+        self.file_identity(value)
+            .map(memory_persistent_identity)
+            .map_err(|e| FsProbeError::io("identify memory file", e))
+    }
+    fn lookup_mode(&self, value: &FsDirectory) -> Result<FsLookupMode, FsProbeError> {
+        self.directory_identity(value)
+            .map(|_| FsLookupMode::Sensitive)
+            .map_err(|e| FsProbeError::io("observe memory lookup mode", e))
+    }
+    fn rename_domain(&self, value: &FsDirectory) -> Result<Vec<u8>, FsProbeError> {
+        self.directory_identity(value)
+            .map(|id| id.namespace().to_be_bytes().to_vec())
+            .map_err(|e| FsProbeError::io("identify memory rename domain", e))
+    }
+    fn describe_volume(&self, value: &FsDirectory) -> Result<FsVolumeDescription, FsProbeError> {
+        self.directory_identity(value)
+            .map(|_| FsVolumeDescription {
+                name: Some("gwz-memory".into()),
+                remote: false,
+                volatile: false,
+            })
+            .map_err(|e| FsProbeError::io("describe memory volume", e))
+    }
     fn canonical_path(&self, path: &Path) -> io::Result<PathBuf> {
         self.kind(path)?;
         // This initial profile has no symlink constructor. Do not resolve an
@@ -110,10 +299,12 @@ impl FileSystem for FakeFileSystem {
     }
     fn metadata(&self, path: &Path) -> io::Result<FsMetadata> {
         if registry().lock().unwrap().contains_key(path) {
-            self.open_directory(path)?;
+            let root = self.open_directory(path)?;
             return Ok(FsMetadata {
                 kind: FsKind::Directory,
                 executable: false,
+                identity: self.directory_identity(&root)?,
+                length: 0,
             });
         }
         let (parent, name) = split(path)?;
@@ -130,6 +321,14 @@ impl FileSystem for FakeFileSystem {
         Ok(FsMetadata {
             kind,
             executable: false,
+            identity: FsIdentity {
+                namespace: Arc::as_ptr(&handle.tree) as usize as u64,
+                object: id,
+            },
+            length: match tree.nodes.get(&id) {
+                Some(Node::File { bytes, .. }) => bytes.len() as u64,
+                _ => 0,
+            },
         })
     }
     fn metadata_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsMetadata> {
@@ -146,6 +345,14 @@ impl FileSystem for FakeFileSystem {
         Ok(FsMetadata {
             kind,
             executable: false,
+            identity: FsIdentity {
+                namespace: Arc::as_ptr(&handle.tree) as usize as u64,
+                object: id,
+            },
+            length: match tree.nodes.get(&id) {
+                Some(Node::File { bytes, .. }) => bytes.len() as u64,
+                _ => 0,
+            },
         })
     }
     fn link_target(&self, path: &Path) -> io::Result<PathBuf> {
@@ -250,11 +457,14 @@ impl FileSystem for FakeFileSystem {
         if !matches!(tree.nodes.get(&id), Some(Node::File { .. })) {
             return Err(error(io::ErrorKind::InvalidInput));
         }
-        Ok(FsFile(FileHandle::Memory(Handle {
-            id,
-            writable: false,
-            tree: parent.tree.clone(),
-        })))
+        Ok(FsFile(
+            FileHandle::Memory(Handle {
+                id,
+                writable: false,
+                tree: parent.tree.clone(),
+            }),
+            0,
+        ))
     }
     fn open_lock_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         self.open_file_at(parent, name)
@@ -267,11 +477,14 @@ impl FileSystem for FakeFileSystem {
         if !matches!(tree.nodes.get(&id), Some(Node::File { .. })) {
             return Err(error(io::ErrorKind::InvalidInput));
         }
-        Ok(FsFile(FileHandle::Memory(Handle {
-            id,
-            writable: true,
-            tree: parent.tree.clone(),
-        })))
+        Ok(FsFile(
+            FileHandle::Memory(Handle {
+                id,
+                writable: true,
+                tree: parent.tree.clone(),
+            }),
+            0,
+        ))
     }
     fn create_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
@@ -284,11 +497,14 @@ impl FileSystem for FakeFileSystem {
                 durable: Vec::new(),
             },
         )?;
-        Ok(FsFile(FileHandle::Memory(Handle {
-            id,
-            writable: true,
-            tree: parent.tree.clone(),
-        })))
+        Ok(FsFile(
+            FileHandle::Memory(Handle {
+                id,
+                writable: true,
+                tree: parent.tree.clone(),
+            }),
+            0,
+        ))
     }
     fn read_at(&self, value: &FsFile, offset: u64, buffer: &mut [u8]) -> io::Result<usize> {
         let handle = file(value)?;
@@ -583,4 +799,57 @@ fn rename_handles(
     tree.entries_mut(destination.id)?
         .insert(target.to_owned(), id);
     Ok(())
+}
+
+fn memory_legacy_identity(identity: FsIdentity) -> std::io::Result<FsLegacyObjectIdentity> {
+    let namespace = identity.namespace();
+    let object = identity.object();
+    #[cfg(not(windows))]
+    let invocation = FsLegacyInvocationIdentity::Unix {
+        device: namespace,
+        inode: object,
+    };
+    #[cfg(target_os = "linux")]
+    let durable = FsLegacyDurableIdentity::Linux {
+        filesystem_id: namespace.to_be_bytes().to_vec(),
+        handle_type: 1,
+        file_handle: object.to_be_bytes().to_vec(),
+    };
+    #[cfg(target_os = "macos")]
+    let durable = {
+        let mut volume_uuid = [0; 16];
+        volume_uuid[..8].copy_from_slice(&namespace.to_be_bytes());
+        volume_uuid[8..].copy_from_slice(&namespace.to_be_bytes());
+        FsLegacyDurableIdentity::Mac {
+            volume_uuid,
+            persistent_object_id: object.to_be_bytes(),
+        }
+    };
+    #[cfg(windows)]
+    let (durable, invocation) = {
+        let volume_guid = namespace
+            .to_be_bytes()
+            .chunks_exact(2)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        let mut file_id = [0; 16];
+        file_id[..8].copy_from_slice(&object.to_be_bytes());
+        file_id[8..].copy_from_slice(&object.to_be_bytes());
+        (
+            FsLegacyDurableIdentity::Windows {
+                volume_guid: volume_guid.clone(),
+                file_id,
+            },
+            FsLegacyInvocationIdentity::Windows {
+                volume_guid,
+                file_id,
+            },
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    return Err(std::io::ErrorKind::Unsupported.into());
+    Ok(FsLegacyObjectIdentity {
+        durable,
+        invocation,
+    })
 }

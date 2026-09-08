@@ -1,10 +1,11 @@
 //! Owner-private physical edges for the first catalog.
+#[cfg(not(windows))]
+use crate::filesystem::FileSystem;
 
 use std::ffi::OsStr;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::OpenOptions;
+use crate::filesystem::FsOpenMode;
 
 use super::platform::HostPlatform;
 use super::publication::{DestinationRecheckV1, PublicationSourceV1, publish_verified_no_replace};
@@ -72,13 +73,13 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn create_git_private_p
     crate::checked_artifact::fault_v1::hit(
         crate::checked_artifact::fault_v1::CheckedArtifactFaultKeyV1::CatalogBootstrapGitParentCreate,
     );
-    match parent.create_dir(name) {
+    match parent.create_child(name) {
         Ok(()) => {
-            let opened = parent.open_dir_nofollow(name).map_err(|source| {
+            let opened = parent.retained_child(name).map_err(|source| {
                 CheckedFsError::io("reopen created Git GWZ parent no-follow", source)
             })?;
             opened
-                .dir_metadata()
+                .identify()
                 .map_err(|source| CheckedFsError::io("identify created Git GWZ parent", source))?;
             #[cfg(test)]
             crate::checked_artifact::fault_v1::hit(
@@ -131,7 +132,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn write_or_rewrite_scr
     let options = durable_write_options(create_new);
     let mut file = parent
         .handle()
-        .open_with(OsStr::new(leaf), &options)
+        .open_file(OsStr::new(leaf), &options)
         .map_err(|source| CheckedFsError::io("open catalog scratch no-follow", source))?;
     #[cfg(test)]
     if create_new {
@@ -230,7 +231,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_active_recor
     let options = durable_write_options(false);
     let mut file = parent
         .handle()
-        .open_with(OsStr::new(source), &options)
+        .open_file(OsStr::new(source), &options)
         .map_err(|source| CheckedFsError::io("open publishable catalog scratch", source))?;
     verify_open_file(&mut file, expected, "catalog active publication")?;
     file.sync_all()
@@ -322,7 +323,7 @@ fn observed_scratch<'a>(
 }
 
 fn verify_open_file(
-    file: &mut cap_std::fs::File,
+    file: &mut crate::filesystem::FsFile,
     expected: ObservedRegularFileV1<'_>,
     fact: &'static str,
 ) -> Result<(), CheckedFsError> {
@@ -344,21 +345,20 @@ fn verify_open_file(
 }
 
 fn verify_named_file(
-    parent: &cap_std::fs::Dir,
+    parent: &crate::filesystem::FsDirectory,
     name: &OsStr,
     expected: ObservedRegularFileV1<'_>,
     fact: &'static str,
 ) -> Result<(), CheckedFsError> {
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     let mut file = parent
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("reopen named catalog source", source))?;
     verify_open_file(&mut file, expected, fact)
 }
 
 fn read_bounded(
-    file: &mut cap_std::fs::File,
+    file: &mut crate::filesystem::FsFile,
     expected_len: usize,
 ) -> Result<Vec<u8>, CheckedFsError> {
     let mut bytes = Vec::new();
@@ -374,31 +374,23 @@ fn read_bounded(
     Ok(bytes)
 }
 
-fn durable_write_options(create_new: bool) -> OpenOptions {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create_new(create_new)
-        .truncate(false)
-        .follow(FollowSymlinks::No);
-    #[cfg(windows)]
-    {
-        use cap_std::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_WRITE_THROUGH;
-        options.custom_flags(FILE_FLAG_WRITE_THROUGH);
-    }
-    options
+fn durable_write_options(create_new: bool) -> FsOpenMode {
+    FsOpenMode::Write { create_new }
 }
 
 #[cfg(not(windows))]
-fn finish_private_parent_edge(directory: &cap_std::fs::Dir) -> Result<(), CheckedFsError> {
-    crate::checked_artifact::platform::sync_parent(directory)
+fn finish_private_parent_edge(
+    directory: &crate::filesystem::FsDirectory,
+) -> Result<(), CheckedFsError> {
+    crate::filesystem::make_filesystem()
+        .sync_directory_at(directory)
         .map_err(|source| CheckedFsError::io("flush private-parent containing dirent", source))
 }
 
 #[cfg(windows)]
-fn finish_private_parent_edge(_directory: &cap_std::fs::Dir) -> Result<(), CheckedFsError> {
+fn finish_private_parent_edge(
+    _directory: &crate::filesystem::FsDirectory,
+) -> Result<(), CheckedFsError> {
     // Deliberate no-op for every caller. For the parent-create arms, loss of
     // the empty parent is the original Missing state (§6 waiver). For the
     // scratch-edge root anchor, dirent durability rests on §5's
@@ -408,13 +400,18 @@ fn finish_private_parent_edge(_directory: &cap_std::fs::Dir) -> Result<(), Check
 }
 
 #[cfg(not(windows))]
-fn sync_created_file_namespace(directory: &cap_std::fs::Dir) -> Result<(), CheckedFsError> {
-    crate::checked_artifact::platform::sync_parent(directory)
+fn sync_created_file_namespace(
+    directory: &crate::filesystem::FsDirectory,
+) -> Result<(), CheckedFsError> {
+    crate::filesystem::make_filesystem()
+        .sync_directory_at(directory)
         .map_err(|source| CheckedFsError::io("flush catalog scratch namespace", source))
 }
 
 #[cfg(windows)]
-fn sync_created_file_namespace(_directory: &cap_std::fs::Dir) -> Result<(), CheckedFsError> {
+fn sync_created_file_namespace(
+    _directory: &crate::filesystem::FsDirectory,
+) -> Result<(), CheckedFsError> {
     // The nonempty scratch is created through FILE_FLAG_WRITE_THROUGH and
     // then flushed with FlushFileBuffers via sync_all. NTFS includes metadata
     // changes produced by the write-through request.
@@ -422,13 +419,18 @@ fn sync_created_file_namespace(_directory: &cap_std::fs::Dir) -> Result<(), Chec
 }
 
 #[cfg(not(windows))]
-fn sync_published_namespace(directory: &cap_std::fs::Dir) -> Result<(), CheckedFsError> {
-    crate::checked_artifact::platform::sync_parent(directory)
+fn sync_published_namespace(
+    directory: &crate::filesystem::FsDirectory,
+) -> Result<(), CheckedFsError> {
+    crate::filesystem::make_filesystem()
+        .sync_directory_at(directory)
         .map_err(|source| CheckedFsError::io("flush catalog active publication", source))
 }
 
 #[cfg(windows)]
-fn sync_published_namespace(_directory: &cap_std::fs::Dir) -> Result<(), CheckedFsError> {
+fn sync_published_namespace(
+    _directory: &crate::filesystem::FsDirectory,
+) -> Result<(), CheckedFsError> {
     // rename_relative uses FILE_FLAG_WRITE_THROUGH for the source handle.
     Ok(())
 }

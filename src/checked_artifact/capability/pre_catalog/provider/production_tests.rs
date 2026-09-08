@@ -1,10 +1,10 @@
+use crate::filesystem::FileSystem;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cap_fs_ext::MetadataExt;
-use cap_std::fs::{Dir, File};
+use crate::filesystem::{FsDirectory as Dir, FsFile as File};
 
 use super::filesystem::{filesystem_provider_for_test, filesystem_provider_with_hook_for_test};
 use super::*;
@@ -36,10 +36,10 @@ impl FakePlatform {
         }
     }
 
-    fn identity(metadata: &impl MetadataExt) -> Vec<u8> {
+    fn identity(metadata: crate::filesystem::FsIdentity) -> Vec<u8> {
         let mut value = Vec::with_capacity(16);
-        value.extend_from_slice(&metadata.dev().to_be_bytes());
-        value.extend_from_slice(&metadata.ino().to_be_bytes());
+        value.extend_from_slice(&metadata.namespace().to_be_bytes());
+        value.extend_from_slice(&metadata.object().to_be_bytes());
         value
     }
 
@@ -47,8 +47,8 @@ impl FakePlatform {
         directory: &Dir,
     ) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
         let invocation = Self::identity(
-            &directory
-                .dir_metadata()
+            directory
+                .identify()
                 .map_err(|source| CheckedFsError::io("test directory identity", source))?,
         );
         Ok(ObjectIdentityFact::new(
@@ -61,8 +61,8 @@ impl FakePlatform {
         file: &File,
     ) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
         let invocation = Self::identity(
-            &file
-                .metadata()
+            crate::filesystem::make_filesystem()
+                .file_identity(file)
                 .map_err(|source| CheckedFsError::io("test file identity", source))?,
         );
         Ok(ObjectIdentityFact::new(

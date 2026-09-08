@@ -29,13 +29,11 @@
 //!   [`flush_observed_leaf`], whose Windows arm states the durability property
 //!   that platform relies on in place of a handle flush.
 
+use crate::filesystem::FsKind;
 use std::ffi::OsStr;
 use std::io::{self, Read, Seek, SeekFrom};
 
-#[cfg(unix)]
-use cap_fs_ext::OsMetadataExt;
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, File, Metadata, OpenOptions};
+use crate::filesystem::{FsDirectory as Dir, FsFile as File, FsMetadata as Metadata, FsOpenMode};
 use sha2::{Digest, Sha256};
 
 use super::retained::encode_identity;
@@ -398,7 +396,7 @@ fn open_retained_leaf(parent: &Dir, leaf: &AsciiComponent) -> Result<OpenedLeafV
 /// object's identity from the open handle — never from the name.
 fn open_leaf(parent: &Dir, leaf: &AsciiComponent) -> Result<OpenedLeafV1, CheckedFsError> {
     let name = leaf_name(leaf)?;
-    let metadata = match parent.symlink_metadata(name) {
+    let metadata = match parent.entry_metadata(name) {
         Ok(metadata) => metadata,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
             return Ok(OpenedLeafV1::Absent);
@@ -408,9 +406,8 @@ fn open_leaf(parent: &Dir, leaf: &AsciiComponent) -> Result<OpenedLeafV1, Checke
     if let Some(other) = non_canonical(&metadata) {
         return Ok(OpenedLeafV1::Other(other));
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
-    let file = match parent.open_with(name, &options) {
+    let options = FsOpenMode::Read;
+    let file = match parent.open_file(name, &options) {
         Ok(file) => file,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
             return Ok(OpenedLeafV1::Absent);
@@ -434,9 +431,9 @@ fn open_leaf(parent: &Dir, leaf: &AsciiComponent) -> Result<OpenedLeafV1, Checke
 /// reached without following a link. The mode rule is the one the legacy leaf
 /// observer already applies (`observation.rs:216`, `:366-373`).
 fn non_canonical(metadata: &Metadata) -> Option<LeafOther> {
-    if metadata.is_symlink() {
+    if metadata.kind == FsKind::Symlink {
         Some(LeafOther::Substituted)
-    } else if !metadata.is_file() {
+    } else if metadata.kind != FsKind::File {
         Some(LeafOther::WrongKind)
     } else if executable(metadata) {
         Some(LeafOther::Executable)
@@ -447,7 +444,7 @@ fn non_canonical(metadata: &Metadata) -> Option<LeafOther> {
 
 #[cfg(unix)]
 fn executable(metadata: &Metadata) -> bool {
-    OsMetadataExt::mode(metadata) & 0o111 != 0
+    metadata.executable
 }
 
 #[cfg(not(unix))]
@@ -616,9 +613,8 @@ fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
 /// family already carries for `sync_parent` (`platform.rs`, `linux_tests`).
 #[cfg(test)]
 mod platform_tests {
-    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-    use cap_std::ambient_authority;
-    use cap_std::fs::{Dir, File, OpenOptions};
+    use crate::filesystem::FileSystem;
+    use crate::filesystem::{FsFile as File, FsOpenMode};
     use std::io::Write;
 
     /// A leaf opened exactly as `open_leaf` opens it: read-only, no-follow.
@@ -629,14 +625,17 @@ mod platform_tests {
             line!()
         ));
         std::fs::create_dir(&root).unwrap();
-        let parent = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
-        let mut written = parent.create("source-payload-v1").unwrap();
+        let parent = crate::filesystem::make_filesystem()
+            .open_directory(&root)
+            .unwrap();
+        let mut written = parent
+            .open_file("source-payload-v1", &FsOpenMode::Write { create_new: true })
+            .unwrap();
         written.write_all(b"gwz-r2d-e9-payload").unwrap();
         written.sync_all().unwrap();
         drop(written);
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        let file = parent.open_with("source-payload-v1", &options).unwrap();
+        let options = FsOpenMode::Read;
+        let file = parent.open_file("source-payload-v1", &options).unwrap();
         (root, file)
     }
 

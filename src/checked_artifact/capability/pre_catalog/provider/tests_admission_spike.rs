@@ -18,14 +18,14 @@
 //! `mutation.rs` + `directory_mutation.rs`, so this spike proves the primitive
 //! without widening the production seam.
 
+use crate::filesystem::FileSystem;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cap_std::ambient_authority;
-use cap_std::fs::Dir;
+use crate::filesystem::FsDirectory as Dir;
 
 use super::platform::HostPlatform;
 use super::publication::{DestinationRecheckV1, PublicationSourceV1, publish_verified_no_replace};
@@ -57,13 +57,18 @@ impl Drop for SpikeFixture {
 }
 
 fn write_and_flush(parent: &Dir, name: &OsStr, bytes: &[u8]) {
-    let mut file = parent.create(name).unwrap();
+    let mut file = parent
+        .open_file(name, &crate::filesystem::FsOpenMode::WriteOrCreate)
+        .unwrap();
+    file.set_len(0).unwrap();
     file.write_all(bytes).unwrap();
     file.sync_all().unwrap();
 }
 
 fn identity_of(parent: &Dir, name: &OsStr) -> Vec<u8> {
-    let file = parent.open(name).unwrap();
+    let file = parent
+        .open_file(name, &crate::filesystem::FsOpenMode::Read)
+        .unwrap();
     encode_identity(&HostPlatform.file_identity(&file).unwrap())
 }
 
@@ -76,9 +81,12 @@ fn admission_publish_and_retire_edges_use_the_sealed_publication_primitive() {
     // directory; terminal retirement lands under the retired root.
     fs::create_dir(fixture.root.join("final")).unwrap();
     fs::create_dir(fixture.root.join("retired")).unwrap();
-    let final_dir = Dir::open_ambient_dir(fixture.root.join("final"), ambient_authority()).unwrap();
-    let retired_dir =
-        Dir::open_ambient_dir(fixture.root.join("retired"), ambient_authority()).unwrap();
+    let final_dir = crate::filesystem::make_filesystem()
+        .open_directory(&(fixture.root.join("final")))
+        .unwrap();
+    let retired_dir = crate::filesystem::make_filesystem()
+        .open_directory(&(fixture.root.join("retired")))
+        .unwrap();
 
     // Deterministic indexed names; no nonce is allocated on any edge or retry
     // (RemPlan-4 §4 R2 stop clause :1089-1092).
@@ -105,10 +113,21 @@ fn admission_publish_and_retire_edges_use_the_sealed_publication_primitive() {
     // Reobserve through the same retained parent: the staging name is
     // consumed, and the published object is the identical object and bytes.
     assert!(
-        final_dir.open(staging).is_err(),
+        final_dir
+            .open_file(staging, &crate::filesystem::FsOpenMode::Read)
+            .is_err(),
         "publication must consume the staging name"
     );
-    assert_eq!(final_dir.read(published).unwrap(), reservation);
+    assert_eq!(
+        crate::filesystem::make_filesystem()
+            .read_all(
+                &final_dir
+                    .open_file(published, &crate::filesystem::FsOpenMode::Read)
+                    .unwrap()
+            )
+            .unwrap(),
+        reservation
+    );
     assert_eq!(identity_of(&final_dir, published), staged_identity);
 
     // No-replace proof: a second publication into the occupied destination
@@ -129,7 +148,7 @@ fn admission_publish_and_retire_edges_use_the_sealed_publication_primitive() {
         "publication must never replace an occupied action destination"
     );
     assert_eq!(identity_of(&final_dir, published), staged_identity);
-    final_dir.remove_file(staging).unwrap();
+    final_dir.remove_leaf(staging).unwrap();
 
     // Edge 2 -- final action to the retired root, cross-parent retirement.
     publish_verified_no_replace(
@@ -144,10 +163,21 @@ fn admission_publish_and_retire_edges_use_the_sealed_publication_primitive() {
     .unwrap();
 
     assert!(
-        final_dir.open(published).is_err(),
+        final_dir
+            .open_file(published, &crate::filesystem::FsOpenMode::Read)
+            .is_err(),
         "retirement must consume the final action name"
     );
-    assert_eq!(retired_dir.read(retired).unwrap(), reservation);
+    assert_eq!(
+        crate::filesystem::make_filesystem()
+            .read_all(
+                &retired_dir
+                    .open_file(retired, &crate::filesystem::FsOpenMode::Read)
+                    .unwrap()
+            )
+            .unwrap(),
+        reservation
+    );
     assert_eq!(identity_of(&retired_dir, retired), staged_identity);
 }
 
@@ -158,7 +188,9 @@ fn admission_publish_and_retire_edges_use_the_sealed_publication_primitive() {
 fn admission_publish_rejects_a_substituted_source_before_the_namespace_edge() {
     let fixture = SpikeFixture::new("substituted-source");
     fs::create_dir(fixture.root.join("final")).unwrap();
-    let final_dir = Dir::open_ambient_dir(fixture.root.join("final"), ambient_authority()).unwrap();
+    let final_dir = crate::filesystem::make_filesystem()
+        .open_directory(&(fixture.root.join("final")))
+        .unwrap();
 
     let staging = OsStr::new("staging-0001");
     let published = OsStr::new("action-0001");
@@ -168,7 +200,7 @@ fn admission_publish_rejects_a_substituted_source_before_the_namespace_edge() {
     let observed_identity = identity_of(&final_dir, staging);
 
     // Same name, different object: the owner's observed identity is stale.
-    final_dir.remove_file(staging).unwrap();
+    final_dir.remove_leaf(staging).unwrap();
     write_and_flush(&final_dir, staging, &reservation);
 
     let substituted = publish_verified_no_replace(
@@ -185,7 +217,9 @@ fn admission_publish_rejects_a_substituted_source_before_the_namespace_edge() {
         "a substituted publication source must reject before the edge"
     );
     assert!(
-        final_dir.open(published).is_err(),
+        final_dir
+            .open_file(published, &crate::filesystem::FsOpenMode::Read)
+            .is_err(),
         "a rejected publication performs no namespace mutation"
     );
 }

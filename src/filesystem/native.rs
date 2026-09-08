@@ -5,6 +5,9 @@
     reason = "native filesystem adapter"
 )]
 use super::*;
+mod facts;
+mod legacy_identity;
+mod publication;
 #[cfg(not(windows))]
 use cap_fs_ext::DirExt;
 use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
@@ -31,23 +34,7 @@ fn directory(value: &FsDirectory) -> io::Result<&Dir> {
     }
 }
 
-pub(crate) fn with_directory<T>(
-    value: &FsDirectory,
-    body: impl FnOnce(&Dir) -> T,
-) -> io::Result<T> {
-    directory(value).map(body)
-}
-
-pub(crate) fn clone_directory_handle(value: &Dir) -> io::Result<FsDirectory> {
-    value
-        .try_clone()
-        .map(|directory| FsDirectory(DirectoryHandle::Native(Directory(directory))))
-}
-
-pub(crate) fn with_file<T>(
-    value: &FsFile,
-    body: impl FnOnce(&cap_std::fs::File) -> T,
-) -> io::Result<T> {
+fn with_file<T>(value: &FsFile, body: impl FnOnce(&cap_std::fs::File) -> T) -> io::Result<T> {
     let file = file(value)?
         .lock()
         .map_err(|_| io::Error::other("file lock poisoned"))?;
@@ -79,13 +66,145 @@ fn metadata_value(metadata: &cap_fs_ext::Metadata) -> FsMetadata {
     let executable = metadata.permissions().mode() & 0o111 != 0;
     #[cfg(not(unix))]
     let executable = false;
-    FsMetadata { kind, executable }
+    FsMetadata {
+        kind,
+        executable,
+        identity: FsIdentity {
+            namespace: metadata.dev(),
+            object: metadata.ino(),
+        },
+        length: metadata.len(),
+    }
 }
 
 impl FileSystem for NativeFileSystem {
+    fn legacy_directory_identity(&self, value: &FsDirectory) -> io::Result<FsLegacyObjectIdentity> {
+        legacy_identity::dir_object_identity(directory(value)?)
+    }
+    fn legacy_file_identity(&self, value: &FsFile) -> io::Result<FsLegacyObjectIdentity> {
+        with_file(value, legacy_identity::file_object_identity)?
+    }
+    fn legacy_rename_domain(&self, value: &FsDirectory) -> io::Result<FsLegacyRenameDomain> {
+        legacy_identity::rename_domain(directory(value)?)
+    }
+    fn legacy_path_identity(&self, value: &FsDirectory, relative: &Path) -> io::Result<Vec<u8>> {
+        legacy_identity::path_identity(directory(value)?, relative)
+    }
+    fn directory_names(&self, value: &FsDirectory) -> io::Result<FsDirectoryNames> {
+        Ok(Box::new(
+            directory(value)?
+                .entries()?
+                .map(|entry| entry.map(|entry| entry.file_name())),
+        ))
+    }
+
+    fn create_private_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
+        component(name)?;
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        durable_options(&mut options);
+        directory(parent)?
+            .open_with(name, &options)
+            .map(|file| FsFile(FileHandle::Native(File(Arc::new(Mutex::new(file)))), 0))
+    }
+    fn open_publication_source(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
+        component(name)?;
+        let file = publication::open(directory(parent)?, name)?;
+        Ok(FsFile(
+            FileHandle::Native(File(Arc::new(Mutex::new(file)))),
+            0,
+        ))
+    }
+    fn publish_source(
+        &self,
+        source: FsPublicationSource<'_>,
+        destination: &FsDirectory,
+        target: &OsStr,
+        mode: RenameMode,
+        acquired: &dyn Fn() -> io::Result<()>,
+    ) -> io::Result<()> {
+        component(source.name)?;
+        component(target)?;
+        with_file(source.file, |file| {
+            publication::publish(
+                file,
+                directory(source.parent)?,
+                source.name,
+                directory(destination)?,
+                target,
+                mode,
+                acquired,
+            )
+        })?
+    }
+    fn file_metadata(&self, value: &FsFile) -> io::Result<FsMetadata> {
+        with_file(value, |file| {
+            file.metadata().map(|value| metadata_value(&value))
+        })?
+    }
+    fn support_profile(&self) -> FsSupportProfile {
+        facts::support_profile()
+    }
+    fn persistent_directory_identity(
+        &self,
+        value: &FsDirectory,
+    ) -> Result<FsObjectIdentity, FsProbeError> {
+        facts::dir_identity(
+            directory(value)
+                .map_err(|e| FsProbeError::io("access native retained directory", e))?,
+        )
+    }
+    fn persistent_file_identity(&self, value: &FsFile) -> Result<FsObjectIdentity, FsProbeError> {
+        with_file(value, facts::file_identity)
+            .map_err(|e| FsProbeError::io("access native retained file", e))?
+    }
+    fn lookup_mode(&self, value: &FsDirectory) -> Result<FsLookupMode, FsProbeError> {
+        facts::parent_mode(
+            directory(value)
+                .map_err(|e| FsProbeError::io("access native retained directory", e))?,
+        )
+    }
+    fn rename_domain(&self, value: &FsDirectory) -> Result<Vec<u8>, FsProbeError> {
+        facts::rename_domain(
+            directory(value)
+                .map_err(|e| FsProbeError::io("access native retained directory", e))?,
+        )
+    }
+    fn describe_volume(&self, value: &FsDirectory) -> Result<FsVolumeDescription, FsProbeError> {
+        facts::describe_volume(
+            directory(value)
+                .map_err(|e| FsProbeError::io("access native retained directory", e))?,
+        )
+    }
     fn canonical_path(&self, path: &Path) -> io::Result<std::path::PathBuf> {
         std::fs::canonicalize(path)
     }
+    #[cfg(windows)]
+    fn metadata(&self, path: &Path) -> io::Result<FsMetadata> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::*;
+
+        // Windows path-only metadata omits the volume and file identity.
+        // Observe the entry itself through one handle, including dangling
+        // reparse points and directory roots, without opening its target.
+        let file = std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        let metadata = cap_std::fs::File::from_std(file).metadata()?;
+        Ok(metadata_value(&metadata))
+    }
+    #[cfg(not(windows))]
     fn metadata(&self, path: &Path) -> io::Result<FsMetadata> {
         let metadata = std::fs::symlink_metadata(path)?;
         let kind = metadata.file_type();
@@ -103,7 +222,16 @@ impl FileSystem for NativeFileSystem {
             std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()) & 0o111 != 0;
         #[cfg(not(unix))]
         let executable = false;
-        Ok(FsMetadata { kind, executable })
+        let metadata = cap_std::fs::Metadata::from_just_metadata(metadata);
+        Ok(FsMetadata {
+            kind,
+            executable,
+            identity: FsIdentity {
+                namespace: metadata.dev(),
+                object: metadata.ino(),
+            },
+            length: metadata.len(),
+        })
     }
     fn metadata_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsMetadata> {
         component(name)?;
@@ -150,27 +278,38 @@ impl FileSystem for NativeFileSystem {
         if !file.metadata()?.is_file() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        Ok(FsFile(FileHandle::Native(File(Arc::new(Mutex::new(file))))))
+        Ok(FsFile(
+            FileHandle::Native(File(Arc::new(Mutex::new(file)))),
+            0,
+        ))
     }
     fn open_lock_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).follow(FollowSymlinks::No);
+        durable_options(&mut options);
         let file = directory(parent)?.open_with(name, &options)?;
         if !file.metadata()?.is_file() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        Ok(FsFile(FileHandle::Native(File(Arc::new(Mutex::new(file))))))
+        Ok(FsFile(
+            FileHandle::Native(File(Arc::new(Mutex::new(file)))),
+            0,
+        ))
     }
     fn open_file_for_write_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).follow(FollowSymlinks::No);
+        durable_options(&mut options);
         let file = directory(parent)?.open_with(name, &options)?;
         if !file.metadata()?.is_file() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        Ok(FsFile(FileHandle::Native(File(Arc::new(Mutex::new(file))))))
+        Ok(FsFile(
+            FileHandle::Native(File(Arc::new(Mutex::new(file)))),
+            0,
+        ))
     }
     fn create_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
@@ -180,9 +319,10 @@ impl FileSystem for NativeFileSystem {
             .write(true)
             .create_new(true)
             .follow(FollowSymlinks::No);
+        durable_options(&mut options);
         directory(parent)?
             .open_with(name, &options)
-            .map(|file| FsFile(FileHandle::Native(File(Arc::new(Mutex::new(file))))))
+            .map(|file| FsFile(FileHandle::Native(File(Arc::new(Mutex::new(file)))), 0))
     }
     fn read_at(&self, handle: &FsFile, offset: u64, bytes: &mut [u8]) -> io::Result<usize> {
         let mut file = file(handle)?
@@ -618,47 +758,20 @@ mod retained {
         destination: &Dir,
         target: &OsStr,
     ) -> io::Result<()> {
-        use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
-        use cap_std::fs::OpenOptionsExt;
-        use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
-        use windows_sys::Win32::Storage::FileSystem::*;
-
-        let mut options = OpenOptions::new();
-        options
-            .access_mode(DELETE)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
-            )
-            .follow(FollowSymlinks::No)
-            .maybe_dir(true);
-        let source = source.open_with(name, &options)?;
-        let destination_path = windows_destination_path(destination, target)?;
-        let name = destination_path.encode_wide().collect::<Vec<_>>();
-        let size = std::mem::size_of::<FILE_RENAME_INFO>() + name.len() * 2;
-        let mut storage = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
-        let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-        unsafe {
-            (*info).Anonymous.ReplaceIfExists = false;
-            (*info).RootDirectory = std::ptr::null_mut();
-            (*info).FileNameLength = u32::try_from(name.len() * 2)
-                .map_err(|_| io::Error::other("destination name is too long"))?;
-            std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-            if SetFileInformationByHandle(
-                source.as_raw_handle(),
-                FileRenameInfo,
-                info.cast(),
-                u32::try_from(size).map_err(|_| io::Error::other("rename buffer is too large"))?,
-            ) == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-        }
-        Ok(())
+        let file = publication::open(source, name)?;
+        publication::publish(
+            &file,
+            source,
+            name,
+            destination,
+            target,
+            RenameMode::NoReplace,
+            &|| Ok(()),
+        )
     }
 
     #[cfg(windows)]
-    fn windows_destination_path(dir: &Dir, destination: &OsStr) -> io::Result<OsString> {
+    pub(super) fn windows_destination_path(dir: &Dir, destination: &OsStr) -> io::Result<OsString> {
         use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
@@ -861,4 +974,14 @@ mod platform_rename {
         }
         Ok(encoded.into_iter().chain(iter::once(0)).collect())
     }
+}
+
+fn durable_options(options: &mut OpenOptions) {
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_WRITE_THROUGH);
+    }
+    #[cfg(not(windows))]
+    let _ = options;
 }

@@ -42,6 +42,7 @@
 //! (`scripts/checks/check_checked_artifact_boundaries.py`) and out of the
 //! injection-site rescan (`interface_tests/fault_expected_keys.rs`).
 
+use crate::filesystem::FileSystem;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,7 +52,6 @@ use crate::checked_artifact::bootstrap::{
     CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
     try_acquire_workspace_runtime,
 };
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, ambient_authority};
 use sha2::{Digest, Sha256};
 
 use crate::checked_artifact::capability::{CheckedFsError, DurableIdentityProvider};
@@ -316,7 +316,8 @@ fn slot_name(slot: BaseActionSlotV1, action: ActionDigestV1) -> String {
 fn place_completed_action_rows(action_directory: &Path, expected: &ActionCapacityReservationV1) {
     const ALIAS_BYTES: &[u8] = b"gwz-retired-alias-fixture\n";
     let action = expected.action_digest();
-    let directory = cap_std::fs::Dir::open_ambient_dir(action_directory, ambient_authority())
+    let directory = crate::filesystem::make_filesystem()
+        .open_directory(action_directory)
         .expect("the admitted action directory is openable");
     let mut rows = Vec::new();
     for alias in CleanupAliasV1::ALL {
@@ -348,14 +349,13 @@ fn place_completed_action_rows(action_directory: &Path, expected: &ActionCapacit
 /// through the same `HostPlatform` identity provider the production observation
 /// path uses. Nothing here is invented.
 fn observed_alias_fingerprint(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     name: &str,
     bytes: &[u8],
 ) -> DurableLeafFingerprintV1 {
-    let mut options = cap_std::fs::OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = crate::filesystem::FsOpenMode::Read;
     let file = directory
-        .open_with(name, &options)
+        .open_file(name, &options)
         .expect("the alias is openable no-follow");
     let identity = super::HostPlatform
         .file_identity(&file)

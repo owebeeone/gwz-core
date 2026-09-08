@@ -35,11 +35,11 @@
 //! every leaf they touch arrives as an `&AsciiComponent` derived by
 //! `namespace/roles.rs` from the admitted action's own schedule.
 
+use crate::filesystem::FsKind;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, OpenOptions};
+use crate::filesystem::{FsDirectory as Dir, FsOpenMode};
 use sha2::{Digest, Sha256};
 
 use super::directory_mutation::sync_directory_edge;
@@ -161,7 +161,7 @@ pub(super) fn retain_action_namespace(
 ) -> Result<RetainedActionNamespaceV1, CheckedFsError> {
     let leaf = OsString::from(action_leaf);
     let handle = final_directory
-        .open_dir_nofollow(&leaf)
+        .retained_child(&leaf)
         .map_err(|source| CheckedFsError::io("open admitted action directory", source))?;
     let fact = super::HostPlatform.dir_identity(&handle)?;
     if fact.durable() != expected_identity {
@@ -178,7 +178,7 @@ pub(super) fn retain_action_namespace(
         parent_fact.invocation().clone(),
         super::HostPlatform.rename_domain(final_directory)?,
     )?])?;
-    let parent = final_directory.try_clone().map_err(|source| {
+    let parent = final_directory.clone_handle().map_err(|source| {
         CheckedFsError::io("retain completed catalog for revalidation", source)
     })?;
     Ok(RetainedActionNamespaceV1 {
@@ -233,7 +233,7 @@ impl RetainedActionNamespaceV1 {
         }
         let named = self
             .parent
-            .open_dir_nofollow(&self.leaf)
+            .retained_child(&self.leaf)
             .map_err(|source| CheckedFsError::io("reopen named action directory", source))?;
         if super::HostPlatform.dir_identity(&named)?.durable() != &self.identity
             || super::HostPlatform.dir_identity(&self.handle)?.durable() != &self.identity
@@ -329,7 +329,7 @@ impl RetainedActionNamespaceV1 {
     /// namespace question this owner answers without an edge, so a restart can
     /// tell which scheduled row it already reached.
     pub(in crate::checked_artifact) fn row_is_resident(&self, leaf: &AsciiComponent) -> bool {
-        self.handle.symlink_metadata(os_name(leaf)).is_ok()
+        self.handle.entry_metadata(os_name(leaf)).is_ok()
     }
 
     /// R2-E E3.1 — `terminal.*` keys #1-#4: the four durable rows the terminal
@@ -496,9 +496,9 @@ impl RetainedActionNamespaceV1 {
             None => {
                 let metadata = self
                     .handle
-                    .symlink_metadata(os_name(&resident))
+                    .entry_metadata(os_name(&resident))
                     .map_err(|source| CheckedFsError::io("observe terminal row", source))?;
-                if !metadata.is_file() || metadata.is_symlink() {
+                if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
                     return Err(CheckedFsError::ambiguous(
                         label,
                         "the scheduled row is not a canonical regular file",
@@ -588,21 +588,20 @@ impl RetainedActionNamespaceV1 {
         expected: &DurableLeafFingerprintV1,
     ) -> Result<CleanupPhysicalFactV1, CheckedFsError> {
         let name = os_name(leaf);
-        let metadata = match self.handle.symlink_metadata(&name) {
+        let metadata = match self.handle.entry_metadata(&name) {
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 return Ok(CleanupPhysicalFactV1::Missing);
             }
             Err(source) => return Err(CheckedFsError::io("observe cleanup alias", source)),
             Ok(value) => value,
         };
-        if !metadata.is_file() || metadata.is_symlink() {
+        if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
             return Ok(CleanupPhysicalFactV1::Other);
         }
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
+        let options = FsOpenMode::Read;
         let mut file = self
             .handle
-            .open_with(&name, &options)
+            .open_file(&name, &options)
             .map_err(|source| CheckedFsError::io("open cleanup alias no-follow", source))?;
         let fact = super::HostPlatform.file_identity(&file)?;
         file.seek(SeekFrom::Start(0))
@@ -646,7 +645,7 @@ impl RetainedActionNamespaceV1 {
     /// conditional arm recorded in the freeze §4.3 E9 form). On every other
     /// platform the class selects nothing: both are the same directory `fsync`.
     pub(in crate::checked_artifact) fn barrier(&self) -> Result<(), CheckedFsError> {
-        crate::checked_artifact::platform::private_barrier(
+        crate::checked_artifact::platform::filesystem_private_barrier(
             &self.handle,
             crate::checked_artifact::platform::DirentBarrierClass::ExactInterior,
             ErrorCode::IoError,
@@ -664,7 +663,7 @@ impl RetainedActionNamespaceV1 {
     /// stated as a pre-edge expectation so a resident row is a typed refusal
     /// rather than an `EEXIST`.
     fn require_absent(&self, name: &OsStr, label: &'static str) -> Result<(), CheckedFsError> {
-        match self.handle.symlink_metadata(name) {
+        match self.handle.entry_metadata(name) {
             Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(source) => Err(CheckedFsError::io("observe namespace destination", source)),
             Ok(_) => Err(CheckedFsError::ambiguous(
@@ -683,9 +682,9 @@ impl RetainedActionNamespaceV1 {
         let name = os_name(leaf);
         let metadata = self
             .handle
-            .symlink_metadata(&name)
+            .entry_metadata(&name)
             .map_err(|source| CheckedFsError::io("observe namespace object", source))?;
-        if !metadata.is_file() || metadata.is_symlink() {
+        if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
             // A directory source would need the §4.4 Class 1 managed
             // source-interior arm, which §4.3 assigns to Phase 2.3/3, so this
             // owner refuses rather than publishing without one.
@@ -694,11 +693,10 @@ impl RetainedActionNamespaceV1 {
                 "namespace object is not a canonical regular file",
             ));
         }
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
+        let options = FsOpenMode::Read;
         let mut file = self
             .handle
-            .open_with(&name, &options)
+            .open_file(&name, &options)
             .map_err(|source| CheckedFsError::io("open namespace object no-follow", source))?;
         let fact = super::HostPlatform.file_identity(&file)?;
         let limit = kind.max_bytes();
@@ -786,7 +784,7 @@ pub(in crate::checked_artifact) fn write_cleanup_worklist_scratch(
 ) -> Result<(), CheckedFsError> {
     let directory = &action.handle;
     let name = os_name(scratch_leaf);
-    let create_new = match directory.symlink_metadata(&name) {
+    let create_new = match directory.entry_metadata(&name) {
         Err(source) if source.kind() == io::ErrorKind::NotFound => true,
         Err(source) => {
             return Err(CheckedFsError::io(
@@ -794,7 +792,7 @@ pub(in crate::checked_artifact) fn write_cleanup_worklist_scratch(
                 source,
             ));
         }
-        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => false,
+        Ok(metadata) if metadata.kind == FsKind::File && metadata.kind != FsKind::Symlink => false,
         Ok(_) => {
             return Err(cleanup_error(
                 "cleanup worklist scratch row is not a canonical regular file",
@@ -808,7 +806,7 @@ pub(in crate::checked_artifact) fn write_cleanup_worklist_scratch(
     }
     let options = super::directory_mutation::durable_write_options(create_new);
     let mut file = directory
-        .open_with(&name, &options)
+        .open_file(&name, &options)
         .map_err(|source| CheckedFsError::io("open cleanup worklist scratch", source))?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::CleanupWorklistScratchCreate);
@@ -992,12 +990,12 @@ fn observe_cleanup_alias(
     action: &RetainedActionNamespaceV1,
     leaf: &AsciiComponent,
 ) -> Result<CleanupPhysicalFactV1, CheckedFsError> {
-    match action.handle.symlink_metadata(os_name(leaf)) {
+    match action.handle.entry_metadata(os_name(leaf)) {
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
             return Ok(CleanupPhysicalFactV1::Missing);
         }
         Err(source) => return Err(CheckedFsError::io("observe cleanup alias", source)),
-        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => {}
+        Ok(metadata) if metadata.kind == FsKind::File && metadata.kind != FsKind::Symlink => {}
         Ok(_) => return Ok(CleanupPhysicalFactV1::Other),
     }
     let observed = action.observe_regular_file(

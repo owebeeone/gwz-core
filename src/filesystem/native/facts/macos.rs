@@ -4,11 +4,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use cap_fs_ext::MetadataExt;
 use cap_std::fs::{Dir, File};
 
-use super::super::super::*;
-use super::VolumeDescription;
-use crate::checked_artifact::capability::{
-    ObjectIdentityFact, PathComponentMode, PlatformCapability,
-};
+use crate::filesystem::*;
 
 #[repr(C, packed(4))]
 struct ObjectAttributes {
@@ -23,47 +19,43 @@ struct VolumeAttributes {
     volume_uuid: [u8; 16],
 }
 
-pub(super) const fn support_profile() -> SupportedFilesystemProfile {
-    SupportedFilesystemProfile::MacPersistentObjectIdV1
+pub(crate) const fn support_profile() -> FsSupportProfile {
+    FsSupportProfile::MacPersistentId
 }
 
-pub(super) fn dir_identity(
-    directory: &Dir,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+pub(crate) fn dir_identity(directory: &Dir) -> Result<FsObjectIdentity, FsProbeError> {
     identity(
         directory.as_raw_fd(),
         &directory.dir_metadata().map_err(io_identity)?,
     )
 }
 
-pub(super) fn file_identity(
-    file: &File,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+pub(crate) fn file_identity(file: &File) -> Result<FsObjectIdentity, FsProbeError> {
     identity(file.as_raw_fd(), &file.metadata().map_err(io_identity)?)
 }
 
-pub(super) fn parent_mode(parent: &Dir) -> Result<PathComponentMode, CheckedFsError> {
+pub(crate) fn parent_mode(parent: &Dir) -> Result<FsLookupMode, FsProbeError> {
     set_errno(0);
     let result = unsafe { libc::fpathconf(parent.as_raw_fd(), libc::_PC_CASE_SENSITIVE) };
     match result {
-        0 => Ok(PathComponentMode::AsciiCaseFold),
-        1 => Ok(PathComponentMode::Sensitive),
-        -1 if errno() == 0 => Err(CheckedFsError::unsupported(
-            PlatformCapability::PathEquivalence,
+        0 => Ok(FsLookupMode::AsciiCaseFold),
+        1 => Ok(FsLookupMode::Sensitive),
+        -1 if errno() == 0 => Err(FsProbeError::unsupported(
+            FsCapability::PathEquivalence,
             "filesystem does not report per-parent lookup mode",
         )),
         -1 => Err(query_error(
-            PlatformCapability::PathEquivalence,
+            FsCapability::PathEquivalence,
             "query macOS parent lookup mode",
         )),
-        _ => Err(CheckedFsError::unsupported(
-            PlatformCapability::PathEquivalence,
+        _ => Err(FsProbeError::unsupported(
+            FsCapability::PathEquivalence,
             "filesystem returned a noncanonical lookup mode",
         )),
     }
 }
 
-pub(super) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, CheckedFsError> {
+pub(crate) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, FsProbeError> {
     Ok(volume_attributes(directory.as_raw_fd())?
         .volume_uuid
         .to_vec())
@@ -86,7 +78,7 @@ pub(super) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, CheckedFsError> 
 /// identity gate on macOS is unchanged by this step; only Linux gained a
 /// volatility refusal (§3.2), because only there does an identity probe
 /// actively admit a volatile substrate.
-pub(super) fn describe_volume(directory: &Dir) -> Result<VolumeDescription, CheckedFsError> {
+pub(crate) fn describe_volume(directory: &Dir) -> Result<FsVolumeDescription, FsProbeError> {
     let stat = mounted_filesystem(directory.as_raw_fd())?;
     let length = stat
         .f_fstypename
@@ -98,27 +90,30 @@ pub(super) fn describe_volume(directory: &Dir) -> Result<VolumeDescription, Chec
         .map(|unit| *unit as u8)
         .collect::<Vec<_>>();
     let name = String::from_utf8_lossy(&bytes).into_owned();
-    Ok(VolumeDescription {
+    Ok(FsVolumeDescription {
         name: (!name.is_empty()).then_some(name),
         remote: stat.f_flags & libc::MNT_LOCAL as u32 == 0,
         volatile: false,
     })
 }
 
-fn identity(
-    fd: RawFd,
-    metadata: &impl MetadataExt,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+fn identity(fd: RawFd, metadata: &impl MetadataExt) -> Result<FsObjectIdentity, FsProbeError> {
     let object = object_attributes(fd)?;
     let volume = volume_attributes(fd)?;
-    let durable = DurableObjectIdentityV1::mac(volume.volume_uuid, object.persistent_object_id)?;
+    let persistent = FsPersistentIdentity::Mac {
+        volume: volume.volume_uuid,
+        object: object.persistent_object_id,
+    };
     let mut invocation = Vec::with_capacity(16);
     invocation.extend_from_slice(&metadata.dev().to_be_bytes());
     invocation.extend_from_slice(&metadata.ino().to_be_bytes());
-    Ok(ObjectIdentityFact::new(durable, invocation))
+    Ok(FsObjectIdentity {
+        persistent,
+        invocation,
+    })
 }
 
-fn object_attributes(fd: RawFd) -> Result<ObjectAttributes, CheckedFsError> {
+fn object_attributes(fd: RawFd) -> Result<ObjectAttributes, FsProbeError> {
     let mut list = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
@@ -140,21 +135,21 @@ fn object_attributes(fd: RawFd) -> Result<ObjectAttributes, CheckedFsError> {
     } != 0
     {
         return Err(query_error(
-            PlatformCapability::PersistentFilesystemIdentity,
+            FsCapability::PersistentFilesystemIdentity,
             "query macOS persistent object identity",
         ));
     }
     let attributes = unsafe { attributes.assume_init() };
     if attributes.length as usize != std::mem::size_of::<ObjectAttributes>() {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "filesystem returned a noncanonical object identity",
         ));
     }
     Ok(attributes)
 }
 
-fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, CheckedFsError> {
+fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, FsProbeError> {
     let mut list = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
@@ -176,7 +171,7 @@ fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, CheckedFsError> {
     } != 0
     {
         return Err(query_error(
-            PlatformCapability::PersistentFilesystemIdentity,
+            FsCapability::PersistentFilesystemIdentity,
             "query macOS volume identity",
         ));
     }
@@ -187,14 +182,14 @@ fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, CheckedFsError> {
         || capabilities.valid[format] & libc::VOL_CAP_FMT_PERSISTENTOBJECTIDS == 0
         || capabilities.capabilities[format] & libc::VOL_CAP_FMT_PERSISTENTOBJECTIDS == 0
     {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "filesystem does not promise persistent object identities",
         ));
     }
     if mounted_filesystem(fd)?.f_flags & libc::MNT_LOCAL as u32 == 0 {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "remote macOS filesystems are not an admitted profile",
         ));
     }
@@ -204,29 +199,29 @@ fn volume_attributes(fd: RawFd) -> Result<VolumeAttributes, CheckedFsError> {
 /// The one `fstatfs` both the admission gate and the volume description read.
 /// The gate consumes `f_flags & MNT_LOCAL`; the description also reads
 /// `f_fstypename`, so factoring it keeps one error string for one syscall.
-fn mounted_filesystem(fd: RawFd) -> Result<libc::statfs, CheckedFsError> {
+fn mounted_filesystem(fd: RawFd) -> Result<libc::statfs, FsProbeError> {
     let mut stat = std::mem::MaybeUninit::<libc::statfs>::zeroed();
     if unsafe { libc::fstatfs(fd, stat.as_mut_ptr()) } != 0 {
         return Err(query_error(
-            PlatformCapability::PersistentFilesystemIdentity,
+            FsCapability::PersistentFilesystemIdentity,
             "query macOS mounted filesystem",
         ));
     }
     Ok(unsafe { stat.assume_init() })
 }
 
-fn query_error(capability: PlatformCapability, operation: &'static str) -> CheckedFsError {
+fn query_error(capability: FsCapability, operation: &'static str) -> FsProbeError {
     let source = io::Error::last_os_error();
     match source.raw_os_error() {
         Some(libc::ENOTSUP | libc::EINVAL | libc::ENOTTY) => {
-            CheckedFsError::unsupported(capability, source.to_string())
+            FsProbeError::unsupported(capability, source.to_string())
         }
-        _ => CheckedFsError::io(operation, source),
+        _ => FsProbeError::io(operation, source),
     }
 }
 
-fn io_identity(source: io::Error) -> CheckedFsError {
-    CheckedFsError::io("read macOS invocation identity", source)
+fn io_identity(source: io::Error) -> FsProbeError {
+    FsProbeError::io("read macOS invocation identity", source)
 }
 
 fn errno() -> i32 {

@@ -1,10 +1,11 @@
+use crate::filesystem::FsKind;
+use crate::filesystem::{FileSystem, make_filesystem};
 use crate::git::{GitRepository, make_repository};
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, ambient_authority};
-use cap_std::fs::{Dir, File, OpenOptions};
+use crate::filesystem::{FsDirectory as Dir, FsFile as File, FsOpenMode};
 
 use super::super::*;
 use super::filesystem::PlatformProviderV1;
@@ -267,18 +268,17 @@ pub(super) fn retain_index_file(
     platform: &impl PlatformProviderV1,
 ) -> Result<Option<RetainedFile>, CheckedFsError> {
     let name = OsStr::new("index");
-    match parent.handle.symlink_metadata(name) {
+    match parent.handle.entry_metadata(name) {
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(CheckedFsError::io("observe Git index", source)),
-        Ok(metadata) if !metadata.is_file() || metadata.is_symlink() => Err(
+        Ok(metadata) if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink => Err(
             CheckedFsError::ambiguous("Git index", "index is not a no-follow regular file"),
         ),
         Ok(_) => {
-            let mut options = OpenOptions::new();
-            options.read(true).follow(FollowSymlinks::No);
+            let options = FsOpenMode::Read;
             let handle = parent
                 .handle
-                .open_with(name, &options)
+                .open_file(name, &options)
                 .map_err(|source| CheckedFsError::io("open Git index no-follow", source))?;
             let identity = platform.file_identity(&handle)?;
             Ok(Some(RetainedFile { handle, identity }))
@@ -292,7 +292,8 @@ fn retain_ambient(
     label: &'static str,
 ) -> Result<RetainedDirectory, CheckedFsError> {
     reject_symlink(path, label)?;
-    let handle = Dir::open_ambient_dir(path, ambient_authority())
+    let handle = make_filesystem()
+        .open_directory(path)
         .map_err(|source| CheckedFsError::io("open retained pre-catalog directory", source))?;
     retain_opened(handle, platform, label)
 }
@@ -316,18 +317,21 @@ fn retain_optional_child(
     label: &'static str,
 ) -> Result<(Option<RetainedDirectory>, AliasObservationV1), CheckedFsError> {
     let alias_observation = reject_equivalent_alias(parent.handle(), name, parent.mode(), label)?;
-    match parent.handle.symlink_metadata(name) {
+    match parent.handle.entry_metadata(name) {
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok((None, alias_observation)),
         Err(source) => Err(CheckedFsError::io(
             "observe retained child directory",
             source,
         )),
-        Ok(metadata) if !metadata.is_dir() || metadata.is_symlink() => Err(
-            CheckedFsError::ambiguous(label, "expected a no-follow directory"),
-        ),
+        Ok(metadata) if metadata.kind != FsKind::Directory || metadata.kind == FsKind::Symlink => {
+            Err(CheckedFsError::ambiguous(
+                label,
+                "expected a no-follow directory",
+            ))
+        }
         Ok(_) => parent
             .handle
-            .open_dir_nofollow(name)
+            .retained_child(name)
             .map_err(|source| CheckedFsError::io("open retained child no-follow", source))
             .and_then(|handle| retain_opened(handle, platform, label))
             .map(|child| (Some(child), alias_observation)),
@@ -370,7 +374,7 @@ fn reject_equivalent_alias(
         .map_err(|source| CheckedFsError::io("enumerate retained parent", source))?
     {
         let entry = entry.map_err(|source| CheckedFsError::io("read retained parent", source))?;
-        let observed = entry.file_name();
+        let observed = entry;
         budget.charge_os_str(&observed)?;
         if native_name_matches_ascii(&observed, expected_bytes, mode)?
             && observed.as_os_str() != expected
@@ -405,14 +409,16 @@ fn revalidate_repository_paths(root: &RetainedPlatformRoot) -> Result<(), Checke
 
 fn canonical_directory(path: &Path, label: &'static str) -> Result<PathBuf, CheckedFsError> {
     reject_symlink(path, label)?;
-    std::fs::canonicalize(path)
+    make_filesystem()
+        .canonical_path(path)
         .map_err(|source| CheckedFsError::io("canonicalize pre-catalog directory", source))
 }
 
 fn reject_symlink(path: &Path, label: &'static str) -> Result<(), CheckedFsError> {
-    let metadata = std::fs::symlink_metadata(path)
+    let metadata = make_filesystem()
+        .metadata(path)
         .map_err(|source| CheckedFsError::io("observe pre-catalog directory", source))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if metadata.kind != FsKind::Directory || metadata.kind == FsKind::Symlink {
         return Err(CheckedFsError::ambiguous(
             label,
             "expected a no-follow directory",

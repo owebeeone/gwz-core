@@ -15,7 +15,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use cap_std::fs::Dir;
+use crate::filesystem::FsDirectory as Dir;
 
 use super::authority_record_binding::{
     AuthorityTransactionV1, FOREIGN_AUTHORITY_REFUSAL, FOREIGN_EXACT_DURABLE_IS_WEAKER,
@@ -245,7 +245,10 @@ fn a_resident_record_one_byte_past_the_frozen_bound_is_refused() {
     let directory = fixture.dir();
     let name = slot_name(&fixture.expected, BaseActionSlotV1::Authority);
     let oversize = vec![0_u8; ProtocolRecordKindV1::Authority.max_bytes() + 1];
-    let mut file = directory.create(name.as_str()).unwrap();
+    let mut file = directory
+        .open_file(name.as_str(), &crate::filesystem::FsOpenMode::WriteOrCreate)
+        .unwrap();
+    file.set_len(0).unwrap();
     file.write_all(&oversize).unwrap();
     file.sync_all().unwrap();
     drop(file);

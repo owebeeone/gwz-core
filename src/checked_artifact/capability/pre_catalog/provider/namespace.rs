@@ -1,8 +1,8 @@
+use crate::filesystem::FsKind;
 use std::ffi::OsStr;
 use std::io::{self, Read};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
-use cap_std::fs::OpenOptions;
+use crate::filesystem::FsOpenMode;
 
 use super::filesystem::PlatformProviderV1;
 use super::interior;
@@ -37,7 +37,7 @@ pub(super) fn observe(
         .map_err(|source| CheckedFsError::io("enumerate catalog parent", source))?
     {
         let entry = entry.map_err(|source| CheckedFsError::io("read catalog parent", source))?;
-        let observed_name = entry.file_name();
+        let observed_name = entry;
         let Some(role) = scanner.observe_os_str(&observed_name)? else {
             continue;
         };
@@ -94,7 +94,7 @@ fn observe_leaf(
     _role: &CatalogRecognizedNameV1,
     platform: &impl PlatformProviderV1,
 ) -> Result<RawCatalogEntryFactV1, CheckedFsError> {
-    match parent.handle().symlink_metadata(name) {
+    match parent.handle().entry_metadata(name) {
         Err(source) if source.kind() == io::ErrorKind::NotFound => Err(CheckedFsError::ambiguous(
             "catalog parent",
             "reserved entry disappeared during aggregate observation",
@@ -102,8 +102,8 @@ fn observe_leaf(
         Err(source) => Err(CheckedFsError::io("observe catalog role", source)),
         Ok(metadata) => {
             let mut value = Vec::new();
-            if metadata.is_dir() && !metadata.is_symlink() {
-                let directory = parent.handle().open_dir_nofollow(name).map_err(|source| {
+            if metadata.kind == FsKind::Directory && metadata.kind != FsKind::Symlink {
+                let directory = parent.handle().retained_child(name).map_err(|source| {
                     CheckedFsError::io("open catalog directory no-follow", source)
                 })?;
                 let identity = platform.dir_identity(&directory)?;
@@ -113,12 +113,11 @@ fn observe_leaf(
                     durable_identity: identity.durable().clone(),
                     interior,
                 });
-            } else if metadata.is_file() && !metadata.is_symlink() {
-                let mut options = OpenOptions::new();
-                options.read(true).follow(FollowSymlinks::No);
+            } else if metadata.kind == FsKind::File && metadata.kind != FsKind::Symlink {
+                let options = FsOpenMode::Read;
                 let mut file = parent
                     .handle()
-                    .open_with(name, &options)
+                    .open_file(name, &options)
                     .map_err(|source| {
                         CheckedFsError::io("open catalog record no-follow", source)
                     })?;
@@ -126,7 +125,11 @@ fn observe_leaf(
                 let bytes = read_record_bytes(&mut file)?;
                 return Ok(RawCatalogEntryFactV1::RegularFile { identity, bytes });
             } else {
-                value.push(if metadata.is_symlink() { 3 } else { 4 });
+                value.push(if metadata.kind == FsKind::Symlink {
+                    3
+                } else {
+                    4
+                });
                 value.extend_from_slice(&metadata.dev().to_be_bytes());
                 value.extend_from_slice(&metadata.ino().to_be_bytes());
             }
@@ -135,7 +138,9 @@ fn observe_leaf(
     }
 }
 
-fn read_record_bytes(file: &mut cap_std::fs::File) -> Result<RawCatalogBytesV1, CheckedFsError> {
+fn read_record_bytes(
+    file: &mut crate::filesystem::FsFile,
+) -> Result<RawCatalogBytesV1, CheckedFsError> {
     let limit = ProtocolRecordKindV1::CatalogBootstrap.max_bytes();
     let read_limit = u64::try_from(limit + 1).expect("catalog record limit fits u64");
     let mut bytes = Vec::new();

@@ -1,6 +1,9 @@
+use crate::filesystem::FsKind;
+use crate::filesystem::{FileSystem, make_filesystem};
 use crate::git::{GitIndexEntry, GitRepository, make_repository};
+#[cfg(unix)]
 use std::ffi::OsString;
-use std::io::{self, Read};
+use std::io;
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
@@ -33,9 +36,11 @@ pub(super) fn observe(
     let actual_parent = actual_path.parent().ok_or_else(|| {
         CheckedFsError::ambiguous("Git index", "index path has no parent directory")
     })?;
-    let expected_parent = std::fs::canonicalize(retained.git_directory_path())
+    let expected_parent = make_filesystem()
+        .canonical_path(retained.git_directory_path())
         .map_err(|source| CheckedFsError::io("canonicalize the actual Git directory", source))?;
-    let actual_parent = std::fs::canonicalize(actual_parent)
+    let actual_parent = make_filesystem()
+        .canonical_path(actual_parent)
         .map_err(|source| CheckedFsError::io("canonicalize the reported index parent", source))?;
     if actual_parent != expected_parent
         || actual_path.file_name() != Some(std::ffi::OsStr::new("index"))
@@ -114,20 +119,18 @@ pub(super) fn observe(
 }
 
 fn hash_file(file: &RetainedFile) -> Result<[u8; 32], CheckedFsError> {
-    let mut reader = file
-        .handle()
-        .try_clone()
-        .map_err(|source| CheckedFsError::io("clone retained Git index", source))?;
+    let mut offset = 0;
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 16 * 1024];
     loop {
-        let read = reader
-            .read(&mut buffer)
+        let read = make_filesystem()
+            .read_at(file.handle(), offset, &mut buffer)
             .map_err(|source| CheckedFsError::io("read retained Git index", source))?;
         if read == 0 {
             break;
         }
         digest.update(&buffer[..read]);
+        offset += read as u64;
     }
     Ok(digest.finalize().into())
 }
@@ -142,12 +145,12 @@ fn worktree_kind(
     let Some(path) = worktree_path(&entry.path) else {
         return Ok(TrackedWorktreeKind::Other);
     };
-    match retained.root().handle().symlink_metadata(&path) {
+    match retained.root().handle().entry_metadata(&path) {
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(TrackedWorktreeKind::Missing),
         Err(source) => Err(CheckedFsError::io("observe tracked worktree path", source)),
-        Ok(metadata) if metadata.is_symlink() => Ok(TrackedWorktreeKind::Symlink),
-        Ok(metadata) if metadata.is_file() => Ok(TrackedWorktreeKind::RegularFile),
-        Ok(metadata) if metadata.is_dir() => Ok(TrackedWorktreeKind::Directory),
+        Ok(metadata) if metadata.kind == FsKind::Symlink => Ok(TrackedWorktreeKind::Symlink),
+        Ok(metadata) if metadata.kind == FsKind::File => Ok(TrackedWorktreeKind::RegularFile),
+        Ok(metadata) if metadata.kind == FsKind::Directory => Ok(TrackedWorktreeKind::Directory),
         Ok(_) => Ok(TrackedWorktreeKind::Other),
     }
 }

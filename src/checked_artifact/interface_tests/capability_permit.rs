@@ -243,7 +243,9 @@ fn the_durability_anchor_protocol_is_closed_and_allocates_no_retry_name() {
         );
     }
     assert_eq!(
-        anchor.matches("publish_verified_leaf_no_replace(").count(),
+        anchor
+            .matches("publish_verified_filesystem_leaf_no_replace(")
+            .count(),
         1,
         "every anchor edge publishes through one shared call site"
     );

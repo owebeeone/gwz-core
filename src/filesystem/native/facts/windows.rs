@@ -8,11 +8,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, VOLUME_NAME_DOS, VOLUME_NAME_GUID,
 };
 
-use super::super::super::*;
-use super::VolumeDescription;
-use crate::checked_artifact::capability::{
-    ObjectIdentityFact, PathComponentMode, PlatformCapability,
-};
+use crate::filesystem::*;
 
 const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
 
@@ -28,23 +24,19 @@ const DRIVE_REMOTE: u32 = 4;
 /// gets a volume root to judge.
 const UNC_FINAL_PATH_PREFIX: &str = r"\\?\UNC\";
 
-pub(super) const fn support_profile() -> SupportedFilesystemProfile {
-    SupportedFilesystemProfile::WindowsNtfsFileId128V1
+pub(crate) const fn support_profile() -> FsSupportProfile {
+    FsSupportProfile::WindowsFileId
 }
 
-pub(super) fn dir_identity(
-    directory: &Dir,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+pub(crate) fn dir_identity(directory: &Dir) -> Result<FsObjectIdentity, FsProbeError> {
     identity(directory)
 }
 
-pub(super) fn file_identity(
-    file: &File,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+pub(crate) fn file_identity(file: &File) -> Result<FsObjectIdentity, FsProbeError> {
     identity(file)
 }
 
-pub(super) fn parent_mode(parent: &Dir) -> Result<PathComponentMode, CheckedFsError> {
+pub(crate) fn parent_mode(parent: &Dir) -> Result<FsLookupMode, FsProbeError> {
     let mut info = FILE_CASE_SENSITIVE_INFO::default();
     if unsafe {
         GetFileInformationByHandleEx(
@@ -56,18 +48,18 @@ pub(super) fn parent_mode(parent: &Dir) -> Result<PathComponentMode, CheckedFsEr
     } == 0
     {
         return Err(query_error(
-            PlatformCapability::PathEquivalence,
+            FsCapability::PathEquivalence,
             "query NTFS per-directory case mode",
         ));
     }
     Ok(if info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR == 0 {
-        PathComponentMode::AsciiCaseFold
+        FsLookupMode::AsciiCaseFold
     } else {
-        PathComponentMode::Sensitive
+        FsLookupMode::Sensitive
     })
 }
 
-pub(super) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, CheckedFsError> {
+pub(crate) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, FsProbeError> {
     let (volume_guid, _) = facts(directory)?;
     Ok(encode_utf16(&volume_guid))
 }
@@ -82,28 +74,32 @@ pub(super) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, CheckedFsError> 
 /// `\\?\UNC\` final path for the shares whose volume root cannot be asked at
 /// all. `volatile` is always `false`: Windows exposes no interface that
 /// separates a RAM disk from a fixed volume, the same limit macOS has.
-pub(super) fn describe_volume(directory: &Dir) -> Result<VolumeDescription, CheckedFsError> {
+pub(crate) fn describe_volume(directory: &Dir) -> Result<FsVolumeDescription, FsProbeError> {
     let handle = directory.as_raw_handle();
     let remote = final_path(handle, VOLUME_NAME_DOS).is_ok_and(|path| is_unc_final_path(&path))
         || volume_guid(handle).is_ok_and(|guid| volume_root_drive_type(&guid) == DRIVE_REMOTE);
-    Ok(VolumeDescription {
+    Ok(FsVolumeDescription {
         name: filesystem_name(handle).ok(),
         remote,
         volatile: false,
     })
 }
 
-fn identity(
-    value: &impl AsRawHandle,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+fn identity(value: &impl AsRawHandle) -> Result<FsObjectIdentity, FsProbeError> {
     let (volume_guid, file_id) = facts(value)?;
-    let durable = DurableObjectIdentityV1::windows_ntfs(volume_guid.clone(), file_id)?;
+    let persistent = FsPersistentIdentity::Windows {
+        volume: volume_guid.clone(),
+        file_id,
+    };
     let mut invocation = encode_utf16(&volume_guid);
     invocation.extend_from_slice(&file_id);
-    Ok(ObjectIdentityFact::new(durable, invocation))
+    Ok(FsObjectIdentity {
+        persistent,
+        invocation,
+    })
 }
 
-fn facts(value: &impl AsRawHandle) -> Result<(Vec<u16>, [u8; 16]), CheckedFsError> {
+fn facts(value: &impl AsRawHandle) -> Result<(Vec<u16>, [u8; 16]), FsProbeError> {
     let handle = value.as_raw_handle();
     require_ntfs(handle)?;
     let mut info = FILE_ID_INFO::default();
@@ -117,14 +113,14 @@ fn facts(value: &impl AsRawHandle) -> Result<(Vec<u16>, [u8; 16]), CheckedFsErro
     } == 0
     {
         return Err(query_error(
-            PlatformCapability::PersistentFilesystemIdentity,
+            FsCapability::PersistentFilesystemIdentity,
             "query NTFS 128-bit file identity",
         ));
     }
     let volume_guid = volume_guid(handle)?;
     if info.FileId.Identifier == [0; 16] {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "NTFS returned a zero file identity",
         ));
     }
@@ -139,10 +135,10 @@ fn facts(value: &impl AsRawHandle) -> Result<(Vec<u16>, [u8; 16]), CheckedFsErro
 /// FAT/exFAT do not — is not to be built blind from a host that cannot run
 /// the Windows matrix. It is charter §8 item 3 and the next Windows-verified
 /// step's work.
-fn require_ntfs(handle: std::os::windows::io::RawHandle) -> Result<(), CheckedFsError> {
+fn require_ntfs(handle: std::os::windows::io::RawHandle) -> Result<(), FsProbeError> {
     if filesystem_name(handle)? != "NTFS" {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "only local NTFS is an admitted Windows profile",
         ));
     }
@@ -151,7 +147,7 @@ fn require_ntfs(handle: std::os::windows::io::RawHandle) -> Result<(), CheckedFs
 
 /// The one `GetVolumeInformationByHandleW` name fetch: the gate above
 /// compares it to `NTFS`, the volume description reports it verbatim.
-fn filesystem_name(handle: std::os::windows::io::RawHandle) -> Result<String, CheckedFsError> {
+fn filesystem_name(handle: std::os::windows::io::RawHandle) -> Result<String, FsProbeError> {
     let mut filesystem = [0_u16; 32];
     if unsafe {
         GetVolumeInformationByHandleW(
@@ -167,7 +163,7 @@ fn filesystem_name(handle: std::os::windows::io::RawHandle) -> Result<String, Ch
     } == 0
     {
         return Err(query_error(
-            PlatformCapability::PersistentFilesystemIdentity,
+            FsCapability::PersistentFilesystemIdentity,
             "query Windows filesystem profile",
         ));
     }
@@ -176,8 +172,8 @@ fn filesystem_name(handle: std::os::windows::io::RawHandle) -> Result<String, Ch
         .position(|unit| *unit == 0)
         .unwrap_or(filesystem.len());
     String::from_utf16(&filesystem[..length]).map_err(|_| {
-        CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "filesystem name is not valid UTF-16",
         )
     })
@@ -188,13 +184,13 @@ fn filesystem_name(handle: std::os::windows::io::RawHandle) -> Result<String, Ch
 fn final_path(
     handle: std::os::windows::io::RawHandle,
     flags: GETFINALPATHNAMEBYHANDLE_FLAGS,
-) -> Result<Vec<u16>, CheckedFsError> {
+) -> Result<Vec<u16>, FsProbeError> {
     let mut path = vec![0_u16; 1024];
     let length =
         unsafe { GetFinalPathNameByHandleW(handle, path.as_mut_ptr(), path.len() as u32, flags) };
     if length == 0 || length as usize >= path.len() {
         return Err(query_error(
-            PlatformCapability::PersistentFilesystemIdentity,
+            FsCapability::PersistentFilesystemIdentity,
             "query local NTFS volume GUID",
         ));
     }
@@ -216,12 +212,12 @@ fn volume_root_drive_type(volume_guid: &[u16]) -> u32 {
     unsafe { GetDriveTypeW(root.as_ptr()) }
 }
 
-fn volume_guid(handle: std::os::windows::io::RawHandle) -> Result<Vec<u16>, CheckedFsError> {
+fn volume_guid(handle: std::os::windows::io::RawHandle) -> Result<Vec<u16>, FsProbeError> {
     let mut path = final_path(handle, VOLUME_NAME_GUID)?;
     let prefix = "\\\\?\\Volume{".encode_utf16().collect::<Vec<_>>();
     if !path.starts_with(&prefix) {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "opened object is not on a local volume GUID path",
         ));
     }
@@ -231,8 +227,8 @@ fn volume_guid(handle: std::os::windows::io::RawHandle) -> Result<Vec<u16>, Chec
         .skip(prefix.len())
         .find_map(|(index, unit)| (*unit == b'\\' as u16).then_some(index))
         .ok_or_else(|| {
-            CheckedFsError::unsupported(
-                PlatformCapability::PersistentFilesystemIdentity,
+            FsProbeError::unsupported(
+                FsCapability::PersistentFilesystemIdentity,
                 "opened object did not expose a complete volume GUID",
             )
         })?;
@@ -244,11 +240,11 @@ fn encode_utf16(value: &[u16]) -> Vec<u8> {
     value.iter().flat_map(|unit| unit.to_le_bytes()).collect()
 }
 
-fn query_error(capability: PlatformCapability, operation: &'static str) -> CheckedFsError {
+fn query_error(capability: FsCapability, operation: &'static str) -> FsProbeError {
     let source = io::Error::last_os_error();
     match source.raw_os_error() {
-        Some(1 | 50 | 87) => CheckedFsError::unsupported(capability, source.to_string()),
-        _ => CheckedFsError::io(operation, source),
+        Some(1 | 50 | 87) => FsProbeError::unsupported(capability, source.to_string()),
+        _ => FsProbeError::io(operation, source),
     }
 }
 

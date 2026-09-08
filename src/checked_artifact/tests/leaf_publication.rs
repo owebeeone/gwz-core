@@ -357,22 +357,22 @@ fn substituted_staged_goal_is_refused_before_the_sealed_managed_edge() {
 /// freeze's §4.2 spike over `publish_verified_no_replace`.
 #[test]
 fn the_sealed_leaf_publication_moves_only_the_verified_object() {
-    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-    use cap_std::fs::{Dir, OpenOptions};
+    use crate::filesystem::{FileSystem, FsOpenMode, make_filesystem};
     use std::ffi::OsStr;
 
-    use super::super::platform::{LeafPublicationSourceV1, publish_verified_leaf_no_replace};
+    use super::super::platform::{
+        LeafPublicationSourceV1, publish_verified_filesystem_leaf_no_replace,
+    };
 
     let root = TempRoot::new("sealed-leaf-primitive");
-    let directory = Dir::open_ambient_dir(&root.0, cap_std::ambient_authority()).unwrap();
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let directory = make_filesystem().open_directory(&root.0).unwrap();
+    let options = FsOpenMode::Read;
     let identity_of = |name: &str| {
-        let file = directory.open_with(OsStr::new(name), &options).unwrap();
-        super::super::identity::file_identity(&file).unwrap()
+        let file = directory.open_file(OsStr::new(name), &options).unwrap();
+        super::super::identity::filesystem_file_identity(&file).unwrap()
     };
     let publish = |identity: &ObjectIdentity, bytes: &[u8], destination: &str| {
-        publish_verified_leaf_no_replace(
+        publish_verified_filesystem_leaf_no_replace(
             &directory,
             OsStr::new("source"),
             &directory,

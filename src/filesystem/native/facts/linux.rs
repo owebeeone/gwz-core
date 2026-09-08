@@ -4,11 +4,7 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use cap_fs_ext::MetadataExt;
 use cap_std::fs::{Dir, File};
 
-use super::super::super::*;
-use super::VolumeDescription;
-use crate::checked_artifact::capability::{
-    ObjectIdentityFact, PathComponentMode, PlatformCapability,
-};
+use crate::filesystem::*;
 
 const FS_CASEFOLD_FL: libc::c_long = 0x4000_0000;
 const MAX_HANDLE_BYTES: usize = 128;
@@ -77,16 +73,14 @@ struct LinuxFileHandle {
 /// longer a filesystem-name test — `identity` below admits ext4, xfs, f2fs
 /// and anything else that answers `FS_IOC_GETFSUUID` with a nonzero 16-byte
 /// UUID and `name_to_handle_at` with a persistent handle. The name stays
-/// because `SupportedFilesystemProfile` is a PERSISTED catalog value:
+/// because `FsSupportProfile` is a PERSISTED catalog value:
 /// renaming it is a catalog-format change, which the charter parks
 /// ("What this is not", §0, and the (b) design's dual-tuple migration).
-pub(super) const fn support_profile() -> SupportedFilesystemProfile {
-    SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1
+pub(crate) const fn support_profile() -> FsSupportProfile {
+    FsSupportProfile::LinuxPersistentHandle
 }
 
-pub(super) fn dir_identity(
-    directory: &Dir,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+pub(crate) fn dir_identity(directory: &Dir) -> Result<FsObjectIdentity, FsProbeError> {
     let queryable = descriptor_query_fd(directory)?;
     identity(
         queryable.as_raw_fd(),
@@ -94,13 +88,11 @@ pub(super) fn dir_identity(
     )
 }
 
-pub(super) fn file_identity(
-    file: &File,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+pub(crate) fn file_identity(file: &File) -> Result<FsObjectIdentity, FsProbeError> {
     identity(file.as_raw_fd(), &file.metadata().map_err(io_identity)?)
 }
 
-pub(super) fn parent_mode(parent: &Dir) -> Result<PathComponentMode, CheckedFsError> {
+pub(crate) fn parent_mode(parent: &Dir) -> Result<FsLookupMode, FsProbeError> {
     // DR-1 (a0), 2026-09-03: no filesystem-type test here. `FS_IOC_GETFLAGS` refuses on
     // its own where the driver lacks `fileattr_get`, and every path reaching this
     // function has already passed `identity` (`catalog_lease/target.rs`), which is the
@@ -110,24 +102,24 @@ pub(super) fn parent_mode(parent: &Dir) -> Result<PathComponentMode, CheckedFsEr
     let mut flags: libc::c_long = 0;
     if unsafe { libc::ioctl(queryable.as_raw_fd(), FS_IOC_GETFLAGS, &mut flags) } != 0 {
         return Err(query_error(
-            PlatformCapability::PathEquivalence,
+            FsCapability::PathEquivalence,
             "query Linux directory attribute flags",
         ));
     }
     Ok(if flags & FS_CASEFOLD_FL == 0 {
-        PathComponentMode::Sensitive
+        FsLookupMode::Sensitive
     } else {
-        PathComponentMode::AsciiCaseFold
+        FsLookupMode::AsciiCaseFold
     })
 }
 
-pub(super) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, CheckedFsError> {
+pub(crate) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, FsProbeError> {
     // DR-1 (a0), 2026-09-03: no filesystem-type test here either — `statx(MNT_ID)` is a
     // VFS field present on every Linux filesystem and refuses on its own; `identity`
     // above is the admission gate.
     let mount_id = mount_identity(directory)?.ok_or_else(|| {
-        CheckedFsError::unsupported(
-            PlatformCapability::AtomicRenameDomain,
+        FsProbeError::unsupported(
+            FsCapability::AtomicRenameDomain,
             "filesystem does not expose a mount identity",
         )
     })?;
@@ -153,7 +145,7 @@ pub(super) fn rename_domain(directory: &Dir) -> Result<Vec<u8>, CheckedFsError> 
 /// `fstatfs` and `statx` are traversal-class operations, which the kernel
 /// answers on the `O_PATH` capability descriptor itself (see
 /// `descriptor_query_fd`), so this reads the volume without reopening it.
-pub(super) fn describe_volume(directory: &Dir) -> Result<VolumeDescription, CheckedFsError> {
+pub(crate) fn describe_volume(directory: &Dir) -> Result<FsVolumeDescription, FsProbeError> {
     let f_type = filesystem_type(directory.as_raw_fd())?;
     let name = mounted_filesystem_name(directory)
         .or_else(|| magic_filesystem_name(f_type).map(str::to_owned));
@@ -176,7 +168,7 @@ pub(super) fn describe_volume(directory: &Dir) -> Result<VolumeDescription, Chec
 /// descriptor reports `EBADF` and a recycled non-directory descriptor reports
 /// `ENOTDIR`, both as hard I/O errors, so genuine descriptor-lifecycle defects
 /// stay loud.
-fn descriptor_query_fd(directory: impl AsFd) -> Result<OwnedFd, CheckedFsError> {
+fn descriptor_query_fd(directory: impl AsFd) -> Result<OwnedFd, FsProbeError> {
     rustix::fs::openat(
         directory,
         c".",
@@ -184,7 +176,7 @@ fn descriptor_query_fd(directory: impl AsFd) -> Result<OwnedFd, CheckedFsError> 
         rustix::fs::Mode::empty(),
     )
     .map_err(|source| {
-        CheckedFsError::io(
+        FsProbeError::io(
             "reopen Linux directory for descriptor-consuming queries",
             io::Error::from_raw_os_error(source.raw_os_error()),
         )
@@ -216,37 +208,41 @@ fn descriptor_query_fd(directory: impl AsFd) -> Result<OwnedFd, CheckedFsError> 
 /// warning path and runs the merge without activating the catalog. Only
 /// `--filesystem-strict` turns it into a refusal. Nothing here may become a
 /// default merge refusal.
-fn identity(
-    fd: RawFd,
-    metadata: &impl MetadataExt,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+fn identity(fd: RawFd, metadata: &impl MetadataExt) -> Result<FsObjectIdentity, FsProbeError> {
     refuse_volatile_filesystem(fd)?;
     let uuid = filesystem_uuid(fd)?;
     let (handle_type, handle) = persistent_handle(fd)?;
-    let durable = DurableObjectIdentityV1::linux_ext4(uuid, handle_type, handle)?;
+    let persistent = FsPersistentIdentity::Linux {
+        volume: uuid,
+        handle_type,
+        handle,
+    };
     let mut invocation = Vec::with_capacity(16);
     invocation.extend_from_slice(&metadata.dev().to_be_bytes());
     invocation.extend_from_slice(&metadata.ino().to_be_bytes());
-    Ok(ObjectIdentityFact::new(durable, invocation))
+    Ok(FsObjectIdentity {
+        persistent,
+        invocation,
+    })
 }
 
 /// Charter §3.2's volatility refusal. See `identity` for why it is here and
 /// why it must never become a default merge refusal.
-fn refuse_volatile_filesystem(fd: RawFd) -> Result<(), CheckedFsError> {
+fn refuse_volatile_filesystem(fd: RawFd) -> Result<(), FsProbeError> {
     let f_type = filesystem_type(fd)?;
     if f_type == libc::TMPFS_MAGIC || f_type == RAMFS_MAGIC {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "volatile filesystem: contents do not survive power loss",
         ));
     }
     Ok(())
 }
 
-fn filesystem_type(fd: RawFd) -> Result<libc::c_long, CheckedFsError> {
+fn filesystem_type(fd: RawFd) -> Result<libc::c_long, FsProbeError> {
     let mut stat = std::mem::MaybeUninit::<libc::statfs>::zeroed();
     if unsafe { libc::fstatfs(fd, stat.as_mut_ptr()) } != 0 {
-        return Err(CheckedFsError::io(
+        return Err(FsProbeError::io(
             "query Linux filesystem type",
             io::Error::last_os_error(),
         ));
@@ -254,27 +250,27 @@ fn filesystem_type(fd: RawFd) -> Result<libc::c_long, CheckedFsError> {
     Ok(unsafe { stat.assume_init() }.f_type)
 }
 
-fn filesystem_uuid(fd: RawFd) -> Result<[u8; 16], CheckedFsError> {
+fn filesystem_uuid(fd: RawFd) -> Result<[u8; 16], FsProbeError> {
     let mut value = FsUuid2 {
         len: 0,
         uuid: [0; 16],
     };
     if unsafe { libc::ioctl(fd, FS_IOC_GETFSUUID, &mut value) } != 0 {
         return Err(query_error(
-            PlatformCapability::PersistentFilesystemIdentity,
+            FsCapability::PersistentFilesystemIdentity,
             "query external filesystem UUID",
         ));
     }
     if value.len != 16 || value.uuid == [0; 16] {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "filesystem returned an absent or malformed external UUID",
         ));
     }
     Ok(value.uuid)
 }
 
-fn persistent_handle(fd: RawFd) -> Result<(i32, Vec<u8>), CheckedFsError> {
+fn persistent_handle(fd: RawFd) -> Result<(i32, Vec<u8>), FsProbeError> {
     let mut value = LinuxFileHandle {
         handle_bytes: MAX_HANDLE_BYTES as u32,
         handle_type: 0,
@@ -292,14 +288,14 @@ fn persistent_handle(fd: RawFd) -> Result<(i32, Vec<u8>), CheckedFsError> {
     } != 0
     {
         return Err(query_error(
-            PlatformCapability::PersistentFilesystemIdentity,
+            FsCapability::PersistentFilesystemIdentity,
             "query retained empty-path file handle",
         ));
     }
     let length = value.handle_bytes as usize;
     if value.handle_type <= 0 || !(1..=MAX_HANDLE_BYTES).contains(&length) {
-        return Err(CheckedFsError::unsupported(
-            PlatformCapability::PersistentFilesystemIdentity,
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
             "filesystem returned an unsupported persistent handle",
         ));
     }
@@ -310,7 +306,7 @@ fn persistent_handle(fd: RawFd) -> Result<(i32, Vec<u8>), CheckedFsError> {
 /// rename domain and selects the `/proc/self/mountinfo` row. `Ok(None)` means
 /// the kernel answered without filling the mask (pre-5.8), which each caller
 /// interprets for itself.
-fn mount_identity(directory: &Dir) -> Result<Option<u64>, CheckedFsError> {
+fn mount_identity(directory: &Dir) -> Result<Option<u64>, FsProbeError> {
     let stat = rustix::fs::statx(
         directory,
         "",
@@ -318,7 +314,7 @@ fn mount_identity(directory: &Dir) -> Result<Option<u64>, CheckedFsError> {
         rustix::fs::StatxFlags::MNT_ID,
     )
     .map_err(|source| {
-        CheckedFsError::io(
+        FsProbeError::io(
             "query Linux rename domain",
             io::Error::from_raw_os_error(source.raw_os_error()),
         )
@@ -395,12 +391,12 @@ fn magic_filesystem_name(f_type: libc::c_long) -> Option<&'static str> {
     })
 }
 
-fn classify_volume(name: Option<String>) -> VolumeDescription {
+fn classify_volume(name: Option<String>) -> FsVolumeDescription {
     let remote = name.as_deref().is_some_and(is_remote_filesystem_name);
     let volatile = name
         .as_deref()
         .is_some_and(|name| VOLATILE_FILESYSTEM_NAMES.contains(&name));
-    VolumeDescription {
+    FsVolumeDescription {
         name,
         remote,
         volatile,
@@ -417,18 +413,18 @@ const fn magic(value: u32) -> libc::c_long {
     value as libc::c_long
 }
 
-fn query_error(capability: PlatformCapability, operation: &'static str) -> CheckedFsError {
+fn query_error(capability: FsCapability, operation: &'static str) -> FsProbeError {
     let source = io::Error::last_os_error();
     match source.raw_os_error() {
         Some(libc::EOPNOTSUPP | libc::ENOSYS | libc::ENOTTY | libc::EINVAL) => {
-            CheckedFsError::unsupported(capability, source.to_string())
+            FsProbeError::unsupported(capability, source.to_string())
         }
-        _ => CheckedFsError::io(operation, source),
+        _ => FsProbeError::io(operation, source),
     }
 }
 
-fn io_identity(source: io::Error) -> CheckedFsError {
-    CheckedFsError::io("read Linux invocation identity", source)
+fn io_identity(source: io::Error) -> FsProbeError {
+    FsProbeError::io("read Linux invocation identity", source)
 }
 
 const fn ior(kind: u32, number: u32, size: u32) -> u32 {
@@ -471,10 +467,10 @@ mod tests {
         }
     }
 
-    fn is_hard_io(error: &CheckedFsError, expected: i32) -> bool {
+    fn is_hard_io(error: &FsProbeError, expected: i32) -> bool {
         matches!(
             error,
-            CheckedFsError::Io { source, .. } if source.raw_os_error() == Some(expected)
+            FsProbeError::Io { source, .. } if source.raw_os_error() == Some(expected)
         )
     }
 
@@ -569,9 +565,9 @@ mod tests {
         // that genuinely lack the capability (for example `FS_IOC_GETFSUUID`
         // on pre-6.9 kernels, where the ioctl does not exist, reports `ENOTTY` on a real descriptor).
         unsafe { *libc::__errno_location() = libc::ENOTTY };
-        let error = query_error(PlatformCapability::PersistentFilesystemIdentity, "probe");
+        let error = query_error(FsCapability::PersistentFilesystemIdentity, "probe");
         assert!(
-            matches!(error, CheckedFsError::Unsupported { .. }),
+            matches!(error, FsProbeError::Unsupported { .. }),
             "got {error:?}"
         );
     }
@@ -583,7 +579,7 @@ mod tests {
         // dead or recycled descriptor — a defect that must stay loud rather
         // than masquerade as a graceful capability downgrade.
         unsafe { *libc::__errno_location() = libc::EBADF };
-        let error = query_error(PlatformCapability::PersistentFilesystemIdentity, "probe");
+        let error = query_error(FsCapability::PersistentFilesystemIdentity, "probe");
         assert!(is_hard_io(&error, libc::EBADF), "got {error:?}");
     }
 
@@ -732,8 +728,8 @@ mod tests {
         assert!(
             matches!(
                 &error,
-                CheckedFsError::Unsupported { capability, detail }
-                    if *capability == PlatformCapability::PersistentFilesystemIdentity
+                FsProbeError::Unsupported { capability, detail }
+                    if *capability == FsCapability::PersistentFilesystemIdentity
                         && detail == "volatile filesystem: contents do not survive power loss"
             ),
             "got {error:?}"

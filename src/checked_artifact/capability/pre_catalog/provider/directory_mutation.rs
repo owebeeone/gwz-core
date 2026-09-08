@@ -1,10 +1,11 @@
 //! Owner-private physical transitions for the staged and final catalog directory.
+#[cfg(not(windows))]
+use crate::filesystem::FileSystem;
 
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::OpenOptions;
+use crate::filesystem::FsOpenMode;
 
 use super::interior::{self, StagingPlanV1};
 use super::publication::{
@@ -86,7 +87,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn prepare_or_rewrite_s
     let Some(observed) = observed_directory(raw_roles, CatalogRecognizedNameV1::Staging)? else {
         parent
             .handle()
-            .create_dir(staging_name)
+            .create_child(staging_name)
             .map_err(|source| CheckedFsError::io("create catalog staging no-replace", source))?;
         #[cfg(test)]
         crate::checked_artifact::fault_v1::hit(
@@ -94,7 +95,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn prepare_or_rewrite_s
         );
         let directory = parent
             .handle()
-            .open_dir_nofollow(staging_name)
+            .retained_child(staging_name)
             .map_err(|source| CheckedFsError::io("reopen catalog staging", source))?;
         super::HostPlatform.dir_identity(&directory)?;
         return sync_directory_edge(parent.handle(), "flush catalog staging creation");
@@ -264,7 +265,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn publish_final_direct
     );
     let final_directory = parent
         .handle()
-        .open_dir_nofollow(final_name)
+        .retained_child(final_name)
         .map_err(|source| CheckedFsError::io("reopen published final catalog", source))?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(
@@ -455,32 +456,32 @@ fn mutation_parent<'a>(
 }
 
 pub(super) fn open_observed_directory(
-    parent: &cap_std::fs::Dir,
+    parent: &crate::filesystem::FsDirectory,
     name: &OsStr,
     observed: ObservedDirectoryV1<'_>,
     fact: &'static str,
-) -> Result<cap_std::fs::Dir, CheckedFsError> {
+) -> Result<crate::filesystem::FsDirectory, CheckedFsError> {
     let directory = parent
-        .open_dir_nofollow(name)
+        .retained_child(name)
         .map_err(|source| CheckedFsError::io("open observed catalog directory", source))?;
     verify_directory_identity(&directory, observed.identity, fact)?;
     Ok(directory)
 }
 
 fn verify_named_directory(
-    parent: &cap_std::fs::Dir,
+    parent: &crate::filesystem::FsDirectory,
     name: &OsStr,
     observed: ObservedDirectoryV1<'_>,
     fact: &'static str,
 ) -> Result<(), CheckedFsError> {
     let named = parent
-        .open_dir_nofollow(name)
+        .retained_child(name)
         .map_err(|source| CheckedFsError::io("reopen named catalog directory", source))?;
     verify_directory_identity(&named, observed.identity, fact)
 }
 
 fn verify_directory_identity(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     expected: &[u8],
     fact: &'static str,
 ) -> Result<(), CheckedFsError> {
@@ -494,22 +495,22 @@ fn verify_directory_identity(
 }
 
 fn create_empty_directory(
-    parent: &cap_std::fs::Dir,
+    parent: &crate::filesystem::FsDirectory,
     slot: InfrastructureSlotV1,
 ) -> Result<(), CheckedFsError> {
     let name = OsStr::new(slot.name());
     parent
-        .create_dir(name)
+        .create_child(name)
         .map_err(|source| CheckedFsError::io("create catalog infrastructure directory", source))?;
     let child = parent
-        .open_dir_nofollow(name)
+        .retained_child(name)
         .map_err(|source| CheckedFsError::io("reopen catalog infrastructure directory", source))?;
     super::HostPlatform.dir_identity(&child)?;
     sync_directory_edge(parent, "flush catalog infrastructure directory")
 }
 
 fn write_slot(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     interior: &RawCatalogInteriorObservationV1,
     slot: InfrastructureSlotV1,
     bytes: &[u8],
@@ -525,7 +526,7 @@ fn write_slot(
     }
     let options = durable_write_options(create_new);
     let mut file = directory
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open catalog infrastructure file", source))?;
     #[cfg(test)]
     if slot == InfrastructureSlotV1::CatalogAnchorB && create_new {
@@ -577,7 +578,7 @@ fn write_slot(
 }
 
 fn exercise_catalog_anchor(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     interior: &RawCatalogInteriorObservationV1,
 ) -> Result<(), CheckedFsError> {
     let a = OsStr::new(InfrastructureSlotV1::CatalogAnchorA.name());
@@ -655,21 +656,20 @@ fn exercise_catalog_anchor(
 }
 
 pub(super) fn verify_named_file(
-    parent: &cap_std::fs::Dir,
+    parent: &crate::filesystem::FsDirectory,
     name: &OsStr,
     expected: ObservedFileV1<'_>,
     fact: &'static str,
 ) -> Result<(), CheckedFsError> {
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     let mut file = parent
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("reopen named catalog file", source))?;
     verify_open_file(&mut file, expected, fact)
 }
 
 pub(super) fn verify_open_file(
-    file: &mut cap_std::fs::File,
+    file: &mut crate::filesystem::FsFile,
     expected: ObservedFileV1<'_>,
     fact: &'static str,
 ) -> Result<(), CheckedFsError> {
@@ -700,21 +700,8 @@ pub(super) fn verify_open_file(
     Ok(())
 }
 
-pub(super) fn durable_write_options(create_new: bool) -> OpenOptions {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create_new(create_new)
-        .truncate(false)
-        .follow(FollowSymlinks::No);
-    #[cfg(windows)]
-    {
-        use cap_std::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_WRITE_THROUGH;
-        options.custom_flags(FILE_FLAG_WRITE_THROUGH);
-    }
-    options
+pub(super) fn durable_write_options(create_new: bool) -> FsOpenMode {
+    FsOpenMode::Write { create_new }
 }
 
 fn private_name(name: CatalogPrivateNameV1) -> &'static str {
@@ -723,16 +710,17 @@ fn private_name(name: CatalogPrivateNameV1) -> &'static str {
 
 #[cfg(not(windows))]
 pub(super) fn sync_directory_edge(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     operation: &'static str,
 ) -> Result<(), CheckedFsError> {
-    crate::checked_artifact::platform::sync_parent(directory)
+    crate::filesystem::make_filesystem()
+        .sync_directory_at(directory)
         .map_err(|source| CheckedFsError::io(operation, source))
 }
 
 #[cfg(windows)]
 pub(super) fn sync_directory_edge(
-    _directory: &cap_std::fs::Dir,
+    _directory: &crate::filesystem::FsDirectory,
     _operation: &'static str,
 ) -> Result<(), CheckedFsError> {
     // Every authority-carrying file uses write-through plus FlushFileBuffers,

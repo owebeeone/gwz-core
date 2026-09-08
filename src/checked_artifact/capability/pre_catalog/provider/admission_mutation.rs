@@ -10,14 +10,14 @@
 //! The slots are the ones R1+C0 already froze; this file mints no name
 //! (`GwzM5-8R2DInterfaceFreeze.md` §3.1 persisted-home pin).
 
+use crate::filesystem::FsKind;
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, OpenOptions};
+use crate::filesystem::{FsDirectory as Dir, FsOpenMode};
 
 use super::directory_mutation::{
-    ObservedFileV1, durable_write_options, sync_directory_edge, verify_named_file, verify_open_file,
+    ObservedFileV1, sync_directory_edge, verify_named_file, verify_open_file,
 };
 use super::interior;
 use super::publication::{
@@ -164,7 +164,7 @@ fn write_admission_scratch(
 /// scratch is the frozen `ActionDirectoryAdmissionV1::idle()` state itself.
 fn retire_admission_record(final_directory: &Dir) -> Result<(), CheckedFsError> {
     final_directory
-        .remove_file(OsStr::new(
+        .remove_leaf(OsStr::new(
             InfrastructureSlotV1::ActionAdmissionActive.name(),
         ))
         .map_err(|source| CheckedFsError::io("retire the superseded admission record", source))?;
@@ -218,12 +218,12 @@ fn publish_admission_record(
 fn create_staging_directory(final_directory: &Dir) -> Result<(), CheckedFsError> {
     let staging = OsStr::new(InfrastructureSlotV1::ActionAdmissionStaging.name());
     final_directory
-        .create_dir(staging)
+        .create_child(staging)
         .map_err(|source| CheckedFsError::io("create admission staging no-replace", source))?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionStagingCreate);
     let directory = final_directory
-        .open_dir_nofollow(staging)
+        .retained_child(staging)
         .map_err(|source| CheckedFsError::io("reopen admission staging", source))?;
     super::HostPlatform.dir_identity(&directory)?;
     sync_directory_edge(final_directory, "flush admission staging creation")
@@ -238,7 +238,7 @@ fn write_resident_reservation(
     expected: &ActionCapacityReservationV1,
 ) -> Result<(), CheckedFsError> {
     let staging = final_directory
-        .open_dir_nofollow(OsStr::new(
+        .retained_child(OsStr::new(
             InfrastructureSlotV1::ActionAdmissionStaging.name(),
         ))
         .map_err(|source| CheckedFsError::io("open admission staging", source))?;
@@ -270,7 +270,7 @@ fn publish_staging_action(
     let staging_name = OsStr::new(InfrastructureSlotV1::ActionAdmissionStaging.name());
     let published = final_action_name(expected);
     let staging = final_directory
-        .open_dir_nofollow(staging_name)
+        .retained_child(staging_name)
         .map_err(|source| CheckedFsError::io("open admission staging", source))?;
     let fact = super::HostPlatform.dir_identity(&staging)?;
     let identity = encode_identity(&fact);
@@ -307,7 +307,7 @@ fn publish_staging_action(
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::AdmissionFinalPublish);
     let republished = final_directory
-        .open_dir_nofollow(OsStr::new(published.as_str()))
+        .retained_child(OsStr::new(published.as_str()))
         .map_err(|source| CheckedFsError::io("reopen published action directory", source))?;
     if encode_identity(&super::HostPlatform.dir_identity(&republished)?) != identity {
         return Err(CheckedFsError::ambiguous(
@@ -347,7 +347,7 @@ fn reserve_retired_slot(
     retired_action_dirs: usize,
     admission: CatalogAdmissionOccupancyV1,
 ) -> Result<(), CheckedFsError> {
-    match retired_root.symlink_metadata(destination) {
+    match retired_root.entry_metadata(destination) {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
         Err(source) => return Err(CheckedFsError::io("observe retirement destination", source)),
         Ok(_) => {
@@ -455,7 +455,7 @@ pub(super) fn retire_action_directory(
     )?;
 
     let action = final_directory
-        .open_dir_nofollow(name)
+        .retained_child(name)
         .map_err(|source| CheckedFsError::io("open retiring action directory", source))?;
     let fact = super::HostPlatform.dir_identity(&action)?;
     let identity = encode_identity(&fact);
@@ -492,7 +492,7 @@ pub(super) fn retire_action_directory(
     );
 
     let retired = retired_root
-        .open_dir_nofollow(name)
+        .retained_child(name)
         .map_err(|source| CheckedFsError::io("reopen retired action directory", source))?;
     if encode_identity(&super::HostPlatform.dir_identity(&retired)?) != identity {
         return Err(CheckedFsError::ambiguous(
@@ -524,7 +524,7 @@ pub(super) fn barrier_catalog_root(
     bootstrap: &CatalogBootstrapRecordV1,
     revalidate_retained: impl FnOnce() -> Result<(), CheckedFsError>,
 ) -> Result<(), CheckedFsError> {
-    crate::checked_artifact::platform::private_barrier(
+    crate::checked_artifact::platform::filesystem_private_barrier(
         final_directory,
         crate::checked_artifact::platform::DirentBarrierClass::ExactInterior,
         crate::model::ErrorCode::IoError,
@@ -636,10 +636,9 @@ fn write_durable_record(
     let fact = row.fact();
     #[cfg(test)]
     let faults = row.write_faults();
-    let mut options = durable_write_options(false);
-    options.create(true);
+    let options = crate::filesystem::FsOpenMode::WriteOrCreate;
     let mut file = parent
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open admission record", source))?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(faults[0]);
@@ -673,18 +672,17 @@ fn observed_record(
     fact: &'static str,
 ) -> Result<(Vec<u8>, Vec<u8>), CheckedFsError> {
     let metadata = parent
-        .symlink_metadata(name)
+        .entry_metadata(name)
         .map_err(|source| CheckedFsError::io("observe admission record", source))?;
-    if !metadata.is_file() || metadata.is_symlink() {
+    if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
         return Err(CheckedFsError::ambiguous(
             fact,
             "admission record is not a canonical regular file",
         ));
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     let mut file = parent
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open admission record", source))?;
     let identity = encode_identity(&super::HostPlatform.file_identity(&file)?);
     let limit = ProtocolRecordKindV1::Admission.max_bytes();

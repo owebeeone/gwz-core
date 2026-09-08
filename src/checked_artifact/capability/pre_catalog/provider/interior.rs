@@ -1,10 +1,10 @@
 //! Bounded observation and exact-prefix classification for first-catalog interiors.
 
+use crate::filesystem::FsKind;
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
-use cap_std::fs::OpenOptions;
+use crate::filesystem::FsOpenMode;
 
 use super::filesystem::PlatformProviderV1;
 use super::retained::encode_identity;
@@ -66,7 +66,7 @@ pub(super) enum StagingPlanV1 {
 }
 
 pub(super) fn observe(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     platform: &impl PlatformProviderV1,
 ) -> Result<RawCatalogInteriorObservationV1, CheckedFsError> {
     let mode = platform.parent_mode(directory)?;
@@ -79,7 +79,7 @@ pub(super) fn observe(
         .map_err(|source| CheckedFsError::io("enumerate catalog interior", source))?
     {
         let entry = entry.map_err(|source| CheckedFsError::io("read catalog interior", source))?;
-        let name = entry.file_name();
+        let name = entry;
         budget.charge_os_str(&name)?;
         if rows.len() + action_rows.len() == MAX_INTERIOR_ENTRIES {
             return Err(interior_bound_exceeded());
@@ -455,15 +455,15 @@ fn native_ascii_bytes(name: &OsStr) -> Option<&[u8]> {
 }
 
 fn observe_slot(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     name: &OsStr,
     probe_empty_directory: bool,
     platform: &impl PlatformProviderV1,
 ) -> Result<RawCatalogInteriorFactV1, CheckedFsError> {
     let metadata = directory
-        .symlink_metadata(name)
+        .entry_metadata(name)
         .map_err(|source| CheckedFsError::io("observe catalog interior slot", source))?;
-    if metadata.is_dir() && !metadata.is_symlink() {
+    if metadata.kind == FsKind::Directory && metadata.kind != FsKind::Symlink {
         // Share-delete open, not a plain no-follow one. This enumeration runs
         // inside the sealed publication's destination recheck, which holds the
         // retained rename-source handle open across the whole edge — and R2-D
@@ -487,7 +487,8 @@ fn observe_slot(
         // it inherits std's default share mode, which already includes
         // `FILE_SHARE_DELETE`, which is why only the directory label appeared
         // in the Windows failures.
-        let child = crate::checked_artifact::platform::open_dir_share_delete(directory, name)
+        let child = directory
+            .retained_child(name)
             .map_err(|source| CheckedFsError::io("open catalog interior directory", source))?;
         let identity = platform.dir_identity(&child)?;
         if probe_empty_directory {
@@ -510,11 +511,10 @@ fn observe_slot(
                 retired_action_dirs: retired.retired_action_dirs,
             });
         }
-    } else if metadata.is_file() && !metadata.is_symlink() {
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
+    } else if metadata.kind == FsKind::File && metadata.kind != FsKind::Symlink {
+        let options = FsOpenMode::Read;
         let mut file = directory
-            .open_with(name, &options)
+            .open_file(name, &options)
             .map_err(|source| CheckedFsError::io("open catalog interior file", source))?;
         let identity = platform.file_identity(&file)?;
         return Ok(RawCatalogInteriorFactV1::RegularFile {
@@ -524,7 +524,11 @@ fn observe_slot(
         });
     }
     let mut value = Vec::new();
-    value.push(if metadata.is_symlink() { 3 } else { 4 });
+    value.push(if metadata.kind == FsKind::Symlink {
+        3
+    } else {
+        4
+    });
     value.extend_from_slice(&metadata.dev().to_be_bytes());
     value.extend_from_slice(&metadata.ino().to_be_bytes());
     Ok(RawCatalogInteriorFactV1::Other(value))
@@ -576,7 +580,9 @@ impl RetiredRootReadingV1 {
 /// silently coupled the retired-root bound to the active one; naming the
 /// retired constant here is what makes a future edit to either fail closed
 /// (E0.2b §3.2 ground 3, Code round-2 [P3-R1]).
-fn read_retired_root(directory: &cap_std::fs::Dir) -> Result<RetiredRootReadingV1, CheckedFsError> {
+fn read_retired_root(
+    directory: &crate::filesystem::FsDirectory,
+) -> Result<RetiredRootReadingV1, CheckedFsError> {
     let mut budget = CatalogNameBudgetV1::new();
     let mut actions: Vec<crate::checked_artifact::protocol::ActionDigestV1> = Vec::new();
     let mut unaccepted_rows = 0_usize;
@@ -586,7 +592,7 @@ fn read_retired_root(directory: &cap_std::fs::Dir) -> Result<RetiredRootReadingV
     {
         let entry =
             entry.map_err(|source| CheckedFsError::io("read retired-action root", source))?;
-        let name = entry.file_name();
+        let name = entry;
         budget.charge_os_str(&name)?;
         if budget.entry_count() > MAX_RETIRED_ACTION_DIRS {
             return Err(CheckedFsError::unsupported(
@@ -624,23 +630,23 @@ fn read_retired_root(directory: &cap_std::fs::Dir) -> Result<RetiredRootReadingV
 /// It returns the frozen R1 observation type, so neither the admission driver
 /// nor the sealed primitive receives a handle or a raw row.
 pub(super) fn observe_action_directory(
-    parent: &cap_std::fs::Dir,
+    parent: &crate::filesystem::FsDirectory,
     name: &OsStr,
     expected: &ActionCapacityReservationV1,
     platform: &impl PlatformProviderV1,
 ) -> Result<ObservedActionDirectoryV1, CheckedFsError> {
-    let metadata = match parent.symlink_metadata(name) {
+    let metadata = match parent.entry_metadata(name) {
         Ok(value) => value,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
             return Ok(ObservedActionDirectoryV1::Missing);
         }
         Err(source) => return Err(CheckedFsError::io("observe action directory", source)),
     };
-    if !metadata.is_dir() || metadata.is_symlink() {
+    if metadata.kind != FsKind::Directory || metadata.kind == FsKind::Symlink {
         return Ok(ObservedActionDirectoryV1::Other);
     }
     let directory = parent
-        .open_dir_nofollow(name)
+        .retained_child(name)
         .map_err(|source| CheckedFsError::io("open action directory", source))?;
     let identity = platform.dir_identity(&directory)?;
     let observed = observe_action_interior(&directory, expected)?;
@@ -683,7 +689,7 @@ impl ActionInteriorObservationV1 {
 }
 
 pub(super) fn observe_action_interior(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     expected: &ActionCapacityReservationV1,
 ) -> Result<ActionInteriorObservationV1, CheckedFsError> {
     let reservation_name =
@@ -704,7 +710,7 @@ pub(super) fn observe_action_interior(
         .map_err(|source| CheckedFsError::io("enumerate action directory", source))?
     {
         let entry = entry.map_err(|source| CheckedFsError::io("read action directory", source))?;
-        let child = entry.file_name();
+        let child = entry;
         budget.charge_os_str(&child)?;
         seen += 1;
         if seen > MAX_ACTION_SLOTS {
@@ -758,7 +764,7 @@ impl ManagedComponentInteriorObservationV1 {
 }
 
 pub(super) fn observe_managed_component_interior(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     expected: &OwnershipMarkerV1,
 ) -> Result<ManagedComponentInteriorObservationV1, CheckedFsError> {
     let marker_name = managed_marker_name();
@@ -776,7 +782,7 @@ pub(super) fn observe_managed_component_interior(
         .map_err(|source| CheckedFsError::io("enumerate managed component", source))?
     {
         let entry = entry.map_err(|source| CheckedFsError::io("read managed component", source))?;
-        let child = entry.file_name();
+        let child = entry;
         budget.charge_os_str(&child)?;
         seen += 1;
         if seen > MAX_MANAGED_COMPONENT_ENTRIES {
@@ -801,20 +807,19 @@ pub(super) fn observe_managed_component_interior(
 /// and compared byte-exact. The comparison is in-memory only: no handle, no row
 /// and no path leaves this owner.
 fn observe_managed_marker(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     name: &OsStr,
     expected_bytes: &[u8],
 ) -> Result<RecordObservationV1<()>, CheckedFsError> {
     let metadata = directory
-        .symlink_metadata(name)
+        .entry_metadata(name)
         .map_err(|source| CheckedFsError::io("observe ownership marker", source))?;
-    if !metadata.is_file() || metadata.is_symlink() {
+    if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
         return Ok(RecordObservationV1::Other);
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     let mut file = directory
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open ownership marker", source))?;
     let RawCatalogBytesV1::Bounded(bytes) =
         read_bounded_with(&mut file, ProtocolRecordKindV1::Marker.max_bytes())?
@@ -829,21 +834,20 @@ fn observe_managed_marker(
 }
 
 fn observe_reservation(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     name: &OsStr,
     expected_bytes: &[u8],
     expected: &ActionCapacityReservationV1,
 ) -> Result<RecordObservationV1<ActionCapacityReservationV1>, CheckedFsError> {
     let metadata = directory
-        .symlink_metadata(name)
+        .entry_metadata(name)
         .map_err(|source| CheckedFsError::io("observe resident reservation", source))?;
-    if !metadata.is_file() || metadata.is_symlink() {
+    if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
         return Ok(RecordObservationV1::Other);
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     let mut file = directory
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open resident reservation", source))?;
     let RawCatalogBytesV1::Bounded(bytes) =
         read_bounded_with(&mut file, ProtocolRecordKindV1::Capacity.max_bytes())?
@@ -857,7 +861,7 @@ fn observe_reservation(
     })
 }
 
-fn read_bounded(file: &mut cap_std::fs::File) -> Result<RawCatalogBytesV1, CheckedFsError> {
+fn read_bounded(file: &mut crate::filesystem::FsFile) -> Result<RawCatalogBytesV1, CheckedFsError> {
     read_bounded_with(
         file,
         ProtocolRecordKindV1::Infrastructure
@@ -867,7 +871,7 @@ fn read_bounded(file: &mut cap_std::fs::File) -> Result<RawCatalogBytesV1, Check
 }
 
 fn read_bounded_with(
-    file: &mut cap_std::fs::File,
+    file: &mut crate::filesystem::FsFile,
     limit: usize,
 ) -> Result<RawCatalogBytesV1, CheckedFsError> {
     let mut bytes = Vec::new();

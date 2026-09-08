@@ -9,11 +9,14 @@ use std::io;
 use std::path::{Component, Path};
 
 mod factory;
+mod facts;
+mod retained;
+pub(crate) use facts::*;
 #[cfg(test)]
 mod fake;
 #[cfg(test)]
 mod filesystem_contract_tests;
-pub(crate) mod native;
+mod native;
 
 pub(crate) use factory::make_filesystem;
 
@@ -68,31 +71,8 @@ pub(crate) fn write_for_test(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 pub(crate) struct FsDirectory(DirectoryHandle);
-pub(crate) struct FsFile(FileHandle);
+pub(crate) struct FsFile(FileHandle, u64);
 
-impl FsDirectory {
-    #[cfg(test)]
-    pub(crate) fn is_memory(&self) -> bool {
-        matches!(self.0, DirectoryHandle::Memory(_))
-    }
-
-    #[cfg(not(test))]
-    pub(crate) const fn is_memory(&self) -> bool {
-        false
-    }
-}
-
-impl FsFile {
-    #[cfg(test)]
-    pub(crate) fn is_memory(&self) -> bool {
-        matches!(self.0, FileHandle::Memory(_))
-    }
-
-    #[cfg(not(test))]
-    pub(crate) const fn is_memory(&self) -> bool {
-        false
-    }
-}
 #[allow(dead_code, reason = "runtime-lock consumers are migrating")]
 pub(crate) struct FsLockGuard {
     _handle: LockHandle,
@@ -126,6 +106,7 @@ pub(crate) struct FsIdentity {
 }
 
 impl FsIdentity {
+    #[cfg(test)]
     pub(crate) fn encode(self) -> [u8; 16] {
         let mut encoded = [0; 16];
         encoded[..8].copy_from_slice(&self.namespace.to_be_bytes());
@@ -133,9 +114,11 @@ impl FsIdentity {
         encoded
     }
 
+    #[cfg(test)]
     pub(crate) const fn namespace(self) -> u64 {
         self.namespace
     }
+    #[cfg(test)]
     pub(crate) const fn object(self) -> u64 {
         self.object
     }
@@ -153,6 +136,8 @@ pub(crate) enum FsKind {
 pub(crate) struct FsMetadata {
     pub(crate) kind: FsKind,
     pub(crate) executable: bool,
+    pub(crate) identity: FsIdentity,
+    pub(crate) length: u64,
 }
 
 #[allow(
@@ -165,13 +150,60 @@ pub(crate) struct FsDirectoryEntry {
     pub(crate) kind: FsKind,
 }
 
+pub(crate) type FsDirectoryNames = Box<dyn Iterator<Item = io::Result<OsString>> + Send>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RenameMode {
     Replace,
     NoReplace,
 }
 
+pub(crate) enum FsOpenMode {
+    Read,
+    Write { create_new: bool },
+    WriteOrCreate,
+}
+
+pub(crate) struct FsPublicationSource<'a> {
+    pub(crate) file: &'a FsFile,
+    pub(crate) parent: &'a FsDirectory,
+    pub(crate) name: &'a OsStr,
+}
+
 pub(crate) trait FileSystem: Send + Sync {
+    fn legacy_directory_identity(
+        &self,
+        directory: &FsDirectory,
+    ) -> io::Result<FsLegacyObjectIdentity>;
+    fn legacy_file_identity(&self, file: &FsFile) -> io::Result<FsLegacyObjectIdentity>;
+    fn legacy_rename_domain(&self, directory: &FsDirectory) -> io::Result<FsLegacyRenameDomain>;
+    fn legacy_path_identity(&self, directory: &FsDirectory, relative: &Path)
+    -> io::Result<Vec<u8>>;
+    /// Stream names so callers can stop at their namespace observation budget.
+    fn directory_names(&self, directory: &FsDirectory) -> io::Result<FsDirectoryNames>;
+    /// Retain either a regular file or directory for subsequent publication.
+    fn open_publication_source(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile>;
+    /// On Windows rename the retained source object, with the callback in the
+    /// destination-path acquisition window. Unix retains its relative rename contract.
+    fn publish_source(
+        &self,
+        source: FsPublicationSource<'_>,
+        destination: &FsDirectory,
+        target: &OsStr,
+        mode: RenameMode,
+        acquired: &dyn Fn() -> io::Result<()>,
+    ) -> io::Result<()>;
+    fn file_metadata(&self, file: &FsFile) -> io::Result<FsMetadata>;
+    fn support_profile(&self) -> FsSupportProfile;
+    fn persistent_directory_identity(
+        &self,
+        directory: &FsDirectory,
+    ) -> Result<FsObjectIdentity, FsProbeError>;
+    fn persistent_file_identity(&self, file: &FsFile) -> Result<FsObjectIdentity, FsProbeError>;
+    fn lookup_mode(&self, directory: &FsDirectory) -> Result<FsLookupMode, FsProbeError>;
+    fn rename_domain(&self, directory: &FsDirectory) -> Result<Vec<u8>, FsProbeError>;
+    fn describe_volume(&self, directory: &FsDirectory)
+    -> Result<FsVolumeDescription, FsProbeError>;
     fn canonical_path(&self, path: &Path) -> io::Result<std::path::PathBuf>;
     fn metadata(&self, path: &Path) -> io::Result<FsMetadata>;
     fn metadata_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsMetadata>;
@@ -238,6 +270,11 @@ pub(crate) trait FileSystem: Send + Sync {
     fn open_lock_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile>;
     fn open_file_for_write_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile>;
     fn create_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile>;
+    #[allow(
+        dead_code,
+        reason = "Windows anchor creation; exercised by portable protocol tests"
+    )]
+    fn create_private_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile>;
     fn read_at(&self, file: &FsFile, offset: u64, bytes: &mut [u8]) -> io::Result<usize>;
     fn file_len(&self, file: &FsFile) -> io::Result<u64>;
     fn write_at(&self, file: &FsFile, offset: u64, bytes: &[u8]) -> io::Result<usize>;

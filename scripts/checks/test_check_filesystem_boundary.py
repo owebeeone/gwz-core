@@ -32,5 +32,15 @@ let message = r###"path.canonicalize();"###;
     def test_line_numbers(self):
         self.assertEqual(checker.violations('\n\nstd::fs::read(p);')[0][0], 3)
 
+    def test_production_scan_excludes_only_items_that_require_test(self):
+        source = '''
+#[cfg(test)] mod tests { fn fixture() { std::fs::read(p); } }
+#[cfg(all(windows, test))] fn native_fixture() { std::fs::write(p, b"x"); }
+#[cfg(not(test))] fn production() { std::fs::read(p); }
+#[cfg(any(windows, test))] fn windows_production() { std::fs::read(p); }
+'''
+        failures = checker.violations(checker.production_source(source))
+        self.assertEqual([line for line, _ in failures], [4, 5])
+
 if __name__ == '__main__':
     unittest.main()

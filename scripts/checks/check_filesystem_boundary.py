@@ -11,6 +11,7 @@ import argparse
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
+PRODUCTION_TREES = ('src/checked_artifact',)
 PROTECTED = ('src/filesystem.rs', 'src/filesystem',
              'src/workspace_ops/merge/v1_lifecycle/store/rewrite.rs',
              'src/workspace_ops/merge/v1_lifecycle/checked.rs',
@@ -109,6 +110,56 @@ def imports(items):
     return result
 
 
+def production_source(source):
+    """Blank test-only Rust items without hiding platform production branches."""
+    ts = tokens(source)
+    names = [item[0] for item in ts]
+    output = list(source)
+
+    def requires_test(expression):
+        if expression == ['test']:
+            return True
+        if len(expression) < 3 or expression[0] not in {'all', 'any'} or expression[1] != '(':
+            return False
+        groups, current, depth = [], [], 0
+        for token in expression[2:-1]:
+            if token == ',' and depth == 0:
+                if current: groups.append(current)
+                current = []
+            else:
+                current.append(token)
+                depth += (token == '(') - (token == ')')
+        if current: groups.append(current)
+        values = [requires_test(group) for group in groups]
+        return any(values) if expression[0] == 'all' else bool(values) and all(values)
+
+    index = 0
+    while index + 4 < len(ts):
+        if names[index:index+4] != ['#', '[', 'cfg', '(']:
+            index += 1
+            continue
+        end = index + 4
+        while end < len(ts) and names[end] != ']': end += 1
+        if not requires_test(names[index+4:end-1]):
+            index = end + 1
+            continue
+        cursor = end + 1
+        while cursor < len(ts) and names[cursor] not in {'{', ';'}: cursor += 1
+        if cursor == len(ts): break
+        if names[cursor] == '{':
+            depth = 1
+            cursor += 1
+            while cursor < len(ts) and depth:
+                depth += (names[cursor] == '{') - (names[cursor] == '}')
+                cursor += 1
+        else:
+            cursor += 1
+        for offset in range(ts[index][1], ts[cursor-1][1] + 1):
+            if output[offset] != '\n': output[offset] = ' '
+        index = cursor
+    return ''.join(output)
+
+
 def violations(source):
     ts = tokens(source)
     names = [t[0] for t in ts]
@@ -151,7 +202,7 @@ def main():
     parser.add_argument('paths', nargs='*', type=Path)
     args = parser.parse_args()
     failures = []
-    for entry in args.paths or [ROOT / p for p in PROTECTED]:
+    for entry in args.paths or [ROOT / p for p in (*PROTECTED, *PRODUCTION_TREES)]:
         if not entry.exists():
             failures.append(f'{entry}: protected source is missing'); continue
         files = sorted(entry.rglob('*.rs')) if entry.is_dir() else [entry]
@@ -159,7 +210,14 @@ def main():
             resolved = path.resolve()
             native = ROOT / 'src/filesystem/native'
             if resolved == native.with_suffix('.rs') or resolved.is_relative_to(native): continue
-            for line, message in violations(path.read_text()):
+            production = resolved == ROOT / 'src/checked_artifact.rs' or resolved.is_relative_to(ROOT / 'src/checked_artifact')
+            if production and (any(part in {'tests', 'interface_tests'} or part.endswith('_tests') for part in path.parts)
+                               or path.stem.startswith('tests') or path.stem.endswith('_tests')
+                               or path.stem == 'test_support'):
+                continue
+            source = path.read_text()
+            if production: source = production_source(source)
+            for line, message in violations(source):
                 failures.append(f'{path}:{line}: {message}; use make_filesystem()/FileSystem')
     if failures:
         print('\n'.join(failures)); return 1

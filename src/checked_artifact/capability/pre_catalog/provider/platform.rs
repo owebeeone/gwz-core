@@ -1,6 +1,7 @@
-use cap_std::fs::{Dir, File};
-
-use crate::filesystem::{FileSystem, FsDirectory, FsFile, FsIdentity, make_filesystem};
+use crate::filesystem::{
+    FileSystem, FsCapability, FsDirectory, FsFile, FsLookupMode, FsObjectIdentity,
+    FsPersistentIdentity, FsProbeError, FsSupportProfile, FsVolumeDescription, make_filesystem,
+};
 
 use super::super::*;
 #[cfg(test)]
@@ -8,19 +9,6 @@ use crate::checked_artifact::capability::PlatformCapability;
 use crate::checked_artifact::capability::{
     DurableIdentityProvider, ObjectIdentityFact, PathComponentMode, PathEquivalenceProvider,
 };
-
-#[cfg(target_os = "linux")]
-#[path = "platform/linux.rs"]
-mod imp;
-#[cfg(target_os = "macos")]
-#[path = "platform/macos.rs"]
-mod imp;
-#[cfg(windows)]
-#[path = "platform/windows.rs"]
-mod imp;
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-#[path = "platform/unsupported.rs"]
-mod imp;
 
 pub(in crate::checked_artifact) struct HostPlatform;
 
@@ -146,26 +134,7 @@ pub(in crate::checked_artifact) struct VolumeDescription {
 
 impl HostPlatform {
     pub(in crate::checked_artifact) fn support_profile(&self) -> SupportedFilesystemProfile {
-        imp::support_profile()
-    }
-
-    /// The host's volume description. An inherent method rather than a trait
-    /// row because it answers no capability: it is the wording input W3's
-    /// decision point reads after `dir_identity` has already decided, and
-    /// W3's test-only seam (charter §3.8) wraps exactly this call.
-    pub(in crate::checked_artifact) fn describe_volume(
-        &self,
-        directory: &Dir,
-    ) -> Result<VolumeDescription, CheckedFsError> {
-        #[cfg(test)]
-        if let Some(injected) = IDENTITY_UNAVAILABLE.with_borrow(Clone::clone) {
-            return Ok(VolumeDescription {
-                name: injected.name,
-                remote: injected.remote,
-                volatile: injected.volatile,
-            });
-        }
-        imp::describe_volume(directory)
+        map_profile(make_filesystem().support_profile())
     }
 
     pub(in crate::checked_artifact) fn describe_fs_volume(
@@ -180,65 +149,19 @@ impl HostPlatform {
                 volatile: injected.volatile,
             });
         }
-        if directory.is_memory() {
-            return Ok(VolumeDescription {
-                name: Some("gwz-memory".to_owned()),
-                remote: false,
-                volatile: false,
-            });
-        }
-        crate::filesystem::native::with_directory(directory, imp::describe_volume)
-            .map_err(|source| CheckedFsError::io("access native retained directory", source))?
-    }
-}
-
-impl PathEquivalenceProvider<Dir> for HostPlatform {
-    fn parent_mode(&self, parent: &Dir) -> Result<PathComponentMode, CheckedFsError> {
-        imp::parent_mode(parent)
-    }
-}
-
-impl DurableIdentityProvider<Dir, File> for HostPlatform {
-    type InvocationIdentity = Vec<u8>;
-    type RenameDomain = Vec<u8>;
-
-    fn support_profile(&self) -> SupportedFilesystemProfile {
-        imp::support_profile()
-    }
-
-    fn dir_identity(
-        &self,
-        directory: &Dir,
-    ) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
-        #[cfg(test)]
-        if IDENTITY_UNAVAILABLE.with_borrow(Option::is_some) {
-            return Err(CheckedFsError::unsupported(
-                PlatformCapability::PersistentFilesystemIdentity,
-                "injected: identity unavailable",
-            ));
-        }
-        imp::dir_identity(directory)
-    }
-
-    fn file_identity(
-        &self,
-        file: &File,
-    ) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
-        imp::file_identity(file)
-    }
-
-    fn rename_domain(&self, directory: &Dir) -> Result<Vec<u8>, CheckedFsError> {
-        imp::rename_domain(directory)
+        make_filesystem()
+            .describe_volume(directory)
+            .map(map_volume)
+            .map_err(map_error)
     }
 }
 
 impl PathEquivalenceProvider<FsDirectory> for HostPlatform {
     fn parent_mode(&self, parent: &FsDirectory) -> Result<PathComponentMode, CheckedFsError> {
-        if parent.is_memory() {
-            return Ok(PathComponentMode::Sensitive);
-        }
-        crate::filesystem::native::with_directory(parent, imp::parent_mode)
-            .map_err(|source| CheckedFsError::io("access native retained directory", source))?
+        make_filesystem()
+            .lookup_mode(parent)
+            .map(map_mode)
+            .map_err(map_error)
     }
 }
 
@@ -247,7 +170,7 @@ impl DurableIdentityProvider<FsDirectory, FsFile> for HostPlatform {
     type RenameDomain = Vec<u8>;
 
     fn support_profile(&self) -> SupportedFilesystemProfile {
-        imp::support_profile()
+        map_profile(make_filesystem().support_profile())
     }
 
     fn dir_identity(
@@ -261,74 +184,84 @@ impl DurableIdentityProvider<FsDirectory, FsFile> for HostPlatform {
                 "injected: identity unavailable",
             ));
         }
-        if directory.is_memory() {
-            let identity = make_filesystem()
-                .directory_identity(directory)
-                .map_err(|source| CheckedFsError::io("identify memory directory", source))?;
-            return fake_identity(identity);
-        }
-        crate::filesystem::native::with_directory(directory, imp::dir_identity)
-            .map_err(|source| CheckedFsError::io("access native retained directory", source))?
+        map_identity(
+            make_filesystem()
+                .persistent_directory_identity(directory)
+                .map_err(map_error)?,
+        )
     }
 
     fn file_identity(
         &self,
         file: &FsFile,
     ) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
-        if file.is_memory() {
-            let identity = make_filesystem()
-                .file_identity(file)
-                .map_err(|source| CheckedFsError::io("identify memory file", source))?;
-            return fake_identity(identity);
-        }
-        crate::filesystem::native::with_file(file, imp::file_identity)
-            .map_err(|source| CheckedFsError::io("access native retained file", source))?
+        map_identity(
+            make_filesystem()
+                .persistent_file_identity(file)
+                .map_err(map_error)?,
+        )
     }
 
     fn rename_domain(&self, directory: &FsDirectory) -> Result<Vec<u8>, CheckedFsError> {
-        if directory.is_memory() {
-            let identity = make_filesystem()
-                .directory_identity(directory)
-                .map_err(|source| CheckedFsError::io("identify memory rename domain", source))?;
-            return Ok(identity.namespace().to_be_bytes().to_vec());
-        }
-        crate::filesystem::native::with_directory(directory, imp::rename_domain)
-            .map_err(|source| CheckedFsError::io("access native retained directory", source))?
+        make_filesystem()
+            .rename_domain(directory)
+            .map_err(map_error)
     }
 }
 
-fn fake_identity(
-    identity: FsIdentity,
+fn map_error(error: FsProbeError) -> CheckedFsError {
+    use crate::checked_artifact::capability::PlatformCapability;
+    match error {
+        FsProbeError::Io { operation, source } => CheckedFsError::io(operation, source),
+        FsProbeError::Unsupported { capability, detail } => CheckedFsError::unsupported(
+            match capability {
+                FsCapability::PersistentFilesystemIdentity => {
+                    PlatformCapability::PersistentFilesystemIdentity
+                }
+                FsCapability::PathEquivalence => PlatformCapability::PathEquivalence,
+                FsCapability::AtomicRenameDomain => PlatformCapability::AtomicRenameDomain,
+            },
+            detail,
+        ),
+    }
+}
+fn map_identity(
+    fact: FsObjectIdentity,
 ) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
-    let invocation = identity.encode().to_vec();
-    let namespace = identity.namespace().to_be_bytes();
-    let object = identity.object().wrapping_add(1).to_be_bytes();
-    #[cfg(target_os = "linux")]
-    let durable = {
-        let mut uuid = [0; 16];
-        uuid[..8].copy_from_slice(&namespace);
-        uuid[8..].copy_from_slice(&namespace);
-        DurableObjectIdentityV1::linux_ext4(uuid, 1, object.to_vec())?
+    let durable = match fact.persistent {
+        FsPersistentIdentity::Linux {
+            volume,
+            handle_type,
+            handle,
+        } => DurableObjectIdentityV1::linux_ext4(volume, handle_type, handle)?,
+        FsPersistentIdentity::Mac { volume, object } => {
+            DurableObjectIdentityV1::mac(volume, object)?
+        }
+        FsPersistentIdentity::Windows { volume, file_id } => {
+            DurableObjectIdentityV1::windows_ntfs(volume, file_id)?
+        }
     };
-    #[cfg(target_os = "macos")]
-    let durable = {
-        let mut uuid = [0; 16];
-        uuid[..8].copy_from_slice(&namespace);
-        uuid[8..].copy_from_slice(&namespace);
-        DurableObjectIdentityV1::mac(uuid, object)?
-    };
-    #[cfg(windows)]
-    let durable = {
-        let mut file_id = [0; 16];
-        file_id[..8].copy_from_slice(&object);
-        file_id[8..].copy_from_slice(&object);
-        DurableObjectIdentityV1::windows_ntfs(vec![1], file_id)?
-    };
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    return Err(CheckedFsError::unsupported(
-        PlatformCapability::PersistentFilesystemIdentity,
-        "memory filesystem has no supported host identity profile",
-    ));
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    Ok(ObjectIdentityFact::new(durable, invocation))
+    Ok(ObjectIdentityFact::new(durable, fact.invocation))
+}
+fn map_mode(mode: FsLookupMode) -> PathComponentMode {
+    match mode {
+        FsLookupMode::Sensitive => PathComponentMode::Sensitive,
+        FsLookupMode::AsciiCaseFold => PathComponentMode::AsciiCaseFold,
+    }
+}
+fn map_volume(volume: FsVolumeDescription) -> VolumeDescription {
+    VolumeDescription {
+        name: volume.name,
+        remote: volume.remote,
+        volatile: volume.volatile,
+    }
+}
+fn map_profile(profile: FsSupportProfile) -> SupportedFilesystemProfile {
+    match profile {
+        FsSupportProfile::LinuxPersistentHandle => {
+            SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1
+        }
+        FsSupportProfile::MacPersistentId => SupportedFilesystemProfile::MacPersistentObjectIdV1,
+        FsSupportProfile::WindowsFileId => SupportedFilesystemProfile::WindowsNtfsFileId128V1,
+    }
 }

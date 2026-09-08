@@ -35,7 +35,7 @@
 //!    second outstanding retirement is a typed refusal rather than an
 //!    accommodation.
 //! 3. **Raw relative renames.** Every anchor edge now publishes through
-//!    [`publish_verified_leaf_no_replace`](super::publish_verified_leaf_no_replace)
+//!    [`publish_verified_filesystem_leaf_no_replace`](super::publish_verified_filesystem_leaf_no_replace)
 //!    — E22's "P1" — so each one re-verifies the object it is about to move
 //!    through the very handle it renames.
 //!
@@ -66,7 +66,7 @@
 //! behavioural tail.* A crash between the two renames leaves the alias under
 //! `<reserved leaf>.roundtrip` with the reserved leaf empty. That window is
 //! **converged, and nothing persists** — but the converging caller is
-//! [`super::prepare_roaming_target`], **not** this function.
+//! [`super::prepare_filesystem_roaming_target`], **not** this function.
 //!
 //! The distinction is the whole finding. A drive branching on the reserved leaf
 //! alone cannot see the outbound name, so it answered "absent", created a second
@@ -74,13 +74,13 @@
 //! both names resident and refused. One attempt was lost, and the outbound name
 //! was then left **permanently**, because the following attempt settled the
 //! ordinal and a settled ordinal is never barriered again. The cure is that the
-//! entry decision is now `prepare_roaming_target`'s: it owns both names, returns
+//! entry decision is now `prepare_filesystem_roaming_target`'s: it owns both names, returns
 //! the outbound object before it answers, and hands its caller the ordinary
 //! resident state. `round_trip_supplied` calls it too, so a direct caller that
 //! did not prepare is equally safe.
 //!
 //! Stated as states, since three of the four are crash windows — the full table
-//! is at [`super::prepare_roaming_target`]:
+//! is at [`super::prepare_filesystem_roaming_target`]:
 //!
 //! * **reserved leaf resident, outbound absent** — the settled between-barriers
 //!   state. Nothing to do.
@@ -124,16 +124,15 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, OpenOptions};
+use crate::filesystem::{FileSystem, FsDirectory as Dir, make_filesystem};
 
 use super::super::CheckedArtifactFact;
 use super::super::fault::{CheckedArtifactFault, fault};
 use super::super::identity::{self, ObjectIdentity};
-use super::super::observation::observe_native_leaf_exact;
+use super::super::observation::observe_leaf_exact;
 use super::{
-    LeafPublicationSourceV1, error, io_error, leaf_is_resident, prepare_roaming_target,
-    publish_verified_leaf_no_replace, roundtrip_name, verify_leaf_bytes,
+    LeafPublicationSourceV1, error, io_error, leaf_is_resident, prepare_filesystem_roaming_target,
+    publish_verified_filesystem_leaf_no_replace, roundtrip_name, verify_leaf_bytes,
 };
 use crate::model::{ErrorCode, ModelResult};
 
@@ -285,33 +284,25 @@ pub(super) fn round_trip(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult
 fn establish(dir: &Dir, scratch_present: bool, code: ErrorCode, label: &str) -> ModelResult<()> {
     let scratch = OsStr::new(SCRATCH_NAME);
     fault(CheckedArtifactFault::BeforeAnchorScratchCreate, code, label)?;
-    let mut options = OpenOptions::new();
-    options.write(true).follow(FollowSymlinks::No);
-    if scratch_present {
-        options.truncate(true);
+    let fs = make_filesystem();
+    let mut file = if scratch_present {
+        fs.open_file_for_write_at(dir, scratch)
     } else {
-        options.create_new(true);
+        fs.create_private_file_at(dir, scratch)
     }
-    #[cfg(windows)]
-    {
-        use cap_std::fs::OpenOptionsExt;
-        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_WRITE_THROUGH);
+    .map_err(|cause| io_error(code, label, cause))?;
+    if scratch_present {
+        file.set_len(0)
+            .map_err(|cause| io_error(code, label, cause))?;
     }
-    #[cfg(unix)]
-    {
-        use cap_std::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = dir
-        .open_with(scratch, &options)
-        .map_err(|cause| io_error(code, label, cause))?;
     file.write_all(ANCHOR_BYTES)
         .map_err(|cause| io_error(code, label, cause))?;
     fault(CheckedArtifactFault::AfterAnchorScratchWrite, code, label)?;
     file.sync_all()
         .map_err(|cause| io_error(code, label, cause))?;
     fault(CheckedArtifactFault::AfterAnchorScratchFlush, code, label)?;
-    let identity = identity::file_identity(&file).map_err(|cause| io_error(code, label, cause))?;
+    let identity =
+        identity::filesystem_file_identity(&file).map_err(|cause| io_error(code, label, cause))?;
     drop(file);
     let final_name = OsString::from(anchor_name(&identity.name_digest()));
     publish(dir, scratch, &final_name, &identity, code, label)?;
@@ -349,11 +340,11 @@ pub(super) fn round_trip_supplied(
     label: &str,
 ) -> ModelResult<()> {
     let roundtrip = roundtrip_name(alias);
-    // The caller reached here through `prepare_roaming_target`, which already
+    // The caller reached here through `prepare_filesystem_roaming_target`, which already
     // returned any outbound residue, so this converge step is the direct
     // caller's guarantee rather than the drive's: it keeps the arm safe for a
     // caller that did not prepare, which is how `round_trip` itself opens.
-    prepare_roaming_target(dir, alias, bytes, code, label)?;
+    prepare_filesystem_roaming_target(dir, alias, bytes, code, label)?;
     if !leaf_is_resident(dir, alias, code, label)?
         || leaf_is_resident(dir, &roundtrip, code, label)?
     {
@@ -415,7 +406,7 @@ fn publish_bytes(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
-    publish_verified_leaf_no_replace(
+    publish_verified_filesystem_leaf_no_replace(
         dir,
         source,
         dir,
@@ -440,7 +431,7 @@ fn survey(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult<AnchorState> {
         .map_err(|cause| io_error(code, label, cause))?
     {
         let entry = entry.map_err(|cause| io_error(code, label, cause))?;
-        let name = entry.file_name();
+        let name = entry;
         let text = name.to_string_lossy();
         if text.starts_with(ANCHOR_PREFIX) {
             anchors.push(name);
@@ -553,7 +544,13 @@ fn retired_name(ordinal: u32) -> String {
 }
 
 fn verify(dir: &Dir, name: &OsStr, code: ErrorCode, label: &str) -> ModelResult<ObjectIdentity> {
-    let observed = observe_native_leaf_exact(dir, name, code, label)?;
+    let observed = observe_leaf_exact(
+        &crate::filesystem::make_filesystem(),
+        dir,
+        name,
+        code,
+        label,
+    )?;
     if observed.fact != CheckedArtifactFact::Bytes(ANCHOR_BYTES.to_vec()) {
         return Err(error(
             code,

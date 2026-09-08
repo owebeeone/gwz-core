@@ -155,11 +155,11 @@
 //! binds the leaf durably, so a restart reads it from disk instead of
 //! re-choosing.
 
+use crate::filesystem::FsKind;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, OpenOptions};
+use crate::filesystem::{FsDirectory as Dir, FsOpenMode};
 
 use super::directory_mutation::sync_directory_edge;
 use super::interior::ROAMING_ANCHOR_BYTES;
@@ -358,10 +358,10 @@ pub(in crate::checked_artifact) fn write_barrier_intent_scratch(
 ) -> Result<(), CheckedFsError> {
     let directory = action.handle();
     let name = os_name(scratch_leaf);
-    let create_new = match directory.symlink_metadata(&name) {
+    let create_new = match directory.entry_metadata(&name) {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => true,
         Err(source) => return Err(CheckedFsError::io("observe barrier intent scratch", source)),
-        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => false,
+        Ok(metadata) if metadata.kind == FsKind::File && metadata.kind != FsKind::Symlink => false,
         Ok(_) => {
             return Err(barrier_error(
                 "barrier intent scratch row is not a canonical regular file",
@@ -375,7 +375,7 @@ pub(in crate::checked_artifact) fn write_barrier_intent_scratch(
     }
     let options = super::directory_mutation::durable_write_options(create_new);
     let mut file = directory
-        .open_with(&name, &options)
+        .open_file(&name, &options)
         .map_err(|source| CheckedFsError::io("open barrier intent scratch", source))?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::BarrierIntentScratchCreate);
@@ -500,7 +500,7 @@ pub(in crate::checked_artifact) fn converge_target_anchor_alias(
     target: &RetainedActionNamespaceV1,
     reserved_leaf: &AsciiComponent,
 ) -> Result<TargetAnchorAliasStateV1, CheckedFsError> {
-    let state = crate::checked_artifact::platform::prepare_roaming_target(
+    let state = crate::checked_artifact::platform::prepare_filesystem_roaming_target(
         target.handle(),
         &os_name(reserved_leaf),
         ROAMING_ANCHOR_BYTES,
@@ -536,7 +536,7 @@ pub(in crate::checked_artifact) fn create_target_anchor_alias(
     let name = os_name(reserved_leaf);
     let options = super::directory_mutation::durable_write_options(true);
     let mut file = directory
-        .open_with(&name, &options)
+        .open_file(&name, &options)
         .map_err(|source| CheckedFsError::io("create roaming anchor alias", source))?;
     file.write_all(ROAMING_ANCHOR_BYTES)
         .map_err(|source| CheckedFsError::io("write roaming anchor alias", source))?;
@@ -582,7 +582,7 @@ pub(in crate::checked_artifact) fn barrier_target_parent(
 ) -> Result<(), CheckedFsError> {
     let directory = target.handle();
     let name = os_name(reserved_leaf);
-    crate::checked_artifact::platform::private_barrier(
+    crate::checked_artifact::platform::filesystem_private_barrier(
         directory,
         crate::checked_artifact::platform::DirentBarrierClass::RoamingAnchoredTarget {
             alias: &name,
@@ -649,8 +649,8 @@ pub(in crate::checked_artifact) fn observe_barrier_completion(
     let label = "observe settled barrier ordinal";
     require_absent(directory, &os_name(reserved_leaf), label)?;
     require_alias_resident(directory, &os_name(retired_alias_leaf), label)?;
-    match directory.symlink_metadata(os_name(retired_intent_leaf)) {
-        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => {}
+    match directory.entry_metadata(os_name(retired_intent_leaf)) {
+        Ok(metadata) if metadata.kind == FsKind::File && metadata.kind != FsKind::Symlink => {}
         Ok(_) => {
             return Err(barrier_error(
                 "settled barrier ordinal's retired intent row is not a canonical regular file",
@@ -692,7 +692,7 @@ fn require_absent(
     name: &OsStr,
     label: &'static str,
 ) -> Result<(), CheckedFsError> {
-    match directory.symlink_metadata(name) {
+    match directory.entry_metadata(name) {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(CheckedFsError::io("observe reserved target leaf", source)),
         Ok(_) => Err(CheckedFsError::ambiguous(
@@ -711,18 +711,17 @@ fn read_bounded(
     limit: usize,
 ) -> Result<Vec<u8>, CheckedFsError> {
     let metadata = directory
-        .symlink_metadata(name)
+        .entry_metadata(name)
         .map_err(|source| CheckedFsError::io("observe barrier object", source))?;
-    if !metadata.is_file() || metadata.is_symlink() {
+    if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
         return Err(CheckedFsError::ambiguous(
             label,
             "barrier object is not a canonical regular file",
         ));
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     let mut file = directory
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open barrier object no-follow", source))?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(limit + 1).map_err(|_| {

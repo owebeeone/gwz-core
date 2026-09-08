@@ -14,6 +14,7 @@
 //! the injection-site rescan (`interface_tests/fault_expected_keys.rs:391`),
 //! mirroring `admission/tests_fault_matrix.rs:18-22`.
 
+use crate::filesystem::FileSystem;
 use std::cell::Cell;
 use std::ffi::OsStr;
 use std::fs;
@@ -21,8 +22,7 @@ use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cap_std::ambient_authority;
-use cap_std::fs::Dir;
+use crate::filesystem::FsDirectory as Dir;
 use sha2::{Digest, Sha256};
 
 use super::directory_mutation::sync_directory_edge;
@@ -106,7 +106,7 @@ impl BarrierNamespaceV1 {
 
 impl NamespaceProtocol for BarrierNamespaceV1 {
     type DirectoryHandle = Dir;
-    type ObjectHandle = cap_std::fs::File;
+    type ObjectHandle = crate::filesystem::FsFile;
     type Identity = DurableObjectIdentityV1;
     type PathProfile = CanonicalPathIdentityV1;
     type ReservationBinding = ();
@@ -200,7 +200,9 @@ impl Drop for LeafFixture {
 }
 
 pub(super) fn open_dir(path: &Path) -> Dir {
-    Dir::open_ambient_dir(path, ambient_authority()).unwrap()
+    crate::filesystem::make_filesystem()
+        .open_directory(path)
+        .unwrap()
 }
 
 /// Mints the retained-parent capability from a live handle, binding the
@@ -233,7 +235,13 @@ pub(super) fn component(name: &str) -> AsciiComponent {
 /// Writes a durable leaf the way a payload writer would: create, write, flush
 /// the handle, flush the parent.
 pub(super) fn write_leaf(parent: &Dir, name: &str, bytes: &[u8]) {
-    let mut file = parent.create(OsStr::new(name)).unwrap();
+    let mut file = parent
+        .open_file(
+            OsStr::new(name),
+            &crate::filesystem::FsOpenMode::WriteOrCreate,
+        )
+        .unwrap();
+    file.set_len(0).unwrap();
     file.write_all(bytes).unwrap();
     file.sync_all().unwrap();
     drop(file);
@@ -400,7 +408,12 @@ fn a_durable_observation_opens_the_expectation_twice_and_crosses_one_barrier() {
     assert_eq!(
         &identity,
         HostPlatform
-            .file_identity(&parent.handle().open(OsStr::new(LEAF)).unwrap())
+            .file_identity(
+                &parent
+                    .handle()
+                    .open_file(OsStr::new(LEAF), &crate::filesystem::FsOpenMode::Read)
+                    .unwrap()
+            )
             .unwrap()
             .durable()
     );

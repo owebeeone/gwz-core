@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use cap_std::fs::Dir;
+use crate::filesystem::{FileSystem, FsDirectory as Dir, make_filesystem};
 
 use super::super::super::fault::{
     CheckedArtifactFault, fail_next_checked_artifact_at, run_next_checked_artifact_at,
@@ -66,7 +66,7 @@ impl TempRoot {
     }
 
     fn dir(&self) -> Dir {
-        Dir::open_ambient_dir(&self.0, cap_std::ambient_authority()).unwrap()
+        make_filesystem().open_directory(&self.0).unwrap()
     }
 }
 
@@ -264,7 +264,7 @@ fn strand_alias(root: &Path) -> Option<(String, String)> {
     let second = root.join(".gwz-anchor-link-b");
     std::fs::write(&first, ANCHOR_BYTES).unwrap();
     std::fs::hard_link(&first, &second).unwrap();
-    let dir = Dir::open_ambient_dir(root, cap_std::ambient_authority()).unwrap();
+    let dir = make_filesystem().open_directory(root).unwrap();
     let identity = super::verify(&dir, OsStr::new(".gwz-anchor-link-a"), CODE, LABEL).unwrap();
     let sibling = super::verify(&dir, OsStr::new(".gwz-anchor-link-b"), CODE, LABEL).unwrap();
     if identity != sibling {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cap_std::fs::{Dir, File};
+use crate::filesystem::{FsDirectory as Dir, FsFile as File};
 
 use super::super::*;
 use super::snapshot::{CollisionModes, SnapshotParts};

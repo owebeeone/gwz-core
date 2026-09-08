@@ -14,11 +14,10 @@
 //! (`scripts/checks/check_checked_artifact_boundaries.py`) and out of the
 //! injection-site rescan (`interface_tests/fault_expected_keys.rs`).
 
+use crate::filesystem::FileSystem;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-
-use cap_fs_ext::ambient_authority;
 
 use crate::checked_artifact::admission::ActionAdmissionOwnerV1;
 use crate::checked_artifact::bootstrap::{
@@ -295,12 +294,13 @@ const NESTED_CHAIN_DEPTH: usize = 1024;
 /// `PATH_MAX` at this depth.
 fn plant_nested_retired_chain(start: &Path, depth: usize) {
     let name = InfrastructureSlotV1::RetiredActions.name();
-    let mut directory = cap_std::fs::Dir::open_ambient_dir(start, ambient_authority())
+    let mut directory = crate::filesystem::make_filesystem()
+        .open_directory(start)
         .expect("the retired root is openable");
     for _ in 0..depth {
-        directory.create_dir(name).expect("the chain is writable");
+        directory.create_child(name).expect("the chain is writable");
         directory = directory
-            .open_dir(name)
+            .retained_child(name)
             .expect("the chain level is openable");
     }
 }
@@ -319,20 +319,41 @@ fn plant_nested_retired_chain(start: &Path, depth: usize) {
 fn remove_nested_retired_chain(start: &Path) {
     const SCRATCH: &str = "gwz-chain-teardown";
     let name = InfrastructureSlotV1::RetiredActions.name();
-    let Ok(root) = cap_std::fs::Dir::open_ambient_dir(start, ambient_authority()) else {
+    let Ok(root) = crate::filesystem::make_filesystem().open_directory(start) else {
         return;
     };
-    while let Ok(head) = root.open_dir(name) {
-        if head.open_dir(name).is_err() {
+    while let Ok(head) = root.retained_child(name) {
+        if head.retained_child(name).is_err() {
             drop(head);
-            let _ = root.remove_dir(name);
+            let _ = crate::filesystem::make_filesystem().remove_directory_at(&root, name.as_ref());
             return;
         }
-        if head.rename(name, &root, SCRATCH).is_err() {
+        if crate::filesystem::make_filesystem()
+            .rename_at(
+                &head,
+                name.as_ref(),
+                &root,
+                SCRATCH.as_ref(),
+                crate::filesystem::RenameMode::Replace,
+            )
+            .is_err()
+        {
             return;
         }
         drop(head);
-        if root.remove_dir(name).is_err() || root.rename(SCRATCH, &root, name).is_err() {
+        if crate::filesystem::make_filesystem()
+            .remove_directory_at(&root, name.as_ref())
+            .is_err()
+            || crate::filesystem::make_filesystem()
+                .rename_at(
+                    &root,
+                    SCRATCH.as_ref(),
+                    &root,
+                    name.as_ref(),
+                    crate::filesystem::RenameMode::Replace,
+                )
+                .is_err()
+        {
             return;
         }
     }

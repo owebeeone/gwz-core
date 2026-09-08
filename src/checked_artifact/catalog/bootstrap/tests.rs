@@ -538,18 +538,11 @@ fn interior_names(directory: &Path) -> Vec<String> {
     names
 }
 
-/// Every production source under `src/checked_artifact/` that NAMES
-/// `prepare_private` — definitions plus uses, by path relative to the scan
-/// root. Spelling-blind per the R1.2 [P1-1] precedent ([R1.1-P1-1]): a `use`
-/// import, an alias (`use … as pp; pp(dir, …)`) and a qualified call all put
-/// the bare identifier in the file, while a call-site matcher sees only the
-/// spellings its prefix rules admit — over-eager toward RED by design.
-/// `prepare_private` is `pub(super)` on `platform`, so no namer can exist
-/// outside this subtree and the scan is exhaustive. `//` comments are
-/// stripped first, so prose naming the identifier (as `platform.rs:437-439`
-/// does) cannot move the list; the `_tests.rs` stems are `#[cfg(test)]`
-/// companions and excluded with the `tests*` files.
-fn production_namers_of_prepare_private() -> Vec<String> {
+/// Locate the qualified anchor preparation call in production source.
+/// The anchor module is private to `platform`, which owns its construction.
+/// This scan checks the current call shape; Rust visibility enforces ownership.
+/// Comments and separate test companions are excluded.
+fn production_namers_of_anchor_prepare() -> Vec<String> {
     fn walk(root: &Path, directory: &Path, found: &mut Vec<String>) {
         for entry in fs::read_dir(directory).expect("the scan root is readable") {
             let path = entry.expect("a readable directory entry").path();
@@ -568,7 +561,7 @@ fn production_namers_of_prepare_private() -> Vec<String> {
                 .lines()
                 .map(|line| line.split_once("//").map_or(line, |(kept, _)| kept))
                 .collect::<String>();
-            if code.contains("prepare_private") {
+            if code.contains("anchor::prepare(") {
                 let relative = path
                     .strip_prefix(root)
                     .expect("a source under the scan root");
@@ -594,7 +587,7 @@ fn production_namers_of_prepare_private() -> Vec<String> {
 /// renaming the shared `Final` marches the legacy writer into the catalog's
 /// new home. The killing teeth there differ by platform ([R1.1-P2-1]): on
 /// Windows the drive plants a `.ca1-*` anchor that makes re-observation
-/// refuse (`provider/interior.rs:437-440`); on darwin/linux `prepare_private`
+/// refuse (`provider/interior.rs`); on darwin/linux filesystem private preparation
 /// is a no-op (`platform.rs:344-351`) and a clean drive removes its
 /// write-ahead names, so what discriminates is the disjointness assertion
 /// below — the legacy area appears as its OWN directory — not the
@@ -631,13 +624,13 @@ fn a_legacy_drive_after_bootstrap_leaves_the_catalog_recoverable() {
 
     // The structural no-anchor guarantee ([RC-P3-1]), identical on both
     // platforms and carried into the Windows first-dispatch obligation:
-    // `platform::prepare_private` is the only planter of
+    // The platform's private preparation is the only planter of
     // `.ca1-durability-anchor-<32hex>` (Windows arm, `platform.rs:687-695`),
     // and its filesystem adapter now lives beside it in `platform.rs`; no
     // legacy writer outside that boundary names the native primitive.
     // The catalog's directory therefore cannot acquire an anchor, on any
     // platform, by construction rather than by test.
-    assert_eq!(production_namers_of_prepare_private(), ["platform.rs"]);
+    assert_eq!(production_namers_of_anchor_prepare(), ["platform.rs"]);
 
     // Still recoverable — the criterion itself.
     retained.revalidate_for_test().unwrap();

@@ -198,22 +198,6 @@ CONCRETE_PRESERVATION_OBSERVER_REFERENCES = {"git/gitbackend.rs"}
 # edge, require its target to remain a regular in-crate `.rs` file, and reject
 # `include` entirely so the source inventory matches the compiler-loaded graph.
 APPROVED_RUST_PATH_EDGES = {
-    (
-        "checked_artifact/capability/pre_catalog/provider/platform.rs",
-        "platform/linux.rs",
-    ),
-    (
-        "checked_artifact/capability/pre_catalog/provider/platform.rs",
-        "platform/macos.rs",
-    ),
-    (
-        "checked_artifact/capability/pre_catalog/provider/platform.rs",
-        "platform/unsupported.rs",
-    ),
-    (
-        "checked_artifact/capability/pre_catalog/provider/platform.rs",
-        "platform/windows.rs",
-    ),
     ("checked_artifact/mod.rs", "tests.rs"),
     ("checked_artifact/tests.rs", "tests/durability.rs"),
     ("checked_artifact/tests.rs", "tests/exact_source.rs"),
@@ -432,8 +416,9 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
 # held them — two in its create/return arms and two in the barrier round trip —
 # and its closed successor in `checked_artifact/platform/anchor.rs` publishes
 # every anchor edge through the same P1 composition instead, so that file needs
-# no entry here at all. `rename_relative` now has exactly ONE reference in the
-# whole subsystem: `rename_open_source`'s own non-Windows delegation.
+# no entry here at all. The filesystem migration moved the native rename
+# implementation behind FileSystem; `rename_relative` has no callers left in
+# checked_artifact. The two retained-source composition calls remain here.
 #
 # Any other reference anywhere in the subsystem violates the single-seam rule
 # (RemPlan publication-correction clause; amendment §8.13) and fails closed
@@ -444,9 +429,8 @@ RAW_RENAME_CALL_ALLOWLIST = {
         "rename_open_source": 1,
     },
     "checked_artifact/platform.rs": {
-        "open_rename_source": 6,
-        "rename_open_source": 6,
-        "rename_relative": 1,
+        "open_rename_source": 5,
+        "rename_open_source": 5,
     },
 }
 RAW_RENAME_TOKENS = ("open_rename_source", "rename_open_source", "rename_relative")

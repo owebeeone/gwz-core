@@ -3,7 +3,7 @@
 use std::ffi::OsStr;
 use std::io::Read;
 
-use cap_std::fs::Dir;
+use crate::filesystem::FsDirectory as Dir;
 
 use super::interior::{self, StagingPlanV1};
 use super::platform::HostPlatform;
@@ -245,11 +245,9 @@ pub(super) fn publish_verified_no_replace(
             expected_identity,
             interior: recheck,
         } => {
-            let directory =
-                crate::checked_artifact::platform::open_dir_share_delete(source_dir, source)
-                    .map_err(|source| {
-                        CheckedFsError::io("reopen publication source directory", source)
-                    })?;
+            let directory = source_dir.retained_child(source).map_err(|source| {
+                CheckedFsError::io("reopen publication source directory", source)
+            })?;
             if encode_identity(&HostPlatform.dir_identity(&directory)?) != *expected_identity {
                 return Err(CheckedFsError::ambiguous(
                     label,

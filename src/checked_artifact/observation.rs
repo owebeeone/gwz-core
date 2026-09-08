@@ -364,17 +364,6 @@ pub(super) fn observe_leaf_exact(
     })
 }
 
-pub(super) fn observe_native_leaf_exact(
-    dir: &cap_std::fs::Dir,
-    leaf: &OsStr,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<LeafObservation> {
-    let directory = crate::filesystem::native::clone_directory_handle(dir)
-        .map_err(|cause| io_op_error(code, label, "retain native artifact parent", cause))?;
-    observe_leaf_exact(&make_filesystem(), &directory, leaf, code, label)
-}
-
 enum Traversal {
     Missing,
     Invalid,

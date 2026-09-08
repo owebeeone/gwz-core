@@ -3,8 +3,7 @@
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::OpenOptions;
+use crate::filesystem::FsOpenMode;
 
 use super::directory_mutation::{
     ObservedDirectoryV1, ObservedFileV1, observed_directory, open_observed_directory, row,
@@ -28,12 +27,12 @@ type IdentityV1 =
     ObjectIdentityFact<crate::checked_artifact::capability::DurableObjectIdentityV1, Vec<u8>>;
 
 struct RetainedCatalogFileV1 {
-    handle: cap_std::fs::File,
+    handle: crate::filesystem::FsFile,
     identity: IdentityV1,
 }
 
 struct RetainedCatalogDirectoryV1 {
-    handle: cap_std::fs::Dir,
+    handle: crate::filesystem::FsDirectory,
     identity: IdentityV1,
 }
 
@@ -223,7 +222,7 @@ impl RetainedCompletedCatalogV1 {
     /// E3.1 mints exactly one forward, and this is it; the family's other five
     /// keys need no forward at all because they read the action directory
     /// through the capability that already owns it.
-    const fn retired_root(&self) -> &cap_std::fs::Dir {
+    const fn retired_root(&self) -> &crate::filesystem::FsDirectory {
         &self.retired_actions.handle
     }
 
@@ -244,8 +243,8 @@ impl RetainedCompletedCatalogV1 {
         let expected = admitted.reservation();
         let name = RootEntryNameV1::ActiveAction(expected.action_digest()).name();
         let name = OsStr::new(name.as_str());
-        let retired_resident = self.retired_root().symlink_metadata(name).is_ok();
-        let active_resident = self.final_directory.handle.symlink_metadata(name).is_ok();
+        let retired_resident = self.retired_root().entry_metadata(name).is_ok();
+        let active_resident = self.final_directory.handle.entry_metadata(name).is_ok();
         if retired_resident {
             // The corpus's standing convergence idiom: a resumed drive that
             // finds the row already at its destination returns without
@@ -322,7 +321,7 @@ impl RetainedCompletedCatalogV1 {
         })?;
         let named = parent
             .handle()
-            .open_dir_nofollow(OsStr::new(private_name(CatalogPrivateNameV1::Final)))
+            .retained_child(OsStr::new(private_name(CatalogPrivateNameV1::Final)))
             .map_err(|source| CheckedFsError::io("reopen named completed catalog", source))?;
         let named_identity = super::HostPlatform.dir_identity(&named)?;
         if named_identity != self.final_directory.identity
@@ -401,7 +400,7 @@ impl RetainedCompletedCatalogV1 {
 }
 
 fn retain_file(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     interior: &super::RawCatalogInteriorObservationV1,
     slot: InfrastructureSlotV1,
 ) -> Result<RetainedCatalogFileV1, CheckedFsError> {
@@ -419,10 +418,9 @@ fn retain_file(
     let expected = ObservedFileV1 { identity, bytes };
     let name = OsStr::new(slot.name());
     verify_named_file(directory, name, expected, "completed catalog")?;
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     let mut handle = directory
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("retain completed catalog file", source))?;
     verify_open_bytes(&mut handle, expected)?;
     let identity = super::HostPlatform.file_identity(&handle)?;
@@ -447,7 +445,7 @@ fn retain_file(
 /// behind has already applied (`retain_completed_catalog` refuses before it
 /// reaches here).
 fn retain_directory(
-    directory: &cap_std::fs::Dir,
+    directory: &crate::filesystem::FsDirectory,
     interior: &super::RawCatalogInteriorObservationV1,
     slot: InfrastructureSlotV1,
 ) -> Result<RetainedCatalogDirectoryV1, CheckedFsError> {
@@ -462,7 +460,7 @@ fn retain_directory(
         ));
     };
     let handle = directory
-        .open_dir_nofollow(OsStr::new(slot.name()))
+        .retained_child(OsStr::new(slot.name()))
         .map_err(|source| CheckedFsError::io("retain completed catalog directory", source))?;
     let opened = super::HostPlatform.dir_identity(&handle)?;
     if super::retained::encode_identity(&opened) != *identity {
@@ -478,7 +476,7 @@ fn retain_directory(
 }
 
 fn verify_open_bytes(
-    file: &mut cap_std::fs::File,
+    file: &mut crate::filesystem::FsFile,
     expected: ObservedFileV1<'_>,
 ) -> Result<(), CheckedFsError> {
     file.seek(SeekFrom::Start(0))

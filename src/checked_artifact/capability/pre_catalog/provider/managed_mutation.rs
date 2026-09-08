@@ -35,11 +35,13 @@
 //! edge, so the `CATALOG_PUBLICATION_CALL_COUNTS` companion and the
 //! `capability_permit.rs` caller inventory are unchanged by that step.
 
+#[cfg(test)]
+use crate::filesystem::FileSystem;
+use crate::filesystem::FsKind;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, OpenOptions};
+use crate::filesystem::{FsDirectory as Dir, FsOpenMode};
 
 use super::directory_mutation::sync_directory_edge;
 use super::interior;
@@ -157,14 +159,14 @@ fn retain_managed_child(
 ) -> Result<RetainedManagedParentV1, CheckedFsError> {
     let leaf_name = os_name(leaf);
     let handle = enclosing
-        .open_dir_nofollow(&leaf_name)
+        .retained_child(&leaf_name)
         .map_err(|source| CheckedFsError::io("open managed parent", source))?;
     let fact = super::HostPlatform.dir_identity(&handle)?;
     let mut components = prefix.to_vec();
     components.push(bind_child_component(enclosing, leaf)?);
     let path_profile = CanonicalPathIdentityV1::new(components)?;
     let parent = enclosing
-        .try_clone()
+        .clone_handle()
         .map_err(|source| CheckedFsError::io("retain managed parent enclosure", source))?;
     // The mode that governs the *installed* leaf is the managed parent's own,
     // not its enclosure's: the installed component is a child of `handle`.
@@ -271,10 +273,12 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn observe_managed_pref
         .map_err(|_| prefix_allocation_failure())?;
     for component in components {
         let name = os_name(component);
-        match current.symlink_metadata(&name) {
+        match current.entry_metadata(&name) {
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => break,
             Err(source) => return Err(CheckedFsError::io("observe managed parent prefix", source)),
-            Ok(metadata) if !metadata.is_dir() || metadata.is_symlink() => {
+            Ok(metadata)
+                if metadata.kind != FsKind::Directory || metadata.kind == FsKind::Symlink =>
+            {
                 return Err(managed_error(
                     "managed parent prefix component is not a canonical directory",
                 ));
@@ -283,7 +287,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn observe_managed_pref
         }
         profile.push(bind_child_component(&current, component)?);
         let child = current
-            .open_dir_nofollow(&name)
+            .retained_child(&name)
             .map_err(|source| CheckedFsError::io("open managed parent prefix", source))?;
         let fact = super::HostPlatform.dir_identity(&child)?;
         depths.push(ManagedPrefixDepthV1 {
@@ -322,7 +326,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn retain_managed_prefi
     for component in &components[..depth - 1] {
         profile.push(bind_child_component(&current, component)?);
         current = current
-            .open_dir_nofollow(os_name(component))
+            .retained_child(os_name(component))
             .map_err(|source| CheckedFsError::io("open managed parent enclosure", source))?;
     }
     retain_managed_child(&current, &profile, &components[depth - 1], reservation)
@@ -342,7 +346,7 @@ fn require_bounded_prefix(components: &[AsciiComponent]) -> Result<(), CheckedFs
 fn clone_root(root: &super::RetainedPlatformRoot) -> Result<Dir, CheckedFsError> {
     root.root()
         .handle()
-        .try_clone()
+        .clone_handle()
         .map_err(|source| CheckedFsError::io("retain managed parent root", source))
 }
 
@@ -392,7 +396,8 @@ pub(in crate::checked_artifact) fn retain_managed_parent_at_for_test(
     leaf: &str,
     reservation: RecordDigestV1,
 ) -> Result<RetainedManagedParentV1, CheckedFsError> {
-    let directory = Dir::open_ambient_dir(enclosing, cap_std::ambient_authority())
+    let directory = crate::filesystem::make_filesystem()
+        .open_directory(enclosing)
         .map_err(|source| CheckedFsError::io("open managed enclosure", source))?;
     retain_managed_parent(&directory, leaf, reservation)
 }
@@ -427,7 +432,7 @@ impl RetainedManagedParentV1 {
         }
         let named = self
             .parent
-            .open_dir_nofollow(&self.leaf)
+            .retained_child(&self.leaf)
             .map_err(|source| CheckedFsError::io("reopen named managed parent", source))?;
         if super::HostPlatform.dir_identity(&named)?.durable() != &self.identity
             || super::HostPlatform.dir_identity(&self.handle)?.durable() != &self.identity
@@ -447,7 +452,7 @@ impl RetainedManagedParentV1 {
     /// managed question this owner answers without an edge, so a restart can
     /// tell which half of the component sequence it already reached.
     pub(in crate::checked_artifact) fn row_is_resident(&self, leaf: &AsciiComponent) -> bool {
-        self.handle.symlink_metadata(os_name(leaf)).is_ok()
+        self.handle.entry_metadata(os_name(leaf)).is_ok()
     }
 
     /// R2-D Phase 3 Step 3.1 — the writer half of edge E15's source: the staged
@@ -485,15 +490,17 @@ impl RetainedManagedParentV1 {
         marker: &OwnershipMarkerV1,
     ) -> Result<(), CheckedFsError> {
         let name = os_name(staging_leaf);
-        let created = match self.handle.symlink_metadata(&name) {
-            Ok(metadata) if !metadata.is_dir() || metadata.is_symlink() => {
+        let created = match self.handle.entry_metadata(&name) {
+            Ok(metadata)
+                if metadata.kind != FsKind::Directory || metadata.kind == FsKind::Symlink =>
+            {
                 return Err(managed_error(
                     "resident managed staging row is not a canonical directory",
                 ));
             }
             Ok(_) => false,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                self.handle.create_dir(&name).map_err(|source| {
+                self.handle.create_child(&name).map_err(|source| {
                     CheckedFsError::io("create managed staging no-replace", source)
                 })?;
                 #[cfg(test)]
@@ -504,7 +511,9 @@ impl RetainedManagedParentV1 {
             }
             Err(source) => return Err(CheckedFsError::io("observe managed staging row", source)),
         };
-        let staged = crate::checked_artifact::platform::open_dir_share_delete(&self.handle, &name)
+        let staged = self
+            .handle
+            .retained_child(&name)
             .map_err(|source| CheckedFsError::io("open managed staging no-follow", source))?;
         if !interior::observe_managed_component_interior(&staged, marker)?.is_exact() {
             write_or_rewrite_marker(&staged, marker)?;
@@ -542,9 +551,9 @@ impl RetainedManagedParentV1 {
         let name = os_name(staging_leaf);
         let metadata = self
             .handle
-            .symlink_metadata(&name)
+            .entry_metadata(&name)
             .map_err(|source| CheckedFsError::io("observe staged component", source))?;
-        if !metadata.is_dir() || metadata.is_symlink() {
+        if metadata.kind != FsKind::Directory || metadata.kind == FsKind::Symlink {
             return Err(managed_error(
                 "staged managed component is not a canonical directory",
             ));
@@ -560,9 +569,10 @@ impl RetainedManagedParentV1 {
         // anyway so every directory open in the managed owner shares one
         // sharing doctrine; both arms are no-follow, and on macOS/Linux the
         // helper is byte-identically `open_dir_nofollow`.
-        let directory =
-            crate::checked_artifact::platform::open_dir_share_delete(&self.handle, &name)
-                .map_err(|source| CheckedFsError::io("open staged component no-follow", source))?;
+        let directory = self
+            .handle
+            .retained_child(&name)
+            .map_err(|source| CheckedFsError::io("open staged component no-follow", source))?;
         let fact = super::HostPlatform.dir_identity(&directory)?;
         if !interior::observe_managed_component_interior(&directory, expected_marker)?.is_exact() {
             return Err(managed_error(
@@ -828,9 +838,9 @@ impl RetainedManagedParentV1 {
         let name = os_name(final_leaf);
         let metadata = self
             .handle
-            .symlink_metadata(&name)
+            .entry_metadata(&name)
             .map_err(|source| CheckedFsError::io("observe installed component", source))?;
-        if !metadata.is_dir() || metadata.is_symlink() {
+        if metadata.kind != FsKind::Directory || metadata.kind == FsKind::Symlink {
             return Err(managed_error(
                 "installed managed component is not a canonical directory",
             ));
@@ -843,10 +853,10 @@ impl RetainedManagedParentV1 {
         // rename or delete this component while the handle is held — not a
         // protection. Phase 3.1 inherits this doctrine: apply it for uniformity
         // of the owner's opens, never as an interlock argument.
-        let directory =
-            crate::checked_artifact::platform::open_dir_share_delete(&self.handle, &name).map_err(
-                |source| CheckedFsError::io("open installed component no-follow", source),
-            )?;
+        let directory = self
+            .handle
+            .retained_child(&name)
+            .map_err(|source| CheckedFsError::io("open installed component no-follow", source))?;
         #[cfg(test)]
         crate::checked_artifact::fault_v1::hit(
             CheckedArtifactFaultKeyV1::ManagedBootstrapFinalDirectoryReopen,
@@ -887,7 +897,7 @@ fn require_absent_in(
     name: &OsStr,
     label: &'static str,
 ) -> Result<(), CheckedFsError> {
-    match directory.symlink_metadata(name) {
+    match directory.entry_metadata(name) {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(CheckedFsError::io("observe managed destination", source)),
         Ok(_) => Err(CheckedFsError::ambiguous(
@@ -907,7 +917,7 @@ fn require_absent_in(
 /// name and never adopts a symlink or a non-file in its place.
 fn write_or_rewrite_marker(staged: &Dir, marker: &OwnershipMarkerV1) -> Result<(), CheckedFsError> {
     let name = os_name(&managed_marker_name());
-    let create_new = match staged.symlink_metadata(&name) {
+    let create_new = match staged.entry_metadata(&name) {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => true,
         Err(source) => {
             return Err(CheckedFsError::io(
@@ -915,7 +925,7 @@ fn write_or_rewrite_marker(staged: &Dir, marker: &OwnershipMarkerV1) -> Result<(
                 source,
             ));
         }
-        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => false,
+        Ok(metadata) if metadata.kind == FsKind::File && metadata.kind != FsKind::Symlink => false,
         Ok(_) => {
             return Err(managed_error(
                 "staged ownership marker is not a canonical regular file",
@@ -924,7 +934,7 @@ fn write_or_rewrite_marker(staged: &Dir, marker: &OwnershipMarkerV1) -> Result<(
     };
     let options = super::directory_mutation::durable_write_options(create_new);
     let mut file = staged
-        .open_with(&name, &options)
+        .open_file(&name, &options)
         .map_err(|source| CheckedFsError::io("open managed ownership marker", source))?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(
@@ -1077,10 +1087,10 @@ pub(in crate::checked_artifact) fn write_managed_intent_scratch(
 ) -> Result<(), CheckedFsError> {
     let directory = action.handle();
     let name = os_name(scratch_leaf);
-    let create_new = match directory.symlink_metadata(&name) {
+    let create_new = match directory.entry_metadata(&name) {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => true,
         Err(source) => return Err(CheckedFsError::io("observe managed intent scratch", source)),
-        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => false,
+        Ok(metadata) if metadata.kind == FsKind::File && metadata.kind != FsKind::Symlink => false,
         Ok(_) => {
             return Err(managed_error(
                 "managed intent scratch row is not a canonical regular file",
@@ -1094,7 +1104,7 @@ pub(in crate::checked_artifact) fn write_managed_intent_scratch(
     }
     let options = super::directory_mutation::durable_write_options(create_new);
     let mut file = directory
-        .open_with(&name, &options)
+        .open_file(&name, &options)
         .map_err(|source| CheckedFsError::io("open managed intent scratch", source))?;
     #[cfg(test)]
     if let Some(faults) = edge.scratch_faults() {
@@ -1205,18 +1215,17 @@ fn observe_regular_file(
     kind: ProtocolRecordKindV1,
 ) -> Result<ObservedManagedObjectV1, CheckedFsError> {
     let metadata = directory
-        .symlink_metadata(name)
+        .entry_metadata(name)
         .map_err(|source| CheckedFsError::io("observe managed object", source))?;
-    if !metadata.is_file() || metadata.is_symlink() {
+    if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
         return Err(CheckedFsError::ambiguous(
             label,
             "managed object is not a canonical regular file",
         ));
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     let mut file = directory
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open managed object no-follow", source))?;
     let fact = super::HostPlatform.file_identity(&file)?;
     let limit = kind.max_bytes();

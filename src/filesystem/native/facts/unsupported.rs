@@ -1,15 +1,11 @@
 use cap_std::fs::{Dir, File};
 
-use super::super::super::*;
-use super::VolumeDescription;
-use crate::checked_artifact::capability::{
-    ObjectIdentityFact, PathComponentMode, PlatformCapability,
-};
+use crate::filesystem::*;
 
 /// R2-E E4.1 precondition 5 — the swept Linux-profile claim (E0.1(b) row 3,
 /// routed here from O12/E6.2 by E0.2 §5.3 item 5).
 ///
-/// This stub used to CLAIM `LinuxExt4FsIocGetFsUuidV1` on a platform that is
+/// This stub used to CLAIM `LinuxPersistentHandle` on a platform that is
 /// neither Linux, macOS nor Windows. The trait's `support_profile` is
 /// infallible, so some variant must be named; what the sweep removes is the
 /// claim's standing, and it removes it structurally rather than by convention:
@@ -18,30 +14,25 @@ use crate::checked_artifact::capability::{
 /// refuses. No caller on this platform can observe the value below — it is
 /// unreachable, not merely shielded by fail-closed ordering, and it is named
 /// for that rather than for a filesystem this platform does not have.
-const UNREACHABLE_PROFILE: SupportedFilesystemProfile =
-    SupportedFilesystemProfile::LinuxExt4FsIocGetFsUuidV1;
+const UNREACHABLE_PROFILE: FsSupportProfile = FsSupportProfile::LinuxPersistentHandle;
 
-pub(super) const fn support_profile() -> SupportedFilesystemProfile {
+pub(crate) const fn support_profile() -> FsSupportProfile {
     UNREACHABLE_PROFILE
 }
 
-pub(super) fn dir_identity(
-    _directory: &Dir,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+pub(crate) fn dir_identity(_directory: &Dir) -> Result<FsObjectIdentity, FsProbeError> {
     Err(unsupported())
 }
 
-pub(super) fn file_identity(
-    _file: &File,
-) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
+pub(crate) fn file_identity(_file: &File) -> Result<FsObjectIdentity, FsProbeError> {
     Err(unsupported())
 }
 
-pub(super) fn parent_mode(_parent: &Dir) -> Result<PathComponentMode, CheckedFsError> {
+pub(crate) fn parent_mode(_parent: &Dir) -> Result<FsLookupMode, FsProbeError> {
     Err(unsupported())
 }
 
-pub(super) fn rename_domain(_directory: &Dir) -> Result<Vec<u8>, CheckedFsError> {
+pub(crate) fn rename_domain(_directory: &Dir) -> Result<Vec<u8>, FsProbeError> {
     Err(unsupported())
 }
 
@@ -53,17 +44,17 @@ pub(super) fn rename_domain(_directory: &Dir) -> Result<Vec<u8>, CheckedFsError>
 /// and which parenthetical it takes (`no durable filesystem identity`).
 /// Refusing here would give the warning nothing to say and would make a
 /// wording input look like a gate.
-pub(super) fn describe_volume(_directory: &Dir) -> Result<VolumeDescription, CheckedFsError> {
-    Ok(VolumeDescription {
+pub(crate) fn describe_volume(_directory: &Dir) -> Result<FsVolumeDescription, FsProbeError> {
+    Ok(FsVolumeDescription {
         name: None,
         remote: false,
         volatile: false,
     })
 }
 
-fn unsupported() -> CheckedFsError {
-    CheckedFsError::unsupported(
-        PlatformCapability::PersistentFilesystemIdentity,
+fn unsupported() -> FsProbeError {
+    FsProbeError::unsupported(
+        FsCapability::PersistentFilesystemIdentity,
         "this operating system has no checked filesystem provider at all",
     )
 }

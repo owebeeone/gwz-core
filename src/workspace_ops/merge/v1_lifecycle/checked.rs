@@ -165,10 +165,6 @@ impl V1MutationLease {
     /// untouched; the catalog's own partial state converges on restart.
     pub(super) fn acquire_activated(root: &Path) -> ModelResult<Self> {
         let lease = Self::acquire(root)?;
-        #[cfg(test)]
-        if crate::test_backend::modes().fake_filesystem {
-            return Ok(lease);
-        }
         crate::checked_artifact::entry::activate_workspace_catalog(
             lease.guard.catalog_mutation_lease(),
         )?;
@@ -186,16 +182,6 @@ impl V1MutationLease {
     /// Two leases: admission consumes the first, execution recovers after it.
     pub(super) fn acquire_for_merge_start(root: &Path, workspace_id: &str) -> ModelResult<Self> {
         let lease = Self::acquire(root)?;
-        #[cfg(test)]
-        if crate::test_backend::modes().fake_filesystem {
-            make_filesystem()
-                .create_directories(&lease.workspace_root.join(".gwz/merge"))
-                .map_err(io_error)?;
-            make_filesystem()
-                .create_directories(&lease.workspace_root.join(crate::stash::STASH_BUNDLE_DIR))
-                .map_err(io_error)?;
-            return Ok(lease);
-        }
         crate::checked_artifact::entry::bootstrap_merge_start_parents(
             workspace_id,
             lease.guard.catalog_mutation_lease(),

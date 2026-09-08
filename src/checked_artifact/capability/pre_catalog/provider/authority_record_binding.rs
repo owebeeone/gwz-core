@@ -62,14 +62,14 @@
 //! authority record binds a fingerprint and two digests and has no encoding
 //! for "absent".
 
+use crate::filesystem::FsKind;
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, OpenOptions};
+use crate::filesystem::{FsDirectory as Dir, FsOpenMode};
 
 use super::directory_mutation::{
-    ObservedFileV1, durable_write_options, sync_directory_edge, verify_named_file, verify_open_file,
+    ObservedFileV1, sync_directory_edge, verify_named_file, verify_open_file,
 };
 use super::leaf_observation::HostLeafObserverV1;
 use super::publication::{DestinationRecheckV1, PublicationSourceV1, publish_verified_no_replace};
@@ -499,10 +499,9 @@ pub(in crate::checked_artifact) fn install_authority_record(
 /// open-file verified, named-file verified and parent-flushed before the
 /// active name is touched.
 fn write_authority_scratch(parent: &Dir, name: &OsStr, bytes: &[u8]) -> Result<(), CheckedFsError> {
-    let mut options = durable_write_options(false);
-    options.create(true);
+    let options = crate::filesystem::FsOpenMode::WriteOrCreate;
     let mut file = parent
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open authority scratch", source))?;
     #[cfg(test)]
     crate::checked_artifact::fault_v1::hit(CheckedArtifactFaultKeyV1::RecordScratchCreate);
@@ -618,7 +617,7 @@ pub(in crate::checked_artifact) fn retire_authority_record(
     // before the edge. The sealed primitive is no-replace by construction; this
     // states the same property as a pre-edge expectation, so a resident alias
     // is a typed refusal rather than a failed rename.
-    if handle.symlink_metadata(retired).is_ok() {
+    if handle.entry_metadata(retired).is_ok() {
         return Err(CheckedFsError::ambiguous(
             "authority record retirement",
             "the scheduled retired authority alias is already resident",
@@ -666,20 +665,19 @@ fn open_record(
     parent: &Dir,
     name: &OsStr,
     fact: &'static str,
-) -> Result<cap_std::fs::File, CheckedFsError> {
+) -> Result<crate::filesystem::FsFile, CheckedFsError> {
     let metadata = parent
-        .symlink_metadata(name)
+        .entry_metadata(name)
         .map_err(|source| CheckedFsError::io("observe the authority record", source))?;
-    if !metadata.is_file() || metadata.is_symlink() {
+    if metadata.kind != FsKind::File || metadata.kind == FsKind::Symlink {
         return Err(CheckedFsError::ambiguous(
             fact,
             "authority record is not a canonical regular file",
         ));
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    let options = FsOpenMode::Read;
     parent
-        .open_with(name, &options)
+        .open_file(name, &options)
         .map_err(|source| CheckedFsError::io("open the authority record", source))
 }
 

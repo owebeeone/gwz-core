@@ -1,6 +1,92 @@
 use super::*;
 use std::io::ErrorKind;
 
+#[cfg(windows)]
+#[test]
+fn publication_moves_the_retained_object_after_its_name_is_replaced() {
+    let fs = make_filesystem();
+    let workspace = fs.test_workspace().unwrap();
+    let root = fs.open_directory(workspace.path()).unwrap();
+    let file = fs.create_file_at(&root, "source".as_ref()).unwrap();
+    fs.write_all(&file, b"captured").unwrap();
+    drop(file);
+    let retained = fs
+        .open_publication_source(&root, "source".as_ref())
+        .unwrap();
+    fs.publish_source(
+        FsPublicationSource {
+            file: &retained,
+            parent: &root,
+            name: "source".as_ref(),
+        },
+        &root,
+        "published".as_ref(),
+        RenameMode::NoReplace,
+        &|| {
+            fs.rename_at(
+                &root,
+                "source".as_ref(),
+                &root,
+                "displaced".as_ref(),
+                RenameMode::NoReplace,
+            )?;
+            let replacement = fs.create_file_at(&root, "source".as_ref())?;
+            fs.write_all(&replacement, b"foreign")
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fs.read(&workspace.path().join("published")).unwrap(),
+        b"captured"
+    );
+    assert_eq!(
+        fs.read(&workspace.path().join("source")).unwrap(),
+        b"foreign"
+    );
+    assert_eq!(
+        fs.kind(&workspace.path().join("displaced"))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::NotFound
+    );
+}
+
+#[test]
+fn persistent_facts_follow_retained_objects_across_name_replacement() {
+    let fs = make_filesystem();
+    let workspace = fs.test_workspace().unwrap();
+    let root = fs.open_directory(workspace.path()).unwrap();
+    let original = fs.create_file_at(&root, "original".as_ref()).unwrap();
+    let before = fs.persistent_file_identity(&original).unwrap();
+    let directory_before = fs.persistent_directory_identity(&root).unwrap();
+    let domain = fs.rename_domain(&root).unwrap();
+    fs.rename_at(
+        &root,
+        "original".as_ref(),
+        &root,
+        "moved".as_ref(),
+        RenameMode::NoReplace,
+    )
+    .unwrap();
+    let replacement = fs.create_file_at(&root, "original".as_ref()).unwrap();
+    let reopened = fs.open_file_at(&root, "moved".as_ref()).unwrap();
+    assert_eq!(before, fs.persistent_file_identity(&original).unwrap());
+    assert_eq!(before, fs.persistent_file_identity(&reopened).unwrap());
+    assert_ne!(before, fs.persistent_file_identity(&replacement).unwrap());
+    assert_eq!(
+        directory_before,
+        fs.persistent_directory_identity(&fs.clone_directory(&root).unwrap())
+            .unwrap()
+    );
+    assert_eq!(domain, fs.rename_domain(&root).unwrap());
+    assert!(matches!(
+        fs.lookup_mode(&root).unwrap(),
+        FsLookupMode::Sensitive | FsLookupMode::AsciiCaseFold
+    ));
+    let volume = fs.describe_volume(&root).unwrap();
+    assert!(!volume.remote && !volume.volatile);
+}
+
 #[test]
 fn retained_metadata_observes_kind_without_following_a_symlink() {
     let fs = make_filesystem();

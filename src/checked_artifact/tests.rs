@@ -140,24 +140,29 @@ fn replaced_parent_invalidates_the_retained_capability() {
     assert_eq!(fs::read(root.0.join("a/value")).unwrap(), b"foreign");
 }
 
-// Positive Windows counterpart of the gated substitution injections:
-// production retains the parent through a plain cap-std directory open,
-// which holds no DELETE sharing on Windows, so the OS itself denies
-// displacing the retained directory with a sharing violation.
+// The retained filesystem adapter shares DELETE access on Windows. Detect
+// substitution through identity revalidation and preserve the foreign tree.
 #[cfg(windows)]
 #[test]
-fn retained_directory_blocks_substitution_rename_windows() {
-    let root = TempRoot::new("retained-parent-pins-name");
+fn retained_directory_rejects_substitution_windows() {
+    let root = TempRoot::new("retained-parent-detects-substitution");
     fs::create_dir_all(root.0.join("a")).unwrap();
     fs::write(root.0.join("a/value"), b"owned").unwrap();
     let checked = artifact(&root.0, "a/value");
-    let error = fs::rename(root.0.join("a"), root.0.join("old-a")).unwrap_err();
-    assert_eq!(error.raw_os_error(), Some(32), "{error:?}");
-    assert_eq!(
-        checked.observe().unwrap(),
-        CheckedArtifactFact::Bytes(b"owned".to_vec())
+    fs::rename(root.0.join("a"), root.0.join("old-a")).unwrap();
+    fs::create_dir(root.0.join("a")).unwrap();
+    fs::write(root.0.join("a/value"), b"foreign").unwrap();
+    assert_eq!(checked.observe().unwrap(), CheckedArtifactFact::Invalid);
+    assert!(
+        checked
+            .replace_exact(
+                &CheckedArtifactFact::Bytes(b"owned".to_vec()),
+                b"replacement"
+            )
+            .is_err()
     );
-    assert_eq!(fs::read(root.0.join("a/value")).unwrap(), b"owned");
+    assert_eq!(fs::read(root.0.join("a/value")).unwrap(), b"foreign");
+    assert_eq!(fs::read(root.0.join("old-a/value")).unwrap(), b"owned");
 }
 
 #[cfg(unix)]
