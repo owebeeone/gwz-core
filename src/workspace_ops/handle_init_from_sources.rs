@@ -5,7 +5,7 @@ use crate::artifact::{
     self, ArtifactSourceKind, DesiredRefArtifact, LockArtifact, ManifestArtifact, ManifestMember,
     RemoteArtifact, ResolvedMemberArtifact, WorkspaceHeader,
 };
-use crate::git::{GitBackend, GitHeadState, git_host};
+use crate::git::{GitBackend, GitHeadState, MergeAuthorityBackend, git_host};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::{
     EventEmitter, EventSink, OperationRequest, WorkspaceMutatorLock, par_map_per_host,
@@ -25,13 +25,13 @@ pub fn handle_init_from_sources<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::InitFromSourcesResponse>
 where
-    B: GitBackend + Sync,
+    B: GitBackend + MergeAuthorityBackend + Sync,
 {
     let context =
         OperationRequest::InitFromSources(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::InitFromSourcesResponse> = (|| {
         let root = if request.workspace_root.trim().is_empty() {
@@ -110,7 +110,7 @@ where
             });
         }
 
-        ensure_workspace_git_repo(&root)?;
+        ensure_workspace_git_repo(backend, &root)?;
         let _guard = WorkspaceMutatorLock::acquire_in(&services, &root)?;
         let mut lock = LockArtifact {
             schema: artifact::LOCK_SCHEMA.to_owned(),

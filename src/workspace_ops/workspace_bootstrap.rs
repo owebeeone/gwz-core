@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::artifact;
 use crate::filesystem::FileSystem;
-use crate::git::GitBackend;
+use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{ActionKind, OpenMergeCommand, OperationContext};
 
@@ -53,9 +53,9 @@ pub fn handle_update_workspace_bootstrap<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::ResponseEnvelope>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     handle_update_workspace_bootstrap_in(&services, backend, start, meta, operation_id)
 }
 

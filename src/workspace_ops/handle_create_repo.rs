@@ -7,7 +7,9 @@ use crate::artifact::{
     RemoteArtifact, ResolvedMemberArtifact, WorkspaceHeader,
 };
 use crate::filesystem::{FileSystem, FsKind};
-use crate::git::{Git2Backend, GitBackend, GitHeadState, GitRemote, GitStatus};
+use crate::git::{
+    Git2Backend, GitBackend, GitHeadState, GitRemote, GitStatus, MergeAuthorityBackend,
+};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::{OpenMergeCommand, OperationRequest, WorkspaceMutatorLock};
 use crate::workspace::{
@@ -20,18 +22,20 @@ pub fn handle_create_workspace(
     request: crate::CreateWorkspaceRequest,
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::CreateWorkspaceResponse> {
-    handle_create_workspace_in(
-        &crate::operation_context::OperationServices::existing(),
-        request,
-        operation_id,
-    )
+    let backend = Git2Backend::new();
+    let services = crate::operation_context::OperationServices::for_merge(&backend);
+    handle_create_workspace_in(&services, &backend, request, operation_id)
 }
 
-pub(crate) fn handle_create_workspace_in(
+pub(crate) fn handle_create_workspace_in<B>(
     services: &crate::operation_context::OperationServices,
+    backend: &B,
     request: crate::CreateWorkspaceRequest,
     operation_id: impl Into<String>,
-) -> ModelResult<crate::CreateWorkspaceResponse> {
+) -> ModelResult<crate::CreateWorkspaceResponse>
+where
+    B: GitBackend,
+{
     let context =
         OperationRequest::CreateWorkspace(request.clone()).context(operation_id.into())?;
     let root = PathBuf::from(&request.workspace_root);
@@ -59,8 +63,7 @@ pub(crate) fn handle_create_workspace_in(
         ));
         return Ok(crate::CreateWorkspaceResponse { response });
     }
-    ensure_workspace_git_repo(&root)?;
-    let backend = Git2Backend::new();
+    ensure_workspace_git_repo(backend, &root)?;
     let _guard = WorkspaceMutatorLock::acquire_in(services, &root)?;
 
     let manifest = ManifestArtifact {
@@ -78,10 +81,10 @@ pub(crate) fn handle_create_workspace_in(
     };
     // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `gwz repo create`, add-existing and workspace create are all capability-free (E0.2 §5.2), so all four writer pairs in this file stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)?;
-    sync_workspace_boundary_in(services.filesystem(), &backend, &root, &manifest, &lock)?;
+    sync_workspace_boundary_in(services.filesystem(), backend, &root, &manifest, &lock)?;
     let bootstrap = ensure_workspace_bootstrap_files_in(
         services.filesystem(),
-        &backend,
+        backend,
         &root,
         false,
         force_bootstrap_overwrite(&request.meta),
@@ -103,15 +106,10 @@ pub fn handle_create_repo<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::CreateRepoResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    handle_create_repo_in(
-        &crate::operation_context::OperationServices::existing(),
-        backend,
-        start,
-        request,
-        operation_id,
-    )
+    let services = crate::operation_context::OperationServices::for_merge(backend);
+    handle_create_repo_in(&services, backend, start, request, operation_id)
 }
 
 pub(crate) fn handle_create_repo_in<B>(
@@ -289,15 +287,10 @@ pub fn handle_add_existing_repo<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::AddExistingRepoResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    handle_add_existing_repo_in(
-        &crate::operation_context::OperationServices::existing(),
-        backend,
-        start,
-        request,
-        operation_id,
-    )
+    let services = crate::operation_context::OperationServices::for_merge(backend);
+    handle_add_existing_repo_in(&services, backend, start, request, operation_id)
 }
 
 pub(crate) fn handle_add_existing_repo_in<B>(
@@ -536,15 +529,10 @@ pub fn handle_repo_sync<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::RepoSyncResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    handle_repo_sync_in(
-        &crate::operation_context::OperationServices::existing(),
-        backend,
-        start,
-        request,
-        operation_id,
-    )
+    let services = crate::operation_context::OperationServices::for_merge(backend);
+    handle_repo_sync_in(&services, backend, start, request, operation_id)
 }
 
 pub(crate) fn handle_repo_sync_in<B>(
@@ -1102,11 +1090,14 @@ pub(crate) fn now_marker() -> String {
     format!("unix-ms:{millis}")
 }
 
-pub(crate) fn ensure_workspace_git_repo(root: &Path) -> ModelResult<()> {
-    if root.join(".git").exists() {
+pub(crate) fn ensure_workspace_git_repo<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+) -> ModelResult<()> {
+    if backend.is_repository(root)? {
         Ok(())
     } else {
-        Git2Backend::new().create_repo(root).map(|_| ())
+        backend.create_repo(root).map(|_| ())
     }
 }
 
