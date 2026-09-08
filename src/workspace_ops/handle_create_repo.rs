@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -7,6 +6,7 @@ use crate::artifact::{
     self, ArtifactSourceKind, DesiredRefArtifact, LockArtifact, ManifestArtifact, ManifestMember,
     RemoteArtifact, ResolvedMemberArtifact, WorkspaceHeader,
 };
+use crate::filesystem::{FileSystem, FsKind};
 use crate::git::{Git2Backend, GitBackend, GitHeadState, GitRemote, GitStatus};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::{OpenMergeCommand, OperationRequest, WorkspaceMutatorLock};
@@ -165,7 +165,7 @@ where
         ));
     }
     let member_abs_path = root.join(member_path.as_str());
-    ensure_member_target_available(&member_abs_path)?;
+    ensure_member_target_available_in(services.filesystem(), &member_abs_path)?;
 
     let slug = path_slug(member_path.as_str())?;
     let member_id = request
@@ -261,7 +261,7 @@ where
         }
         return Err(error);
     }
-    sync_workspace_boundary(backend, &root, &manifest, &lock)?;
+    sync_workspace_boundary_in(services.filesystem(), backend, &root, &manifest, &lock)?;
 
     let mut response = response_envelope(
         context,
@@ -412,7 +412,13 @@ where
                     &manifest,
                     &lock,
                 )?;
-                sync_workspace_boundary(backend, &root, &manifest, &lock)?;
+                sync_workspace_boundary_in(
+                    services.filesystem(),
+                    backend,
+                    &root,
+                    &manifest,
+                    &lock,
+                )?;
                 let mut response = response_envelope(
                     context,
                     crate::AggregateStatus::Ok,
@@ -502,7 +508,7 @@ where
     let locked = resolved_member(&manifest_member, &head, &status);
     lock.members.insert(member_id.clone(), locked.clone());
     artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)?;
-    sync_workspace_boundary(backend, &root, &manifest, &lock)?;
+    sync_workspace_boundary_in(services.filesystem(), backend, &root, &manifest, &lock)?;
 
     let mut response = response_envelope(
         context,
@@ -925,22 +931,25 @@ pub(crate) fn start_dir(start: &Path) -> &Path {
     }
 }
 
-pub(crate) fn ensure_member_target_available(path: &Path) -> ModelResult<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    if !path.is_dir() {
+pub(crate) fn ensure_member_target_available_in(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+) -> ModelResult<()> {
+    let kind = match filesystem.kind(path) {
+        Ok(kind) => kind,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(io_error(error)),
+    };
+    if kind != FsKind::Directory {
         return Err(ModelError::new(
             ErrorCode::PathCollision,
             "member path exists and is not a directory",
         ));
     }
-    if fs::read_dir(path)
+    if !filesystem
+        .read_directory(path)
         .map_err(io_error)?
-        .next()
-        .transpose()
-        .map_err(io_error)?
-        .is_some()
+        .is_empty()
     {
         return Err(ModelError::new(
             ErrorCode::PathCollision,
@@ -948,6 +957,11 @@ pub(crate) fn ensure_member_target_available(path: &Path) -> ModelResult<()> {
         ));
     }
     Ok(())
+}
+
+/// Compatibility adapter for operation families not yet carrying services.
+pub(crate) fn ensure_member_target_available(path: &Path) -> ModelResult<()> {
+    ensure_member_target_available_in(&crate::filesystem::make_filesystem(), path)
 }
 
 pub(crate) fn read_lock_or_empty(root: &Path, workspace_id: &str) -> ModelResult<LockArtifact> {
