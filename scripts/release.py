@@ -518,7 +518,8 @@ def main():
             refresh_cargo_lock(cargo_root=cargo_root)
             if worktree is not None:
                 copy_lock_from_cargo_root(cargo_root)
-            run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=cargo_env())
+            if not args.no_test:
+                run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=cargo_env())
             git(["add", "Cargo.toml", "Cargo.lock"])
             # No AI co-author trailer. The operator's attribution rule is
             # absolute and applies to every commit in every repo, including
