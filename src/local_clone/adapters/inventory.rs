@@ -35,9 +35,9 @@ pub struct IncludedRepository {
     pub path: PathBuf,
     /// The directory *is* a Git directory (no `.git` entry): a bare
     /// repository, or a nested `.git` moved out of its worktree. Found by
-    /// Git's own test -- a `HEAD` file beside `objects/` and `refs/` -- and,
-    /// when nested, never descended into (design §4.0 "unmanaged/ignored
-    /// nested repositories"; LCM2.1, closing §13.8's recorded gap).
+    /// Git's own test -- a `HEAD` file beside `objects` and `refs` -- and,
+    /// when outside a registered member, never descended into before the
+    /// local-clone admission refusal.
     pub bare: bool,
 }
 

@@ -342,8 +342,8 @@ fn ensure_source_is_ready_for_local_clone<B: GitBackend>(
     Err(invalid(format!(
         "local clone `{name}` refused before reservation: source workspace {} is not ready for a \
          local family because {}; commit the initial GWZ configuration and its integrity marker \
-         first. Ordinary worktree changes and nested repositories remain valid verbatim clone \
-         input; do not run `gwz init` on another directory to bypass this refusal",
+         first. Ordinary worktree changes and repositories inside registered members remain \
+         valid verbatim clone input; do not run `gwz init` on another directory to bypass this refusal",
         root.display(),
         findings.join("; "),
     )))
