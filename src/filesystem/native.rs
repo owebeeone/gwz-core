@@ -5,7 +5,9 @@
     reason = "native filesystem adapter"
 )]
 use super::*;
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+#[cfg(not(windows))]
+use cap_fs_ext::DirExt;
+use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 #[cfg(unix)]
 use cap_std::fs::PermissionsExt;
 use cap_std::fs::{Dir, OpenOptions};
@@ -121,8 +123,10 @@ impl FileSystem for NativeFileSystem {
     }
 
     fn open_directory(&self, path: &Path) -> io::Result<FsDirectory> {
-        Dir::open_ambient_dir(path, cap_std::ambient_authority())
-            .map(|dir| FsDirectory(DirectoryHandle::Native(Directory(dir))))
+        let dir = Dir::open_ambient_dir(path, cap_std::ambient_authority())?;
+        #[cfg(windows)]
+        let dir = retained::open_directory(&dir, OsStr::new("."))?;
+        Ok(FsDirectory(DirectoryHandle::Native(Directory(dir))))
     }
     fn clone_directory(&self, value: &FsDirectory) -> io::Result<FsDirectory> {
         directory(value)?
@@ -131,8 +135,7 @@ impl FileSystem for NativeFileSystem {
     }
     fn open_directory_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsDirectory> {
         component(name)?;
-        directory(parent)?
-            .open_dir_nofollow(name)
+        retained::open_directory(directory(parent)?, name)
             .map(|dir| FsDirectory(DirectoryHandle::Native(Directory(dir))))
     }
     fn create_directory_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<()> {
@@ -315,6 +318,19 @@ impl FileSystem for NativeFileSystem {
         target: &Path,
     ) -> io::Result<()> {
         component(name)?;
+        #[cfg(windows)]
+        {
+            let directory = directory(parent)?;
+            match directory.metadata(target) {
+                Ok(metadata) if metadata.is_dir() => directory.symlink_dir(target, name),
+                Ok(_) => directory.symlink_file(target, name),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    directory.symlink_file(target, name)
+                }
+                Err(error) => Err(error),
+            }
+        }
+        #[cfg(not(windows))]
         directory(parent)?.symlink(target, name)
     }
     fn try_lock_file(&self, value: &FsFile) -> io::Result<Option<FsLockGuard>> {
@@ -526,6 +542,31 @@ mod platform_lock {
 
 mod retained {
     use super::*;
+
+    #[cfg(not(windows))]
+    pub(super) fn open_directory(parent: &Dir, name: &OsStr) -> io::Result<Dir> {
+        parent.open_dir_nofollow(name)
+    }
+
+    #[cfg(windows)]
+    pub(super) fn open_directory(parent: &Dir, name: &OsStr) -> io::Result<Dir> {
+        use cap_std::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::GENERIC_READ;
+        use windows_sys::Win32::Storage::FileSystem::*;
+
+        // Retain the object across renames, rather than preventing namespace changes.
+        let mut options = OpenOptions::new();
+        options
+            .access_mode(GENERIC_READ)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .follow(FollowSymlinks::No);
+        let file = parent.open_with(name, &options)?;
+        if !file.metadata()?.is_dir() {
+            return Err(io::ErrorKind::NotADirectory.into());
+        }
+        Ok(Dir::from_std_file(file.into_std()))
+    }
 
     pub(super) fn rename(
         source: &Dir,
@@ -790,19 +831,18 @@ mod platform_rename {
     use std::iter;
     use std::os::windows::ffi::OsStrExt as _;
 
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
 
     use super::*;
 
     pub(super) fn rename(source: &Path, destination: &Path, mode: RenameMode) -> io::Result<()> {
+        if mode == RenameMode::Replace {
+            // Rust's handle-based rename supports replacing an open destination.
+            return std::fs::rename(source, destination);
+        }
         let source = wide_path(source)?;
         let destination = wide_path(destination)?;
-        let mut flags = MOVEFILE_WRITE_THROUGH;
-        if mode == RenameMode::Replace {
-            flags |= MOVEFILE_REPLACE_EXISTING;
-        }
+        let flags = MOVEFILE_WRITE_THROUGH;
         // SAFETY: both buffers are owned, NUL-terminated UTF-16 paths and live through the call.
         if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
             Err(io::Error::last_os_error())

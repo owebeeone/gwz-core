@@ -145,7 +145,7 @@ fn lists_materialized_members_by_default() {
     assert!(entry.materialized);
     assert_eq!(entry.path, "repos/app");
     assert!(
-        entry.abspath.ends_with("repos/app"),
+        std::path::Path::new(&entry.abspath).ends_with(std::path::Path::new("repos").join("app")),
         "abspath: {}",
         entry.abspath
     );
