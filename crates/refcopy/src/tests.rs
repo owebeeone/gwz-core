@@ -835,6 +835,12 @@ fn expected_mechanism() -> NativeMechanism {
         && !cfg!(any(target_arch = "sparc", target_arch = "sparc64"))
     {
         NativeMechanism::LinuxFiclone
+    } else if cfg!(windows) {
+        // The mechanism is compiled in for every Windows target. Whether a
+        // *volume* can serve it is a different question, answered per file by
+        // the operation, and a Windows build on NTFS reports every file in
+        // `ordinary_files` with one `NativeUnsupportedFellBack` warning.
+        NativeMechanism::WindowsBlockClone
     } else {
         NativeMechanism::None
     }

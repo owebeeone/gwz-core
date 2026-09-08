@@ -7,7 +7,8 @@
 //!
 //! Two paths, one result. Every regular file is copied either by the
 //! platform's native copy-on-write mechanism ([`native`]: Apple `clonefile`
-//! on Apple targets, `FICLONE` on Linux) or by ordinary buffered read/write
+//! on Apple targets, `FICLONE` on Linux, `FSCTL_DUPLICATE_EXTENTS_TO_FILE` on
+//! Windows) or by ordinary buffered read/write
 //! ([`ordinary`], which is also the whole engine: admission, traversal,
 //! metadata and error classification). Which one ran changes nothing an
 //! inspection of the destination can see -- contents, entry type, symlink
@@ -23,9 +24,9 @@
 //! - `CopyMode::OrdinaryOnly` never attempts a native call, and is never
 //!   promised one, so it carries no native warning.
 //! - `CopyMode::Auto` attempts one for each regular file, unless no
-//!   mechanism is compiled in for this target (Windows today -- see
-//!   [`native`]) or [`SystemTreeCopier::probe_native`] has already ruled the
-//!   pair out. Then the copy is ordinary and carries one copy-wide
+//!   mechanism is compiled in for this target (see [`native`] for which
+//!   targets those are) or [`SystemTreeCopier::probe_native`] has already
+//!   ruled the pair out. Then the copy is ordinary and carries one copy-wide
 //!   `CopyWarningKind::NativeUnavailable` warning saying why.
 //! - An attempt that is made and classified unsupported (an unsupported
 //!   filesystem, a cross-device pair) falls back to the ordinary copy for
@@ -33,7 +34,15 @@
 //!   `CopyWarningKind::NativeUnsupportedFellBack`. A permission, space or
 //!   I/O failure is an error, and stops the copy.
 
-#![forbid(unsafe_code)]
+// Everywhere but Windows this crate is `forbid(unsafe_code)`: `rustix` gives
+// `clonefile` and `FICLONE` safe wrappers, so nothing needs relaxing. Windows
+// has no such wrapper -- `windows-sys` is a raw binding and
+// `FSCTL_DUPLICATE_EXTENTS_TO_FILE` is reached through `DeviceIoControl` --
+// so there the lint is `deny` instead, which an inner `allow` can lift for
+// the handful of calls in `native::windows` that make it and nothing else.
+// `forbid` is kept for every other target so the relaxation cannot travel.
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 // `CopyError` is 128 bytes on `x86_64-pc-windows-msvc` (a `PathBuf` is 32
 // bytes there), exactly clippy's `result_large_err` threshold; the contract
 // allows the lint at `TreeCopier::copy_tree` for the same reason and boxing

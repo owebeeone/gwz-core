@@ -1,5 +1,4 @@
 //! Owner-private physical transitions for the staged and final catalog directory.
-#[cfg(not(windows))]
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom, Write};
 

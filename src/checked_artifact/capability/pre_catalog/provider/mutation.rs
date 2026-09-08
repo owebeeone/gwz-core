@@ -1,5 +1,4 @@
 //! Owner-private physical edges for the first catalog.
-#[cfg(not(windows))]
 use std::ffi::OsStr;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 

@@ -2,12 +2,14 @@
 //! probe's one shortcut, the per-copy plan, and the platform wrapper itself
 //! where this host has one.
 //!
-//! Both tables are checked here whatever the host is, because both are
-//! compiled everywhere on unix (see [`super::classify`]) -- the classification
-//! is the policy, and it must be readable and testable without the machine
-//! whose syscall it describes. What a host cannot check is the binding: that
-//! `FICLONE` really returns these errno for these filesystems is Linux CI's
-//! job, not this file's.
+//! Every table is checked here whatever the host is, because every table is
+//! compiled here (see [`super::classify`]) -- the classification is the
+//! policy, and it must be readable and testable without the machine whose
+//! call it describes. So is the block-clone geometry
+//! ([`super::block_clone`]), which is arithmetic and needs no machine at all.
+//! What a host cannot check is the binding: that `FICLONE` really returns
+//! these errno for these filesystems is Linux CI's job, and that ReFS really
+//! answers these Win32 codes is Windows CI's.
 
 use std::fs;
 

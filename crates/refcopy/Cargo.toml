@@ -27,7 +27,18 @@ libc = "0.2"
 rustix = { version = "1", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+# `Win32_System_IO` is `DeviceIoControl`, `Win32_System_Ioctl` is
+# `FSCTL_DUPLICATE_EXTENTS_TO_FILE` with its `DUPLICATE_EXTENTS_DATA` and
+# `FSCTL_SET_SPARSE`, and `Win32_System_SystemServices` is the one volume flag
+# (`FILE_SUPPORTS_BLOCK_REFCOUNTING`) that says whether a volume can share
+# blocks at all. Feature names only: the crate itself is already inventoried.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  "Win32_System_SystemServices",
+] }
 
 [dev-dependencies]
 gwz-copy-contract = { path = "../copy-contract", features = ["contract-tests"] }
