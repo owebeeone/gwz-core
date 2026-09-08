@@ -10,7 +10,7 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 
 #[derive(Clone)]
 pub(super) struct CheckedV1Store {
-    context: crate::operation_context::OperationContext,
+    context: crate::operation_context::OperationServices,
     commit_fault: Option<CommitFault>,
 }
 
@@ -30,19 +30,19 @@ pub(super) enum ArchiveOutcome {
 #[cfg(test)]
 impl Default for CheckedV1Store {
     fn default() -> Self {
-        Self::new(crate::operation_context::OperationContext::existing())
+        Self::new(crate::operation_context::OperationServices::existing())
     }
 }
 
 impl CheckedV1Store {
-    pub(super) fn new(context: crate::operation_context::OperationContext) -> Self {
+    pub(super) fn new(context: crate::operation_context::OperationServices) -> Self {
         Self {
             context,
             commit_fault: None,
         }
     }
 
-    pub(super) fn context(&self) -> &crate::operation_context::OperationContext {
+    pub(super) fn context(&self) -> &crate::operation_context::OperationServices {
         &self.context
     }
     pub(super) fn load_open(&self, root: &Path, merge_id: &str) -> ModelResult<StoredV1Record> {
@@ -51,7 +51,7 @@ impl CheckedV1Store {
 
     pub(super) fn load_open_in(
         &self,
-        context: &crate::operation_context::OperationContext,
+        context: &crate::operation_context::OperationServices,
         root: &Path,
         merge_id: &str,
     ) -> ModelResult<StoredV1Record> {

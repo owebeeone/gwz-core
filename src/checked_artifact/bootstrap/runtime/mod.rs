@@ -1,4 +1,4 @@
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -33,10 +33,10 @@ const BOOTSTRAP_GUARD_NAME: &str = "gwz-runtime-bootstrap-v1.lock";
 const LOCKS_DIRECTORY_NAME: &str = "locks";
 const WORKSPACE_MUTATOR_LOCK_NAME: &str = "workspace-mutator.lock";
 
-struct RuntimeBootstrap(OperationContext);
+struct RuntimeBootstrap(OperationServices);
 
 pub(crate) struct WorkspaceRuntimeLease {
-    context: OperationContext,
+    context: OperationServices,
     lock: AdvisoryLock,
     path: PathBuf,
     workspace_root: RetainedDirectory,
@@ -89,11 +89,11 @@ impl WorkspaceRuntimeLease {
 pub(crate) fn try_acquire_workspace_runtime(
     root: &Path,
 ) -> ModelResult<Option<WorkspaceRuntimeLease>> {
-    try_acquire_workspace_runtime_in(&OperationContext::existing(), root)
+    try_acquire_workspace_runtime_in(&OperationServices::existing(), root)
 }
 
 pub(crate) fn try_acquire_workspace_runtime_in(
-    context: &OperationContext,
+    context: &OperationServices,
     root: &Path,
 ) -> ModelResult<Option<WorkspaceRuntimeLease>> {
     let resolved = resolve_workspace_paths_in(context, root).map_err(runtime_error)?;
@@ -199,7 +199,7 @@ impl WorkspaceRuntimeBootstrapV1 for RuntimeBootstrap {
 
 #[allow(clippy::too_many_arguments)]
 fn revalidate_runtime_tree(
-    context: &OperationContext,
+    context: &OperationServices,
     paths: &WorkspaceRuntimePaths<'_>,
     workspace_root: &RetainedDirectory,
     workspace_git_dir: &RetainedDirectory,
@@ -227,7 +227,7 @@ fn revalidate_runtime_tree(
 
 #[allow(clippy::too_many_arguments)]
 fn revalidate_workspace_catalog_target(
-    context: &OperationContext,
+    context: &OperationServices,
     paths: &WorkspaceRuntimePaths<'_>,
     workspace_root: &RetainedDirectory,
     workspace_git_dir: &RetainedDirectory,

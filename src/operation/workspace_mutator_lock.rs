@@ -11,7 +11,7 @@ pub struct WorkspaceMutatorLock {
 
 impl WorkspaceMutatorLock {
     pub(crate) fn acquire_in(
-        context: &crate::operation_context::OperationContext,
+        context: &crate::operation_context::OperationServices,
         root: &Path,
     ) -> ModelResult<Self> {
         Self::try_acquire_in(context, root)?.ok_or_else(|| {
@@ -23,7 +23,7 @@ impl WorkspaceMutatorLock {
     }
 
     pub(crate) fn try_acquire_in(
-        context: &crate::operation_context::OperationContext,
+        context: &crate::operation_context::OperationServices,
         root: &Path,
     ) -> ModelResult<Option<Self>> {
         crate::checked_artifact::try_acquire_workspace_runtime_in(context, root)
@@ -54,7 +54,7 @@ impl WorkspaceMutatorLock {
     /// GWZ mutators; run mutating operations serially there.
     pub fn try_acquire(root: &Path) -> ModelResult<Option<Self>> {
         Self::try_acquire_in(
-            &crate::operation_context::OperationContext::existing(),
+            &crate::operation_context::OperationServices::existing(),
             root,
         )
     }
@@ -84,12 +84,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::operation_context::{OperationContext, TestWorld};
+    use crate::operation_context::{OperationServices, TestWorld};
 
     const CHILD_ENV: &str = "GWZ_WORKSPACE_MUTATOR_LOCK_CHILD_ROOT";
     const BOOTSTRAP_GUARD_NAME: &str = "gwz-runtime-bootstrap-v1.lock";
 
-    fn physical_context() -> OperationContext {
+    fn physical_context() -> OperationServices {
         TestWorld::physical().context()
     }
 

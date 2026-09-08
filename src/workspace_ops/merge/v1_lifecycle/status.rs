@@ -66,7 +66,7 @@ fn optimistic_open_status(
 }
 
 fn acquire_open_status_v1(
-    services: &crate::operation_context::OperationContext,
+    services: &crate::operation_context::OperationServices,
     root: &Path,
     merge_id: &str,
 ) -> ModelResult<(

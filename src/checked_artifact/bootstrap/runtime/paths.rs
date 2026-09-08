@@ -1,5 +1,5 @@
 use crate::filesystem::{FileSystem, FsDirectory, FsFile, FsIdentity, FsKind};
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ pub(super) struct ResolvedWorkspacePaths {
 }
 
 pub(super) fn resolve_workspace_paths_in(
-    context: &OperationContext,
+    context: &OperationServices,
     root: &Path,
 ) -> Result<ResolvedWorkspacePaths, CheckedFsError> {
     let filesystem = context.filesystem();
@@ -105,7 +105,7 @@ pub(super) fn revalidate_ambient_directory(
 }
 
 pub(super) fn revalidate_workspace_repository_in(
-    context: &OperationContext,
+    context: &OperationServices,
     workspace_root: &Path,
     workspace_git_dir: &Path,
 ) -> Result<(), CheckedFsError> {
@@ -327,5 +327,5 @@ pub(super) fn retain_ambient_directory(
     path: &Path,
     label: &'static str,
 ) -> Result<RetainedDirectory, CheckedFsError> {
-    retain_ambient_directory_in(OperationContext::existing().filesystem(), path, label)
+    retain_ambient_directory_in(OperationServices::existing().filesystem(), path, label)
 }

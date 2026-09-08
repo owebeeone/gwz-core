@@ -47,7 +47,7 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
     let merge_id = record.merge_id.clone();
-    let services = crate::operation_context::OperationContext::for_merge(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let store = CheckedV1Store::new(services.clone());
 
     let decision = crate::checked_artifact::entry::crash_recovery_decision_in(&services, root)?;
@@ -191,7 +191,7 @@ pub(in crate::workspace_ops::merge) fn handle_v1_command<B: MergeAuthorityBacken
     context: &OperationContext,
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
-    let services = crate::operation_context::OperationContext::for_merge(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let store = CheckedV1Store::new(services.clone());
     super::super::validate_open_merge_id(request.merge_id.as_deref(), merge_id)?;
     match request.op {

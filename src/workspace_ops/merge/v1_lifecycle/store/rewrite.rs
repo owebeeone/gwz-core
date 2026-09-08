@@ -9,12 +9,12 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 use super::super::checked::{StoredV1Record, V1MutationLease};
 use super::super::transition::PreparedV1Rewrite;
 use super::{CommitFault, unknown};
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn load_open(
-    context: &OperationContext,
+    context: &OperationServices,
     root: &Path,
     merge_id: &str,
 ) -> ModelResult<StoredV1Record> {

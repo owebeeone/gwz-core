@@ -17,7 +17,7 @@ use crate::checked_artifact::capability::{
     VolumeDescription,
 };
 use crate::filesystem::FsKind;
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 
 pub(super) const GIT_CATALOG_MUTATOR_LOCK_NAME: &str = "gwz-catalog-mutator-v1.lock";
 
@@ -49,7 +49,7 @@ pub(in crate::checked_artifact) struct WorkspaceAdmissionProbeV1 {
 /// directory is made: that is `catalog::recover_or_create`'s work, one layer
 /// above, and this function never reaches it.
 pub(in crate::checked_artifact) fn probe_workspace_admission(
-    context: &OperationContext,
+    context: &OperationServices,
     root: &Path,
 ) -> WorkspaceAdmissionProbeV1 {
     let admitted =
@@ -68,7 +68,7 @@ pub(in crate::checked_artifact) fn probe_workspace_admission(
 /// retention the probe above uses. Independent of `resolve_workspace_paths` so
 /// a root the catalog cannot bind at all can still be NAMED in the warning.
 fn describe_workspace_volume(
-    context: &OperationContext,
+    context: &OperationServices,
     root: &Path,
 ) -> Result<VolumeDescription, CheckedFsError> {
     let target =
@@ -105,7 +105,7 @@ impl CatalogLeaseTargetRequestV1 {
     #[cfg(test)]
     pub(super) fn canonical_order_key_for_test(
         &self,
-        context: &OperationContext,
+        context: &OperationServices,
     ) -> Result<Vec<u8>, CheckedFsError> {
         RetainedCatalogTargetV1::retain(context, self).map(|target| target.binding.order_key)
     }
@@ -113,7 +113,7 @@ impl CatalogLeaseTargetRequestV1 {
     #[cfg(test)]
     pub(super) fn canonical_target_path_for_test(
         &self,
-        context: &OperationContext,
+        context: &OperationServices,
     ) -> Result<PathBuf, CheckedFsError> {
         RetainedCatalogTargetV1::retain(context, self).map(|target| target.binding.canonical_path)
     }
@@ -137,7 +137,7 @@ pub(super) struct CatalogTargetBindingV1 {
 }
 
 pub(super) struct RetainedCatalogTargetV1 {
-    context: OperationContext,
+    context: OperationServices,
     pub(super) binding: CatalogTargetBindingV1,
     pub(super) target: RetainedDirectory,
     pub(super) related_git_directory: RetainedDirectory,
@@ -146,7 +146,7 @@ pub(super) struct RetainedCatalogTargetV1 {
 
 impl RetainedCatalogTargetV1 {
     pub(super) fn retain(
-        context: &OperationContext,
+        context: &OperationServices,
         request: &CatalogLeaseTargetRequestV1,
     ) -> Result<Self, CheckedFsError> {
         match &request.purpose {
@@ -157,7 +157,7 @@ impl RetainedCatalogTargetV1 {
         }
     }
 
-    fn retain_workspace(context: &OperationContext, path: &Path) -> Result<Self, CheckedFsError> {
+    fn retain_workspace(context: &OperationServices, path: &Path) -> Result<Self, CheckedFsError> {
         let resolved = resolve_workspace_paths_in(context, path)?;
         let target = retain_ambient_directory_in(
             context.filesystem(),
@@ -185,7 +185,7 @@ impl RetainedCatalogTargetV1 {
     }
 
     fn retain_git_directory(
-        context: &OperationContext,
+        context: &OperationServices,
         path: &Path,
     ) -> Result<Self, CheckedFsError> {
         let canonical_path = canonical_git_directory(context, path)?;
@@ -210,7 +210,7 @@ impl RetainedCatalogTargetV1 {
     }
 
     fn retain_repository_common_git_directory(
-        context: &OperationContext,
+        context: &OperationServices,
         path: &Path,
     ) -> Result<Self, CheckedFsError> {
         let association = RetainedCatalogGitAssociationV1::retain(context, path)?;
@@ -221,7 +221,7 @@ impl RetainedCatalogTargetV1 {
     }
 
     fn finish(
-        context: &OperationContext,
+        context: &OperationServices,
         root_kind: PreCatalogRootKindV1,
         canonical_path: PathBuf,
         related_git_directory_path: PathBuf,
@@ -456,7 +456,7 @@ impl RetainedCatalogTargetV1 {
 }
 
 pub(super) struct HeldCatalogTargetV1 {
-    pub(super) context: crate::operation_context::OperationContext,
+    pub(super) context: crate::operation_context::OperationServices,
     pub(super) target: RetainedCatalogTargetV1,
     associated_targets: Vec<RetainedCatalogTargetV1>,
     _runtime_dir: Option<RetainedDirectory>,
@@ -507,7 +507,7 @@ impl HeldCatalogTargetV1 {
 }
 
 fn canonical_git_directory(
-    context: &OperationContext,
+    context: &OperationServices,
     path: &Path,
 ) -> Result<PathBuf, CheckedFsError> {
     let filesystem = context.filesystem();

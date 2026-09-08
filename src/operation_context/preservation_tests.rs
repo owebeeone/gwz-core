@@ -4,7 +4,7 @@ use crate::git::*;
 const MARKER: &str = "gwz.conf/markers/merge_context.yaml";
 const LOCK: &str = crate::artifact::LOCK_PATH;
 
-fn write(context: &OperationContext, root: &Path, path: &str, bytes: &[u8]) {
+fn write(context: &OperationServices, root: &Path, path: &str, bytes: &[u8]) {
     let path = root.join(path);
     context
         .filesystem()
@@ -17,7 +17,7 @@ fn write(context: &OperationContext, root: &Path, path: &str, bytes: &[u8]) {
     context.filesystem().write_all(&file, bytes).unwrap();
 }
 
-fn form(context: &OperationContext, root: &Path) -> GitRootManagedForm {
+fn form(context: &OperationServices, root: &Path) -> GitRootManagedForm {
     let index = context.repository().repository_index(root).unwrap();
     let fact = |path: &str| {
         index

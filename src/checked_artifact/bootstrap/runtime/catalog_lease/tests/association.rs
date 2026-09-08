@@ -6,7 +6,7 @@ use crate::checked_artifact::bootstrap::runtime::{
 };
 use crate::operation_context::TestWorld;
 
-fn test_world_context() -> crate::operation_context::OperationContext {
+fn test_world_context() -> crate::operation_context::OperationServices {
     TestWorld::physical().context()
 }
 

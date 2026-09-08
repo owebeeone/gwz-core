@@ -1,4 +1,4 @@
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 use std::path::Path;
 
 #[cfg(test)]
@@ -50,7 +50,7 @@ impl<T> PlatformProviderV1 for T where
 
 pub(super) struct FilesystemPreCatalogProvider<P> {
     platform: P,
-    context: OperationContext,
+    context: OperationServices,
     #[cfg(test)]
     hook: Option<TestHook>,
 }
@@ -82,7 +82,7 @@ struct Observed {
 pub(super) fn platform_pre_catalog_provider() -> FilesystemPreCatalogProvider<HostPlatform> {
     FilesystemPreCatalogProvider {
         platform: HostPlatform,
-        context: OperationContext::existing(),
+        context: OperationServices::existing(),
         #[cfg(test)]
         hook: None,
     }
@@ -105,7 +105,7 @@ where
 {
     FilesystemPreCatalogProvider {
         platform,
-        context: OperationContext::existing(),
+        context: OperationServices::existing(),
         hook: hook.map(|callback| TestHook {
             callback,
             fired: AtomicBool::new(false),
@@ -341,7 +341,7 @@ impl Observed {
 }
 
 pub(super) fn platform_pre_catalog_provider_in(
-    context: OperationContext,
+    context: OperationServices,
 ) -> FilesystemPreCatalogProvider<HostPlatform> {
     FilesystemPreCatalogProvider {
         context,

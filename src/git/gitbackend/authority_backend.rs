@@ -4,7 +4,7 @@
 
 mod sealed {
     pub(crate) trait Sealed {
-        fn operation_services(&self) -> crate::operation_context::OperationContext;
+        fn operation_services(&self) -> crate::operation_context::OperationServices;
     }
 }
 
@@ -18,8 +18,8 @@ mod sealed {
 pub trait MergeAuthorityBackend: super::contract::GitBackend + sealed::Sealed {}
 
 impl sealed::Sealed for super::backend::Git2Backend {
-    fn operation_services(&self) -> crate::operation_context::OperationContext {
-        crate::operation_context::OperationContext::from_services(
+    fn operation_services(&self) -> crate::operation_context::OperationServices {
+        crate::operation_context::OperationServices::from_services(
             self.filesystem.clone(),
             std::sync::Arc::new(self.clone()),
         )
@@ -29,10 +29,10 @@ impl MergeAuthorityBackend for super::backend::Git2Backend {}
 
 #[cfg(test)]
 impl sealed::Sealed for super::factory::GitTestRepository {
-    fn operation_services(&self) -> crate::operation_context::OperationContext {
+    fn operation_services(&self) -> crate::operation_context::OperationServices {
         match self {
             Self::Real(repository) => repository.operation_services(),
-            Self::Fake(repository) => crate::operation_context::OperationContext::from_services(
+            Self::Fake(repository) => crate::operation_context::OperationServices::from_services(
                 repository.filesystem.clone(),
                 std::sync::Arc::new((**repository).clone()),
             ),

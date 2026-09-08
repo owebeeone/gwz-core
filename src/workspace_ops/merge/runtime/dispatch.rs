@@ -133,7 +133,7 @@ where
     B: MergeAuthorityBackend,
 {
     let operation_id = operation_id.into();
-    let services = crate::operation_context::OperationContext::for_merge(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let store = FileMergeStore;
     let clock = SystemClock;
     let mut ids = OperationScopedIds::new(&operation_id);
@@ -164,7 +164,7 @@ fn handle_merge_invocation<B, S, C, I>(
     start: &Path,
     request: crate::MergeRequest,
     operation_id: String,
-    services: &crate::operation_context::OperationContext,
+    services: &crate::operation_context::OperationServices,
     enforce_start_gate: bool,
     v1: &dyn V1Router,
 ) -> ModelResult<crate::MergeResponse>
@@ -227,7 +227,7 @@ fn dispatch_merge<B, S, C, I>(
     start: &Path,
     request: crate::MergeRequest,
     context: crate::operation::OperationContext,
-    services: &crate::operation_context::OperationContext,
+    services: &crate::operation_context::OperationServices,
     emitter: &crate::operation::EventEmitter<'_>,
     v1: &dyn V1Router,
     start_guard: Option<super::WorkspaceMutationGuard>,

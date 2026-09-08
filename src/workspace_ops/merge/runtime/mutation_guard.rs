@@ -71,7 +71,7 @@ impl WorkspaceMutationAccess {
 }
 
 pub(crate) fn acquire_workspace_mutation_guard_in(
-    services: &crate::operation_context::OperationContext,
+    services: &crate::operation_context::OperationServices,
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
     command: crate::operation::OpenMergeCommand,
@@ -113,7 +113,7 @@ pub fn acquire_workspace_mutation_guard(
     dry_run: bool,
 ) -> ModelResult<WorkspaceMutationAccess> {
     acquire_workspace_mutation_guard_in(
-        &crate::operation_context::OperationContext::existing(),
+        &crate::operation_context::OperationServices::existing(),
         start,
         workspace,
         command,
@@ -124,7 +124,7 @@ pub fn acquire_workspace_mutation_guard(
 /// Resolve and enforce a gated dry-run without taking the mutator lock, or
 /// retain the authoritative guard for a real mutation.
 pub(crate) fn guarded_workspace_root_in(
-    services: &crate::operation_context::OperationContext,
+    services: &crate::operation_context::OperationServices,
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
     command: crate::operation::OpenMergeCommand,

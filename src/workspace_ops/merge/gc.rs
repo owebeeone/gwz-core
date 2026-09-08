@@ -181,7 +181,7 @@ pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
     store: &S,
     root: &Path,
     merge_id: Option<&str>,
-    services: &crate::operation_context::OperationContext,
+    services: &crate::operation_context::OperationServices,
     context: &OperationContext,
 ) -> ModelResult<crate::MergeResponse> {
     let _guard = WorkspaceMutatorLock::acquire_in(services, root)?;

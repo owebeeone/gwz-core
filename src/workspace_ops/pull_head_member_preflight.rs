@@ -40,7 +40,7 @@ pub fn handle_pull_head_with_events<B>(
 where
     B: GitBackend + Sync,
 {
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let context = OperationRequest::PullHead(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);

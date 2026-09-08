@@ -45,7 +45,7 @@ pub fn handle_create_workspace(
     }
     ensure_workspace_git_repo(&root)?;
     let backend = Git2Backend::new();
-    let services = crate::operation_context::OperationContext::for_merge(&backend);
+    let services = crate::operation_context::OperationServices::for_merge(&backend);
     let _guard = WorkspaceMutatorLock::acquire_in(&services, &root)?;
 
     let manifest = ManifestArtifact {
@@ -90,7 +90,7 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::CreateRepo(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     if request
         .initial_branch
         .as_ref()
@@ -257,7 +257,7 @@ where
 {
     let context =
         OperationRequest::AddExistingRepo(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root_in(
         &services,
@@ -473,7 +473,7 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::RepoSync(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root_in(
         &services,

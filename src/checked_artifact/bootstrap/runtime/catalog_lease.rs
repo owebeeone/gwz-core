@@ -1,6 +1,6 @@
 //! Target-bound advisory leases for checked catalog mutation.
 
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 #[cfg(test)]
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -91,11 +91,11 @@ impl CatalogLeaseSetV1 {
     pub(in crate::checked_artifact) fn try_acquire(
         batch: CatalogLeaseTargetBatchV1,
     ) -> Result<Option<Self>, CheckedFsError> {
-        Self::try_acquire_in(&OperationContext::existing(), batch)
+        Self::try_acquire_in(&OperationServices::existing(), batch)
     }
 
     pub(in crate::checked_artifact) fn try_acquire_in(
-        context: &OperationContext,
+        context: &OperationServices,
         batch: CatalogLeaseTargetBatchV1,
     ) -> Result<Option<Self>, CheckedFsError> {
         let mut prepared = Vec::new();
@@ -262,7 +262,7 @@ fn deduplicate_exact_locations(
 
 impl RetainedCatalogTargetGroupV1 {
     fn retain(
-        context: &OperationContext,
+        context: &OperationServices,
         expected: &PreparedCatalogTargetV1,
     ) -> Result<Self, CheckedFsError> {
         let mut requests = expected.requests.iter();
@@ -310,7 +310,7 @@ impl RetainedCatalogTargetGroupV1 {
 }
 
 fn retain_prepared_request(
-    context: &OperationContext,
+    context: &OperationServices,
     binding: &CatalogTargetBindingV1,
     expected: &PreparedCatalogRequestV1,
 ) -> Result<RetainedCatalogTargetV1, CheckedFsError> {

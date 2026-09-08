@@ -43,7 +43,7 @@ pub fn handle_clone_repo_member<B>(
 where
     B: GitBackend,
 {
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let context =
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
@@ -201,7 +201,7 @@ pub fn handle_detach_repo_member<B>(
 where
     B: GitBackend,
 {
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let context =
         OperationRequest::DetachRepoMember(request.clone()).context(operation_id.into())?;
     let selector = validate_single_detach_selector(request.meta.selection.as_ref())?;
@@ -279,7 +279,7 @@ pub fn handle_attach_repo_member<B>(
 where
     B: GitBackend,
 {
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let context =
         OperationRequest::AttachRepoMember(request.clone()).context(operation_id.into())?;
     let member_id = validate_single_attach_selector(request.meta.selection.as_ref())?;

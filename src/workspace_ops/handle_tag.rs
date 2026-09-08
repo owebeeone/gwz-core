@@ -22,7 +22,7 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();

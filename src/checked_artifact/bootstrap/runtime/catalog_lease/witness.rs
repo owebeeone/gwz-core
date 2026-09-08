@@ -30,7 +30,7 @@ pub(in crate::checked_artifact) struct CatalogLeaseTargetFactsV1 {
 impl<'lease> CatalogLeaseTargetWitnessV1<'lease> {
     pub(in crate::checked_artifact) fn context(
         &self,
-    ) -> crate::operation_context::OperationContext {
+    ) -> crate::operation_context::OperationServices {
         match self.lease.source {
             CatalogMutationLeaseSourceV1::WorkspaceRuntime(runtime) => runtime.context.clone(),
             CatalogMutationLeaseSourceV1::LeaseSet(held) => held.context.clone(),

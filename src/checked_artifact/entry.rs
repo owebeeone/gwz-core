@@ -659,13 +659,13 @@ impl CrashRecoveryDecision {
 #[cfg(test)]
 pub(crate) fn crash_recovery_decision(root: &Path) -> ModelResult<CrashRecoveryDecision> {
     crash_recovery_decision_in(
-        &crate::operation_context::OperationContext::existing(),
+        &crate::operation_context::OperationServices::existing(),
         root,
     )
 }
 
 pub(crate) fn crash_recovery_decision_in(
-    context: &crate::operation_context::OperationContext,
+    context: &crate::operation_context::OperationServices,
     root: &Path,
 ) -> ModelResult<CrashRecoveryDecision> {
     let probe = probe_workspace_admission(context, root);

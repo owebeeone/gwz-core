@@ -166,7 +166,7 @@ fn gc_archived_with_hook<B: MergeAuthorityBackend, F: FnOnce()>(
     merge_id: &str,
     after_ref_deletions: F,
 ) -> ModelResult<ValidatedArchivedMerge> {
-    let services = crate::operation_context::OperationContext::for_merge(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let filesystem = services.filesystem();
     let _guard = WorkspaceMutatorLock::acquire_in(&services, root)?;
     if any_open_record_present(filesystem, root)? {

@@ -55,7 +55,7 @@ pub fn handle_update_workspace_bootstrap<B>(
 where
     B: GitBackend,
 {
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let context =
         OperationContext::from_meta(operation_id.into(), ActionKind::InitFromSources, &meta)?;
     let (_guard, root) = guarded_workspace_root_in(

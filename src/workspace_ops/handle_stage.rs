@@ -23,7 +23,7 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Stage(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let _access = acquire_workspace_mutation_guard_in(
         &services,
         start,

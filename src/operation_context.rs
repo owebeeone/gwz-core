@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(crate) struct OperationContext {
+pub(crate) struct OperationServices {
     filesystem: Arc<dyn FileSystem>,
     repository: Arc<dyn GitRepository + Send + Sync>,
 }
@@ -28,7 +28,7 @@ impl<'a> BorrowedOperationContext<'a> {
     }
 }
 
-impl OperationContext {
+impl OperationServices {
     pub(crate) fn from_services(
         filesystem: Arc<dyn FileSystem>,
         repository: Arc<dyn GitRepository + Send + Sync>,
@@ -43,21 +43,15 @@ impl OperationContext {
     pub(crate) fn for_merge(backend: &impl crate::git::MergeAuthorityBackend) -> Self {
         backend.operation_services()
     }
-    /// Compatibility construction at entry points not yet accepting a context.
+    /// Compatibility construction at entry points not yet accepting services.
+    ///
+    /// This is always native. Tests choose `TestWorld` explicitly; a public
+    /// operation must never silently switch its dependencies because a test
+    /// executable set a process-wide mode.
     pub(crate) fn existing() -> Self {
-        #[cfg(not(test))]
-        {
-            Self::native()
-        }
-        #[cfg(test)]
-        {
-            Self {
-                filesystem: Arc::new(crate::filesystem::make_filesystem()),
-                repository: Arc::new(crate::git::make_repository()),
-            }
-        }
+        Self::native()
     }
-    #[cfg(not(test))]
+
     pub(crate) fn native() -> Self {
         let repository = Git2Repository::new();
         Self {
@@ -75,7 +69,7 @@ impl OperationContext {
 
 #[cfg(test)]
 pub(crate) struct TestWorld {
-    context: OperationContext,
+    context: OperationServices,
     repository: crate::git::GitTestRepository,
 }
 
@@ -115,14 +109,14 @@ impl TestWorld {
             }
         };
         Self {
-            context: OperationContext {
+            context: OperationServices {
                 filesystem,
                 repository: Arc::new(repository.clone()),
             },
             repository,
         }
     }
-    pub(crate) fn context(&self) -> OperationContext {
+    pub(crate) fn context(&self) -> OperationServices {
         self.context.clone()
     }
 

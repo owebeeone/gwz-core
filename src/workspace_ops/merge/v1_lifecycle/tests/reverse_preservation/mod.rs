@@ -105,7 +105,7 @@ impl FixtureFs<'_> {
 pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct PreservationFixture<
     B = GitTestRepository,
 > {
-    services: crate::operation_context::OperationContext,
+    services: crate::operation_context::OperationServices,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) root: TempDir,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) backend: B,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) member: std::path::PathBuf,
@@ -161,14 +161,14 @@ fn integrated_fixture_using<B: GitBackend>(name: &str, backend: B) -> Preservati
     integrated_fixture_in(
         name,
         backend,
-        crate::operation_context::OperationContext::existing(),
+        crate::operation_context::OperationServices::existing(),
     )
 }
 
 fn integrated_fixture_in<B: GitBackend>(
     _name: &str,
     backend: B,
-    services: crate::operation_context::OperationContext,
+    services: crate::operation_context::OperationServices,
 ) -> PreservationFixture<B> {
     let fs = FixtureFs(services.filesystem());
     let workspace = services.filesystem().test_workspace().unwrap();
@@ -391,7 +391,7 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
         include_later_member,
         degenerate_candidate,
         backend,
-        crate::operation_context::OperationContext::existing(),
+        crate::operation_context::OperationServices::existing(),
     )
 }
 
@@ -401,7 +401,7 @@ fn dirty_root_handoff_fixture_in<B: GitBackend>(
     include_later_member: bool,
     degenerate_candidate: bool,
     backend: B,
-    services: crate::operation_context::OperationContext,
+    services: crate::operation_context::OperationServices,
 ) -> RootPreservationFixture<B> {
     let mut base = integrated_fixture_in(name, backend, services.clone());
     let fs = FixtureFs(services.filesystem());

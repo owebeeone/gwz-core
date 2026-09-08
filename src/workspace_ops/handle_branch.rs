@@ -17,7 +17,7 @@ pub fn handle_branch<B>(
 where
     B: GitBackend,
 {
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     if request.op == crate::BranchOp::Merge {
         return Err(ModelError::new(
             ErrorCode::DeprecatedOperation,

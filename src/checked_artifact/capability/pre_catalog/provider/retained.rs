@@ -1,6 +1,6 @@
 use crate::filesystem::FileSystem;
 use crate::filesystem::FsKind;
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -98,7 +98,7 @@ impl RetainedFile {
 }
 
 pub(in crate::checked_artifact::capability::pre_catalog) struct RetainedPlatformRoot {
-    context: OperationContext,
+    context: OperationServices,
     root_path: PathBuf,
     git_directory_path: PathBuf,
     common_directory_path: PathBuf,
@@ -127,7 +127,7 @@ impl AliasObservationV1 {
 }
 
 impl RetainedPlatformRoot {
-    pub(super) fn context(&self) -> &OperationContext {
+    pub(super) fn context(&self) -> &OperationServices {
         &self.context
     }
     pub(super) fn root_path(&self) -> &Path {
@@ -189,7 +189,7 @@ impl RetainedPlatformRoot {
 }
 
 pub(super) fn retain_workspace(
-    context: &OperationContext,
+    context: &OperationServices,
     path: &Path,
     platform: &impl PlatformProviderV1,
 ) -> Result<RetainedPlatformRoot, CheckedFsError> {
@@ -244,7 +244,7 @@ pub(super) fn retain_workspace(
 }
 
 pub(super) fn retain_git_directory(
-    context: &OperationContext,
+    context: &OperationServices,
     path: &Path,
     platform: &impl PlatformProviderV1,
 ) -> Result<RetainedPlatformRoot, CheckedFsError> {

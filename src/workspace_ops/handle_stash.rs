@@ -33,7 +33,7 @@ pub fn handle_stash<B>(
 where
     B: GitBackend,
 {
-    let services = crate::operation_context::OperationContext::existing();
+    let services = crate::operation_context::OperationServices::existing();
     let context = OperationRequest::Stash(request.clone()).context(operation_id.into())?;
     let (_guard, root) = if request.op == crate::StashOp::List {
         (

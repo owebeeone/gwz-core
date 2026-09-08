@@ -11,7 +11,7 @@ use super::super::record_wire::UnknownFieldManifest;
 use crate::filesystem::{FileSystem, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::WorkspaceMutatorLock;
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RecordDigest([u8; 32]);
@@ -39,7 +39,7 @@ impl OpenRecordLocation {
 }
 
 pub(super) struct StoredV1Record {
-    context: OperationContext,
+    context: OperationServices,
     typed: ValidatedV1Record,
     raw: Value,
     unknown_fields: UnknownFieldManifest,
@@ -71,15 +71,15 @@ impl StoredV1Record {
 
     #[cfg(test)]
     pub(super) fn from_open_bytes(root: &Path, path: &Path, bytes: &[u8]) -> ModelResult<Self> {
-        Self::from_open_bytes_in(&OperationContext::existing(), root, path, bytes)
+        Self::from_open_bytes_in(&OperationServices::existing(), root, path, bytes)
     }
 
-    pub(super) fn context(&self) -> &OperationContext {
+    pub(super) fn context(&self) -> &OperationServices {
         &self.context
     }
 
     pub(super) fn from_open_bytes_in(
-        context: &OperationContext,
+        context: &OperationServices,
         root: &Path,
         path: &Path,
         bytes: &[u8],
@@ -123,7 +123,7 @@ impl StoredV1Record {
         let merge_id = record.merge_id.clone();
         Ok(Self {
             typed: validate_v1_record(record)?,
-            context: OperationContext::existing(),
+            context: OperationServices::existing(),
             raw,
             unknown_fields,
             source_digest: RecordDigest::from_bytes(&bytes),
@@ -146,11 +146,11 @@ impl StoredV1Record {
 pub(super) struct V1MutationLease {
     guard: WorkspaceMutatorLock,
     workspace_root: PathBuf,
-    context: OperationContext,
+    context: OperationServices,
 }
 
 impl V1MutationLease {
-    pub(super) fn context(&self) -> &OperationContext {
+    pub(super) fn context(&self) -> &OperationServices {
         &self.context
     }
     /// The plain lease: the workspace mutator lock and nothing else.
@@ -167,10 +167,10 @@ impl V1MutationLease {
     /// ON this lease. A dated residual shipped with A1; DR-1's (C) is the cure.
     #[cfg(test)]
     pub(super) fn acquire(root: &Path) -> ModelResult<Self> {
-        Self::acquire_in(&OperationContext::existing(), root)
+        Self::acquire_in(&OperationServices::existing(), root)
     }
 
-    pub(super) fn acquire_in(context: &OperationContext, root: &Path) -> ModelResult<Self> {
+    pub(super) fn acquire_in(context: &OperationServices, root: &Path) -> ModelResult<Self> {
         let workspace_root = context
             .filesystem()
             .canonical_path(root)
@@ -200,11 +200,11 @@ impl V1MutationLease {
     /// untouched; the catalog's own partial state converges on restart.
     #[cfg(test)]
     pub(super) fn acquire_activated(root: &Path) -> ModelResult<Self> {
-        Self::acquire_activated_in(&OperationContext::existing(), root)
+        Self::acquire_activated_in(&OperationServices::existing(), root)
     }
 
     pub(super) fn acquire_activated_in(
-        context: &OperationContext,
+        context: &OperationServices,
         root: &Path,
     ) -> ModelResult<Self> {
         let lease = Self::acquire_in(context, root)?;
@@ -225,11 +225,11 @@ impl V1MutationLease {
     /// Two leases: admission consumes the first, execution recovers after it.
     #[cfg(test)]
     pub(super) fn acquire_for_merge_start(root: &Path, workspace_id: &str) -> ModelResult<Self> {
-        Self::acquire_for_merge_start_in(&OperationContext::existing(), root, workspace_id)
+        Self::acquire_for_merge_start_in(&OperationServices::existing(), root, workspace_id)
     }
 
     pub(super) fn acquire_for_merge_start_in(
-        context: &OperationContext,
+        context: &OperationServices,
         root: &Path,
         workspace_id: &str,
     ) -> ModelResult<Self> {
@@ -262,7 +262,7 @@ impl V1MutationLease {
     /// is unchanged and still publishes the record through the checked boundary
     /// (charter §4.1).
     pub(super) fn acquire_for_merge_start_uncatalogued_in(
-        context: &OperationContext,
+        context: &OperationServices,
         root: &Path,
     ) -> ModelResult<Self> {
         let lease = Self::acquire_in(context, root)?;

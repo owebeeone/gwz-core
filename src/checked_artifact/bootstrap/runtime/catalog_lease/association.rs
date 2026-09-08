@@ -10,7 +10,7 @@ use crate::checked_artifact::capability::{
     PathComponentMode, PathEquivalenceProvider, SupportedFilesystemProfile,
 };
 use crate::filesystem::{FileSystem, FsKind};
-use crate::operation_context::OperationContext;
+use crate::operation_context::OperationServices;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CatalogAssociationDirectoryBindingV1 {
@@ -35,7 +35,7 @@ pub(super) struct CatalogGitAssociationBindingV1 {
 }
 
 pub(super) struct RetainedCatalogGitAssociationV1 {
-    context: OperationContext,
+    context: OperationServices,
     binding: CatalogGitAssociationBindingV1,
     request: RetainedAssociationDirectoryV1,
     worktree: Option<RetainedAssociationDirectoryV1>,
@@ -44,7 +44,7 @@ pub(super) struct RetainedCatalogGitAssociationV1 {
 }
 
 impl RetainedCatalogGitAssociationV1 {
-    pub(super) fn retain(context: &OperationContext, path: &Path) -> Result<Self, CheckedFsError> {
+    pub(super) fn retain(context: &OperationServices, path: &Path) -> Result<Self, CheckedFsError> {
         let repository = context
             .repository()
             .repository_paths(path)

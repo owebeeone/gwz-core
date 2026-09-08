@@ -1,11 +1,11 @@
 use super::super::*;
 use super::write_open_v1_record;
 use crate::model::ErrorCode;
-use crate::operation_context::{OperationContext, TestWorld};
+use crate::operation_context::{OperationServices, TestWorld};
 use crate::workspace_ops::tests::TempDir;
 use std::path::Path;
 
-fn physical_context() -> OperationContext {
+fn physical_context() -> OperationServices {
     TestWorld::physical().context()
 }
 
