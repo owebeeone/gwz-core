@@ -175,9 +175,14 @@ fn verify_bundle_prefix<B: crate::git::MergeAuthorityBackend>(
     plans: &[V1PreservationOwnerPlan],
 ) -> ModelResult<()> {
     let owner = plans.last();
-    let exact =
-        v1_bundle_cursor_is_exact(backend, current.location().root(), current.record(), plans)
-            .map_err(|error| attach_plan(error, owner))?;
+    let exact = v1_bundle_cursor_is_exact(
+        current.context().filesystem(),
+        backend,
+        current.location().root(),
+        current.record(),
+        plans,
+    )
+    .map_err(|error| attach_plan(error, owner))?;
     if !exact {
         return Err(owner.map_or_else(
             || preservation_error("preservation bundle exists for an empty owner set"),
@@ -214,6 +219,7 @@ fn verify_pending_bundle_prefix<B: crate::git::MergeAuthorityBackend>(
         return verify_bundle_prefix(backend, current, plans);
     }
     let observed = v1_bundle_observation(
+        current.context().filesystem(),
         backend,
         current.location().root(),
         current.record(),

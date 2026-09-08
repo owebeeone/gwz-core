@@ -50,6 +50,16 @@ OBSERVATIONS = {'canonicalize', 'exists', 'try_exists', 'is_file', 'is_dir',
 # These consumers receive their dependencies from a context or retained handle.
 # Compatibility constructors remain outside this migrated scope.
 CONTEXT_PROTECTED = (
+    'src/workspace_ops/merge/v1_lifecycle',
+    'src/workspace_ops/merge/preserve/checked_bundle.rs',
+    'src/workspace_ops/merge/root/artifact_facts.rs',
+    'src/workspace_ops/merge/root/v1_rollback.rs',
+    'src/workspace_ops/merge/v1_rollback',
+    'src/checked_artifact/entry.rs',
+    'src/checked_artifact/observation.rs',
+    'src/checked_artifact/bootstrap/runtime/paths.rs',
+    'src/checked_artifact/bootstrap/runtime/catalog_lease.rs',
+    'src/checked_artifact/bootstrap/runtime/catalog_lease',
     'src/filesystem/retained.rs',
     'src/git/gitbackend/preservation_root.rs',
     'src/git/gitbackend/preservation_root',
@@ -267,6 +277,10 @@ def main():
                 continue
             files = sorted(entry.rglob('*.rs')) if entry.is_dir() else [entry]
             for path in files:
+                if (any(part in {'tests', 'interface_tests'} or part.endswith('_tests') for part in path.parts)
+                        or path.stem.startswith('tests') or path.stem.endswith('_tests')
+                        or path.stem == 'test_support'):
+                    continue
                 for line, message in context_violations(production_source(path.read_text())):
                     failures.append(f'{path}:{line}: {message}')
     if failures:

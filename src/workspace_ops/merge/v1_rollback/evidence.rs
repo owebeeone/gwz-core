@@ -7,6 +7,7 @@
 
 use super::super::root::artifact_facts;
 use crate::artifact;
+use crate::filesystem::FileSystem;
 use crate::git::GitCandidateFile;
 use crate::git::{GitBackend, GitRepositoryState};
 use crate::model::{ErrorCode, ModelError, ModelResult};
@@ -23,6 +24,7 @@ pub(in crate::workspace_ops::merge) enum V1EvidenceRollbackObservation {
 }
 
 pub(in crate::workspace_ops::merge) fn preflight_v1_evidence<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &MergeOperationRecordV1,
@@ -33,7 +35,7 @@ pub(in crate::workspace_ops::merge) fn preflight_v1_evidence<B: GitBackend>(
     if publication.candidate.is_some()
         && publication.composition_commit.is_some()
         && !publication.evidence_rolled_back
-        && !evidence_shape_is_exact(backend, root, record)?
+        && !evidence_shape_is_exact(filesystem, backend, root, record)?
     {
         return Err(root_error(
             "publication evidence is not at an exact rollback-representable state",
@@ -43,6 +45,7 @@ pub(in crate::workspace_ops::merge) fn preflight_v1_evidence<B: GitBackend>(
 }
 
 pub(in crate::workspace_ops::merge) fn observe_v1_evidence_rollback<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &MergeOperationRecordV1,
@@ -55,7 +58,7 @@ pub(in crate::workspace_ops::merge) fn observe_v1_evidence_rollback<B: GitBacken
         .ok_or_else(|| root_error("publication-evidence rollback has no immutable candidate"))?;
     let head_before = exact_evidence_head(backend, root, record, true)?;
     let head_after = exact_evidence_head(backend, root, record, false)?;
-    let files = file_states(root, record, Some(step))?;
+    let files = file_states(filesystem, root, record, Some(step))?;
     let index = index_state(backend, root, record)?;
     Ok(classify_v1_evidence_rollback(
         step,
@@ -67,12 +70,13 @@ pub(in crate::workspace_ops::merge) fn observe_v1_evidence_rollback<B: GitBacken
 }
 
 pub(in crate::workspace_ops::merge) fn v1_evidence_residue_after_selected_root_is_exact(
+    filesystem: &dyn FileSystem,
     root: &Path,
     record: &MergeOperationRecordV1,
 ) -> ModelResult<bool> {
     let candidate = candidate_v1(record)?;
-    let boundary = artifact_facts::observe(root, &boundary_relative(root)?)?;
-    let marker = artifact_facts::observe(root, marker_path_v1(record)?)?;
+    let boundary = artifact_facts::observe(filesystem, root, &boundary_relative(root)?)?;
+    let marker = artifact_facts::observe(filesystem, root, marker_path_v1(record)?)?;
     Ok(boundary
         == artifact_facts::RegularFileFact::Bytes(
             candidate.baseline_boundary_text.as_bytes().to_vec(),
@@ -113,12 +117,13 @@ fn classify_v1_evidence_rollback(
 }
 
 pub(in crate::workspace_ops::merge) fn execute_v1_evidence_rollback<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &MergeOperationRecordV1,
     step: EvidenceRollbackStepV1,
 ) -> ModelResult<()> {
-    if observe_v1_evidence_rollback(backend, root, record, step)?
+    if observe_v1_evidence_rollback(filesystem, backend, root, record, step)?
         != V1EvidenceRollbackObservation::Before
     {
         return Err(root_error(
@@ -136,18 +141,21 @@ pub(in crate::workspace_ops::merge) fn execute_v1_evidence_rollback<B: GitBacken
             &crate::workspace_ops::merge::acceptance::v1_composition_message(record),
         ),
         EvidenceRollbackStepV1::Boundary => artifact_facts::write_checked(
+            filesystem,
             root,
             &boundary_relative(root)?,
             candidate.boundary_text.as_bytes(),
             candidate.baseline_boundary_text.as_bytes(),
         ),
         EvidenceRollbackStepV1::Lock => artifact_facts::write_checked(
+            filesystem,
             root,
             artifact::LOCK_PATH,
             candidate.lock_yaml.as_bytes(),
             candidate.baseline_lock_yaml.as_bytes(),
         ),
         EvidenceRollbackStepV1::Marker => artifact_facts::remove_exact(
+            filesystem,
             root,
             marker_path_v1(record)?,
             candidate.marker_yaml.as_bytes(),
@@ -257,6 +265,7 @@ impl EvidenceFileStates {
 use FileState::{Baseline as B, Candidate as C};
 
 fn file_states(
+    filesystem: &dyn FileSystem,
     root: &Path,
     record: &MergeOperationRecordV1,
     pending: Option<EvidenceRollbackStepV1>,
@@ -265,6 +274,7 @@ fn file_states(
     Ok(EvidenceFileStates {
         boundary: if pending == Some(EvidenceRollbackStepV1::Boundary) {
             transition_file(artifact_facts::classify_write(
+                filesystem,
                 root,
                 &boundary_relative(root)?,
                 candidate.boundary_text.as_bytes(),
@@ -272,7 +282,7 @@ fn file_states(
             )?)
         } else {
             classify_file(
-                artifact_facts::observe(root, &boundary_relative(root)?)?,
+                artifact_facts::observe(filesystem, root, &boundary_relative(root)?)?,
                 candidate.boundary_text.as_bytes(),
                 candidate.baseline_boundary_text.as_bytes(),
                 false,
@@ -280,6 +290,7 @@ fn file_states(
         },
         lock: if pending == Some(EvidenceRollbackStepV1::Lock) {
             transition_file(artifact_facts::classify_write(
+                filesystem,
                 root,
                 artifact::LOCK_PATH,
                 candidate.lock_yaml.as_bytes(),
@@ -287,7 +298,7 @@ fn file_states(
             )?)
         } else {
             classify_file(
-                artifact_facts::observe(root, artifact::LOCK_PATH)?,
+                artifact_facts::observe(filesystem, root, artifact::LOCK_PATH)?,
                 candidate.lock_yaml.as_bytes(),
                 candidate.baseline_lock_yaml.as_bytes(),
                 false,
@@ -295,13 +306,14 @@ fn file_states(
         },
         marker: if pending == Some(EvidenceRollbackStepV1::Marker) {
             transition_file(artifact_facts::classify_remove(
+                filesystem,
                 root,
                 marker_path_v1(record)?,
                 candidate.marker_yaml.as_bytes(),
             )?)
         } else {
             classify_file(
-                artifact_facts::observe(root, marker_path_v1(record)?)?,
+                artifact_facts::observe(filesystem, root, marker_path_v1(record)?)?,
                 candidate.marker_yaml.as_bytes(),
                 &[],
                 true,
@@ -374,11 +386,12 @@ fn index_state<B: GitBackend>(
 }
 
 fn evidence_shape_is_exact<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &MergeOperationRecordV1,
 ) -> ModelResult<bool> {
-    let files = file_states(root, record, None)?;
+    let files = file_states(filesystem, root, record, None)?;
     let index = index_state(backend, root, record)?;
     Ok(classify_v1_evidence_rollback(
         EvidenceRollbackStepV1::EvidenceCommit,

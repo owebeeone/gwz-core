@@ -19,6 +19,8 @@ FILESYSTEM_CONTRACTS = (
     "store::rewrite::filesystem_tests::",
 )
 CONTRACTS = (
+    "catalog_batch_uses_its_world_through_reopen_and_contention",
+    "service_reopens_and_commits_in_the_supplied_world",
     "operation_context::",
     "checked::context_tests::",
     "git::gitbackend::repository_contract_tests::",

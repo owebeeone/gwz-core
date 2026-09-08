@@ -69,6 +69,7 @@ impl StoredV1Record {
         &self.unknown_fields
     }
 
+    #[cfg(test)]
     pub(super) fn from_open_bytes(root: &Path, path: &Path, bytes: &[u8]) -> ModelResult<Self> {
         Self::from_open_bytes_in(&OperationContext::existing(), root, path, bytes)
     }
@@ -164,6 +165,7 @@ impl V1MutationLease {
     /// checked artifact — a preservation bundle, a selected root's manifest and
     /// lock, or the published evidence — still takes the legacy identity probe
     /// ON this lease. A dated residual shipped with A1; DR-1's (C) is the cure.
+    #[cfg(test)]
     pub(super) fn acquire(root: &Path) -> ModelResult<Self> {
         Self::acquire_in(&OperationContext::existing(), root)
     }
@@ -196,6 +198,7 @@ impl V1MutationLease {
     /// **Ordering** (E0.2b §5.3 item 6): taken before `create_open` and before
     /// the service's commit loop, so a refusal leaves the merge store
     /// untouched; the catalog's own partial state converges on restart.
+    #[cfg(test)]
     pub(super) fn acquire_activated(root: &Path) -> ModelResult<Self> {
         Self::acquire_activated_in(&OperationContext::existing(), root)
     }
@@ -220,6 +223,7 @@ impl V1MutationLease {
     /// recovers the catalog itself, so taking this lease activates it; E4.1's
     /// `acquire_activated` stays the forward SERVICE loop's, creating no parent.
     /// Two leases: admission consumes the first, execution recovers after it.
+    #[cfg(test)]
     pub(super) fn acquire_for_merge_start(root: &Path, workspace_id: &str) -> ModelResult<Self> {
         Self::acquire_for_merge_start_in(&OperationContext::existing(), root, workspace_id)
     }
@@ -257,8 +261,11 @@ impl V1MutationLease {
     /// and nothing inside the seam `r2d_seam_freeze.rs` freezes. `create_open`
     /// is unchanged and still publishes the record through the checked boundary
     /// (charter §4.1).
-    pub(super) fn acquire_for_merge_start_uncatalogued(root: &Path) -> ModelResult<Self> {
-        let lease = Self::acquire(root)?;
+    pub(super) fn acquire_for_merge_start_uncatalogued_in(
+        context: &OperationContext,
+        root: &Path,
+    ) -> ModelResult<Self> {
+        let lease = Self::acquire_in(context, root)?;
         crate::checked_artifact::entry::prepare_merge_start_parents_uncatalogued(
             lease.context().filesystem(),
             root,

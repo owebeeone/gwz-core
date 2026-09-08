@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::identity::{self, ObjectIdentity};
 use super::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, ParentState, error};
-use crate::filesystem::{FileSystem, FsDirectory, FsKind, make_filesystem};
+use crate::filesystem::{FileSystem, FsDirectory, FsKind};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 impl CheckedArtifact {
@@ -105,6 +105,7 @@ impl CheckedArtifact {
     /// probe it, so a volume that refuses handles never yields a
     /// `CheckedArtifact` at all, and `parent_is_current`'s own probe below is
     /// unreachable there.
+    #[cfg(test)]
     pub(super) fn acquire_with_escape(
         policy: CheckedArtifactPolicy,
         relative: &Path,
@@ -112,7 +113,14 @@ impl CheckedArtifact {
         label: impl Into<String>,
         escape: IdentityGapEscape,
     ) -> ModelResult<Self> {
-        Self::acquire_with_escape_in(&make_filesystem(), policy, relative, code, label, escape)
+        Self::acquire_with_escape_in(
+            &crate::filesystem::make_filesystem(),
+            policy,
+            relative,
+            code,
+            label,
+            escape,
+        )
     }
 
     pub(super) fn acquire_with_escape_in(
@@ -445,8 +453,7 @@ pub(super) enum IdentityGapEscape {
 /// creating nothing. Any failure — the open, or the probe — answers `false`,
 /// because every one of them means the door cannot bind this directory's
 /// durable identity.
-pub(super) fn directory_handles_ok(directory: &Path) -> bool {
-    let filesystem = make_filesystem();
+pub(super) fn directory_handles_ok(filesystem: &dyn FileSystem, directory: &Path) -> bool {
     filesystem
         .open_directory(directory)
         .is_ok_and(|dir| identity::filesystem_directory_identity(&dir).is_ok())

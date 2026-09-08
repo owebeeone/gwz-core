@@ -60,6 +60,7 @@ fn execute_checked<B: MergeAuthorityBackend>(
         }
         PendingRollbackActionV1::PublicationEvidence { next_step } => {
             crate::workspace_ops::merge::v1_rollback::execute_v1_evidence_rollback(
+                current.context().filesystem(),
                 backend,
                 current.location().root(),
                 current.record(),
@@ -68,6 +69,7 @@ fn execute_checked<B: MergeAuthorityBackend>(
         }
         PendingRollbackActionV1::SelectedRootMetadata { next_step } => {
             crate::workspace_ops::merge::root::execute_v1_root_metadata_rollback(
+                current.context().filesystem(),
                 backend,
                 current.location().root(),
                 current.record(),

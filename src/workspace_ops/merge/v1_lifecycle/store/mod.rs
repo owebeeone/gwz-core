@@ -8,8 +8,9 @@ use super::checked::{StoredV1Record, V1MutationLease};
 use super::transition::PreparedV1Rewrite;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone)]
 pub(super) struct CheckedV1Store {
+    context: crate::operation_context::OperationContext,
     commit_fault: Option<CommitFault>,
 }
 
@@ -26,13 +27,26 @@ pub(super) enum ArchiveOutcome {
     ReconciledBothCopies,
 }
 
+#[cfg(test)]
+impl Default for CheckedV1Store {
+    fn default() -> Self {
+        Self::new(crate::operation_context::OperationContext::existing())
+    }
+}
+
 impl CheckedV1Store {
+    pub(super) fn new(context: crate::operation_context::OperationContext) -> Self {
+        Self {
+            context,
+            commit_fault: None,
+        }
+    }
+
+    pub(super) fn context(&self) -> &crate::operation_context::OperationContext {
+        &self.context
+    }
     pub(super) fn load_open(&self, root: &Path, merge_id: &str) -> ModelResult<StoredV1Record> {
-        self.load_open_in(
-            &crate::operation_context::OperationContext::existing(),
-            root,
-            merge_id,
-        )
+        self.load_open_in(&self.context, root, merge_id)
     }
 
     pub(super) fn load_open_in(
@@ -94,6 +108,7 @@ impl CheckedV1Store {
     pub(super) fn failing_after(fault: CommitFault) -> Self {
         Self {
             commit_fault: Some(fault),
+            ..Self::default()
         }
     }
 }

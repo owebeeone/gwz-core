@@ -3,14 +3,14 @@
 use std::path::{Path, PathBuf};
 
 use super::super::paths::{
-    RetainedDirectory, retain_ambient_directory, revalidate_ambient_directory,
+    RetainedDirectory, retain_ambient_directory_in, revalidate_ambient_directory,
 };
 use crate::checked_artifact::capability::{
     CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1, HostPlatform,
     PathComponentMode, PathEquivalenceProvider, SupportedFilesystemProfile,
 };
-use crate::filesystem::{FileSystem, FsKind, make_filesystem};
-use crate::git::{GitRepository, make_repository};
+use crate::filesystem::{FileSystem, FsKind};
+use crate::operation_context::OperationContext;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CatalogAssociationDirectoryBindingV1 {
@@ -35,6 +35,7 @@ pub(super) struct CatalogGitAssociationBindingV1 {
 }
 
 pub(super) struct RetainedCatalogGitAssociationV1 {
+    context: OperationContext,
     binding: CatalogGitAssociationBindingV1,
     request: RetainedAssociationDirectoryV1,
     worktree: Option<RetainedAssociationDirectoryV1>,
@@ -43,25 +44,34 @@ pub(super) struct RetainedCatalogGitAssociationV1 {
 }
 
 impl RetainedCatalogGitAssociationV1 {
-    pub(super) fn retain(path: &Path) -> Result<Self, CheckedFsError> {
-        let repository = make_repository()
+    pub(super) fn retain(context: &OperationContext, path: &Path) -> Result<Self, CheckedFsError> {
+        let repository = context
+            .repository()
             .repository_paths(path)
             .map_err(git_error)?;
-        let (request_binding, request) =
-            RetainedAssociationDirectoryV1::retain(path, "catalog repository/worktree request")?;
+        let (request_binding, request) = RetainedAssociationDirectoryV1::retain(
+            context.filesystem(),
+            path,
+            "catalog repository/worktree request",
+        )?;
         let (worktree_binding, worktree) = match repository.worktree.as_deref() {
             Some(path) => {
-                let (binding, retained) =
-                    RetainedAssociationDirectoryV1::retain(path, "catalog worktree")?;
+                let (binding, retained) = RetainedAssociationDirectoryV1::retain(
+                    context.filesystem(),
+                    path,
+                    "catalog worktree",
+                )?;
                 (Some(binding), Some(retained))
             }
             None => (None, None),
         };
         let (actual_git_binding, actual_git_directory) = RetainedAssociationDirectoryV1::retain(
+            context.filesystem(),
             &repository.git_dir,
             "catalog actual Git directory",
         )?;
         let (common_git_binding, common_git_directory) = RetainedAssociationDirectoryV1::retain(
+            context.filesystem(),
             &repository.common_dir,
             "catalog common Git directory",
         )?;
@@ -72,6 +82,7 @@ impl RetainedCatalogGitAssociationV1 {
             common_git_directory: common_git_binding,
         };
         let retained = Self {
+            context: context.clone(),
             binding,
             request,
             worktree,
@@ -109,15 +120,25 @@ impl RetainedCatalogGitAssociationV1 {
             "catalog common Git directory",
         )?;
 
-        let repository = make_repository()
+        let repository = self
+            .context
+            .repository()
             .repository_paths(&self.binding.request.canonical_path)
             .map_err(git_error)?;
-        let actual = canonical_directory(&repository.git_dir, "catalog actual Git directory")?;
-        let common = canonical_directory(&repository.common_dir, "catalog common Git directory")?;
+        let actual = canonical_directory(
+            self.context.filesystem(),
+            &repository.git_dir,
+            "catalog actual Git directory",
+        )?;
+        let common = canonical_directory(
+            self.context.filesystem(),
+            &repository.common_dir,
+            "catalog common Git directory",
+        )?;
         let worktree = repository
             .worktree
             .as_deref()
-            .map(|path| canonical_directory(path, "catalog worktree"))
+            .map(|path| canonical_directory(self.context.filesystem(), path, "catalog worktree"))
             .transpose()?;
         if actual != self.binding.actual_git_directory.canonical_path
             || common != self.binding.common_git_directory.canonical_path
@@ -145,11 +166,12 @@ impl CatalogGitAssociationBindingV1 {
 
 impl RetainedAssociationDirectoryV1 {
     fn retain(
+        filesystem: &dyn FileSystem,
         path: &Path,
         label: &'static str,
     ) -> Result<(CatalogAssociationDirectoryBindingV1, Self), CheckedFsError> {
-        let canonical_path = canonical_directory(path, label)?;
-        let directory = retain_ambient_directory(&canonical_path, label)?;
+        let canonical_path = canonical_directory(filesystem, path, label)?;
+        let directory = retain_ambient_directory_in(filesystem, &canonical_path, label)?;
         let platform = HostPlatform;
         let identity = platform.dir_identity(directory.handle())?;
         let support_profile = platform.support_profile();
@@ -199,8 +221,11 @@ impl RetainedAssociationDirectoryV1 {
     }
 }
 
-fn canonical_directory(path: &Path, label: &'static str) -> Result<PathBuf, CheckedFsError> {
-    let filesystem = make_filesystem();
+fn canonical_directory(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    label: &'static str,
+) -> Result<PathBuf, CheckedFsError> {
     let input = filesystem
         .metadata(path)
         .map_err(|source| CheckedFsError::io("observe catalog association input", source))?;

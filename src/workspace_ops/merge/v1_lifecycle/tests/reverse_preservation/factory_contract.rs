@@ -2,6 +2,7 @@ use super::*;
 use crate::workspace_ops::merge::v1_lifecycle::authority::{
     V1LifecycleRequest, V1ResponseDisposition,
 };
+use crate::workspace_ops::merge::v1_lifecycle::events::LifecycleEvents;
 use crate::workspace_ops::merge::v1_lifecycle::reverse::ReverseRuntime;
 use crate::workspace_ops::merge::v1_lifecycle::service::run_test;
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
@@ -51,20 +52,22 @@ fn activated_lease_creates_and_reopens_the_catalog_through_the_factory() {
 }
 
 #[test]
-fn root_preservation_survives_factory_reopening() {
-    let fixture = dirty_root_handoff_fixture_using(
+fn root_preservation_survives_world_reopening() {
+    let world = crate::operation_context::TestWorld::selected();
+    let fixture = dirty_root_handoff_fixture_in(
         "factory-root-preservation",
         false,
         false,
         false,
-        make_repository(),
+        world.repository(),
+        world.context(),
     );
     fixture.base.seed_open();
-    let backend = make_repository();
+    let backend = world.repository();
     let context = fixture.base.context();
     let mut runtime = ReverseRuntime::new(&backend, &context);
     let response = run_test(
-        &CheckedV1Store::default(),
+        &CheckedV1Store::new(world.context()),
         &fixture.base.root.path,
         &fixture.base.model.merge_id,
         V1LifecycleRequest::Preserve,
@@ -76,7 +79,8 @@ fn root_preservation_survives_factory_reopening() {
         V1ResponseDisposition::Terminal(OperationState::Aborted)
     );
     assert!(response.current().record().pending_preservation.is_none());
-    let stashes = make_repository()
+    let stashes = world
+        .repository()
         .preservation_stashes(&fixture.base.root.path, &fixture.base.model.merge_id)
         .unwrap();
     assert_eq!(stashes.len(), 1);
@@ -84,4 +88,24 @@ fn root_preservation_survives_factory_reopening() {
     assert!(stashes[0].image.dirty.staged);
     assert!(stashes[0].image.dirty.unstaged);
     assert!(stashes[0].image.dirty.untracked);
+
+    let archive = super::super::super::archive::archive_terminal(
+        &world.repository(),
+        &CheckedV1Store::new(world.context()),
+        &fixture.base.root.path,
+        &fixture.base.model.merge_id,
+        &context,
+        &mut LifecycleEvents::silent(),
+    )
+    .unwrap();
+    let reopened = super::super::super::archive::archive_terminal(
+        &world.repository(),
+        &CheckedV1Store::new(world.context()),
+        &fixture.base.root.path,
+        &fixture.base.model.merge_id,
+        &context,
+        &mut LifecycleEvents::silent(),
+    )
+    .unwrap();
+    assert_eq!(archive.destination_bytes(), reopened.destination_bytes());
 }

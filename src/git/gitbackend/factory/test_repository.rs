@@ -21,6 +21,7 @@ pub(super) fn make_repository() -> GitTestRepository {
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum GitTestRepository {
     Real(Box<Git2Repository>),
     Fake(Box<FakeGitRepository>),

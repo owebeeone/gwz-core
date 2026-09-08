@@ -1,4 +1,4 @@
-use std::fs;
+use crate::filesystem::{FileSystem, FsKind};
 use std::path::Path;
 
 use super::archive_result::ValidatedArchivedMerge;
@@ -10,12 +10,11 @@ use super::checked::StoredV1Record;
 use super::reverse::{ReverseRuntime, route_error};
 use super::service;
 use super::store::CheckedV1Store;
-use crate::durable_fs::sync_dir;
 use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OperationContext, WorkspaceMutatorLock};
 use crate::workspace_ops::merge::record_wire::{
-    CanonicalRecordLeaf, ValidatedArchivedRecord, acquire_canonical_merge_locations,
+    CanonicalRecordLeaf, ValidatedArchivedRecord, acquire_canonical_merge_locations_in,
     decode_archived,
 };
 
@@ -29,8 +28,8 @@ impl CanonicalArchiveAcquisition {
         (self.destination_bytes, self.decoded)
     }
 
-    fn acquire(root: &Path, merge_id: &str) -> ModelResult<Self> {
-        let locations = acquire_canonical_merge_locations(root, merge_id)?;
+    fn acquire(filesystem: &dyn FileSystem, root: &Path, merge_id: &str) -> ModelResult<Self> {
+        let locations = acquire_canonical_merge_locations_in(filesystem, root, merge_id)?;
         let (_, destination_bytes, _) = locations.archived().exact().ok_or_else(|| {
             ModelError::new(
                 ErrorCode::OperationNotFound,
@@ -59,9 +58,13 @@ impl CanonicalArchiveAcquisition {
 ///
 /// The opaque result is the only P4-to-P3 handoff. Projection and cleanup data
 /// are decoded once from the exact bytes retained by the result.
-pub(super) fn acquire_archived(root: &Path, merge_id: &str) -> ModelResult<ValidatedArchivedMerge> {
+pub(super) fn acquire_archived(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    merge_id: &str,
+) -> ModelResult<ValidatedArchivedMerge> {
     Ok(ValidatedArchivedMerge::from_acquisition(
-        CanonicalArchiveAcquisition::acquire(root, merge_id)?,
+        CanonicalArchiveAcquisition::acquire(filesystem, root, merge_id)?,
     ))
 }
 
@@ -75,7 +78,9 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
     context: &OperationContext,
     events: &mut super::events::LifecycleEvents<'_>,
 ) -> ModelResult<ValidatedArchivedMerge> {
-    if open_record_present(root, merge_id)? {
+    let services = store.context();
+    let filesystem = services.filesystem();
+    if open_record_present(filesystem, root, merge_id)? {
         let mut runtime = ReverseRuntime::new(backend, context);
         let response = service::run(
             store,
@@ -93,19 +98,19 @@ pub(super) fn archive_terminal<B: MergeAuthorityBackend>(
                 "terminal archive service returned a non-archive disposition",
             ));
         }
-        return acquire_archived(root, merge_id);
+        return acquire_archived(filesystem, root, merge_id);
     }
 
     // Destination-only is a completed crash shape. Serialize the source
     // absence check with every cooperating workspace mutation before reading
     // the destination authority bytes.
-    let _guard = WorkspaceMutatorLock::acquire(root)?;
-    if open_record_present(root, merge_id)? {
+    let _guard = WorkspaceMutatorLock::acquire_in(services, root)?;
+    if open_record_present(filesystem, root, merge_id)? {
         return Err(recovery(
             "open merge record appeared during destination-only archive recovery",
         ));
     }
-    acquire_archived(root, merge_id)
+    acquire_archived(filesystem, root, merge_id)
 }
 
 /// Collect only merge-owned backup refs from an immutable archive worklist,
@@ -161,29 +166,31 @@ fn gc_archived_with_hook<B: MergeAuthorityBackend, F: FnOnce()>(
     merge_id: &str,
     after_ref_deletions: F,
 ) -> ModelResult<ValidatedArchivedMerge> {
-    let _guard = WorkspaceMutatorLock::acquire(root)?;
-    if any_open_record_present(root)? {
+    let services = crate::operation_context::OperationContext::for_merge(backend);
+    let filesystem = services.filesystem();
+    let _guard = WorkspaceMutatorLock::acquire_in(&services, root)?;
+    if any_open_record_present(filesystem, root)? {
         return Err(ModelError::new(
             ErrorCode::OpenOperation,
             format!("cannot collect archived merge record '{merge_id}' while an open merge exists"),
         ));
     }
 
-    let authority = acquire_archived(root, merge_id)?;
+    let authority = acquire_archived(filesystem, root, merge_id)?;
     let prepared =
         super::super::gc::preflight_archived_cleanup(backend, root, merge_id, authority.cleanup())?;
     super::super::gc::delete_preflighted_backup_refs(backend, &prepared)?;
     after_ref_deletions();
 
-    let verified = acquire_archived(root, merge_id)?;
+    let verified = acquire_archived(filesystem, root, merge_id)?;
     require_same_archive(&authority, &verified)?;
     super::super::gc::require_backup_refs_absent(backend, &prepared)?;
 
     // Keep the final identity check adjacent to unlink. The retained mutator
     // lock closes cooperating races across the whole preflight/delete/recheck.
-    let final_read = acquire_archived(root, merge_id)?;
+    let final_read = acquire_archived(filesystem, root, merge_id)?;
     require_same_archive(&authority, &final_read)?;
-    remove_archive(root, merge_id, authority.destination_bytes())?;
+    remove_archive(filesystem, root, merge_id, authority.destination_bytes())?;
     Ok(authority)
 }
 
@@ -196,38 +203,47 @@ pub(super) fn observe_open<B: MergeAuthorityBackend>(
     observe_archive(current, request)
 }
 
-fn open_record_present(root: &Path, merge_id: &str) -> ModelResult<bool> {
+fn open_record_present(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    merge_id: &str,
+) -> ModelResult<bool> {
     Ok(!matches!(
-        acquire_canonical_merge_locations(root, merge_id)?.open(),
+        acquire_canonical_merge_locations_in(filesystem, root, merge_id)?.open(),
         CanonicalRecordLeaf::Absent
     ))
 }
 
-fn any_open_record_present(root: &Path) -> ModelResult<bool> {
-    let root = root.canonicalize().map_err(io_error)?;
-    require_real_directory(&root)?;
+fn any_open_record_present(filesystem: &dyn FileSystem, root: &Path) -> ModelResult<bool> {
+    let root = filesystem.canonical_path(root).map_err(io_error)?;
+    require_real_directory(filesystem, &root)?;
     let mut directory = root;
     for component in [".gwz", "merge"] {
         directory.push(component);
-        match fs::symlink_metadata(&directory) {
-            Ok(_) => require_real_directory(&directory)?,
+        match filesystem.metadata(&directory) {
+            Ok(_) => require_real_directory(filesystem, &directory)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(io_error(error)),
         }
     }
-    let entries = fs::read_dir(&directory).map_err(io_error)?;
+    let entries = filesystem.read_directory(&directory).map_err(io_error)?;
     for entry in entries {
-        let path = entry.map_err(io_error)?.path();
+        let path = directory.join(entry.name);
         if path.extension().and_then(|value| value.to_str()) == Some("yaml") {
-            require_regular_file(&path)?;
+            require_regular_file(filesystem, &path)?;
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-fn remove_archive(root: &Path, merge_id: &str, expected: &[u8]) -> ModelResult<()> {
-    let locations = acquire_canonical_merge_locations(root, merge_id)?;
+fn remove_archive(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    merge_id: &str,
+    expected: &[u8],
+) -> ModelResult<()> {
+    let locations = acquire_canonical_merge_locations_in(filesystem, root, merge_id)?;
     let (path, actual, _) = locations
         .archived()
         .exact()
@@ -242,8 +258,8 @@ fn remove_archive(root: &Path, merge_id: &str, expected: &[u8]) -> ModelResult<(
         .parent()
         .ok_or_else(|| recovery("validated archive path has no parent"))?;
     // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the DEAD `remove_archive` arm behind the `:135-144` allowance (`:108-111` as adopted; re-measured at the E4.7 landing); carved with the rest of the row rather than half-converted (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
-    fs::remove_file(path.as_path()).map_err(io_error)?;
-    sync_dir(done).map_err(io_error)
+    filesystem.remove_file(path.as_path()).map_err(io_error)?;
+    filesystem.sync_directory(done).map_err(io_error)
 }
 
 fn require_same_archive(
@@ -264,9 +280,9 @@ fn require_same_archive(
     }
 }
 
-fn require_real_directory(path: &Path) -> ModelResult<()> {
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if metadata.file_type().is_dir() {
+fn require_real_directory(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<()> {
+    let metadata = filesystem.metadata(path).map_err(io_error)?;
+    if metadata.kind == FsKind::Directory {
         Ok(())
     } else {
         Err(recovery(format!(
@@ -276,9 +292,9 @@ fn require_real_directory(path: &Path) -> ModelResult<()> {
     }
 }
 
-fn require_regular_file(path: &Path) -> ModelResult<()> {
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if metadata.file_type().is_file() {
+fn require_regular_file(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<()> {
+    let metadata = filesystem.metadata(path).map_err(io_error)?;
+    if metadata.kind == FsKind::File {
         Ok(())
     } else {
         Err(recovery(format!(

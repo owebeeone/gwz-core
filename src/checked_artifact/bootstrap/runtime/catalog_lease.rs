@@ -1,5 +1,6 @@
 //! Target-bound advisory leases for checked catalog mutation.
 
+use crate::operation_context::OperationContext;
 #[cfg(test)]
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -86,13 +87,21 @@ pub(in crate::checked_artifact) struct CatalogLeaseSetV1 {
 }
 
 impl CatalogLeaseSetV1 {
+    #[cfg(test)]
     pub(in crate::checked_artifact) fn try_acquire(
+        batch: CatalogLeaseTargetBatchV1,
+    ) -> Result<Option<Self>, CheckedFsError> {
+        Self::try_acquire_in(&OperationContext::existing(), batch)
+    }
+
+    pub(in crate::checked_artifact) fn try_acquire_in(
+        context: &OperationContext,
         batch: CatalogLeaseTargetBatchV1,
     ) -> Result<Option<Self>, CheckedFsError> {
         let mut prepared = Vec::new();
         try_reserve_batch(&mut prepared, batch.requests.len())?;
         for request in batch.requests {
-            let target = RetainedCatalogTargetV1::retain(&request)?;
+            let target = RetainedCatalogTargetV1::retain(context, &request)?;
             let (binding, git_association) = target.into_prepared_bindings();
             let mut requests = Vec::new();
             try_reserve_batch(&mut requests, 1)?;
@@ -111,7 +120,7 @@ impl CatalogLeaseSetV1 {
         // Phase one may converge only the fixed runtime lock grammar. Every
         // transient guard is released before the next target is visited.
         for expected in &prepared {
-            let target = RetainedCatalogTargetGroupV1::retain(expected)?;
+            let target = RetainedCatalogTargetGroupV1::retain(context, expected)?;
             reject_equivalent_alias(
                 target.guard_parent(),
                 OsStr::new(BOOTSTRAP_GUARD_NAME),
@@ -144,7 +153,7 @@ impl CatalogLeaseSetV1 {
         let mut held = Vec::new();
         try_reserve_batch(&mut held, prepared.len())?;
         for expected in &prepared {
-            let target = match RetainedCatalogTargetGroupV1::retain(expected) {
+            let target = match RetainedCatalogTargetGroupV1::retain(context, expected) {
                 Ok(target) => target,
                 Err(error) => {
                     release_reverse(&mut held);
@@ -252,17 +261,24 @@ fn deduplicate_exact_locations(
 }
 
 impl RetainedCatalogTargetGroupV1 {
-    fn retain(expected: &PreparedCatalogTargetV1) -> Result<Self, CheckedFsError> {
+    fn retain(
+        context: &OperationContext,
+        expected: &PreparedCatalogTargetV1,
+    ) -> Result<Self, CheckedFsError> {
         let mut requests = expected.requests.iter();
         let first = requests.next().expect("prepared target has a request");
-        let primary = retain_prepared_request(&expected.binding, first)?;
+        let primary = retain_prepared_request(context, &expected.binding, first)?;
         let mut associated_targets = Vec::new();
         try_reserve_batch(
             &mut associated_targets,
             expected.requests.len().saturating_sub(1),
         )?;
         for request in requests {
-            associated_targets.push(retain_prepared_request(&expected.binding, request)?);
+            associated_targets.push(retain_prepared_request(
+                context,
+                &expected.binding,
+                request,
+            )?);
         }
         let group = Self {
             primary,
@@ -294,10 +310,11 @@ impl RetainedCatalogTargetGroupV1 {
 }
 
 fn retain_prepared_request(
+    context: &OperationContext,
     binding: &CatalogTargetBindingV1,
     expected: &PreparedCatalogRequestV1,
 ) -> Result<RetainedCatalogTargetV1, CheckedFsError> {
-    let target = RetainedCatalogTargetV1::retain(&expected.request)?;
+    let target = RetainedCatalogTargetV1::retain(context, &expected.request)?;
     require_same_binding(binding, &target.binding)?;
     if expected.git_association.as_ref() != target.git_association_binding() {
         return Err(CheckedFsError::ambiguous(

@@ -52,6 +52,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_recovery_origin<
         }
         PendingRollbackActionV1::PublicationEvidence { next_step } => {
             crate::workspace_ops::merge::v1_rollback::observe_v1_evidence_rollback(
+                current.context().filesystem(),
                 backend,
                 current.location().root(),
                 current.record(),
@@ -60,6 +61,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn verify_recovery_origin<
         }
         PendingRollbackActionV1::SelectedRootMetadata { next_step } => {
             crate::workspace_ops::merge::root::observe_v1_root_metadata_rollback(
+                current.context().filesystem(),
                 backend,
                 current.location().root(),
                 current.record(),

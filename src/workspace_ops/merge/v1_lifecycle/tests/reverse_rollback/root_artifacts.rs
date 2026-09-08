@@ -79,6 +79,7 @@ fn selected_root_steps_are_exact_and_sequential() {
     let (root, backend, model) = root_fixture("v1-rollback-root-phases");
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -89,6 +90,7 @@ fn selected_root_steps_are_exact_and_sequential() {
     );
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -98,6 +100,7 @@ fn selected_root_steps_are_exact_and_sequential() {
         O::Before
     );
     execute_v1_root_metadata_rollback(
+        &crate::filesystem::make_filesystem(),
         &backend,
         &root.path,
         &model,
@@ -106,6 +109,7 @@ fn selected_root_steps_are_exact_and_sequential() {
     .unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -116,6 +120,7 @@ fn selected_root_steps_are_exact_and_sequential() {
     );
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -125,6 +130,7 @@ fn selected_root_steps_are_exact_and_sequential() {
         O::Before
     );
     execute_v1_root_metadata_rollback(
+        &crate::filesystem::make_filesystem(),
         &backend,
         &root.path,
         &model,
@@ -133,6 +139,7 @@ fn selected_root_steps_are_exact_and_sequential() {
     .unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -156,6 +163,7 @@ fn selected_root_rejects_a_symlink_leaf() {
         .unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -178,6 +186,7 @@ fn selected_root_checked_write_preserves_a_leaf_replaced_before_linearization() 
         write_for_test(&replacement, b"foreign manifest\n").unwrap();
     });
     let error = execute_v1_root_metadata_rollback(
+        &crate::filesystem::make_filesystem(),
         &backend,
         &root.path,
         &model,
@@ -191,6 +200,7 @@ fn selected_root_checked_write_preserves_a_leaf_replaced_before_linearization() 
     );
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -211,6 +221,7 @@ fn selected_root_rejects_lock_restored_ahead_of_manifest() {
     .unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -225,6 +236,7 @@ fn selected_root_rejects_lock_restored_ahead_of_manifest() {
 fn selected_root_lock_and_complete_reject_third_states() {
     let (root, backend, model) = root_fixture("v1-rollback-root-lock-third");
     execute_v1_root_metadata_rollback(
+        &crate::filesystem::make_filesystem(),
         &backend,
         &root.path,
         &model,
@@ -234,6 +246,7 @@ fn selected_root_lock_and_complete_reject_third_states() {
     write_for_test(&root.path.join(WORKSPACE_MANIFEST), b"result manifest\n").unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,
@@ -248,11 +261,19 @@ fn selected_root_lock_and_complete_reject_third_states() {
         RootMetadataRollbackStepV1::Manifest,
         RootMetadataRollbackStepV1::Lock,
     ] {
-        execute_v1_root_metadata_rollback(&backend, &root.path, &model, step).unwrap();
+        execute_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
+            &backend,
+            &root.path,
+            &model,
+            step,
+        )
+        .unwrap();
     }
     write_for_test(&root.path.join(LOCK_PATH), b"foreign\n").unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
+            &crate::filesystem::make_filesystem(),
             &backend,
             &root.path,
             &model,

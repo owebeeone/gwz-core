@@ -5,7 +5,7 @@ use super::super::*;
 use crate::model::ModelResult;
 use crate::workspace_ops::merge::OperationState;
 use crate::workspace_ops::merge::record_wire::{
-    CanonicalRecordKind, CanonicalRecordLeaf, acquire_canonical_merge_locations,
+    CanonicalRecordKind, CanonicalRecordLeaf, acquire_canonical_merge_locations_in,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,8 +45,11 @@ impl CheckedArchiveObservation {
             ));
         }
 
-        let locations =
-            acquire_canonical_merge_locations(current.location().root(), &record.merge_id)?;
+        let locations = acquire_canonical_merge_locations_in(
+            current.context().filesystem(),
+            current.location().root(),
+            &record.merge_id,
+        )?;
         let (source_path, source_bytes, source_digest) =
             locations.open().exact().ok_or_else(|| {
                 authority_error("checked archive source is absent from its canonical open path")
@@ -57,7 +60,8 @@ impl CheckedArchiveObservation {
             source_path.as_path(),
             current.location().path(),
         )?;
-        let reopened = StoredV1Record::from_open_bytes(
+        let reopened = StoredV1Record::from_open_bytes_in(
+            current.context(),
             current.location().root(),
             source_path.as_path(),
             source_bytes.as_slice(),

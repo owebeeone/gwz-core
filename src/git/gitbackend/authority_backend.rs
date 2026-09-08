@@ -3,7 +3,9 @@
 #![forbid(clippy::disallowed_methods)]
 
 mod sealed {
-    pub trait Sealed {}
+    pub(crate) trait Sealed {
+        fn operation_services(&self) -> crate::operation_context::OperationContext;
+    }
 }
 
 /// Production backend permitted to supply v1 merge authority facts and
@@ -15,10 +17,27 @@ mod sealed {
 #[allow(private_bounds)]
 pub trait MergeAuthorityBackend: super::contract::GitBackend + sealed::Sealed {}
 
-impl sealed::Sealed for super::backend::Git2Backend {}
+impl sealed::Sealed for super::backend::Git2Backend {
+    fn operation_services(&self) -> crate::operation_context::OperationContext {
+        crate::operation_context::OperationContext::from_services(
+            self.filesystem.clone(),
+            std::sync::Arc::new(self.clone()),
+        )
+    }
+}
 impl MergeAuthorityBackend for super::backend::Git2Backend {}
 
 #[cfg(test)]
-impl sealed::Sealed for super::factory::GitTestRepository {}
+impl sealed::Sealed for super::factory::GitTestRepository {
+    fn operation_services(&self) -> crate::operation_context::OperationContext {
+        match self {
+            Self::Real(repository) => repository.operation_services(),
+            Self::Fake(repository) => crate::operation_context::OperationContext::from_services(
+                repository.filesystem.clone(),
+                std::sync::Arc::new((**repository).clone()),
+            ),
+        }
+    }
+}
 #[cfg(test)]
 impl MergeAuthorityBackend for super::factory::GitTestRepository {}

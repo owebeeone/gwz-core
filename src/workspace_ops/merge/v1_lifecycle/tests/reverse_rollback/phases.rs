@@ -118,6 +118,7 @@ fn evidence_rollback_steps_accept_only_their_exact_before_and_after_states() {
     for step in steps {
         assert_eq!(
             observe_v1_evidence_rollback(
+                &crate::filesystem::make_filesystem(),
                 &fixture.backend,
                 &fixture.root.path,
                 &fixture.model,
@@ -127,10 +128,17 @@ fn evidence_rollback_steps_accept_only_their_exact_before_and_after_states() {
             E::Before,
             "{step:?} before",
         );
-        execute_v1_evidence_rollback(&fixture.backend, &fixture.root.path, &fixture.model, step)
-            .unwrap();
+        execute_v1_evidence_rollback(
+            &crate::filesystem::make_filesystem(),
+            &fixture.backend,
+            &fixture.root.path,
+            &fixture.model,
+            step,
+        )
+        .unwrap();
         assert_eq!(
             observe_v1_evidence_rollback(
+                &crate::filesystem::make_filesystem(),
                 &fixture.backend,
                 &fixture.root.path,
                 &fixture.model,
@@ -143,6 +151,7 @@ fn evidence_rollback_steps_accept_only_their_exact_before_and_after_states() {
     }
     assert_eq!(
         observe_v1_evidence_rollback(
+            &crate::filesystem::make_filesystem(),
             &fixture.backend,
             &fixture.root.path,
             &fixture.model,
@@ -166,6 +175,7 @@ fn every_evidence_phase_rejects_a_third_state() {
     let advance = |fixture: &EvidenceFixture, count| {
         for step in &PRIOR[..count] {
             execute_v1_evidence_rollback(
+                &crate::filesystem::make_filesystem(),
                 &fixture.backend,
                 &fixture.root.path,
                 &fixture.model,
@@ -177,6 +187,7 @@ fn every_evidence_phase_rejects_a_third_state() {
     let assert_ambiguous = |fixture: &EvidenceFixture, step| {
         assert_eq!(
             observe_v1_evidence_rollback(
+                &crate::filesystem::make_filesystem(),
                 &fixture.backend,
                 &fixture.root.path,
                 &fixture.model,
@@ -272,6 +283,7 @@ fn every_evidence_phase_rejects_a_third_state() {
 fn evidence_rollback_skips_artifact_steps_that_are_already_baseline() {
     let fixture = staged_evidence_fixture("v1-rollback-evidence-noops", false, false);
     execute_v1_evidence_rollback(
+        &crate::filesystem::make_filesystem(),
         &fixture.backend,
         &fixture.root.path,
         &fixture.model,
@@ -284,6 +296,7 @@ fn evidence_rollback_skips_artifact_steps_that_are_already_baseline() {
     ] {
         assert_eq!(
             observe_v1_evidence_rollback(
+                &crate::filesystem::make_filesystem(),
                 &fixture.backend,
                 &fixture.root.path,
                 &fixture.model,

@@ -29,6 +29,20 @@ impl<'a> BorrowedOperationContext<'a> {
 }
 
 impl OperationContext {
+    pub(crate) fn from_services(
+        filesystem: Arc<dyn FileSystem>,
+        repository: Arc<dyn GitRepository + Send + Sync>,
+    ) -> Self {
+        Self {
+            filesystem,
+            repository,
+        }
+    }
+
+    /// Preserve the admitted backend's configured transport and storage world.
+    pub(crate) fn for_merge(backend: &impl crate::git::MergeAuthorityBackend) -> Self {
+        backend.operation_services()
+    }
     /// Compatibility construction at entry points not yet accepting a context.
     pub(crate) fn existing() -> Self {
         #[cfg(not(test))]
@@ -62,6 +76,7 @@ impl OperationContext {
 #[cfg(test)]
 pub(crate) struct TestWorld {
     context: OperationContext,
+    repository: crate::git::GitTestRepository,
 }
 
 #[cfg(test)]
@@ -83,26 +98,31 @@ impl TestWorld {
         } else {
             native_filesystem()
         };
-        let repository: Arc<dyn GitRepository + Send + Sync> = if fake_git {
-            Arc::new(crate::git::FakeGitRepository::with_filesystem(
-                filesystem.clone(),
+        let repository = if fake_git {
+            crate::git::GitTestRepository::Fake(Box::new(
+                crate::git::FakeGitRepository::with_filesystem(filesystem.clone()),
             ))
         } else {
             {
                 let mut repository = Git2Repository::new();
                 repository.filesystem = filesystem.clone();
-                Arc::new(repository)
+                crate::git::GitTestRepository::Real(Box::new(repository))
             }
         };
         Self {
             context: OperationContext {
                 filesystem,
-                repository,
+                repository: Arc::new(repository.clone()),
             },
+            repository,
         }
     }
     pub(crate) fn context(&self) -> OperationContext {
         self.context.clone()
+    }
+
+    pub(crate) fn repository(&self) -> crate::git::GitTestRepository {
+        self.repository.clone()
     }
     fn workspace_at(&self, path: &Path) -> std::io::Result<crate::filesystem::TestFsWorkspace> {
         self.context.filesystem().test_workspace_at(path)

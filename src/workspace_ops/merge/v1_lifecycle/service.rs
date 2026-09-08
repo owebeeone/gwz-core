@@ -129,6 +129,7 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
     runtime: &mut R,
     events: &mut LifecycleEvents<'_>,
 ) -> ModelResult<V1ServiceResponse> {
+    let services = store.context();
     let initial = store.load_open(root, merge_id)?;
     match next_action(&initial, request)? {
         V1NextAction::Respond(disposition) => {
@@ -157,11 +158,11 @@ fn run_with_runtime<R: ExactObserver + PhysicalExecutor>(
         (
             V1LifecycleRequest::ResumeStart | V1LifecycleRequest::Continue,
             Some(CrashRecoveryDecision::Unsupported { .. }),
-        ) => V1MutationLease::acquire(root)?,
+        ) => V1MutationLease::acquire_in(services, root)?,
         (V1LifecycleRequest::ResumeStart | V1LifecycleRequest::Continue, _) => {
-            V1MutationLease::acquire_activated(root)?
+            V1MutationLease::acquire_activated_in(services, root)?
         }
-        _ => V1MutationLease::acquire(root)?,
+        _ => V1MutationLease::acquire_in(services, root)?,
     };
     let mut current = store.load_open(root, merge_id)?;
     let mut attempt = None;

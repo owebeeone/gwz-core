@@ -101,6 +101,7 @@ impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for PreservationEntryVi
             ));
         }
         crate::workspace_ops::merge::v1_rollback::preflight_v1_evidence(
+            current.context().filesystem(),
             self.backend,
             current.location().root(),
             anticipated,
@@ -116,6 +117,7 @@ impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for PreservationEntryVi
             // any preservation entry record can be durably committed.
             let _ = v1_preservation_image(self.backend, &preserving, plan, &plan.protected_commit)?;
             let bundle = v1_bundle_observation(
+                current.context().filesystem(),
                 self.backend,
                 current.location().root(),
                 &preserving,

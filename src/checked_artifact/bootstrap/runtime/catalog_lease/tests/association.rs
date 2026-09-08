@@ -115,12 +115,12 @@ fn workspace_compatibility_borrow_rejects_post_return_root_replacement() {
 fn duplicate_location_with_changed_identity_rejects_before_preparation_in_both_orders() {
     let repo = TempRepo::new("duplicate-location-identity-race");
     let request = CatalogLeaseTargetRequestV1::repository_common_git_directory(repo.path());
-    let first = RetainedCatalogTargetV1::retain(&request).unwrap();
+    let first = RetainedCatalogTargetV1::retain(&OperationContext::existing(), &request).unwrap();
     let git = first.binding.canonical_path.clone();
     let retired = repo.path().join("retired-before-dedupe");
     fs::rename(&git, &retired).unwrap();
     git2::Repository::init(repo.path()).unwrap();
-    let second = RetainedCatalogTargetV1::retain(&request).unwrap();
+    let second = RetainedCatalogTargetV1::retain(&OperationContext::existing(), &request).unwrap();
     assert_ne!(
         first.binding.durable_identity,
         second.binding.durable_identity
@@ -150,7 +150,8 @@ fn duplicate_location_with_changed_identity_rejects_before_preparation_in_both_o
 fn duplicate_location_requires_exact_live_target_and_repository_bindings() {
     let repo = TempRepo::new("duplicate-location-live-binding");
     let request = CatalogLeaseTargetRequestV1::workspace(repo.path());
-    let retained = RetainedCatalogTargetV1::retain(&request).unwrap();
+    let retained =
+        RetainedCatalogTargetV1::retain(&OperationContext::existing(), &request).unwrap();
 
     for changed in [
         {

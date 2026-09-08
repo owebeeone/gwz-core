@@ -25,6 +25,7 @@ pub(crate) use archive::{ArchivedCleanupWorklist, ValidatedArchivedRecord, decod
 pub(crate) use location::{
     CanonicalMergeLocations, CanonicalRecordKind, CanonicalRecordLeaf, CanonicalRecordPath,
     ImmutableBytes, Sha256Digest, acquire_canonical_merge_locations,
+    acquire_canonical_merge_locations_in,
 };
 
 #[cfg(test)]

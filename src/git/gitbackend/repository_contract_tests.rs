@@ -1,18 +1,21 @@
 //! Identical assertions against physical and in-memory repositories.
 use super::*;
-use crate::filesystem::{FileSystem, TestFsWorkspace, make_filesystem};
+use crate::filesystem::{FileSystem, TestFsWorkspace};
 
 #[test]
 fn committed_index_is_independent_of_worktree() {
-    let backend = make_repository();
-    let root = fixture(&backend);
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let backend = world.repository();
+    let root = fixture(filesystem, &backend);
     assert_eq!(
-        exists(&root.path.join(".git/config")),
+        exists(filesystem, &root.path.join(".git/config")),
         std::env::var("GWZ_TEST_GIT").as_deref() == Ok("real")
     );
-    write(&root.path.join("file.txt"), b"staged\n");
+    write(filesystem, &root.path.join("file.txt"), b"staged\n");
     backend.stage_paths(&root.path, &["file.txt"]).unwrap();
-    write(&root.path.join("file.txt"), b"unstaged\n");
+    write(filesystem, &root.path.join("file.txt"), b"unstaged\n");
     let commit = backend
         .commit(&root.path, "snapshot index", false)
         .unwrap()
@@ -43,9 +46,9 @@ fn committed_index_is_independent_of_worktree() {
         backend.head(&root.path).unwrap().commit,
         Some(commit.clone())
     );
-    // Reopening through a fresh factory call must observe the same repository.
+    // Reopening the same world must observe the same repository.
     assert_eq!(
-        make_repository().head(&root.path).unwrap().commit,
+        world.repository().head(&root.path).unwrap().commit,
         Some(commit)
     );
     let status = backend.status(&root.path).unwrap();
@@ -61,8 +64,8 @@ struct Fixture {
     path: PathBuf,
 }
 
-fn fixture<B: GitRepository>(backend: &B) -> Fixture {
-    let directory = make_filesystem().test_workspace().unwrap();
+fn fixture<B: GitRepository>(filesystem: &dyn FileSystem, backend: &B) -> Fixture {
+    let directory = filesystem.test_workspace().unwrap();
     let root = Fixture {
         path: directory.path().to_path_buf(),
         _directory: directory,
@@ -75,13 +78,16 @@ fn fixture<B: GitRepository>(backend: &B) -> Fixture {
 
 #[test]
 fn checked_backup_ref_rejects_drift_and_is_idempotent() {
-    let backend = make_repository();
-    let root = fixture(&backend);
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let backend = world.repository();
+    let root = fixture(filesystem, &backend);
     assert_eq!(
-        exists(&root.path.join(".git/config")),
+        exists(filesystem, &root.path.join(".git/config")),
         std::env::var("GWZ_TEST_GIT").as_deref() == Ok("real")
     );
-    write(&root.path.join("file.txt"), b"first");
+    write(filesystem, &root.path.join("file.txt"), b"first");
     backend.stage_paths(&root.path, &["file.txt"]).unwrap();
     let first = backend.commit(&root.path, "first", false).unwrap().commit;
     let name = "refs/gwz/merge/contract/root/head";
@@ -94,7 +100,7 @@ fn checked_backup_ref_rejects_drift_and_is_idempotent() {
             .unwrap(),
         created
     );
-    write(&root.path.join("file.txt"), b"second");
+    write(filesystem, &root.path.join("file.txt"), b"second");
     backend.stage_paths(&root.path, &["file.txt"]).unwrap();
     let second = backend.commit(&root.path, "second", false).unwrap().commit;
     assert_eq!(
@@ -133,17 +139,20 @@ fn checked_backup_ref_rejects_drift_and_is_idempotent() {
 
 #[test]
 fn checked_reset_restores_content_and_rejects_dirty_work() {
-    let backend = make_repository();
-    let root = fixture(&backend);
-    write(&root.path.join("file.txt"), b"first");
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let backend = world.repository();
+    let root = fixture(filesystem, &backend);
+    write(filesystem, &root.path.join("file.txt"), b"first");
     backend.stage_paths(&root.path, &["file.txt"]).unwrap();
     let first = backend.commit(&root.path, "first", false).unwrap().commit;
-    write(&root.path.join("file.txt"), b"second");
+    write(filesystem, &root.path.join("file.txt"), b"second");
     backend.stage_paths(&root.path, &["file.txt"]).unwrap();
     let second = backend.commit(&root.path, "second", false).unwrap().commit;
     assert!(backend.is_ancestor(&root.path, &first, &second).unwrap());
     assert!(!backend.is_ancestor(&root.path, &second, &first).unwrap());
-    write(&root.path.join("file.txt"), b"user work");
+    write(filesystem, &root.path.join("file.txt"), b"user work");
     assert_eq!(
         backend
             .set_branch_target_checked(&root.path, "main", &second, &first)
@@ -156,16 +165,16 @@ fn checked_reset_restores_content_and_rejects_dirty_work() {
         Some(second.clone())
     );
     assert_eq!(
-        make_filesystem().read(&root.path.join("file.txt")).unwrap(),
+        filesystem.read(&root.path.join("file.txt")).unwrap(),
         b"user work"
     );
-    write(&root.path.join("file.txt"), b"second");
+    write(filesystem, &root.path.join("file.txt"), b"second");
     let changed = backend
         .set_branch_target_checked(&root.path, "main", &second, &first)
         .unwrap();
     assert!(changed.updated);
     assert_eq!(
-        make_filesystem().read(&root.path.join("file.txt")).unwrap(),
+        filesystem.read(&root.path.join("file.txt")).unwrap(),
         b"first"
     );
     assert!(!backend.status(&root.path).unwrap().is_dirty);
@@ -180,15 +189,18 @@ fn checked_reset_restores_content_and_rejects_dirty_work() {
 
 #[test]
 fn preservation_stash_captures_dirty_work_once() {
-    let backend = make_repository();
-    let root = fixture(&backend);
-    write(&root.path.join("file.txt"), b"base");
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let backend = world.repository();
+    let root = fixture(filesystem, &backend);
+    write(filesystem, &root.path.join("file.txt"), b"base");
     backend.stage_paths(&root.path, &["file.txt"]).unwrap();
     let head = backend.commit(&root.path, "base", false).unwrap().commit;
-    write(&root.path.join("file.txt"), b"staged");
+    write(filesystem, &root.path.join("file.txt"), b"staged");
     backend.stage_paths(&root.path, &["file.txt"]).unwrap();
-    write(&root.path.join("file.txt"), b"unstaged");
-    write(&root.path.join("new.txt"), b"untracked");
+    write(filesystem, &root.path.join("file.txt"), b"unstaged");
+    write(filesystem, &root.path.join("new.txt"), b"untracked");
     let image = backend.preservation_image(&root.path, true).unwrap();
     assert_eq!(
         image.dirty,
@@ -210,10 +222,10 @@ fn preservation_stash_captures_dirty_work_once() {
         .unwrap();
     assert!(!backend.status(&root.path).unwrap().is_dirty);
     assert_eq!(
-        make_filesystem().read(&root.path.join("file.txt")).unwrap(),
+        filesystem.read(&root.path.join("file.txt")).unwrap(),
         b"base"
     );
-    assert!(!exists(&root.path.join("new.txt")));
+    assert!(!exists(filesystem, &root.path.join("new.txt")));
     let evidence = backend
         .preservation_stashes(&root.path, "contract")
         .unwrap();
@@ -233,7 +245,7 @@ fn preservation_stash_captures_dirty_work_once() {
             .unwrap(),
         stash
     );
-    write(&root.path.join("new.txt"), b"new user work");
+    write(filesystem, &root.path.join("new.txt"), b"new user work");
     assert_eq!(
         backend
             .stash_for_merge_preservation_checked(
@@ -249,7 +261,7 @@ fn preservation_stash_captures_dirty_work_once() {
         ErrorCode::PreservationEvidenceMismatch
     );
     assert_eq!(
-        make_filesystem().read(&root.path.join("new.txt")).unwrap(),
+        filesystem.read(&root.path.join("new.txt")).unwrap(),
         b"new user work"
     );
     assert_eq!(
@@ -258,9 +270,7 @@ fn preservation_stash_captures_dirty_work_once() {
             .unwrap(),
         evidence
     );
-    make_filesystem()
-        .remove_file(&root.path.join("new.txt"))
-        .unwrap();
+    filesystem.remove_file(&root.path.join("new.txt")).unwrap();
     backend
         .stash_apply(
             &root.path,
@@ -269,11 +279,11 @@ fn preservation_stash_captures_dirty_work_once() {
         )
         .unwrap();
     assert_eq!(
-        make_filesystem().read(&root.path.join("file.txt")).unwrap(),
+        filesystem.read(&root.path.join("file.txt")).unwrap(),
         b"unstaged"
     );
     assert_eq!(
-        make_filesystem().read(&root.path.join("new.txt")).unwrap(),
+        filesystem.read(&root.path.join("new.txt")).unwrap(),
         b"untracked"
     );
     assert_eq!(backend.preservation_image(&root.path, true).unwrap(), image);
@@ -287,11 +297,14 @@ fn preservation_stash_captures_dirty_work_once() {
 
 #[test]
 fn fixture_commits_and_ref_changes_do_not_rewrite_the_checkout() {
-    let git = make_repository();
-    let temp = make_filesystem().test_workspace().unwrap();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let git = world.repository();
+    let temp = filesystem.test_workspace().unwrap();
     let root = temp.path();
     git.test_init_repo(root, &TestRepoSpec::default()).unwrap();
-    write(&root.join("file.txt"), b"index");
+    write(filesystem, &root.join("file.txt"), b"index");
     git.stage_paths(root, &["file.txt"]).unwrap();
     let first = git
         .test_create_commit(root, &TestCommitSpec::from_index("first", vec![]))
@@ -305,7 +318,7 @@ fn fixture_commits_and_ref_changes_do_not_rewrite_the_checkout() {
     .unwrap();
     git.test_set_head(root, &TestHead::Attached("refs/heads/main".into()))
         .unwrap();
-    write(&root.join("file.txt"), b"user work");
+    write(filesystem, &root.join("file.txt"), b"user work");
     let second = git
         .test_create_commit(
             root,
@@ -324,7 +337,7 @@ fn fixture_commits_and_ref_changes_do_not_rewrite_the_checkout() {
     .unwrap();
     assert_eq!(git.head(root).unwrap().commit, Some(second));
     assert_eq!(
-        make_filesystem().read(&root.join("file.txt")).unwrap(),
+        filesystem.read(&root.join("file.txt")).unwrap(),
         b"user work"
     );
     let index = git.test_read_index(root).unwrap();
@@ -334,13 +347,12 @@ fn fixture_commits_and_ref_changes_do_not_rewrite_the_checkout() {
     assert_eq!(git.test_read_index(root).unwrap(), index);
 }
 
-fn exists(path: &Path) -> bool {
-    make_filesystem().metadata(path).is_ok()
+fn exists(filesystem: &dyn FileSystem, path: &Path) -> bool {
+    filesystem.metadata(path).is_ok()
 }
 
-fn write(path: &Path, bytes: &[u8]) {
-    let filesystem = make_filesystem();
-    if exists(path) {
+fn write(filesystem: &dyn FileSystem, path: &Path, bytes: &[u8]) {
+    if exists(filesystem, path) {
         filesystem.remove_file(path).unwrap();
     }
     let file = filesystem.create_file(path).unwrap();
@@ -349,8 +361,11 @@ fn write(path: &Path, bytes: &[u8]) {
 
 #[test]
 fn fixture_config_preserves_repeated_and_empty_values() {
-    let git = make_repository();
-    let root = fixture(&git);
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let git = world.repository();
+    let root = fixture(filesystem, &git);
     let values = vec![String::new(), "one".into(), String::new(), "one".into()];
     git.test_set_config(&root.path, "fixture.values", &values)
         .unwrap();
@@ -369,8 +384,11 @@ fn fixture_config_preserves_repeated_and_empty_values() {
 
 #[test]
 fn fixture_detached_head_and_symbolic_refs_resolve_independently() {
-    let git = make_repository();
-    let root = fixture(&git);
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let git = world.repository();
+    let root = fixture(filesystem, &git);
     let first = git
         .test_create_commit(&root.path, &TestCommitSpec::from_index("first", vec![]))
         .unwrap();
@@ -419,8 +437,11 @@ fn fixture_detached_head_and_symbolic_refs_resolve_independently() {
 
 #[test]
 fn fixture_tree_edits_mixed_reset_and_merge_conflict_match_native_semantics() {
-    let git = make_repository();
-    let root = fixture(&git);
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let git = world.repository();
+    let root = fixture(filesystem, &git);
     let base = git
         .test_create_commit_from_parent(
             &root.path,
@@ -464,14 +485,14 @@ fn fixture_tree_edits_mixed_reset_and_merge_conflict_match_native_semantics() {
     git.test_set_head(&root.path, &TestHead::Attached("refs/heads/main".into()))
         .unwrap();
     git.test_force_checkout(&root.path, &ours).unwrap();
-    write(&root.path.join("file.txt"), b"kept worktree\n");
+    write(filesystem, &root.path.join("file.txt"), b"kept worktree\n");
     git.test_reset_mixed(&root.path, &base).unwrap();
     assert_eq!(
         git.head(&root.path).unwrap().commit.as_deref(),
         Some(base.as_str())
     );
     assert_eq!(
-        make_filesystem().read(&root.path.join("file.txt")).unwrap(),
+        filesystem.read(&root.path.join("file.txt")).unwrap(),
         b"kept worktree\n"
     );
 
@@ -490,7 +511,7 @@ fn fixture_tree_edits_mixed_reset_and_merge_conflict_match_native_semantics() {
         GitRepositoryState::Clean
     );
     assert_eq!(
-        make_filesystem().read(&root.path.join("file.txt")).unwrap(),
+        filesystem.read(&root.path.join("file.txt")).unwrap(),
         b"ours\n"
     );
 }

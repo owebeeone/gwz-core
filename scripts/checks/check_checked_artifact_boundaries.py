@@ -590,9 +590,9 @@ CAPABILITY_FREE_EXCEPTION = "the capability-free exception, dev-docs/GwzM5-8R2E-
 # not start and E4.7 retires none of the three. The archive rows' `std::fs` surface
 # is measured ONCE, by the inventory below.
 V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = {
-    "workspace_ops/merge/v1_lifecycle/archive.rs": {"sync_dir": 2},
+    "workspace_ops/merge/v1_lifecycle/archive.rs": {"sync_directory": 1},
 }
-V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_dir")
+V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_dir", "sync_directory")
 
 # Rows carved out PERMANENTLY by a dated amendment, each naming its own reason
 # and authority. Membership changes nothing this checker MEASURES and everything
@@ -664,7 +664,7 @@ for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCL
 CAPABILITY_FREE_WRITER_TOKENS = (
     "rename_noreplace", "rename_durable", "sync_dir",  # `durable_fs`
     "create_dir_all", "remove_file",  # `std::fs`-direct
-    "write_atomic", "write_marker", "write_lock", "write_manifest_and_lock",  # the
+    "write_atomic", "write_atomic_in", "write_marker", "write_lock", "write_manifest_and_lock",  # the
     "write_bundle", "publish_workspace_exclude_candidate",  # `write_atomic` family
     "sync_workspace_boundary", "ensure_workspace_exclude",
     # M5d step (3), 2026-09-03: the relocated verified record writer. It is the
@@ -728,7 +728,7 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
     "workspace_ops/merge/store/retention.rs": (":275 GC retention enforcement, the same lock", {"sync_dir": 1, "remove_file": 1}),
     "workspace_ops/merge/v1_lifecycle/archive.rs": (":275 the DEAD `remove_archive` arm behind the `:108-111` allowance", {"remove_file": 1}),
     "workspace_ops/pull_head_member_preflight.rs": (":278/:279 `gwz pull`, Pull guard", {"write_lock": 3, "sync_workspace_boundary": 2}),
-    "workspace_ops/sync_workspace_boundary.rs": (":279 the `.git/info/exclude` family itself", {"write_atomic": 2, "publish_workspace_exclude_candidate": 1, "sync_workspace_boundary": 1, "ensure_workspace_exclude": 2}),
+    "workspace_ops/sync_workspace_boundary.rs": (":279 the `.git/info/exclude` family itself", {"write_atomic_in": 2, "publish_workspace_exclude_candidate": 1, "sync_workspace_boundary": 1, "ensure_workspace_exclude": 2}),
 }
 if hashlib.sha256(
     "\n".join(sorted(CAPABILITY_FREE_RAW_WRITER_INVENTORY)).encode("utf-8")
@@ -821,7 +821,8 @@ ENTRY_REFERENCES = {
         "workspace_ops/merge/v1_lifecycle/store/mod.rs",
         "workspace_ops/merge/v1_lifecycle/store/rewrite.rs",
     },
-    "crash_recovery_decision": {"workspace_ops/merge/v1_lifecycle/start.rs"},
+    "crash_recovery_decision": set(),  # Compatibility test wrapper.
+    "crash_recovery_decision_in": {"workspace_ops/merge/v1_lifecycle/start.rs"},
     "crash_recovery_protocol": {"workspace_ops/merge/v1_lifecycle/start.rs"},
     "crash_recovery_strict_refusal": {"workspace_ops/merge/v1_lifecycle/start.rs"},
     "crash_recovery_warning": {"workspace_ops/merge/v1_lifecycle/start.rs"},
@@ -1102,11 +1103,13 @@ CHECKED_LEAF_ADAPTER_ITEMS = {
 
 CHECKED_LEAF_ADAPTER_USES = {
     "workspace_ops/merge/root/artifact_facts.rs": {
+        "crate::filesystem::FileSystem",
         "crate::checked_artifact::entry::{MergeArtifactFact, MergeArtifactTransition}",
         "crate::model::ModelResult",
         "std::path::Path",
     },
     "workspace_ops/merge/preserve/checked_bundle.rs": {
+        "crate::filesystem::FileSystem",
         "crate::checked_artifact::entry::MergeArtifactTransition",
         "crate::model::{ErrorCode, ModelError, ModelResult}",
         "crate::stash::{ STASH_BUNDLE_SCHEMA, StashBundle, StashBundleMember, StashDirtySummary, StashParticipation, StashPushLifecycle, StashRestoreState, }",
@@ -1685,7 +1688,9 @@ def check(source: Path) -> list[str]:
     for path in production_rust_files(source / V1_LIFECYCLE_TREE):
         relative = path.relative_to(source).as_posix()
         text = mask_non_code(path.read_text(encoding="utf-8"))
-        if re.search(r"\bdurable_fs\b", text):
+        # The context migration injects FileSystem without changing the raw
+        # publication exception. Inspect that retained writer through its API.
+        if re.search(r"\bdurable_fs\b", text) or relative in V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES:
             raw_writer_files[relative] = {
                 writer: count
                 for writer in V1_LIFECYCLE_RAW_DURABLE_WRITERS

@@ -35,8 +35,13 @@ fn global_preflight_failure_mutates_no_earlier_participant() {
     write_for_test(&member_b.join("untracked"), b"drift\n").unwrap();
 
     let a_before = fixture.backend.head(&fixture.member).unwrap();
-    let error =
-        preflight_v1_rollback(&fixture.backend, &fixture.root.path, &fixture.model).unwrap_err();
+    let error = preflight_v1_rollback(
+        &crate::filesystem::make_filesystem(),
+        &fixture.backend,
+        &fixture.root.path,
+        &fixture.model,
+    )
+    .unwrap_err();
     assert_eq!(error.member_id.as_deref(), Some("mem_b"));
     assert_eq!(fixture.backend.head(&fixture.member).unwrap(), a_before);
     assert_eq!(
@@ -125,8 +130,13 @@ fn selected_root_publication_handoff_rejects_all_unrelated_dirt_before_entry() {
         let marker_before = make_filesystem()
             .read(&fixture.root.path.join(marker))
             .unwrap();
-        let error = preflight_v1_rollback(&fixture.backend, &fixture.root.path, &fixture.model)
-            .unwrap_err();
+        let error = preflight_v1_rollback(
+            &crate::filesystem::make_filesystem(),
+            &fixture.backend,
+            &fixture.root.path,
+            &fixture.model,
+        )
+        .unwrap_err();
         assert_eq!(error.member_id.as_deref(), Some("@root"), "{kind}");
         assert_eq!(
             fixture.backend.head(&fixture.root.path).unwrap(),
@@ -164,8 +174,13 @@ fn rollback_entry_rejects_semantic_index_flags_for_member_and_selected_root() {
         .test_replace_index(&member.member, &entries)
         .unwrap();
     write_for_test(&member.member.join("README.md"), b"hidden drift\n").unwrap();
-    let error =
-        preflight_v1_rollback(&member.backend, &member.root.path, &member.model).unwrap_err();
+    let error = preflight_v1_rollback(
+        &crate::filesystem::make_filesystem(),
+        &member.backend,
+        &member.root.path,
+        &member.model,
+    )
+    .unwrap_err();
     assert_eq!(error.member_id.as_deref(), Some("mem_a"));
 
     let root = selected_root_evidence_fixture("v1-rollback-root-semantic-index");
@@ -183,7 +198,13 @@ fn rollback_entry_rejects_semantic_index_flags_for_member_and_selected_root() {
         b"hidden selected-root drift\n",
     )
     .unwrap();
-    let error = preflight_v1_rollback(&root.backend, &root.root.path, &root.model).unwrap_err();
+    let error = preflight_v1_rollback(
+        &crate::filesystem::make_filesystem(),
+        &root.backend,
+        &root.root.path,
+        &root.model,
+    )
+    .unwrap_err();
     assert_eq!(error.member_id.as_deref(), Some("@root"));
 }
 
@@ -199,8 +220,13 @@ fn selected_root_result_artifacts_are_proved_before_rollback_entry() {
         .manifest_exact_yaml
         .push_str("# drift\n");
     let head_before = fixture.backend.head(&fixture.root.path).unwrap();
-    let error =
-        preflight_v1_rollback(&fixture.backend, &fixture.root.path, &fixture.model).unwrap_err();
+    let error = preflight_v1_rollback(
+        &crate::filesystem::make_filesystem(),
+        &fixture.backend,
+        &fixture.root.path,
+        &fixture.model,
+    )
+    .unwrap_err();
     assert_eq!(error.member_id.as_deref(), Some("@root"));
     assert_eq!(
         fixture.backend.head(&fixture.root.path).unwrap(),
@@ -249,6 +275,12 @@ pub(super) fn selected_root_evidence_fixture(name: &str) -> EvidenceFixture {
     fixture.model.selected_targets = vec!["@root".into()];
     fixture.model.participants.clear();
     fixture.model.participants.insert("@root".into(), row);
-    preflight_v1_rollback(&fixture.backend, &fixture.root.path, &fixture.model).unwrap();
+    preflight_v1_rollback(
+        &crate::filesystem::make_filesystem(),
+        &fixture.backend,
+        &fixture.root.path,
+        &fixture.model,
+    )
+    .unwrap();
     fixture
 }

@@ -831,14 +831,30 @@ fn a_reverse_checked_door_on_a_handle_fail_volume_names_the_one_escape() {
 
     let refusals = with_handle_probe_unavailable(|| {
         vec![
-            crate::checked_artifact::entry::observe_merge_root_artifact(root, relative)
-                .map(|_| ())
-                .unwrap_err(),
-            crate::checked_artifact::entry::remove_merge_root_artifact(root, relative, b"x")
-                .unwrap_err(),
-            crate::checked_artifact::entry::replace_merge_root_artifact(root, relative, b"x", b"y")
-                .unwrap_err(),
+            crate::checked_artifact::entry::observe_merge_root_artifact(
+                &crate::filesystem::make_filesystem(),
+                root,
+                relative,
+            )
+            .map(|_| ())
+            .unwrap_err(),
+            crate::checked_artifact::entry::remove_merge_root_artifact(
+                &crate::filesystem::make_filesystem(),
+                root,
+                relative,
+                b"x",
+            )
+            .unwrap_err(),
+            crate::checked_artifact::entry::replace_merge_root_artifact(
+                &crate::filesystem::make_filesystem(),
+                root,
+                relative,
+                b"x",
+                b"y",
+            )
+            .unwrap_err(),
             crate::checked_artifact::entry::observe_merge_preservation_bundle(
+                &crate::filesystem::make_filesystem(),
                 root,
                 Path::new(".gwz/stash/bundle"),
                 None,

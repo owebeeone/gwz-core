@@ -12,7 +12,7 @@ type FileTree = BTreeMap<String, Vec<u8>>;
 
 #[derive(Clone)]
 pub(crate) struct FakeGitRepository {
-    filesystem: Arc<dyn FileSystem>,
+    pub(super) filesystem: Arc<dyn FileSystem>,
     repositories: Arc<Mutex<BTreeMap<PathBuf, RepositoryState>>>,
 }
 impl Default for FakeGitRepository {

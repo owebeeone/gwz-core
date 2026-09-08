@@ -6,6 +6,7 @@
 
 use super::super::root::artifact_facts;
 use crate::artifact;
+use crate::filesystem::FileSystem;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
@@ -15,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub(in crate::workspace_ops::merge) fn preflight_v1_rollback<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &MergeOperationRecordV1,
@@ -60,7 +62,7 @@ pub(in crate::workspace_ops::merge) fn preflight_v1_rollback<B: GitBackend>(
             // classifier is run by the caller before rollback entry; the root
             // participant becomes observable at its result commit only after
             // that evidence owner is durably completed.
-            require_virtual_selected_root_after_evidence(backend, root, record, row)?;
+            require_virtual_selected_root_after_evidence(filesystem, backend, root, record, row)?;
             continue;
         }
         match row.state {
@@ -112,7 +114,7 @@ pub(in crate::workspace_ops::merge) fn preflight_v1_rollback<B: GitBackend>(
     if record.selected_targets.iter().any(|id| id == "@root") {
         for relative in [WORKSPACE_MANIFEST, artifact::LOCK_PATH] {
             if !matches!(
-                artifact_facts::observe(root, relative)?,
+                artifact_facts::observe(filesystem, root, relative)?,
                 artifact_facts::RegularFileFact::Bytes(_)
             ) {
                 return Err(ModelError::new(
@@ -126,6 +128,7 @@ pub(in crate::workspace_ops::merge) fn preflight_v1_rollback<B: GitBackend>(
 }
 
 fn require_virtual_selected_root_after_evidence<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &MergeOperationRecordV1,
@@ -133,7 +136,7 @@ fn require_virtual_selected_root_after_evidence<B: GitBackend>(
 ) -> ModelResult<()> {
     use crate::workspace_ops::merge::model::v1::AcceptedRootBaseV1;
 
-    super::evidence::preflight_v1_evidence(backend, root, record)?;
+    super::evidence::preflight_v1_evidence(filesystem, backend, root, record)?;
     let publication = record
         .publication
         .as_ref()

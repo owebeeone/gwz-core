@@ -605,6 +605,7 @@ fn a_legacy_drive_after_bootstrap_leaves_the_catalog_recoverable() {
     fs::create_dir_all(fixture.path().join("a")).unwrap();
     fs::write(fixture.path().join("a/value"), b"before").unwrap();
     crate::checked_artifact::entry::replace_merge_root_artifact(
+        &crate::filesystem::make_filesystem(),
         fixture.path(),
         Path::new("a/value"),
         b"before",

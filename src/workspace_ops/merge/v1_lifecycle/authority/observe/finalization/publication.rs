@@ -6,7 +6,7 @@ use crate::workspace_ops::merge::acceptance::{
     classify_frozen_v1_publication, v1_candidate_files, v1_composition_message,
     v1_publication_base,
 };
-use crate::workspace_ops::workspace_exclude_candidate;
+use crate::workspace_ops::workspace_exclude_candidate_in;
 
 mod live;
 
@@ -339,14 +339,19 @@ fn prepare_candidate<B: MergeAuthorityBackend>(
     context: &OperationContext,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
-    verify_publication_path_parents(current.location().root())?;
+    verify_publication_path_parents(current.context().filesystem(), current.location().root())?;
     if !verification_is_exact(verify_accepted_inputs(backend, current))? {
         return ambiguity(current);
     }
     let record = current.record();
     let (manifest, lock) = candidate_artifacts(record)?;
-    let (baseline_boundary, boundary) =
-        workspace_exclude_candidate(backend, current.location().root(), &manifest, &lock)?;
+    let (baseline_boundary, boundary) = workspace_exclude_candidate_in(
+        current.context().filesystem(),
+        backend,
+        current.location().root(),
+        &manifest,
+        &lock,
+    )?;
     let root_head = backend.head(current.location().root())?;
     let marker_id = crate::workspace_ops::handle_commit::new_uuid_v7()?;
     let actor_id = context
@@ -384,7 +389,7 @@ fn begin_evidence<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
-    verify_publication_path_parents(current.location().root())?;
+    verify_publication_path_parents(current.context().filesystem(), current.location().root())?;
     verify_accepted_inputs(backend, current)?;
     if snapshot(backend, current)? != Some((CandidatePublicationPrefix::Baseline, IndexForm::Pre)) {
         return ambiguity(current);
@@ -580,7 +585,7 @@ fn verify_post_evidence_inputs<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {
-    verify_publication_path_parents(current.location().root())?;
+    verify_publication_path_parents(current.context().filesystem(), current.location().root())?;
     verify_non_root_participants(backend, current)?;
     verify_frozen_manifest(backend, current)
 }
@@ -589,7 +594,7 @@ fn evidence_base_is_live<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<bool> {
-    verify_publication_path_parents(current.location().root())?;
+    verify_publication_path_parents(current.context().filesystem(), current.location().root())?;
     Ok(
         verification_is_exact(verify_accepted_inputs(backend, current))?
             && snapshot(backend, current)?

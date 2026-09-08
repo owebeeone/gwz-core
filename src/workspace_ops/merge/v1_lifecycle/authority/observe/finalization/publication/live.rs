@@ -1,4 +1,4 @@
-use crate::filesystem::{FileSystem, FsKind, make_filesystem};
+use crate::filesystem::{FileSystem, FsKind};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -104,9 +104,12 @@ pub(super) fn snapshot<B: MergeAuthorityBackend>(
         )
     })?;
     let root = current.location().root();
-    let lock = regular_digest(&root.join(LOCK_PATH))?;
-    let marker = regular_digest(&root.join(marker_path))?;
-    let boundary = regular_digest(&workspace_exclude_path(root))?;
+    let lock = regular_digest(current.context().filesystem(), &root.join(LOCK_PATH))?;
+    let marker = regular_digest(current.context().filesystem(), &root.join(marker_path))?;
+    let boundary = regular_digest(
+        current.context().filesystem(),
+        &workspace_exclude_path(root),
+    )?;
     let (FileDigest::Regular(lock), marker, boundary) = (lock, marker, boundary) else {
         return Ok(None);
     };
@@ -163,8 +166,8 @@ enum FileDigest {
     Other,
 }
 
-fn regular_digest(path: &Path) -> ModelResult<FileDigest> {
-    let metadata = match make_filesystem().metadata(path) {
+fn regular_digest(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<FileDigest> {
+    let metadata = match filesystem.metadata(path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(FileDigest::Missing);
@@ -180,7 +183,7 @@ fn regular_digest(path: &Path) -> ModelResult<FileDigest> {
             return Ok(FileDigest::Other);
         }
     }
-    let bytes = make_filesystem()
+    let bytes = filesystem
         .read(path)
         .map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string()))?;
     Ok(FileDigest::Regular(format!("{:x}", Sha256::digest(bytes))))

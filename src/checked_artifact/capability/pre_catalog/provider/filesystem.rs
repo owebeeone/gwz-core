@@ -78,6 +78,7 @@ struct Observed {
     dead_code,
     reason = "R2-C0 freezes the retained provider before C1 issues preflight permits"
 )]
+#[cfg(test)]
 pub(super) fn platform_pre_catalog_provider() -> FilesystemPreCatalogProvider<HostPlatform> {
     FilesystemPreCatalogProvider {
         platform: HostPlatform,

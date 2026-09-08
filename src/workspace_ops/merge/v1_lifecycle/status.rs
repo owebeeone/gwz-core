@@ -38,23 +38,23 @@ pub(super) fn open_status<B: MergeAuthorityBackend>(
 }
 
 fn optimistic_open_status(
-    _store: &CheckedV1Store,
+    store: &CheckedV1Store,
     root: &Path,
     merge_id: &str,
     mut snapshot: impl FnMut(&super::checked::StoredV1Record) -> ModelResult<crate::MergeResponse>,
 ) -> ModelResult<crate::MergeResponse> {
     for attempt in 0..2 {
-        let (locations, current) = match acquire_open_status_v1(root, merge_id) {
+        let (locations, current) = match acquire_open_status_v1(store.context(), root, merge_id) {
             Ok(value) => value,
             Err(error) if attempt == 0 => return Err(error),
             Err(_) => return Err(status_contention(merge_id)),
         };
         let response = snapshot(&current)?;
-        let unchanged = acquire_open_status_v1(root, merge_id).ok().is_some_and(
-            |(reread_locations, reread)| {
+        let unchanged = acquire_open_status_v1(store.context(), root, merge_id)
+            .ok()
+            .is_some_and(|(reread_locations, reread)| {
                 reread_locations == locations && current.same_source_as(&reread)
-            },
-        );
+            });
         if unchanged {
             return Ok(response);
         }
@@ -66,18 +66,28 @@ fn optimistic_open_status(
 }
 
 fn acquire_open_status_v1(
+    services: &crate::operation_context::OperationContext,
     root: &Path,
     merge_id: &str,
 ) -> ModelResult<(
     super::super::record_wire::CanonicalMergeLocations,
     super::checked::StoredV1Record,
 )> {
-    let locations = super::super::record_wire::acquire_canonical_merge_locations(root, merge_id)?;
+    let locations = super::super::record_wire::acquire_canonical_merge_locations_in(
+        services.filesystem(),
+        root,
+        merge_id,
+    )?;
     let open = locations
         .open()
         .exact()
         .map(|(path, bytes, _)| {
-            super::checked::StoredV1Record::from_open_bytes(root, path.as_path(), bytes.as_slice())
+            super::checked::StoredV1Record::from_open_bytes_in(
+                services,
+                root,
+                path.as_path(),
+                bytes.as_slice(),
+            )
         })
         .transpose()?;
     let _archived = locations

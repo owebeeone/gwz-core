@@ -13,6 +13,44 @@ mod association;
 mod bounds;
 
 #[test]
+fn catalog_batch_uses_its_world_through_reopen_and_contention() {
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let workspace = context.filesystem().test_workspace().unwrap();
+    context
+        .repository()
+        .test_init_repo(workspace.path(), &crate::git::TestRepoSpec::default())
+        .unwrap();
+    let batch = || {
+        CatalogLeaseTargetBatchV1::try_new([
+            CatalogLeaseTargetRequestV1::workspace(workspace.path()),
+            CatalogLeaseTargetRequestV1::repository_common_git_directory(workspace.path()),
+        ])
+        .unwrap()
+    };
+    let leases = CatalogLeaseSetV1::try_acquire_in(&context, batch())
+        .unwrap()
+        .unwrap();
+    assert_eq!(leases.len(), 2);
+    drop(context);
+    let reopened = world.context();
+    assert!(
+        CatalogLeaseSetV1::try_acquire_in(&reopened, batch())
+            .unwrap()
+            .is_none()
+    );
+    for lease in leases.leases() {
+        lease.begin_preflight().unwrap();
+    }
+    drop(leases);
+    assert!(
+        CatalogLeaseSetV1::try_acquire_in(&reopened, batch())
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
 fn workspace_runtime_lease_borrows_only_its_exact_catalog_target() {
     let first = TempRepo::new("workspace-bound-first");
     let second = TempRepo::new("workspace-bound-second");

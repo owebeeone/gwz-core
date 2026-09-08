@@ -322,21 +322,10 @@ fn reject_non_directory_or_symlink(
     Ok(())
 }
 
-// Compatibility entry points for the catalog batch not yet context-aware.
-pub(super) fn resolve_workspace_paths(
-    root: &Path,
-) -> Result<ResolvedWorkspacePaths, CheckedFsError> {
-    resolve_workspace_paths_in(&OperationContext::existing(), root)
-}
+#[cfg(test)]
 pub(super) fn retain_ambient_directory(
     path: &Path,
     label: &'static str,
 ) -> Result<RetainedDirectory, CheckedFsError> {
     retain_ambient_directory_in(OperationContext::existing().filesystem(), path, label)
-}
-pub(super) fn revalidate_workspace_repository(
-    root: &Path,
-    git_dir: &Path,
-) -> Result<(), CheckedFsError> {
-    revalidate_workspace_repository_in(&OperationContext::existing(), root, git_dir)
 }

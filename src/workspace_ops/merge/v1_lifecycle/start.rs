@@ -47,9 +47,10 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
     let merge_id = record.merge_id.clone();
-    let store = CheckedV1Store::default();
+    let services = crate::operation_context::OperationContext::for_merge(backend);
+    let store = CheckedV1Store::new(services.clone());
 
-    let decision = crate::checked_artifact::entry::crash_recovery_decision(root)?;
+    let decision = crate::checked_artifact::entry::crash_recovery_decision_in(&services, root)?;
     let below_bar = matches!(
         decision,
         crate::checked_artifact::entry::CrashRecoveryDecision::Unsupported { .. }
@@ -70,9 +71,15 @@ pub(in crate::workspace_ops::merge) fn handle_start_durable_v1<B: MergeAuthority
         // W3: below the bar there is no catalog to activate, so the same two
         // parents are prepared through the legacy checked boundary instead.
         let lease = if below_bar {
-            super::checked::V1MutationLease::acquire_for_merge_start_uncatalogued(root)?
+            super::checked::V1MutationLease::acquire_for_merge_start_uncatalogued_in(
+                &services, root,
+            )?
         } else {
-            super::checked::V1MutationLease::acquire_for_merge_start(root, &record.workspace_id)?
+            super::checked::V1MutationLease::acquire_for_merge_start_in(
+                &services,
+                root,
+                &record.workspace_id,
+            )?
         };
         // M5d charter §3: the decision this process already made chooses the
         // record's publication too — checked above the handle bar, raw below
@@ -184,7 +191,8 @@ pub(in crate::workspace_ops::merge) fn handle_v1_command<B: MergeAuthorityBacken
     context: &OperationContext,
     emitter: &EventEmitter<'_>,
 ) -> ModelResult<crate::MergeResponse> {
-    let store = CheckedV1Store::default();
+    let services = crate::operation_context::OperationContext::for_merge(backend);
+    let store = CheckedV1Store::new(services.clone());
     super::super::validate_open_merge_id(request.merge_id.as_deref(), merge_id)?;
     match request.op {
         crate::MergeOp::Status => {
@@ -205,7 +213,9 @@ pub(in crate::workspace_ops::merge) fn handle_v1_command<B: MergeAuthorityBacken
             let mut events = LifecycleEvents::new(emitter);
             let disposition = match lifecycle {
                 V1LifecycleRequest::Continue => {
-                    let made = crate::checked_artifact::entry::crash_recovery_decision(root)?;
+                    let made = crate::checked_artifact::entry::crash_recovery_decision_in(
+                        &services, root,
+                    )?;
                     if matches!(
                         made,
                         crate::checked_artifact::entry::CrashRecoveryDecision::Unsupported { .. }

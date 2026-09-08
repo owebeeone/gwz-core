@@ -29,7 +29,7 @@ use crate::artifact::{self, LOCK_PATH};
 use crate::workspace_ops::merge::acceptance::{
     v1_candidate_files, v1_composition_message, v1_publication_base,
 };
-use crate::workspace_ops::publish_workspace_exclude_candidate;
+use crate::workspace_ops::publish_workspace_exclude_candidate_in;
 
 pub(super) fn publication<B: MergeAuthorityBackend>(
     backend: &B,
@@ -76,7 +76,11 @@ pub(super) fn publication<B: MergeAuthorityBackend>(
             // DR-1 S1, 2026-09-03; the footnote at the foot of this file) → `abort/evidence.rs`
             // → `Other` → `RecoveryRequired`, stranding `gwz merge --abort` — a directional-residue
             // window, distinct from and stronger than the detach window below. Ruling (a) 2026-09-02.
-            artifact::write_atomic(&root.join(path), &candidate.marker_yaml)?;
+            artifact::write_atomic_in(
+                current.context().filesystem(),
+                &root.join(path),
+                &candidate.marker_yaml,
+            )?;
         }
         PublicationPhysicalAction::WriteLock => {
             // [R2-P3-1] DATED RESIDUAL, E4.7 2026-09-02 — the lock STAYS RAW: a
@@ -85,7 +89,11 @@ pub(super) fn publication<B: MergeAuthorityBackend>(
             // (`merge/abort/evidence.rs::classify_file`) observers refuse to classify the
             // absence — an observation-dead window. The raw rename is atomic and opens
             // none. DR-1 (`dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md` §5).
-            artifact::write_atomic(&root.join(LOCK_PATH), &candidate.lock_yaml)?;
+            artifact::write_atomic_in(
+                current.context().filesystem(),
+                &root.join(LOCK_PATH),
+                &candidate.lock_yaml,
+            )?;
         }
         PublicationPhysicalAction::WriteBoundary => {
             // [R2-P3-1] DATED RESIDUAL, E4.7 2026-09-02 — the boundary STAYS RAW, on
@@ -95,7 +103,11 @@ pub(super) fn publication<B: MergeAuthorityBackend>(
             // observers both refuse to classify — an observation-dead window. DR-1
             // (`dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md` §5); row `:279`'s
             // frozen cell-2 wording travels there with it.
-            publish_workspace_exclude_candidate(root, &candidate.boundary_text)?;
+            publish_workspace_exclude_candidate_in(
+                current.context().filesystem(),
+                root,
+                &candidate.boundary_text,
+            )?;
         }
         PublicationPhysicalAction::StageIndex => {
             let marker = progress.candidate_marker_path.as_deref().ok_or_else(|| {

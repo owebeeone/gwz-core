@@ -1,4 +1,4 @@
-use crate::filesystem::{FileSystem, FsKind, make_filesystem};
+use crate::filesystem::{FileSystem, FsKind};
 use std::path::{Path, PathBuf};
 
 use super::super::*;
@@ -93,7 +93,7 @@ fn participants_complete<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
-    verify_metadata_path_parent(current.location().root())?;
+    verify_metadata_path_parent(current.context().filesystem(), current.location().root())?;
     verify_participants(backend, current)?;
     let proof = VerifiedParticipants::issue(
         &AuthorityIssuer::for_observer(current),
@@ -109,7 +109,7 @@ fn acceptance<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<ExactObservationFact> {
-    verify_metadata_path_parent(current.location().root())?;
+    verify_metadata_path_parent(current.context().filesystem(), current.location().root())?;
     verify_participants(backend, current)?;
     let record = current.record();
     let accepted = if let Some(root) = record.participants.get("@root") {
@@ -244,7 +244,7 @@ pub(super) fn verify_accepted_root<B: MergeAuthorityBackend>(
     backend: &B,
     current: &StoredV1Record,
 ) -> ModelResult<()> {
-    verify_metadata_path_parent(current.location().root())?;
+    verify_metadata_path_parent(current.context().filesystem(), current.location().root())?;
     let record = current.record();
     let accepted = record
         .accepted_workspace
@@ -276,6 +276,7 @@ pub(super) fn verify_accepted_root<B: MergeAuthorityBackend>(
         }
     };
     let metadata_matches = exact_files(
+        current.context().filesystem(),
         backend,
         root,
         &[
@@ -305,6 +306,7 @@ pub(super) fn verify_frozen_manifest<B: MergeAuthorityBackend>(
         .as_ref()
         .ok_or_else(|| acceptance_error(record, "accepted workspace is missing"))?;
     if exact_files(
+        current.context().filesystem(),
         backend,
         current.location().root(),
         &[(
@@ -320,20 +322,27 @@ pub(super) fn verify_frozen_manifest<B: MergeAuthorityBackend>(
     }
 }
 
-fn verify_metadata_path_parent(root: &Path) -> ModelResult<()> {
-    verify_real_directory_chains(root, &["gwz.conf"])
+fn verify_metadata_path_parent(filesystem: &dyn FileSystem, root: &Path) -> ModelResult<()> {
+    verify_real_directory_chains(filesystem, root, &["gwz.conf"])
 }
 
-pub(super) fn verify_publication_path_parents(root: &Path) -> ModelResult<()> {
-    verify_real_directory_chains(root, &["gwz.conf/markers", ".git/info"])
+pub(super) fn verify_publication_path_parents(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+) -> ModelResult<()> {
+    verify_real_directory_chains(filesystem, root, &["gwz.conf/markers", ".git/info"])
 }
 
-fn verify_real_directory_chains(root: &Path, relatives: &[&str]) -> ModelResult<()> {
+fn verify_real_directory_chains(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    relatives: &[&str],
+) -> ModelResult<()> {
     for relative in relatives {
         let mut current = root.to_path_buf();
         for component in Path::new(relative).components() {
             current.push(component);
-            match make_filesystem().metadata(&current) {
+            match filesystem.metadata(&current) {
                 Ok(metadata) if metadata.kind == FsKind::Directory => {}
                 Ok(_) => {
                     return Err(root_drift(&format!(
@@ -350,6 +359,7 @@ fn verify_real_directory_chains(root: &Path, relatives: &[&str]) -> ModelResult<
 }
 
 fn exact_files<B: MergeAuthorityBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     expected: &[(&str, &str)],
@@ -366,7 +376,7 @@ fn exact_files<B: MergeAuthorityBackend>(
     }
     expected
         .iter()
-        .map(|(path, value)| regular_file_equals(&root.join(path), value))
+        .map(|(path, value)| regular_file_equals(filesystem, &root.join(path), value))
         .try_fold(true, |exact, next| next.map(|next| exact && next))
 }
 
@@ -404,6 +414,7 @@ fn verify_unselected_root_baseline<B: MergeAuthorityBackend>(
         .as_deref()
         .ok_or_else(|| acceptance_error(record, "operation baseline lock bytes are missing"))?;
     let files_match = exact_files(
+        current.context().filesystem(),
         backend,
         root,
         &[(WORKSPACE_MANIFEST, manifest), (LOCK_PATH, lock)],
@@ -449,8 +460,12 @@ fn participant_path(root: &Path, member_id: &str, kind: MergeTargetKind, path: &
     }
 }
 
-fn regular_file_equals(path: &Path, expected: &str) -> ModelResult<bool> {
-    let metadata = match make_filesystem().metadata(path) {
+fn regular_file_equals(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    expected: &str,
+) -> ModelResult<bool> {
+    let metadata = match filesystem.metadata(path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(ModelError::new(ErrorCode::IoError, error.to_string())),
@@ -464,7 +479,7 @@ fn regular_file_equals(path: &Path, expected: &str) -> ModelResult<bool> {
             return Ok(false);
         }
     }
-    let bytes = make_filesystem()
+    let bytes = filesystem
         .read(path)
         .map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string()))?;
     Ok(bytes == expected.as_bytes())

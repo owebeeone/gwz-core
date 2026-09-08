@@ -120,6 +120,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: MergeAuth
         }
         RollbackCursor::SelectedRootMetadata => {
             let observed = crate::workspace_ops::merge::root::observe_v1_root_metadata_rollback(
+                current.context().filesystem(),
                 backend,
                 current.location().root(),
                 record,
@@ -304,11 +305,13 @@ impl<B: MergeAuthorityBackend> SealedReverseEntryVisitor for RollbackEntryHandof
             ));
         }
         crate::workspace_ops::merge::v1_rollback::preflight_v1_rollback(
+            current.context().filesystem(),
             self.backend,
             current.location().root(),
             anticipated,
         )?;
         crate::workspace_ops::merge::v1_rollback::preflight_v1_evidence(
+            current.context().filesystem(),
             self.backend,
             current.location().root(),
             anticipated,
@@ -447,6 +450,7 @@ fn observe_evidence<B: MergeAuthorityBackend>(
 ) -> ModelResult<ExactObservationFact> {
     use crate::workspace_ops::merge::v1_rollback::V1EvidenceRollbackObservation as O;
     match crate::workspace_ops::merge::v1_rollback::observe_v1_evidence_rollback(
+        current.context().filesystem(),
         backend,
         current.location().root(),
         current.record(),
@@ -509,6 +513,7 @@ fn observe_root<B: MergeAuthorityBackend>(
 ) -> ModelResult<ExactObservationFact> {
     use crate::workspace_ops::merge::root::V1RootRollbackObservation as O;
     match crate::workspace_ops::merge::root::observe_v1_root_metadata_rollback(
+        current.context().filesystem(),
         backend,
         current.location().root(),
         current.record(),

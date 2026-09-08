@@ -141,6 +141,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn rollback_exhausted_for_test
 
 fn selected_root_baseline(current: &StoredV1Record) -> ModelResult<RollbackExhaustedPayload> {
     let fact = crate::workspace_ops::merge::root::observe_v1_selected_root_baseline(
+        current.context().filesystem(),
         current.location().root(),
         current.record(),
     )?;

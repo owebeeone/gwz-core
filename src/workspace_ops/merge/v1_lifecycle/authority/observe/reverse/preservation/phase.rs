@@ -50,6 +50,7 @@ pub(super) fn observe_pending<B: MergeAuthorityBackend>(
             phase: S::WriteBundle,
             ..
         } => match v1_bundle_observation(
+            current.context().filesystem(),
             backend,
             current.location().root(),
             current.record(),

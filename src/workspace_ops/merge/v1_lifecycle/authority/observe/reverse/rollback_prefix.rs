@@ -81,10 +81,12 @@ pub(super) fn classify_rollback_aggregate<B: MergeAuthorityBackend>(
     if publication_evidence_complete {
         let exact = if selected_root_checkout_supersedes_evidence {
             crate::workspace_ops::merge::v1_rollback::v1_evidence_residue_after_selected_root_is_exact(
+                current.context().filesystem(),
                 root, record,
             )?
         } else {
             crate::workspace_ops::merge::v1_rollback::observe_v1_evidence_rollback(
+                current.context().filesystem(),
                 backend,
                 root,
                 record,
@@ -105,7 +107,11 @@ pub(super) fn classify_rollback_aggregate<B: MergeAuthorityBackend>(
     });
     if let Some(step) = selected_root_projection {
         let observed = crate::workspace_ops::merge::root::observe_v1_root_metadata_rollback(
-            backend, root, record, step,
+            current.context().filesystem(),
+            backend,
+            root,
+            record,
+            step,
         )?;
         if observed == crate::workspace_ops::merge::root::V1RootRollbackObservation::Ambiguous {
             return Ok(RollbackAggregateClassification::Mismatch);

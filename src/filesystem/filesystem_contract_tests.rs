@@ -4,7 +4,9 @@ use std::io::ErrorKind;
 #[cfg(windows)]
 #[test]
 fn publication_moves_the_retained_object_after_its_name_is_replaced() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     let file = fs.create_file_at(&root, "source".as_ref()).unwrap();
@@ -53,7 +55,9 @@ fn publication_moves_the_retained_object_after_its_name_is_replaced() {
 
 #[test]
 fn persistent_facts_follow_retained_objects_across_name_replacement() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     let original = fs.create_file_at(&root, "original".as_ref()).unwrap();
@@ -89,7 +93,9 @@ fn persistent_facts_follow_retained_objects_across_name_replacement() {
 
 #[test]
 fn retained_metadata_observes_kind_without_following_a_symlink() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     let file = fs.create_file_at(&root, "file".as_ref()).unwrap();
@@ -114,7 +120,9 @@ fn retained_metadata_observes_kind_without_following_a_symlink() {
 
 #[test]
 fn cloned_directory_retains_the_same_namespace() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     let retained = fs.clone_directory(&root).unwrap();
@@ -131,7 +139,9 @@ fn cloned_directory_retains_the_same_namespace() {
 
 #[test]
 fn replacement_preserves_retained_file_and_reopening_observes_new_bytes() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     let old = fs.create_file_at(&root, "record".as_ref()).unwrap();
@@ -148,7 +158,9 @@ fn replacement_preserves_retained_file_and_reopening_observes_new_bytes() {
         RenameMode::Replace,
     )
     .unwrap();
-    let reopened = make_filesystem()
+    let reopened_context = world.context();
+    let reopened = reopened_context
+        .filesystem()
         .open_file_at(&root, "record".as_ref())
         .unwrap();
     assert_eq!(fs.read_all(&old).unwrap(), b"old");
@@ -157,7 +169,9 @@ fn replacement_preserves_retained_file_and_reopening_observes_new_bytes() {
 
 #[test]
 fn create_new_refuses_existing_name_without_changing_contents() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     let file = fs.create_file_at(&root, "file".as_ref()).unwrap();
@@ -174,7 +188,9 @@ fn create_new_refuses_existing_name_without_changing_contents() {
 
 #[test]
 fn retained_directory_survives_rename_and_components_cannot_escape() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     fs.create_directory_at(&root, "before".as_ref()).unwrap();
@@ -206,7 +222,9 @@ fn retained_directory_survives_rename_and_components_cannot_escape() {
 
 #[test]
 fn path_helpers_share_the_retained_namespace() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let nested = workspace.path().join("one/two");
     fs.create_directories(&nested).unwrap();
@@ -227,7 +245,9 @@ fn path_helpers_share_the_retained_namespace() {
 
 #[test]
 fn no_replace_rename_refuses_an_existing_destination_without_changing_either_file() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let source = workspace.path().join("source");
     let destination = workspace.path().join("destination");
@@ -248,7 +268,9 @@ fn no_replace_rename_refuses_an_existing_destination_without_changing_either_fil
 
 #[test]
 fn path_rename_replaces_the_destination_and_directory_sync_accepts_both_parents() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let source_parent = workspace.path().join("source-parent");
     let destination_parent = workspace.path().join("destination-parent");
@@ -273,7 +295,9 @@ fn path_rename_replaces_the_destination_and_directory_sync_accepts_both_parents(
 
 #[test]
 fn directory_listing_reports_names_and_kinds_from_the_selected_namespace() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     fs.create_directories(&workspace.path().join("directory"))
         .unwrap();
@@ -298,7 +322,9 @@ fn directory_listing_reports_names_and_kinds_from_the_selected_namespace() {
 
 #[test]
 fn empty_directory_can_be_removed_without_affecting_its_parent() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let directory = workspace.path().join("empty");
     fs.create_directories(&directory).unwrap();
@@ -311,7 +337,9 @@ fn empty_directory_can_be_removed_without_affecting_its_parent() {
 
 #[test]
 fn retained_directory_listing_and_sync_use_the_opened_namespace() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     fs.create_directory_at(&root, "directory".as_ref()).unwrap();
@@ -335,7 +363,9 @@ fn retained_directory_listing_and_sync_use_the_opened_namespace() {
 
 #[test]
 fn retained_identity_detects_a_same_name_replacement() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     fs.create_directory_at(&root, "current".as_ref()).unwrap();
@@ -368,7 +398,9 @@ fn retained_identity_detects_a_same_name_replacement() {
 
 #[test]
 fn retained_file_identity_survives_replacement_of_its_name() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     let retained = fs.create_file_at(&root, "record".as_ref()).unwrap();
@@ -403,7 +435,9 @@ fn retained_file_identity_survives_replacement_of_its_name() {
 
 #[test]
 fn retained_no_replace_rename_preserves_both_directories_on_collision() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     fs.create_directory_at(&root, "source".as_ref()).unwrap();
@@ -428,7 +462,9 @@ fn retained_no_replace_rename_preserves_both_directories_on_collision() {
 
 #[test]
 fn advisory_file_lock_contends_and_drop_releases_it() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     let file = fs.create_file_at(&root, "lease".as_ref()).unwrap();
@@ -445,7 +481,9 @@ fn advisory_file_lock_contends_and_drop_releases_it() {
 
 #[test]
 fn symlink_observation_never_opens_the_target_as_a_regular_leaf() {
-    let fs = make_filesystem();
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let fs = context.filesystem();
     let workspace = fs.test_workspace().unwrap();
     let root = fs.open_directory(workspace.path()).unwrap();
     fs.test_create_symlink_at(&root, "link".as_ref(), Path::new("target"))

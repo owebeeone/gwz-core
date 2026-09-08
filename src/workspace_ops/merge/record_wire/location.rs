@@ -106,8 +106,16 @@ pub(crate) fn acquire_canonical_merge_locations(
     root: &Path,
     merge_id: &str,
 ) -> ModelResult<CanonicalMergeLocations> {
+    acquire_canonical_merge_locations_in(&make_filesystem(), root, merge_id)
+}
+
+pub(crate) fn acquire_canonical_merge_locations_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    merge_id: &str,
+) -> ModelResult<CanonicalMergeLocations> {
     validate_merge_id(merge_id)?;
-    acquire_filesystem_merge_locations(root, merge_id)
+    acquire_filesystem_merge_locations(filesystem, root, merge_id)
 }
 
 fn absent_locations() -> CanonicalMergeLocations {
@@ -118,10 +126,10 @@ fn absent_locations() -> CanonicalMergeLocations {
 }
 
 fn acquire_filesystem_merge_locations(
+    filesystem: &dyn FileSystem,
     root_path: &Path,
     merge_id: &str,
 ) -> ModelResult<CanonicalMergeLocations> {
-    let filesystem = make_filesystem();
     let root_path = filesystem
         .canonical_path(root_path)
         .map_err(|error| location_error(root_path, error))?;
@@ -133,7 +141,7 @@ fn acquire_filesystem_merge_locations(
         .map_err(|error| location_error(&root_path, error))?;
     let gwz_path = root_path.join(".gwz");
     let Some((gwz, gwz_identity)) = optional_directory(
-        &filesystem,
+        filesystem,
         &root,
         ".gwz".as_ref(),
         &gwz_path,
@@ -144,7 +152,7 @@ fn acquire_filesystem_merge_locations(
     };
     let merge_path = root_path.join(MERGE_DIR);
     let Some((merge, merge_identity)) = optional_directory(
-        &filesystem,
+        filesystem,
         &gwz,
         "merge".as_ref(),
         &merge_path,
@@ -156,7 +164,7 @@ fn acquire_filesystem_merge_locations(
     let leaf_name = format!("{merge_id}.yaml");
     let open_path = merge_path.join(&leaf_name);
     let open = read_leaf(
-        &filesystem,
+        filesystem,
         &merge,
         leaf_name.as_ref(),
         &open_path,
@@ -164,7 +172,7 @@ fn acquire_filesystem_merge_locations(
     )?;
     let done_path = root_path.join(DONE_DIR);
     let done = optional_directory(
-        &filesystem,
+        filesystem,
         &merge,
         "done".as_ref(),
         &done_path,
@@ -172,7 +180,7 @@ fn acquire_filesystem_merge_locations(
     )?;
     let archived = match &done {
         Some((done, _)) => read_leaf(
-            &filesystem,
+            filesystem,
             done,
             leaf_name.as_ref(),
             &done_path.join(&leaf_name),
@@ -209,7 +217,7 @@ fn acquire_filesystem_merge_locations(
         return Err(changed_parent(&merge_path));
     }
     let final_done = optional_directory(
-        &filesystem,
+        filesystem,
         &merge,
         "done".as_ref(),
         &done_path,
@@ -221,7 +229,7 @@ fn acquire_filesystem_merge_locations(
         return Err(changed_parent(&done_path));
     }
     let final_open = read_leaf(
-        &filesystem,
+        filesystem,
         &merge,
         leaf_name.as_ref(),
         &open_path,
@@ -229,7 +237,7 @@ fn acquire_filesystem_merge_locations(
     )?;
     let final_archived = match final_done {
         Some((done, _)) => read_leaf(
-            &filesystem,
+            filesystem,
             &done,
             leaf_name.as_ref(),
             &done_path.join(&leaf_name),
@@ -246,7 +254,7 @@ fn acquire_filesystem_merge_locations(
 }
 
 fn optional_directory(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     parent: &FsDirectory,
     name: &std::ffi::OsStr,
     path: &Path,
@@ -265,7 +273,7 @@ fn optional_directory(
 }
 
 fn read_leaf(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     parent: &FsDirectory,
     name: &std::ffi::OsStr,
     path: &Path,

@@ -2,6 +2,7 @@
 
 #![forbid(clippy::disallowed_methods)]
 
+use crate::filesystem::FileSystem;
 use std::path::{Path, PathBuf};
 
 use crate::checked_artifact::entry::MergeArtifactTransition;
@@ -19,6 +20,7 @@ pub(in crate::workspace_ops::merge) enum V1BundleObservation {
 pub(in crate::workspace_ops::merge) fn v1_bundle_observation<
     B: crate::git::MergeAuthorityBackend,
 >(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
@@ -34,6 +36,7 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_observation<
     let after_bytes = after.to_yaml()?.into_bytes();
     Ok(
         match crate::checked_artifact::entry::classify_merge_preservation_bundle(
+            filesystem,
             root,
             &bundle_relative(&after.stash_id),
             before_bytes.as_deref(),
@@ -51,6 +54,7 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_observation<
 pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<
     B: crate::git::MergeAuthorityBackend,
 >(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
@@ -61,6 +65,7 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<
         .then(|| expected.to_yaml().map(String::into_bytes))
         .transpose()?;
     crate::checked_artifact::entry::observe_merge_preservation_bundle(
+        filesystem,
         root,
         &bundle_relative(&expected.stash_id),
         bytes.as_deref(),
@@ -70,6 +75,7 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<
 pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<
     B: crate::git::MergeAuthorityBackend,
 >(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
@@ -85,6 +91,7 @@ pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<
         .transpose()?;
     let after = after.to_yaml()?.into_bytes();
     match crate::checked_artifact::entry::classify_merge_preservation_bundle(
+        filesystem,
         root,
         &relative,
         before.as_deref(),
@@ -100,12 +107,14 @@ pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<
         }
     }
     crate::checked_artifact::entry::replace_merge_preservation_bundle(
+        filesystem,
         root,
         &relative,
         before.as_deref(),
         &after,
     )?;
     (crate::checked_artifact::entry::classify_merge_preservation_bundle(
+        filesystem,
         root,
         &relative,
         before.as_deref(),

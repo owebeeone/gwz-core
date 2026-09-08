@@ -37,15 +37,27 @@ pub(crate) fn ensure_workspace_exclude<B: GitBackend>(
     manifest: &ManifestArtifact,
     lock: &LockArtifact,
 ) -> ModelResult<()> {
-    let (existing, updated) = workspace_exclude_candidate(backend, root, manifest, lock)?;
+    ensure_workspace_exclude_in(&make_filesystem(), backend, root, manifest, lock)
+}
+
+pub(crate) fn ensure_workspace_exclude_in<B: GitBackend>(
+    filesystem: &dyn FileSystem,
+    backend: &B,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    lock: &LockArtifact,
+) -> ModelResult<()> {
+    let (existing, updated) =
+        workspace_exclude_candidate_in(filesystem, backend, root, manifest, lock)?;
     if updated != existing {
-        crate::artifact::write_atomic(&workspace_exclude_path(root), updated)?;
+        crate::artifact::write_atomic_in(filesystem, &workspace_exclude_path(root), updated)?;
     }
     Ok(())
 }
 
 /// Build the exact local boundary bytes without publishing them.
-pub(crate) fn workspace_exclude_candidate<B: GitBackend>(
+pub(crate) fn workspace_exclude_candidate_in<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     manifest: &ManifestArtifact,
@@ -72,7 +84,7 @@ pub(crate) fn workspace_exclude_candidate<B: GitBackend>(
     let block = lines.join("\n");
 
     let exclude_path = workspace_exclude_path(root);
-    let existing = match make_filesystem().read(&exclude_path) {
+    let existing = match filesystem.read(&exclude_path) {
         Ok(value) => String::from_utf8(value).map_err(|error| {
             io_error(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         })?,
@@ -84,8 +96,17 @@ pub(crate) fn workspace_exclude_candidate<B: GitBackend>(
 }
 
 // CAPABILITY-FREE EXCEPTION, §10 row `:279`: this family is the `.git/info/exclude` writer for every capability-free caller, so it stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3). Its `write_atomic` bootstraps `.git/info` by construction (`artifact/mod.rs:492-495`), which row `:279`'s third cell forbids: ACCEPTED-UNMET, inert because `git init` always creates it.
+#[cfg(test)]
 pub(crate) fn publish_workspace_exclude_candidate(root: &Path, contents: &str) -> ModelResult<()> {
-    crate::artifact::write_atomic(&workspace_exclude_path(root), contents)
+    publish_workspace_exclude_candidate_in(&make_filesystem(), root, contents)
+}
+
+pub(crate) fn publish_workspace_exclude_candidate_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    contents: &str,
+) -> ModelResult<()> {
+    crate::artifact::write_atomic_in(filesystem, &workspace_exclude_path(root), contents)
 }
 
 pub(crate) fn workspace_exclude_path(root: &Path) -> std::path::PathBuf {

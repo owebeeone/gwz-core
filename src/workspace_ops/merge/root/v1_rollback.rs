@@ -6,7 +6,7 @@
 
 use super::artifact_facts;
 use crate::artifact::LOCK_PATH;
-use crate::filesystem::{FileSystem, FsKind, make_filesystem};
+use crate::filesystem::{FileSystem, FsKind};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
@@ -23,6 +23,7 @@ pub(in crate::workspace_ops::merge) enum V1RootRollbackObservation {
 }
 
 pub(in crate::workspace_ops::merge) fn observe_v1_root_metadata_rollback<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &MergeOperationRecordV1,
@@ -38,6 +39,7 @@ pub(in crate::workspace_ops::merge) fn observe_v1_root_metadata_rollback<B: GitB
         })?;
     let manifest = if step == RootMetadataRollbackStepV1::Manifest {
         transition_state(artifact_facts::classify_write(
+            filesystem,
             root,
             WORKSPACE_MANIFEST,
             before_manifest.as_bytes(),
@@ -45,13 +47,14 @@ pub(in crate::workspace_ops::merge) fn observe_v1_root_metadata_rollback<B: GitB
         )?)
     } else {
         artifact_state(
-            artifact_facts::observe(root, WORKSPACE_MANIFEST)?,
+            artifact_facts::observe(filesystem, root, WORKSPACE_MANIFEST)?,
             &before_manifest,
             baseline_manifest,
         )
     };
     let lock = if step == RootMetadataRollbackStepV1::Lock {
         transition_state(artifact_facts::classify_write(
+            filesystem,
             root,
             LOCK_PATH,
             before_lock.as_bytes(),
@@ -59,7 +62,7 @@ pub(in crate::workspace_ops::merge) fn observe_v1_root_metadata_rollback<B: GitB
         )?)
     } else {
         artifact_state(
-            artifact_facts::observe(root, LOCK_PATH)?,
+            artifact_facts::observe(filesystem, root, LOCK_PATH)?,
             &before_lock,
             baseline_lock,
         )
@@ -100,6 +103,7 @@ pub(in crate::workspace_ops::merge) fn observe_v1_root_metadata_rollback<B: GitB
 /// The caller binds this fresh fact to the exact checked record before it
 /// can authorize terminal rollback.
 pub(in crate::workspace_ops::merge) fn observe_v1_selected_root_baseline(
+    filesystem: &dyn FileSystem,
     root: &Path,
     record: &MergeOperationRecordV1,
 ) -> ModelResult<(String, String)> {
@@ -110,8 +114,8 @@ pub(in crate::workspace_ops::merge) fn observe_v1_selected_root_baseline(
         record.baseline.lock_yaml.as_deref().ok_or_else(|| {
             root_metadata_error("selected-root operation baseline has no lock bytes")
         })?;
-    if observe_final_artifact(root, WORKSPACE_MANIFEST)? != baseline_manifest.as_bytes()
-        || observe_final_artifact(root, LOCK_PATH)? != baseline_lock.as_bytes()
+    if observe_final_artifact(filesystem, root, WORKSPACE_MANIFEST)? != baseline_manifest.as_bytes()
+        || observe_final_artifact(filesystem, root, LOCK_PATH)? != baseline_lock.as_bytes()
     {
         return Err(root_metadata_error(
             "selected-root manifest and lock do not exactly match the operation baseline",
@@ -123,7 +127,11 @@ pub(in crate::workspace_ops::merge) fn observe_v1_selected_root_baseline(
     ))
 }
 
-fn observe_final_artifact(root: &Path, relative: &str) -> ModelResult<Vec<u8>> {
+fn observe_final_artifact(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    relative: &str,
+) -> ModelResult<Vec<u8>> {
     let relative_path = Path::new(relative);
     if relative_path.as_os_str().is_empty()
         || relative_path.is_absolute()
@@ -136,11 +144,14 @@ fn observe_final_artifact(root: &Path, relative: &str) -> ModelResult<Vec<u8>> {
         )));
     }
 
-    observe_final_artifact_through_filesystem(root, relative_path)
+    observe_final_artifact_through_filesystem(filesystem, root, relative_path)
 }
 
-fn observe_final_artifact_through_filesystem(root: &Path, relative: &Path) -> ModelResult<Vec<u8>> {
-    let filesystem = make_filesystem();
+fn observe_final_artifact_through_filesystem(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    relative: &Path,
+) -> ModelResult<Vec<u8>> {
     let mut directory = filesystem.open_directory(root).map_err(|error| {
         root_metadata_error(format!(
             "failed to inspect selected-root parent '{}': {error}",
@@ -243,12 +254,13 @@ fn noncanonical_artifact(path: &Path) -> ModelError {
 }
 
 pub(in crate::workspace_ops::merge) fn execute_v1_root_metadata_rollback<B: GitBackend>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     record: &MergeOperationRecordV1,
     step: RootMetadataRollbackStepV1,
 ) -> ModelResult<()> {
-    if observe_v1_root_metadata_rollback(backend, root, record, step)?
+    if observe_v1_root_metadata_rollback(filesystem, backend, root, record, step)?
         != V1RootRollbackObservation::Before
     {
         return Err(root_metadata_error(
@@ -289,7 +301,7 @@ pub(in crate::workspace_ops::merge) fn execute_v1_root_metadata_rollback<B: GitB
                         .as_bytes(),
                 )
             };
-            artifact_facts::write_checked(root, relative, expected, target)
+            artifact_facts::write_checked(filesystem, root, relative, expected, target)
         }
         RootMetadataRollbackStepV1::Complete => Err(root_metadata_error(
             "complete selected-root rollback has no physical mutation",

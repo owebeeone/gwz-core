@@ -5,7 +5,7 @@
 
 #![forbid(clippy::disallowed_methods)]
 
-use crate::filesystem::{FileSystem, FsDirectory, FsKind, make_filesystem};
+use crate::filesystem::{FileSystem, FsDirectory, FsKind};
 use std::ffi::OsStr;
 use std::path::{Component, Path};
 
@@ -37,10 +37,12 @@ pub(crate) enum MergeArtifactTransition {
 }
 
 pub(crate) fn observe_merge_root_artifact(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
 ) -> ModelResult<MergeArtifactFact> {
-    observe_filesystem_artifact(
+    observe_filesystem_artifact_in(
+        filesystem,
         root,
         relative,
         ErrorCode::MergeRecoveryRequired,
@@ -52,15 +54,6 @@ enum FilesystemParent {
     Missing,
     Invalid,
     Open(FsDirectory),
-}
-
-fn observe_filesystem_artifact(
-    root: &Path,
-    relative: &Path,
-    code: ErrorCode,
-    label: &str,
-) -> ModelResult<MergeArtifactFact> {
-    observe_filesystem_artifact_in(&make_filesystem(), root, relative, code, label)
 }
 
 fn observe_filesystem_artifact_in(
@@ -293,42 +286,47 @@ fn reverse_door_identity_error(label: &str) -> ModelError {
 }
 
 pub(crate) fn replace_merge_root_artifact(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: &[u8],
     goal: &[u8],
 ) -> ModelResult<()> {
-    root_artifact(root, relative)?
+    root_artifact(filesystem, root, relative)?
         .replace_exact(&CheckedArtifactFact::Bytes(expected.to_vec()), goal)
 }
 
 pub(crate) fn classify_replace_merge_root_artifact(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: &[u8],
     goal: &[u8],
 ) -> ModelResult<MergeArtifactTransition> {
     map_transition(
-        root_artifact(root, relative)?
+        root_artifact(filesystem, root, relative)?
             .classify_replace(&CheckedArtifactFact::Bytes(expected.to_vec()), goal)?,
     )
 }
 
 pub(crate) fn remove_merge_root_artifact(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: &[u8],
 ) -> ModelResult<()> {
-    root_artifact(root, relative)?.remove_exact(&CheckedArtifactFact::Bytes(expected.to_vec()))
+    root_artifact(filesystem, root, relative)?
+        .remove_exact(&CheckedArtifactFact::Bytes(expected.to_vec()))
 }
 
 pub(crate) fn classify_remove_merge_root_artifact(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: &[u8],
 ) -> ModelResult<MergeArtifactTransition> {
     map_transition(
-        root_artifact(root, relative)?
+        root_artifact(filesystem, root, relative)?
             .classify_remove(&CheckedArtifactFact::Bytes(expected.to_vec()))?,
     )
 }
@@ -398,33 +396,36 @@ pub(crate) fn classify_merge_preservation_workspace(
 }
 
 pub(crate) fn observe_merge_preservation_bundle(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: Option<&[u8]>,
 ) -> ModelResult<bool> {
-    let artifact = preservation_bundle(root, relative)?;
+    let artifact = preservation_bundle(filesystem, root, relative)?;
     require_canonical_bundle_parent(&artifact)?;
     observe_expected_durable(artifact, expected)
 }
 
 pub(crate) fn classify_merge_preservation_bundle(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: Option<&[u8]>,
     goal: &[u8],
 ) -> ModelResult<MergeArtifactTransition> {
-    let artifact = preservation_bundle(root, relative)?;
+    let artifact = preservation_bundle(filesystem, root, relative)?;
     require_canonical_bundle_parent(&artifact)?;
     map_transition(artifact.classify_replace(&fact(expected), goal)?)
 }
 
 pub(crate) fn replace_merge_preservation_bundle(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: Option<&[u8]>,
     goal: &[u8],
 ) -> ModelResult<()> {
-    let artifact = preservation_bundle(root, relative)?;
+    let artifact = preservation_bundle(filesystem, root, relative)?;
     require_canonical_bundle_parent(&artifact)?;
     artifact.replace_exact(&fact(expected), goal)
 }
@@ -655,8 +656,19 @@ impl CrashRecoveryDecision {
 /// and carry no reverse-door limit; and the probe runs ONLY below the bar,
 /// because above it a handle failure remains an anomaly at the door rather
 /// than a capability the merge plans around.
+#[cfg(test)]
 pub(crate) fn crash_recovery_decision(root: &Path) -> ModelResult<CrashRecoveryDecision> {
-    let probe = probe_workspace_admission(root);
+    crash_recovery_decision_in(
+        &crate::operation_context::OperationContext::existing(),
+        root,
+    )
+}
+
+pub(crate) fn crash_recovery_decision_in(
+    context: &crate::operation_context::OperationContext,
+    root: &Path,
+) -> ModelResult<CrashRecoveryDecision> {
+    let probe = probe_workspace_admission(context, root);
     let cause = match probe.admitted {
         Ok(()) => return Ok(CrashRecoveryDecision::Supported),
         Err(cause) => cause,
@@ -678,7 +690,7 @@ pub(crate) fn crash_recovery_decision(root: &Path) -> ModelResult<CrashRecoveryD
     Ok(CrashRecoveryDecision::Unsupported {
         filesystem,
         gap,
-        handles_ok: directory_handles_ok(root),
+        handles_ok: directory_handles_ok(context.filesystem(), root),
     })
 }
 
@@ -697,8 +709,13 @@ pub(crate) fn crash_recovery_decision(root: &Path) -> ModelResult<CrashRecoveryD
 ///
 /// The forward create door below does NOT take this treatment: it does not
 /// refuse at all on such a volume, it publishes raw.
-fn root_artifact(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire_with_escape(
+fn root_artifact(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    relative: &Path,
+) -> ModelResult<CheckedArtifact> {
+    CheckedArtifact::acquire_with_escape_in(
+        filesystem,
         CheckedArtifactPolicy::workspace(root),
         relative,
         ErrorCode::MergeRecoveryRequired,
@@ -707,8 +724,13 @@ fn root_artifact(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
     )
 }
 
-fn preservation_bundle(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire_with_escape(
+fn preservation_bundle(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    relative: &Path,
+) -> ModelResult<CheckedArtifact> {
+    CheckedArtifact::acquire_with_escape_in(
+        filesystem,
         CheckedArtifactPolicy::workspace(root),
         relative,
         ErrorCode::PreservationEvidenceMismatch,
@@ -1042,13 +1064,14 @@ mod filesystem_observation_tests {
 
     #[test]
     fn root_level_artifact_uses_the_retained_filesystem_path() {
-        let filesystem = make_filesystem();
+        let filesystem = crate::filesystem::make_filesystem();
         let workspace = filesystem.test_workspace().unwrap();
         crate::filesystem::write_for_test(&workspace.path().join("gwz.lock"), b"lock bytes")
             .unwrap();
 
         assert_eq!(
-            observe_merge_root_artifact(workspace.path(), Path::new("gwz.lock")).unwrap(),
+            observe_merge_root_artifact(&filesystem, workspace.path(), Path::new("gwz.lock"))
+                .unwrap(),
             MergeArtifactFact::Bytes(b"lock bytes".to_vec())
         );
     }

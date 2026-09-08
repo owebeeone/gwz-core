@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use super::super::advisory::AdvisoryLock;
 use super::super::paths::{
     RetainedDirectory, ensure_child_directory, open_child_directory, open_existing_file,
-    open_or_create_file, resolve_workspace_paths, retain_ambient_directory,
+    open_or_create_file, resolve_workspace_paths_in, retain_ambient_directory_in,
     revalidate_ambient_directory, revalidate_child_directory, revalidate_file,
-    revalidate_workspace_repository,
+    revalidate_workspace_repository_in,
 };
 use super::super::{LOCKS_DIRECTORY_NAME, WORKSPACE_MUTATOR_LOCK_NAME, try_advisory_lock};
 use super::alias::reject_equivalent_alias;
@@ -16,8 +16,8 @@ use crate::checked_artifact::capability::{
     PathComponentMode, PathEquivalenceProvider, PreCatalogRootKindV1, SupportedFilesystemProfile,
     VolumeDescription,
 };
-use crate::filesystem::{FileSystem, FsKind, make_filesystem};
-use crate::git::{GitRepository, make_repository};
+use crate::filesystem::FsKind;
+use crate::operation_context::OperationContext;
 
 pub(super) const GIT_CATALOG_MUTATOR_LOCK_NAME: &str = "gwz-catalog-mutator-v1.lock";
 
@@ -49,13 +49,15 @@ pub(in crate::checked_artifact) struct WorkspaceAdmissionProbeV1 {
 /// directory is made: that is `catalog::recover_or_create`'s work, one layer
 /// above, and this function never reaches it.
 pub(in crate::checked_artifact) fn probe_workspace_admission(
+    context: &OperationContext,
     root: &Path,
 ) -> WorkspaceAdmissionProbeV1 {
     let admitted =
-        RetainedCatalogTargetV1::retain(&CatalogLeaseTargetRequestV1::workspace(root)).map(drop);
+        RetainedCatalogTargetV1::retain(context, &CatalogLeaseTargetRequestV1::workspace(root))
+            .map(drop);
     let volume = admitted
         .is_err()
-        .then(|| describe_workspace_volume(root).ok());
+        .then(|| describe_workspace_volume(context, root).ok());
     WorkspaceAdmissionProbeV1 {
         admitted,
         volume: volume.flatten(),
@@ -65,8 +67,12 @@ pub(in crate::checked_artifact) fn probe_workspace_admission(
 /// The volume description of the workspace root itself, on the same ambient
 /// retention the probe above uses. Independent of `resolve_workspace_paths` so
 /// a root the catalog cannot bind at all can still be NAMED in the warning.
-fn describe_workspace_volume(root: &Path) -> Result<VolumeDescription, CheckedFsError> {
-    let target = retain_ambient_directory(root, "catalog workspace target")?;
+fn describe_workspace_volume(
+    context: &OperationContext,
+    root: &Path,
+) -> Result<VolumeDescription, CheckedFsError> {
+    let target =
+        retain_ambient_directory_in(context.filesystem(), root, "catalog workspace target")?;
     HostPlatform.describe_fs_volume(target.handle())
 }
 
@@ -98,12 +104,14 @@ impl CatalogLeaseTargetRequestV1 {
 
     #[cfg(test)]
     pub(super) fn canonical_order_key_for_test(&self) -> Result<Vec<u8>, CheckedFsError> {
-        RetainedCatalogTargetV1::retain(self).map(|target| target.binding.order_key)
+        RetainedCatalogTargetV1::retain(&OperationContext::existing(), self)
+            .map(|target| target.binding.order_key)
     }
 
     #[cfg(test)]
     pub(super) fn canonical_target_path_for_test(&self) -> Result<PathBuf, CheckedFsError> {
-        RetainedCatalogTargetV1::retain(self).map(|target| target.binding.canonical_path)
+        RetainedCatalogTargetV1::retain(&OperationContext::existing(), self)
+            .map(|target| target.binding.canonical_path)
     }
 }
 
@@ -125,6 +133,7 @@ pub(super) struct CatalogTargetBindingV1 {
 }
 
 pub(super) struct RetainedCatalogTargetV1 {
+    context: OperationContext,
     pub(super) binding: CatalogTargetBindingV1,
     pub(super) target: RetainedDirectory,
     pub(super) related_git_directory: RetainedDirectory,
@@ -132,25 +141,37 @@ pub(super) struct RetainedCatalogTargetV1 {
 }
 
 impl RetainedCatalogTargetV1 {
-    pub(super) fn retain(request: &CatalogLeaseTargetRequestV1) -> Result<Self, CheckedFsError> {
+    pub(super) fn retain(
+        context: &OperationContext,
+        request: &CatalogLeaseTargetRequestV1,
+    ) -> Result<Self, CheckedFsError> {
         match &request.purpose {
-            CatalogLeaseTargetPurposeV1::Workspace(path) => Self::retain_workspace(path),
+            CatalogLeaseTargetPurposeV1::Workspace(path) => Self::retain_workspace(context, path),
             CatalogLeaseTargetPurposeV1::RepositoryCommonGitDirectory(path) => {
-                Self::retain_repository_common_git_directory(path)
+                Self::retain_repository_common_git_directory(context, path)
             }
         }
     }
 
-    fn retain_workspace(path: &Path) -> Result<Self, CheckedFsError> {
-        let resolved = resolve_workspace_paths(path)?;
-        let target =
-            retain_ambient_directory(&resolved.workspace_root, "catalog workspace target")?;
-        let related_git_directory = retain_ambient_directory(
+    fn retain_workspace(context: &OperationContext, path: &Path) -> Result<Self, CheckedFsError> {
+        let resolved = resolve_workspace_paths_in(context, path)?;
+        let target = retain_ambient_directory_in(
+            context.filesystem(),
+            &resolved.workspace_root,
+            "catalog workspace target",
+        )?;
+        let related_git_directory = retain_ambient_directory_in(
+            context.filesystem(),
             &resolved.workspace_git_dir,
             "catalog workspace Git directory",
         )?;
-        revalidate_workspace_repository(&resolved.workspace_root, &resolved.workspace_git_dir)?;
+        revalidate_workspace_repository_in(
+            context,
+            &resolved.workspace_root,
+            &resolved.workspace_git_dir,
+        )?;
         Self::finish(
+            context,
             PreCatalogRootKindV1::Workspace,
             resolved.workspace_root,
             resolved.workspace_git_dir,
@@ -159,12 +180,23 @@ impl RetainedCatalogTargetV1 {
         )
     }
 
-    fn retain_git_directory(path: &Path) -> Result<Self, CheckedFsError> {
-        let canonical_path = canonical_git_directory(path)?;
-        let target = retain_ambient_directory(&canonical_path, "catalog Git-directory target")?;
-        let related_git_directory =
-            retain_ambient_directory(&canonical_path, "catalog Git-directory target")?;
+    fn retain_git_directory(
+        context: &OperationContext,
+        path: &Path,
+    ) -> Result<Self, CheckedFsError> {
+        let canonical_path = canonical_git_directory(context, path)?;
+        let target = retain_ambient_directory_in(
+            context.filesystem(),
+            &canonical_path,
+            "catalog Git-directory target",
+        )?;
+        let related_git_directory = retain_ambient_directory_in(
+            context.filesystem(),
+            &canonical_path,
+            "catalog Git-directory target",
+        )?;
         Self::finish(
+            context,
             PreCatalogRootKindV1::GitDirectory,
             canonical_path.clone(),
             canonical_path,
@@ -173,15 +205,19 @@ impl RetainedCatalogTargetV1 {
         )
     }
 
-    fn retain_repository_common_git_directory(path: &Path) -> Result<Self, CheckedFsError> {
-        let association = RetainedCatalogGitAssociationV1::retain(path)?;
-        let mut target = Self::retain_git_directory(association.common_directory_path())?;
+    fn retain_repository_common_git_directory(
+        context: &OperationContext,
+        path: &Path,
+    ) -> Result<Self, CheckedFsError> {
+        let association = RetainedCatalogGitAssociationV1::retain(context, path)?;
+        let mut target = Self::retain_git_directory(context, association.common_directory_path())?;
         target.git_association = Some(association);
         target.revalidate()?;
         Ok(target)
     }
 
     fn finish(
+        context: &OperationContext,
         root_kind: PreCatalogRootKindV1,
         canonical_path: PathBuf,
         related_git_directory_path: PathBuf,
@@ -217,6 +253,7 @@ impl RetainedCatalogTargetV1 {
         let durable_identity = target_fact.durable().clone();
         let order_key = canonical_order_key(support_profile, &durable_identity, root_kind);
         Ok(Self {
+            context: context.clone(),
             binding: CatalogTargetBindingV1 {
                 root_kind,
                 support_profile,
@@ -250,11 +287,12 @@ impl RetainedCatalogTargetV1 {
             "catalog target Git directory",
         )?;
         if self.binding.root_kind == PreCatalogRootKindV1::Workspace {
-            revalidate_workspace_repository(
+            revalidate_workspace_repository_in(
+                &self.context,
                 &self.binding.canonical_path,
                 &self.binding.related_git_directory,
             )?;
-        } else if canonical_git_directory(&self.binding.canonical_path)?
+        } else if canonical_git_directory(&self.context, &self.binding.canonical_path)?
             != self.binding.canonical_path
         {
             return Err(CheckedFsError::ambiguous(
@@ -401,7 +439,7 @@ impl RetainedCatalogTargetV1 {
         #[cfg(test)]
         super::super::fault::run(super::super::fault::RuntimeBootstrapFault::CatalogFinalLeaseLock);
         let held = HeldCatalogTargetV1 {
-            context: crate::operation_context::OperationContext::existing(),
+            context: self.context.clone(),
             target: self,
             associated_targets,
             _runtime_dir: runtime_dir,
@@ -464,8 +502,11 @@ impl HeldCatalogTargetV1 {
     }
 }
 
-fn canonical_git_directory(path: &Path) -> Result<PathBuf, CheckedFsError> {
-    let filesystem = make_filesystem();
+fn canonical_git_directory(
+    context: &OperationContext,
+    path: &Path,
+) -> Result<PathBuf, CheckedFsError> {
+    let filesystem = context.filesystem();
     let input = filesystem
         .metadata(path)
         .map_err(|source| CheckedFsError::io("observe catalog Git directory", source))?;
@@ -478,7 +519,8 @@ fn canonical_git_directory(path: &Path) -> Result<PathBuf, CheckedFsError> {
     let canonical = filesystem
         .canonical_path(path)
         .map_err(|source| CheckedFsError::io("canonicalize catalog Git directory", source))?;
-    let repository = make_repository()
+    let repository = context
+        .repository()
         .repository_paths(&canonical)
         .map_err(|error| {
             CheckedFsError::io(

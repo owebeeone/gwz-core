@@ -73,9 +73,39 @@ mod fs {
     }
 }
 
+use std::io;
+struct FixtureFs<'a>(&'a dyn FileSystem);
+impl FixtureFs<'_> {
+    fn create_dir_all(&self, path: impl AsRef<std::path::Path>) -> io::Result<()> {
+        self.0.create_directories(path.as_ref())
+    }
+
+    fn write(&self, path: impl AsRef<std::path::Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+        let filesystem = self.0;
+        let path = path.as_ref();
+        match filesystem.remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let file = filesystem.create_file(path)?;
+        filesystem.write_all(&file, bytes.as_ref())
+    }
+
+    fn read(&self, path: impl AsRef<std::path::Path>) -> io::Result<Vec<u8>> {
+        self.0.read(path.as_ref())
+    }
+
+    fn read_to_string(&self, path: impl AsRef<std::path::Path>) -> io::Result<String> {
+        String::from_utf8(self.read(path)?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+}
+
 pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct PreservationFixture<
     B = GitTestRepository,
 > {
+    services: crate::operation_context::OperationContext,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) root: TempDir,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) backend: B,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) member: std::path::PathBuf,
@@ -87,17 +117,24 @@ pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct PreservationFi
 
 impl<B> PreservationFixture<B> {
     fn current(&self) -> crate::workspace_ops::merge::v1_lifecycle::checked::StoredV1Record {
-        crate::workspace_ops::merge::v1_lifecycle::checked::StoredV1Record::for_test(
+        crate::workspace_ops::merge::v1_lifecycle::checked::StoredV1Record::from_open_bytes_in(
+            &self.services,
             &self.root.path,
-            self.model.clone(),
+            &self
+                .root
+                .path
+                .join(".gwz/merge")
+                .join(format!("{}.yaml", self.model.merge_id)),
+            serde_yaml::to_string(&self.model).unwrap().as_bytes(),
         )
         .unwrap()
     }
 
     fn seed_open(&self) {
+        let fs = FixtureFs(self.services.filesystem());
         let merge_root = self.root.path.join(".gwz/merge");
-        fs::create_dir_all(&merge_root).unwrap();
-        fs::write(
+        fs.create_dir_all(&merge_root).unwrap();
+        fs.write(
             merge_root.join(format!("{}.yaml", self.model.merge_id)),
             serde_yaml::to_string(&self.model).unwrap(),
         )
@@ -121,18 +158,45 @@ fn integrated_fixture(name: &str) -> PreservationFixture {
 }
 
 fn integrated_fixture_using<B: GitBackend>(name: &str, backend: B) -> PreservationFixture<B> {
-    let root = TempDir::new(name);
+    integrated_fixture_in(
+        name,
+        backend,
+        crate::operation_context::OperationContext::existing(),
+    )
+}
+
+fn integrated_fixture_in<B: GitBackend>(
+    _name: &str,
+    backend: B,
+    services: crate::operation_context::OperationContext,
+) -> PreservationFixture<B> {
+    let fs = FixtureFs(services.filesystem());
+    let workspace = services.filesystem().test_workspace().unwrap();
+    let root = TempDir {
+        path: workspace.path().to_path_buf(),
+        _workspace: workspace,
+    };
     backend
         .test_init_repo(&root.path, &TestRepoSpec::default())
         .unwrap();
-    fs::create_dir_all(root.path.join(crate::stash::STASH_BUNDLE_DIR)).unwrap();
+    fs.create_dir_all(root.path.join(crate::stash::STASH_BUNDLE_DIR))
+        .unwrap();
     let member = root.path.join("members/a");
     backend
         .test_init_repo(&member, &TestRepoSpec::default())
         .unwrap();
-    let before =
-        fixture_commit_file(&backend, &member, "README.md", "before\n", "before", &[]).unwrap();
-    let result = fixture_commit_file(
+    let before = fixture_commit_file_in(
+        fs.0,
+        &backend,
+        &member,
+        "README.md",
+        "before\n",
+        "before",
+        &[],
+    )
+    .unwrap();
+    let result = fixture_commit_file_in(
+        fs.0,
         &backend,
         &member,
         "README.md",
@@ -141,7 +205,8 @@ fn integrated_fixture_using<B: GitBackend>(name: &str, backend: B) -> Preservati
         std::slice::from_ref(&before),
     )
     .unwrap();
-    let protected = fixture_commit_file(
+    let protected = fixture_commit_file_in(
+        fs.0,
         &backend,
         &member,
         "feature.txt",
@@ -173,6 +238,7 @@ fn integrated_fixture_using<B: GitBackend>(name: &str, backend: B) -> Preservati
     row.preservation.clear();
 
     PreservationFixture {
+        services,
         root,
         backend,
         member,
@@ -205,11 +271,13 @@ fn add_integrated_member<B: GitBackend>(
     relative_path: &str,
 ) -> (std::path::PathBuf, String, String, String) {
     let path = fixture.root.path.join(relative_path);
+    let fs = FixtureFs(fixture.services.filesystem());
     fixture
         .backend
         .test_init_repo(&path, &TestRepoSpec::default())
         .unwrap();
-    let before = fixture_commit_file(
+    let before = fixture_commit_file_in(
+        fs.0,
         &fixture.backend,
         &path,
         "README.md",
@@ -218,7 +286,8 @@ fn add_integrated_member<B: GitBackend>(
         &[],
     )
     .unwrap();
-    let result = fixture_commit_file(
+    let result = fixture_commit_file_in(
+        fs.0,
         &fixture.backend,
         &path,
         "README.md",
@@ -227,7 +296,8 @@ fn add_integrated_member<B: GitBackend>(
         std::slice::from_ref(&before),
     )
     .unwrap();
-    let protected = fixture_commit_file(
+    let protected = fixture_commit_file_in(
+        fs.0,
         &fixture.backend,
         &path,
         "protected-b.txt",
@@ -315,14 +385,33 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
     degenerate_candidate: bool,
     backend: B,
 ) -> RootPreservationFixture<B> {
-    let mut base = integrated_fixture_using(name, backend);
+    dirty_root_handoff_fixture_in(
+        name,
+        selected_root_owner,
+        include_later_member,
+        degenerate_candidate,
+        backend,
+        crate::operation_context::OperationContext::existing(),
+    )
+}
+
+fn dirty_root_handoff_fixture_in<B: GitBackend>(
+    name: &str,
+    selected_root_owner: bool,
+    include_later_member: bool,
+    degenerate_candidate: bool,
+    backend: B,
+    services: crate::operation_context::OperationContext,
+) -> RootPreservationFixture<B> {
+    let mut base = integrated_fixture_in(name, backend, services.clone());
+    let fs = FixtureFs(services.filesystem());
     base.backend
         .set_branch_target_checked(&base.member, "main", &base.protected, &base.result)
         .unwrap();
     if include_later_member {
         add_integrated_member(&mut base, "mem_z", "members/z");
     }
-    fs::create_dir_all(base.root.path.join("gwz.conf")).unwrap();
+    fs.create_dir_all(base.root.path.join("gwz.conf")).unwrap();
     let manifest = base.model.baseline.manifest_yaml.clone().unwrap();
     if degenerate_candidate {
         let mut lock = crate::artifact::LockArtifact::from_yaml(
@@ -353,14 +442,16 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
         base.model.baseline.lock_yaml = Some(lock);
     }
     let lock = base.model.baseline.lock_yaml.clone().unwrap();
-    crate::workspace_ops::ensure_workspace_exclude(
+    crate::workspace_ops::ensure_workspace_exclude_in(
+        fs.0,
         &base.backend,
         &base.root.path,
         &crate::artifact::ManifestArtifact::from_yaml(&manifest).unwrap(),
         &crate::artifact::LockArtifact::from_yaml(&lock).unwrap(),
     )
     .unwrap();
-    let first = fixture_commit_file(
+    let first = fixture_commit_file_in(
+        fs.0,
         &base.backend,
         &base.root.path,
         crate::workspace::WORKSPACE_MANIFEST,
@@ -369,7 +460,8 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
         &[],
     )
     .unwrap();
-    let root_baseline = fixture_commit_file(
+    let root_baseline = fixture_commit_file_in(
+        fs.0,
         &base.backend,
         &base.root.path,
         crate::artifact::LOCK_PATH,
@@ -389,7 +481,8 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
             Some(format!("{:x}", Sha256::digest(manifest.as_bytes())));
         base.model.baseline.lock_commit_sha256 =
             Some(format!("{:x}", Sha256::digest(lock.as_bytes())));
-        let root_result = fixture_commit_file(
+        let root_result = fixture_commit_file_in(
+            fs.0,
             &base.backend,
             &base.root.path,
             "selected-root.txt",
@@ -432,7 +525,7 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
     let mut candidate =
         crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::candidate_payload(&current);
     let boundary_path = crate::workspace_ops::workspace_exclude_path(&base.root.path);
-    let baseline_boundary = fs::read_to_string(&boundary_path).unwrap();
+    let baseline_boundary = fs.read_to_string(&boundary_path).unwrap();
     let manifest_artifact = crate::artifact::ManifestArtifact::from_yaml(&manifest).unwrap();
     let mut boundary = baseline_boundary.clone();
     if !degenerate_candidate {
@@ -508,13 +601,14 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
     let publication = base.model.publication.as_ref().unwrap();
     let candidate = publication.candidate.as_ref().unwrap();
     let marker_path = publication.candidate_marker_path.as_ref().unwrap();
-    fs::create_dir_all(base.root.path.join(marker_path).parent().unwrap()).unwrap();
-    fs::write(
+    fs.create_dir_all(base.root.path.join(marker_path).parent().unwrap())
+        .unwrap();
+    fs.write(
         base.root.path.join(marker_path),
         candidate.marker_yaml.as_bytes(),
     )
     .unwrap();
-    fs::write(
+    fs.write(
         base.root.path.join(crate::artifact::LOCK_PATH),
         candidate.lock_yaml.as_bytes(),
     )
@@ -525,8 +619,10 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
             &[marker_path.as_str(), crate::artifact::LOCK_PATH],
         )
         .unwrap();
-    crate::workspace_ops::publish_workspace_exclude_candidate(&base.root.path, &boundary).unwrap();
-    let protected = fixture_commit_file(
+    crate::workspace_ops::publish_workspace_exclude_candidate_in(fs.0, &base.root.path, &boundary)
+        .unwrap();
+    let protected = fixture_commit_file_in(
+        fs.0,
         &base.backend,
         &base.root.path,
         "root-protected.txt",
@@ -535,16 +631,17 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
         std::slice::from_ref(&anchor),
     )
     .unwrap();
-    fs::write(
+    fs.write(
         base.root.path.join("root-protected.txt"),
         "unstaged root work\n",
     )
     .unwrap();
-    fs::write(base.root.path.join("root-staged.txt"), "staged root work\n").unwrap();
+    fs.write(base.root.path.join("root-staged.txt"), "staged root work\n")
+        .unwrap();
     base.backend
         .stage_paths(&base.root.path, &["root-staged.txt"])
         .unwrap();
-    fs::write(
+    fs.write(
         base.root.path.join("root-untracked.txt"),
         "untracked root work\n",
     )
@@ -734,7 +831,29 @@ fn fixture_commit_file<B: GitBackend>(
     message: &str,
     parents: &[String],
 ) -> crate::model::ModelResult<String> {
-    fs::write(path.join(relative), contents).unwrap();
+    fixture_commit_file_in(
+        &make_filesystem(),
+        backend,
+        path,
+        relative,
+        contents,
+        message,
+        parents,
+    )
+}
+
+fn fixture_commit_file_in<B: GitBackend>(
+    filesystem: &dyn FileSystem,
+    backend: &B,
+    path: &std::path::Path,
+    relative: &str,
+    contents: &str,
+    message: &str,
+    parents: &[String],
+) -> crate::model::ModelResult<String> {
+    FixtureFs(filesystem)
+        .write(path.join(relative), contents)
+        .unwrap();
     backend.stage_paths(path, &[relative])?;
     let commit =
         backend.test_create_commit(path, &TestCommitSpec::from_index(message, parents.to_vec()))?;

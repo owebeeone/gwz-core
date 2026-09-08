@@ -72,6 +72,7 @@ fn execute_checked<B: MergeAuthorityBackend>(
             phase: S::WriteBundle,
             ..
         } => v1_write_bundle_checked(
+            current.context().filesystem(),
             backend,
             current.location().root(),
             current.record(),

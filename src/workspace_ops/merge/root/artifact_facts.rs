@@ -1,5 +1,6 @@
 #![forbid(clippy::disallowed_methods)]
 
+use crate::filesystem::FileSystem;
 use std::path::Path;
 
 use crate::checked_artifact::entry::{MergeArtifactFact, MergeArtifactTransition};
@@ -21,11 +22,13 @@ pub(in crate::workspace_ops::merge) enum RegularFileTransition {
 }
 
 pub(in crate::workspace_ops::merge) fn observe(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &str,
 ) -> ModelResult<RegularFileFact> {
     Ok(
         match crate::checked_artifact::entry::observe_merge_root_artifact(
+            filesystem,
             root,
             Path::new(relative),
         )? {
@@ -37,12 +40,14 @@ pub(in crate::workspace_ops::merge) fn observe(
 }
 
 pub(in crate::workspace_ops::merge) fn write_checked(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &str,
     expected: &[u8],
     bytes: &[u8],
 ) -> ModelResult<()> {
     crate::checked_artifact::entry::replace_merge_root_artifact(
+        filesystem,
         root,
         Path::new(relative),
         expected,
@@ -51,6 +56,7 @@ pub(in crate::workspace_ops::merge) fn write_checked(
 }
 
 pub(in crate::workspace_ops::merge) fn classify_write(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &str,
     expected: &[u8],
@@ -58,6 +64,7 @@ pub(in crate::workspace_ops::merge) fn classify_write(
 ) -> ModelResult<RegularFileTransition> {
     map_transition(
         crate::checked_artifact::entry::classify_replace_merge_root_artifact(
+            filesystem,
             root,
             Path::new(relative),
             expected,
@@ -67,20 +74,28 @@ pub(in crate::workspace_ops::merge) fn classify_write(
 }
 
 pub(in crate::workspace_ops::merge) fn remove_exact(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &str,
     expected: &[u8],
 ) -> ModelResult<()> {
-    crate::checked_artifact::entry::remove_merge_root_artifact(root, Path::new(relative), expected)
+    crate::checked_artifact::entry::remove_merge_root_artifact(
+        filesystem,
+        root,
+        Path::new(relative),
+        expected,
+    )
 }
 
 pub(in crate::workspace_ops::merge) fn classify_remove(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &str,
     expected: &[u8],
 ) -> ModelResult<RegularFileTransition> {
     map_transition(
         crate::checked_artifact::entry::classify_remove_merge_root_artifact(
+            filesystem,
             root,
             Path::new(relative),
             expected,

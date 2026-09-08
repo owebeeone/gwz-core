@@ -20,6 +20,51 @@ use crate::workspace_ops::merge::{
 use crate::workspace_ops::tests::TempDir;
 
 #[test]
+fn service_reopens_and_commits_in_the_supplied_world() {
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let root = context.filesystem().test_workspace().unwrap();
+    context
+        .repository()
+        .test_init_repo(root.path(), &crate::git::TestRepoSpec::default())
+        .unwrap();
+    let mut model = test_record();
+    model.state = OperationState::AwaitingResolution;
+    let row = model.participants.get_mut("mem_a").unwrap();
+    row.state = ParticipantState::Conflicted;
+    row.expected_merge_head = Some(row.source_commit.clone());
+    let store = CheckedV1Store::new(context.clone());
+    let lease =
+        V1MutationLease::acquire_for_merge_start_in(&context, root.path(), &model.workspace_id)
+            .unwrap();
+    store
+        .create_open(&lease, root.path(), &model, None)
+        .unwrap();
+    drop(lease);
+    drop(context);
+    let mut runtime = ConflictRuntime::default();
+    let error = run(
+        &store,
+        root.path(),
+        &model.merge_id,
+        V1LifecycleRequest::Continue,
+        &mut runtime,
+    )
+    .err()
+    .expect("acceptance checkpoint");
+    assert_eq!(error.message, "acceptance checkpoint reached");
+    assert_eq!(runtime.executions, 1);
+    let current = store
+        .load_open_in(&world.context(), root.path(), &model.merge_id)
+        .unwrap();
+    assert_eq!(current.record().state, OperationState::Finalizing);
+    assert_eq!(
+        current.record().participants["mem_a"].state,
+        ParticipantState::Continued
+    );
+}
+
+#[test]
 fn read_only_status_responds_without_observation_or_execution() {
     let root = TempDir::new_git("merge-v1-service-status");
     seed_open(&root, &test_record());

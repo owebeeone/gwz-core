@@ -61,6 +61,7 @@ pub(crate) fn v1_write_preservation_bundle_for_test<B: crate::git::MergeAuthorit
     let record = open.record_for_test();
     let plans = v1_preservation_owners(backend, root, record)?;
     v1_write_bundle_checked(
+        &crate::filesystem::make_filesystem(),
         backend,
         root,
         record,

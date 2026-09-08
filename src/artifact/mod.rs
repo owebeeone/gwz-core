@@ -494,8 +494,16 @@ fn list_artifacts<T>(dir: PathBuf, parse: impl Fn(&str) -> ModelResult<T>) -> Mo
 /// clean. The typed conf writers below re-record it; anything git rewrites behind gwz's
 /// back is reconciled at the gate instead.
 pub fn write_atomic(path: &Path, contents: impl AsRef<str>) -> ModelResult<()> {
-    let staged = stage_durably(path, contents.as_ref())?;
-    publish_staged(&staged, path)
+    write_atomic_in(&make_filesystem(), path, contents)
+}
+
+pub(crate) fn write_atomic_in(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    contents: impl AsRef<str>,
+) -> ModelResult<()> {
+    let staged = stage_durably(filesystem, path, contents.as_ref())?;
+    publish_staged(filesystem, &staged, path)
 }
 
 /// F14: write the manifest and lock together. True cross-file atomicity isn't possible on
@@ -508,20 +516,20 @@ pub fn write_manifest_and_lock(
     manifest: &ManifestArtifact,
     lock: &LockArtifact,
 ) -> ModelResult<()> {
+    let filesystem = make_filesystem();
     let manifest_path = root.join(WORKSPACE_MANIFEST);
     let lock_path = root.join(LOCK_PATH);
-    let manifest_staged = stage_durably(&manifest_path, &manifest.to_yaml()?)?;
-    let lock_staged = stage_durably(&lock_path, &lock.to_yaml()?)?;
-    publish_staged(&manifest_staged, &manifest_path)?;
-    publish_staged(&lock_staged, &lock_path)?;
+    let manifest_staged = stage_durably(&filesystem, &manifest_path, &manifest.to_yaml()?)?;
+    let lock_staged = stage_durably(&filesystem, &lock_path, &lock.to_yaml()?)?;
+    publish_staged(&filesystem, &manifest_staged, &manifest_path)?;
+    publish_staged(&filesystem, &lock_staged, &lock_path)?;
     // One refresh after both are published: the marker never records a half-written pair.
     conf_integrity::refresh_conf_integrity_marker(root)
 }
 
 /// Write `contents` to a unique temp beside `path` and fsync it, returning the staged temp
 /// path. On success the bytes are durably on disk, ready for `publish_staged`.
-fn stage_durably(path: &Path, contents: &str) -> ModelResult<PathBuf> {
-    let filesystem = make_filesystem();
+fn stage_durably(filesystem: &dyn FileSystem, path: &Path, contents: &str) -> ModelResult<PathBuf> {
     if let Some(parent) = path.parent() {
         filesystem.create_directories(parent).map_err(io_error)?;
     }
@@ -545,8 +553,7 @@ fn stage_durably(path: &Path, contents: &str) -> ModelResult<PathBuf> {
 
 /// Publish a staged temp to `path` (atomic rename) and best-effort fsync the directory so
 /// the rename entry itself survives a crash.
-fn publish_staged(tmp_path: &Path, path: &Path) -> ModelResult<()> {
-    let filesystem = make_filesystem();
+fn publish_staged(filesystem: &dyn FileSystem, tmp_path: &Path, path: &Path) -> ModelResult<()> {
     if let Err(err) = filesystem
         .rename(tmp_path, path, RenameMode::Replace)
         .map_err(io_error)

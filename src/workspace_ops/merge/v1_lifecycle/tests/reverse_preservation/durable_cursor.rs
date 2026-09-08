@@ -350,8 +350,15 @@ fn expected_bundle_bytes_are_identical_with_and_without_markers() {
             fs::remove_file(&bundle).unwrap();
         }
         let plans = v1_preservation_owners(&fixture.backend, &fixture.root.path, record).unwrap();
-        v1_write_bundle_checked(&fixture.backend, &fixture.root.path, record, &plans, &owner)
-            .unwrap();
+        v1_write_bundle_checked(
+            &crate::filesystem::make_filesystem(),
+            &fixture.backend,
+            &fixture.root.path,
+            record,
+            &plans,
+            &owner,
+        )
+        .unwrap();
         fs::read(&bundle).unwrap()
     };
 
