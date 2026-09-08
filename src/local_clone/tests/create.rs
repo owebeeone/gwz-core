@@ -10,7 +10,7 @@ use gwz_family_model::{CloneMode, MemberKind, MemberState, ROOT_PATH};
 use gwz_family_store_contract::{FamilyLocation, FamilyObservation, FamilySource, FamilyStore};
 
 use super::fixture::{
-    FamilyFixture, TempDir, family_files_absent, family_workspace, meta,
+    FamilyFixture, TempDir, family_files_absent, family_workspace, init_repo_with_commit, meta,
     uncommitted_configuration_workspace, workspace,
 };
 use crate::artifact::{ConfIntegrityVerdict, inspect_conf_integrity};
@@ -279,6 +279,92 @@ fn an_unborn_workspace_root_refuses_before_family_allocation() {
     assert!(
         !destination.exists(),
         "the unborn source must not allocate a destination"
+    );
+}
+
+#[test]
+fn an_unregistered_repository_in_the_workspace_root_refuses_before_family_allocation() {
+    let fixture = family_workspace("create-unregistered-repository");
+    let repository = fixture.root.join("artifacts/rogue");
+    init_repo_with_commit(&repository, false, "rogue");
+    let destination = fixture.sibling("A");
+    let error = handle_clone_local_workspace(
+        &Git2Backend::without_credential_helpers(),
+        &fixture.root,
+        clone_request("A"),
+        "op-clone",
+        &NullSink,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error}");
+    assert!(
+        error.message.contains("unregistered Git repositories"),
+        "{error}"
+    );
+    assert!(error.message.contains("artifacts/rogue"), "{error}");
+    assert!(
+        family_files_absent(&fixture.root),
+        "the rejected source must not found a family"
+    );
+    assert!(
+        !destination.exists(),
+        "the rejected source must not allocate a destination"
+    );
+}
+
+#[test]
+fn a_repository_inside_a_registered_member_remains_the_members_responsibility() {
+    let fixture = family_workspace("create-member-owned-repository");
+    init_repo_with_commit(
+        &fixture.root.join("app/vendor/submodule"),
+        false,
+        "submodule",
+    );
+
+    handle_clone_local_workspace(
+        &Git2Backend::without_credential_helpers(),
+        &fixture.root,
+        clone_request("A"),
+        "op-clone",
+        &NullSink,
+    )
+    .expect("registered member owns nested repositories");
+
+    assert!(
+        fixture
+            .sibling("A")
+            .join("app/vendor/submodule/.git")
+            .is_dir()
+    );
+}
+
+#[test]
+fn a_lane_destination_inside_the_workspace_refuses_before_family_allocation() {
+    let fixture = family_workspace("create-inside-workspace");
+    let lane_parent = fixture.root.join("lanes");
+    fs::create_dir_all(&lane_parent).expect("lane parent");
+    let destination = lane_parent.join("A");
+    let mut request = clone_request("A");
+    request.dest = Some(destination.to_string_lossy().into_owned());
+    let error = handle_clone_local_workspace(
+        &Git2Backend::without_credential_helpers(),
+        &fixture.root,
+        request,
+        "op-clone",
+        &NullSink,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error}");
+    assert!(error.message.contains("inside the root"), "{error}");
+    assert!(
+        family_files_absent(&fixture.root),
+        "the rejected source must not found a family"
+    );
+    assert!(
+        !destination.exists(),
+        "the rejected source must not allocate a destination"
     );
 }
 

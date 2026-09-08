@@ -83,7 +83,38 @@ fn workspace_with_members(
         )
         .expect("register the member repository");
     }
+    commit_workspace_configuration(&root);
     root
+}
+
+/// Local-clone admission requires the root's managed configuration to be a
+/// real part of the source history. This fixture makes that same final
+/// operator commit after it registers its arbitrary set of members.
+fn commit_workspace_configuration(root: &Path) {
+    let repository = git2::Repository::open(root).expect("open root repository");
+    let mut index = repository.index().expect("index");
+    index
+        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+        .expect("stage managed configuration");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repository.find_tree(tree_id).expect("tree");
+    let parent = repository
+        .head()
+        .expect("HEAD")
+        .peel_to_commit()
+        .expect("HEAD commit");
+    let signature = gwz_local_testrepo::fixture_signature();
+    repository
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "register workspace members",
+            &tree,
+            &[&parent],
+        )
+        .expect("commit managed configuration");
 }
 
 fn family(label: &str, members: &[&str]) -> Family {

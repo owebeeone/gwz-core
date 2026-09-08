@@ -57,6 +57,7 @@ use crate::artifact;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
+use gwz_repo_contract::RepoKey;
 
 /// What one create produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -184,6 +185,11 @@ pub(crate) fn clone_local<B: GitBackend>(
     // §4.0 hazard refuses here with nothing written.
     let capture = capture_source(&placement.source, open_merge)
         .map_err(|error| port_error(&request.name, &destination, &error))?;
+    reject_unregistered_workspace_repositories(
+        &capture.repositories,
+        &placement.source,
+        &request.name,
+    )?;
 
     // The root's manifest, for its exclude block below: the capture's when
     // the root is the copy source, read otherwise (a clone of a clone).
@@ -340,6 +346,37 @@ fn ensure_source_is_ready_for_local_clone<B: GitBackend>(
          input; do not run `gwz init` on another directory to bypass this refusal",
         root.display(),
         findings.join("; "),
+    )))
+}
+
+/// The workspace root may contain only itself and manifest members as Git
+/// repositories. Registered members own their own nested repositories, but
+/// a repository elsewhere means the proposed root is an accidental wrapper
+/// or an incomplete workspace composition.
+fn reject_unregistered_workspace_repositories(
+    repositories: &[super::adapters::inventory::IncludedRepository],
+    source: &Path,
+    name: &MemberName,
+) -> ModelResult<()> {
+    let unexpected: Vec<_> = repositories
+        .iter()
+        .filter_map(|repository| match &repository.key {
+            RepoKey::Member { id } if id.starts_with("nested:") => {
+                Some(repository.relative.display().to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    if unexpected.is_empty() {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "local clone `{name}` refused before reservation: source workspace {} contains \
+         unregistered Git repositories at {}; a GWZ workspace may contain only its root and \
+         registered member repositories. Nested repositories and submodules inside a registered \
+         member remain that member's responsibility",
+        source.display(),
+        unexpected.join(", "),
     )))
 }
 

@@ -2,13 +2,13 @@
 //! `InstallPorts::{snapshot_source, recheck_source}` and disposal's fresh
 //! evidence.
 //!
-//! Design §4.0: "Inventory every included Git repository before copying:
-//! workspace root, materialized members, and unmanaged/ignored nested
-//! repositories." `gwz-repo-inspect` answers for one repository path; the
-//! traversal that finds them is core's, and it is the same traversal the
-//! copier makes -- excluded entries are not included, symbolic links are
-//! never followed, and a repository's own `.git` is never descended into.
-//! Every repository found is inspected; the hazards of all of them are
+//! Design §4.0 inventories the workspace root and materialized members
+//! before copying. An unregistered repository is inventoried only to produce
+//! a pre-allocation refusal. `gwz-repo-inspect` answers for one repository
+//! path; the traversal that finds them is core's, and it is the same
+//! traversal the copier makes -- excluded entries are not included, symbolic
+//! links are never followed, and a repository's own `.git` is never
+//! descended into. Every included repository is inspected; their hazards are
 //! aggregated into one refusal (design §4 step 1).
 
 use std::collections::BTreeMap;
@@ -21,12 +21,12 @@ use gwz_workspace_install::{CapturedRepository, InstallPortError, SourceSnapshot
 use crate::artifact::{self, LOCK_PATH};
 use crate::workspace::WORKSPACE_MANIFEST;
 
-/// One repository of a workspace tree.
+/// One repository discovered in a workspace tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncludedRepository {
-    /// The workspace root, a manifest member by id, or an unmanaged nested
-    /// repository keyed `nested:<relative path>` -- it is copied and
-    /// inspected like the others but is never paired across the family.
+    /// The workspace root, a manifest member by id, or an unregistered
+    /// repository keyed `nested:<relative path>`. Local-clone admission
+    /// refuses the latter before allocation so the key is diagnostic only.
     pub key: RepoKey,
     /// Workspace-relative; empty for the root.
     pub relative: PathBuf,
@@ -59,8 +59,10 @@ impl IncludedRepository {
 }
 
 /// Every repository under `workspace`: the root first (when it is one),
-/// then members and nested repositories in path order. `exclusions` are
-/// the copy-time exclusions, so an excluded subtree is not inventoried.
+/// then members and unregistered repositories in path order. A registered
+/// member is a boundary: its own submodules and nested repositories belong
+/// to that member and are not workspace repositories. `exclusions` are the
+/// copy-time exclusions, so an excluded subtree is not inventoried.
 pub fn included_repositories(
     workspace: &Path,
     exclusions: &[Exclusion],
@@ -112,6 +114,7 @@ pub fn included_repositories(
         // and its contents (objects, refs) are not a tree to walk.
         let bare = !is_repository && is_git_directory(&directory);
         let at_root = relative.as_os_str().is_empty();
+        let member_boundary = members.contains_key(&relative);
         if is_repository || bare {
             let key = if at_root {
                 RepoKey::Root
@@ -130,9 +133,11 @@ pub fn included_repositories(
             });
         }
         // A nested bare repository's contents are objects and refs, not a
-        // tree to walk; the root is walked whatever it is, because a bare
-        // hub root (design §4.3) still holds its members beneath it.
-        if bare && !at_root {
+        // tree to walk. A registered member is likewise a boundary: its
+        // submodules are owned by that member, not by this workspace. The
+        // root is walked whatever it is, because a bare hub root can still
+        // hold its members beneath it.
+        if (bare || member_boundary) && !at_root {
             continue;
         }
         // Depth-first in sorted order: push in reverse so the first child

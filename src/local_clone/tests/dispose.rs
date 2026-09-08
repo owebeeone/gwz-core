@@ -18,7 +18,9 @@ use gwz_family_store_contract::{FamilyLocation, FamilyObservation, FamilySession
 use gwz_local_disposal::{DisposalPorts, DisposeEffect, HistoryAnswer, HistoryQuery};
 use gwz_repo_contract::{Observation, RepoKey, WorkKind};
 
-use super::fixture::{FamilyFixture, clean_family_workspace, family_workspace, meta};
+use super::fixture::{
+    FamilyFixture, clean_family_workspace, family_files_absent, family_workspace, meta,
+};
 use crate::git::Git2Backend;
 use crate::local_clone::adapters::disposal::CoreDisposalPorts;
 use crate::local_clone::create;
@@ -1315,61 +1317,30 @@ fn the_disposal_ports_observe_check_history_per_witness_and_remove() {
     let _ = DisposeEffect::RowDetached;
 }
 
-/// Design §5.1 ("including root and unmanaged nested repositories") and
-/// §13.8's recorded gap: a nested **bare** repository -- a directory that
-/// is itself a Git directory, with no `.git` entry -- is inventoried and
-/// inspected like every other repository in the deletion tree, so its
-/// unique history refuses ordinary deletion rather than being deleted
-/// uninspected.
+/// A local-clone source may contain Git repositories only at the workspace
+/// root or at registered member paths. A nested bare repository is therefore
+/// rejected before it can become a lane whose disposal needs special
+/// treatment.
 #[test]
-fn a_nested_bare_repository_is_inventoried_and_its_history_protected() {
-    let nested_key = format!(
-        "nested:{}",
-        Path::new("vendor").join("mirror.git").display()
-    );
+fn an_unregistered_bare_repository_refuses_before_family_allocation() {
     let fixture = clean_family_workspace("dispose-nested-bare");
-    // A bare repository inside the source tree, copied into the lane.
-    let bare = fixture.tree.bare_repo("root/vendor/mirror.git");
-    let unique = bare.commit_files("mirror", &[("README", b"mirrored\n")]);
-    clone(&fixture.root, "A");
+    fixture.tree.bare_repo("root/vendor/mirror.git");
     let dest = fixture.sibling("A");
-    let view = family(&fixture.root).unwrap();
-    let mut ports = CoreDisposalPorts::new(
-        fixture.root.clone(),
-        view,
-        MemberName::parse("A").unwrap(),
-        open_merge_probe,
-    );
-    let evidence = ports.observe_target(&dest).expect("observed");
-    assert!(evidence.unknown.is_empty(), "{:?}", evidence.unknown);
-    let nested = evidence
-        .repositories
-        .iter()
-        .find(|repository| matches!(&repository.key, RepoKey::Member { id } if id == &nested_key))
-        .expect("the nested bare repository is inventoried");
-    assert!(nested.info.bare);
-    let roots = nested.history.known().expect("its history is known");
+    let error = handle_clone_local_workspace(
+        &Git2Backend::without_credential_helpers(),
+        &fixture.root,
+        clone_request("A"),
+        "op-clone",
+        &NullSink,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error}");
     assert!(
-        roots.roots.iter().any(|root| root.oid == unique),
-        "its commit is a protected root: {:?}",
-        roots.roots
+        error.message.contains("unregistered Git repositories"),
+        "{error}"
     );
-    // Through the slot: a nested repository is paired with no survivor, so
-    // its history is unpreserved until the operator names the loss.
-    let before = tree_bytes(&dest);
-    let error = refuse(&fixture.root, delete_request("A", &[]));
-    assert_refused_without_effect(
-        &fixture,
-        &dest,
-        &before,
-        &error,
-        ErrorCode::UnwaivedHazard,
-        &["<unpreserved-history>", &nested_key],
-    );
-    local(&fixture.root, delete_request("A", &["unpreserved-history"]));
+    assert!(error.message.contains("vendor/mirror.git"), "{error}");
+    assert!(family_files_absent(&fixture.root));
     assert!(!dest.exists());
-    assert!(
-        fixture.root.join("vendor/mirror.git/HEAD").is_file(),
-        "the source's own copy stands"
-    );
 }
