@@ -85,6 +85,14 @@ fn edges(
             let tree = repository.find_tree(git_oid).map_err(corrupt)?;
             let mut edges = Vec::with_capacity(tree.len());
             for entry in tree.iter() {
+                // A gitlink is a reference to a member repository's commit,
+                // not an object owned by this repository's object database.
+                // The containing tree preserves the gitlink; following its
+                // id would make a valid multi-repository workspace look
+                // incomplete whenever that commit is absent locally.
+                if entry.filemode() == 0o160000 {
+                    continue;
+                }
                 edges.push(convert(entry.id())?);
             }
             Ok((ObjectKind::Tree, edges))

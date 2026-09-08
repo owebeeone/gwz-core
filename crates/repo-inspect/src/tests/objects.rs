@@ -130,6 +130,39 @@ fn a_tags_edge_is_its_target_so_a_traversal_reaches_the_commit() {
 }
 
 #[test]
+fn tree_edges_exclude_a_gitlink_owned_by_a_member_repository() {
+    let outer = Fixture::checkout(ObjectFormat::Sha1);
+    let member = Fixture::checkout(ObjectFormat::Sha1);
+    member.write("member.txt", b"member-only\n");
+    member.commit("member commit");
+    let member_commit = member.head_commit();
+    let repository = outer.open();
+    let base_tree = repository
+        .find_commit(outer.head_commit())
+        .expect("outer commit")
+        .tree()
+        .expect("outer tree");
+    let mut builder = repository.treebuilder(Some(&base_tree)).expect("tree builder");
+    builder
+        .insert("member", member_commit, 0o160000)
+        .expect("gitlink entry");
+    let tree = builder.write().expect("tree with gitlink");
+
+    let reader = LocalObjectReader::open(&admitted(outer.root()));
+    let record = reader
+        .read_object(&id(ObjectFormat::Sha1, tree), &ReadLimits::default())
+        .expect("outer tree reads without the member object");
+    assert_eq!(record.kind, ObjectKind::Tree);
+    assert_eq!(record.edges, vec![id(ObjectFormat::Sha1, base_tree.get(0).expect("blob").id())]);
+    assert_eq!(
+        reader.read_object(&id(ObjectFormat::Sha1, member_commit), &ReadLimits::default()),
+        Err(ReadError::Missing {
+            oid: id(ObjectFormat::Sha1, member_commit)
+        })
+    );
+}
+
+#[test]
 fn a_missing_object_refuses_typed_and_is_never_fetched() {
     let fixture = Fixture::checkout(ObjectFormat::Sha1);
     let reader = LocalObjectReader::open(&admitted(fixture.root()));
