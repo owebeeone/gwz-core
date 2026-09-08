@@ -858,7 +858,6 @@ ENTRY_REFERENCES = {
         "git/gitbackend/preservation_root/files.rs"
     },
     "observe_merge_root_artifact": {"workspace_ops/merge/root/artifact_facts.rs"},
-    "prepare_merge_store_parents": set(),
     "remove_merge_root_artifact": {"workspace_ops/merge/root/artifact_facts.rs"},
     "replace_merge_preservation_bundle": {
         "workspace_ops/merge/preserve/checked_bundle.rs"
@@ -910,7 +909,6 @@ ENTRY_ITEMS = {
     "observe_merge_preservation_git_directory",
     "observe_merge_preservation_workspace",
     "observe_merge_root_artifact",
-    "prepare_merge_store_parents",
     "preservation_bundle",
     "preservation_git_directory",
     "preservation_workspace",
@@ -968,7 +966,6 @@ ENTRY_CALLS = {
     "clone",
     "gap_sentence",
     "let",
-    "prepare_merge_store_parents",
     "probe_workspace_admission",
     "unwrap_or",
     "CheckedArtifact::acquire",

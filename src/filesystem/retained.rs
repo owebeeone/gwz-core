@@ -16,12 +16,15 @@ impl FsMetadata {
 }
 
 impl FsDirectory {
+    pub(crate) fn filesystem(&self) -> &dyn FileSystem {
+        self.1.as_ref()
+    }
     pub(crate) fn open_file(
         &self,
         name: impl AsRef<OsStr>,
         mode: &FsOpenMode,
     ) -> io::Result<FsFile> {
-        let fs = make_filesystem();
+        let fs = self.filesystem();
         match mode {
             FsOpenMode::WriteOrCreate => match fs.open_file_for_write_at(self, name.as_ref()) {
                 Ok(file) => Ok(file),
@@ -43,7 +46,7 @@ impl FsDirectory {
         }
     }
     pub(crate) fn entry_metadata(&self, path: impl AsRef<Path>) -> io::Result<FsMetadata> {
-        let fs = make_filesystem();
+        let fs = self.filesystem();
         let path = path.as_ref();
         let mut components = path.components().peekable();
         let mut parent = fs.clone_directory(self)?;
@@ -59,45 +62,48 @@ impl FsDirectory {
         Err(io::ErrorKind::InvalidInput.into())
     }
     pub(crate) fn retained_child(&self, name: impl AsRef<OsStr>) -> io::Result<Self> {
-        make_filesystem().open_directory_at(self, name.as_ref())
+        self.filesystem().open_directory_at(self, name.as_ref())
     }
     pub(crate) fn create_child(&self, name: impl AsRef<OsStr>) -> io::Result<()> {
-        make_filesystem().create_directory_at(self, name.as_ref())
+        self.filesystem().create_directory_at(self, name.as_ref())
     }
     pub(crate) fn clone_handle(&self) -> io::Result<Self> {
-        make_filesystem().clone_directory(self)
+        self.filesystem().clone_directory(self)
     }
     pub(crate) fn entries(&self) -> io::Result<FsDirectoryNames> {
-        make_filesystem().directory_names(self)
+        self.filesystem().directory_names(self)
     }
     pub(crate) fn remove_leaf(&self, name: impl AsRef<OsStr>) -> io::Result<()> {
-        make_filesystem().remove_file_at(self, name.as_ref())
+        self.filesystem().remove_file_at(self, name.as_ref())
     }
     pub(crate) fn identify(&self) -> io::Result<FsIdentity> {
-        make_filesystem().directory_identity(self)
+        self.filesystem().directory_identity(self)
     }
 }
 impl FsFile {
+    pub(crate) fn filesystem(&self) -> &dyn FileSystem {
+        self.2.as_ref()
+    }
     pub(crate) fn metadata(&self) -> io::Result<FsMetadata> {
-        make_filesystem().file_metadata(self)
+        self.filesystem().file_metadata(self)
     }
     pub(crate) fn sync_all(&self) -> io::Result<()> {
-        make_filesystem().sync_file(self)
+        self.filesystem().sync_file(self)
     }
     pub(crate) fn set_len(&self, len: u64) -> io::Result<()> {
-        make_filesystem().set_len(self, len)
+        self.filesystem().set_len(self, len)
     }
 }
 impl Read for FsFile {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        let read = make_filesystem().read_at(self, self.1, bytes)?;
+        let read = self.filesystem().read_at(self, self.1, bytes)?;
         self.1 += read as u64;
         Ok(read)
     }
 }
 impl Write for FsFile {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let written = make_filesystem().write_at(self, self.1, bytes)?;
+        let written = self.filesystem().write_at(self, self.1, bytes)?;
         self.1 += written as u64;
         Ok(written)
     }
@@ -113,7 +119,8 @@ impl Seek for FsFile {
                 .1
                 .checked_add_signed(delta)
                 .ok_or(io::ErrorKind::InvalidInput)?,
-            SeekFrom::End(delta) => make_filesystem()
+            SeekFrom::End(delta) => self
+                .filesystem()
                 .file_len(self)?
                 .checked_add_signed(delta)
                 .ok_or(io::ErrorKind::InvalidInput)?,

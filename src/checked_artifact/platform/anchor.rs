@@ -124,7 +124,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 
-use crate::filesystem::{FileSystem, FsDirectory as Dir, make_filesystem};
+use crate::filesystem::FsDirectory as Dir;
 
 use super::super::CheckedArtifactFact;
 use super::super::fault::{CheckedArtifactFault, fault};
@@ -284,7 +284,7 @@ pub(super) fn round_trip(dir: &Dir, code: ErrorCode, label: &str) -> ModelResult
 fn establish(dir: &Dir, scratch_present: bool, code: ErrorCode, label: &str) -> ModelResult<()> {
     let scratch = OsStr::new(SCRATCH_NAME);
     fault(CheckedArtifactFault::BeforeAnchorScratchCreate, code, label)?;
-    let fs = make_filesystem();
+    let fs = dir.filesystem();
     let mut file = if scratch_present {
         fs.open_file_for_write_at(dir, scratch)
     } else {
@@ -544,13 +544,7 @@ fn retired_name(ordinal: u32) -> String {
 }
 
 fn verify(dir: &Dir, name: &OsStr, code: ErrorCode, label: &str) -> ModelResult<ObjectIdentity> {
-    let observed = observe_leaf_exact(
-        &crate::filesystem::make_filesystem(),
-        dir,
-        name,
-        code,
-        label,
-    )?;
+    let observed = observe_leaf_exact(dir.filesystem(), dir, name, code, label)?;
     if observed.fact != CheckedArtifactFact::Bytes(ANCHOR_BYTES.to_vec()) {
         return Err(error(
             code,

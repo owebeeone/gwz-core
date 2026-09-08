@@ -8,7 +8,7 @@ pub(crate) fn make_filesystem() -> impl FileSystem {
 #[cfg(test)]
 pub(crate) fn make_filesystem() -> TestFileSystem {
     if crate::test_backend::modes().fake_filesystem {
-        TestFileSystem(Backend::Memory(fake::FakeFileSystem))
+        TestFileSystem(Backend::Memory(fake::FakeFileSystem::shared()))
     } else {
         TestFileSystem(Backend::Native(native::NativeFileSystem))
     }
@@ -78,4 +78,5 @@ impl FileSystem for TestFileSystem {
     forward!(try_lock_file(file: &FsFile) -> io::Result<Option<FsLockGuard>>);
     forward!(rename_at(source: &FsDirectory, name: &OsStr, destination: &FsDirectory, target: &OsStr, mode: RenameMode) -> io::Result<()>);
     forward!(test_workspace() -> io::Result<TestFsWorkspace>);
+    forward!(test_workspace_at(path: &Path) -> io::Result<TestFsWorkspace>);
 }

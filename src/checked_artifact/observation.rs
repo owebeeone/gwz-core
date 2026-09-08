@@ -9,7 +9,8 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 impl CheckedArtifact {
     /// Prepare a canonical no-follow directory hierarchy before an operation
     /// can persist an action that depends on it.
-    pub(super) fn prepare_parent(
+    pub(super) fn prepare_parent_in(
+        filesystem: &dyn FileSystem,
         root: &Path,
         relative: &Path,
         code: ErrorCode,
@@ -23,7 +24,6 @@ impl CheckedArtifact {
         {
             return Err(error(code, &label, "parent path is noncanonical"));
         }
-        let filesystem = make_filesystem();
         let mut current = filesystem.open_directory(root).map_err(|cause| {
             io_op_error(code, &label, "open root for parent preparation", cause)
         })?;
@@ -80,6 +80,7 @@ impl CheckedArtifact {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn acquire(
         policy: CheckedArtifactPolicy,
         relative: &Path,
@@ -111,13 +112,23 @@ impl CheckedArtifact {
         label: impl Into<String>,
         escape: IdentityGapEscape,
     ) -> ModelResult<Self> {
+        Self::acquire_with_escape_in(&make_filesystem(), policy, relative, code, label, escape)
+    }
+
+    pub(super) fn acquire_with_escape_in(
+        filesystem: &dyn FileSystem,
+        policy: CheckedArtifactPolicy,
+        relative: &Path,
+        code: ErrorCode,
+        label: impl Into<String>,
+        escape: IdentityGapEscape,
+    ) -> ModelResult<Self> {
         let label = label.into();
         let relative = relative.to_path_buf();
         let (parent_relative, leaf) =
             split_relative(&relative).map_err(|detail| error(code, &label, detail))?;
         let private_root = policy.artifact_root().to_path_buf();
         let quarantine_parent = policy.private_parent();
-        let filesystem = make_filesystem();
         let root = filesystem
             .open_directory(policy.artifact_root())
             .map_err(|cause| io_op_error(code, &label, "open ambient artifact root", cause))?;
@@ -125,7 +136,7 @@ impl CheckedArtifact {
         let canonical_path_identity =
             identity::filesystem_canonical_path_identity(&root, &relative)
                 .map_err(|cause| unsupported(&label, cause))?;
-        let parent = match traverse(&filesystem, &root, &parent_relative)
+        let parent = match traverse(filesystem, &root, &parent_relative)
             .map_err(|cause| io_op_error(code, &label, "traverse to artifact parent", cause))?
         {
             Traversal::Missing => ParentState::Missing,
@@ -160,7 +171,7 @@ impl CheckedArtifact {
         if !self.parent_is_current(identity)? {
             return Ok(CheckedArtifactFact::Invalid);
         }
-        observe_leaf(&make_filesystem(), dir, &self.leaf, self.code, &self.label)
+        observe_leaf(dir.filesystem(), dir, &self.leaf, self.code, &self.label)
     }
 
     pub(super) fn observe_leaf_exact_current(&self) -> ModelResult<LeafObservation> {
@@ -178,7 +189,7 @@ impl CheckedArtifact {
                 "canonical parent changed while observing artifact",
             ));
         }
-        observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)
+        observe_leaf_exact(dir.filesystem(), dir, &self.leaf, self.code, &self.label)
     }
 
     pub(super) fn parent_is_canonical(&self) -> ModelResult<bool> {
@@ -189,11 +200,10 @@ impl CheckedArtifact {
     }
 
     pub(super) fn parent_is_current(&self, expected: &ObjectIdentity) -> ModelResult<bool> {
-        let filesystem = make_filesystem();
-        let current =
-            traverse(&filesystem, &self.root, &self.parent_relative).map_err(|cause| {
-                io_op_error(self.code, &self.label, "retraverse artifact parent", cause)
-            })?;
+        let filesystem = self.root.filesystem();
+        let current = traverse(filesystem, &self.root, &self.parent_relative).map_err(|cause| {
+            io_op_error(self.code, &self.label, "retraverse artifact parent", cause)
+        })?;
         let Traversal::Open(current) = current else {
             return Ok(false);
         };
@@ -204,7 +214,7 @@ impl CheckedArtifact {
 }
 
 pub(super) fn observe_leaf(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     dir: &FsDirectory,
     leaf: &OsStr,
     code: ErrorCode,
@@ -219,7 +229,7 @@ pub(super) struct LeafObservation {
 }
 
 pub(super) fn observe_leaf_exact(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     dir: &FsDirectory,
     leaf: &OsStr,
     code: ErrorCode,
@@ -371,7 +381,7 @@ enum Traversal {
 }
 
 fn traverse(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     root: &FsDirectory,
     relative: &Path,
 ) -> std::io::Result<Traversal> {

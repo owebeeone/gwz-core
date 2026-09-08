@@ -2,22 +2,30 @@
 
 use super::super::*;
 use crate::checked_artifact::entry::MergeArtifactTransition;
+use crate::filesystem::FileSystem;
 use std::path::{Component, Path, PathBuf};
 
 pub(super) fn observe_relative(
+    filesystem: &dyn FileSystem,
     root: &Path,
     expected: &Option<GitCandidateFile>,
     path: &str,
 ) -> ModelResult<bool> {
     crate::checked_artifact::entry::observe_merge_preservation_workspace(
+        filesystem,
         root,
         Path::new(path),
         expected.as_ref().map(|file| file.bytes.as_slice()),
     )
 }
 
-pub(super) fn observe_required(root: &Path, expected: &GitCandidateFile) -> ModelResult<bool> {
+pub(super) fn observe_required(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    expected: &GitCandidateFile,
+) -> ModelResult<bool> {
     crate::checked_artifact::entry::observe_merge_preservation_workspace(
+        filesystem,
         root,
         Path::new(&expected.path),
         Some(&expected.bytes),
@@ -25,12 +33,14 @@ pub(super) fn observe_required(root: &Path, expected: &GitCandidateFile) -> Mode
 }
 
 pub(super) fn observe_boundary(
-    backend: &impl GitBackend,
+    filesystem: &dyn FileSystem,
+    backend: &(impl GitBackend + ?Sized),
     root: &Path,
     expected: &[u8],
 ) -> ModelResult<bool> {
     let repo = backend.repository_paths(root)?;
     crate::checked_artifact::entry::observe_merge_preservation_git_directory(
+        filesystem,
         &repo.git_dir,
         Path::new("info/exclude"),
         Some(expected),
@@ -38,12 +48,14 @@ pub(super) fn observe_boundary(
 }
 
 pub(super) fn replace_relative(
+    filesystem: &dyn FileSystem,
     root: &Path,
     path: &str,
     source: Option<&GitCandidateFile>,
     goal: Option<&GitCandidateFile>,
 ) -> ModelResult<()> {
     crate::checked_artifact::entry::replace_merge_preservation_workspace(
+        filesystem,
         root,
         Path::new(path),
         source.map(|file| file.bytes.as_slice()),
@@ -52,12 +64,14 @@ pub(super) fn replace_relative(
 }
 
 pub(super) fn observe_transition(
+    filesystem: &dyn FileSystem,
     root: &Path,
     path: &str,
     source: Option<&GitCandidateFile>,
     goal: Option<&GitCandidateFile>,
 ) -> ModelResult<MergeArtifactTransition> {
     crate::checked_artifact::entry::classify_merge_preservation_workspace(
+        filesystem,
         root,
         Path::new(path),
         source.map(|file| file.bytes.as_slice()),

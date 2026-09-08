@@ -37,7 +37,7 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::filesystem::{FileSystem, RenameMode, make_filesystem};
+use crate::filesystem::{FileSystem, RenameMode};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -50,8 +50,11 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// exit removes the temporary. `rename_durable`'s `replace = true` is
 /// harmless on the one path that reaches this function: `create_open` refuses
 /// an existing record before it is called, so the target is absent.
-pub(crate) fn write_atomic_verified(path: &Path, bytes: &[u8]) -> ModelResult<()> {
-    let filesystem = make_filesystem();
+pub(crate) fn write_atomic_verified(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    bytes: &[u8],
+) -> ModelResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| recovery_error("record path has no parent"))?;
@@ -106,7 +109,7 @@ mod tests {
         let workspace = filesystem.test_workspace().unwrap();
         let path = workspace.path().join("nested/record.yaml");
 
-        write_atomic_verified(&path, b"checked record").unwrap();
+        write_atomic_verified(&filesystem, &path, b"checked record").unwrap();
 
         assert_eq!(filesystem.read(&path).unwrap(), b"checked record");
     }

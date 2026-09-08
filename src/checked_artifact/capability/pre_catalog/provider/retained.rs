@@ -1,6 +1,6 @@
+use crate::filesystem::FileSystem;
 use crate::filesystem::FsKind;
-use crate::filesystem::{FileSystem, make_filesystem};
-use crate::git::{GitRepository, make_repository};
+use crate::operation_context::OperationContext;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -98,6 +98,7 @@ impl RetainedFile {
 }
 
 pub(in crate::checked_artifact::capability::pre_catalog) struct RetainedPlatformRoot {
+    context: OperationContext,
     root_path: PathBuf,
     git_directory_path: PathBuf,
     common_directory_path: PathBuf,
@@ -126,6 +127,9 @@ impl AliasObservationV1 {
 }
 
 impl RetainedPlatformRoot {
+    pub(super) fn context(&self) -> &OperationContext {
+        &self.context
+    }
     pub(super) fn root_path(&self) -> &Path {
         &self.root_path
     }
@@ -185,32 +189,48 @@ impl RetainedPlatformRoot {
 }
 
 pub(super) fn retain_workspace(
+    context: &OperationContext,
     path: &Path,
     platform: &impl PlatformProviderV1,
 ) -> Result<RetainedPlatformRoot, CheckedFsError> {
-    let root_path = canonical_directory(path, "workspace root")?;
-    let repository = make_repository()
+    let root_path = canonical_directory(context.filesystem(), path, "workspace root")?;
+    let repository = context
+        .repository()
         .repository_paths(&root_path)
         .map_err(git_error)?;
     let workdir = repository.worktree.as_deref().ok_or_else(|| {
         CheckedFsError::ambiguous("workspace root", "bare repository is not a workspace")
     })?;
-    if canonical_directory(workdir, "repository worktree")? != root_path {
+    if canonical_directory(context.filesystem(), workdir, "repository worktree")? != root_path {
         return Err(CheckedFsError::ambiguous(
             "workspace root",
             "path is not the repository worktree root",
         ));
     }
-    let git_directory_path = canonical_directory(&repository.git_dir, "Git directory")?;
-    let common_directory_path =
-        canonical_directory(&repository.common_dir, "common Git directory")?;
-    let root = retain_ambient(&root_path, platform, "workspace root")?;
-    let repository = retain_ambient(&git_directory_path, platform, "Git directory")?;
-    let common_directory =
-        retain_ambient(&common_directory_path, platform, "common Git directory")?;
+    let git_directory_path =
+        canonical_directory(context.filesystem(), &repository.git_dir, "Git directory")?;
+    let common_directory_path = canonical_directory(
+        context.filesystem(),
+        &repository.common_dir,
+        "common Git directory",
+    )?;
+    let root = retain_ambient(context.filesystem(), &root_path, platform, "workspace root")?;
+    let repository = retain_ambient(
+        context.filesystem(),
+        &git_directory_path,
+        platform,
+        "Git directory",
+    )?;
+    let common_directory = retain_ambient(
+        context.filesystem(),
+        &common_directory_path,
+        platform,
+        "common Git directory",
+    )?;
     let (private_parent, private_parent_alias_observation) =
         retain_required_child(&root, OsStr::new(".gwz"), platform, "workspace GWZ parent")?;
     Ok(RetainedPlatformRoot {
+        context: context.clone(),
         root_path,
         git_directory_path,
         common_directory_path,
@@ -224,26 +244,46 @@ pub(super) fn retain_workspace(
 }
 
 pub(super) fn retain_git_directory(
+    context: &OperationContext,
     path: &Path,
     platform: &impl PlatformProviderV1,
 ) -> Result<RetainedPlatformRoot, CheckedFsError> {
-    let root_path = canonical_directory(path, "actual Git directory")?;
-    let repository = make_repository()
+    let root_path = canonical_directory(context.filesystem(), path, "actual Git directory")?;
+    let repository = context
+        .repository()
         .repository_paths(&root_path)
         .map_err(git_error)?;
-    let git_directory_path = canonical_directory(&repository.git_dir, "Git directory")?;
+    let git_directory_path =
+        canonical_directory(context.filesystem(), &repository.git_dir, "Git directory")?;
     if git_directory_path != root_path {
         return Err(CheckedFsError::ambiguous(
             "actual Git directory",
             "path does not name the repository's actual Git directory",
         ));
     }
-    let common_directory_path =
-        canonical_directory(&repository.common_dir, "common Git directory")?;
-    let root = retain_ambient(&root_path, platform, "actual Git directory")?;
-    let repository = retain_ambient(&git_directory_path, platform, "Git directory")?;
-    let common_directory =
-        retain_ambient(&common_directory_path, platform, "common Git directory")?;
+    let common_directory_path = canonical_directory(
+        context.filesystem(),
+        &repository.common_dir,
+        "common Git directory",
+    )?;
+    let root = retain_ambient(
+        context.filesystem(),
+        &root_path,
+        platform,
+        "actual Git directory",
+    )?;
+    let repository = retain_ambient(
+        context.filesystem(),
+        &git_directory_path,
+        platform,
+        "Git directory",
+    )?;
+    let common_directory = retain_ambient(
+        context.filesystem(),
+        &common_directory_path,
+        platform,
+        "common Git directory",
+    )?;
     let (private_parent, private_parent_alias_observation) = retain_optional_child(
         &root,
         OsStr::new("gwz"),
@@ -251,6 +291,7 @@ pub(super) fn retain_git_directory(
         "Git-directory GWZ parent",
     )?;
     Ok(RetainedPlatformRoot {
+        context: context.clone(),
         root_path,
         git_directory_path,
         common_directory_path,
@@ -287,12 +328,13 @@ pub(super) fn retain_index_file(
 }
 
 fn retain_ambient(
+    filesystem: &dyn FileSystem,
     path: &Path,
     platform: &impl PlatformProviderV1,
     label: &'static str,
 ) -> Result<RetainedDirectory, CheckedFsError> {
-    reject_symlink(path, label)?;
-    let handle = make_filesystem()
+    reject_symlink(filesystem, path, label)?;
+    let handle = filesystem
         .open_directory(path)
         .map_err(|source| CheckedFsError::io("open retained pre-catalog directory", source))?;
     retain_opened(handle, platform, label)
@@ -392,12 +434,18 @@ fn reject_equivalent_alias(
 }
 
 fn revalidate_repository_paths(root: &RetainedPlatformRoot) -> Result<(), CheckedFsError> {
-    let repository = make_repository()
+    let context = &root.context;
+    let repository = context
+        .repository()
         .repository_paths(&root.root_path)
         .map_err(git_error)?;
-    if canonical_directory(&repository.git_dir, "Git directory")? != root.git_directory_path
-        || canonical_directory(&repository.common_dir, "common Git directory")?
-            != root.common_directory_path
+    if canonical_directory(context.filesystem(), &repository.git_dir, "Git directory")?
+        != root.git_directory_path
+        || canonical_directory(
+            context.filesystem(),
+            &repository.common_dir,
+            "common Git directory",
+        )? != root.common_directory_path
     {
         return Err(CheckedFsError::ambiguous(
             "repository relationship",
@@ -407,15 +455,23 @@ fn revalidate_repository_paths(root: &RetainedPlatformRoot) -> Result<(), Checke
     Ok(())
 }
 
-fn canonical_directory(path: &Path, label: &'static str) -> Result<PathBuf, CheckedFsError> {
-    reject_symlink(path, label)?;
-    make_filesystem()
+fn canonical_directory(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    label: &'static str,
+) -> Result<PathBuf, CheckedFsError> {
+    reject_symlink(filesystem, path, label)?;
+    filesystem
         .canonical_path(path)
         .map_err(|source| CheckedFsError::io("canonicalize pre-catalog directory", source))
 }
 
-fn reject_symlink(path: &Path, label: &'static str) -> Result<(), CheckedFsError> {
-    let metadata = make_filesystem()
+fn reject_symlink(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    label: &'static str,
+) -> Result<(), CheckedFsError> {
+    let metadata = filesystem
         .metadata(path)
         .map_err(|source| CheckedFsError::io("observe pre-catalog directory", source))?;
     if metadata.kind != FsKind::Directory || metadata.kind == FsKind::Symlink {

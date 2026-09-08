@@ -1,9 +1,15 @@
 //! Git facts used by the shared root-preservation protocol.
 use super::*;
 
-pub(super) fn worktree(repo: &RepositoryState, path: &Path) -> ModelResult<FileTree> {
+pub(super) fn worktree(
+    backend: &FakeGitRepository,
+    repo: &RepositoryState,
+    path: &Path,
+) -> ModelResult<FileTree> {
     let mut ignored = Vec::new();
-    let boundary = make_filesystem()
+    let boundary = backend
+        .filesystem
+        .as_ref()
         .read(&path.join(".git/info/exclude"))
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
@@ -18,7 +24,7 @@ pub(super) fn worktree(repo: &RepositoryState, path: &Path) -> ModelResult<FileT
         let prefix = rule.trim_start_matches('/');
         ignored.push(prefix.to_owned());
     }
-    read_worktree(path, &ignored, &repo.index)
+    read_worktree(backend.filesystem.as_ref(), path, &ignored, &repo.index)
 }
 fn image(index: &FileTree, worktree: &FileTree, committed: &FileTree) -> GitPreservationImage {
     let paths: BTreeSet<_> = index
@@ -48,10 +54,10 @@ pub(super) fn capture(
 ) -> ModelResult<GitPreservationImage> {
     let all = backend.repositories.lock().unwrap();
     let repo = all
-        .get(&repository_key(path))
+        .get(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     let mut index = repo.index.clone();
-    let mut disk = worktree(repo, path)?;
+    let mut disk = worktree(backend, repo, path)?;
     let committed = repo
         .head
         .as_ref()
@@ -105,7 +111,7 @@ pub(super) fn validate(
     }
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     for form in [
         &spec.attached_clean_form,
@@ -194,7 +200,7 @@ pub(super) fn checkout_matches(
 ) -> ModelResult<bool> {
     let all = backend.repositories.lock().unwrap();
     let repo = all
-        .get(&repository_key(path))
+        .get(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     if repo.index_override.as_ref().is_some_and(|entries| {
         entries.iter().any(|entry| {
@@ -211,7 +217,7 @@ pub(super) fn checkout_matches(
         .commits
         .get(commit)
         .ok_or_else(|| failed("commit missing"))?;
-    let disk = worktree(repo, path)?;
+    let disk = worktree(backend, repo, path)?;
     let matches = |actual: &FileTree, ignored: &[String]| {
         let filter = |tree: &FileTree| {
             tree.iter()
@@ -234,7 +240,7 @@ pub(super) fn candidate_matches(
         .repositories
         .lock()
         .unwrap()
-        .get(&repository_key(path))
+        .get(&repository_key(backend.filesystem.as_ref(), path))
         .unwrap()
         .sha256;
     for file in files {
@@ -270,7 +276,7 @@ pub(super) fn scoped_commit(
 ) -> ModelResult<GitScopedCommitResult> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     if repo.detached || repo.head.as_deref() != expected {
         return Err(ModelError::new(
@@ -327,7 +333,7 @@ pub(super) fn verify_scoped(
 ) -> ModelResult<GitScopedCommitResult> {
     let all = backend.repositories.lock().unwrap();
     let repo = all
-        .get(&repository_key(path))
+        .get(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     let metadata = repo
         .metadata

@@ -86,7 +86,7 @@ pub(in crate::checked_artifact::capability::pre_catalog) use filesystem::{
 pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_bound_observation(
     bound: &LeaseBoundPreCatalogObservationV1<'_>,
 ) -> Result<(), CheckedFsError> {
-    filesystem::platform_pre_catalog_provider()
+    filesystem::platform_pre_catalog_provider_in(bound.target.context())
         .revalidate_bound_target(&bound.target, &bound.observation)
 }
 pub(in crate::checked_artifact::capability::pre_catalog) use aggregate::outer_aggregate_facts;

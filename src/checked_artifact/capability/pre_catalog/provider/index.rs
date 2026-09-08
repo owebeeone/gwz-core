@@ -1,6 +1,5 @@
 use crate::filesystem::FsKind;
-use crate::filesystem::{FileSystem, make_filesystem};
-use crate::git::{GitIndexEntry, GitRepository, make_repository};
+use crate::git::GitIndexEntry;
 #[cfg(unix)]
 use std::ffi::OsString;
 use std::io;
@@ -21,7 +20,9 @@ pub(super) fn observe(
     retained: &RetainedPlatformRoot,
     platform: &impl PlatformProviderV1,
 ) -> Result<(IndexSnapshotFacts, Option<RetainedFile>), CheckedFsError> {
-    let index = make_repository()
+    let index = retained
+        .context()
+        .repository()
         .repository_index(retained.root_path())
         .map_err(git_error)?;
     let actual_path = index.path.as_deref().ok_or_else(|| {
@@ -36,10 +37,14 @@ pub(super) fn observe(
     let actual_parent = actual_path.parent().ok_or_else(|| {
         CheckedFsError::ambiguous("Git index", "index path has no parent directory")
     })?;
-    let expected_parent = make_filesystem()
+    let expected_parent = retained
+        .context()
+        .filesystem()
         .canonical_path(retained.git_directory_path())
         .map_err(|source| CheckedFsError::io("canonicalize the actual Git directory", source))?;
-    let actual_parent = make_filesystem()
+    let actual_parent = retained
+        .context()
+        .filesystem()
         .canonical_path(actual_parent)
         .map_err(|source| CheckedFsError::io("canonicalize the reported index parent", source))?;
     if actual_parent != expected_parent
@@ -123,7 +128,9 @@ fn hash_file(file: &RetainedFile) -> Result<[u8; 32], CheckedFsError> {
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 16 * 1024];
     loop {
-        let read = make_filesystem()
+        let read = file
+            .handle()
+            .filesystem()
             .read_at(file.handle(), offset, &mut buffer)
             .map_err(|source| CheckedFsError::io("read retained Git index", source))?;
         if read == 0 {

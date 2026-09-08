@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use crate::checked_artifact::capability::{
     CheckedFsError, HostPlatform, PathComponentMode, PathEquivalenceProvider,
 };
-use crate::filesystem::{FileSystem, FsDirectory, make_filesystem};
+use crate::filesystem::FsDirectory;
 
 pub(super) const MAX_CATALOG_ALIAS_PARENT_ENTRIES_V1: usize = 4_096;
 const MAX_CATALOG_ALIAS_NAME_UNITS_V1: usize = 255;
@@ -32,7 +32,8 @@ fn reject_equivalent_alias_with_mode(
     }
     let mut entries = 0usize;
     let mut aggregate_bytes = 0usize;
-    for entry in make_filesystem()
+    for entry in parent
+        .filesystem()
         .read_directory_at(parent)
         .map_err(|source| CheckedFsError::io("enumerate catalog lease parent", source))?
     {

@@ -47,6 +47,46 @@ FORBIDDEN = (
 OBSERVATIONS = {'canonicalize', 'exists', 'try_exists', 'is_file', 'is_dir',
                 'is_symlink', 'symlink_metadata', 'read_dir', 'read_link'}
 
+# These consumers receive their dependencies from a context or retained handle.
+# Compatibility constructors remain outside this migrated scope.
+CONTEXT_PROTECTED = (
+    'src/filesystem/retained.rs',
+    'src/git/gitbackend/preservation_root.rs',
+    'src/git/gitbackend/preservation_root',
+    'src/git/gitbackend/preservation.rs',
+    'src/git/gitbackend/preservation_image.rs',
+    'src/verified_write.rs',
+    'src/workspace_ops/merge/v1_lifecycle/store/rewrite.rs',
+    'src/workspace_ops/merge/v1_lifecycle/store/archive.rs',
+    'src/checked_artifact/classification.rs',
+    'src/checked_artifact/cleanup.rs',
+    'src/checked_artifact/identity.rs',
+    'src/checked_artifact/residue.rs',
+    'src/checked_artifact/transition.rs',
+    'src/checked_artifact/platform.rs',
+    'src/checked_artifact/platform/anchor.rs',
+    'src/checked_artifact/bootstrap/runtime/advisory.rs',
+    'src/checked_artifact/bootstrap/runtime/catalog_lease/alias.rs',
+    'src/checked_artifact/capability/pre_catalog/provider/index.rs',
+    'src/checked_artifact/capability/pre_catalog/provider/retained.rs',
+    'src/checked_artifact/capability/pre_catalog/provider/platform.rs',
+    'src/checked_artifact/capability/pre_catalog/provider/mutation.rs',
+    'src/checked_artifact/capability/pre_catalog/provider/directory_mutation.rs',
+    'src/checked_artifact/capability/pre_catalog/provider/filesystem/bound.rs',
+)
+
+
+def context_violations(source):
+    found = []
+    ts = tokens(source)
+    names = [item[0] for item in ts]
+    for index, (name, offset) in enumerate(ts):
+        if name in {'make_repository', 'make_filesystem'} or (
+                name == 'existing' and index and names[index-1] == '::'):
+            found.append((source.count('\n', 0, offset) + 1,
+                          'ambient dependency construction; use the context or handle owner'))
+    return found
+
 
 def tokens(source):
     """Discard comments/literals while retaining offsets, including raw strings."""
@@ -219,6 +259,16 @@ def main():
             if production: source = production_source(source)
             for line, message in violations(source):
                 failures.append(f'{path}:{line}: {message}; use make_filesystem()/FileSystem')
+    if not args.paths:
+        for relative in CONTEXT_PROTECTED:
+            entry = ROOT / relative
+            if not entry.exists():
+                failures.append(f'{entry}: context-protected source is missing')
+                continue
+            files = sorted(entry.rglob('*.rs')) if entry.is_dir() else [entry]
+            for path in files:
+                for line, message in context_violations(production_source(path.read_text())):
+                    failures.append(f'{path}:{line}: {message}')
     if failures:
         print('\n'.join(failures)); return 1
     print('Filesystem source boundary passed for migrated scope.')

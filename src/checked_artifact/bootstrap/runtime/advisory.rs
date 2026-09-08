@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::filesystem::{FileSystem, FsFile, FsLockGuard, make_filesystem};
+use crate::filesystem::{FsFile, FsLockGuard};
 
 pub(super) struct AdvisoryLock {
     file: FsFile,
@@ -9,7 +9,7 @@ pub(super) struct AdvisoryLock {
 
 impl AdvisoryLock {
     pub(super) fn try_acquire(file: FsFile) -> io::Result<Option<Self>> {
-        let Some(guard) = make_filesystem().try_lock_file(&file)? else {
+        let Some(guard) = file.filesystem().try_lock_file(&file)? else {
             return Ok(None);
         };
         Ok(Some(Self {

@@ -92,6 +92,7 @@ use policy::CheckedArtifactPolicy;
 
 pub(crate) use bootstrap::{
     CatalogMutationLeaseV1, WorkspaceRuntimeLease, try_acquire_workspace_runtime,
+    try_acquire_workspace_runtime_in,
 };
 
 #[cfg(test)]

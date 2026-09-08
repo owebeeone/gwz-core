@@ -113,7 +113,7 @@ impl GitBackend for Git2Backend {
         clean: &GitRootManagedForm,
         excluded: &[String],
     ) -> ModelResult<GitPreservationImage> {
-        preservation_image::capture_normalized(root, clean, excluded)
+        preservation_image::capture_normalized(self.filesystem.as_ref(), root, clean, excluded)
     }
 
     fn validate_root_preservation_spec(
@@ -129,7 +129,7 @@ impl GitBackend for Git2Backend {
         root: &Path,
         form: &GitRootManagedIndexForm,
     ) -> ModelResult<bool> {
-        preservation_root::index::observe(root, form)
+        preservation_root::index::observe(self.filesystem.as_ref(), root, form)
     }
 
     fn rewrite_root_managed_index_checked(
@@ -137,7 +137,7 @@ impl GitBackend for Git2Backend {
         root: &Path,
         form: &GitRootManagedIndexForm,
     ) -> ModelResult<()> {
-        preservation_root::index::rewrite(root, form)
+        preservation_root::index::rewrite(self.filesystem.as_ref(), root, form)
     }
 
     #[cfg(test)]
@@ -201,6 +201,7 @@ impl GitBackend for Git2Backend {
             transport_support::identity::Selection::from_options(start, options.unwrap_or(&empty))?;
         identities.validate_files()?;
         Ok(Some(Self {
+            filesystem: self.filesystem.clone(),
             credential_helpers: self.credential_helpers,
             identities,
             observations: Default::default(),
@@ -271,9 +272,50 @@ impl GitBackend for Git2Backend {
     delegate!(checkout_matches_commit(path: &Path, branch: &str, commit: &str,) -> ModelResult<bool> => preservation::checkout_matches_commit);
     delegate!(checkout_matches_commit_except(path: &Path, commit: &str, allowed_paths: &[String],) -> ModelResult<bool> => preservation::checkout_matches_commit_except);
     delegate!(checkout_matches_commit_with_overlay(path: &Path, commit: &str, overlay: &GitCheckoutOverlay,) -> ModelResult<bool> => preservation::checkout_matches_commit_with_overlay);
-    delegate!(prepare_root_preservation_stash(root: &Path, spec: &GitRootPreservationSpec,) -> ModelResult<GitPreparedRootStash> => preservation_root::prepare_root_preservation_stash);
-    delegate!(observe_root_preservation_step(root: &Path, spec: &GitRootPreservationSpec, step: &GitRootPreservationPhysicalStep, guard: &GitRootPreservationGuard,) -> ModelResult<GitRootPreservationStepObservation> => preservation_root::observe_root_preservation_step);
-    delegate!(execute_root_preservation_step_checked(root: &Path, spec: &GitRootPreservationSpec, step: &GitRootPreservationPhysicalStep, guard: &GitRootPreservationGuard,) -> ModelResult<GitCheckedPreservationMutation> => preservation_root::execute_root_preservation_step_checked);
+    fn prepare_root_preservation_stash(
+        &self,
+        root: &Path,
+        spec: &GitRootPreservationSpec,
+    ) -> ModelResult<GitPreparedRootStash> {
+        preservation_root::prepare_root_preservation_stash(
+            self.filesystem.as_ref(),
+            self,
+            root,
+            spec,
+        )
+    }
+    fn observe_root_preservation_step(
+        &self,
+        root: &Path,
+        spec: &GitRootPreservationSpec,
+        step: &GitRootPreservationPhysicalStep,
+        guard: &GitRootPreservationGuard,
+    ) -> ModelResult<GitRootPreservationStepObservation> {
+        preservation_root::observe_root_preservation_step(
+            self.filesystem.as_ref(),
+            self,
+            root,
+            spec,
+            step,
+            guard,
+        )
+    }
+    fn execute_root_preservation_step_checked(
+        &self,
+        root: &Path,
+        spec: &GitRootPreservationSpec,
+        step: &GitRootPreservationPhysicalStep,
+        guard: &GitRootPreservationGuard,
+    ) -> ModelResult<GitCheckedPreservationMutation> {
+        preservation_root::execute_root_preservation_step_checked(
+            self.filesystem.as_ref(),
+            self,
+            root,
+            spec,
+            step,
+            guard,
+        )
+    }
     delegate!(index_matches_candidate_files(path: &Path, expected_files: &[GitCandidateFile], absent_paths: &[String],) -> ModelResult<bool> => preservation::index_matches_candidate_files);
     delegate!(index_entries_match_candidate_files(path: &Path, expected_files: &[GitCandidateFile], absent_paths: &[String],) -> ModelResult<bool> => preservation::index_entries_match_candidate_files);
     delegate!(commit_gwz_paths_checked(root: &Path, expected_head: Option<&str>, candidate_files: &[GitCandidateFile], message: &str,) -> ModelResult<GitScopedCommitResult> => scoped_evidence::commit_gwz_paths_checked);

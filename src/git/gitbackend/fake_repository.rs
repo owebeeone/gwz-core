@@ -10,11 +10,24 @@ mod root;
 
 type FileTree = BTreeMap<String, Vec<u8>>;
 
-#[derive(Default)]
+#[derive(Clone)]
 pub(crate) struct FakeGitRepository {
+    filesystem: Arc<dyn FileSystem>,
     repositories: Arc<Mutex<BTreeMap<PathBuf, RepositoryState>>>,
 }
+impl Default for FakeGitRepository {
+    fn default() -> Self {
+        Self::with_filesystem(Arc::new(make_filesystem()))
+    }
+}
 impl FakeGitRepository {
+    pub(crate) fn with_filesystem(filesystem: Arc<dyn FileSystem>) -> Self {
+        Self {
+            filesystem,
+            repositories: Default::default(),
+        }
+    }
+
     /// Factory-created handles share repository state, just as native handles
     /// opening the same path see the same repository. Direct Default fixtures
     /// retain isolated state for adapter contract tests.
@@ -22,6 +35,7 @@ impl FakeGitRepository {
         static REPOSITORIES: OnceLock<Arc<Mutex<BTreeMap<PathBuf, RepositoryState>>>> =
             OnceLock::new();
         Self {
+            filesystem: Arc::new(make_filesystem()),
             repositories: Arc::clone(REPOSITORIES.get_or_init(Default::default)),
         }
     }
@@ -123,7 +137,7 @@ impl GitRepository for FakeGitRepository {
     fn merge_state(&self, path: &Path) -> ModelResult<Option<GitNativeMergeState>> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         Ok(repo.merge_head.as_ref().map(|merge_head| {
             let conflict_paths: Vec<String> = repo
@@ -170,7 +184,7 @@ impl GitRepository for FakeGitRepository {
     ) -> ModelResult<GitMergeConflictSnapshot> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         if repo.head.as_deref() != Some(expected_before)
             || repo.merge_head.as_deref() != Some(expected_merge_head)
@@ -188,7 +202,9 @@ impl GitRepository for FakeGitRepository {
             .ok_or_else(|| failed("merge conflict snapshot missing"))?;
         drop(repositories);
         for file in &snapshot.files {
-            let bytes = make_filesystem()
+            let bytes = self
+                .filesystem
+                .as_ref()
                 .read(&path.join(&file.path))
                 .map_err(|error| failed(error.to_string()))?;
             if format!("{:x}", Sha256::digest(bytes)) != file.sha256 {
@@ -213,7 +229,9 @@ impl GitRepository for FakeGitRepository {
         self.merge_conflict_snapshot(path, expected_before, expected_merge_head)?;
         self.test_force_checkout(path, expected_before)?;
         let mut repositories = self.repositories.lock().unwrap();
-        let repo = repositories.get_mut(&repository_key(path)).unwrap();
+        let repo = repositories
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
+            .unwrap();
         repo.repository_state = None;
         repo.merge_head = None;
         repo.merge_conflict_snapshot = None;
@@ -227,7 +245,7 @@ impl GitRepository for FakeGitRepository {
                 .repositories
                 .lock()
                 .unwrap()
-                .get(&repository_key(path))
+                .get(&repository_key(self.filesystem.as_ref(), path))
                 .and_then(|repo| repo.repository_state)
                 .unwrap_or(GitRepositoryState::Clean))
         } else {
@@ -268,7 +286,12 @@ impl GitRepository for FakeGitRepository {
         path: &Path,
         spec: &GitRootPreservationSpec,
     ) -> ModelResult<GitPreparedRootStash> {
-        preservation_root::prepare_root_preservation_stash(self, path, spec)
+        preservation_root::prepare_root_preservation_stash(
+            self.filesystem.as_ref(),
+            self,
+            path,
+            spec,
+        )
     }
     fn observe_root_preservation_step(
         &self,
@@ -277,7 +300,14 @@ impl GitRepository for FakeGitRepository {
         step: &GitRootPreservationPhysicalStep,
         guard: &GitRootPreservationGuard,
     ) -> ModelResult<GitRootPreservationStepObservation> {
-        preservation_root::observe_root_preservation_step(self, path, spec, step, guard)
+        preservation_root::observe_root_preservation_step(
+            self.filesystem.as_ref(),
+            self,
+            path,
+            spec,
+            step,
+            guard,
+        )
     }
     fn execute_root_preservation_step_checked(
         &self,
@@ -286,7 +316,14 @@ impl GitRepository for FakeGitRepository {
         step: &GitRootPreservationPhysicalStep,
         guard: &GitRootPreservationGuard,
     ) -> ModelResult<GitCheckedPreservationMutation> {
-        preservation_root::execute_root_preservation_step_checked(self, path, spec, step, guard)
+        preservation_root::execute_root_preservation_step_checked(
+            self.filesystem.as_ref(),
+            self,
+            path,
+            spec,
+            step,
+            guard,
+        )
     }
     fn checkout_matches_commit(
         &self,
@@ -340,7 +377,7 @@ impl GitRepository for FakeGitRepository {
         Ok(root::candidate_matches(self, path, files, absent)?
             && files.iter().all(|file| {
                 matches!(
-                    make_filesystem().kind(&path.join(&file.path)),
+                    self.filesystem.as_ref().kind(&path.join(&file.path)),
                     Ok(FsKind::File)
                 )
             }))
@@ -420,9 +457,9 @@ impl GitRepository for FakeGitRepository {
             return Err(failed("repository missing"));
         }
         Ok(GitRepositoryPaths {
-            worktree: Some(repository_key(path)),
-            git_dir: repository_key(path).join(".git"),
-            common_dir: repository_key(path).join(".git"),
+            worktree: Some(repository_key(self.filesystem.as_ref(), path)),
+            git_dir: repository_key(self.filesystem.as_ref(), path).join(".git"),
+            common_dir: repository_key(self.filesystem.as_ref(), path).join(".git"),
         })
     }
     fn is_repository(&self, path: &Path) -> ModelResult<bool> {
@@ -430,17 +467,21 @@ impl GitRepository for FakeGitRepository {
             .repositories
             .lock()
             .unwrap()
-            .contains_key(&repository_key(path)))
+            .contains_key(&repository_key(self.filesystem.as_ref(), path)))
     }
     fn create_repo(&self, path: &Path) -> ModelResult<GitCreateResult> {
         let mut repositories = self.repositories.lock().unwrap();
-        if repositories.contains_key(&repository_key(path)) {
+        if repositories.contains_key(&repository_key(self.filesystem.as_ref(), path)) {
             return Err(failed("repository already exists"));
         }
-        make_filesystem()
+        self.filesystem
+            .as_ref()
             .create_directories(path)
             .map_err(|e| failed(e.to_string()))?;
-        repositories.insert(repository_key(path), RepositoryState::default());
+        repositories.insert(
+            repository_key(self.filesystem.as_ref(), path),
+            RepositoryState::default(),
+        );
         Ok(GitCreateResult {
             path: path.to_path_buf(),
         })
@@ -500,7 +541,7 @@ impl GitRepository for FakeGitRepository {
     fn status(&self, path: &Path) -> ModelResult<GitStatus> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         let empty = BTreeMap::new();
         let committed = repo
@@ -508,7 +549,7 @@ impl GitRepository for FakeGitRepository {
             .as_ref()
             .and_then(|oid| repo.commits.get(oid))
             .unwrap_or(&empty);
-        let worktree = root::worktree(repo, path)?;
+        let worktree = root::worktree(self, repo, path)?;
         let paths: BTreeSet<_> = committed
             .keys()
             .chain(repo.index.keys())
@@ -567,7 +608,7 @@ impl GitRepository for FakeGitRepository {
     fn head(&self, path: &Path) -> ModelResult<GitHeadState> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         Ok(GitHeadState {
             branch: if repo.detached {
@@ -608,7 +649,7 @@ impl GitRepository for FakeGitRepository {
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         if ref_spec == "HEAD" {
             return Ok(repo.head.clone());
@@ -624,7 +665,7 @@ impl GitRepository for FakeGitRepository {
     fn is_ancestor(&self, path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         if !repo.commits.contains_key(ancestor) || !repo.commits.contains_key(descendant) {
             return Err(failed("commit missing"));
@@ -646,7 +687,7 @@ impl GitRepository for FakeGitRepository {
     fn stage_paths(&self, path: &Path, pathspecs: &[&str]) -> ModelResult<GitStageResult> {
         let mut repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get_mut(&repository_key(path))
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         let mut staged = 0;
         for spec in pathspecs {
@@ -654,13 +695,13 @@ impl GitRepository for FakeGitRepository {
             // Reject glob/directory semantics until they have their own contract.
             if spec.contains('*')
                 || matches!(
-                    make_filesystem().kind(&path.join(spec)),
+                    self.filesystem.as_ref().kind(&path.join(spec)),
                     Ok(FsKind::Directory)
                 )
             {
                 return unsupported("stage pathspec");
             }
-            match make_filesystem().read(&path.join(spec)) {
+            match self.filesystem.as_ref().read(&path.join(spec)) {
                 Ok(bytes) => {
                     repo.index.insert((*spec).to_owned(), bytes);
                 }
@@ -683,7 +724,7 @@ impl GitRepository for FakeGitRepository {
         }
         let mut repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get_mut(&repository_key(path))
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         if repo.head.as_ref().and_then(|oid| repo.commits.get(oid)) == Some(&repo.index) {
             return Err(failed("nothing to commit"));
@@ -724,7 +765,7 @@ impl GitRepository for FakeGitRepository {
             .repositories
             .lock()
             .unwrap()
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .is_some_and(|repo| repo.symbolic_refs.contains_key(name))
         {
             return Ok(GitDirectRefObservation::NonDirect);
@@ -743,7 +784,7 @@ impl GitRepository for FakeGitRepository {
         preservation::validate_backup_ref_name(name)?;
         let mut repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get_mut(&repository_key(path))
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         if !repo.commits.contains_key(target) {
             return Err(failed("commit missing"));
@@ -774,7 +815,7 @@ impl GitRepository for FakeGitRepository {
         preservation::validate_backup_ref_name(name)?;
         let mut repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get_mut(&repository_key(path))
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         if target != expected_head
             || branch != "main"
@@ -812,7 +853,7 @@ impl GitRepository for FakeGitRepository {
         }
         let mut repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get_mut(&repository_key(path))
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         if repo
             .refs
@@ -836,7 +877,7 @@ impl GitRepository for FakeGitRepository {
         }
         let mut repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get_mut(&repository_key(path))
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         if !repo.commits.contains_key(expected_current) || !repo.commits.contains_key(target) {
             return Err(failed("commit missing"));
@@ -855,11 +896,11 @@ impl GitRepository for FakeGitRepository {
         }
         let tree = repo.commits[target].clone();
         for name in repo.index.keys().filter(|name| !tree.contains_key(*name)) {
-            remove_worktree_file(&path.join(name))?;
+            remove_worktree_file(self.filesystem.as_ref(), &path.join(name))?;
         }
         for (name, bytes) in &tree {
             let file = path.join(name);
-            write_worktree_file(&file, bytes)?;
+            write_worktree_file(self.filesystem.as_ref(), &file, bytes)?;
         }
         repo.index = tree;
         repo.index_override = None;
@@ -889,14 +930,14 @@ impl GitRepository for FakeGitRepository {
     ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         Ok(repo.stashes.get(merge_id).cloned().into_iter().collect())
     }
     fn stash_list(&self, path: &Path) -> ModelResult<Vec<GitStashEntry>> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         Ok(repo
             .stashes
@@ -952,7 +993,7 @@ impl GitRepository for FakeGitRepository {
         let image = self.preservation_image(path, include_untracked)?;
         let mut repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get_mut(&repository_key(path))
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         let mismatch = || {
             ModelError::new(
@@ -988,14 +1029,14 @@ impl GitRepository for FakeGitRepository {
             ))
         )[..40]
             .to_owned();
-        let worktree = root::worktree(repo, path)?;
+        let worktree = root::worktree(self, repo, path)?;
         let tree = repo.commits[expected_head].clone();
         for name in worktree.keys().filter(|name| !tree.contains_key(*name)) {
-            remove_worktree_file(&path.join(name))?;
+            remove_worktree_file(self.filesystem.as_ref(), &path.join(name))?;
         }
         for (name, bytes) in &tree {
             let file = path.join(name);
-            write_worktree_file(&file, bytes)?;
+            write_worktree_file(self.filesystem.as_ref(), &file, bytes)?;
         }
         repo.stash_snapshots
             .insert(object_id.clone(), (repo.index.clone(), worktree));
@@ -1026,7 +1067,7 @@ impl GitRepository for FakeGitRepository {
         }
         let mut repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get_mut(&repository_key(path))
+            .get_mut(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         let oid = target.object_id.as_ref().unwrap();
         let evidence = repo
@@ -1047,11 +1088,11 @@ impl GitRepository for FakeGitRepository {
             .keys()
             .filter(|name| !worktree.contains_key(*name))
         {
-            remove_worktree_file(&path.join(name))?;
+            remove_worktree_file(self.filesystem.as_ref(), &path.join(name))?;
         }
         for (name, bytes) in worktree {
             let file = path.join(name);
-            write_worktree_file(&file, &bytes)?;
+            write_worktree_file(self.filesystem.as_ref(), &file, &bytes)?;
         }
         repo.index = index;
         repo.index_override = None;
@@ -1060,7 +1101,7 @@ impl GitRepository for FakeGitRepository {
     fn commit_exists(&self, path: &Path, oid: &str) -> ModelResult<bool> {
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         Ok(repo.commits.contains_key(oid))
     }
@@ -1083,7 +1124,7 @@ impl GitRepository for FakeGitRepository {
         }
         let repositories = self.repositories.lock().unwrap();
         let repo = repositories
-            .get(&repository_key(path))
+            .get(&repository_key(self.filesystem.as_ref(), path))
             .ok_or_else(|| failed("repository missing"))?;
         let tree = repo
             .commits
@@ -1096,15 +1137,21 @@ impl GitRepository for FakeGitRepository {
 fn failed(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::GitCommandFailed, message)
 }
-fn read_worktree(root: &Path, ignored: &[String], tracked: &FileTree) -> ModelResult<FileTree> {
+fn read_worktree(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    ignored: &[String],
+    tracked: &FileTree,
+) -> ModelResult<FileTree> {
     fn visit(
+        filesystem: &dyn FileSystem,
         root: &Path,
         directory: &Path,
         files: &mut FileTree,
         ignored: &[String],
         tracked: &FileTree,
     ) -> ModelResult<()> {
-        for entry in make_filesystem()
+        for entry in filesystem
             .read_directory(directory)
             .map_err(|e| failed(e.to_string()))?
         {
@@ -1128,13 +1175,11 @@ fn read_worktree(root: &Path, ignored: &[String], tracked: &FileTree) -> ModelRe
                 continue;
             }
             if entry.kind == FsKind::Directory {
-                visit(root, &path, files, ignored, tracked)?;
+                visit(filesystem, root, &path, files, ignored, tracked)?;
             } else if entry.kind == FsKind::File {
                 files.insert(
                     name,
-                    make_filesystem()
-                        .read(&path)
-                        .map_err(|e| failed(e.to_string()))?,
+                    filesystem.read(&path).map_err(|e| failed(e.to_string()))?,
                 );
             } else {
                 return unsupported("non-regular worktree entry");
@@ -1143,12 +1188,12 @@ fn read_worktree(root: &Path, ignored: &[String], tracked: &FileTree) -> ModelRe
         Ok(())
     }
     let mut files = BTreeMap::new();
-    visit(root, root, &mut files, ignored, tracked)?;
+    visit(filesystem, root, root, &mut files, ignored, tracked)?;
     Ok(files)
 }
 
-fn repository_key(path: &Path) -> PathBuf {
-    let canonical = make_filesystem()
+fn repository_key(filesystem: &dyn FileSystem, path: &Path) -> PathBuf {
+    let canonical = filesystem
         .canonical_path(path)
         .unwrap_or_else(|_| path.to_path_buf());
     if canonical.file_name().is_some_and(|name| name == ".git") {
@@ -1158,8 +1203,7 @@ fn repository_key(path: &Path) -> PathBuf {
     }
 }
 
-fn write_worktree_file(path: &Path, bytes: &[u8]) -> ModelResult<()> {
-    let filesystem = make_filesystem();
+fn write_worktree_file(filesystem: &dyn FileSystem, path: &Path, bytes: &[u8]) -> ModelResult<()> {
     filesystem
         .create_directories(
             path.parent()
@@ -1179,8 +1223,8 @@ fn write_worktree_file(path: &Path, bytes: &[u8]) -> ModelResult<()> {
         .map_err(|e| failed(e.to_string()))
 }
 
-fn remove_worktree_file(path: &Path) -> ModelResult<()> {
-    make_filesystem()
+fn remove_worktree_file(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<()> {
+    filesystem
         .remove_file(path)
         .map_err(|e| failed(e.to_string()))
 }

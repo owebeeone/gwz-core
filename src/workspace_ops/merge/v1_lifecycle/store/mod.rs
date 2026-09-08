@@ -28,7 +28,20 @@ pub(super) enum ArchiveOutcome {
 
 impl CheckedV1Store {
     pub(super) fn load_open(&self, root: &Path, merge_id: &str) -> ModelResult<StoredV1Record> {
-        rewrite::load_open(root, merge_id)
+        self.load_open_in(
+            &crate::operation_context::OperationContext::existing(),
+            root,
+            merge_id,
+        )
+    }
+
+    pub(super) fn load_open_in(
+        &self,
+        context: &crate::operation_context::OperationContext,
+        root: &Path,
+        merge_id: &str,
+    ) -> ModelResult<StoredV1Record> {
+        rewrite::load_open(context, root, merge_id)
     }
 
     /// A1's creation owner for the contract-§2 writer floor. See
@@ -46,7 +59,11 @@ impl CheckedV1Store {
     }
 
     pub(super) fn reload_unchanged(&self, current: &StoredV1Record) -> ModelResult<StoredV1Record> {
-        let reopened = self.load_open(current.location().root(), &current.record().merge_id)?;
+        let reopened = self.load_open_in(
+            current.context(),
+            current.location().root(),
+            &current.record().merge_id,
+        )?;
         if !current.same_source_as(&reopened) {
             return Err(ModelError::new(
                 ErrorCode::MergeRecoveryRequired,

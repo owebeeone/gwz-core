@@ -3,7 +3,6 @@ use std::ffi::OsStr;
 use super::authority::{CheckedArtifactAuthority, RetainedSource, authority_name};
 use super::fault::{CheckedArtifactFault, fault};
 use super::{CheckedArtifact, CheckedArtifactFact, ParentState, error, io_error};
-use crate::filesystem::{FileSystem, make_filesystem};
 use crate::model::ModelResult;
 
 impl CheckedArtifact {
@@ -84,7 +83,8 @@ impl CheckedArtifact {
                     "staged goal is a different-identity duplicate",
                 ));
             }
-            make_filesystem()
+            private
+                .filesystem()
                 .remove_file_at(&private, &staged.name)
                 .map_err(|cause| io_error(self.code, &self.label, cause))?;
             super::platform::filesystem_private_barrier(
@@ -129,7 +129,8 @@ impl CheckedArtifact {
                     "cleanup evidence changed before source retirement",
                 ));
             }
-            make_filesystem()
+            private
+                .filesystem()
                 .remove_file_at(&private, &source.name)
                 .map_err(|cause| io_error(self.code, &self.label, cause))?;
             super::platform::filesystem_private_barrier(
@@ -220,7 +221,8 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        make_filesystem()
+        private
+            .filesystem()
             .remove_file_at(&private, OsStr::new(&authority_name))
             .map_err(|cause| io_error(self.code, &self.label, cause))?;
         super::platform::filesystem_private_barrier(

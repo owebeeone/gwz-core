@@ -846,7 +846,10 @@ fn a_reverse_checked_door_on_a_handle_fail_volume_names_the_one_escape() {
             .map(|_| ())
             .unwrap_err(),
             crate::checked_artifact::entry::observe_merge_preservation_workspace(
-                root, relative, None,
+                &crate::filesystem::make_filesystem(),
+                root,
+                relative,
+                None,
             )
             .map(|_| ())
             .unwrap_err(),

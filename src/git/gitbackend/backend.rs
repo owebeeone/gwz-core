@@ -7,8 +7,9 @@ pub enum CredentialHelperPolicy {
     AllowConfigured,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Git2Repository {
+    pub(crate) filesystem: std::sync::Arc<dyn crate::filesystem::FileSystem>,
     pub(crate) credential_helpers: CredentialHelperPolicy,
     pub(crate) identities: super::transport_support::identity::Selection,
     pub(crate) observations: super::transport_observations::TransportObservations,
@@ -16,6 +17,17 @@ pub struct Git2Repository {
 
 /// Compatibility name for existing callers.
 pub type Git2Backend = Git2Repository;
+
+impl std::fmt::Debug for Git2Repository {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Git2Repository")
+            .field("credential_helpers", &self.credential_helpers)
+            .field("identities", &self.identities)
+            .field("observations", &self.observations)
+            .finish_non_exhaustive()
+    }
+}
 
 impl PartialEq for Git2Backend {
     fn eq(&self, other: &Self) -> bool {
@@ -28,6 +40,7 @@ impl Git2Backend {
     pub fn new() -> Self {
         super::transport_support::ensure_server_timeout();
         Self {
+            filesystem: crate::filesystem::native_filesystem(),
             credential_helpers: CredentialHelperPolicy::AllowConfigured,
             identities: Default::default(),
             observations: Default::default(),
@@ -37,6 +50,7 @@ impl Git2Backend {
     pub fn without_credential_helpers() -> Self {
         super::transport_support::ensure_server_timeout();
         Self {
+            filesystem: crate::filesystem::native_filesystem(),
             credential_helpers: CredentialHelperPolicy::Disabled,
             identities: Default::default(),
             observations: Default::default(),

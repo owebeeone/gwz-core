@@ -17,6 +17,7 @@ use cap_std::fs::{Dir, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone, Copy)]
 pub(super) struct NativeFileSystem;
 pub(super) struct Directory(Dir);
 pub(super) struct File(Arc<Mutex<cap_std::fs::File>>);
@@ -112,9 +113,13 @@ impl FileSystem for NativeFileSystem {
             options.mode(0o600);
         }
         durable_options(&mut options);
-        directory(parent)?
-            .open_with(name, &options)
-            .map(|file| FsFile(FileHandle::Native(File(Arc::new(Mutex::new(file)))), 0))
+        directory(parent)?.open_with(name, &options).map(|file| {
+            FsFile(
+                FileHandle::Native(File(Arc::new(Mutex::new(file)))),
+                0,
+                Arc::new(*self),
+            )
+        })
     }
     fn open_publication_source(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
@@ -122,6 +127,7 @@ impl FileSystem for NativeFileSystem {
         Ok(FsFile(
             FileHandle::Native(File(Arc::new(Mutex::new(file)))),
             0,
+            Arc::new(*self),
         ))
     }
     fn publish_source(
@@ -254,17 +260,20 @@ impl FileSystem for NativeFileSystem {
         let dir = Dir::open_ambient_dir(path, cap_std::ambient_authority())?;
         #[cfg(windows)]
         let dir = retained::open_directory(&dir, OsStr::new("."))?;
-        Ok(FsDirectory(DirectoryHandle::Native(Directory(dir))))
+        Ok(FsDirectory(
+            DirectoryHandle::Native(Directory(dir)),
+            Arc::new(*self),
+        ))
     }
     fn clone_directory(&self, value: &FsDirectory) -> io::Result<FsDirectory> {
         directory(value)?
             .try_clone()
-            .map(|dir| FsDirectory(DirectoryHandle::Native(Directory(dir))))
+            .map(|dir| FsDirectory(DirectoryHandle::Native(Directory(dir)), Arc::new(*self)))
     }
     fn open_directory_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsDirectory> {
         component(name)?;
         retained::open_directory(directory(parent)?, name)
-            .map(|dir| FsDirectory(DirectoryHandle::Native(Directory(dir))))
+            .map(|dir| FsDirectory(DirectoryHandle::Native(Directory(dir)), Arc::new(*self)))
     }
     fn create_directory_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<()> {
         component(name)?;
@@ -281,6 +290,7 @@ impl FileSystem for NativeFileSystem {
         Ok(FsFile(
             FileHandle::Native(File(Arc::new(Mutex::new(file)))),
             0,
+            Arc::new(*self),
         ))
     }
     fn open_lock_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
@@ -295,6 +305,7 @@ impl FileSystem for NativeFileSystem {
         Ok(FsFile(
             FileHandle::Native(File(Arc::new(Mutex::new(file)))),
             0,
+            Arc::new(*self),
         ))
     }
     fn open_file_for_write_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
@@ -309,6 +320,7 @@ impl FileSystem for NativeFileSystem {
         Ok(FsFile(
             FileHandle::Native(File(Arc::new(Mutex::new(file)))),
             0,
+            Arc::new(*self),
         ))
     }
     fn create_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
@@ -320,9 +332,13 @@ impl FileSystem for NativeFileSystem {
             .create_new(true)
             .follow(FollowSymlinks::No);
         durable_options(&mut options);
-        directory(parent)?
-            .open_with(name, &options)
-            .map(|file| FsFile(FileHandle::Native(File(Arc::new(Mutex::new(file)))), 0))
+        directory(parent)?.open_with(name, &options).map(|file| {
+            FsFile(
+                FileHandle::Native(File(Arc::new(Mutex::new(file)))),
+                0,
+                Arc::new(*self),
+            )
+        })
     }
     fn read_at(&self, handle: &FsFile, offset: u64, bytes: &mut [u8]) -> io::Result<usize> {
         let mut file = file(handle)?

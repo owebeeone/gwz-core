@@ -10,6 +10,26 @@ pub struct WorkspaceMutatorLock {
 }
 
 impl WorkspaceMutatorLock {
+    pub(crate) fn acquire_in(
+        context: &crate::operation_context::OperationContext,
+        root: &Path,
+    ) -> ModelResult<Self> {
+        Self::try_acquire_in(context, root)?.ok_or_else(|| {
+            ModelError::new(
+                ErrorCode::UnsupportedOperation,
+                "workspace mutator lock is already held",
+            )
+        })
+    }
+
+    pub(crate) fn try_acquire_in(
+        context: &crate::operation_context::OperationContext,
+        root: &Path,
+    ) -> ModelResult<Option<Self>> {
+        crate::checked_artifact::try_acquire_workspace_runtime_in(context, root)
+            .map(|lease| lease.map(|lease| Self { lease }))
+    }
+
     /// Acquire the workspace mutation lock or return the standard busy error.
     pub fn acquire(root: &Path) -> ModelResult<Self> {
         Self::try_acquire(root)?.ok_or_else(|| {

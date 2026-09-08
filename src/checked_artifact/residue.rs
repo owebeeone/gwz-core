@@ -9,7 +9,7 @@ use super::fault::{CheckedArtifactFault, fault};
 use super::identity::{self, ObjectIdentity};
 use super::observation::{LeafObservation, io_op_error, observe_leaf_exact};
 use super::{CheckedArtifact, CheckedArtifactFact, ParentState, error};
-use crate::filesystem::{FileSystem, FsDirectory, FsKind, make_filesystem};
+use crate::filesystem::{FileSystem, FsDirectory, FsKind};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 const MAX_FAMILY_ENTRIES: usize = 64;
@@ -41,14 +41,15 @@ impl FamilyResidue {
 impl CheckedArtifact {
     pub(super) fn open_private(&self, create: bool) -> ModelResult<Option<FsDirectory>> {
         if create {
-            Self::prepare_parent(
+            Self::prepare_parent_in(
+                self.root.filesystem(),
                 &self.private_root,
                 &self.quarantine_parent,
                 self.code,
                 &self.label,
             )?;
         }
-        let filesystem = make_filesystem();
+        let filesystem = self.root.filesystem();
         let root = filesystem
             .open_directory(&self.private_root)
             .map_err(|cause| {
@@ -116,7 +117,7 @@ impl CheckedArtifact {
         let expected_authority_name = authority_name(&family, &action);
         let mut names = Vec::new();
         let mut total_bytes = 0_u64;
-        let filesystem = make_filesystem();
+        let filesystem = self.root.filesystem();
         for entry in filesystem.read_directory_at(&dir).map_err(|cause| {
             io_op_error(self.code, &self.label, "list private family entries", cause)
         })? {
@@ -160,7 +161,7 @@ impl CheckedArtifact {
         let mut staged_goal = None;
         let mut foreign = false;
         for name in names {
-            let observed = observe_leaf_exact(&filesystem, &dir, &name, self.code, &self.label)?;
+            let observed = observe_leaf_exact(filesystem, &dir, &name, self.code, &self.label)?;
             let Some(text) = name.to_str() else {
                 foreign = true;
                 continue;
@@ -360,8 +361,8 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        let filesystem = make_filesystem();
-        let file = self.open_staging(&filesystem, &dir, OsStr::new(&scratch))?;
+        let filesystem = self.root.filesystem();
+        let file = self.open_staging(filesystem, &dir, OsStr::new(&scratch))?;
         fault(
             CheckedArtifactFault::AfterGoalScratchCreate,
             self.code,
@@ -426,7 +427,7 @@ impl CheckedArtifact {
         )?;
         self.rebarrier_exact(&dir, OsStr::new(&name))?;
         let observed =
-            observe_leaf_exact(&filesystem, &dir, OsStr::new(&name), self.code, &self.label)?;
+            observe_leaf_exact(filesystem, &dir, OsStr::new(&name), self.code, &self.label)?;
         if observed.fact != CheckedArtifactFact::Bytes(goal.to_vec())
             || observed.identity.as_ref() != Some(&identity)
         {
@@ -454,8 +455,8 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        let filesystem = make_filesystem();
-        let file = self.open_staging(&filesystem, dir, OsStr::new(scratch))?;
+        let filesystem = self.root.filesystem();
+        let file = self.open_staging(filesystem, dir, OsStr::new(scratch))?;
         fault(
             CheckedArtifactFault::AfterAuthorityScratchCreate,
             self.code,
@@ -539,7 +540,7 @@ impl CheckedArtifact {
     /// name still cannot publish that object's content.
     fn open_staging(
         &self,
-        filesystem: &impl FileSystem,
+        filesystem: &dyn FileSystem,
         dir: &FsDirectory,
         scratch: &OsStr,
     ) -> ModelResult<crate::filesystem::FsFile> {
@@ -578,8 +579,8 @@ impl CheckedArtifact {
     }
 
     pub(super) fn rebarrier_exact(&self, dir: &FsDirectory, name: &OsStr) -> ModelResult<()> {
-        let filesystem = make_filesystem();
-        let before = observe_leaf_exact(&filesystem, dir, name, self.code, &self.label)?;
+        let filesystem = self.root.filesystem();
+        let before = observe_leaf_exact(filesystem, dir, name, self.code, &self.label)?;
         let file = filesystem.open_file_at(dir, name).map_err(|cause| {
             io_op_error(
                 self.code,
@@ -604,7 +605,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        let after = observe_leaf_exact(&filesystem, dir, name, self.code, &self.label)?;
+        let after = observe_leaf_exact(filesystem, dir, name, self.code, &self.label)?;
         if before.fact != after.fact || before.identity != after.identity {
             return Err(error(
                 self.code,

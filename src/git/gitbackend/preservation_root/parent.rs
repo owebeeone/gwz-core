@@ -2,7 +2,7 @@ use super::super::*;
 use super::files;
 use super::{FaultBoundary, fault};
 
-use crate::filesystem::{FileSystem, FsDirectory, RenameMode, make_filesystem};
+use crate::filesystem::{FileSystem, FsDirectory, RenameMode};
 use sha2::{Digest, Sha256};
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
@@ -25,8 +25,7 @@ pub(super) struct PinnedConfig {
 }
 
 impl PinnedConfig {
-    pub(super) fn open(root: &Path) -> ModelResult<Self> {
-        let filesystem = make_filesystem();
+    pub(super) fn open(filesystem: &dyn FileSystem, root: &Path) -> ModelResult<Self> {
         let root = filesystem
             .open_directory(root)
             .map_err(crate::git::io_error)?;
@@ -43,17 +42,18 @@ impl PinnedConfig {
     }
 
     pub(super) fn is_current(&self) -> ModelResult<bool> {
-        make_filesystem()
+        self.root
+            .filesystem()
             .directory_entry_matches(&self.root, OsStr::new("gwz.conf"), &self.dir)
             .map_err(crate::git::io_error)
     }
 
     pub(super) fn observe(&self, marker_path: &str, staging: &str) -> ModelResult<State> {
         let (_, marker) = files::split_relative(Path::new(marker_path))?;
-        let filesystem = make_filesystem();
+        let filesystem = self.root.filesystem();
         let final_state =
-            directory_state(&filesystem, &self.dir, FINAL_NAME.as_ref(), Some(&marker))?;
-        let stage_state = directory_state(&filesystem, &self.dir, staging.as_ref(), None)?;
+            directory_state(filesystem, &self.dir, FINAL_NAME.as_ref(), Some(&marker))?;
+        let stage_state = directory_state(filesystem, &self.dir, staging.as_ref(), None)?;
         let foreign_stage = filesystem
             .read_directory_at(&self.dir)
             .map_err(crate::git::io_error)?
@@ -74,11 +74,11 @@ impl PinnedConfig {
     }
 
     pub(super) fn publish(&self, staging: &str) -> ModelResult<()> {
-        let filesystem = make_filesystem();
+        let filesystem = self.root.filesystem();
         if !self.is_current()? {
             return Err(evidence_error("gwz.conf parent changed before publication"));
         }
-        if directory_state(&filesystem, &self.dir, staging.as_ref(), None)?
+        if directory_state(filesystem, &self.dir, staging.as_ref(), None)?
             == DirectoryState::Missing
         {
             fault(FaultBoundary::BeforeParentStageCreate)?;
@@ -119,7 +119,7 @@ impl PinnedConfig {
             )
             .map_err(crate::git::io_error)?;
         fault(FaultBoundary::AfterParentPublish)?;
-        barrier_after_publish(&filesystem, &self.dir)?;
+        barrier_after_publish(filesystem, &self.dir)?;
         if !self.is_current()? {
             return Err(evidence_error("gwz.conf parent changed during publication"));
         }
@@ -127,13 +127,13 @@ impl PinnedConfig {
     }
 
     pub(super) fn barrier(&self, staging: &str) -> ModelResult<()> {
-        let filesystem = make_filesystem();
+        let filesystem = self.root.filesystem();
         if !self.is_current()? {
             return Err(evidence_error(
                 "gwz.conf parent changed before durability barrier",
             ));
         }
-        barrier_platform(&filesystem, &self.dir, staging, FINAL_NAME)?;
+        barrier_platform(filesystem, &self.dir, staging, FINAL_NAME)?;
         if !self.is_current()? {
             return Err(evidence_error(
                 "gwz.conf parent changed during durability barrier",
@@ -198,8 +198,13 @@ fn hash_form(hash: &mut Sha256, form: &GitRootManagedForm) {
     fact(hash, &form.index.marker); fact(hash, &form.index.lock);
 }
 
-pub(super) fn observe(root: &Path, marker_path: &str, staging: &str) -> ModelResult<State> {
-    PinnedConfig::open(root)?.observe(marker_path, staging)
+pub(super) fn observe(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    marker_path: &str,
+    staging: &str,
+) -> ModelResult<State> {
+    PinnedConfig::open(filesystem, root)?.observe(marker_path, staging)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,7 +216,7 @@ enum DirectoryState {
 }
 
 fn directory_state(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     dir: &FsDirectory,
     name: &OsStr,
     expected: Option<&OsString>,
@@ -237,13 +242,13 @@ fn directory_state(
 }
 
 #[cfg(unix)]
-fn barrier_after_publish(filesystem: &impl FileSystem, dir: &FsDirectory) -> ModelResult<()> {
+fn barrier_after_publish(filesystem: &dyn FileSystem, dir: &FsDirectory) -> ModelResult<()> {
     sync_parent(filesystem, dir)
 }
 
 #[cfg(unix)]
 fn barrier_platform(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     dir: &FsDirectory,
     _staging: &str,
     _final_name: &str,
@@ -252,7 +257,7 @@ fn barrier_platform(
 }
 
 #[cfg(unix)]
-fn sync_parent(filesystem: &impl FileSystem, dir: &FsDirectory) -> ModelResult<()> {
+fn sync_parent(filesystem: &dyn FileSystem, dir: &FsDirectory) -> ModelResult<()> {
     fault(FaultBoundary::BeforeUnixParentSync)?;
     filesystem
         .sync_directory_at(dir)
@@ -261,13 +266,13 @@ fn sync_parent(filesystem: &impl FileSystem, dir: &FsDirectory) -> ModelResult<(
 }
 
 #[cfg(windows)]
-fn barrier_after_publish(_filesystem: &impl FileSystem, _dir: &FsDirectory) -> ModelResult<()> {
+fn barrier_after_publish(_filesystem: &dyn FileSystem, _dir: &FsDirectory) -> ModelResult<()> {
     Ok(())
 }
 
 #[cfg(windows)]
 fn barrier_platform(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     dir: &FsDirectory,
     staging: &str,
     final_name: &str,

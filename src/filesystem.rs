@@ -20,6 +20,19 @@ mod native;
 
 pub(crate) use factory::make_filesystem;
 
+pub(crate) fn native_filesystem() -> std::sync::Arc<dyn FileSystem> {
+    std::sync::Arc::new(native::NativeFileSystem)
+}
+
+pub(crate) fn host_support_profile() -> FsSupportProfile {
+    native::NativeFileSystem.support_profile()
+}
+
+#[cfg(test)]
+pub(crate) fn memory_filesystem() -> std::sync::Arc<dyn FileSystem> {
+    std::sync::Arc::new(fake::FakeFileSystem::default())
+}
+
 #[cfg(test)]
 pub(crate) fn remove_file_for_test(path: &Path) -> io::Result<()> {
     make_filesystem().remove_file(path)
@@ -70,8 +83,8 @@ pub(crate) fn write_for_test(path: &Path, bytes: &[u8]) -> io::Result<()> {
     filesystem.write_all(&file, bytes)
 }
 
-pub(crate) struct FsDirectory(DirectoryHandle);
-pub(crate) struct FsFile(FileHandle, u64);
+pub(crate) struct FsDirectory(DirectoryHandle, std::sync::Arc<dyn FileSystem>);
+pub(crate) struct FsFile(FileHandle, u64, std::sync::Arc<dyn FileSystem>);
 
 #[allow(dead_code, reason = "runtime-lock consumers are migrating")]
 pub(crate) struct FsLockGuard {
@@ -354,6 +367,10 @@ pub(crate) trait FileSystem: Send + Sync {
     }
     #[cfg(test)]
     fn test_workspace(&self) -> io::Result<TestFsWorkspace>;
+    #[cfg(test)]
+    fn test_workspace_at(&self, _path: &Path) -> io::Result<TestFsWorkspace> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 
 fn split(path: &Path) -> io::Result<(&Path, &OsStr)> {

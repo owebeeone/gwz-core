@@ -13,13 +13,21 @@ pub(super) fn test_init_repo(
     }
     backend.create_repo(path)?;
     let mut all = backend.repositories.lock().unwrap();
-    let repo = all.get_mut(&repository_key(path)).unwrap();
+    let repo = all
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
+        .unwrap();
     repo.attached_ref = Some(format!("refs/heads/{}", spec.branch));
     repo.sha256 = spec.sha256;
-    make_filesystem()
+    backend
+        .filesystem
+        .as_ref()
         .create_directories(&path.join(".git/info"))
         .map_err(|e| failed(e.to_string()))?;
-    write_worktree_file(&path.join(".git/info/exclude"), b"")?;
+    write_worktree_file(
+        backend.filesystem.as_ref(),
+        &path.join(".git/info/exclude"),
+        b"",
+    )?;
     Ok(())
 }
 pub(super) fn object_id(sha256: bool, kind: git2::ObjectType, bytes: &[u8]) -> ModelResult<String> {
@@ -132,7 +140,7 @@ pub(super) fn test_create_commit(
 ) -> ModelResult<String> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     if matches!(spec.tree, TestCommitTree::Index)
         && repo
@@ -172,7 +180,7 @@ pub(super) fn test_read_commit(
         .repositories
         .lock()
         .unwrap()
-        .get(&repository_key(path))
+        .get(&repository_key(backend.filesystem.as_ref(), path))
         .and_then(|repo| repo.metadata.get(oid))
         .cloned()
         .ok_or_else(|| failed("commit missing"))
@@ -188,7 +196,7 @@ pub(super) fn test_set_ref(
     }
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     match target {
         Some(TestRefTarget::Direct(oid)) => {
@@ -236,7 +244,7 @@ pub(super) fn test_set_head(
 ) -> ModelResult<()> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     match state {
         TestHead::Attached(name) => {
@@ -264,7 +272,7 @@ pub(super) fn test_read_index(
 ) -> ModelResult<Vec<TestIndexEntry>> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     if let Some(entries) = &repo.index_override {
         return Ok(entries.clone());
@@ -293,7 +301,7 @@ pub(super) fn test_replace_index(
 ) -> ModelResult<()> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     let mut tree = BTreeMap::new();
     for entry in entries {
@@ -321,7 +329,7 @@ pub(super) fn test_set_config(
 ) -> ModelResult<()> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     if values.is_empty() {
         repo.config.remove(key);
@@ -337,7 +345,7 @@ pub(super) fn test_read_config(
 ) -> ModelResult<Vec<String>> {
     let all = backend.repositories.lock().unwrap();
     let repo = all
-        .get(&repository_key(path))
+        .get(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     Ok(repo.config.get(key).cloned().unwrap_or_default())
 }
@@ -349,7 +357,7 @@ pub(super) fn test_force_checkout(
 ) -> ModelResult<()> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     let tree = repo
         .commits
@@ -359,11 +367,11 @@ pub(super) fn test_force_checkout(
     let old_paths = repo.index.keys().cloned().collect::<Vec<_>>();
     for name in old_paths {
         if !tree.contains_key(&name) {
-            remove_worktree_file(&path.join(name))?;
+            remove_worktree_file(backend.filesystem.as_ref(), &path.join(name))?;
         }
     }
     for (name, bytes) in &tree {
-        write_worktree_file(&path.join(name), bytes)?;
+        write_worktree_file(backend.filesystem.as_ref(), &path.join(name), bytes)?;
     }
     repo.index = tree;
     repo.index_override = None;
@@ -381,7 +389,7 @@ pub(super) fn test_reset_mixed(
 ) -> ModelResult<()> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     let tree = repo
         .commits
@@ -411,7 +419,7 @@ pub(super) fn test_set_repository_state(
     }
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     repo.repository_state = Some(state);
     repo.merge_head = merge_head.map(str::to_owned);
@@ -426,7 +434,7 @@ pub(super) fn test_seed_merge_conflict(
 ) -> ModelResult<GitMergeConflictSnapshot> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     if repo.head.as_deref() != Some(before) {
         return Err(failed("conflict fixture head differs"));
@@ -484,7 +492,7 @@ pub(super) fn test_seed_merge_conflict(
             String::from_utf8_lossy(theirs.get(&name).unwrap())
         )
         .into_bytes();
-        write_worktree_file(&path.join(&name), &bytes)?;
+        write_worktree_file(backend.filesystem.as_ref(), &path.join(&name), &bytes)?;
         snapshots.push(GitConflictFileSnapshot {
             path: name,
             sha256: format!("{:x}", Sha256::digest(&bytes)),
@@ -510,7 +518,7 @@ pub(super) fn test_create_commit_from_parent(
 ) -> ModelResult<String> {
     let mut all = backend.repositories.lock().unwrap();
     let repo = all
-        .get_mut(&repository_key(path))
+        .get_mut(&repository_key(backend.filesystem.as_ref(), path))
         .ok_or_else(|| failed("repository missing"))?;
     let mut tree = repo
         .commits

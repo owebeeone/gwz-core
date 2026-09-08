@@ -1,5 +1,7 @@
 use super::*;
 use crate::checked_artifact::entry::MergeArtifactTransition;
+use crate::filesystem::FileSystem;
+use crate::operation_context::BorrowedOperationContext;
 pub(super) mod files;
 pub(super) mod index;
 pub(super) mod index_format;
@@ -9,15 +11,17 @@ use preservation::fault;
 #[cfg(test)]
 pub(crate) use preservation::{fail_next_at, run_next_at};
 pub(super) fn prepare_root_preservation_stash(
+    filesystem: &dyn FileSystem,
     backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
 ) -> ModelResult<GitPreparedRootStash> {
+    let context = BorrowedOperationContext::new(backend, filesystem);
     backend.validate_root_preservation_spec(root, spec)?;
     if !exact_head(backend, root, &spec.attached_branch, &spec.attached_commit)?
         || backend.repository_state(root)? != GitRepositoryState::Clean
-        || !full_form_matches(backend, root, spec, &spec.handoff_form)?
-        || !files::observe_boundary(backend, root, &spec.handoff_boundary)?
+        || !full_form_matches(context, root, spec, &spec.handoff_form)?
+        || !files::observe_boundary(filesystem, backend, root, &spec.handoff_boundary)?
     {
         return Err(evidence_error(
             "root preservation preparation requires the exact durable handoff",
@@ -32,52 +36,57 @@ pub(super) fn prepare_root_preservation_stash(
     })
 }
 pub(super) fn observe_root_preservation_step(
+    filesystem: &dyn FileSystem,
     backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     step: &GitRootPreservationPhysicalStep,
     guard: &GitRootPreservationGuard,
 ) -> ModelResult<GitRootPreservationStepObservation> {
-    observe_root_preservation_step_pinned(backend, root, spec, step, guard, None)
+    let context = BorrowedOperationContext::new(backend, filesystem);
+    observe_root_preservation_step_pinned(context, root, spec, step, guard, None)
 }
 fn observe_root_preservation_step_pinned(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     step: &GitRootPreservationPhysicalStep,
     guard: &GitRootPreservationGuard,
     pinned: Option<&parent::PinnedConfig>,
 ) -> ModelResult<GitRootPreservationStepObservation> {
+    let backend = context.repository;
     backend.validate_root_preservation_spec(root, spec)?;
     match step {
         GitRootPreservationPhysicalStep::Managed(transition) => {
-            observe_managed(backend, root, spec, transition, guard, pinned)
+            observe_managed(context, root, spec, transition, guard, pinned)
         }
         GitRootPreservationPhysicalStep::CreateStash { merge_id } => {
-            observe_create_stash(backend, root, spec, merge_id, guard)
+            observe_create_stash(context, root, spec, merge_id, guard)
         }
         GitRootPreservationPhysicalStep::ResetAttachedRef => {
-            observe_reset(backend, root, spec, guard)
+            observe_reset(context, root, spec, guard)
         }
     }
 }
 pub(super) fn execute_root_preservation_step_checked(
+    filesystem: &dyn FileSystem,
     backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     step: &GitRootPreservationPhysicalStep,
     guard: &GitRootPreservationGuard,
 ) -> ModelResult<GitCheckedPreservationMutation> {
+    let context = BorrowedOperationContext::new(backend, filesystem);
     let pinned = match step {
         GitRootPreservationPhysicalStep::Managed(transition)
             if transition.object == GitRootManagedObject::MarkerParentDirectory =>
         {
-            Some(parent::PinnedConfig::open(root)?)
+            Some(parent::PinnedConfig::open(filesystem, root)?)
         }
         _ => None,
     };
     let observe =
-        |pinned| observe_root_preservation_step_pinned(backend, root, spec, step, guard, pinned);
+        |pinned| observe_root_preservation_step_pinned(context, root, spec, step, guard, pinned);
     match observe(pinned.as_ref())? {
         GitRootPreservationStepObservation::After => {
             return Ok(GitCheckedPreservationMutation::AlreadyComplete);
@@ -112,7 +121,7 @@ pub(super) fn execute_root_preservation_step_checked(
     fault(FaultBoundary::Before)?;
     let mutation = match step {
         GitRootPreservationPhysicalStep::Managed(transition) => {
-            mutate_managed(backend, root, spec, transition, pinned.as_ref())?;
+            mutate_managed(context, root, spec, transition, pinned.as_ref())?;
             GitCheckedPreservationMutation::Applied
         }
         GitRootPreservationPhysicalStep::CreateStash { merge_id } => {
@@ -150,13 +159,15 @@ pub(super) fn execute_root_preservation_step_checked(
     Ok(mutation)
 }
 fn observe_managed(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     transition: &GitRootManagedTransition,
     guard: &GitRootPreservationGuard,
     pinned: Option<&parent::PinnedConfig>,
 ) -> ModelResult<GitRootPreservationStepObservation> {
+    let filesystem = context.filesystem;
+    let backend = context.repository;
     let restore_side = matches!(
         (transition.source, transition.goal),
         (
@@ -174,7 +185,7 @@ fn observe_managed(
     };
     if backend.repository_state(root)? != GitRepositoryState::Clean
         || !exact_head(backend, root, &spec.attached_branch, commit)?
-        || !files::observe_boundary(backend, root, &spec.handoff_boundary)?
+        || !files::observe_boundary(filesystem, backend, root, &spec.handoff_boundary)?
         || !guard_matches(backend, root, spec, guard, clean)?
     {
         return Ok(GitRootPreservationStepObservation::Ambiguous);
@@ -182,7 +193,7 @@ fn observe_managed(
     let source = form(spec, transition.source);
     let goal = form(spec, transition.goal);
     if transition.object == GitRootManagedObject::MarkerParentDirectory {
-        return observe_parent(backend, root, spec, transition, source, goal, pinned);
+        return observe_parent(context, root, spec, transition, source, goal, pinned);
     }
     let staging = parent::staging_name(spec, transition.source, transition.goal);
     if matches!(
@@ -204,11 +215,11 @@ fn observe_managed(
                 unreachable!("checked above")
             }
         };
-        let observed = files::observe_transition(root, path, source_file, goal_file)?;
+        let observed = files::observe_transition(filesystem, root, path, source_file, goal_file)?;
         let after = observed == MergeArtifactTransition::After;
         if observed == MergeArtifactTransition::Ambiguous
             || !pattern_matches(
-                backend,
+                context,
                 root,
                 spec,
                 &staging,
@@ -225,31 +236,33 @@ fn observe_managed(
             GitRootPreservationStepObservation::Before
         });
     }
-    if pattern_matches(backend, root, spec, &staging, transition, true, None)? {
+    if pattern_matches(context, root, spec, &staging, transition, true, None)? {
         return Ok(GitRootPreservationStepObservation::After);
     }
-    if object_matches(backend, root, spec, &staging, transition.object, source)?
-        && !object_matches(backend, root, spec, &staging, transition.object, goal)?
-        && pattern_matches(backend, root, spec, &staging, transition, false, None)?
+    if object_matches(context, root, spec, &staging, transition.object, source)?
+        && !object_matches(context, root, spec, &staging, transition.object, goal)?
+        && pattern_matches(context, root, spec, &staging, transition, false, None)?
     {
         return Ok(GitRootPreservationStepObservation::Before);
     }
     Ok(GitRootPreservationStepObservation::Ambiguous)
 }
 fn observe_create_stash(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     merge_id: &str,
     guard: &GitRootPreservationGuard,
 ) -> ModelResult<GitRootPreservationStepObservation> {
+    let filesystem = context.filesystem;
+    let backend = context.repository;
     let GitRootPreservationGuard::NormalizedPreimage { sha256 } = guard else {
         return Err(invalid("CreateStash requires a normalized-preimage guard"));
     };
     if backend.repository_state(root)? != GitRepositoryState::Clean
         || !exact_head(backend, root, &spec.attached_branch, &spec.attached_commit)?
-        || !files::observe_boundary(backend, root, &spec.handoff_boundary)?
-        || !full_form_matches(backend, root, spec, &spec.attached_clean_form)?
+        || !files::observe_boundary(filesystem, backend, root, &spec.handoff_boundary)?
+        || !full_form_matches(context, root, spec, &spec.attached_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::Ambiguous);
     }
@@ -276,25 +289,27 @@ fn observe_create_stash(
     Ok(GitRootPreservationStepObservation::Ambiguous)
 }
 fn observe_reset(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     guard: &GitRootPreservationGuard,
 ) -> ModelResult<GitRootPreservationStepObservation> {
+    let filesystem = context.filesystem;
+    let backend = context.repository;
     if !matches!(guard, GitRootPreservationGuard::OtherwiseClean)
         || backend.repository_state(root)? != GitRepositoryState::Clean
-        || !files::observe_boundary(backend, root, &spec.handoff_boundary)?
+        || !files::observe_boundary(filesystem, backend, root, &spec.handoff_boundary)?
     {
         return Ok(GitRootPreservationStepObservation::Ambiguous);
     }
     if exact_head(backend, root, &spec.attached_branch, &spec.restore_commit)?
-        && full_form_matches(backend, root, spec, &spec.restore_clean_form)?
+        && full_form_matches(context, root, spec, &spec.restore_clean_form)?
         && otherwise_clean(backend, root, spec, &spec.restore_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::After);
     }
     if exact_head(backend, root, &spec.attached_branch, &spec.attached_commit)?
-        && full_form_matches(backend, root, spec, &spec.attached_clean_form)?
+        && full_form_matches(context, root, spec, &spec.attached_clean_form)?
         && otherwise_clean(backend, root, spec, &spec.attached_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::Before);
@@ -302,7 +317,7 @@ fn observe_reset(
     Ok(GitRootPreservationStepObservation::Ambiguous)
 }
 fn pattern_matches(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     staging: &str,
@@ -341,14 +356,14 @@ fn pattern_matches(
         } else {
             source
         };
-        if !object_matches(backend, root, spec, staging, object, expected)? {
+        if !object_matches(context, root, spec, staging, object, expected)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 fn observe_parent(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     transition: &GitRootManagedTransition,
@@ -356,6 +371,7 @@ fn observe_parent(
     goal: &GitRootManagedForm,
     pinned: Option<&parent::PinnedConfig>,
 ) -> ModelResult<GitRootPreservationStepObservation> {
+    let filesystem = context.filesystem;
     use parent::State as P;
     let staging = parent::staging_name(spec, transition.source, transition.goal);
     let surrounding = if transition.goal == GitRootManagedFormName::Handoff {
@@ -364,21 +380,21 @@ fn observe_parent(
         source
     };
     if !object_matches(
-        backend,
+        context,
         root,
         spec,
         &staging,
         GitRootManagedObject::Index,
         surrounding,
     )? || !object_matches(
-        backend,
+        context,
         root,
         spec,
         &staging,
         GitRootManagedObject::LockWorktree,
         surrounding,
     )? || !object_matches(
-        backend,
+        context,
         root,
         spec,
         &staging,
@@ -389,7 +405,7 @@ fn observe_parent(
     }
     let state = match pinned {
         Some(parent) => parent.observe(&spec.managed_marker_path, &staging),
-        None => parent::observe(root, &spec.managed_marker_path, &staging),
+        None => parent::observe(filesystem, root, &spec.managed_marker_path, &staging),
     }?;
     Ok(
         match (source.marker.is_some(), goal.marker.is_some(), state) {
@@ -407,13 +423,14 @@ fn observe_parent(
 }
 
 fn marker_parent_matches(
+    filesystem: &dyn FileSystem,
     root: &Path,
     spec: &GitRootPreservationSpec,
     staging: &str,
     marker_present: bool,
 ) -> ModelResult<bool> {
     use parent::State as P;
-    let state = parent::observe(root, &spec.managed_marker_path, staging)?;
+    let state = parent::observe(filesystem, root, &spec.managed_marker_path, staging)?;
     Ok(if marker_present {
         matches!(state, P::Empty | P::ExpectedMarker)
     } else {
@@ -422,27 +439,34 @@ fn marker_parent_matches(
 }
 
 fn object_matches(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     staging: &str,
     object: GitRootManagedObject,
     expected: &GitRootManagedForm,
 ) -> ModelResult<bool> {
+    let filesystem = context.filesystem;
+    let backend = context.repository;
     match object {
-        GitRootManagedObject::MarkerWorktree => {
-            files::observe_relative(root, &expected.marker, expected.index.marker.path_str()?)
+        GitRootManagedObject::MarkerWorktree => files::observe_relative(
+            filesystem,
+            root,
+            &expected.marker,
+            expected.index.marker.path_str()?,
+        ),
+        GitRootManagedObject::LockWorktree => {
+            files::observe_required(filesystem, root, &expected.lock)
         }
-        GitRootManagedObject::LockWorktree => files::observe_required(root, &expected.lock),
         GitRootManagedObject::Index => backend.root_managed_index_matches(root, &expected.index),
         GitRootManagedObject::MarkerParentDirectory => {
-            marker_parent_matches(root, spec, staging, expected.marker.is_some())
+            marker_parent_matches(filesystem, root, spec, staging, expected.marker.is_some())
         }
     }
 }
 
 fn full_form_matches(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     expected: &GitRootManagedForm,
@@ -453,28 +477,28 @@ fn full_form_matches(
         GitRootManagedFormName::Handoff,
     );
     Ok(object_matches(
-        backend,
+        context,
         root,
         spec,
         &staging,
         GitRootManagedObject::MarkerWorktree,
         expected,
     )? && object_matches(
-        backend,
+        context,
         root,
         spec,
         &staging,
         GitRootManagedObject::LockWorktree,
         expected,
     )? && object_matches(
-        backend,
+        context,
         root,
         spec,
         &staging,
         GitRootManagedObject::Index,
         expected,
     )? && object_matches(
-        backend,
+        context,
         root,
         spec,
         &staging,
@@ -484,22 +508,26 @@ fn full_form_matches(
 }
 
 fn mutate_managed(
-    backend: &impl GitBackend,
+    context: BorrowedOperationContext<'_>,
     root: &Path,
     spec: &GitRootPreservationSpec,
     transition: &GitRootManagedTransition,
     pinned: Option<&parent::PinnedConfig>,
 ) -> ModelResult<()> {
+    let filesystem = context.filesystem;
+    let backend = context.repository;
     let source = form(spec, transition.source);
     let goal = form(spec, transition.goal);
     match transition.object {
         GitRootManagedObject::MarkerWorktree => files::replace_relative(
+            filesystem,
             root,
             &spec.managed_marker_path,
             source.marker.as_ref(),
             goal.marker.as_ref(),
         ),
         GitRootManagedObject::LockWorktree => files::replace_relative(
+            filesystem,
             root,
             crate::artifact::LOCK_PATH,
             Some(&source.lock),
@@ -519,7 +547,7 @@ fn mutate_managed(
 }
 
 fn guard_matches(
-    backend: &impl GitBackend,
+    backend: &(impl GitBackend + ?Sized),
     root: &Path,
     spec: &GitRootPreservationSpec,
     guard: &GitRootPreservationGuard,
@@ -539,7 +567,7 @@ fn guard_matches(
 }
 
 fn otherwise_clean(
-    backend: &impl GitBackend,
+    backend: &(impl GitBackend + ?Sized),
     root: &Path,
     spec: &GitRootPreservationSpec,
     clean: &GitRootManagedForm,
@@ -551,7 +579,7 @@ fn otherwise_clean(
 }
 
 fn exact_head(
-    backend: &impl GitBackend,
+    backend: &(impl GitBackend + ?Sized),
     root: &Path,
     branch: &str,
     commit: &str,

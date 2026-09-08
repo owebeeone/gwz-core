@@ -278,7 +278,8 @@ pub(super) fn stash_for_merge_preservation_checked(
     // prepared operation.
     let native_stashes = backend.stash_list(path)?;
     let stashes = preservation_image::decode_stashes(path, merge_id)?;
-    let current = preservation_image::capture(path, include_untracked)?;
+    let current =
+        preservation_image::capture(backend.filesystem.as_ref(), path, include_untracked)?;
     match stashes.as_slice() {
         [stash]
             if stash.message == message
@@ -330,7 +331,8 @@ pub(super) fn stash_for_merge_preservation_checked(
     if backend.repository_state(path)? != GitRepositoryState::Clean
         || backend.stash_list(path)? != native_stashes
         || !preservation_image::decode_stashes(path, merge_id)?.is_empty()
-        || preservation_image::capture(path, include_untracked)?.preimage_sha256
+        || preservation_image::capture(backend.filesystem.as_ref(), path, include_untracked)?
+            .preimage_sha256
             != expected_preimage_sha256
     {
         return Err(ModelError::new(
@@ -346,7 +348,8 @@ pub(super) fn stash_for_merge_preservation_checked(
         message: message.clone(),
     };
     let verified = preservation_image::decode_stashes(path, merge_id)?;
-    let postimage = preservation_image::capture(path, include_untracked)?;
+    let postimage =
+        preservation_image::capture(backend.filesystem.as_ref(), path, include_untracked)?;
     if !matches!(verified.as_slice(), [stash]
         if stash.object_id == result.object_id
             && stash.message == message
@@ -363,11 +366,11 @@ pub(super) fn stash_for_merge_preservation_checked(
 }
 
 pub(super) fn preservation_image(
-    _backend: &Git2Backend,
+    backend: &Git2Backend,
     path: &Path,
     include_untracked: bool,
 ) -> ModelResult<GitPreservationImage> {
-    preservation_image::capture(path, include_untracked)
+    preservation_image::capture(backend.filesystem.as_ref(), path, include_untracked)
 }
 
 fn canonical_preservation_stash_message<'a>(
@@ -398,36 +401,51 @@ pub(super) fn checkout_matches_commit(
     {
         return Ok(false);
     }
-    preservation_image::checkout_matches_commit_except(path, commit, &[])
+    preservation_image::checkout_matches_commit_except(
+        backend.filesystem.as_ref(),
+        path,
+        commit,
+        &[],
+    )
 }
 
 pub(super) fn checkout_matches_commit_except(
-    _backend: &Git2Backend,
+    backend: &Git2Backend,
     path: &Path,
     commit: &str,
     allowed_paths: &[String],
 ) -> ModelResult<bool> {
-    preservation_image::checkout_matches_commit_except(path, commit, allowed_paths)
+    preservation_image::checkout_matches_commit_except(
+        backend.filesystem.as_ref(),
+        path,
+        commit,
+        allowed_paths,
+    )
 }
 
 pub(super) fn checkout_matches_commit_with_overlay(
-    _backend: &Git2Backend,
+    backend: &Git2Backend,
     path: &Path,
     commit: &str,
     overlay: &GitCheckoutOverlay,
 ) -> ModelResult<bool> {
-    preservation_image::checkout_matches_commit_with_overlay(path, commit, overlay)
+    preservation_image::checkout_matches_commit_with_overlay(
+        backend.filesystem.as_ref(),
+        path,
+        commit,
+        overlay,
+    )
 }
 
 pub(super) fn index_matches_candidate_files(
-    _backend: &Git2Backend,
+    backend: &Git2Backend,
     path: &Path,
     expected_files: &[GitCandidateFile],
     absent_paths: &[String],
 ) -> ModelResult<bool> {
-    use crate::filesystem::{FileSystem, FsKind, make_filesystem};
+    use crate::filesystem::FsKind;
 
-    let filesystem = make_filesystem();
+    let filesystem = backend.filesystem.as_ref();
     let repo = open_repo(path)?;
     let index = repo.index().map_err(git_error)?;
     for file in expected_files {

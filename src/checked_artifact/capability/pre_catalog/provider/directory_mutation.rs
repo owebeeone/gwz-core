@@ -1,7 +1,5 @@
 //! Owner-private physical transitions for the staged and final catalog directory.
 #[cfg(not(windows))]
-use crate::filesystem::FileSystem;
-
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -713,7 +711,8 @@ pub(super) fn sync_directory_edge(
     directory: &crate::filesystem::FsDirectory,
     operation: &'static str,
 ) -> Result<(), CheckedFsError> {
-    crate::filesystem::make_filesystem()
+    directory
+        .filesystem()
         .sync_directory_at(directory)
         .map_err(|source| CheckedFsError::io(operation, source))
 }

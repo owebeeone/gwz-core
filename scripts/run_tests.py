@@ -19,6 +19,8 @@ FILESYSTEM_CONTRACTS = (
     "store::rewrite::filesystem_tests::",
 )
 CONTRACTS = (
+    "operation_context::",
+    "checked::context_tests::",
     "git::gitbackend::repository_contract_tests::",
     "reverse::preservation::tests::factory_contract::",
 )

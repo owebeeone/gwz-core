@@ -3,14 +3,14 @@ use super::*;
 pub(in crate::checked_artifact::capability::pre_catalog) fn inspect_bound_catalog_target<'lease>(
     target: CatalogLeaseTargetWitnessV1<'lease>,
 ) -> Result<LeaseBoundPreCatalogObservationV1<'lease>, CheckedFsError> {
-    platform_pre_catalog_provider().inspect_bound_catalog_target(target)
+    platform_pre_catalog_provider_in(target.context()).inspect_bound_catalog_target(target)
 }
 
 pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_lease_root_binding(
     target: &CatalogLeaseTargetWitnessV1<'_>,
     root: &RetainedPlatformRoot,
 ) -> Result<(), CheckedFsError> {
-    platform_pre_catalog_provider().revalidate_lease_root_binding(target, root)
+    platform_pre_catalog_provider_in(target.context()).revalidate_lease_root_binding(target, root)
 }
 
 pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_ready_observation(
@@ -18,7 +18,8 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_ready_obs
     root: &RetainedPlatformRoot,
     expected: FreshObservationDigestV1,
 ) -> Result<(), CheckedFsError> {
-    platform_pre_catalog_provider().revalidate_ready_observation(target, root, expected)
+    platform_pre_catalog_provider_in(target.context())
+        .revalidate_ready_observation(target, root, expected)
 }
 
 pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_missing_observation(
@@ -26,7 +27,8 @@ pub(in crate::checked_artifact::capability::pre_catalog) fn revalidate_missing_o
     root: &RetainedPlatformRoot,
     expected: MissingParentObservationDigestV1,
 ) -> Result<(), CheckedFsError> {
-    platform_pre_catalog_provider().revalidate_missing_observation(target, root, expected)
+    platform_pre_catalog_provider_in(target.context())
+        .revalidate_missing_observation(target, root, expected)
 }
 
 impl<P: PlatformProviderV1 + 'static> FilesystemPreCatalogProvider<P> {

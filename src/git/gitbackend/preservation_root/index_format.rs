@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::filesystem::{FileSystem, make_filesystem};
+use crate::filesystem::FileSystem;
 
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -27,8 +27,8 @@ pub(super) struct RawIndex {
     cache_tree: Option<Vec<CacheTreeNode>>,
 }
 
-pub(super) fn read(repo: &git2::Repository) -> ModelResult<RawIndex> {
-    let bytes = make_filesystem()
+pub(super) fn read(filesystem: &dyn FileSystem, repo: &git2::Repository) -> ModelResult<RawIndex> {
+    let bytes = filesystem
         .read(&repo.path().join("index"))
         .map_err(crate::git::io_error)?;
     parse(&bytes, repo.object_format())

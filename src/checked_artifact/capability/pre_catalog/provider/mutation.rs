@@ -1,7 +1,5 @@
 //! Owner-private physical edges for the first catalog.
 #[cfg(not(windows))]
-use crate::filesystem::FileSystem;
-
 use std::ffi::OsStr;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -382,7 +380,8 @@ fn durable_write_options(create_new: bool) -> FsOpenMode {
 fn finish_private_parent_edge(
     directory: &crate::filesystem::FsDirectory,
 ) -> Result<(), CheckedFsError> {
-    crate::filesystem::make_filesystem()
+    directory
+        .filesystem()
         .sync_directory_at(directory)
         .map_err(|source| CheckedFsError::io("flush private-parent containing dirent", source))
 }
@@ -403,7 +402,8 @@ fn finish_private_parent_edge(
 fn sync_created_file_namespace(
     directory: &crate::filesystem::FsDirectory,
 ) -> Result<(), CheckedFsError> {
-    crate::filesystem::make_filesystem()
+    directory
+        .filesystem()
         .sync_directory_at(directory)
         .map_err(|source| CheckedFsError::io("flush catalog scratch namespace", source))
 }
@@ -422,7 +422,8 @@ fn sync_created_file_namespace(
 fn sync_published_namespace(
     directory: &crate::filesystem::FsDirectory,
 ) -> Result<(), CheckedFsError> {
-    crate::filesystem::make_filesystem()
+    directory
+        .filesystem()
         .sync_directory_at(directory)
         .map_err(|source| CheckedFsError::io("flush catalog active publication", source))
 }

@@ -1,7 +1,7 @@
 #![forbid(clippy::disallowed_methods)]
 
 use super::*;
-use crate::filesystem::{FileSystem, FsKind, make_filesystem};
+use crate::filesystem::{FileSystem, FsKind};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -41,21 +41,27 @@ enum WorktreeImage {
     Gitlink(Vec<u8>),
 }
 
-pub(super) fn capture(root: &Path, include_untracked: bool) -> ModelResult<GitPreservationImage> {
-    capture_inner(root, include_untracked, None)
+pub(super) fn capture(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    include_untracked: bool,
+) -> ModelResult<GitPreservationImage> {
+    capture_inner(filesystem, root, include_untracked, None)
 }
 
 pub(super) fn capture_normalized(
+    filesystem: &dyn FileSystem,
     root: &Path,
     form: &GitRootManagedForm,
     excluded_paths: &[String],
 ) -> ModelResult<GitPreservationImage> {
     let excluded_paths = raw_excluded_paths(excluded_paths)?;
-    let (entries, dirty) = live_entries(root, true, Some(form), &excluded_paths)?;
+    let (entries, dirty) = live_entries(filesystem, root, true, Some(form), &excluded_paths)?;
     encode(entries, dirty)
 }
 
 fn capture_inner(
+    filesystem: &dyn FileSystem,
     root: &Path,
     include_untracked: bool,
     managed: Option<&GitRootManagedForm>,
@@ -63,11 +69,18 @@ fn capture_inner(
     // The checked-artifact private area is invisible to the preservation-image
     // model on every capture path, uniform with capture_normalized.
     let excluded_paths = raw_excluded_paths(&[])?;
-    let (entries, dirty) = live_entries(root, include_untracked, managed, &excluded_paths)?;
+    let (entries, dirty) = live_entries(
+        filesystem,
+        root,
+        include_untracked,
+        managed,
+        &excluded_paths,
+    )?;
     encode(entries, dirty)
 }
 
 fn live_entries(
+    filesystem: &dyn FileSystem,
     root: &Path,
     include_untracked: bool,
     managed: Option<&GitRootManagedForm>,
@@ -154,7 +167,7 @@ fn live_entries(
     }
     for (raw_path, row) in &mut entries {
         row.index.sort_by_key(|item| item.stage);
-        row.worktree = read_worktree(root, raw_path, row.index.first())?;
+        row.worktree = read_worktree(filesystem, root, raw_path, row.index.first())?;
     }
     if let Some(form) = managed {
         substitute_managed(&mut entries, form)?;
@@ -163,11 +176,13 @@ fn live_entries(
 }
 
 pub(super) fn checkout_matches_commit_except(
+    filesystem: &dyn FileSystem,
     root: &Path,
     commit: &str,
     allowed_paths: &[String],
 ) -> ModelResult<bool> {
     checkout_matches_commit_with_overlay(
+        filesystem,
         root,
         commit,
         &GitCheckoutOverlay {
@@ -178,6 +193,7 @@ pub(super) fn checkout_matches_commit_except(
 }
 
 pub(super) fn checkout_matches_commit_with_overlay(
+    filesystem: &dyn FileSystem,
     root: &Path,
     commit: &str,
     overlay: &GitCheckoutOverlay,
@@ -204,7 +220,7 @@ pub(super) fn checkout_matches_commit_with_overlay(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let (mut live, _) = live_entries(root, true, None, &[])?;
+    let (mut live, _) = live_entries(filesystem, root, true, None, &[])?;
     let worktree_paths = raw_excluded_paths(&overlay.worktree_paths)?;
     let index_paths = raw_excluded_paths(&overlay.index_paths)?;
     apply_overlay(&mut live, &worktree_paths, &index_paths);
@@ -503,12 +519,13 @@ fn flatten_tree(
 }
 
 fn read_worktree(
+    filesystem: &dyn FileSystem,
     root: &Path,
     raw_path: &[u8],
     index: Option<&IndexImage>,
 ) -> ModelResult<Option<WorktreeImage>> {
     let path = root.join(preservation_root::files::raw_path_to_path(raw_path)?);
-    let metadata = match make_filesystem().metadata(&path) {
+    let metadata = match filesystem.metadata(&path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(crate::git::io_error(error)),
@@ -516,7 +533,7 @@ fn read_worktree(
     if metadata.kind == FsKind::Symlink {
         return Ok(Some(WorktreeImage::Symlink(
             preservation_root::files::path_to_raw(
-                &make_filesystem()
+                &filesystem
                     .link_target(&path)
                     .map_err(crate::git::io_error)?,
             )?,
@@ -537,9 +554,7 @@ fn read_worktree(
     let executable = index.is_some_and(|item| item.mode & 0o111 != 0);
     Ok(Some(WorktreeImage::Regular {
         executable,
-        bytes: make_filesystem()
-            .read(&path)
-            .map_err(crate::git::io_error)?,
+        bytes: filesystem.read(&path).map_err(crate::git::io_error)?,
     }))
 }
 

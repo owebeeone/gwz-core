@@ -1,4 +1,4 @@
-use crate::filesystem::{FileSystem, FsKind, RenameMode, make_filesystem};
+use crate::filesystem::{FileSystem, FsKind, RenameMode};
 use crate::model::ModelResult;
 use crate::workspace_ops::merge::OperationState;
 
@@ -10,7 +10,7 @@ pub(super) fn archive(
     lease: &V1MutationLease,
     current: &StoredV1Record,
 ) -> ModelResult<ArchiveOutcome> {
-    let filesystem = make_filesystem();
+    let filesystem = lease.context().filesystem();
     if !lease.covers(current.location())
         || !matches!(
             current.record().state,
@@ -31,20 +31,20 @@ pub(super) fn archive(
             .file_name()
             .ok_or_else(|| recovery("open record path has no file name"))?,
     );
-    let source_exists = path_exists(source)?;
-    let destination_exists = path_exists(&destination)?;
+    let source_exists = path_exists(filesystem, source)?;
+    let destination_exists = path_exists(filesystem, &destination)?;
 
     match (source_exists, destination_exists) {
         (false, false) => Err(recovery(
             "checked v1 archive source and destination are absent",
         )),
         (false, true) => {
-            require_exact_destination(current, &destination)?;
+            require_exact_destination(filesystem, current, &destination)?;
             Ok(ArchiveOutcome::ReconciledDestination)
         }
         (true, true) => {
-            let source_bytes = require_exact_source(current)?;
-            let destination_bytes = read_regular(&destination)?;
+            let source_bytes = require_exact_source(filesystem, current)?;
+            let destination_bytes = read_regular(filesystem, &destination)?;
             if destination_bytes != source_bytes {
                 return Err(recovery(
                     "checked v1 archive source and destination bytes differ",
@@ -56,19 +56,19 @@ pub(super) fn archive(
             Ok(ArchiveOutcome::ReconciledBothCopies)
         }
         (true, false) => {
-            let source_bytes = require_exact_source(current)?;
+            let source_bytes = require_exact_source(filesystem, current)?;
             // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the terminal archive is reached from EVERY terminal disposition on the PLAIN lease (`service.rs:120`), so it remains outside the durable-identity checked-artifact boundary. Its raw operations are selected through FileSystem (2026-09-08, GwzFileSystemTestInterface.md).
             filesystem.create_directories(&done).map_err(io_error)?;
-            require_plain_directory(&done)?;
+            require_plain_directory(filesystem, &done)?;
             match filesystem.rename(source, &destination, RenameMode::NoReplace) {
                 Ok(()) => {
                     filesystem.sync_directory(merge_root).map_err(io_error)?;
                     filesystem.sync_directory(&done).map_err(io_error)?;
-                    require_exact_destination(current, &destination)?;
+                    require_exact_destination(filesystem, current, &destination)?;
                     Ok(ArchiveOutcome::Published)
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let destination_bytes = read_regular(&destination)?;
+                    let destination_bytes = read_regular(filesystem, &destination)?;
                     if destination_bytes != source_bytes {
                         return Err(recovery(
                             "checked v1 archive destination appeared with different bytes",
@@ -85,8 +85,7 @@ pub(super) fn archive(
     }
 }
 
-fn require_plain_directory(path: &std::path::Path) -> ModelResult<()> {
-    let filesystem = make_filesystem();
+fn require_plain_directory(filesystem: &dyn FileSystem, path: &std::path::Path) -> ModelResult<()> {
     if filesystem.kind(path).map_err(io_error)? == FsKind::Directory
         && filesystem.canonical_path(path).map_err(io_error)? == path
     {
@@ -99,9 +98,13 @@ fn require_plain_directory(path: &std::path::Path) -> ModelResult<()> {
     }
 }
 
-fn require_exact_source(current: &StoredV1Record) -> ModelResult<Vec<u8>> {
-    let bytes = read_regular(current.location().path())?;
-    let reopened = StoredV1Record::from_open_bytes(
+fn require_exact_source(
+    filesystem: &dyn FileSystem,
+    current: &StoredV1Record,
+) -> ModelResult<Vec<u8>> {
+    let bytes = read_regular(filesystem, current.location().path())?;
+    let reopened = StoredV1Record::from_open_bytes_in(
+        current.context(),
         current.location().root(),
         current.location().path(),
         &bytes,
@@ -114,10 +117,11 @@ fn require_exact_source(current: &StoredV1Record) -> ModelResult<Vec<u8>> {
 }
 
 fn require_exact_destination(
+    filesystem: &dyn FileSystem,
     current: &StoredV1Record,
     destination: &std::path::Path,
 ) -> ModelResult<()> {
-    let bytes = read_regular(destination)?;
+    let bytes = read_regular(filesystem, destination)?;
     if super::super::checked::RecordDigest::from_bytes(&bytes) == current.source_digest() {
         Ok(())
     } else {

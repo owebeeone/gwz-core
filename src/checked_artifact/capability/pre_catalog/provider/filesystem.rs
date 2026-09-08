@@ -1,3 +1,4 @@
+use crate::operation_context::OperationContext;
 use std::path::Path;
 
 #[cfg(test)]
@@ -49,6 +50,7 @@ impl<T> PlatformProviderV1 for T where
 
 pub(super) struct FilesystemPreCatalogProvider<P> {
     platform: P,
+    context: OperationContext,
     #[cfg(test)]
     hook: Option<TestHook>,
 }
@@ -79,6 +81,7 @@ struct Observed {
 pub(super) fn platform_pre_catalog_provider() -> FilesystemPreCatalogProvider<HostPlatform> {
     FilesystemPreCatalogProvider {
         platform: HostPlatform,
+        context: OperationContext::existing(),
         #[cfg(test)]
         hook: None,
     }
@@ -101,6 +104,7 @@ where
 {
     FilesystemPreCatalogProvider {
         platform,
+        context: OperationContext::existing(),
         hook: hook.map(|callback| TestHook {
             callback,
             fired: AtomicBool::new(false),
@@ -171,7 +175,7 @@ impl<P: PlatformProviderV1 + 'static> FilesystemPreCatalogProvider<P> {
     }
 
     fn observe_workspace(&self, root: &Path) -> Result<Observed, CheckedFsError> {
-        let mut retained = retained::retain_workspace(root, &self.platform)?;
+        let mut retained = retained::retain_workspace(&self.context, root, &self.platform)?;
         let (index, index_file) = index::observe(&retained, &self.platform)?;
         retained.install_index(index_file);
         let root_kind = PreCatalogRootKindV1::Workspace;
@@ -189,7 +193,7 @@ impl<P: PlatformProviderV1 + 'static> FilesystemPreCatalogProvider<P> {
     }
 
     fn observe_git_directory(&self, root: &Path) -> Result<Observed, CheckedFsError> {
-        let retained = retained::retain_git_directory(root, &self.platform)?;
+        let retained = retained::retain_git_directory(&self.context, root, &self.platform)?;
         self.finish(
             retained,
             PreCatalogRootKindV1::GitDirectory,
@@ -332,5 +336,16 @@ impl Observed {
             missing_parent_digest: self.missing_parent_digest,
             raw_roles: self.raw_roles,
         }
+    }
+}
+
+pub(super) fn platform_pre_catalog_provider_in(
+    context: OperationContext,
+) -> FilesystemPreCatalogProvider<HostPlatform> {
+    FilesystemPreCatalogProvider {
+        context,
+        platform: HostPlatform,
+        #[cfg(test)]
+        hook: None,
     }
 }

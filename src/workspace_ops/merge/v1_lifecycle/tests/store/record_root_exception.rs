@@ -101,7 +101,7 @@ fn the_record_root_rewrite_publishes_by_atomic_rename_and_creates_no_parent() {
         item_body(&rewrite, "store/rewrite.rs", "fn create_temporary(")
             .split_whitespace()
             .collect::<String>()
-            .contains("make_filesystem().create_directories(parent)"),
+            .contains("filesystem.create_directories(parent)"),
         "the one admitted `create_dir_all` — DECLINED as a refusal at E4.3-B because it is \
          structurally undrivable (no fault hook between `read_regular` and `create_temporary`, \
          so a refusal would ship unexercised) — race-only code that `read_regular` at the head of \

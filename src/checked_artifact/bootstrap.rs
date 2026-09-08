@@ -20,7 +20,9 @@ pub(super) use runtime::probe_workspace_admission;
 pub(in crate::checked_artifact) use runtime::{
     CatalogLeaseSetV1, CatalogLeaseTargetBatchV1, CatalogLeaseTargetRequestV1,
 };
-pub(crate) use runtime::{WorkspaceRuntimeLease, try_acquire_workspace_runtime};
+pub(crate) use runtime::{
+    WorkspaceRuntimeLease, try_acquire_workspace_runtime, try_acquire_workspace_runtime_in,
+};
 
 pub(super) struct WorkspaceRuntimePaths<'a> {
     workspace_root: &'a Path,

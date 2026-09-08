@@ -1,5 +1,5 @@
 #![deny(clippy::disallowed_types)]
-use crate::filesystem::{FileSystem, FsFile, FsKind, RenameMode, make_filesystem};
+use crate::filesystem::{FileSystem, FsFile, FsKind, RenameMode};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,15 +9,23 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 use super::super::checked::{StoredV1Record, V1MutationLease};
 use super::super::transition::PreparedV1Rewrite;
 use super::{CommitFault, unknown};
+use crate::operation_context::OperationContext;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub(super) fn load_open(root: &Path, merge_id: &str) -> ModelResult<StoredV1Record> {
+pub(super) fn load_open(
+    context: &OperationContext,
+    root: &Path,
+    merge_id: &str,
+) -> ModelResult<StoredV1Record> {
     validate_merge_id(merge_id)?;
-    let root = make_filesystem().canonical_path(root).map_err(io_error)?;
+    let root = context
+        .filesystem()
+        .canonical_path(root)
+        .map_err(io_error)?;
     let path = root.join(".gwz/merge").join(format!("{merge_id}.yaml"));
-    let bytes = read_regular(&path)?;
-    StoredV1Record::from_open_bytes(&root, &path, &bytes)
+    let bytes = read_regular(context.filesystem(), &path)?;
+    StoredV1Record::from_open_bytes_in(context, &root, &path, &bytes)
 }
 
 /// Create the durable open record for one accepted start, at the version the
@@ -53,11 +61,15 @@ pub(super) fn create_open(
     record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1,
     crash_recovery: Option<&crate::checked_artifact::entry::CrashRecoveryDecision>,
 ) -> ModelResult<StoredV1Record> {
+    let context = lease.context();
     validate_merge_id(&record.merge_id)?;
-    let root = make_filesystem().canonical_path(root).map_err(io_error)?;
+    let root = context
+        .filesystem()
+        .canonical_path(root)
+        .map_err(io_error)?;
     let relative = PathBuf::from(".gwz/merge").join(format!("{}.yaml", record.merge_id));
     let path = root.join(&relative);
-    if path_exists(&path)? {
+    if path_exists(context.filesystem(), &path)? {
         return Err(recovery(format!(
             "merge record '{}' already exists",
             record.merge_id
@@ -69,13 +81,19 @@ pub(super) fn create_open(
         .map(String::into_bytes)
         .map_err(encode_error)?;
     crate::checked_artifact::entry::create_merge_store_record(
+        context.filesystem(),
         &root,
         &relative,
         &encoded,
         crash_recovery,
     )?;
 
-    let published = StoredV1Record::from_open_bytes(&root, &path, &read_regular(&path)?)?;
+    let published = StoredV1Record::from_open_bytes_in(
+        context,
+        &root,
+        &path,
+        &read_regular(context.filesystem(), &path)?,
+    )?;
     if published.record() != record {
         return Err(recovery(
             "checked v1 published record differs from the created record",
@@ -100,14 +118,20 @@ pub(super) fn commit(
     rewrite: PreparedV1Rewrite,
     fault: Option<CommitFault>,
 ) -> ModelResult<StoredV1Record> {
+    let context = lease.context();
     if !lease.covers(current.location()) || rewrite.base_digest() != current.source_digest() {
         return Err(recovery(
             "checked v1 rewrite does not match its lease or source digest",
         ));
     }
     let path = current.location().path();
-    let source_bytes = read_regular(path)?;
-    let reopened = StoredV1Record::from_open_bytes(current.location().root(), path, &source_bytes)?;
+    let source_bytes = read_regular(context.filesystem(), path)?;
+    let reopened = StoredV1Record::from_open_bytes_in(
+        context,
+        current.location().root(),
+        path,
+        &source_bytes,
+    )?;
     if !current.same_source_as(&reopened) {
         return Err(recovery("checked v1 source bytes changed before commit"));
     }
@@ -120,18 +144,19 @@ pub(super) fn commit(
     let encoded = serde_yaml::to_string(&raw)
         .map(String::into_bytes)
         .map_err(encode_error)?;
-    let (temporary, file) = create_temporary(path)?;
-    let filesystem = make_filesystem();
+    let (temporary, file) = create_temporary(context.filesystem(), path)?;
+    let filesystem = context.filesystem();
     let staged_write = filesystem
         .write_all(&file, &encoded)
         .and_then(|()| filesystem.sync_file(&file));
     drop(file);
     if let Err(error) = staged_write {
-        let _ = make_filesystem().remove_file(&temporary);
+        let _ = filesystem.remove_file(&temporary);
         return Err(io_error(error));
     }
-    let staged = match read_regular(&temporary).and_then(|bytes| {
-        let staged = StoredV1Record::from_open_bytes(current.location().root(), path, &bytes)?;
+    let staged = match read_regular(context.filesystem(), &temporary).and_then(|bytes| {
+        let staged =
+            StoredV1Record::from_open_bytes_in(context, current.location().root(), path, &bytes)?;
         require_expected(&staged, rewrite.next(), &expected_unknown)?;
         if bytes != encoded {
             return Err(recovery(
@@ -142,18 +167,18 @@ pub(super) fn commit(
     }) {
         Ok(staged) => staged,
         Err(error) => {
-            let _ = make_filesystem().remove_file(&temporary);
+            let _ = filesystem.remove_file(&temporary);
             return Err(error);
         }
     };
     if fault == Some(CommitFault::AfterTemporarySync) {
-        let _ = make_filesystem().remove_file(&temporary);
+        let _ = filesystem.remove_file(&temporary);
         return Err(recovery(
             "injected checked-store fault after temporary sync",
         ));
     }
     if let Err(error) = filesystem.rename(&temporary, path, RenameMode::Replace) {
-        let _ = make_filesystem().remove_file(&temporary);
+        let _ = filesystem.remove_file(&temporary);
         return Err(io_error(error));
     }
     if fault == Some(CommitFault::AfterPublish) {
@@ -163,9 +188,13 @@ pub(super) fn commit(
         .sync_directory(path.parent().expect("open record has a parent"))
         .map_err(io_error)?;
 
-    let published_bytes = read_regular(path)?;
-    let published =
-        StoredV1Record::from_open_bytes(current.location().root(), path, &published_bytes)?;
+    let published_bytes = read_regular(context.filesystem(), path)?;
+    let published = StoredV1Record::from_open_bytes_in(
+        context,
+        current.location().root(),
+        path,
+        &published_bytes,
+    )?;
     require_expected(&published, rewrite.next(), &expected_unknown)?;
     if !staged.same_source_as(&published) {
         return Err(recovery(
@@ -189,18 +218,16 @@ fn require_expected(
     }
 }
 
-fn create_temporary(path: &Path) -> ModelResult<(PathBuf, FsFile)> {
+fn create_temporary(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<(PathBuf, FsFile)> {
     let parent = path
         .parent()
         .ok_or_else(|| recovery("open record path has no parent"))?;
-    make_filesystem()
-        .create_directories(parent)
-        .map_err(io_error)?;
+    filesystem.create_directories(parent).map_err(io_error)?;
     loop {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let candidate =
             path.with_extension(format!("yaml.{}.{}.v1.tmp", std::process::id(), sequence));
-        match make_filesystem().create_file(&candidate) {
+        match filesystem.create_file(&candidate) {
             Ok(file) => return Ok((candidate, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error(error)),
@@ -208,21 +235,21 @@ fn create_temporary(path: &Path) -> ModelResult<(PathBuf, FsFile)> {
     }
 }
 
-pub(super) fn read_regular(path: &Path) -> ModelResult<Vec<u8>> {
-    let kind = make_filesystem().kind(path).map_err(io_error)?;
+pub(super) fn read_regular(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<Vec<u8>> {
+    let kind = filesystem.kind(path).map_err(io_error)?;
     if kind != FsKind::File {
         return Err(unreadable(format!(
             "record path '{}' is not a regular file",
             path.display()
         )));
     }
-    if make_filesystem().canonical_path(path).map_err(io_error)? != path {
+    if filesystem.canonical_path(path).map_err(io_error)? != path {
         return Err(unreadable(format!(
             "record path '{}' traverses a symbolic link",
             path.display()
         )));
     }
-    make_filesystem().read(path).map_err(io_error)
+    filesystem.read(path).map_err(io_error)
 }
 
 pub(super) fn validate_merge_id(merge_id: &str) -> ModelResult<()> {
@@ -237,8 +264,8 @@ pub(super) fn validate_merge_id(merge_id: &str) -> ModelResult<()> {
     Ok(())
 }
 
-pub(super) fn path_exists(path: &Path) -> ModelResult<bool> {
-    match make_filesystem().kind(path) {
+pub(super) fn path_exists(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<bool> {
+    match filesystem.kind(path) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(io_error(error)),
@@ -264,6 +291,7 @@ fn unreadable(detail: impl Into<String>) -> ModelError {
 #[cfg(test)]
 mod filesystem_tests {
     use super::*;
+    use crate::filesystem::make_filesystem;
 
     #[test]
     fn record_reader_uses_selected_filesystem() {
@@ -272,12 +300,14 @@ mod filesystem_tests {
         let path = workspace.path().join("record.yaml");
         let file = filesystem.create_file(&path).unwrap();
         filesystem.write_all(&file, b"record bytes").unwrap();
-        assert_eq!(read_regular(&path).unwrap(), b"record bytes");
+        assert_eq!(read_regular(&filesystem, &path).unwrap(), b"record bytes");
         assert_eq!(
-            read_regular(workspace.path()).unwrap_err().code,
+            read_regular(&filesystem, workspace.path())
+                .unwrap_err()
+                .code,
             ErrorCode::MergeRecordUnreadable
         );
         filesystem.remove_file(&path).unwrap();
-        assert!(!path_exists(&path).unwrap());
+        assert!(!path_exists(&filesystem, &path).unwrap());
     }
 }

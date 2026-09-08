@@ -401,6 +401,7 @@ impl RetainedCatalogTargetV1 {
         #[cfg(test)]
         super::super::fault::run(super::super::fault::RuntimeBootstrapFault::CatalogFinalLeaseLock);
         let held = HeldCatalogTargetV1 {
+            context: crate::operation_context::OperationContext::existing(),
             target: self,
             associated_targets,
             _runtime_dir: runtime_dir,
@@ -413,6 +414,7 @@ impl RetainedCatalogTargetV1 {
 }
 
 pub(super) struct HeldCatalogTargetV1 {
+    pub(super) context: crate::operation_context::OperationContext,
     pub(super) target: RetainedCatalogTargetV1,
     associated_targets: Vec<RetainedCatalogTargetV1>,
     _runtime_dir: Option<RetainedDirectory>,

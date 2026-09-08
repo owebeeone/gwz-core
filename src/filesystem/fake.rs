@@ -6,12 +6,16 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-pub(super) struct FakeFileSystem;
+#[derive(Clone, Default)]
+pub(super) struct FakeFileSystem {
+    roots: Arc<Registry>,
+}
 #[derive(Clone)]
 pub(super) struct Handle {
     tree: Arc<Mutex<Tree>>,
     id: u64,
     writable: bool,
+    world: usize,
 }
 pub(super) struct Lock {
     tree: Arc<Mutex<Tree>>,
@@ -29,22 +33,30 @@ enum Node {
     Symlink(PathBuf),
 }
 type Registry = Mutex<BTreeMap<PathBuf, Weak<Mutex<Tree>>>>;
-fn registry() -> &'static Registry {
-    static ROOTS: OnceLock<Registry> = OnceLock::new();
-    ROOTS.get_or_init(Mutex::default)
+impl FakeFileSystem {
+    // Compatibility for callers not yet migrated to an operation context.
+    pub(super) fn shared() -> Self {
+        static ROOTS: OnceLock<Arc<Registry>> = OnceLock::new();
+        Self {
+            roots: ROOTS.get_or_init(Default::default).clone(),
+        }
+    }
 }
+
 fn error(kind: io::ErrorKind) -> io::Error {
     kind.into()
 }
-fn directory(value: &FsDirectory) -> io::Result<&Handle> {
+fn directory<'a>(fs: &FakeFileSystem, value: &'a FsDirectory) -> io::Result<&'a Handle> {
     match &value.0 {
-        DirectoryHandle::Memory(handle) => Ok(handle),
+        DirectoryHandle::Memory(handle) if handle.world == Arc::as_ptr(&fs.roots) as usize => {
+            Ok(handle)
+        }
         _ => Err(error(io::ErrorKind::InvalidInput)),
     }
 }
-fn file(value: &FsFile) -> io::Result<&Handle> {
+fn file<'a>(fs: &FakeFileSystem, value: &'a FsFile) -> io::Result<&'a Handle> {
     match &value.0 {
-        FileHandle::Memory(handle) => Ok(handle),
+        FileHandle::Memory(handle) if handle.world == Arc::as_ptr(&fs.roots) as usize => Ok(handle),
         _ => Err(error(io::ErrorKind::InvalidInput)),
     }
 }
@@ -112,7 +124,7 @@ fn memory_persistent_identity(identity: FsIdentity) -> FsObjectIdentity {
         file_id[..8].copy_from_slice(&object);
         file_id[8..].copy_from_slice(&object);
         FsPersistentIdentity::Windows {
-            volume: vec![1],
+            volume: volume.to_vec(),
             file_id,
         }
     };
@@ -129,6 +141,9 @@ fn memory_persistent_identity(identity: FsIdentity) -> FsObjectIdentity {
 }
 
 impl FileSystem for FakeFileSystem {
+    fn test_workspace_at(&self, path: &Path) -> io::Result<TestFsWorkspace> {
+        self.workspace_at(path)
+    }
     fn legacy_directory_identity(&self, value: &FsDirectory) -> io::Result<FsLegacyObjectIdentity> {
         memory_legacy_identity(self.directory_identity(value)?)
     }
@@ -172,7 +187,7 @@ impl FileSystem for FakeFileSystem {
     }
     fn open_publication_source(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
-        let parent = directory(parent)?;
+        let parent = directory(self, parent)?;
         let tree = parent.tree.lock().unwrap();
         let id = tree.lookup(parent.id, name)?;
         if !matches!(
@@ -186,8 +201,10 @@ impl FileSystem for FakeFileSystem {
                 tree: Arc::clone(&parent.tree),
                 id,
                 writable: false,
+                world: Arc::as_ptr(&self.roots) as usize,
             }),
             0,
+            Arc::new(self.clone()),
         ))
     }
     fn publish_source(
@@ -198,13 +215,13 @@ impl FileSystem for FakeFileSystem {
         mode: RenameMode,
         acquired: &dyn Fn() -> io::Result<()>,
     ) -> io::Result<()> {
-        let _ = file(source.file)?;
+        let _ = file(self, source.file)?;
         acquired()?;
         #[cfg(windows)]
         {
             // Windows publishes the captured object even if its old name has
             // been replaced since acquisition. No hard links are synthesized.
-            let handle = file(source.file)?;
+            let handle = file(self, source.file)?;
             let tree = handle.tree.lock().unwrap();
             tree.check()?;
             let (parent, name) = tree
@@ -221,18 +238,22 @@ impl FileSystem for FakeFileSystem {
                 })
                 .ok_or(io::ErrorKind::NotFound)?;
             drop(tree);
-            let parent = FsDirectory(DirectoryHandle::Memory(Handle {
-                tree: Arc::clone(&handle.tree),
-                id: parent,
-                writable: false,
-            }));
+            let parent = FsDirectory(
+                DirectoryHandle::Memory(Handle {
+                    tree: Arc::clone(&handle.tree),
+                    id: parent,
+                    writable: false,
+                    world: Arc::as_ptr(&self.roots) as usize,
+                }),
+                Arc::new(self.clone()),
+            );
             return self.rename_at(&parent, &name, destination, target, mode);
         }
         #[cfg(not(windows))]
         self.rename_at(source.parent, source.name, destination, target, mode)
     }
     fn file_metadata(&self, value: &FsFile) -> io::Result<FsMetadata> {
-        let handle = file(value)?;
+        let handle = file(self, value)?;
         let tree = handle.tree.lock().unwrap();
         tree.check()?;
         let Some(Node::File { bytes, .. }) = tree.nodes.get(&handle.id) else {
@@ -298,7 +319,7 @@ impl FileSystem for FakeFileSystem {
         Ok(path.components().collect())
     }
     fn metadata(&self, path: &Path) -> io::Result<FsMetadata> {
-        if registry().lock().unwrap().contains_key(path) {
+        if self.roots.lock().unwrap().contains_key(path) {
             let root = self.open_directory(path)?;
             return Ok(FsMetadata {
                 kind: FsKind::Directory,
@@ -309,7 +330,7 @@ impl FileSystem for FakeFileSystem {
         }
         let (parent, name) = split(path)?;
         let parent = self.open_directory(parent)?;
-        let handle = directory(&parent)?;
+        let handle = directory(self, &parent)?;
         let tree = handle.tree.lock().unwrap();
         let id = tree.lookup(handle.id, name)?;
         let kind = match tree.nodes.get(&id) {
@@ -333,7 +354,7 @@ impl FileSystem for FakeFileSystem {
     }
     fn metadata_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsMetadata> {
         component(name)?;
-        let handle = directory(parent)?;
+        let handle = directory(self, parent)?;
         let tree = handle.tree.lock().unwrap();
         let id = tree.lookup(handle.id, name)?;
         let kind = match tree.nodes.get(&id) {
@@ -358,7 +379,7 @@ impl FileSystem for FakeFileSystem {
     fn link_target(&self, path: &Path) -> io::Result<PathBuf> {
         let (parent, name) = split(path)?;
         let parent = self.open_directory(parent)?;
-        let handle = directory(&parent)?;
+        let handle = directory(self, &parent)?;
         let tree = handle.tree.lock().unwrap();
         let id = tree.lookup(handle.id, name)?;
         match tree.nodes.get(&id) {
@@ -368,7 +389,7 @@ impl FileSystem for FakeFileSystem {
     }
     fn remove_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<()> {
         component(name)?;
-        let handle = directory(parent)?;
+        let handle = directory(self, parent)?;
         let mut tree = handle.tree.lock().unwrap();
         let id = tree.lookup(handle.id, name)?;
         if matches!(tree.nodes.get(&id), Some(Node::Directory(_))) {
@@ -379,7 +400,7 @@ impl FileSystem for FakeFileSystem {
     }
     fn remove_directory_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<()> {
         component(name)?;
-        let handle = directory(parent)?;
+        let handle = directory(self, parent)?;
         let mut tree = handle.tree.lock().unwrap();
         let id = tree.lookup(handle.id, name)?;
         match tree.nodes.get(&id) {
@@ -396,7 +417,7 @@ impl FileSystem for FakeFileSystem {
 
     fn open_directory(&self, path: &Path) -> io::Result<FsDirectory> {
         // Match the longest registered fixture root; never consult host paths.
-        let roots = registry().lock().unwrap();
+        let roots = self.roots.lock().unwrap();
         let (root, tree) = roots
             .iter()
             .filter(|(root, _)| path.starts_with(root))
@@ -417,31 +438,39 @@ impl FileSystem for FakeFileSystem {
         }
         tree.entries(id)?;
         drop(tree);
-        Ok(FsDirectory(DirectoryHandle::Memory(Handle {
-            tree: shared,
-            id,
-            writable: false,
-        })))
+        Ok(FsDirectory(
+            DirectoryHandle::Memory(Handle {
+                tree: shared,
+                id,
+                writable: false,
+                world: Arc::as_ptr(&self.roots) as usize,
+            }),
+            Arc::new(self.clone()),
+        ))
     }
     fn clone_directory(&self, value: &FsDirectory) -> io::Result<FsDirectory> {
-        Ok(FsDirectory(DirectoryHandle::Memory(
-            directory(value)?.clone(),
-        )))
+        Ok(FsDirectory(
+            DirectoryHandle::Memory(directory(self, value)?.clone()),
+            Arc::new(self.clone()),
+        ))
     }
     fn open_directory_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsDirectory> {
         component(name)?;
-        let parent = directory(parent)?;
+        let parent = directory(self, parent)?;
         let tree = parent.tree.lock().unwrap();
         let id = tree.lookup(parent.id, name)?;
         tree.entries(id)?;
-        Ok(FsDirectory(DirectoryHandle::Memory(Handle {
-            id,
-            ..parent.clone()
-        })))
+        Ok(FsDirectory(
+            DirectoryHandle::Memory(Handle {
+                id,
+                ..parent.clone()
+            }),
+            Arc::new(self.clone()),
+        ))
     }
     fn create_directory_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<()> {
         component(name)?;
-        let parent = directory(parent)?;
+        let parent = directory(self, parent)?;
         parent
             .tree
             .lock()
@@ -451,7 +480,7 @@ impl FileSystem for FakeFileSystem {
     }
     fn open_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
-        let parent = directory(parent)?;
+        let parent = directory(self, parent)?;
         let tree = parent.tree.lock().unwrap();
         let id = tree.lookup(parent.id, name)?;
         if !matches!(tree.nodes.get(&id), Some(Node::File { .. })) {
@@ -461,9 +490,11 @@ impl FileSystem for FakeFileSystem {
             FileHandle::Memory(Handle {
                 id,
                 writable: false,
+                world: Arc::as_ptr(&self.roots) as usize,
                 tree: parent.tree.clone(),
             }),
             0,
+            Arc::new(self.clone()),
         ))
     }
     fn open_lock_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
@@ -471,7 +502,7 @@ impl FileSystem for FakeFileSystem {
     }
     fn open_file_for_write_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
-        let parent = directory(parent)?;
+        let parent = directory(self, parent)?;
         let tree = parent.tree.lock().unwrap();
         let id = tree.lookup(parent.id, name)?;
         if !matches!(tree.nodes.get(&id), Some(Node::File { .. })) {
@@ -481,14 +512,16 @@ impl FileSystem for FakeFileSystem {
             FileHandle::Memory(Handle {
                 id,
                 writable: true,
+                world: Arc::as_ptr(&self.roots) as usize,
                 tree: parent.tree.clone(),
             }),
             0,
+            Arc::new(self.clone()),
         ))
     }
     fn create_file_at(&self, parent: &FsDirectory, name: &OsStr) -> io::Result<FsFile> {
         component(name)?;
-        let parent = directory(parent)?;
+        let parent = directory(self, parent)?;
         let id = parent.tree.lock().unwrap().create(
             parent.id,
             name,
@@ -501,13 +534,15 @@ impl FileSystem for FakeFileSystem {
             FileHandle::Memory(Handle {
                 id,
                 writable: true,
+                world: Arc::as_ptr(&self.roots) as usize,
                 tree: parent.tree.clone(),
             }),
             0,
+            Arc::new(self.clone()),
         ))
     }
     fn read_at(&self, value: &FsFile, offset: u64, buffer: &mut [u8]) -> io::Result<usize> {
-        let handle = file(value)?;
+        let handle = file(self, value)?;
         let tree = handle.tree.lock().unwrap();
         tree.check()?;
         let Some(Node::File { bytes, .. }) = tree.nodes.get(&handle.id) else {
@@ -520,7 +555,7 @@ impl FileSystem for FakeFileSystem {
         Ok(count)
     }
     fn file_len(&self, value: &FsFile) -> io::Result<u64> {
-        let handle = file(value)?;
+        let handle = file(self, value)?;
         let tree = handle.tree.lock().unwrap();
         tree.check()?;
         match tree.nodes.get(&handle.id) {
@@ -531,7 +566,7 @@ impl FileSystem for FakeFileSystem {
         }
     }
     fn write_at(&self, value: &FsFile, offset: u64, buffer: &[u8]) -> io::Result<usize> {
-        let handle = file(value)?;
+        let handle = file(self, value)?;
         if !handle.writable {
             return Err(error(io::ErrorKind::PermissionDenied));
         }
@@ -557,7 +592,7 @@ impl FileSystem for FakeFileSystem {
         Ok(buffer.len())
     }
     fn set_len(&self, value: &FsFile, length: u64) -> io::Result<()> {
-        let handle = file(value)?;
+        let handle = file(self, value)?;
         if !handle.writable {
             return Err(error(io::ErrorKind::PermissionDenied));
         }
@@ -571,7 +606,7 @@ impl FileSystem for FakeFileSystem {
         Ok(())
     }
     fn sync_file(&self, value: &FsFile) -> io::Result<()> {
-        let handle = file(value)?;
+        let handle = file(self, value)?;
         let mut tree = handle.tree.lock().unwrap();
         tree.check()?;
         let Some(Node::File { bytes, durable }) = tree.nodes.get_mut(&handle.id) else {
@@ -581,10 +616,10 @@ impl FileSystem for FakeFileSystem {
         Ok(())
     }
     fn directory_identity(&self, value: &FsDirectory) -> io::Result<FsIdentity> {
-        identity(directory(value)?)
+        identity(directory(self, value)?)
     }
     fn file_identity(&self, value: &FsFile) -> io::Result<FsIdentity> {
-        identity(file(value)?)
+        identity(file(self, value)?)
     }
     fn rename(&self, source: &Path, destination: &Path, mode: RenameMode) -> io::Result<()> {
         let (source_parent, source_name) = split(source)?;
@@ -592,6 +627,7 @@ impl FileSystem for FakeFileSystem {
         let source_parent = self.open_directory(source_parent)?;
         let destination_parent = self.open_directory(destination_parent)?;
         rename_handles(
+            self,
             &source_parent,
             source_name,
             &destination_parent,
@@ -603,7 +639,7 @@ impl FileSystem for FakeFileSystem {
         self.open_directory(path).map(|_| ())
     }
     fn sync_directory_at(&self, value: &FsDirectory) -> io::Result<()> {
-        let handle = directory(value)?;
+        let handle = directory(self, value)?;
         handle.tree.lock().unwrap().entries(handle.id).map(|_| ())
     }
     fn read_directory(&self, path: &Path) -> io::Result<Vec<FsDirectoryEntry>> {
@@ -611,7 +647,7 @@ impl FileSystem for FakeFileSystem {
         self.read_directory_at(&opened)
     }
     fn read_directory_at(&self, value: &FsDirectory) -> io::Result<Vec<FsDirectoryEntry>> {
-        let handle = directory(value)?;
+        let handle = directory(self, value)?;
         let tree = handle.tree.lock().unwrap();
         tree.entries(handle.id)?
             .iter()
@@ -636,8 +672,8 @@ impl FileSystem for FakeFileSystem {
         child: &FsDirectory,
     ) -> io::Result<bool> {
         component(name)?;
-        let parent = directory(parent)?;
-        let child = directory(child)?;
+        let parent = directory(self, parent)?;
+        let child = directory(self, child)?;
         if !Arc::ptr_eq(&parent.tree, &child.tree) {
             return Ok(false);
         }
@@ -655,8 +691,8 @@ impl FileSystem for FakeFileSystem {
         child: &FsFile,
     ) -> io::Result<bool> {
         component(name)?;
-        let parent = directory(parent)?;
-        let child = file(child)?;
+        let parent = directory(self, parent)?;
+        let child = file(self, child)?;
         if !Arc::ptr_eq(&parent.tree, &child.tree) {
             return Ok(false);
         }
@@ -674,7 +710,7 @@ impl FileSystem for FakeFileSystem {
         target: &Path,
     ) -> io::Result<()> {
         component(name)?;
-        let parent = directory(parent)?;
+        let parent = directory(self, parent)?;
         parent
             .tree
             .lock()
@@ -683,7 +719,7 @@ impl FileSystem for FakeFileSystem {
         Ok(())
     }
     fn try_lock_file(&self, value: &FsFile) -> io::Result<Option<FsLockGuard>> {
-        let handle = file(value)?;
+        let handle = file(self, value)?;
         let mut tree = handle.tree.lock().unwrap();
         tree.check()?;
         if !matches!(tree.nodes.get(&handle.id), Some(Node::File { .. })) {
@@ -709,7 +745,7 @@ impl FileSystem for FakeFileSystem {
         target: &OsStr,
         mode: RenameMode,
     ) -> io::Result<()> {
-        rename_handles(source, name, destination, target, mode)
+        rename_handles(self, source, name, destination, target, mode)
     }
     fn test_workspace(&self) -> io::Result<TestFsWorkspace> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -719,25 +755,7 @@ impl FileSystem for FakeFileSystem {
             "/__gwz_memory__"
         };
         let path = PathBuf::from(base).join(NEXT.fetch_add(1, Ordering::Relaxed).to_string());
-        let tree = Arc::new(Mutex::new(Tree {
-            active: true,
-            next: 1,
-            nodes: BTreeMap::from([(0, Node::Directory(BTreeMap::new()))]),
-            locks: BTreeSet::new(),
-        }));
-        registry()
-            .lock()
-            .unwrap()
-            .insert(path.clone(), Arc::downgrade(&tree));
-        let cleanup_path = path.clone();
-        Ok(TestFsWorkspace {
-            path,
-            cleanup: Some(Box::new(move || {
-                // Same lock order as open_directory; fixtures never reset other roots.
-                registry().lock().unwrap().remove(&cleanup_path);
-                tree.lock().unwrap().active = false;
-            })),
-        })
+        self.workspace_at(&path)
     }
 }
 
@@ -756,6 +774,7 @@ fn identity(handle: &Handle) -> io::Result<FsIdentity> {
 }
 
 fn rename_handles(
+    fs: &FakeFileSystem,
     source: &FsDirectory,
     name: &OsStr,
     destination: &FsDirectory,
@@ -764,8 +783,8 @@ fn rename_handles(
 ) -> io::Result<()> {
     component(name)?;
     component(target)?;
-    let source = directory(source)?;
-    let destination = directory(destination)?;
+    let source = directory(fs, source)?;
+    let destination = directory(fs, destination)?;
     if !Arc::ptr_eq(&source.tree, &destination.tree) {
         return Err(error(io::ErrorKind::CrossesDevices));
     }
@@ -852,4 +871,32 @@ fn memory_legacy_identity(identity: FsIdentity) -> std::io::Result<FsLegacyObjec
         durable,
         invocation,
     })
+}
+
+impl FakeFileSystem {
+    pub(super) fn workspace_at(&self, path: &Path) -> io::Result<TestFsWorkspace> {
+        let path = path.to_path_buf();
+        let tree = Arc::new(Mutex::new(Tree {
+            active: true,
+            next: 1,
+            nodes: BTreeMap::from([(0, Node::Directory(BTreeMap::new()))]),
+            locks: BTreeSet::new(),
+        }));
+        let mut roots = self.roots.lock().unwrap();
+        if roots.contains_key(&path) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        roots.insert(path.clone(), Arc::downgrade(&tree));
+        drop(roots);
+        let cleanup_path = path.clone();
+        let roots = self.roots.clone();
+        Ok(TestFsWorkspace {
+            path,
+            cleanup: Some(Box::new(move || {
+                // Same lock order as open_directory; fixtures never reset other roots.
+                roots.lock().unwrap().remove(&cleanup_path);
+                tree.lock().unwrap().active = false;
+            })),
+        })
+    }
 }

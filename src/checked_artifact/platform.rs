@@ -1,6 +1,6 @@
 use std::ffi::{OsStr, OsString};
 
-use crate::filesystem::{FileSystem, FsDirectory, RenameMode, make_filesystem};
+use crate::filesystem::{FsDirectory, RenameMode};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 pub(super) struct OpenedRenameSource<'a> {
@@ -22,7 +22,8 @@ pub(super) fn open_rename_source<'a>(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<OpenedRenameSource<'a>> {
-    let file = make_filesystem()
+    let file = parent
+        .filesystem()
         .open_publication_source(parent, name)
         .map_err(|cause| io_error(code, label, cause))?;
     Ok(OpenedRenameSource {
@@ -39,7 +40,9 @@ pub(super) fn rename_open_source(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
-    make_filesystem()
+    source
+        .file
+        .filesystem()
         .publish_source(
             crate::filesystem::FsPublicationSource {
                 file: &source.file,
@@ -117,7 +120,7 @@ pub(super) fn publish_verified_filesystem_leaf_no_replace(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
-    let filesystem = make_filesystem();
+    let filesystem = source_dir.filesystem();
     let retained = open_rename_source(source_dir, source, code, label)?;
     let handle = retained.file();
     let observed = super::identity::filesystem_file_identity(handle).map_err(|cause| {
@@ -363,15 +366,10 @@ fn leaf_is_resident(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<bool> {
-    Ok(super::observation::observe_leaf_exact(
-        &crate::filesystem::make_filesystem(),
-        dir,
-        name,
-        code,
-        label,
-    )?
-    .fact
-        != super::CheckedArtifactFact::Missing)
+    Ok(
+        super::observation::observe_leaf_exact(dir.filesystem(), dir, name, code, label)?.fact
+            != super::CheckedArtifactFact::Missing,
+    )
 }
 
 /// One lent object re-proved by its frozen bytes, returning the durable identity
@@ -383,13 +381,8 @@ fn verify_leaf_bytes(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<super::identity::ObjectIdentity> {
-    let observed = super::observation::observe_leaf_exact(
-        &crate::filesystem::make_filesystem(),
-        dir,
-        name,
-        code,
-        label,
-    )?;
+    let observed =
+        super::observation::observe_leaf_exact(dir.filesystem(), dir, name, code, label)?;
     if observed.fact != super::CheckedArtifactFact::Bytes(bytes.to_vec()) {
         return Err(error(code, label, "roaming anchor alias bytes are invalid"));
     }
@@ -405,7 +398,7 @@ pub(super) fn filesystem_private_barrier(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<()> {
-    make_filesystem()
+    dir.filesystem()
         .sync_directory_at(dir)
         .map_err(|cause| io_error(code, label, cause))
 }

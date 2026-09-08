@@ -7,6 +7,16 @@ checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
 
 class BoundaryTests(unittest.TestCase):
+    def test_context_scope_rejects_ambient_factories_and_aliases(self):
+        for source in ['make_filesystem();', 'crate::git::make_repository();',
+                       'use crate::filesystem::make_filesystem as ambient; ambient();',
+                       'let factory = crate::git::make_repository;',
+                       'OperationContext::existing();']:
+            with self.subTest(source=source):
+                self.assertTrue(checker.context_violations(source))
+        self.assertFalse(checker.context_violations('context.filesystem().read(path);'))
+        self.assertFalse(checker.context_violations('// make_repository()\nlet label = "make_filesystem";'))
+
     def test_imports_and_qualified_calls(self):
         for source in ['use std::fs;', 'use std::{fs as disk, path::Path};',
                        'use cap_std::fs::Dir;', 'std::fs::read(p);',

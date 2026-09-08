@@ -1,4 +1,4 @@
-use crate::filesystem::{FileSystem, FsDirectory, FsFile, make_filesystem};
+use crate::filesystem::{FsDirectory, FsFile};
 pub(super) use crate::filesystem::{
     FsLegacyDurableIdentity as DurableObjectIdentity, FsLegacyObjectIdentity as ObjectIdentity,
     FsLegacyRenameDomain as RenameDomainProof,
@@ -107,19 +107,21 @@ pub(super) fn filesystem_directory_identity(
     if super::capability::handle_probe_is_unavailable() {
         return Err(identity_error(std::io::ErrorKind::Unsupported.into()));
     }
-    make_filesystem()
+    directory
+        .filesystem()
         .legacy_directory_identity(directory)
         .map_err(identity_error)
 }
 pub(super) fn filesystem_file_identity(file: &FsFile) -> std::io::Result<ObjectIdentity> {
-    make_filesystem()
+    file.filesystem()
         .legacy_file_identity(file)
         .map_err(identity_error)
 }
 pub(super) fn filesystem_rename_domain(
     directory: &FsDirectory,
 ) -> std::io::Result<RenameDomainProof> {
-    make_filesystem()
+    directory
+        .filesystem()
         .legacy_rename_domain(directory)
         .map_err(identity_error)
 }
@@ -127,7 +129,9 @@ pub(super) fn filesystem_canonical_path_identity(
     directory: &FsDirectory,
     relative: &Path,
 ) -> std::io::Result<Vec<u8>> {
-    make_filesystem().legacy_path_identity(directory, relative)
+    directory
+        .filesystem()
+        .legacy_path_identity(directory, relative)
 }
 fn identity_error(source: std::io::Error) -> std::io::Error {
     if source.kind() == std::io::ErrorKind::Unsupported {

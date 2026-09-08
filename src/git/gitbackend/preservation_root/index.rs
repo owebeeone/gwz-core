@@ -1,5 +1,6 @@
 use super::super::*;
 use super::{FaultBoundary, fault};
+use crate::filesystem::FileSystem;
 
 use std::collections::BTreeMap;
 
@@ -174,11 +175,12 @@ fn present_fact(
 }
 
 pub(in crate::git::gitbackend) fn observe(
+    filesystem: &dyn FileSystem,
     root: &Path,
     expected: &GitRootManagedIndexForm,
 ) -> ModelResult<bool> {
     let repo = open_repo(root)?;
-    let index = super::index_format::read(&repo)?;
+    let index = super::index_format::read(filesystem, &repo)?;
     validate_marker_namespace(&index, fact_path(&expected.marker))?;
     Ok(observe_fact(&index, &expected.marker)? && observe_fact(&index, &expected.lock)?)
 }
@@ -230,11 +232,12 @@ fn observe_fact(
 }
 
 pub(in crate::git::gitbackend) fn rewrite(
+    filesystem: &dyn FileSystem,
     root: &Path,
     goal: &GitRootManagedIndexForm,
 ) -> ModelResult<()> {
     let repo = open_repo(root)?;
-    let raw_before = super::index_format::read(&repo)?;
+    let raw_before = super::index_format::read(filesystem, &repo)?;
     validate_marker_namespace(&raw_before, fact_path(&goal.marker))?;
     let mut index = repo.index().map_err(git_error)?;
     let managed = [fact_path(&goal.marker), fact_path(&goal.lock)];
@@ -250,7 +253,7 @@ pub(in crate::git::gitbackend) fn rewrite(
     fault(FaultBoundary::BeforeIndexCommit)?;
     index.write().map_err(git_error)?;
     fault(FaultBoundary::AfterIndexCommit)?;
-    let verified = super::index_format::read(&repo)?;
+    let verified = super::index_format::read(filesystem, &repo)?;
     validate_marker_namespace(&verified, fact_path(&goal.marker))?;
     super::index_format::require_managed_tree_invalidation(&verified, &managed)?;
     if unrelated_entries(&verified, &managed) != before

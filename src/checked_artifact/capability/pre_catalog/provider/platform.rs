@@ -1,6 +1,6 @@
 use crate::filesystem::{
-    FileSystem, FsCapability, FsDirectory, FsFile, FsLookupMode, FsObjectIdentity,
-    FsPersistentIdentity, FsProbeError, FsSupportProfile, FsVolumeDescription, make_filesystem,
+    FsCapability, FsDirectory, FsFile, FsLookupMode, FsObjectIdentity, FsPersistentIdentity,
+    FsProbeError, FsSupportProfile, FsVolumeDescription,
 };
 
 use super::super::*;
@@ -134,7 +134,7 @@ pub(in crate::checked_artifact) struct VolumeDescription {
 
 impl HostPlatform {
     pub(in crate::checked_artifact) fn support_profile(&self) -> SupportedFilesystemProfile {
-        map_profile(make_filesystem().support_profile())
+        host_support_profile()
     }
 
     pub(in crate::checked_artifact) fn describe_fs_volume(
@@ -149,7 +149,8 @@ impl HostPlatform {
                 volatile: injected.volatile,
             });
         }
-        make_filesystem()
+        directory
+            .filesystem()
             .describe_volume(directory)
             .map(map_volume)
             .map_err(map_error)
@@ -158,7 +159,8 @@ impl HostPlatform {
 
 impl PathEquivalenceProvider<FsDirectory> for HostPlatform {
     fn parent_mode(&self, parent: &FsDirectory) -> Result<PathComponentMode, CheckedFsError> {
-        make_filesystem()
+        parent
+            .filesystem()
             .lookup_mode(parent)
             .map(map_mode)
             .map_err(map_error)
@@ -170,7 +172,7 @@ impl DurableIdentityProvider<FsDirectory, FsFile> for HostPlatform {
     type RenameDomain = Vec<u8>;
 
     fn support_profile(&self) -> SupportedFilesystemProfile {
-        map_profile(make_filesystem().support_profile())
+        host_support_profile()
     }
 
     fn dir_identity(
@@ -185,7 +187,8 @@ impl DurableIdentityProvider<FsDirectory, FsFile> for HostPlatform {
             ));
         }
         map_identity(
-            make_filesystem()
+            directory
+                .filesystem()
                 .persistent_directory_identity(directory)
                 .map_err(map_error)?,
         )
@@ -196,14 +199,15 @@ impl DurableIdentityProvider<FsDirectory, FsFile> for HostPlatform {
         file: &FsFile,
     ) -> Result<ObjectIdentityFact<DurableObjectIdentityV1, Vec<u8>>, CheckedFsError> {
         map_identity(
-            make_filesystem()
+            file.filesystem()
                 .persistent_file_identity(file)
                 .map_err(map_error)?,
         )
     }
 
     fn rename_domain(&self, directory: &FsDirectory) -> Result<Vec<u8>, CheckedFsError> {
-        make_filesystem()
+        directory
+            .filesystem()
             .rename_domain(directory)
             .map_err(map_error)
     }
@@ -264,4 +268,8 @@ fn map_profile(profile: FsSupportProfile) -> SupportedFilesystemProfile {
         FsSupportProfile::MacPersistentId => SupportedFilesystemProfile::MacPersistentObjectIdV1,
         FsSupportProfile::WindowsFileId => SupportedFilesystemProfile::WindowsNtfsFileId128V1,
     }
+}
+
+fn host_support_profile() -> SupportedFilesystemProfile {
+    map_profile(crate::filesystem::host_support_profile())
 }

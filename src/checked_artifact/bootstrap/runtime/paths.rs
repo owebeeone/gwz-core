@@ -1,5 +1,5 @@
-use crate::filesystem::{FileSystem, FsDirectory, FsFile, FsIdentity, FsKind, make_filesystem};
-use crate::git::{GitRepository, make_repository};
+use crate::filesystem::{FileSystem, FsDirectory, FsFile, FsIdentity, FsKind};
+use crate::operation_context::OperationContext;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -25,15 +25,17 @@ pub(super) struct ResolvedWorkspacePaths {
     pub(super) workspace_git_dir: PathBuf,
 }
 
-pub(super) fn resolve_workspace_paths(
+pub(super) fn resolve_workspace_paths_in(
+    context: &OperationContext,
     root: &Path,
 ) -> Result<ResolvedWorkspacePaths, CheckedFsError> {
-    let filesystem = make_filesystem();
-    reject_non_directory_or_symlink(&filesystem, root, "workspace root")?;
+    let filesystem = context.filesystem();
+    reject_non_directory_or_symlink(filesystem, root, "workspace root")?;
     let workspace_root = filesystem
         .canonical_path(root)
         .map_err(|source| CheckedFsError::io("canonicalize workspace root", source))?;
-    let repository = make_repository()
+    let repository = context
+        .repository()
         .repository_paths(&workspace_root)
         .map_err(|error| {
             CheckedFsError::io(
@@ -56,19 +58,19 @@ pub(super) fn resolve_workspace_paths(
     let workspace_git_dir = filesystem
         .canonical_path(&repository.git_dir)
         .map_err(|source| CheckedFsError::io("canonicalize workspace Git directory", source))?;
-    reject_non_directory_or_symlink(&filesystem, &workspace_git_dir, "workspace Git directory")?;
+    reject_non_directory_or_symlink(filesystem, &workspace_git_dir, "workspace Git directory")?;
     Ok(ResolvedWorkspacePaths {
         workspace_root,
         workspace_git_dir,
     })
 }
 
-pub(super) fn retain_ambient_directory(
+pub(super) fn retain_ambient_directory_in(
+    filesystem: &dyn FileSystem,
     path: &Path,
     label: &'static str,
 ) -> Result<RetainedDirectory, CheckedFsError> {
-    let filesystem = make_filesystem();
-    reject_non_directory_or_symlink(&filesystem, path, label)?;
+    reject_non_directory_or_symlink(filesystem, path, label)?;
     let dir = filesystem
         .open_directory(path)
         .map_err(|source| CheckedFsError::io("open retained runtime directory", source))?;
@@ -85,8 +87,8 @@ pub(super) fn revalidate_ambient_directory(
     expected: &RetainedDirectory,
     label: &'static str,
 ) -> Result<(), CheckedFsError> {
-    let filesystem = make_filesystem();
-    reject_non_directory_or_symlink(&filesystem, path, label)?;
+    let filesystem = expected.dir.filesystem();
+    reject_non_directory_or_symlink(filesystem, path, label)?;
     let current = filesystem
         .open_directory(path)
         .map_err(|source| CheckedFsError::io("reopen retained runtime directory", source))?;
@@ -102,12 +104,14 @@ pub(super) fn revalidate_ambient_directory(
     Ok(())
 }
 
-pub(super) fn revalidate_workspace_repository(
+pub(super) fn revalidate_workspace_repository_in(
+    context: &OperationContext,
     workspace_root: &Path,
     workspace_git_dir: &Path,
 ) -> Result<(), CheckedFsError> {
-    let filesystem = make_filesystem();
-    let repository = make_repository()
+    let filesystem = context.filesystem();
+    let repository = context
+        .repository()
         .repository_paths(workspace_root)
         .map_err(|error| {
             CheckedFsError::io(
@@ -138,7 +142,7 @@ pub(super) fn ensure_child_directory(
     name: &OsStr,
     label: &'static str,
 ) -> Result<RetainedDirectory, CheckedFsError> {
-    let filesystem = make_filesystem();
+    let filesystem = parent.filesystem();
     match filesystem.open_directory_at(parent, name) {
         Ok(_) => {}
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -185,7 +189,7 @@ pub(super) fn open_child_directory(
     name: &OsStr,
     label: &'static str,
 ) -> Result<RetainedDirectory, CheckedFsError> {
-    let filesystem = make_filesystem();
+    let filesystem = parent.filesystem();
     let dir = filesystem
         .open_directory_at(parent, name)
         .map_err(|source| match source.kind() {
@@ -215,7 +219,7 @@ pub(super) fn open_or_create_file(
     label: &'static str,
 ) -> Result<FsFile, CheckedFsError> {
     const MAX_WINNER_REOPENS: usize = 16;
-    let filesystem = make_filesystem();
+    let filesystem = parent.filesystem();
     for attempt in 0..MAX_WINNER_REOPENS {
         match filesystem.open_lock_file_at(parent, name) {
             Ok(file) => {
@@ -265,7 +269,7 @@ pub(super) fn open_existing_file(
     name: &OsStr,
     label: &'static str,
 ) -> Result<FsFile, CheckedFsError> {
-    let filesystem = make_filesystem();
+    let filesystem = parent.filesystem();
     let file = filesystem
         .open_lock_file_at(parent, name)
         .map_err(|source| {
@@ -288,7 +292,7 @@ pub(super) fn revalidate_file(
     file: &FsFile,
     label: &'static str,
 ) -> Result<(), CheckedFsError> {
-    let filesystem = make_filesystem();
+    let filesystem = parent.filesystem();
     if !filesystem
         .file_entry_matches(parent, name, file)
         .map_err(|source| CheckedFsError::io("observe runtime file", source))?
@@ -302,7 +306,7 @@ pub(super) fn revalidate_file(
 }
 
 fn reject_non_directory_or_symlink(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     path: &Path,
     label: &'static str,
 ) -> Result<(), CheckedFsError> {
@@ -316,4 +320,23 @@ fn reject_non_directory_or_symlink(
         ));
     }
     Ok(())
+}
+
+// Compatibility entry points for the catalog batch not yet context-aware.
+pub(super) fn resolve_workspace_paths(
+    root: &Path,
+) -> Result<ResolvedWorkspacePaths, CheckedFsError> {
+    resolve_workspace_paths_in(&OperationContext::existing(), root)
+}
+pub(super) fn retain_ambient_directory(
+    path: &Path,
+    label: &'static str,
+) -> Result<RetainedDirectory, CheckedFsError> {
+    retain_ambient_directory_in(OperationContext::existing().filesystem(), path, label)
+}
+pub(super) fn revalidate_workspace_repository(
+    root: &Path,
+    git_dir: &Path,
+) -> Result<(), CheckedFsError> {
+    revalidate_workspace_repository_in(&OperationContext::existing(), root, git_dir)
 }

@@ -28,6 +28,14 @@ pub(in crate::checked_artifact) struct CatalogLeaseTargetFactsV1 {
 }
 
 impl<'lease> CatalogLeaseTargetWitnessV1<'lease> {
+    pub(in crate::checked_artifact) fn context(
+        &self,
+    ) -> crate::operation_context::OperationContext {
+        match self.lease.source {
+            CatalogMutationLeaseSourceV1::WorkspaceRuntime(runtime) => runtime.context.clone(),
+            CatalogMutationLeaseSourceV1::LeaseSet(held) => held.context.clone(),
+        }
+    }
     pub(super) fn try_new(lease: CatalogMutationLeaseV1<'lease>) -> Result<Self, CheckedFsError> {
         let witness = Self { lease };
         witness.revalidate()?;

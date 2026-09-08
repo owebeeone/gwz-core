@@ -22,6 +22,7 @@ pub mod diff;
 mod durable_fs;
 mod filesystem;
 pub mod git;
+mod operation_context;
 #[cfg(test)]
 mod test_backend;
 // LCM1.0c (gwz-dev dev-docs/GwzLocalClonePlan.md §3 "1.0c",

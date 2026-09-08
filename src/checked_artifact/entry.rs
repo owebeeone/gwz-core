@@ -60,7 +60,16 @@ fn observe_filesystem_artifact(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<MergeArtifactFact> {
-    let filesystem = make_filesystem();
+    observe_filesystem_artifact_in(&make_filesystem(), root, relative, code, label)
+}
+
+fn observe_filesystem_artifact_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    relative: &Path,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<MergeArtifactFact> {
     let (parent_relative, leaf) = split_filesystem_relative(relative, code, label)?;
     let retained_root = filesystem
         .open_directory(root)
@@ -68,7 +77,7 @@ fn observe_filesystem_artifact(
     let root_identity = super::identity::filesystem_directory_identity(&retained_root)
         .map_err(|_| reverse_door_identity_error(label))?;
     let parent =
-        traverse_filesystem_parent(&filesystem, &retained_root, parent_relative, code, label)?;
+        traverse_filesystem_parent(filesystem, &retained_root, parent_relative, code, label)?;
     let FilesystemParent::Open(parent) = parent else {
         return Ok(match parent {
             FilesystemParent::Missing => MergeArtifactFact::Missing,
@@ -149,7 +158,7 @@ fn observe_filesystem_artifact(
             .map_err(|_| reverse_door_identity_error(label))?
             != file_identity
         || !filesystem_parent_is_current(
-            &filesystem,
+            filesystem,
             &retained_root,
             parent_relative,
             &parent_identity,
@@ -172,7 +181,7 @@ fn observe_filesystem_artifact(
 }
 
 fn traverse_filesystem_parent(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     root: &FsDirectory,
     relative: &Path,
     code: ErrorCode,
@@ -228,7 +237,7 @@ fn traverse_filesystem_parent(
 }
 
 fn filesystem_parent_is_current(
-    filesystem: &impl FileSystem,
+    filesystem: &dyn FileSystem,
     root: &FsDirectory,
     relative: &Path,
     expected: &super::identity::ObjectIdentity,
@@ -325,12 +334,14 @@ pub(crate) fn classify_remove_merge_root_artifact(
 }
 
 pub(crate) fn observe_merge_preservation_workspace(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: Option<&[u8]>,
 ) -> ModelResult<bool> {
     matches_expected(
-        filesystem_fact(observe_filesystem_artifact(
+        filesystem_fact(observe_filesystem_artifact_in(
+            filesystem,
             root,
             relative,
             ErrorCode::PreservationEvidenceMismatch,
@@ -341,12 +352,14 @@ pub(crate) fn observe_merge_preservation_workspace(
 }
 
 pub(crate) fn observe_merge_preservation_git_directory(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: Option<&[u8]>,
 ) -> ModelResult<bool> {
     matches_expected(
-        filesystem_fact(observe_filesystem_artifact(
+        filesystem_fact(observe_filesystem_artifact_in(
+            filesystem,
             root,
             relative,
             ErrorCode::PreservationEvidenceMismatch,
@@ -357,21 +370,31 @@ pub(crate) fn observe_merge_preservation_git_directory(
 }
 
 pub(crate) fn replace_merge_preservation_workspace(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: Option<&[u8]>,
     goal: Option<&[u8]>,
 ) -> ModelResult<()> {
-    replace_expected(preservation_workspace(root, relative)?, expected, goal)
+    replace_expected(
+        preservation_workspace(filesystem, root, relative)?,
+        expected,
+        goal,
+    )
 }
 
 pub(crate) fn classify_merge_preservation_workspace(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     expected: Option<&[u8]>,
     goal: Option<&[u8]>,
 ) -> ModelResult<MergeArtifactTransition> {
-    classify_expected(preservation_workspace(root, relative)?, expected, goal)
+    classify_expected(
+        preservation_workspace(filesystem, root, relative)?,
+        expected,
+        goal,
+    )
 }
 
 pub(crate) fn observe_merge_preservation_bundle(
@@ -406,8 +429,9 @@ pub(crate) fn replace_merge_preservation_bundle(
     artifact.replace_exact(&fact(expected), goal)
 }
 
-pub(crate) fn prepare_merge_store_parents(root: &Path) -> ModelResult<()> {
-    CheckedArtifact::prepare_parent(
+fn prepare_merge_store_parents_in(filesystem: &dyn FileSystem, root: &Path) -> ModelResult<()> {
+    CheckedArtifact::prepare_parent_in(
+        filesystem,
         root,
         Path::new(crate::stash::STASH_BUNDLE_DIR),
         ErrorCode::MergeRecoveryRequired,
@@ -433,14 +457,18 @@ const MERGE_RECORD_PARENT: &str = ".gwz/merge";
 /// `interface_tests/r2d_seam_freeze.rs` freezes. `create_open` still refuses a
 /// missing parent (charter §4.1), so this is the step that makes its refusal
 /// unreachable on the warned path exactly as the bootstrap does on the other.
-pub(crate) fn prepare_merge_start_parents_uncatalogued(root: &Path) -> ModelResult<()> {
-    CheckedArtifact::prepare_parent(
+pub(crate) fn prepare_merge_start_parents_uncatalogued(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+) -> ModelResult<()> {
+    CheckedArtifact::prepare_parent_in(
+        filesystem,
         root,
         Path::new(MERGE_RECORD_PARENT),
         ErrorCode::MergeRecoveryRequired,
         "merge record parent",
     )?;
-    prepare_merge_store_parents(root)
+    prepare_merge_store_parents_in(filesystem, root)
 }
 
 /// Whether this workspace's volume can prove the durable identity the checked
@@ -689,8 +717,13 @@ fn preservation_bundle(root: &Path, relative: &Path) -> ModelResult<CheckedArtif
     )
 }
 
-fn preservation_workspace(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire_with_escape(
+fn preservation_workspace(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    relative: &Path,
+) -> ModelResult<CheckedArtifact> {
+    CheckedArtifact::acquire_with_escape_in(
+        filesystem,
         CheckedArtifactPolicy::workspace(root),
         relative,
         ErrorCode::PreservationEvidenceMismatch,
@@ -901,6 +934,7 @@ pub(crate) fn bootstrap_merge_start_parents(
 /// not exist on this volume, and crash recovery, which the charter states is
 /// absent rather than degraded here.
 pub(crate) fn create_merge_store_record(
+    filesystem: &dyn FileSystem,
     root: &Path,
     relative: &Path,
     goal: &[u8],
@@ -913,13 +947,15 @@ pub(crate) fn create_merge_store_record(
             ..
         })
     ) {
-        return create_merge_store_record_raw(root, relative, goal);
+        return create_merge_store_record_raw(filesystem, root, relative, goal);
     }
-    let artifact = CheckedArtifact::acquire(
+    let artifact = CheckedArtifact::acquire_with_escape_in(
+        filesystem,
         CheckedArtifactPolicy::workspace(root),
         relative,
         ErrorCode::MergeRecoveryRequired,
         format!("merge record '{}'", relative.display()),
+        IdentityGapEscape::Substrate,
     )?;
     // Row `:273`'s clause said out loud, rather than left as the generic
     // ambiguity `classify_replace_exact` reports for an absent parent.
@@ -950,15 +986,20 @@ pub(crate) fn create_merge_store_record(
 /// `MergeRecoveryRequired` code and the same sentence `create_open`'s own
 /// pre-flight uses. `symlink_metadata` and not `exists`: a symlink standing
 /// where the record belongs must refuse, not be followed.
-fn create_merge_store_record_raw(root: &Path, relative: &Path, goal: &[u8]) -> ModelResult<()> {
+fn create_merge_store_record_raw(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    relative: &Path,
+    goal: &[u8],
+) -> ModelResult<()> {
     let path = root.join(relative);
-    if make_filesystem().metadata(&path).is_ok() {
+    if filesystem.metadata(&path).is_ok() {
         return Err(ModelError::new(
             ErrorCode::MergeRecoveryRequired,
             format!("merge record '{}' already exists", relative.display()),
         ));
     }
-    crate::verified_write::write_atomic_verified(&path, goal)
+    crate::verified_write::write_atomic_verified(filesystem, &path, goal)
 }
 
 /// The catalog doors' error rendering, as a named function.
