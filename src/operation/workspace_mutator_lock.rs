@@ -30,7 +30,11 @@ impl WorkspaceMutatorLock {
             .map(|lease| lease.map(|lease| Self { lease }))
     }
 
-    /// Acquire the workspace mutation lock or return the standard busy error.
+    /// Native convenience entry point for tests that deliberately exercise OS locks.
+    ///
+    /// Production callers must supply the operation services that own their
+    /// filesystem and Git authority through [`Self::acquire_in`].
+    #[cfg(test)]
     pub fn acquire(root: &Path) -> ModelResult<Self> {
         Self::try_acquire(root)?.ok_or_else(|| {
             ModelError::new(
@@ -40,7 +44,7 @@ impl WorkspaceMutatorLock {
         })
     }
 
-    /// Try to acquire the workspace-wide mutation lock.
+    /// Native convenience entry point for tests that deliberately exercise OS locks.
     ///
     /// The lock is an OS advisory exclusive lock on `.gwz/locks/workspace-mutator.lock`.
     /// The file itself is stable runtime state and may remain after a process exits. A
@@ -52,6 +56,7 @@ impl WorkspaceMutatorLock {
     /// Advisory file locking must be reliable on the workspace filesystem. Network
     /// filesystems with broken advisory-lock semantics are unsupported for concurrent
     /// GWZ mutators; run mutating operations serially there.
+    #[cfg(test)]
     pub fn try_acquire(root: &Path) -> ModelResult<Option<Self>> {
         Self::try_acquire_in(
             &crate::operation_context::OperationServices::existing(),
