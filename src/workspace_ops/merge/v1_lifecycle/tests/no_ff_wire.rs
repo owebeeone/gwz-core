@@ -15,7 +15,7 @@ use super::forward::{
     stored_action,
 };
 use crate::model::ErrorCode;
-use crate::workspace_ops::merge::status::{reconcile_pending_action, PendingActionReconciliation};
+use crate::workspace_ops::merge::status::{PendingActionReconciliation, reconcile_pending_action};
 use crate::workspace_ops::merge::{
     MergeParticipantRecord, OperationState, ParticipantState, PendingMergeActionKind,
 };
@@ -129,12 +129,14 @@ fn no_ff_record_unknown_fields_survive_rewrite_and_retire_on_reconciliation() {
     );
     let pending = stored_action(&fixture).unwrap();
     assert!(pending.extensions.contains_key("action_probe"));
-    assert!(pending
-        .commit_spec
-        .as_ref()
-        .unwrap()
-        .extensions
-        .contains_key("spec_probe"));
+    assert!(
+        pending
+            .commit_spec
+            .as_ref()
+            .unwrap()
+            .extensions
+            .contains_key("spec_probe")
+    );
 
     // Exact reconciliation retires the container, and its unknown fields.
     fs::remove_file(fixture.member.join("untracked.txt")).unwrap();
