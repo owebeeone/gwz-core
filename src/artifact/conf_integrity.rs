@@ -30,13 +30,13 @@
 //! documented on `conf_gate`, which is where the trade is actually made.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::io;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::filesystem::{FileSystem, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::{WORKSPACE_DIR, WORKSPACE_MANIFEST};
 
@@ -124,7 +124,15 @@ struct ConfIntegrityMarker {
 /// Classify the workspace's conf files against the marker. Never fails: an I/O or parse
 /// problem is itself one of the non-refusing verdicts.
 pub fn inspect_conf_integrity(root: &Path) -> ConfIntegrityVerdict {
-    let marker = match read_marker(root) {
+    inspect_conf_integrity_in(&make_filesystem(), root)
+}
+
+/// Classify the workspace's configuration through the caller's filesystem world.
+pub(crate) fn inspect_conf_integrity_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+) -> ConfIntegrityVerdict {
+    let marker = match read_marker_in(filesystem, root) {
         Ok(None) => return ConfIntegrityVerdict::NotEnrolled,
         Ok(Some(marker)) => marker,
         Err(reason) => return ConfIntegrityVerdict::MarkerUnreadable(reason),
@@ -146,7 +154,7 @@ pub fn inspect_conf_integrity(root: &Path) -> ConfIntegrityVerdict {
         };
         // Absent or unreadable on disk: ambiguous, and a deleted lock is legitimately
         // rebuildable. Refusing here would brick the workspace over a missing file.
-        let Ok(Some(actual)) = file_digest(&root.join(relative)) else {
+        let Ok(Some(actual)) = file_digest_in(filesystem, &root.join(relative)) else {
             continue;
         };
         compared += 1;
@@ -176,18 +184,34 @@ pub fn conf_hand_edit_error(paths: &[String]) -> ModelError {
 /// blesses exactly the bytes that are there now. Writing no marker at all when neither
 /// conf file exists keeps a bare directory from sprouting one.
 pub fn refresh_conf_integrity_marker(root: &Path) -> ModelResult<()> {
-    let Some(contents) = canonical_conf_integrity_marker(root)? else {
+    refresh_conf_integrity_marker_in(&make_filesystem(), root)
+}
+
+/// Record the configuration marker through the caller's filesystem world.
+pub(crate) fn refresh_conf_integrity_marker_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+) -> ModelResult<()> {
+    let Some(contents) = canonical_conf_integrity_marker_in(filesystem, root)? else {
         return Ok(());
     };
-    super::write_atomic(&root.join(CONF_INTEGRITY_MARKER_PATH), contents)
+    super::write_atomic_in(filesystem, &root.join(CONF_INTEGRITY_MARKER_PATH), contents)
 }
 
 /// Render the derived marker without changing the workspace. Consumers still
 /// need independent evidence that the underlying configuration is protected.
 pub(crate) fn canonical_conf_integrity_marker(root: &Path) -> ModelResult<Option<String>> {
+    canonical_conf_integrity_marker_in(&make_filesystem(), root)
+}
+
+/// Render the derived marker through the caller's filesystem world.
+pub(crate) fn canonical_conf_integrity_marker_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+) -> ModelResult<Option<String>> {
     let mut files = BTreeMap::new();
     for relative in GUARDED_CONF_PATHS {
-        if let Some(digest) = file_digest(&root.join(relative))? {
+        if let Some(digest) = file_digest_in(filesystem, &root.join(relative))? {
             files.insert((*relative).to_owned(), digest);
         }
     }
@@ -207,9 +231,12 @@ pub(crate) fn canonical_conf_integrity_marker(root: &Path) -> ModelResult<Option
     Ok(Some(format!("{MARKER_BANNER}{yaml}")))
 }
 
-fn read_marker(root: &Path) -> Result<Option<ConfIntegrityMarker>, String> {
-    let text = match fs::read_to_string(root.join(CONF_INTEGRITY_MARKER_PATH)) {
-        Ok(text) => text,
+fn read_marker_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+) -> Result<Option<ConfIntegrityMarker>, String> {
+    let text = match filesystem.read(&root.join(CONF_INTEGRITY_MARKER_PATH)) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|error| error.to_string())?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
@@ -218,8 +245,8 @@ fn read_marker(root: &Path) -> Result<Option<ConfIntegrityMarker>, String> {
         .map_err(|err| err.to_string())
 }
 
-fn file_digest(path: &Path) -> ModelResult<Option<String>> {
-    match fs::read(path) {
+fn file_digest_in(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<Option<String>> {
+    match filesystem.read(path) {
         Ok(bytes) => Ok(Some(format!("sha256:{}", sha256_hex(&bytes)))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(ModelError::new(ErrorCode::IoError, error.to_string())),

@@ -374,7 +374,15 @@ pub enum ArtifactSourceKind {
 /// displaces the merge lane's own errors. The gate lives at the command sites instead --
 /// see [`assert_conf_unmodified_for`].
 pub fn read_manifest(root: &Path) -> ModelResult<ManifestArtifact> {
-    let text = make_filesystem()
+    read_manifest_in(&make_filesystem(), root)
+}
+
+/// Load the workspace manifest through the caller's filesystem world.
+pub(crate) fn read_manifest_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+) -> ModelResult<ManifestArtifact> {
+    let text = filesystem
         .read(&root.join(WORKSPACE_MANIFEST))
         .map_err(manifest_io_error)?;
     let text = String::from_utf8(text)
@@ -383,12 +391,32 @@ pub fn read_manifest(root: &Path) -> ModelResult<ManifestArtifact> {
 }
 
 pub fn write_manifest(root: &Path, artifact: &ManifestArtifact) -> ModelResult<()> {
-    write_atomic(&root.join(WORKSPACE_MANIFEST), artifact.to_yaml()?)?;
-    conf_integrity::refresh_conf_integrity_marker(root)
+    write_manifest_in(&make_filesystem(), root, artifact)
+}
+
+/// Write the manifest through the caller's filesystem world.
+///
+/// The marker is refreshed through the same filesystem after the manifest publishes.
+pub(crate) fn write_manifest_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    artifact: &ManifestArtifact,
+) -> ModelResult<()> {
+    write_atomic_in(
+        filesystem,
+        &root.join(WORKSPACE_MANIFEST),
+        artifact.to_yaml()?,
+    )?;
+    conf_integrity::refresh_conf_integrity_marker_in(filesystem, root)
 }
 
 pub fn read_lock(root: &Path) -> ModelResult<LockArtifact> {
-    LockArtifact::from_yaml(&read_to_string(root.join(LOCK_PATH))?)
+    read_lock_in(&make_filesystem(), root)
+}
+
+/// Load the lock through the caller's filesystem world.
+pub(crate) fn read_lock_in(filesystem: &dyn FileSystem, root: &Path) -> ModelResult<LockArtifact> {
+    LockArtifact::from_yaml(&read_to_string_in(filesystem, root.join(LOCK_PATH))?)
 }
 
 pub fn write_lock(root: &Path, artifact: &LockArtifact) -> ModelResult<()> {
@@ -516,15 +544,24 @@ pub fn write_manifest_and_lock(
     manifest: &ManifestArtifact,
     lock: &LockArtifact,
 ) -> ModelResult<()> {
-    let filesystem = make_filesystem();
+    write_manifest_and_lock_in(&make_filesystem(), root, manifest, lock)
+}
+
+/// Publish a manifest/lock pair through the caller's filesystem world.
+pub(crate) fn write_manifest_and_lock_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    lock: &LockArtifact,
+) -> ModelResult<()> {
     let manifest_path = root.join(WORKSPACE_MANIFEST);
     let lock_path = root.join(LOCK_PATH);
-    let manifest_staged = stage_durably(&filesystem, &manifest_path, &manifest.to_yaml()?)?;
-    let lock_staged = stage_durably(&filesystem, &lock_path, &lock.to_yaml()?)?;
-    publish_staged(&filesystem, &manifest_staged, &manifest_path)?;
-    publish_staged(&filesystem, &lock_staged, &lock_path)?;
+    let manifest_staged = stage_durably(filesystem, &manifest_path, &manifest.to_yaml()?)?;
+    let lock_staged = stage_durably(filesystem, &lock_path, &lock.to_yaml()?)?;
+    publish_staged(filesystem, &manifest_staged, &manifest_path)?;
+    publish_staged(filesystem, &lock_staged, &lock_path)?;
     // One refresh after both are published: the marker never records a half-written pair.
-    conf_integrity::refresh_conf_integrity_marker(root)
+    conf_integrity::refresh_conf_integrity_marker_in(filesystem, root)
 }
 
 /// Write `contents` to a unique temp beside `path` and fsync it, returning the staged temp
@@ -592,7 +629,11 @@ where
 }
 
 fn read_to_string(path: PathBuf) -> ModelResult<String> {
-    String::from_utf8(make_filesystem().read(&path).map_err(io_error)?)
+    read_to_string_in(&make_filesystem(), path)
+}
+
+pub(crate) fn read_to_string_in(filesystem: &dyn FileSystem, path: PathBuf) -> ModelResult<String> {
+    String::from_utf8(filesystem.read(&path).map_err(io_error)?)
         .map_err(|error| io_error(io::Error::new(io::ErrorKind::InvalidData, error)))
 }
 
@@ -998,6 +1039,47 @@ pub(crate) mod tests {
             temp.path()
                 .join("gwz.conf/markers/01987b0c-2f75-7c4a-9a32-8fd22f7d7c91.yaml")
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn manifest_and_lock_in_stay_in_the_supplied_memory_world() {
+        let world = crate::operation_context::TestWorld::memory();
+        let services = world.context();
+        let workspace = services.filesystem().test_workspace().unwrap();
+
+        write_manifest_and_lock_in(
+            services.filesystem(),
+            workspace.path(),
+            &sample_manifest(),
+            &sample_lock(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_manifest_in(services.filesystem(), workspace.path()).unwrap(),
+            sample_manifest()
+        );
+        assert_eq!(
+            read_lock_in(services.filesystem(), workspace.path()).unwrap(),
+            sample_lock()
+        );
+        assert_eq!(
+            conf_integrity::inspect_conf_integrity_in(services.filesystem(), workspace.path()),
+            ConfIntegrityVerdict::Verified
+        );
+        for relative in [WORKSPACE_MANIFEST, LOCK_PATH, CONF_INTEGRITY_MARKER_PATH] {
+            assert!(
+                !workspace.path().join(relative).exists(),
+                "the selected memory filesystem must not publish {relative} to the host filesystem"
+            );
+        }
+        assert!(
+            services
+                .filesystem()
+                .read(&workspace.path().join(CONF_INTEGRITY_MARKER_PATH))
+                .is_ok(),
+            "the integrity marker must publish in the supplied memory filesystem"
         );
     }
 

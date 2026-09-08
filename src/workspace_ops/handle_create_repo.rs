@@ -20,6 +20,18 @@ pub fn handle_create_workspace(
     request: crate::CreateWorkspaceRequest,
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::CreateWorkspaceResponse> {
+    handle_create_workspace_in(
+        &crate::operation_context::OperationServices::existing(),
+        request,
+        operation_id,
+    )
+}
+
+pub(crate) fn handle_create_workspace_in(
+    services: &crate::operation_context::OperationServices,
+    request: crate::CreateWorkspaceRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::CreateWorkspaceResponse> {
     let context =
         OperationRequest::CreateWorkspace(request.clone()).context(operation_id.into())?;
     let root = PathBuf::from(&request.workspace_root);
@@ -45,8 +57,7 @@ pub fn handle_create_workspace(
     }
     ensure_workspace_git_repo(&root)?;
     let backend = Git2Backend::new();
-    let services = crate::operation_context::OperationServices::for_merge(&backend);
-    let _guard = WorkspaceMutatorLock::acquire_in(&services, &root)?;
+    let _guard = WorkspaceMutatorLock::acquire_in(services, &root)?;
 
     let manifest = ManifestArtifact {
         schema: artifact::WORKSPACE_SCHEMA.to_owned(),
@@ -62,7 +73,7 @@ pub fn handle_create_workspace(
         members: BTreeMap::new(),
     };
     // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `gwz repo create`, add-existing and workspace create are all capability-free (E0.2 §5.2), so all four writer pairs in this file stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
-    artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
+    artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)?;
     sync_workspace_boundary(&backend, &root, &manifest, &lock)?;
     let bootstrap = ensure_workspace_bootstrap_files(
         &backend,
@@ -89,8 +100,26 @@ pub fn handle_create_repo<B>(
 where
     B: GitBackend,
 {
+    handle_create_repo_in(
+        &crate::operation_context::OperationServices::existing(),
+        backend,
+        start,
+        request,
+        operation_id,
+    )
+}
+
+pub(crate) fn handle_create_repo_in<B>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &Path,
+    request: crate::CreateRepoRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::CreateRepoResponse>
+where
+    B: GitBackend,
+{
     let context = OperationRequest::CreateRepo(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
     if request
         .initial_branch
         .as_ref()
@@ -104,7 +133,7 @@ where
 
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root_in(
-        &services,
+        services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
@@ -116,7 +145,7 @@ where
         OpenMergeCommand::RepoMutate,
         reconcile_authority(_guard.as_ref(), dry_run),
     )?;
-    let mut manifest = artifact::read_manifest(&root)?;
+    let mut manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let member_path = MemberPath::parse(&request.member_path)?;
     reject_existing_active_member_path_overlap(&manifest, &member_path)?;
@@ -205,7 +234,7 @@ where
     let locked = resolved_member(&manifest_member, &head, &status);
     let lock = (|| {
         manifest.validate()?;
-        let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+        let mut lock = read_lock_or_empty_in(services.filesystem(), &root, &manifest.workspace.id)?;
         lock.members.insert(member_id.clone(), locked.clone());
         Ok::<_, ModelError>(lock)
     })();
@@ -216,8 +245,10 @@ where
             return Err(error);
         }
     };
-    if let Err(error) = artifact::write_manifest_and_lock(&root, &manifest, &lock) {
-        let published = artifact::read_manifest(&root)
+    if let Err(error) =
+        artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)
+    {
+        let published = artifact::read_manifest_in(services.filesystem(), &root)
             .map(|current| current.members.iter().any(|item| item.id == member_id))
             .unwrap_or(false);
         if !published {
@@ -255,12 +286,30 @@ pub fn handle_add_existing_repo<B>(
 where
     B: GitBackend,
 {
+    handle_add_existing_repo_in(
+        &crate::operation_context::OperationServices::existing(),
+        backend,
+        start,
+        request,
+        operation_id,
+    )
+}
+
+pub(crate) fn handle_add_existing_repo_in<B>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &Path,
+    request: crate::AddExistingRepoRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::AddExistingRepoResponse>
+where
+    B: GitBackend,
+{
     let context =
         OperationRequest::AddExistingRepo(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root_in(
-        &services,
+        services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
@@ -272,7 +321,7 @@ where
         OpenMergeCommand::RepoMutate,
         reconcile_authority(_guard.as_ref(), dry_run),
     )?;
-    let mut manifest = artifact::read_manifest(&root)?;
+    let mut manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let repo_path = resolve_input_path(start, &request.repository_path);
     if !backend.is_repository(&repo_path)? {
@@ -348,10 +397,16 @@ where
                     return Ok(crate::AddExistingRepoResponse { response });
                 }
                 apply_prepared_attach(&mut manifest, &prepared)?;
-                let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+                let mut lock =
+                    read_lock_or_empty_in(services.filesystem(), &root, &manifest.workspace.id)?;
                 lock.members
                     .insert(prepared.member.id.clone(), prepared.locked.clone());
-                artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
+                artifact::write_manifest_and_lock_in(
+                    services.filesystem(),
+                    &root,
+                    &manifest,
+                    &lock,
+                )?;
                 sync_workspace_boundary(backend, &root, &manifest, &lock)?;
                 let mut response = response_envelope(
                     context,
@@ -438,10 +493,10 @@ where
 
     manifest.members.push(manifest_member.clone());
     manifest.validate()?;
-    let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+    let mut lock = read_lock_or_empty_in(services.filesystem(), &root, &manifest.workspace.id)?;
     let locked = resolved_member(&manifest_member, &head, &status);
     lock.members.insert(member_id.clone(), locked.clone());
-    artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
+    artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)?;
     sync_workspace_boundary(backend, &root, &manifest, &lock)?;
 
     let mut response = response_envelope(
@@ -472,11 +527,29 @@ pub fn handle_repo_sync<B>(
 where
     B: GitBackend,
 {
+    handle_repo_sync_in(
+        &crate::operation_context::OperationServices::existing(),
+        backend,
+        start,
+        request,
+        operation_id,
+    )
+}
+
+pub(crate) fn handle_repo_sync_in<B>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &Path,
+    request: crate::RepoSyncRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::RepoSyncResponse>
+where
+    B: GitBackend,
+{
     let context = OperationRequest::RepoSync(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root_in(
-        &services,
+        services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
@@ -488,7 +561,7 @@ where
         OpenMergeCommand::RepoMutate,
         reconcile_authority(_guard.as_ref(), dry_run),
     )?;
-    let manifest = artifact::read_manifest(&root)?;
+    let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let selected = resolve_action_ids(
         &manifest,
@@ -540,7 +613,7 @@ where
             }
         }
         next.validate()?;
-        artifact::write_manifest(&root, &next)?;
+        artifact::write_manifest_in(services.filesystem(), &root, &next)?;
     }
 
     Ok(crate::RepoSyncResponse {
@@ -873,15 +946,23 @@ pub(crate) fn ensure_member_target_available(path: &Path) -> ModelResult<()> {
 }
 
 pub(crate) fn read_lock_or_empty(root: &Path, workspace_id: &str) -> ModelResult<LockArtifact> {
-    if root.join(artifact::LOCK_PATH).exists() {
-        artifact::read_lock(root)
-    } else {
-        Ok(LockArtifact {
+    read_lock_or_empty_in(&crate::filesystem::make_filesystem(), root, workspace_id)
+}
+
+pub(crate) fn read_lock_or_empty_in(
+    filesystem: &dyn crate::filesystem::FileSystem,
+    root: &Path,
+    workspace_id: &str,
+) -> ModelResult<LockArtifact> {
+    match filesystem.metadata(&root.join(artifact::LOCK_PATH)) {
+        Ok(_) => artifact::read_lock_in(filesystem, root),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LockArtifact {
             schema: artifact::LOCK_SCHEMA.to_owned(),
             workspace_id: workspace_id.to_owned(),
             manifest_schema: artifact::WORKSPACE_SCHEMA.to_owned(),
             members: BTreeMap::new(),
-        })
+        }),
+        Err(error) => Err(io_error(error)),
     }
 }
 
