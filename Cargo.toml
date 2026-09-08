@@ -1,6 +1,6 @@
 [package]
 name = "gwz-core"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 license = "GPL-2.0-only"
 rust-version = "1.95"
