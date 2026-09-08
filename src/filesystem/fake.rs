@@ -116,23 +116,26 @@ fn memory_persistent_identity(identity: FsIdentity) -> FsObjectIdentity {
     let mut volume = [0; 16];
     volume[..8].copy_from_slice(&namespace);
     volume[8..].copy_from_slice(&namespace);
-    #[cfg(target_os = "macos")]
-    let persistent = FsPersistentIdentity::Mac { volume, object };
-    #[cfg(windows)]
-    let persistent = {
+    // All variants are portable data: keep every branch type-checked on every host.
+    let persistent = if cfg!(target_os = "macos") {
+        FsPersistentIdentity::Mac { volume, object }
+    } else if cfg!(windows) {
         let mut file_id = [0; 16];
         file_id[..8].copy_from_slice(&object);
         file_id[8..].copy_from_slice(&object);
         FsPersistentIdentity::Windows {
-            volume: volume.to_vec(),
+            volume: volume
+                .chunks_exact(2)
+                .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+                .collect(),
             file_id,
         }
-    };
-    #[cfg(not(any(target_os = "macos", windows)))]
-    let persistent = FsPersistentIdentity::Linux {
-        volume,
-        handle_type: 1,
-        handle: object.to_vec(),
+    } else {
+        FsPersistentIdentity::Linux {
+            volume,
+            handle_type: 1,
+            handle: object.to_vec(),
+        }
     };
     FsObjectIdentity {
         persistent,
