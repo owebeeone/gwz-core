@@ -76,6 +76,68 @@ pub(super) fn in_memory_merge_index(
         .map_err(git_error)
 }
 
+/// A lane root's lock and marker files are generated snapshots. If they are
+/// the only source-side changes, retain the receiving root's live snapshot
+/// while recording the lane root as a merge parent. User-authored root files
+/// keep the normal conflict path.
+pub(super) fn generated_root_metadata_only_merge(
+    repo: &git2::Repository,
+    target: git2::Oid,
+    source: git2::Oid,
+    merge_index: &git2::Index,
+) -> ModelResult<bool> {
+    let conflicts = conflict_paths(merge_index)?;
+    if conflicts.is_empty()
+        || !conflicts
+            .iter()
+            .all(|path| generated_root_metadata_path(Path::new(path)))
+    {
+        return Ok(false);
+    }
+    let base = repo.merge_base(target, source).map_err(git_error)?;
+    let base_tree = repo
+        .find_commit(base)
+        .and_then(|commit| commit.tree())
+        .map_err(git_error)?;
+    let target_tree = repo
+        .find_commit(target)
+        .and_then(|commit| commit.tree())
+        .map_err(git_error)?;
+    if target_tree
+        .get_path(Path::new(crate::workspace::WORKSPACE_MANIFEST))
+        .is_err()
+    {
+        return Ok(false);
+    }
+    let source_tree = repo
+        .find_commit(source)
+        .and_then(|commit| commit.tree())
+        .map_err(git_error)?;
+    let diff = repo
+        .diff_tree_to_tree(Some(&base_tree), Some(&source_tree), None)
+        .map_err(git_error)?;
+    let mut changed = false;
+    for delta in diff.deltas() {
+        changed = true;
+        if !delta
+            .old_file()
+            .path()
+            .is_none_or(generated_root_metadata_path)
+            || !delta
+                .new_file()
+                .path()
+                .is_none_or(generated_root_metadata_path)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(changed)
+}
+
+fn generated_root_metadata_path(path: &Path) -> bool {
+    path == Path::new(crate::artifact::LOCK_PATH) || path.starts_with("gwz.conf/markers")
+}
+
 pub(super) fn validate_prepared_merge_upstream_in_repo(
     backend: &impl GitBackend,
     path: &Path,
@@ -126,6 +188,15 @@ pub(super) fn validate_prepared_merge_upstream_in_repo(
                 .map_err(|_| prepared_merge_mismatch("recorded tree object is unavailable"))?;
             let merge_index = in_memory_merge_index(repo, expected, source)?;
             if merge_index.has_conflicts() {
+                if generated_root_metadata_only_merge(repo, expected, source, &merge_index)? {
+                    let target_tree = repo
+                        .find_commit(expected)
+                        .and_then(|commit| commit.tree())
+                        .map_err(git_error)?;
+                    if target_tree.id().to_string() == prepared_commit.tree_oid {
+                        return Ok(kind);
+                    }
+                }
                 return Err(prepared_merge_mismatch(
                     "prepared clean merge now has conflicts",
                 ));

@@ -1,7 +1,8 @@
 use super::merge_support::{
-    classify_merge, conflict_paths, in_memory_merge_index, merge_signature, merge_signatures,
-    prepared_signature, same_signature, signature_from_prepared, signature_matches_prepared,
-    validate_checked_merge_head, validate_prepared_merge_upstream_in_repo,
+    classify_merge, conflict_paths, generated_root_metadata_only_merge, in_memory_merge_index,
+    merge_signature, merge_signatures, prepared_signature, same_signature, signature_from_prepared,
+    signature_matches_prepared, validate_checked_merge_head,
+    validate_prepared_merge_upstream_in_repo,
 };
 use super::repository_support::{
     branch_ref_name, ensure_no_integration_in_progress, open_repo, resolve_commit_oid,
@@ -181,6 +182,19 @@ pub(super) fn prepare_merge_upstream_mode_checked(
         GitMergeAnalysisKind::TrueMerge => {
             let mut index = in_memory_merge_index(&repo, expected, source)?;
             if index.has_conflicts() {
+                if generated_root_metadata_only_merge(&repo, expected, source, &index)? {
+                    let tree_oid = repo
+                        .find_commit(expected)
+                        .and_then(|commit| commit.tree())
+                        .map_err(git_error)?
+                        .id();
+                    let (author, committer) = merge_signatures(&repo, attribution)?;
+                    return Ok(GitPreparedMerge::Commit(GitPreparedCommit {
+                        tree_oid: tree_oid.to_string(),
+                        author: prepared_signature(&author)?,
+                        committer: prepared_signature(&committer)?,
+                    }));
+                }
                 return Ok(GitPreparedMerge::ExpectedConflict);
             }
             let tree_oid = index.write_tree_to(&repo).map_err(git_error)?;
