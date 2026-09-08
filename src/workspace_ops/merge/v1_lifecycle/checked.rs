@@ -7,11 +7,14 @@ use sha2::{Digest, Sha256};
 use super::super::model::v1::validate_v1_record;
 use super::super::model::v1::{MergeOperationRecordV1, ValidatedV1Record};
 use super::super::record_wire::UnknownFieldManifest;
-#[cfg(test)]
-use crate::filesystem::{FileSystem, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::WorkspaceMutatorLock;
 use crate::operation_context::OperationServices;
+
+#[cfg(test)]
+fn physical_test_services() -> OperationServices {
+    crate::operation_context::TestWorld::physical().context()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RecordDigest([u8; 32]);
@@ -71,7 +74,7 @@ impl StoredV1Record {
 
     #[cfg(test)]
     pub(super) fn from_open_bytes(root: &Path, path: &Path, bytes: &[u8]) -> ModelResult<Self> {
-        Self::from_open_bytes_in(&OperationServices::existing(), root, path, bytes)
+        Self::from_open_bytes_in(&physical_test_services(), root, path, bytes)
     }
 
     pub(super) fn context(&self) -> &OperationServices {
@@ -115,7 +118,11 @@ impl StoredV1Record {
 
     #[cfg(test)]
     pub(super) fn for_test(root: &Path, record: MergeOperationRecordV1) -> ModelResult<Self> {
-        let root = make_filesystem().canonical_path(root).map_err(io_error)?;
+        let context = physical_test_services();
+        let root = context
+            .filesystem()
+            .canonical_path(root)
+            .map_err(io_error)?;
         let raw = serde_yaml::to_value(&record).map_err(io_error)?;
         let bytes = serde_yaml::to_string(&raw).map_err(io_error)?.into_bytes();
         let unknown_fields =
@@ -123,7 +130,7 @@ impl StoredV1Record {
         let merge_id = record.merge_id.clone();
         Ok(Self {
             typed: validate_v1_record(record)?,
-            context: OperationServices::existing(),
+            context,
             raw,
             unknown_fields,
             source_digest: RecordDigest::from_bytes(&bytes),
@@ -167,7 +174,7 @@ impl V1MutationLease {
     /// ON this lease. A dated residual shipped with A1; DR-1's (C) is the cure.
     #[cfg(test)]
     pub(super) fn acquire(root: &Path) -> ModelResult<Self> {
-        Self::acquire_in(&OperationServices::existing(), root)
+        Self::acquire_in(&physical_test_services(), root)
     }
 
     pub(super) fn acquire_in(context: &OperationServices, root: &Path) -> ModelResult<Self> {
@@ -200,7 +207,7 @@ impl V1MutationLease {
     /// untouched; the catalog's own partial state converges on restart.
     #[cfg(test)]
     pub(super) fn acquire_activated(root: &Path) -> ModelResult<Self> {
-        Self::acquire_activated_in(&OperationServices::existing(), root)
+        Self::acquire_activated_in(&physical_test_services(), root)
     }
 
     pub(super) fn acquire_activated_in(
@@ -225,7 +232,7 @@ impl V1MutationLease {
     /// Two leases: admission consumes the first, execution recovers after it.
     #[cfg(test)]
     pub(super) fn acquire_for_merge_start(root: &Path, workspace_id: &str) -> ModelResult<Self> {
-        Self::acquire_for_merge_start_in(&OperationServices::existing(), root, workspace_id)
+        Self::acquire_for_merge_start_in(&physical_test_services(), root, workspace_id)
     }
 
     pub(super) fn acquire_for_merge_start_in(

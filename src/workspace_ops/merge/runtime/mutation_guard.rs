@@ -105,22 +105,6 @@ pub(crate) fn acquire_workspace_mutation_guard_in(
     })
 }
 
-/// Compatibility acquisition for entry points that do not yet accept services.
-pub fn acquire_workspace_mutation_guard(
-    start: &Path,
-    workspace: Option<&crate::WorkspaceRef>,
-    command: crate::operation::OpenMergeCommand,
-    dry_run: bool,
-) -> ModelResult<WorkspaceMutationAccess> {
-    acquire_workspace_mutation_guard_in(
-        &crate::operation_context::OperationServices::existing(),
-        start,
-        workspace,
-        command,
-        dry_run,
-    )
-}
-
 /// Resolve and enforce a gated dry-run without taking the mutator lock, or
 /// retain the authoritative guard for a real mutation.
 pub(crate) fn guarded_workspace_root_in(
