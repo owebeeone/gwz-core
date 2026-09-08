@@ -12,12 +12,14 @@ use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 mod conf_integrity;
 mod merge_marker;
 
-pub(crate) use conf_integrity::canonical_conf_integrity_marker;
 pub(crate) use conf_integrity::sha256_hex;
 pub use conf_integrity::{
     CONF_BANNER, CONF_INTEGRITY_MARKER_PATH, CONF_INTEGRITY_SCHEMA, ConfIntegrityVerdict,
     GUARDED_CONF_PATHS, conf_hand_edit_error, inspect_conf_integrity,
     refresh_conf_integrity_marker,
+};
+pub(crate) use conf_integrity::{
+    canonical_conf_integrity_marker, inspect_conf_integrity_in, refresh_conf_integrity_marker_in,
 };
 pub use merge_marker::{
     MarkerMergeArtifact, MarkerMergeParticipantArtifact, MarkerMergeTargetKind,

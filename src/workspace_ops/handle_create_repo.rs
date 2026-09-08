@@ -36,7 +36,11 @@ pub(crate) fn handle_create_workspace_in(
         OperationRequest::CreateWorkspace(request.clone()).context(operation_id.into())?;
     let root = PathBuf::from(&request.workspace_root);
     preflight_create_workspace(&root)?;
-    preflight_workspace_bootstrap_files(&root, force_bootstrap_overwrite(&request.meta))?;
+    preflight_workspace_bootstrap_files_in(
+        services.filesystem(),
+        &root,
+        force_bootstrap_overwrite(&request.meta),
+    )?;
     let workspace_id = request
         .workspace_id
         .clone()
@@ -74,8 +78,9 @@ pub(crate) fn handle_create_workspace_in(
     };
     // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `gwz repo create`, add-existing and workspace create are all capability-free (E0.2 §5.2), so all four writer pairs in this file stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
     artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)?;
-    sync_workspace_boundary(&backend, &root, &manifest, &lock)?;
-    let bootstrap = ensure_workspace_bootstrap_files(
+    sync_workspace_boundary_in(services.filesystem(), &backend, &root, &manifest, &lock)?;
+    let bootstrap = ensure_workspace_bootstrap_files_in(
+        services.filesystem(),
         &backend,
         &root,
         false,
@@ -213,7 +218,7 @@ where
     let (head, status, remotes, verified_commits, warning) = match inspected {
         Ok(inspected) => inspected,
         Err(error) => {
-            let _ = fs::remove_dir_all(&member_abs_path);
+            let _ = services.filesystem().remove_tree(&member_abs_path);
             return Err(error);
         }
     };
@@ -241,7 +246,7 @@ where
     let lock = match lock {
         Ok(lock) => lock,
         Err(error) => {
-            let _ = fs::remove_dir_all(&member_abs_path);
+            let _ = services.filesystem().remove_tree(&member_abs_path);
             return Err(error);
         }
     };
@@ -252,7 +257,7 @@ where
             .map(|current| current.members.iter().any(|item| item.id == member_id))
             .unwrap_or(false);
         if !published {
-            let _ = fs::remove_dir_all(&member_abs_path);
+            let _ = services.filesystem().remove_tree(&member_abs_path);
         }
         return Err(error);
     }

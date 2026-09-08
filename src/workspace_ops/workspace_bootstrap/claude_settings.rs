@@ -11,11 +11,13 @@
 //! code. Adding `serde_json` for one three-line config file is not warranted.
 
 use std::fmt::Write as _;
-use std::fs;
 use std::path::Path;
 
 use serde_yaml::Value;
 
+use crate::filesystem::FileSystem;
+#[cfg(test)]
+use crate::filesystem::make_filesystem;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 pub(crate) const CLAUDE_SETTINGS_PATH: &str = ".claude/settings.json";
@@ -83,13 +85,26 @@ impl ClaudeSettingsUpdate {
 }
 
 /// Create or idempotently merge the `gwz.conf` deny rules into `.claude/settings.json`.
+#[cfg(test)]
 pub(crate) fn ensure_claude_settings(
     root: &Path,
     dry_run: bool,
 ) -> ModelResult<ClaudeSettingsUpdate> {
+    ensure_claude_settings_in(&make_filesystem(), root, dry_run)
+}
+
+/// Merge the deny rules through the supplied filesystem.
+pub(crate) fn ensure_claude_settings_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    dry_run: bool,
+) -> ModelResult<ClaudeSettingsUpdate> {
     let path = root.join(CLAUDE_SETTINGS_PATH);
-    let existing = match fs::read_to_string(&path) {
-        Ok(text) => Some(text),
+    let existing = match filesystem.read(&path) {
+        Ok(bytes) => Some(
+            String::from_utf8(bytes)
+                .map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string()))?,
+        ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(ModelError::new(ErrorCode::IoError, error.to_string())),
     };
@@ -107,7 +122,7 @@ pub(crate) fn ensure_claude_settings(
         && !dry_run
     {
         // `write_atomic` creates `.claude/` on the way through and publishes durably.
-        crate::artifact::write_atomic(&path, contents)?;
+        crate::artifact::write_atomic_in(filesystem, &path, contents)?;
     }
     Ok(update)
 }
@@ -281,6 +296,7 @@ fn push_json_string(value: &str, out: &mut String) {
 mod tests {
     use super::*;
     use crate::artifact::tests::TempDir;
+    use std::fs;
 
     fn settings(temp: &TempDir) -> String {
         fs::read_to_string(temp.path().join(CLAUDE_SETTINGS_PATH)).unwrap()

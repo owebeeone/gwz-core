@@ -27,6 +27,18 @@ pub(crate) fn sync_workspace_boundary<B: GitBackend>(
     stage_workspace_git_metadata(backend, root)
 }
 
+/// Refresh the local boundary through the invocation's filesystem world.
+pub(crate) fn sync_workspace_boundary_in<B: GitBackend + ?Sized>(
+    filesystem: &dyn FileSystem,
+    backend: &B,
+    root: &Path,
+    manifest: &ManifestArtifact,
+    lock: &LockArtifact,
+) -> ModelResult<()> {
+    ensure_workspace_exclude_in(filesystem, backend, root, manifest, lock)?;
+    stage_workspace_git_metadata(backend, root)
+}
+
 /// Regenerate gwz's managed block in `<root>/.git/info/exclude` so the root repo ignores
 /// `/{RUNTIME_DIR}/`, `/{WORKSPACE_DIR}/.tmp/`, and every member path. Idempotent, preserves any
 /// non-gwz lines, and is purely local (never committed). Paths are the union of stale
@@ -40,7 +52,7 @@ pub(crate) fn ensure_workspace_exclude<B: GitBackend>(
     ensure_workspace_exclude_in(&make_filesystem(), backend, root, manifest, lock)
 }
 
-pub(crate) fn ensure_workspace_exclude_in<B: GitBackend>(
+pub(crate) fn ensure_workspace_exclude_in<B: GitBackend + ?Sized>(
     filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
@@ -56,7 +68,7 @@ pub(crate) fn ensure_workspace_exclude_in<B: GitBackend>(
 }
 
 /// Build the exact local boundary bytes without publishing them.
-pub(crate) fn workspace_exclude_candidate_in<B: GitBackend>(
+pub(crate) fn workspace_exclude_candidate_in<B: GitBackend + ?Sized>(
     filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,

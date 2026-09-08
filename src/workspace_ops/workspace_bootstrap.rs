@@ -1,13 +1,13 @@
-use std::fs;
 use std::path::Path;
 
 use crate::artifact;
+use crate::filesystem::FileSystem;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{ActionKind, OpenMergeCommand, OperationContext};
 
 use super::*;
-use claude_settings::{CLAUDE_SETTINGS_PATH, ensure_claude_settings};
+use claude_settings::{CLAUDE_SETTINGS_PATH, ensure_claude_settings_in};
 pub(crate) use conf_gate::{assert_conf_unmodified_for, reconcile_authority};
 
 mod claude_settings;
@@ -56,6 +56,19 @@ where
     B: GitBackend,
 {
     let services = crate::operation_context::OperationServices::existing();
+    handle_update_workspace_bootstrap_in(&services, backend, start, meta, operation_id)
+}
+
+pub(crate) fn handle_update_workspace_bootstrap_in<B>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &Path,
+    meta: crate::RequestMeta,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::ResponseEnvelope>
+where
+    B: GitBackend,
+{
     let context =
         OperationContext::from_meta(operation_id.into(), ActionKind::InitFromSources, &meta)?;
     let (_guard, root) = guarded_workspace_root_in(
@@ -73,8 +86,9 @@ where
     // NOTE: this is the same `--force` that authorizes overwriting a locally edited
     // AGENTS_GWZ.md, so forcing for that reason also accepts any conf drift. A distinct
     // flag would separate the two; that is an operator decision, not this lane's.
-    let accepted_conf_state =
-        force && !dry_run && artifact::inspect_conf_integrity(&root).refuses();
+    let accepted_conf_state = force
+        && !dry_run
+        && artifact::inspect_conf_integrity_in(services.filesystem(), &root).refuses();
     if !force {
         assert_conf_unmodified_for(
             backend,
@@ -83,20 +97,21 @@ where
             reconcile_authority(_guard.as_ref(), dry_run),
         )?;
     }
-    let manifest = artifact::read_manifest(&root)?;
+    let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     if force {
         // Read BOTH documents before blessing them, so `--force` can never enshrine bytes
         // gwz cannot parse. The lock is read only when it exists: a workspace mid-init, or
         // one whose lock is legitimately absent, must still be acceptable.
-        if root.join(artifact::LOCK_PATH).exists() {
-            artifact::read_lock(&root)?;
+        if path_exists_in(services.filesystem(), &root.join(artifact::LOCK_PATH))? {
+            artifact::read_lock_in(services.filesystem(), &root)?;
         }
         if !dry_run {
-            artifact::refresh_conf_integrity_marker(&root)?;
+            artifact::refresh_conf_integrity_marker_in(services.filesystem(), &root)?;
         }
     }
     assert_workspace_id(&manifest, meta.workspace.as_ref())?;
-    let mut outcome = ensure_workspace_bootstrap_files(backend, &root, dry_run, force)?;
+    let mut outcome =
+        ensure_workspace_bootstrap_files_in(services.filesystem(), backend, &root, dry_run, force)?;
     if accepted_conf_state {
         outcome.notes.push(format!(
             "accepted the current on-disk {} state as the gwz-written baseline",
@@ -108,15 +123,19 @@ where
     Ok(response)
 }
 
-pub(crate) fn preflight_workspace_bootstrap_files(root: &Path, force: bool) -> ModelResult<()> {
-    if let Some(contents) = read_optional_text(&root.join(AGENTS_GWZ_PATH))?
+pub(crate) fn preflight_workspace_bootstrap_files_in(
+    filesystem: &dyn FileSystem,
+    root: &Path,
+    force: bool,
+) -> ModelResult<()> {
+    if let Some(contents) = read_optional_text_in(filesystem, &root.join(AGENTS_GWZ_PATH))?
         && !(force
             || contents == managed_agents_gwz_contents()
             || has_trusted_managed_header(&contents))
     {
         return Err(untrusted_bootstrap_error());
     }
-    read_optional_text(&root.join(AGENTS_PATH)).map(|_| ())
+    read_optional_text_in(filesystem, &root.join(AGENTS_PATH)).map(|_| ())
 }
 
 fn agents_with_gwz_reference(existing: Option<&str>) -> Option<String> {
@@ -138,9 +157,11 @@ fn agents_with_gwz_reference(existing: Option<&str>) -> Option<String> {
     Some(target)
 }
 
-fn read_optional_text(path: &Path) -> ModelResult<Option<String>> {
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(Some(contents)),
+fn read_optional_text_in(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<Option<String>> {
+    match filesystem.read(path) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(io_error(error)),
     }
@@ -178,18 +199,20 @@ impl BootstrapOutcome {
     }
 }
 
-pub(crate) fn ensure_workspace_bootstrap_files<B>(
+/// Bootstrap workspace-owned files through the same filesystem as its artifacts.
+pub(crate) fn ensure_workspace_bootstrap_files_in<B>(
+    filesystem: &dyn FileSystem,
     backend: &B,
     root: &Path,
     dry_run: bool,
     force: bool,
 ) -> ModelResult<BootstrapOutcome>
 where
-    B: GitBackend,
+    B: GitBackend + ?Sized,
 {
-    preflight_workspace_bootstrap_files(root, force)?;
+    preflight_workspace_bootstrap_files_in(filesystem, root, force)?;
     let path = root.join(AGENTS_GWZ_PATH);
-    let existing = read_optional_text(&path)?;
+    let existing = read_optional_text_in(filesystem, &path)?;
     let target = managed_agents_gwz_contents();
     let agents_gwz_status = match existing.as_deref() {
         None => BootstrapUpdateStatus::Created,
@@ -197,8 +220,9 @@ where
         Some(_) => BootstrapUpdateStatus::Updated,
     };
     let agents_path = root.join(AGENTS_PATH);
-    let agents_target = agents_with_gwz_reference(read_optional_text(&agents_path)?.as_deref());
-    let settings = ensure_claude_settings(root, dry_run)?;
+    let agents_target =
+        agents_with_gwz_reference(read_optional_text_in(filesystem, &agents_path)?.as_deref());
+    let settings = ensure_claude_settings_in(filesystem, root, dry_run)?;
     let status = combine_bootstrap_status(
         agents_gwz_status,
         agents_target.is_some() || settings.changed(),
@@ -208,22 +232,22 @@ where
 
     if !dry_run {
         if agents_gwz_status != BootstrapUpdateStatus::Unchanged {
-            fs::write(&path, target).map_err(io_error)?;
+            artifact::write_atomic_in(filesystem, &path, target)?;
         }
-        if path.exists() {
+        if path_exists_in(filesystem, &path)? {
             backend.stage_paths(root, &[AGENTS_GWZ_PATH])?;
         }
         if let Some(agents_target) = agents_target {
-            fs::write(&agents_path, agents_target).map_err(io_error)?;
+            artifact::write_atomic_in(filesystem, &agents_path, agents_target)?;
             backend.stage_paths(root, &[AGENTS_PATH])?;
         }
         // Stage it only when this run wrote it. A pre-existing file gwz declined to
         // touch — unparseable, or the wrong shape — stays exactly as the operator left
         // it, including deliberately untracked.
-        if settings.changed() && root.join(CLAUDE_SETTINGS_PATH).exists() {
+        if settings.changed() && path_exists_in(filesystem, &root.join(CLAUDE_SETTINGS_PATH))? {
             backend.stage_paths(root, &[CLAUDE_SETTINGS_PATH])?;
         }
-        notes.extend(adopt_conf_integrity(backend, root)?);
+        notes.extend(adopt_conf_integrity_in(filesystem, backend, root)?);
     }
 
     Ok(BootstrapOutcome { status, notes })
@@ -236,13 +260,17 @@ where
 /// files, whereas making read-only commands (`gwz status`, `gwz ls`, `gwz diff`) or a dry
 /// run mutate the tree would dirty a workspace nobody asked to change. A workspace that
 /// already has a marker is never re-blessed here; that is `--force`'s job alone.
-fn adopt_conf_integrity<B>(backend: &B, root: &Path) -> ModelResult<Option<String>>
+fn adopt_conf_integrity_in<B>(
+    filesystem: &dyn FileSystem,
+    backend: &B,
+    root: &Path,
+) -> ModelResult<Option<String>>
 where
-    B: GitBackend,
+    B: GitBackend + ?Sized,
 {
-    let note = match artifact::inspect_conf_integrity(root) {
+    let note = match artifact::inspect_conf_integrity_in(filesystem, root) {
         artifact::ConfIntegrityVerdict::NotEnrolled => {
-            artifact::refresh_conf_integrity_marker(root)?;
+            artifact::refresh_conf_integrity_marker_in(filesystem, root)?;
             None
         }
         verdict @ artifact::ConfIntegrityVerdict::MarkerUnreadable(_) => verdict.warning(),
@@ -253,10 +281,18 @@ where
     // Stage whatever marker is now on disk — the freshly adopted one, or the one
     // `--force` just re-blessed. The marker only works if git moves it in the same
     // commit as the files it vouches for; staging an unchanged file is a no-op.
-    if root.join(artifact::CONF_INTEGRITY_MARKER_PATH).exists() {
+    if path_exists_in(filesystem, &root.join(artifact::CONF_INTEGRITY_MARKER_PATH))? {
         backend.stage_paths(root, &[artifact::CONF_INTEGRITY_MARKER_PATH])?;
     }
     Ok(note)
+}
+
+fn path_exists_in(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<bool> {
+    match filesystem.metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(error)),
+    }
 }
 
 pub(crate) fn force_bootstrap_overwrite(meta: &crate::RequestMeta) -> bool {
@@ -309,4 +345,47 @@ fn untrusted_bootstrap_error() -> ModelError {
         ErrorCode::PermissionDenied,
         "AGENTS_GWZ.md has local edits or is missing a trusted gwz-managed-file header; rerun with --force to overwrite",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::TestRepoSpec;
+    use crate::operation_context::TestWorld;
+
+    #[test]
+    fn bootstrap_in_stays_in_the_supplied_memory_world() {
+        let world = TestWorld::memory();
+        let services = world.context();
+        let workspace = services.filesystem().test_workspace().unwrap();
+        services
+            .repository()
+            .test_init_repo(workspace.path(), &TestRepoSpec::default())
+            .unwrap();
+
+        let outcome = ensure_workspace_bootstrap_files_in(
+            services.filesystem(),
+            services.repository(),
+            workspace.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.status, BootstrapUpdateStatus::Created);
+        assert!(
+            services
+                .filesystem()
+                .read(&workspace.path().join(AGENTS_GWZ_PATH))
+                .is_ok()
+        );
+        assert!(
+            services
+                .filesystem()
+                .read(&workspace.path().join(AGENTS_PATH))
+                .is_ok()
+        );
+        assert!(!workspace.path().join(AGENTS_GWZ_PATH).exists());
+        assert!(!workspace.path().join(AGENTS_PATH).exists());
+    }
 }

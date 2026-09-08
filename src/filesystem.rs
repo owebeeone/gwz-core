@@ -255,6 +255,26 @@ pub(crate) trait FileSystem: Send + Sync {
         let (parent, name) = split(path)?;
         self.remove_directory_at(&self.open_directory(parent)?, name)
     }
+    /// Remove a path and everything below it without escaping the selected filesystem.
+    ///
+    /// Symlinks are removed as links; their targets are never traversed.
+    fn remove_tree(&self, path: &Path) -> io::Result<()> {
+        match self.kind(path)? {
+            FsKind::Directory => {
+                for entry in self.read_directory(path)? {
+                    let child = path.join(entry.name);
+                    match entry.kind {
+                        FsKind::Directory => self.remove_tree(&child)?,
+                        FsKind::File | FsKind::Symlink | FsKind::Other => {
+                            self.remove_file(&child)?
+                        }
+                    }
+                }
+                self.remove_directory(path)
+            }
+            FsKind::File | FsKind::Symlink | FsKind::Other => self.remove_file(path),
+        }
+    }
     fn create_directories(&self, path: &Path) -> io::Result<()> {
         match self.open_directory(path) {
             Ok(_) => return Ok(()),

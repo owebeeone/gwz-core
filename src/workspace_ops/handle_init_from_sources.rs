@@ -45,14 +45,22 @@ where
         assert_init_target_is_head(request.target.as_ref())?;
         let force_bootstrap = force_bootstrap_overwrite(&request.meta);
 
-        if root.join(WORKSPACE_MANIFEST).exists() {
+        let manifest_exists = match services
+            .filesystem()
+            .metadata(&root.join(WORKSPACE_MANIFEST))
+        {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(io_error(error)),
+        };
+        if manifest_exists {
             if crate::git::has_transport_options(request.meta.transport.as_ref()) {
                 return Err(ModelError::new(
                     ErrorCode::UnsupportedOperation,
                     "init planning in an existing workspace does not use network credentials",
                 ));
             }
-            let manifest = artifact::read_manifest(&root)?;
+            let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
             if let Some(expected) = &request.workspace_id
                 && expected != &manifest.workspace.id
             {
@@ -72,7 +80,7 @@ where
         }
 
         preflight_create_workspace(&root)?;
-        preflight_workspace_bootstrap_files(&root, force_bootstrap)?;
+        preflight_workspace_bootstrap_files_in(services.filesystem(), &root, force_bootstrap)?;
         let workspace_id = request
             .workspace_id
             .clone()
@@ -209,15 +217,21 @@ where
             // F2/Q6 reject-partial: a source failed mid-batch. Roll back this op's
             // fresh clones and write no manifest/lock — failed = nothing changed.
             for path in &fresh_clone_paths {
-                let _ = std::fs::remove_dir_all(path);
+                let _ = services.filesystem().remove_tree(path);
             }
             emitter.operation_finished();
             return Err(error);
         }
         // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `init-from-sources` is named on E0.2 §5.2's list, so this writer pair stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
-        artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-        sync_workspace_boundary(backend, &root, &manifest, &lock)?;
-        let bootstrap = ensure_workspace_bootstrap_files(backend, &root, false, force_bootstrap)?;
+        artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)?;
+        sync_workspace_boundary_in(services.filesystem(), backend, &root, &manifest, &lock)?;
+        let bootstrap = ensure_workspace_bootstrap_files_in(
+            services.filesystem(),
+            backend,
+            &root,
+            false,
+            force_bootstrap,
+        )?;
         emitter.operation_finished();
 
         let mut response = response_envelope(context, crate::AggregateStatus::Ok, members);
