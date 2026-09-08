@@ -12,8 +12,12 @@ use crate::operation::WorkspaceMutatorLock;
 use crate::operation_context::OperationServices;
 
 #[cfg(test)]
-fn physical_test_services() -> OperationServices {
-    crate::operation_context::TestWorld::physical().context()
+pub(super) fn factory_test_services() -> OperationServices {
+    use crate::filesystem::make_filesystem;
+    use crate::git::make_repository;
+    use std::sync::Arc;
+
+    OperationServices::from_services(Arc::new(make_filesystem()), Arc::new(make_repository()))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,7 +78,7 @@ impl StoredV1Record {
 
     #[cfg(test)]
     pub(super) fn from_open_bytes(root: &Path, path: &Path, bytes: &[u8]) -> ModelResult<Self> {
-        Self::from_open_bytes_in(&physical_test_services(), root, path, bytes)
+        Self::from_open_bytes_in(&factory_test_services(), root, path, bytes)
     }
 
     pub(super) fn context(&self) -> &OperationServices {
@@ -118,7 +122,7 @@ impl StoredV1Record {
 
     #[cfg(test)]
     pub(super) fn for_test(root: &Path, record: MergeOperationRecordV1) -> ModelResult<Self> {
-        let context = physical_test_services();
+        let context = factory_test_services();
         let root = context
             .filesystem()
             .canonical_path(root)
@@ -174,7 +178,7 @@ impl V1MutationLease {
     /// ON this lease. A dated residual shipped with A1; DR-1's (C) is the cure.
     #[cfg(test)]
     pub(super) fn acquire(root: &Path) -> ModelResult<Self> {
-        Self::acquire_in(&physical_test_services(), root)
+        Self::acquire_in(&factory_test_services(), root)
     }
 
     pub(super) fn acquire_in(context: &OperationServices, root: &Path) -> ModelResult<Self> {
@@ -207,7 +211,7 @@ impl V1MutationLease {
     /// untouched; the catalog's own partial state converges on restart.
     #[cfg(test)]
     pub(super) fn acquire_activated(root: &Path) -> ModelResult<Self> {
-        Self::acquire_activated_in(&physical_test_services(), root)
+        Self::acquire_activated_in(&factory_test_services(), root)
     }
 
     pub(super) fn acquire_activated_in(
@@ -232,7 +236,7 @@ impl V1MutationLease {
     /// Two leases: admission consumes the first, execution recovers after it.
     #[cfg(test)]
     pub(super) fn acquire_for_merge_start(root: &Path, workspace_id: &str) -> ModelResult<Self> {
-        Self::acquire_for_merge_start_in(&physical_test_services(), root, workspace_id)
+        Self::acquire_for_merge_start_in(&factory_test_services(), root, workspace_id)
     }
 
     pub(super) fn acquire_for_merge_start_in(

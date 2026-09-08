@@ -157,12 +157,11 @@ fn integrated_fixture(name: &str) -> PreservationFixture {
     integrated_fixture_using(name, make_repository())
 }
 
-fn integrated_fixture_using<B: GitBackend>(name: &str, backend: B) -> PreservationFixture<B> {
-    integrated_fixture_in(
-        name,
-        backend,
-        crate::operation_context::TestWorld::physical().context(),
-    )
+fn integrated_fixture_using<B: GitBackend + crate::git::MergeAuthorityBackend + Clone>(
+    name: &str,
+    backend: B,
+) -> PreservationFixture<B> {
+    integrated_fixture_in(name, backend.clone(), backend.operation_services())
 }
 
 fn integrated_fixture_in<B: GitBackend>(
@@ -378,7 +377,7 @@ fn dirty_root_handoff_fixture_with_owner(
     )
 }
 
-fn dirty_root_handoff_fixture_using<B: GitBackend>(
+fn dirty_root_handoff_fixture_using<B: GitBackend + crate::git::MergeAuthorityBackend + Clone>(
     name: &str,
     selected_root_owner: bool,
     include_later_member: bool,
@@ -390,8 +389,8 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
         selected_root_owner,
         include_later_member,
         degenerate_candidate,
-        backend,
-        crate::operation_context::TestWorld::physical().context(),
+        backend.clone(),
+        backend.operation_services(),
     )
 }
 

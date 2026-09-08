@@ -30,7 +30,7 @@ pub(super) enum ArchiveOutcome {
 #[cfg(test)]
 impl Default for CheckedV1Store {
     fn default() -> Self {
-        Self::new(crate::operation_context::TestWorld::physical().context())
+        Self::new(crate::workspace_ops::merge::v1_lifecycle::checked::factory_test_services())
     }
 }
 
