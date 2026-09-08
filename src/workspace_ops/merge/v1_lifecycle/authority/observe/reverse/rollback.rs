@@ -180,8 +180,8 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_abort_participant<
             let proof = VerifiedParticipantNotStarted::issue(
                 &AuthorityIssuer::for_observer(current),
                 member_id,
-                "participant_not_started",
-                "verified",
+                "participant_action",
+                "not_started",
                 member_id.into(),
             )?;
             let entry = prepare_entry(
