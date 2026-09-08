@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(crate) struct OperationServices {
+pub struct OperationServices {
     filesystem: Arc<dyn FileSystem>,
     repository: Arc<dyn GitRepository + Send + Sync>,
 }

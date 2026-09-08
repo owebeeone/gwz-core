@@ -22,7 +22,13 @@ pub mod diff;
 mod durable_fs;
 mod filesystem;
 pub mod git;
-mod operation_context;
+/// Per-invocation infrastructure supplied by a command driver.
+///
+/// The type is deliberately opaque: production callers obtain it from the
+/// `Git2Backend` that will execute the operation, while core tests use their
+/// explicit test worlds.  A process-wide fake/native switch is not part of
+/// this boundary.
+pub mod operation_context;
 #[cfg(test)]
 mod test_backend;
 // LCM1.0c (gwz-dev dev-docs/GwzLocalClonePlan.md §3 "1.0c",
