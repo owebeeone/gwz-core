@@ -296,6 +296,7 @@ where
                                 remote: Some(remote.into()),
                                 refspec: Some(refspec),
                             },
+                            &BTreeMap::new(),
                         )?;
                     }
                     backend

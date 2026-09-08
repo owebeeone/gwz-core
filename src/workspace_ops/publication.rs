@@ -8,6 +8,32 @@ use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
 
+/// Remote reads completed before any publication starts.  The identity owner is
+/// part of the key: the same URL reached with a different repository's SSH
+/// configuration still needs its own authentication check.
+#[derive(Default)]
+pub(super) struct ReadPreflight {
+    checked: std::collections::BTreeSet<(std::path::PathBuf, String, String)>,
+}
+
+impl ReadPreflight {
+    pub(super) fn record(&mut self, identity_repo: &Path, remote: &str, url: &str) {
+        self.checked.insert((
+            identity_repo.to_path_buf(),
+            remote.to_owned(),
+            url.to_owned(),
+        ));
+    }
+
+    fn contains(&self, identity_repo: &Path, remote: &str, url: &str) -> bool {
+        self.checked.contains(&(
+            identity_repo.to_path_buf(),
+            remote.to_owned(),
+            url.to_owned(),
+        ))
+    }
+}
+
 pub(super) fn freeze_root_request<B: GitBackend>(
     backend: &B,
     root: &Path,
@@ -43,9 +69,13 @@ pub(super) fn checked_root_request<B: GitBackend>(
     backend: &B,
     root: &Path,
     request: &crate::PushRequest,
+    published: &std::collections::BTreeMap<String, crate::git::GitPreparedPush>,
 ) -> ModelResult<crate::PushRequest> {
     let pinned = freeze_root_request(backend, root, request)?;
     for dependency in root_dependencies(backend, root, &pinned)? {
+        if dependency_was_published(&dependency, published) {
+            continue;
+        }
         let materialized = backend.is_repository(&dependency.path)?;
         let advertised = backend.ls_remote_url(
             root,
@@ -75,6 +105,28 @@ pub(super) fn checked_root_request<B: GitBackend>(
         }
     }
     Ok(pinned)
+}
+
+/// A completed member push of the exact commit in the frozen root lock is
+/// stronger evidence than a second read advertisement: that remote accepted
+/// the object during this operation.  Keep the comparison intentionally
+/// exact; an ahead member still receives the ordinary remote proof below.
+fn dependency_was_published(
+    dependency: &PublicationDependency,
+    published: &std::collections::BTreeMap<String, crate::git::GitPreparedPush>,
+) -> bool {
+    let Some(plan) = published.get(&dependency.member_id) else {
+        return false;
+    };
+    plan.remote == dependency.remote
+        && plan.url == dependency.url
+        && plan.refspecs.iter().any(|refspec| {
+            refspec
+                .strip_prefix('+')
+                .and_then(|value| value.split_once(':'))
+                .map(|(source, _)| source == dependency.commit)
+                .unwrap_or(false)
+        })
 }
 
 pub(super) struct PublicationDependency {
@@ -126,16 +178,34 @@ pub(super) fn preflight_dependencies<B: GitBackend>(
     root: &Path,
     request: &crate::PushRequest,
 ) -> ModelResult<()> {
-    let mut seen = std::collections::BTreeSet::new();
+    preflight_dependencies_with_reads(backend, root, request, &mut ReadPreflight::default())
+}
+
+/// Confirm that every root-lock dependency has read access before any push.
+/// Previously checked destinations can be reused only in this pre-transfer
+/// phase. `checked_root_request` deliberately reads again after member pushes
+/// to prove the pinned objects are now advertised.
+pub(super) fn preflight_dependencies_with_reads<B: GitBackend>(
+    backend: &B,
+    root: &Path,
+    request: &crate::PushRequest,
+    reads: &mut ReadPreflight,
+) -> ModelResult<()> {
     for dependency in root_dependencies(backend, root, request)? {
         let materialized = backend.is_repository(&dependency.path)?;
-        let identity_repo = materialized.then_some(dependency.path.as_path());
-        if seen.insert((
-            identity_repo.map(Path::to_path_buf),
-            dependency.remote.clone(),
-            dependency.url.clone(),
-        )) {
-            backend.ls_remote_url(root, &dependency.url, &dependency.remote, identity_repo)?;
+        if !materialized {
+            backend.ls_remote_url(root, &dependency.url, &dependency.remote, None)?;
+            continue;
+        }
+        let identity_repo = dependency.path.as_path();
+        if !reads.contains(identity_repo, &dependency.remote, &dependency.url) {
+            backend.ls_remote_url(
+                root,
+                &dependency.url,
+                &dependency.remote,
+                Some(identity_repo),
+            )?;
+            reads.record(identity_repo, &dependency.remote, &dependency.url);
         }
     }
     Ok(())

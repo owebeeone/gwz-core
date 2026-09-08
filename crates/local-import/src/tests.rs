@@ -81,7 +81,7 @@ fn fetch(receiver: &str, source: &str) -> TransportCall {
     TransportCall::FetchAnonymous {
         receiver: receiver.into(),
         source: source.into(),
-        refspecs: vec![format!("HEAD:{IMPORT}")],
+        refspecs: vec![format!("+HEAD:{IMPORT}")],
     }
 }
 
@@ -347,10 +347,10 @@ fn a_named_source_ref_is_resolved_in_the_source_and_fetched_by_that_name() {
         TransportCall::FetchAnonymous {
             receiver: "/D/app".into(),
             source: "/A/app".into(),
-            refspecs: vec![format!("refs/heads/lane/agent-17:{IMPORT}")],
+            refspecs: vec![format!("+refs/heads/lane/agent-17:{IMPORT}")],
         },
-        "no `+`: the name was checked free, so a forced update would only \
-         hide a collision that appeared since"
+        "the import name was checked free before transfer; force avoids libgit2's \
+         unrelated-history ancestry walk for the private import ref"
     );
 }
 

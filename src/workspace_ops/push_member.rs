@@ -220,6 +220,7 @@ where
 
         // No member transfer starts until every selected destination and root-lock
         // dependency has passed read authentication. Aggregate failures per target.
+        let mut read_preflight = super::publication::ReadPreflight::default();
         for response in &mut preflight {
             if response.status != crate::MemberStatus::Planned {
                 continue;
@@ -230,12 +231,17 @@ where
             let path = root.join(&response.member_path);
             let result = backend
                 .ls_remote_url(&path, &plan.url, &plan.remote, Some(&path))
+                .map(|advertised| {
+                    read_preflight.record(&path, &plan.remote, &plan.url);
+                    advertised
+                })
                 .and_then(|_| {
                     if response.member_id == "@root" {
-                        super::publication::preflight_dependencies(
+                        super::publication::preflight_dependencies_with_reads(
                             backend,
                             &root,
                             root_request.as_ref().expect("selected root captured"),
+                            &mut read_preflight,
                         )
                     } else {
                         Ok(())
@@ -322,10 +328,21 @@ where
                 .map(|response| response.member_id.as_str())
                 .collect();
             let root_response = if failed.is_empty() {
+                let published: std::collections::BTreeMap<_, _> = responses
+                    .iter()
+                    .filter(|response| response.status == crate::MemberStatus::Ok)
+                    .filter_map(|response| {
+                        plans
+                            .get(&response.member_id)
+                            .cloned()
+                            .map(|plan| (response.member_id.clone(), plan))
+                    })
+                    .collect();
                 match super::publication::checked_root_request(
                     backend,
                     &root,
                     root_request.as_ref().expect("selected root was captured"),
+                    &published,
                 ) {
                     Ok(_) => {
                         let mut response = preflight

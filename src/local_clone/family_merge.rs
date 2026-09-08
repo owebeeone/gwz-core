@@ -138,19 +138,18 @@ pub(crate) fn selected_keys(
         .collect())
 }
 
-/// Every repository a workspace's lock records, in lock order, plus its
-/// root: the participant set the import pairs by member id (design §6).
+/// The root first, then every repository the workspace lock records in lock
+/// order. Importing the root before member repositories keeps the root
+/// transfer independent of nested repository fetch state.
 pub(crate) fn participants_of(root: &Path, lock: &LockArtifact) -> Vec<Participant> {
-    lock.members
-        .iter()
-        .map(|(id, entry)| {
+    std::iter::once(Participant::root(root))
+        .chain(lock.members.iter().map(|(id, entry)| {
             Participant::new(
                 RepoKey::Member { id: id.clone() },
                 entry.path.clone(),
                 root.join(&entry.path),
             )
-        })
-        .chain(std::iter::once(Participant::root(root)))
+        }))
         .collect()
 }
 

@@ -564,7 +564,11 @@ pub fn prepare_import(
         }
     }
 
-    let refspec = format!("{}:{import_ref}", request.selector.refspec_source());
+    // A fresh import name is collision-checked in every receiver above.
+    // Force the explicit update anyway: libgit2 otherwise performs an
+    // unrelated-history ancestry walk while updating this private ref, which
+    // can reject a valid root import before writing the ref.
+    let refspec = format!("+{}:{import_ref}", request.selector.refspec_source());
     for (pairing, commit) in pairings.iter().zip(&captured) {
         if let Some(error) = cancelled(cancellation, &effects) {
             return Err(error);
