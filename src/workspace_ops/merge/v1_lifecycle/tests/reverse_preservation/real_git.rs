@@ -312,8 +312,8 @@ fn selected_root_owns_the_same_complete_handoff_state_machine_without_collision(
 }
 
 struct SelectedRootRecordingRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
-    backend: &'a Git2Backend,
+    inner: ReverseRuntime<'a, GitTestRepository>,
+    backend: &'a GitTestRepository,
     root: &'a std::path::Path,
     anchor: &'a str,
     saw_backup: bool,
@@ -371,7 +371,7 @@ impl PhysicalExecutor for SelectedRootRecordingRuntime<'_> {
 }
 
 struct RecordingRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     preservation_actions: Vec<PendingPreservationActionV1>,
     saw_backup: bool,
     stash_phases: Vec<S>,

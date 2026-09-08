@@ -425,6 +425,9 @@ pub(super) fn index_matches_candidate_files(
     expected_files: &[GitCandidateFile],
     absent_paths: &[String],
 ) -> ModelResult<bool> {
+    use crate::filesystem::{FileSystem, FsKind, make_filesystem};
+
+    let filesystem = make_filesystem();
     let repo = open_repo(path)?;
     let index = repo.index().map_err(git_error)?;
     for file in expected_files {
@@ -446,29 +449,28 @@ pub(super) fn index_matches_candidate_files(
             return Ok(false);
         }
         let worktree_path = path.join(&file.path);
-        let metadata = match std::fs::symlink_metadata(&worktree_path) {
+        let metadata = match filesystem.metadata(&worktree_path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(crate::git::io_error(error)),
         };
-        if !metadata.file_type().is_file()
-            || std::fs::read(&worktree_path).map_err(crate::git::io_error)? != file.bytes
+        if metadata.kind != FsKind::File
+            || filesystem
+                .read(&worktree_path)
+                .map_err(crate::git::io_error)?
+                != file.bytes
         {
             return Ok(false);
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o111 != 0 {
-                return Ok(false);
-            }
+        if metadata.executable {
+            return Ok(false);
         }
     }
     for absent in absent_paths {
         if index.iter().any(|entry| entry.path == absent.as_bytes()) {
             return Ok(false);
         }
-        match std::fs::symlink_metadata(path.join(absent)) {
+        match filesystem.metadata(&path.join(absent)) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Ok(_) => return Ok(false),
             Err(error) => return Err(crate::git::io_error(error)),
@@ -523,7 +525,7 @@ fn parse_commit(repo: &git2::Repository, target: &str) -> ModelResult<git2::Oid>
     Ok(oid)
 }
 
-fn validate_backup_ref_name(name: &str) -> ModelResult<()> {
+pub(super) fn validate_backup_ref_name(name: &str) -> ModelResult<()> {
     if !name.starts_with(MERGE_REF_PREFIX)
         || !name.ends_with("/head")
         || !git2::Reference::is_valid_name(name)

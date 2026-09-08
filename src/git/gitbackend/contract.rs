@@ -145,7 +145,80 @@ pub enum GitPreparedMergeMode {
     ForceMergeCommit,
 }
 
-pub trait GitBackend {
+/// All Git operations used by GWZ. Implementations must preserve the documented
+/// observation, mutation and failure semantics; unsupported operations fail closed.
+/// The test-only FakeGitRepository implements this same interface.
+pub trait GitRepository {
+    #[cfg(test)]
+    fn test_init_repo(&self, repo: &Path, spec: &TestRepoSpec) -> ModelResult<()>;
+    #[cfg(test)]
+    fn test_create_commit(&self, repo: &Path, spec: &TestCommitSpec) -> ModelResult<String>;
+    #[cfg(test)]
+    fn test_read_commit(&self, repo: &Path, oid: &str) -> ModelResult<TestCommit>;
+    #[cfg(test)]
+    fn test_set_ref(
+        &self,
+        repo: &Path,
+        name: &str,
+        target: Option<&TestRefTarget>,
+    ) -> ModelResult<()>;
+    #[cfg(test)]
+    fn test_set_head(&self, repo: &Path, state: &TestHead) -> ModelResult<()>;
+    #[cfg(test)]
+    fn test_replace_index(&self, repo: &Path, entries: &[TestIndexEntry]) -> ModelResult<()>;
+    #[cfg(test)]
+    fn test_read_index(&self, repo: &Path) -> ModelResult<Vec<TestIndexEntry>>;
+    #[cfg(test)]
+    fn test_set_config(&self, repo: &Path, key: &str, values: &[String]) -> ModelResult<()>;
+    #[cfg(test)]
+    fn test_read_config(&self, repo: &Path, key: &str) -> ModelResult<Vec<String>>;
+    #[cfg(test)]
+    fn test_force_checkout(&self, _repo: &Path, _commit: &str) -> ModelResult<()> {
+        unsupported_backend("test_force_checkout")
+    }
+    #[cfg(test)]
+    fn test_reset_mixed(&self, _repo: &Path, _commit: &str) -> ModelResult<()> {
+        unsupported_backend("test_reset_mixed")
+    }
+    #[cfg(test)]
+    fn test_set_repository_state(
+        &self,
+        _repo: &Path,
+        _state: GitRepositoryState,
+        _merge_head: Option<&str>,
+    ) -> ModelResult<()> {
+        unsupported_backend("test_set_repository_state")
+    }
+    #[cfg(test)]
+    fn test_seed_merge_conflict(
+        &self,
+        _repo: &Path,
+        _before: &str,
+        _source: &str,
+    ) -> ModelResult<GitMergeConflictSnapshot> {
+        unsupported_backend("test_seed_merge_conflict")
+    }
+    #[cfg(test)]
+    fn test_create_commit_from_parent(
+        &self,
+        _repo: &Path,
+        _parent: &str,
+        _message: &str,
+        _edits: &[TestCommitFileEdit],
+    ) -> ModelResult<String> {
+        unsupported_backend("test_create_commit_from_parent")
+    }
+
+    /// Read preservation stashes for exactly this merge, without mutation.
+    /// Keep duplicate matches visible so callers can reject ambiguity.
+    fn preservation_stashes(
+        &self,
+        _path: &Path,
+        _merge_id: &str,
+    ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
+        unsupported_backend("preservation_stashes")
+    }
+
     /// Bind invocation credentials to a new backend value. The default refuses
     /// explicit authority rather than silently ignoring it. No global state.
     fn with_transport(
@@ -214,6 +287,14 @@ pub trait GitBackend {
         unsupported_backend("read_remote_file")
     }
 
+    /// Read lossless index facts and the actual index path without retaining a native handle.
+    fn repository_index(&self, _path: &Path) -> ModelResult<GitIndexSnapshot> {
+        unsupported_backend("repository_index")
+    }
+    /// Resolve worktree, Git directory, and common storage locations.
+    fn repository_paths(&self, _path: &Path) -> ModelResult<GitRepositoryPaths> {
+        unsupported_backend("repository_paths")
+    }
     fn is_repository(&self, path: &Path) -> ModelResult<bool>;
     /// Return whether `oid` exists locally and resolves to a commit object.
     /// This never fetches and returns `false` for malformed, missing, or
@@ -600,6 +681,41 @@ pub trait GitBackend {
         } else {
             unsupported_backend("checkout_matches_commit_with_overlay")
         }
+    }
+    /// Capture a preimage with the supplied managed files normalized to their clean form.
+    /// Excluded paths are control state; this observation must not rewrite the checkout.
+    fn root_preservation_image(
+        &self,
+        _root: &Path,
+        _clean: &GitRootManagedForm,
+        _excluded: &[String],
+    ) -> ModelResult<GitPreservationImage> {
+        unsupported_backend("root_preservation_image")
+    }
+    /// Validate managed paths, index facts, and clean forms against their exact commits.
+    fn validate_root_preservation_spec(
+        &self,
+        _root: &Path,
+        _spec: &GitRootPreservationSpec,
+    ) -> ModelResult<()> {
+        unsupported_backend("validate_root_preservation_spec")
+    }
+    /// Observe the exact managed index entries and marker namespace, without mutation.
+    fn root_managed_index_matches(
+        &self,
+        _root: &Path,
+        _form: &GitRootManagedIndexForm,
+    ) -> ModelResult<bool> {
+        unsupported_backend("root_managed_index_matches")
+    }
+    /// Replace only the managed index entries, preserving unrelated entries and
+    /// checking the resulting index. The shared protocol supplies the precondition.
+    fn rewrite_root_managed_index_checked(
+        &self,
+        _root: &Path,
+        _form: &GitRootManagedIndexForm,
+    ) -> ModelResult<()> {
+        unsupported_backend("rewrite_root_managed_index_checked")
     }
     fn prepare_root_preservation_stash(
         &self,
@@ -1021,3 +1137,6 @@ fn unsupported_backend<T>(method: &str) -> ModelResult<T> {
         format!("{method} is not implemented by this GitBackend"),
     ))
 }
+
+/// Compatibility name for existing callers; this is the same trait.
+pub use GitRepository as GitBackend;

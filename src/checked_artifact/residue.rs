@@ -1,9 +1,5 @@
 use std::ffi::{OsStr, OsString};
-use std::io::Write;
 use std::path::Component;
-
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, ambient_authority};
-use cap_std::fs::{Dir, OpenOptions};
 
 use super::authority::{
     CheckedArtifactAuthority, RetainedSource, authority_name, family_prefix, goal_name,
@@ -13,6 +9,7 @@ use super::fault::{CheckedArtifactFault, fault};
 use super::identity::{self, ObjectIdentity};
 use super::observation::{LeafObservation, io_op_error, observe_leaf_exact};
 use super::{CheckedArtifact, CheckedArtifactFact, ParentState, error};
+use crate::filesystem::{FileSystem, FsDirectory, FsKind, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 const MAX_FAMILY_ENTRIES: usize = 64;
@@ -42,7 +39,7 @@ impl FamilyResidue {
 }
 
 impl CheckedArtifact {
-    pub(super) fn open_private(&self, create: bool) -> ModelResult<Option<Dir>> {
+    pub(super) fn open_private(&self, create: bool) -> ModelResult<Option<FsDirectory>> {
         if create {
             Self::prepare_parent(
                 &self.private_root,
@@ -51,8 +48,10 @@ impl CheckedArtifact {
                 &self.label,
             )?;
         }
-        let root =
-            Dir::open_ambient_dir(&self.private_root, ambient_authority()).map_err(|cause| {
+        let filesystem = make_filesystem();
+        let root = filesystem
+            .open_directory(&self.private_root)
+            .map_err(|cause| {
                 io_op_error(self.code, &self.label, "open ambient private root", cause)
             })?;
         let mut current = root;
@@ -64,7 +63,7 @@ impl CheckedArtifact {
                     "private recovery path is noncanonical",
                 ));
             };
-            current = match current.open_dir_nofollow(component) {
+            current = match filesystem.open_directory_at(&current, component) {
                 Ok(dir) => dir,
                 Err(cause) if cause.kind() == std::io::ErrorKind::NotFound && !create => {
                     return Ok(None);
@@ -86,9 +85,9 @@ impl CheckedArtifact {
                 "canonical parent is missing or invalid",
             ));
         };
-        let managed_domain = identity::rename_domain(parent)
+        let managed_domain = identity::filesystem_rename_domain(parent)
             .map_err(|cause| unsupported(&self.label, "managed parent rename domain", cause))?;
-        let private_domain = identity::rename_domain(&current)
+        let private_domain = identity::filesystem_rename_domain(&current)
             .map_err(|cause| unsupported(&self.label, "private parent rename domain", cause))?;
         if managed_domain != private_domain {
             return Err(ModelError::new(
@@ -99,7 +98,7 @@ impl CheckedArtifact {
                 ),
             ));
         }
-        super::platform::prepare_private(&current, create, self.code, &self.label)?;
+        super::platform::prepare_filesystem_private(&current, create, self.code, &self.label)?;
         Ok(Some(current))
     }
 
@@ -117,13 +116,11 @@ impl CheckedArtifact {
         let expected_authority_name = authority_name(&family, &action);
         let mut names = Vec::new();
         let mut total_bytes = 0_u64;
-        for entry in dir.entries().map_err(|cause| {
+        let filesystem = make_filesystem();
+        for entry in filesystem.read_directory_at(&dir).map_err(|cause| {
             io_op_error(self.code, &self.label, "list private family entries", cause)
         })? {
-            let entry = entry.map_err(|cause| {
-                io_op_error(self.code, &self.label, "read private family entry", cause)
-            })?;
-            let name = entry.file_name();
+            let name = entry.name;
             if !name.to_string_lossy().starts_with(&prefix) {
                 continue;
             }
@@ -139,10 +136,15 @@ impl CheckedArtifact {
             // read, bounded by its own post-open `fstat` (anchor nit 1's
             // cure), and caught by the len-mismatch arm — so the budget bounds
             // the survey, not a concurrent writer.
-            let stat = entry.metadata().map_err(|cause| {
-                io_op_error(self.code, &self.label, "stat private family entry", cause)
-            })?;
-            total_bytes = total_bytes.saturating_add(stat.len());
+            if entry.kind == FsKind::File {
+                let file = filesystem.open_file_at(&dir, &name).map_err(|cause| {
+                    io_op_error(self.code, &self.label, "stat private family entry", cause)
+                })?;
+                total_bytes =
+                    total_bytes.saturating_add(filesystem.file_len(&file).map_err(|cause| {
+                        io_op_error(self.code, &self.label, "stat private family entry", cause)
+                    })?);
+            }
             names.push(name);
             if names.len() > MAX_FAMILY_ENTRIES || total_bytes > MAX_FAMILY_BYTES {
                 return Ok(FamilyResidue {
@@ -158,7 +160,7 @@ impl CheckedArtifact {
         let mut staged_goal = None;
         let mut foreign = false;
         for name in names {
-            let observed = observe_leaf_exact(&dir, &name, self.code, &self.label)?;
+            let observed = observe_leaf_exact(&filesystem, &dir, &name, self.code, &self.label)?;
             let Some(text) = name.to_str() else {
                 foreign = true;
                 continue;
@@ -353,22 +355,19 @@ impl CheckedArtifact {
             return Ok(goal);
         }
         let scratch = scratch_name(&authority.family_key, &authority.action_key, "goal");
-        let mut options = self.staging_options(&dir, OsStr::new(&scratch), 0o644)?;
-        options.follow(FollowSymlinks::No);
         fault(
             CheckedArtifactFault::BeforeGoalScratchCreate,
             self.code,
             &self.label,
         )?;
-        let mut file = dir.open_with(&scratch, &options).map_err(|cause| {
-            io_op_error(self.code, &self.label, "create goal scratch file", cause)
-        })?;
+        let filesystem = make_filesystem();
+        let file = self.open_staging(&filesystem, &dir, OsStr::new(&scratch))?;
         fault(
             CheckedArtifactFault::AfterGoalScratchCreate,
             self.code,
             &self.label,
         )?;
-        file.write_all(goal).map_err(|cause| {
+        filesystem.write_all(&file, goal).map_err(|cause| {
             io_op_error(self.code, &self.label, "write goal scratch bytes", cause)
         })?;
         fault(
@@ -376,7 +375,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        file.sync_all().map_err(|cause| {
+        filesystem.sync_file(&file).map_err(|cause| {
             io_op_error(self.code, &self.label, "sync goal scratch file", cause)
         })?;
         fault(
@@ -384,7 +383,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        let identity = identity::file_identity(&file)
+        let identity = identity::filesystem_file_identity(&file)
             .map_err(|cause| unsupported(&self.label, "staged goal identity", cause))?;
         drop(file);
         let name = goal_name(
@@ -397,7 +396,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        super::platform::publish_verified_leaf_no_replace(
+        super::platform::publish_verified_filesystem_leaf_no_replace(
             &dir,
             OsStr::new(&scratch),
             &dir,
@@ -414,7 +413,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        super::platform::private_barrier(
+        super::platform::filesystem_private_barrier(
             &dir,
             super::platform::DirentBarrierClass::AnchoredPrivateArea,
             self.code,
@@ -426,7 +425,8 @@ impl CheckedArtifact {
             &self.label,
         )?;
         self.rebarrier_exact(&dir, OsStr::new(&name))?;
-        let observed = observe_leaf_exact(&dir, OsStr::new(&name), self.code, &self.label)?;
+        let observed =
+            observe_leaf_exact(&filesystem, &dir, OsStr::new(&name), self.code, &self.label)?;
         if observed.fact != CheckedArtifactFact::Bytes(goal.to_vec())
             || observed.identity.as_ref() != Some(&identity)
         {
@@ -444,32 +444,24 @@ impl CheckedArtifact {
 
     fn publish_scratch(
         &self,
-        dir: &Dir,
+        dir: &FsDirectory,
         scratch: &str,
         name: &str,
         bytes: &[u8],
     ) -> ModelResult<()> {
-        let mut options = self.staging_options(dir, OsStr::new(scratch), 0o600)?;
-        options.follow(FollowSymlinks::No);
         fault(
             CheckedArtifactFault::BeforeAuthorityScratchCreate,
             self.code,
             &self.label,
         )?;
-        let mut file = dir.open_with(scratch, &options).map_err(|cause| {
-            io_op_error(
-                self.code,
-                &self.label,
-                "create authority scratch file",
-                cause,
-            )
-        })?;
+        let filesystem = make_filesystem();
+        let file = self.open_staging(&filesystem, dir, OsStr::new(scratch))?;
         fault(
             CheckedArtifactFault::AfterAuthorityScratchCreate,
             self.code,
             &self.label,
         )?;
-        file.write_all(bytes).map_err(|cause| {
+        filesystem.write_all(&file, bytes).map_err(|cause| {
             io_op_error(
                 self.code,
                 &self.label,
@@ -482,7 +474,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        file.sync_all().map_err(|cause| {
+        filesystem.sync_file(&file).map_err(|cause| {
             io_op_error(self.code, &self.label, "sync authority scratch file", cause)
         })?;
         fault(
@@ -497,7 +489,7 @@ impl CheckedArtifact {
         // fails without `identity::file_identity` — through `inspect_family`'s
         // reobservation of the record it just published, or through the goal
         // staging that follows it.
-        let identity = identity::file_identity(&file)
+        let identity = identity::filesystem_file_identity(&file)
             .map_err(|cause| unsupported(&self.label, "authority record identity", cause))?;
         drop(file);
         fault(
@@ -505,7 +497,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        super::platform::publish_verified_leaf_no_replace(
+        super::platform::publish_verified_filesystem_leaf_no_replace(
             dir,
             OsStr::new(&scratch),
             dir,
@@ -522,7 +514,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        super::platform::private_barrier(
+        super::platform::filesystem_private_barrier(
             dir,
             super::platform::DirentBarrierClass::AnchoredPrivateArea,
             self.code,
@@ -545,13 +537,13 @@ impl CheckedArtifact {
     /// the sealed publication re-verifies identity and bytes through the handle
     /// it renames, so a truncate that meets a foreign object at the now-derivable
     /// name still cannot publish that object's content.
-    fn staging_options(
+    fn open_staging(
         &self,
-        dir: &Dir,
+        filesystem: &impl FileSystem,
+        dir: &FsDirectory,
         scratch: &OsStr,
-        #[cfg_attr(not(unix), allow(unused_variables))] mode: u32,
-    ) -> ModelResult<OpenOptions> {
-        let resident = match dir.symlink_metadata(scratch) {
+    ) -> ModelResult<crate::filesystem::FsFile> {
+        let resident = match filesystem.metadata_at(dir, scratch) {
             Ok(_) => true,
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => false,
             Err(cause) => {
@@ -563,23 +555,32 @@ impl CheckedArtifact {
                 ));
             }
         };
-        let mut options = OpenOptions::new();
-        options.write(true);
         if resident {
-            options.truncate(true);
+            let file = filesystem
+                .open_file_for_write_at(dir, scratch)
+                .map_err(|cause| {
+                    io_op_error(self.code, &self.label, "open staging scratch file", cause)
+                })?;
+            filesystem.set_len(&file, 0).map_err(|cause| {
+                io_op_error(
+                    self.code,
+                    &self.label,
+                    "truncate staging scratch file",
+                    cause,
+                )
+            })?;
+            Ok(file)
         } else {
-            options.create_new(true);
+            filesystem.create_file_at(dir, scratch).map_err(|cause| {
+                io_op_error(self.code, &self.label, "create staging scratch file", cause)
+            })
         }
-        #[cfg(unix)]
-        cap_std::fs::OpenOptionsExt::mode(&mut options, mode);
-        Ok(options)
     }
 
-    pub(super) fn rebarrier_exact(&self, dir: &Dir, name: &OsStr) -> ModelResult<()> {
-        let before = observe_leaf_exact(dir, name, self.code, &self.label)?;
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        let file = dir.open_with(name, &options).map_err(|cause| {
+    pub(super) fn rebarrier_exact(&self, dir: &FsDirectory, name: &OsStr) -> ModelResult<()> {
+        let filesystem = make_filesystem();
+        let before = observe_leaf_exact(&filesystem, dir, name, self.code, &self.label)?;
+        let file = filesystem.open_file_at(dir, name).map_err(|cause| {
             io_op_error(
                 self.code,
                 &self.label,
@@ -593,16 +594,17 @@ impl CheckedArtifact {
         // barrier issued just below, so the per-file re-sync is Unix-only
         // (W3, GwzWindowsMatrix-Classification.md).
         #[cfg(not(windows))]
-        file.sync_all()
+        filesystem
+            .sync_file(&file)
             .map_err(|cause| io_op_error(self.code, &self.label, "sync family entry", cause))?;
         drop(file);
-        super::platform::private_barrier(
+        super::platform::filesystem_private_barrier(
             dir,
             super::platform::DirentBarrierClass::AnchoredPrivateArea,
             self.code,
             &self.label,
         )?;
-        let after = observe_leaf_exact(dir, name, self.code, &self.label)?;
+        let after = observe_leaf_exact(&filesystem, dir, name, self.code, &self.label)?;
         if before.fact != after.fact || before.identity != after.identity {
             return Err(error(
                 self.code,

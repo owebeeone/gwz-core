@@ -161,17 +161,18 @@ pub(crate) fn observe_checked_archive_source_v1(
     require_bounded(bytes.as_slice())?;
     let decoded = super::decode_production_v1(bytes.as_slice())
         .map_err(CheckedOwnerObservationError::Decode)?;
-    if decoded.record.state.is_open() {
+    if decoded.record().state.is_open() {
         return Err(CheckedOwnerObservationError::NotTerminal);
     }
-    super::archive::decode_archived(bytes.as_slice(), &decoded.record.merge_id)
+    super::archive::decode_archived(bytes.as_slice(), &decoded.record().merge_id)
         .map_err(|_| CheckedOwnerObservationError::InvalidTerminal)?;
+    let record = decoded.into_record();
     let owner = CheckedOwnerRecordObservation {
         version: CheckedOwnerRecordVersion::V1,
         exact_bytes: bytes.as_slice(),
-        workspace_id: decoded.record.workspace_id,
-        merge_id: decoded.record.merge_id,
-        operation_id: decoded.record.operation_id,
+        workspace_id: record.workspace_id,
+        merge_id: record.merge_id,
+        operation_id: record.operation_id,
     };
     if path.as_path().file_stem().and_then(|value| value.to_str()) != Some(owner.merge_id()) {
         return Err(CheckedOwnerObservationError::Identity);
@@ -191,12 +192,13 @@ pub(crate) fn observe_checked_owner_v1(
     require_bounded(exact_bytes)?;
     let decoded =
         super::decode_production_v1(exact_bytes).map_err(CheckedOwnerObservationError::Decode)?;
+    let record = decoded.into_record();
     Ok(CheckedOwnerRecordObservation {
         version: CheckedOwnerRecordVersion::V1,
         exact_bytes,
-        workspace_id: decoded.record.workspace_id,
-        merge_id: decoded.record.merge_id,
-        operation_id: decoded.record.operation_id,
+        workspace_id: record.workspace_id,
+        merge_id: record.merge_id,
+        operation_id: record.operation_id,
     })
 }
 

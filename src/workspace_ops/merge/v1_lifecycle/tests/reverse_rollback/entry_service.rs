@@ -14,15 +14,19 @@ use sha2::{Digest, Sha256};
 fn selected_root_service_entry_rejects_semantic_drift_without_mutation() {
     let fixture = service_fixture("v1-rollback-service-root-semantic-index");
     seed_open(&fixture);
-    let status = std::process::Command::new("git")
-        .args(["update-index", "--skip-worktree", "selected-root.txt"])
-        .current_dir(&fixture.root.path)
-        .status()
+    let mut entries = fixture.backend.test_read_index(&fixture.root.path).unwrap();
+    entries
+        .iter_mut()
+        .find(|entry| entry.path == b"selected-root.txt")
+        .unwrap()
+        .skip_worktree = true;
+    fixture
+        .backend
+        .test_replace_index(&fixture.root.path, &entries)
         .unwrap();
-    assert!(status.success());
-    std::fs::write(
-        fixture.root.path.join("selected-root.txt"),
-        "hidden selected-root drift\n",
+    write_for_test(
+        &fixture.root.path.join("selected-root.txt"),
+        b"hidden selected-root drift\n",
     )
     .unwrap();
     assert_entry_rejected_without_mutation(&fixture, "semantic index drift", "@root");
@@ -97,7 +101,7 @@ struct NoMutationSnapshot {
     root_head: crate::git::GitHeadState,
     root_branch: Option<String>,
     root_repository_state: crate::git::GitRepositoryState,
-    root_index: Vec<u8>,
+    root_index: Vec<crate::git::TestIndexEntry>,
     root_files: Vec<(String, Vec<u8>)>,
     members: Vec<MemberSnapshot>,
     root_stashes: Vec<crate::git::GitStashEntry>,
@@ -110,7 +114,7 @@ struct MemberSnapshot {
     head: crate::git::GitHeadState,
     branch: Option<String>,
     repository_state: crate::git::GitRepositoryState,
-    index: Vec<u8>,
+    index: Vec<crate::git::TestIndexEntry>,
     files: Vec<(String, Vec<u8>)>,
     stashes: Vec<crate::git::GitStashEntry>,
 }
@@ -132,20 +136,21 @@ impl NoMutationSnapshot {
                         .read_ref(&member, "refs/heads/main")
                         .unwrap(),
                     repository_state: fixture.backend.repository_state(&member).unwrap(),
-                    index: std::fs::read(member.join(".git/index")).unwrap(),
+                    index: fixture.backend.test_read_index(&member).unwrap(),
                     files: files(&member),
                     stashes: fixture.backend.stash_list(&member).unwrap(),
                 }
             })
             .collect();
         Self {
-            record: std::fs::read(
-                fixture
-                    .root
-                    .path
-                    .join(format!(".gwz/merge/{}.yaml", fixture.model.merge_id)),
-            )
-            .unwrap(),
+            record: make_filesystem()
+                .read(
+                    &fixture
+                        .root
+                        .path
+                        .join(format!(".gwz/merge/{}.yaml", fixture.model.merge_id)),
+                )
+                .unwrap(),
             root_head: fixture.backend.head(&fixture.root.path).unwrap(),
             root_branch: fixture
                 .backend
@@ -155,15 +160,16 @@ impl NoMutationSnapshot {
                 .backend
                 .repository_state(&fixture.root.path)
                 .unwrap(),
-            root_index: std::fs::read(fixture.root.path.join(".git/index")).unwrap(),
+            root_index: fixture.backend.test_read_index(&fixture.root.path).unwrap(),
             root_files: files(&fixture.root.path),
             members,
             root_stashes: fixture.backend.stash_list(&fixture.root.path).unwrap(),
-            bundle: std::fs::read(crate::stash::bundle_path(
-                &fixture.root.path,
-                &format!("stash_{}", fixture.model.merge_id),
-            ))
-            .ok(),
+            bundle: make_filesystem()
+                .read(&crate::stash::bundle_path(
+                    &fixture.root.path,
+                    &format!("stash_{}", fixture.model.merge_id),
+                ))
+                .ok(),
         }
     }
 
@@ -198,9 +204,8 @@ fn collect_files(
     current: &std::path::Path,
     out: &mut Vec<(String, Vec<u8>)>,
 ) {
-    for entry in std::fs::read_dir(current).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
+    for entry in make_filesystem().read_directory(current).unwrap() {
+        let path = current.join(&entry.name);
         let relative = path.strip_prefix(root).unwrap();
         // Control state this snapshot deliberately does not weigh: it is proved
         // by the fields beside `root_files`, not by the file set. `.git` is
@@ -224,13 +229,13 @@ fn collect_files(
         {
             continue;
         }
-        let metadata = std::fs::symlink_metadata(&path).unwrap();
-        if metadata.is_dir() {
+        if entry.kind == crate::filesystem::FsKind::Directory {
             collect_files(root, &path, out);
-        } else if metadata.file_type().is_symlink() {
+        } else if entry.kind == crate::filesystem::FsKind::Symlink {
             out.push((
                 relative.to_string_lossy().into_owned(),
-                std::fs::read_link(path)
+                make_filesystem()
+                    .link_target(&path)
                     .unwrap()
                     .as_os_str()
                     .as_encoded_bytes()
@@ -239,7 +244,7 @@ fn collect_files(
         } else {
             out.push((
                 relative.to_string_lossy().into_owned(),
-                std::fs::read(path).unwrap(),
+                make_filesystem().read(&path).unwrap(),
             ));
         }
     }
@@ -247,7 +252,7 @@ fn collect_files(
 
 pub(super) struct ServiceFixture {
     pub(super) root: TempDir,
-    pub(super) backend: Git2Backend,
+    pub(super) backend: GitTestRepository,
     pub(super) model: MergeOperationRecordV1,
 }
 
@@ -266,25 +271,21 @@ pub(super) fn service_fixture_with_later_member(name: &str) -> ServiceFixture {
 fn finish_service_fixture(
     mut fixture: crate::workspace_ops::merge::v1_lifecycle::reverse::preservation::tests::RootPreservationFixture,
 ) -> ServiceFixture {
-    let root_repo = git2::Repository::open(&fixture.base.root.path).unwrap();
-    let root_anchor = root_repo
-        .find_object(fixture.anchor.parse().unwrap(), None)
-        .unwrap();
-    root_repo
-        .reset(&root_anchor, git2::ResetType::Hard, None)
+    fixture
+        .base
+        .backend
+        .test_force_checkout(&fixture.base.root.path, &fixture.anchor)
         .unwrap();
     for member_id in fixture.base.model.selected_targets.clone() {
         let row = &fixture.base.model.participants[&member_id];
         if row.target_kind == MergeTargetKind::Root {
             continue;
         }
-        let member_repo = git2::Repository::open(fixture.base.root.path.join(&row.path)).unwrap();
         let result = row.resulting_commit.as_deref().unwrap();
-        let member_result = member_repo
-            .find_object(result.parse().unwrap(), None)
-            .unwrap();
-        member_repo
-            .reset(&member_result, git2::ResetType::Hard, None)
+        fixture
+            .base
+            .backend
+            .test_force_checkout(&fixture.base.root.path.join(&row.path), result)
             .unwrap();
     }
     for path in [
@@ -292,9 +293,9 @@ fn finish_service_fixture(
         "root-staged.txt",
         "root-protected.txt",
     ] {
-        let _ = std::fs::remove_file(fixture.base.root.path.join(path));
+        let _ = make_filesystem().remove_file(&fixture.base.root.path.join(path));
     }
-    let _ = std::fs::remove_file(fixture.base.member.join("untracked.txt"));
+    let _ = make_filesystem().remove_file(&fixture.base.member.join("untracked.txt"));
     fixture.base.model.state = OperationState::Finalizing;
     fixture.base.model.pending_preservation = None;
     fixture.base.model.pending_rollback = None;
@@ -314,55 +315,32 @@ enum ResultArtifactCase {
 }
 
 fn install_invalid_result_commit(fixture: &mut ServiceFixture, case: ResultArtifactCase) {
-    let repo = git2::Repository::open(&fixture.root.path).unwrap();
     let result = fixture.model.participants["@root"]
         .resulting_commit
         .as_deref()
         .unwrap();
-    let parent = repo.find_commit(result.parse().unwrap()).unwrap();
-    let root_tree = parent.tree().unwrap();
-    let manifest = std::path::Path::new(crate::workspace::WORKSPACE_MANIFEST);
-    let directory_name = manifest.parent().unwrap().file_name().unwrap();
-    let leaf = manifest.file_name().unwrap();
-    let directory_tree = repo
-        .find_tree(
-            root_tree
-                .get_name(directory_name.to_str().unwrap())
-                .unwrap()
-                .id(),
-        )
-        .unwrap();
-    let mut directory_builder = repo.treebuilder(Some(&directory_tree)).unwrap();
-    match case {
-        ResultArtifactCase::Missing => {
-            directory_builder.remove(leaf).unwrap();
-        }
-        ResultArtifactCase::NonUtf8 => {
-            let blob = repo.blob(&[0xff, 0xfe, 0xfd]).unwrap();
-            directory_builder.insert(leaf, blob, 0o100644).unwrap();
-        }
-    }
-    let directory_oid = directory_builder.write().unwrap();
-    let mut root_builder = repo.treebuilder(Some(&root_tree)).unwrap();
-    root_builder
-        .insert(directory_name, directory_oid, 0o040000)
-        .unwrap();
-    let tree = repo.find_tree(root_builder.write().unwrap()).unwrap();
-    let signature = git2::Signature::now("GWZ Test", "gwz@example.invalid").unwrap();
-    let commit = repo
-        .commit(
-            None,
-            &signature,
-            &signature,
+    let commit = fixture
+        .backend
+        .test_create_commit_from_parent(
+            &fixture.root.path,
+            result,
             "invalid selected-root result",
-            &tree,
-            &[&parent],
+            &[crate::git::TestCommitFileEdit {
+                path: crate::workspace::WORKSPACE_MANIFEST.into(),
+                bytes: match case {
+                    ResultArtifactCase::Missing => None,
+                    ResultArtifactCase::NonUtf8 => Some(vec![0xff, 0xfe, 0xfd]),
+                },
+            }],
         )
-        .unwrap()
-        .to_string();
-    repo.find_reference("refs/heads/main")
-        .unwrap()
-        .set_target(commit.parse().unwrap(), "install invalid result fixture")
+        .unwrap();
+    fixture
+        .backend
+        .test_set_ref(
+            &fixture.root.path,
+            "refs/heads/main",
+            Some(&TestRefTarget::Direct(commit.clone())),
+        )
         .unwrap();
     let row = fixture.model.participants.get_mut("@root").unwrap();
     row.resulting_commit = Some(commit.clone());
@@ -420,9 +398,10 @@ fn rebuild_publication(fixture: &mut ServiceFixture) {
         .resulting_commit
         .clone()
         .unwrap();
-    let repo = git2::Repository::open(&fixture.root.path).unwrap();
-    let object = repo.find_object(result.parse().unwrap(), None).unwrap();
-    repo.reset(&object, git2::ResetType::Hard, None).unwrap();
+    fixture
+        .backend
+        .test_force_checkout(&fixture.root.path, &result)
+        .unwrap();
     let files =
         crate::workspace_ops::merge::acceptance::v1_candidate_files(&fixture.model).unwrap();
     let message = crate::workspace_ops::merge::acceptance::v1_composition_message(&fixture.model);
@@ -443,21 +422,28 @@ fn rebuild_publication(fixture: &mut ServiceFixture) {
             sha256: hash.sha256,
         })
         .collect();
-    repo.find_reference("refs/heads/main")
-        .unwrap()
-        .set_target(
-            evidence.commit.parse().unwrap(),
-            "install rebuilt publication",
+    fixture
+        .backend
+        .test_set_ref(
+            &fixture.root.path,
+            "refs/heads/main",
+            Some(&TestRefTarget::Direct(evidence.commit.clone())),
         )
         .unwrap();
     let publication = fixture.model.publication.as_ref().unwrap();
     let candidate = publication.candidate.as_ref().unwrap();
     let marker = publication.candidate_marker_path.as_ref().unwrap();
-    std::fs::create_dir_all(fixture.root.path.join(marker).parent().unwrap()).unwrap();
-    std::fs::write(fixture.root.path.join(marker), &candidate.marker_yaml).unwrap();
-    std::fs::write(
-        fixture.root.path.join(crate::artifact::LOCK_PATH),
-        &candidate.lock_yaml,
+    make_filesystem()
+        .create_directories(fixture.root.path.join(marker).parent().unwrap())
+        .unwrap();
+    write_for_test(
+        &fixture.root.path.join(marker),
+        candidate.marker_yaml.as_bytes(),
+    )
+    .unwrap();
+    write_for_test(
+        &fixture.root.path.join(crate::artifact::LOCK_PATH),
+        candidate.lock_yaml.as_bytes(),
     )
     .unwrap();
     fixture
@@ -472,8 +458,8 @@ fn rebuild_publication(fixture: &mut ServiceFixture) {
         &candidate.boundary_text,
     )
     .unwrap();
-    std::fs::write(
-        fixture.root.path.join(crate::workspace::WORKSPACE_MANIFEST),
+    write_for_test(
+        &fixture.root.path.join(crate::workspace::WORKSPACE_MANIFEST),
         fixture
             .model
             .accepted_workspace
@@ -493,10 +479,10 @@ fn rebuild_publication(fixture: &mut ServiceFixture) {
 
 pub(super) fn seed_open(fixture: &ServiceFixture) {
     let directory = fixture.root.path.join(".gwz/merge");
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(
-        directory.join(format!("{}.yaml", fixture.model.merge_id)),
-        serde_yaml::to_string(&fixture.model).unwrap(),
+    make_filesystem().create_directories(&directory).unwrap();
+    write_for_test(
+        &directory.join(format!("{}.yaml", fixture.model.merge_id)),
+        serde_yaml::to_string(&fixture.model).unwrap().as_bytes(),
     )
     .unwrap();
 }

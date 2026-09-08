@@ -1,3 +1,4 @@
+use crate::git::{GitRepository, make_repository};
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -187,8 +188,10 @@ pub(super) fn retain_workspace(
     platform: &impl PlatformProviderV1,
 ) -> Result<RetainedPlatformRoot, CheckedFsError> {
     let root_path = canonical_directory(path, "workspace root")?;
-    let repository = git2::Repository::open(&root_path).map_err(git_error)?;
-    let workdir = repository.workdir().ok_or_else(|| {
+    let repository = make_repository()
+        .repository_paths(&root_path)
+        .map_err(git_error)?;
+    let workdir = repository.worktree.as_deref().ok_or_else(|| {
         CheckedFsError::ambiguous("workspace root", "bare repository is not a workspace")
     })?;
     if canonical_directory(workdir, "repository worktree")? != root_path {
@@ -197,9 +200,9 @@ pub(super) fn retain_workspace(
             "path is not the repository worktree root",
         ));
     }
-    let git_directory_path = canonical_directory(repository.path(), "Git directory")?;
+    let git_directory_path = canonical_directory(&repository.git_dir, "Git directory")?;
     let common_directory_path =
-        canonical_directory(repository.commondir(), "common Git directory")?;
+        canonical_directory(&repository.common_dir, "common Git directory")?;
     let root = retain_ambient(&root_path, platform, "workspace root")?;
     let repository = retain_ambient(&git_directory_path, platform, "Git directory")?;
     let common_directory =
@@ -224,8 +227,10 @@ pub(super) fn retain_git_directory(
     platform: &impl PlatformProviderV1,
 ) -> Result<RetainedPlatformRoot, CheckedFsError> {
     let root_path = canonical_directory(path, "actual Git directory")?;
-    let repository = git2::Repository::open(&root_path).map_err(git_error)?;
-    let git_directory_path = canonical_directory(repository.path(), "Git directory")?;
+    let repository = make_repository()
+        .repository_paths(&root_path)
+        .map_err(git_error)?;
+    let git_directory_path = canonical_directory(&repository.git_dir, "Git directory")?;
     if git_directory_path != root_path {
         return Err(CheckedFsError::ambiguous(
             "actual Git directory",
@@ -233,7 +238,7 @@ pub(super) fn retain_git_directory(
         ));
     }
     let common_directory_path =
-        canonical_directory(repository.commondir(), "common Git directory")?;
+        canonical_directory(&repository.common_dir, "common Git directory")?;
     let root = retain_ambient(&root_path, platform, "actual Git directory")?;
     let repository = retain_ambient(&git_directory_path, platform, "Git directory")?;
     let common_directory =
@@ -383,9 +388,11 @@ fn reject_equivalent_alias(
 }
 
 fn revalidate_repository_paths(root: &RetainedPlatformRoot) -> Result<(), CheckedFsError> {
-    let repository = git2::Repository::open(&root.root_path).map_err(git_error)?;
-    if canonical_directory(repository.path(), "Git directory")? != root.git_directory_path
-        || canonical_directory(repository.commondir(), "common Git directory")?
+    let repository = make_repository()
+        .repository_paths(&root.root_path)
+        .map_err(git_error)?;
+    if canonical_directory(&repository.git_dir, "Git directory")? != root.git_directory_path
+        || canonical_directory(&repository.common_dir, "common Git directory")?
             != root.common_directory_path
     {
         return Err(CheckedFsError::ambiguous(
@@ -426,9 +433,9 @@ pub(super) fn encode_identity(
     value
 }
 
-fn git_error(error: git2::Error) -> CheckedFsError {
+fn git_error(error: crate::model::ModelError) -> CheckedFsError {
     CheckedFsError::io(
         "open pre-catalog Git repository",
-        io::Error::other(error.message().to_owned()),
+        io::Error::other(error.to_string()),
     )
 }

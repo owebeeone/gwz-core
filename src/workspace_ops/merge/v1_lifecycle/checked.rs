@@ -3,8 +3,11 @@ use std::path::{Path, PathBuf};
 use serde_yaml::Value;
 use sha2::{Digest, Sha256};
 
-use super::super::model::v1::{MergeOperationRecordV1, ValidatedV1Record, validate_v1_record};
+#[cfg(test)]
+use super::super::model::v1::validate_v1_record;
+use super::super::model::v1::{MergeOperationRecordV1, ValidatedV1Record};
 use super::super::record_wire::UnknownFieldManifest;
+use crate::filesystem::{FileSystem, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::WorkspaceMutatorLock;
 
@@ -64,7 +67,7 @@ impl StoredV1Record {
     }
 
     pub(super) fn from_open_bytes(root: &Path, path: &Path, bytes: &[u8]) -> ModelResult<Self> {
-        let root = root.canonicalize().map_err(io_error)?;
+        let root = make_filesystem().canonical_path(root).map_err(io_error)?;
         let expected_parent = root.join(".gwz/merge");
         if path.parent() != Some(expected_parent.as_path()) {
             return Err(unreadable(
@@ -74,11 +77,11 @@ impl StoredV1Record {
         let decoded = super::super::record_wire::decode_production_v1(bytes)
             .map_err(|error| unreadable(format!("v1 decode failed: {error:?}")))?;
         let expected_id = path.file_stem().and_then(|value| value.to_str());
-        if expected_id != Some(decoded.record.merge_id.as_str()) {
+        if expected_id != Some(decoded.record().merge_id.as_str()) {
             return Err(unreadable("v1 record id does not match its file name"));
         }
         Ok(Self {
-            typed: validate_v1_record(decoded.record)?,
+            typed: decoded.validated,
             raw: decoded.raw,
             unknown_fields: decoded.unknown_fields,
             source_digest: RecordDigest::from_bytes(bytes),
@@ -91,7 +94,7 @@ impl StoredV1Record {
 
     #[cfg(test)]
     pub(super) fn for_test(root: &Path, record: MergeOperationRecordV1) -> ModelResult<Self> {
-        let root = root.canonicalize().map_err(io_error)?;
+        let root = make_filesystem().canonical_path(root).map_err(io_error)?;
         let raw = serde_yaml::to_value(&record).map_err(io_error)?;
         let bytes = serde_yaml::to_string(&raw).map_err(io_error)?.into_bytes();
         let unknown_fields =
@@ -119,7 +122,7 @@ impl StoredV1Record {
 }
 
 pub(super) struct V1MutationLease {
-    _guard: WorkspaceMutatorLock,
+    guard: WorkspaceMutatorLock,
     workspace_root: PathBuf,
 }
 
@@ -137,10 +140,10 @@ impl V1MutationLease {
     /// lock, or the published evidence — still takes the legacy identity probe
     /// ON this lease. A dated residual shipped with A1; DR-1's (C) is the cure.
     pub(super) fn acquire(root: &Path) -> ModelResult<Self> {
-        let workspace_root = root.canonicalize().map_err(io_error)?;
+        let workspace_root = make_filesystem().canonical_path(root).map_err(io_error)?;
         let guard = WorkspaceMutatorLock::acquire(&workspace_root)?;
         Ok(Self {
-            _guard: guard,
+            guard,
             workspace_root,
         })
     }
@@ -162,8 +165,12 @@ impl V1MutationLease {
     /// untouched; the catalog's own partial state converges on restart.
     pub(super) fn acquire_activated(root: &Path) -> ModelResult<Self> {
         let lease = Self::acquire(root)?;
+        #[cfg(test)]
+        if crate::test_backend::modes().fake_filesystem {
+            return Ok(lease);
+        }
         crate::checked_artifact::entry::activate_workspace_catalog(
-            lease._guard.catalog_mutation_lease(),
+            lease.guard.catalog_mutation_lease(),
         )?;
         Ok(lease)
     }
@@ -179,10 +186,20 @@ impl V1MutationLease {
     /// Two leases: admission consumes the first, execution recovers after it.
     pub(super) fn acquire_for_merge_start(root: &Path, workspace_id: &str) -> ModelResult<Self> {
         let lease = Self::acquire(root)?;
+        #[cfg(test)]
+        if crate::test_backend::modes().fake_filesystem {
+            make_filesystem()
+                .create_directories(&lease.workspace_root.join(".gwz/merge"))
+                .map_err(io_error)?;
+            make_filesystem()
+                .create_directories(&lease.workspace_root.join(crate::stash::STASH_BUNDLE_DIR))
+                .map_err(io_error)?;
+            return Ok(lease);
+        }
         crate::checked_artifact::entry::bootstrap_merge_start_parents(
             workspace_id,
-            lease._guard.catalog_mutation_lease(),
-            lease._guard.catalog_mutation_lease(),
+            lease.guard.catalog_mutation_lease(),
+            lease.guard.catalog_mutation_lease(),
         )?;
         Ok(lease)
     }

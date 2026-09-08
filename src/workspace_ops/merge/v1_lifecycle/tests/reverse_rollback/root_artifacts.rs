@@ -1,5 +1,10 @@
 use super::*;
 use crate::artifact::LOCK_PATH;
+use crate::filesystem::{FileSystem, make_filesystem, remove_file_for_test, write_for_test};
+use crate::git::{
+    GitRepository, GitTestRepository, TestCommitSpec, TestHead, TestRefTarget, TestRepoSpec,
+    make_repository,
+};
 use crate::workspace::WORKSPACE_MANIFEST;
 use crate::workspace_ops::merge::model::v1::RootMetadataRollbackStepV1;
 use crate::workspace_ops::merge::root::{
@@ -7,22 +12,26 @@ use crate::workspace_ops::merge::root::{
     observe_v1_root_metadata_rollback,
 };
 
-fn root_fixture(name: &str) -> (TempDir, Git2Backend, MergeOperationRecordV1) {
+fn root_fixture(name: &str) -> (TempDir, GitTestRepository, MergeOperationRecordV1) {
     let root = TempDir::new(name);
-    let backend = Git2Backend::new();
-    backend.create_repo(&root.path).unwrap();
-    std::fs::create_dir_all(root.path.join("gwz.conf")).unwrap();
+    let backend = make_repository();
+    backend
+        .test_init_repo(&root.path, &TestRepoSpec::default())
+        .unwrap();
+    make_filesystem()
+        .create_directories(&root.path.join("gwz.conf"))
+        .unwrap();
     let manifest = "result manifest\n";
-    let first = commit_file(&root.path, WORKSPACE_MANIFEST, manifest, "manifest", &[]).unwrap();
-    let lock = "result lock\n";
-    let result = commit_file(
+    let first = commit_fixture_file(
+        &backend,
         &root.path,
-        LOCK_PATH,
-        lock,
-        "lock",
-        &[first.parse().unwrap()],
-    )
-    .unwrap();
+        WORKSPACE_MANIFEST,
+        manifest,
+        "manifest",
+        &[],
+    );
+    let lock = "result lock\n";
+    let result = commit_fixture_file(&backend, &root.path, LOCK_PATH, lock, "lock", &[first]);
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     model.state = OperationState::RollingBack;
     model.selected_targets = vec!["@root".into()];
@@ -37,6 +46,32 @@ fn root_fixture(name: &str) -> (TempDir, Git2Backend, MergeOperationRecordV1) {
     model.baseline.manifest_yaml = Some("baseline manifest\n".into());
     model.baseline.lock_yaml = Some("baseline lock\n".into());
     (root, backend, model)
+}
+
+fn commit_fixture_file(
+    backend: &GitTestRepository,
+    root: &std::path::Path,
+    relative: &str,
+    bytes: &str,
+    message: &str,
+    parents: &[String],
+) -> String {
+    write_for_test(&root.join(relative), bytes.as_bytes()).unwrap();
+    backend.stage_paths(root, &[relative]).unwrap();
+    let commit = backend
+        .test_create_commit(root, &TestCommitSpec::from_index(message, parents.to_vec()))
+        .unwrap();
+    backend
+        .test_set_ref(
+            root,
+            "refs/heads/main",
+            Some(&TestRefTarget::Direct(commit.clone())),
+        )
+        .unwrap();
+    backend
+        .test_set_head(root, &TestHead::Attached("refs/heads/main".into()))
+        .unwrap();
+    commit
 }
 
 #[test]
@@ -108,13 +143,17 @@ fn selected_root_steps_are_exact_and_sequential() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn selected_root_rejects_a_symlink_leaf() {
-    use std::os::unix::fs::symlink;
     let (root, backend, model) = root_fixture("v1-rollback-root-symlink");
-    std::fs::remove_file(root.path.join(WORKSPACE_MANIFEST)).unwrap();
-    symlink("target", root.path.join(WORKSPACE_MANIFEST)).unwrap();
+    remove_file_for_test(&root.path.join(WORKSPACE_MANIFEST)).unwrap();
+    let manifest = std::path::Path::new(WORKSPACE_MANIFEST);
+    let parent = make_filesystem()
+        .open_directory(&root.path.join(manifest.parent().unwrap()))
+        .unwrap();
+    make_filesystem()
+        .test_create_symlink_at(&parent, manifest.file_name().unwrap(), "target".as_ref())
+        .unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
             &backend,
@@ -135,8 +174,8 @@ fn selected_root_checked_write_preserves_a_leaf_replaced_before_linearization() 
     let manifest = root.path.join(WORKSPACE_MANIFEST);
     let replacement = manifest.clone();
     run_next_checked_artifact_at(CheckedArtifactFault::BeforeFinalCheck, move || {
-        std::fs::remove_file(&replacement).unwrap();
-        std::fs::write(replacement, "foreign manifest\n").unwrap();
+        remove_file_for_test(&replacement).unwrap();
+        write_for_test(&replacement, b"foreign manifest\n").unwrap();
     });
     let error = execute_v1_root_metadata_rollback(
         &backend,
@@ -147,7 +186,7 @@ fn selected_root_checked_write_preserves_a_leaf_replaced_before_linearization() 
     .unwrap_err();
     assert_eq!(error.code, crate::model::ErrorCode::MergeRecoveryRequired);
     assert_eq!(
-        std::fs::read_to_string(manifest).unwrap(),
+        String::from_utf8(make_filesystem().read(&manifest).unwrap()).unwrap(),
         "foreign manifest\n"
     );
     assert_eq!(
@@ -165,9 +204,9 @@ fn selected_root_checked_write_preserves_a_leaf_replaced_before_linearization() 
 #[test]
 fn selected_root_rejects_lock_restored_ahead_of_manifest() {
     let (root, backend, model) = root_fixture("v1-rollback-root-out-of-order");
-    std::fs::write(
-        root.path.join(LOCK_PATH),
-        model.baseline.lock_yaml.as_deref().unwrap(),
+    write_for_test(
+        &root.path.join(LOCK_PATH),
+        model.baseline.lock_yaml.as_deref().unwrap().as_bytes(),
     )
     .unwrap();
     assert_eq!(
@@ -192,7 +231,7 @@ fn selected_root_lock_and_complete_reject_third_states() {
         RootMetadataRollbackStepV1::Manifest,
     )
     .unwrap();
-    std::fs::write(root.path.join(WORKSPACE_MANIFEST), "result manifest\n").unwrap();
+    write_for_test(&root.path.join(WORKSPACE_MANIFEST), b"result manifest\n").unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
             &backend,
@@ -211,7 +250,7 @@ fn selected_root_lock_and_complete_reject_third_states() {
     ] {
         execute_v1_root_metadata_rollback(&backend, &root.path, &model, step).unwrap();
     }
-    std::fs::write(root.path.join(LOCK_PATH), "foreign\n").unwrap();
+    write_for_test(&root.path.join(LOCK_PATH), b"foreign\n").unwrap();
     assert_eq!(
         observe_v1_root_metadata_rollback(
             &backend,

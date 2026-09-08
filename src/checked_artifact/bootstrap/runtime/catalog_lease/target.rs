@@ -1,8 +1,6 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use cap_std::fs::Dir;
-
 use super::super::advisory::AdvisoryLock;
 use super::super::paths::{
     RetainedDirectory, ensure_child_directory, open_child_directory, open_existing_file,
@@ -18,6 +16,8 @@ use crate::checked_artifact::capability::{
     PathComponentMode, PathEquivalenceProvider, PreCatalogRootKindV1, SupportedFilesystemProfile,
     VolumeDescription,
 };
+use crate::filesystem::{FileSystem, FsKind, make_filesystem};
+use crate::git::{GitRepository, make_repository};
 
 pub(super) const GIT_CATALOG_MUTATOR_LOCK_NAME: &str = "gwz-catalog-mutator-v1.lock";
 
@@ -67,7 +67,7 @@ pub(in crate::checked_artifact) fn probe_workspace_admission(
 /// a root the catalog cannot bind at all can still be NAMED in the warning.
 fn describe_workspace_volume(root: &Path) -> Result<VolumeDescription, CheckedFsError> {
     let target = retain_ambient_directory(root, "catalog workspace target")?;
-    HostPlatform.describe_volume(target.handle())
+    HostPlatform.describe_fs_volume(target.handle())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -307,7 +307,7 @@ impl RetainedCatalogTargetV1 {
         )
     }
 
-    pub(super) fn guard_parent(&self) -> &Dir {
+    pub(super) fn guard_parent(&self) -> &crate::filesystem::FsDirectory {
         self.related_git_directory.handle()
     }
 
@@ -463,23 +463,29 @@ impl HeldCatalogTargetV1 {
 }
 
 fn canonical_git_directory(path: &Path) -> Result<PathBuf, CheckedFsError> {
-    let input = std::fs::symlink_metadata(path)
+    let filesystem = make_filesystem();
+    let input = filesystem
+        .metadata(path)
         .map_err(|source| CheckedFsError::io("observe catalog Git directory", source))?;
-    if !input.is_dir() || input.file_type().is_symlink() {
+    if input.kind != FsKind::Directory {
         return Err(CheckedFsError::ambiguous(
             "catalog Git-directory target",
             "expected a no-follow directory",
         ));
     }
-    let canonical = std::fs::canonicalize(path)
+    let canonical = filesystem
+        .canonical_path(path)
         .map_err(|source| CheckedFsError::io("canonicalize catalog Git directory", source))?;
-    let repository = git2::Repository::open(&canonical).map_err(|error| {
-        CheckedFsError::io(
-            "open catalog Git directory",
-            std::io::Error::other(error.message().to_owned()),
-        )
-    })?;
-    let actual = std::fs::canonicalize(repository.path())
+    let repository = make_repository()
+        .repository_paths(&canonical)
+        .map_err(|error| {
+            CheckedFsError::io(
+                "open catalog Git directory",
+                std::io::Error::other(error.to_string()),
+            )
+        })?;
+    let actual = filesystem
+        .canonical_path(&repository.git_dir)
         .map_err(|source| CheckedFsError::io("canonicalize actual Git directory", source))?;
     if actual != canonical {
         return Err(CheckedFsError::ambiguous(

@@ -1,6 +1,7 @@
 use super::authority::{ArtifactOperation, RetainedSource};
 use super::observation::observe_leaf_exact;
 use super::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition, ParentState, error};
+use crate::filesystem::make_filesystem;
 use crate::model::ModelResult;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,7 +142,7 @@ impl CheckedArtifact {
         if residue.foreign {
             return Ok(ExactTransition::Ambiguous);
         }
-        let leaf = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        let leaf = observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)?;
         let goal_fact = goal.map_or(CheckedArtifactFact::Missing, |bytes| {
             CheckedArtifactFact::Bytes(bytes.to_vec())
         });

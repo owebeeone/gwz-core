@@ -9,7 +9,7 @@ split to manage. **Release tags are cut directly off `main`.**
 `scripts/release.py` automates the cut on `main` for a given tag `vX.Y.Z`:
 
 1. Gate the tree: `python protocol/regen.py --check`, `cargo fmt --check`,
-   `cargo test --locked`, `cargo clippy` (same bar as CI). If rustfmt fails,
+   `python scripts/run_tests.py`, `cargo clippy` (same bar as CI). If rustfmt fails,
    run `cargo fmt` and commit the formatting changes.
 2. Bump `version` in `Cargo.toml`, commit `chore(release): gwz-core X.Y.Z`.
 3. Tag that commit `vX.Y.Z` (lightweight; never moves an existing tag).
@@ -46,7 +46,7 @@ Typical sequence when both crates need a release:
 
 If you prefer not to use the script, the steps are the same:
 
-1. Land all changes on `main`; ensure green (`cargo fmt --check`, `cargo test`,
+1. Land all changes on `main`; ensure green (`cargo fmt --check`, `python scripts/run_tests.py`,
    `cargo clippy`). Regenerate protocol output when the schema changed (see above).
 2. Bump `version` in `Cargo.toml` (semver; an additive protocol/API change is a minor bump).
 3. Commit, then tag that commit: `git tag vX.Y.Z` (tags are **off `main`**).
@@ -57,3 +57,33 @@ If you prefer not to use the script, the steps are the same:
 **gwz-cli** pins a gwz-core release by tag and builds against it on its `release` branch.
 After you publish a new gwz-core tag, bump gwz-cli's `release` branch to pin it — see
 [gwz-cli/RELEASE.md](../gwz-cli/RELEASE.md).
+
+## Slow compiler probes are manual-only
+
+Release scripts and automatic workflows do not run the source-mutation compiler
+suites. To investigate a change to architecture enforcement explicitly, run:
+
+```sh
+python scripts/run_compiler_tests.py          # both suites
+python scripts/run_compiler_tests.py boundary
+python scripts/run_compiler_tests.py privacy
+```
+
+GitHub Actions also has **Architecture compiler probes (manual)**, triggered only
+with Run workflow. These tests are not a release prerequisite. The ordinary
+source scan, Rust compilation, behavior tests and Clippy remain in the release
+path. Do not add the mutation suites back to release or push/PR workflows.
+
+### Repository factory migration
+
+Use `python scripts/run_tests.py` for the normal suite. It runs the migrated
+repository tests and root matrices with fake Git, then the remaining tests with
+native Git in a separate process. The small repository contracts run in both
+modes routinely. `python scripts/run_tests.py --compare` runs the complete
+converted group against both backends explicitly.
+
+For a focused native test, use `GWZ_TEST_GIT=real cargo test --locked --lib FILTER`
+(on PowerShell, set `$env:GWZ_TEST_GIT = 'real'` first). An unset selector chooses
+fake Git, so unconverted unit fixtures must use the native process while this
+migration is in progress. Integration tests always compile the production
+factory and cannot select fake Git.

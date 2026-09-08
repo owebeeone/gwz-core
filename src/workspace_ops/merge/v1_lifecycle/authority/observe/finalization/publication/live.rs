@@ -1,5 +1,5 @@
+use crate::filesystem::{FileSystem, FsKind, make_filesystem};
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
@@ -164,25 +164,25 @@ enum FileDigest {
 }
 
 fn regular_digest(path: &Path) -> ModelResult<FileDigest> {
-    let metadata = match fs::symlink_metadata(path) {
+    let metadata = match make_filesystem().metadata(path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(FileDigest::Missing);
         }
         Err(error) => return Err(ModelError::new(ErrorCode::IoError, error.to_string())),
     };
-    if !metadata.file_type().is_file() {
+    if metadata.kind != FsKind::File {
         return Ok(FileDigest::Other);
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o111 != 0 {
+        if metadata.executable {
             return Ok(FileDigest::Other);
         }
     }
-    let bytes =
-        fs::read(path).map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string()))?;
+    let bytes = make_filesystem()
+        .read(path)
+        .map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string()))?;
     Ok(FileDigest::Regular(format!("{:x}", Sha256::digest(bytes))))
 }
 

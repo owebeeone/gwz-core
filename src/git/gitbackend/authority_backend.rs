@@ -17,3 +17,8 @@ pub trait MergeAuthorityBackend: super::contract::GitBackend + sealed::Sealed {}
 
 impl sealed::Sealed for super::backend::Git2Backend {}
 impl MergeAuthorityBackend for super::backend::Git2Backend {}
+
+#[cfg(test)]
+impl sealed::Sealed for super::factory::GitTestRepository {}
+#[cfg(test)]
+impl MergeAuthorityBackend for super::factory::GitTestRepository {}

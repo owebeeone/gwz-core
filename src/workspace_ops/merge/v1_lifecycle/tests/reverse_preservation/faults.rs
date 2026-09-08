@@ -145,7 +145,7 @@ fn regressed_completed_prefix_refuses_fail_closed_without_wedging_later_owner() 
         "a regressed earlier owner must still refuse fail-closed"
     );
     // The new work is untouched on disk — nothing was rolled back over it.
-    assert!(fixture.member.join("new-earlier-work.txt").exists());
+    assert!(fs::exists(fixture.member.join("new-earlier-work.txt")));
     // §2.2 immutability: `mem_a`'s artifact evidence is byte-constant.
     let stored = CheckedV1Store::default()
         .load_open(&fixture.root.path, &fixture.model.merge_id)
@@ -370,13 +370,13 @@ fn premature_foreign_root_stash_blocks_before_the_next_physical_mutation() {
 }
 
 struct CrashAfterPreservationAction<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     crash_after: usize,
     executions: usize,
 }
 
 struct FailOwnerPreservationExecution<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     member_id: &'static str,
 }
 

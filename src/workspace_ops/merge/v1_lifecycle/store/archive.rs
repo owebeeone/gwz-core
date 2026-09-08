@@ -1,6 +1,4 @@
-use std::fs;
-
-use crate::durable_fs::{rename_noreplace, sync_dir};
+use crate::filesystem::{FileSystem, FsKind, RenameMode, make_filesystem};
 use crate::model::ModelResult;
 use crate::workspace_ops::merge::OperationState;
 
@@ -12,6 +10,7 @@ pub(super) fn archive(
     lease: &V1MutationLease,
     current: &StoredV1Record,
 ) -> ModelResult<ArchiveOutcome> {
+    let filesystem = make_filesystem();
     if !lease.covers(current.location())
         || !matches!(
             current.record().state,
@@ -51,20 +50,20 @@ pub(super) fn archive(
                     "checked v1 archive source and destination bytes differ",
                 ));
             }
-            fs::remove_file(source).map_err(io_error)?;
-            sync_dir(merge_root).map_err(io_error)?;
-            sync_dir(&done).map_err(io_error)?;
+            filesystem.remove_file(source).map_err(io_error)?;
+            filesystem.sync_directory(merge_root).map_err(io_error)?;
+            filesystem.sync_directory(&done).map_err(io_error)?;
             Ok(ArchiveOutcome::ReconciledBothCopies)
         }
         (true, false) => {
             let source_bytes = require_exact_source(current)?;
-            // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the terminal archive is reached from EVERY terminal disposition on the PLAIN lease (`service.rs:120`), so this bootstrap and the whole file stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
-            fs::create_dir_all(&done).map_err(io_error)?;
+            // CAPABILITY-FREE EXCEPTION, §10 row `:275`: the terminal archive is reached from EVERY terminal disposition on the PLAIN lease (`service.rs:120`), so it remains outside the durable-identity checked-artifact boundary. Its raw operations are selected through FileSystem (2026-09-08, GwzFileSystemTestInterface.md).
+            filesystem.create_directories(&done).map_err(io_error)?;
             require_plain_directory(&done)?;
-            match rename_noreplace(source, &destination) {
+            match filesystem.rename(source, &destination, RenameMode::NoReplace) {
                 Ok(()) => {
-                    sync_dir(merge_root).map_err(io_error)?;
-                    sync_dir(&done).map_err(io_error)?;
+                    filesystem.sync_directory(merge_root).map_err(io_error)?;
+                    filesystem.sync_directory(&done).map_err(io_error)?;
                     require_exact_destination(current, &destination)?;
                     Ok(ArchiveOutcome::Published)
                 }
@@ -75,9 +74,9 @@ pub(super) fn archive(
                             "checked v1 archive destination appeared with different bytes",
                         ));
                     }
-                    fs::remove_file(source).map_err(io_error)?;
-                    sync_dir(merge_root).map_err(io_error)?;
-                    sync_dir(&done).map_err(io_error)?;
+                    filesystem.remove_file(source).map_err(io_error)?;
+                    filesystem.sync_directory(merge_root).map_err(io_error)?;
+                    filesystem.sync_directory(&done).map_err(io_error)?;
                     Ok(ArchiveOutcome::ReconciledBothCopies)
                 }
                 Err(error) => Err(io_error(error)),
@@ -87,8 +86,10 @@ pub(super) fn archive(
 }
 
 fn require_plain_directory(path: &std::path::Path) -> ModelResult<()> {
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if metadata.file_type().is_dir() && path.canonicalize().map_err(io_error)? == path {
+    let filesystem = make_filesystem();
+    if filesystem.kind(path).map_err(io_error)? == FsKind::Directory
+        && filesystem.canonical_path(path).map_err(io_error)? == path
+    {
         Ok(())
     } else {
         Err(recovery(format!(

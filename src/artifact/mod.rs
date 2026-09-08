@@ -1,12 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::durable_fs::{rename_durable, sync_dir};
+use crate::filesystem::{FileSystem, RenameMode, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::{MemberPath, WORKSPACE_MANIFEST};
 
@@ -375,7 +374,11 @@ pub enum ArtifactSourceKind {
 /// displaces the merge lane's own errors. The gate lives at the command sites instead --
 /// see [`assert_conf_unmodified_for`].
 pub fn read_manifest(root: &Path) -> ModelResult<ManifestArtifact> {
-    let text = fs::read_to_string(root.join(WORKSPACE_MANIFEST)).map_err(manifest_io_error)?;
+    let text = make_filesystem()
+        .read(&root.join(WORKSPACE_MANIFEST))
+        .map_err(manifest_io_error)?;
+    let text = String::from_utf8(text)
+        .map_err(|error| manifest_io_error(io::Error::new(io::ErrorKind::InvalidData, error)))?;
     ManifestArtifact::from_yaml(&text)
 }
 
@@ -518,20 +521,23 @@ pub fn write_manifest_and_lock(
 /// Write `contents` to a unique temp beside `path` and fsync it, returning the staged temp
 /// path. On success the bytes are durably on disk, ready for `publish_staged`.
 fn stage_durably(path: &Path, contents: &str) -> ModelResult<PathBuf> {
+    let filesystem = make_filesystem();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(io_error)?;
+        filesystem.create_directories(parent).map_err(io_error)?;
     }
     let tmp_path = temp_path(path)?;
     let write = || -> ModelResult<()> {
         // F12: fsync the bytes to disk before the rename publishes them. Sync the SAME
         // writable handle we wrote through — do NOT reopen read-only, because Windows
         // rejects FlushFileBuffers on a read-only handle with ERROR_ACCESS_DENIED.
-        let mut file = fs::File::create(&tmp_path).map_err(io_error)?;
-        file.write_all(contents.as_bytes()).map_err(io_error)?;
-        file.sync_all().map_err(io_error)
+        let file = filesystem.create_file(&tmp_path).map_err(io_error)?;
+        filesystem
+            .write_all(&file, contents.as_bytes())
+            .map_err(io_error)?;
+        filesystem.sync_file(&file).map_err(io_error)
     };
     if let Err(err) = write() {
-        let _ = fs::remove_file(&tmp_path);
+        let _ = filesystem.remove_file(&tmp_path);
         return Err(err);
     }
     Ok(tmp_path)
@@ -540,12 +546,16 @@ fn stage_durably(path: &Path, contents: &str) -> ModelResult<PathBuf> {
 /// Publish a staged temp to `path` (atomic rename) and best-effort fsync the directory so
 /// the rename entry itself survives a crash.
 fn publish_staged(tmp_path: &Path, path: &Path) -> ModelResult<()> {
-    if let Err(err) = rename_durable(tmp_path, path, true).map_err(io_error) {
-        let _ = fs::remove_file(tmp_path);
+    let filesystem = make_filesystem();
+    if let Err(err) = filesystem
+        .rename(tmp_path, path, RenameMode::Replace)
+        .map_err(io_error)
+    {
+        let _ = filesystem.remove_file(tmp_path);
         return Err(err);
     }
     if let Some(parent) = path.parent() {
-        let _ = sync_dir(parent);
+        let _ = filesystem.sync_directory(parent);
     }
     Ok(())
 }
@@ -575,7 +585,8 @@ where
 }
 
 fn read_to_string(path: PathBuf) -> ModelResult<String> {
-    fs::read_to_string(path).map_err(io_error)
+    String::from_utf8(make_filesystem().read(&path).map_err(io_error)?)
+        .map_err(|error| io_error(io::Error::new(io::ErrorKind::InvalidData, error)))
 }
 
 pub(crate) fn snapshot_path(root: &Path, snapshot_id: &str) -> ModelResult<PathBuf> {

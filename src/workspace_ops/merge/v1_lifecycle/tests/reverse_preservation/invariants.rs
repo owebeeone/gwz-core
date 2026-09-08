@@ -39,12 +39,13 @@ fn absent_backup_ref_is_not_before_after_the_persisted_head_advances() {
         stored.record().pending_preservation,
         Some(PendingPreservationActionV1::BackupRef { .. })
     ));
-    let advanced = commit_file(
+    let advanced = fixture_commit_file(
+        &fixture.backend,
         &fixture.member,
         "advanced.txt",
         "advanced after durable intent\n",
         "advance after intent",
-        &[fixture.protected.parse().unwrap()],
+        std::slice::from_ref(&fixture.protected),
     )
     .unwrap();
     let record_path = fixture
@@ -176,7 +177,7 @@ fn new_work_in_an_earlier_skipped_owner_is_rejected_before_later_evidence_mutate
     // regression — it advances on its own exact observations, which is the
     // payoff this amendment buys. What must not happen is any mutation of the
     // REGRESSED owner: its new work stands and no artifact was created over it.
-    assert!(fixture.member.join("new-earlier-work.txt").exists());
+    assert!(fs::exists(fixture.member.join("new-earlier-work.txt")));
     assert!(
         fixture
             .backend
@@ -305,7 +306,7 @@ fn foreign_bundle_inserted_before_publication_is_not_overwritten() {
         &fixture.root.path,
         &format!("stash_{}", fixture.model.merge_id),
     );
-    assert!(!bundle.exists());
+    assert!(!fs::exists(&bundle));
     let insertion = bundle.clone();
     run_next_checked_artifact_at(CheckedArtifactFault::BeforeFinalCheck, move || {
         fs::write(insertion, "foreign bundle\n").unwrap();
@@ -330,7 +331,7 @@ fn foreign_bundle_inserted_before_publication_is_not_overwritten() {
 }
 
 struct StopBeforeBackup<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     stopped: bool,
 }
 
@@ -368,12 +369,12 @@ impl PhysicalExecutor for StopBeforeBackup<'_> {
 }
 
 struct StopAfterLaterBundle<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     stopped: bool,
 }
 
 struct StopBeforeBundle<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     stopped: bool,
 }
 

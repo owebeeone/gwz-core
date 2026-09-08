@@ -71,7 +71,13 @@ fn execute_checked<B: MergeAuthorityBackend>(
         PendingPreservationActionV1::Stash {
             phase: S::WriteBundle,
             ..
-        } => v1_write_bundle_checked(current.location().root(), current.record(), &plans, owner)?,
+        } => v1_write_bundle_checked(
+            backend,
+            current.location().root(),
+            current.record(),
+            &plans,
+            owner,
+        )?,
         PendingPreservationActionV1::Stash {
             phase: S::Complete, ..
         } => return Err(route_error("complete stash phase has no physical mutation")),

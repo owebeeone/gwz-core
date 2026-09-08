@@ -92,7 +92,7 @@ fn malformed_scratch_family_entry_is_read_only_ambiguity() {
                 .join("checked-artifacts-catalog-bootstrap-v1.scratch.malformed")
         )
         .unwrap(),
-        []
+        Vec::<u8>::new()
     );
 }
 

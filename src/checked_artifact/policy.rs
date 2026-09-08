@@ -5,6 +5,10 @@ use super::catalog_names::{CatalogPrivateNameV1, CatalogPrivateRootV1};
 /// Explicitly selects the filesystem that owns a checked artifact's private
 /// recovery namespace.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "git-directory policy remains a checked-boundary contract vector"
+)]
 pub(super) enum CheckedArtifactPolicy {
     WorkspaceArtifact { artifact_root: PathBuf },
     GitDirectoryArtifact { artifact_root: PathBuf },
@@ -17,6 +21,10 @@ impl CheckedArtifactPolicy {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "git-directory policy remains a checked-boundary contract vector"
+    )]
     pub(super) fn git_directory(artifact_root: &Path) -> Self {
         Self::GitDirectoryArtifact {
             artifact_root: artifact_root.to_path_buf(),
@@ -38,11 +46,10 @@ impl CheckedArtifactPolicy {
     /// not move, its residue is not orphaned, and its git-status dirt exemption
     /// and preservation-image blindness stay correct where they already are.
     ///
-    /// The `GitDirectoryArtifact` arm is symmetry, not behaviour: its only
-    /// production construction site is `entry.rs:182`, reached only from
-    /// `observe_merge_preservation_git_directory`, which never mutates — no
-    /// production write lands under `<git-dir>/gwz/` through this policy
-    /// ([P3-7]).
+    /// The `GitDirectoryArtifact` arm remains a protocol-contract vector; the
+    /// read-only preservation observer now uses the filesystem boundary
+    /// directly, so no production write lands under `<git-dir>/gwz/` through
+    /// this policy ([P3-7]).
     pub(super) fn private_parent(&self) -> PathBuf {
         match self {
             Self::WorkspaceArtifact { .. } => {

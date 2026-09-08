@@ -280,7 +280,7 @@ impl RetainedCatalogTargetGroupV1 {
         Ok(())
     }
 
-    fn guard_parent(&self) -> &cap_std::fs::Dir {
+    fn guard_parent(&self) -> &crate::filesystem::FsDirectory {
         self.primary.guard_parent()
     }
 

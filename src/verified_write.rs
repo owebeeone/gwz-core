@@ -33,12 +33,11 @@
 //! reboot-durable identity behind, and no `recover()` of a half-written raw
 //! record exists or is owed.
 
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::durable_fs::{rename_durable, sync_dir};
+use crate::filesystem::{FileSystem, RenameMode, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -52,36 +51,35 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// harmless on the one path that reaches this function: `create_open` refuses
 /// an existing record before it is called, so the target is absent.
 pub(crate) fn write_atomic_verified(path: &Path, bytes: &[u8]) -> ModelResult<()> {
+    let filesystem = make_filesystem();
     let parent = path
         .parent()
         .ok_or_else(|| recovery_error("record path has no parent"))?;
-    fs::create_dir_all(parent).map_err(io_error)?;
-    let (temporary, mut file) = loop {
+    filesystem.create_directories(parent).map_err(io_error)?;
+    let (temporary, file) = loop {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let candidate =
             path.with_extension(format!("yaml.{}.{}.tmp", std::process::id(), sequence));
-        match File::options()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
+        match filesystem.create_file(&candidate) {
             Ok(file) => break (candidate, file),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error(error)),
         }
     };
-    let staged = file.write_all(bytes).and_then(|()| file.sync_all());
+    let staged = filesystem
+        .write_all(&file, bytes)
+        .and_then(|()| filesystem.sync_file(&file));
     drop(file);
     if let Err(error) = staged {
-        let _ = fs::remove_file(&temporary);
+        let _ = filesystem.remove_file(&temporary);
         return Err(io_error(error));
     }
-    if let Err(error) = rename_durable(&temporary, path, true) {
-        let _ = fs::remove_file(&temporary);
+    if let Err(error) = filesystem.rename(&temporary, path, RenameMode::Replace) {
+        let _ = filesystem.remove_file(&temporary);
         return Err(io_error(error));
     }
-    sync_dir(parent).map_err(io_error)?;
-    if fs::read(path).map_err(io_error)? != bytes {
+    filesystem.sync_directory(parent).map_err(io_error)?;
+    if filesystem.read(path).map_err(io_error)? != bytes {
         return Err(recovery_error(
             "merge record bytes failed write verification",
         ));
@@ -95,4 +93,21 @@ fn recovery_error(message: impl Into<String>) -> ModelError {
 
 fn io_error(error: io::Error) -> ModelError {
     ModelError::new(ErrorCode::IoError, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filesystem::{FileSystem, make_filesystem};
+
+    #[test]
+    fn atomic_verified_write_uses_the_selected_filesystem() {
+        let filesystem = make_filesystem();
+        let workspace = filesystem.test_workspace().unwrap();
+        let path = workspace.path().join("nested/record.yaml");
+
+        write_atomic_verified(&path, b"checked record").unwrap();
+
+        assert_eq!(filesystem.read(&path).unwrap(), b"checked record");
+    }
 }

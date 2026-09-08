@@ -33,7 +33,7 @@ fn completed_participant_drift_blocks_every_later_owner_and_exhaustion() {
                     .join(".gwz/merge")
                     .join(format!("{}.yaml", fixture.model.merge_id));
                 super::service_fault_matrix::seed_open(&fixture.root.path, &fixture.model);
-                let record_before = std::fs::read(&record_path).unwrap();
+                let record_before = make_filesystem().read(&record_path).unwrap();
                 install_drift(&fixture, drift);
                 let later_before = fixture.backend.head(&fixture.later).unwrap();
                 let context = super::service_fault_matrix::context(&fixture.model);
@@ -59,7 +59,7 @@ fn completed_participant_drift_blocks_every_later_owner_and_exhaustion() {
                     ),
                     "{terminal:?}/{request:?}/{drift:?}: {error:?}"
                 );
-                assert_eq!(std::fs::read(&record_path).unwrap(), record_before);
+                assert_eq!(make_filesystem().read(&record_path).unwrap(), record_before);
                 assert_eq!(fixture.backend.head(&fixture.later).unwrap(), later_before);
                 let stored = CheckedV1Store::default()
                     .load_open(&fixture.root.path, &fixture.model.merge_id)
@@ -87,12 +87,10 @@ fn completed_participant_drift_blocks_terminal_exhaustion_for_every_request() {
                 Drift::NativeState,
             ] {
                 let mut fixture = prefix_fixture(terminal, drift);
-                let status = std::process::Command::new("git")
-                    .args(["reset", "--hard", &fixture.later_before])
-                    .current_dir(&fixture.later)
-                    .status()
+                fixture
+                    .backend
+                    .test_force_checkout(&fixture.later, &fixture.later_before)
                     .unwrap();
-                assert!(status.success());
                 let later = fixture.model.participants.get_mut("mem_a").unwrap();
                 later.state = terminal;
                 later.resulting_commit = match terminal {
@@ -106,7 +104,7 @@ fn completed_participant_drift_blocks_terminal_exhaustion_for_every_request() {
                     .join(".gwz/merge")
                     .join(format!("{}.yaml", fixture.model.merge_id));
                 super::service_fault_matrix::seed_open(&fixture.root.path, &fixture.model);
-                let record_before = std::fs::read(&record_path).unwrap();
+                let record_before = make_filesystem().read(&record_path).unwrap();
                 install_drift(&fixture, drift);
                 let context = super::service_fault_matrix::context(&fixture.model);
                 let mut runtime = ReverseRuntime::new(&fixture.backend, &context);
@@ -133,7 +131,7 @@ fn completed_participant_drift_blocks_terminal_exhaustion_for_every_request() {
                     ),
                     "{terminal:?}/{request:?}/{drift:?}: {error:?}"
                 );
-                assert_eq!(std::fs::read(&record_path).unwrap(), record_before);
+                assert_eq!(make_filesystem().read(&record_path).unwrap(), record_before);
                 assert_eq!(
                     CheckedV1Store::default()
                         .load_open(&fixture.root.path, &fixture.model.merge_id)
@@ -160,7 +158,7 @@ fn admitted_requests() -> [V1LifecycleRequest; 5] {
 
 struct PrefixFixture {
     root: TempDir,
-    backend: Git2Backend,
+    backend: GitTestRepository,
     completed: std::path::PathBuf,
     later: std::path::PathBuf,
     later_before: String,
@@ -169,37 +167,50 @@ struct PrefixFixture {
 }
 
 fn prefix_fixture(terminal: ParticipantState, drift: Drift) -> PrefixFixture {
-    let root = TempDir::new_git(&format!("rollback-prefix-{terminal:?}-{drift:?}"));
-    let backend = Git2Backend::new();
+    let root = TempDir::new(&format!("rollback-prefix-{terminal:?}-{drift:?}"));
+    let backend = make_repository();
+    backend
+        .test_init_repo(&root.path, &TestRepoSpec::default())
+        .unwrap();
     let later = root.path.join("members/later");
     let completed = root.path.join("members/completed");
     backend.create_repo(&later).unwrap();
     backend.create_repo(&completed).unwrap();
-    let later_before = commit_file(&later, "README.md", "later before\n", "before", &[]).unwrap();
-    let later_result = commit_file(
+    let later_before = fixture_commit_file(
+        &backend,
+        &later,
+        "README.md",
+        "later before\n",
+        "before",
+        &[],
+    );
+    let later_result = fixture_commit_file(
+        &backend,
         &later,
         "README.md",
         "later result\n",
         "result",
-        &[later_before.parse().unwrap()],
-    )
-    .unwrap();
-    let completed_before =
-        commit_file(&completed, "README.md", "completed before\n", "before", &[]).unwrap();
-    let completed_result = commit_file(
+        std::slice::from_ref(&later_before),
+    );
+    let completed_before = fixture_commit_file(
+        &backend,
+        &completed,
+        "README.md",
+        "completed before\n",
+        "before",
+        &[],
+    );
+    let completed_result = fixture_commit_file(
+        &backend,
         &completed,
         "README.md",
         "completed result\n",
         "result",
-        &[completed_before.parse().unwrap()],
-    )
-    .unwrap();
-    let status = std::process::Command::new("git")
-        .args(["reset", "--hard", &completed_before])
-        .current_dir(&completed)
-        .status()
+        std::slice::from_ref(&completed_before),
+    );
+    backend
+        .test_force_checkout(&completed, &completed_before)
         .unwrap();
-    assert!(status.success());
 
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     model.state = OperationState::RollingBack;
@@ -272,46 +283,56 @@ fn prefix_fixture(terminal: ParticipantState, drift: Drift) -> PrefixFixture {
 fn install_drift(fixture: &PrefixFixture, drift: Drift) {
     match drift {
         Drift::Unstaged => {
-            std::fs::write(fixture.completed.join("README.md"), "unstaged drift\n").unwrap();
+            write_for_test(&fixture.completed.join("README.md"), b"unstaged drift\n").unwrap();
         }
         Drift::Staged => {
-            std::fs::write(fixture.completed.join("README.md"), "staged drift\n").unwrap();
-            let status = std::process::Command::new("git")
-                .args(["add", "README.md"])
-                .current_dir(&fixture.completed)
-                .status()
+            write_for_test(&fixture.completed.join("README.md"), b"staged drift\n").unwrap();
+            fixture
+                .backend
+                .stage_paths(&fixture.completed, &["README.md"])
                 .unwrap();
-            assert!(status.success());
         }
         Drift::Untracked => {
-            std::fs::write(fixture.completed.join("foreign.txt"), "untracked drift\n").unwrap();
+            write_for_test(&fixture.completed.join("foreign.txt"), b"untracked drift\n").unwrap();
         }
         Drift::SemanticIndex => {
-            let status = std::process::Command::new("git")
-                .args(["update-index", "--assume-unchanged", "README.md"])
-                .current_dir(&fixture.completed)
-                .status()
+            let mut entries = fixture.backend.test_read_index(&fixture.completed).unwrap();
+            entries
+                .iter_mut()
+                .find(|entry| entry.path == b"README.md")
+                .unwrap()
+                .assume_valid = true;
+            fixture
+                .backend
+                .test_replace_index(&fixture.completed, &entries)
                 .unwrap();
-            assert!(status.success());
         }
         Drift::Branch => {
             fixture
                 .backend
-                .branch_create(&fixture.completed, "foreign", &fixture.completed_before)
+                .test_set_ref(
+                    &fixture.completed,
+                    "refs/heads/foreign",
+                    Some(&TestRefTarget::Direct(fixture.completed_before.clone())),
+                )
                 .unwrap();
             fixture
                 .backend
-                .switch_branch(&fixture.completed, "foreign")
+                .test_set_head(
+                    &fixture.completed,
+                    &TestHead::Attached("refs/heads/foreign".into()),
+                )
                 .unwrap();
         }
         Drift::NativeState => {
-            let repo = git2::Repository::open(&fixture.completed).unwrap();
-            std::fs::write(
-                repo.path().join("MERGE_HEAD"),
-                format!("{}\n", fixture.completed_before),
-            )
-            .unwrap();
-            std::fs::write(repo.path().join("MERGE_MSG"), "foreign merge\n").unwrap();
+            fixture
+                .backend
+                .test_set_repository_state(
+                    &fixture.completed,
+                    crate::git::GitRepositoryState::Merge,
+                    Some(&fixture.completed_before),
+                )
+                .unwrap();
         }
     }
 }

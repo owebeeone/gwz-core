@@ -19,149 +19,159 @@ use crate::workspace_ops::merge::v1_lifecycle::tests::c7_matrix::matrix_spec::{
 };
 
 #[test]
-fn every_root_physical_and_successor_boundary_recovers_without_repeating_mutation() {
-    for owner in [RootOwner::Publication, RootOwner::Selected] {
-        let cases = physical_cases(owner);
-        assert_eq!(
-            cases.len(),
-            match owner {
-                RootOwner::Publication => 54,
-                RootOwner::Selected => 58,
-            },
-            "{owner:?} physical/action-form cross drifted",
-        );
-        for (target_index, (handoff, target)) in cases.into_iter().enumerate() {
-            for (boundary_index, boundary) in [
-                Boundary::BeforePhysical,
-                Boundary::AfterPhysical,
-                Boundary::AfterDurableSuccessor,
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let name = format!("v1-root-matrix-{owner:?}-{target_index}-{boundary_index}",);
-                let mut fixture = root_fixture(owner, &name, handoff);
-                install_handoff(&mut fixture, handoff);
-                fixture.base.seed_open();
-                let context = fixture.base.context();
-                let mut interrupt = InterruptRuntime {
-                    inner: ReverseRuntime::new(&fixture.base.backend, &context),
-                    target,
-                    boundary,
-                    physical_complete: false,
-                    interrupted: false,
-                };
-                let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run(
-                        &CheckedV1Store::default(),
-                        &fixture.base.root.path,
-                        &fixture.base.model.merge_id,
-                        V1LifecycleRequest::Preserve,
-                        &mut interrupt,
-                    )
-                }));
-                assert!(interrupt.interrupted, "{owner:?} {target:?} was not issued");
-                match boundary {
-                    Boundary::BeforePhysical => match &first {
-                        Ok(Err(_)) => {}
-                        Ok(Ok(response)) => assert_eq!(
-                            response.disposition(),
-                            V1ResponseDisposition::Stopped(OperationState::RecoveryRequired),
-                            "{target:?} {boundary:?} did not retain a recoverable journal",
-                        ),
-                        Err(_) => panic!("{target:?} {boundary:?} unexpectedly panicked"),
-                    },
-                    Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => {
-                        assert!(first.is_err(), "{target:?} {boundary:?} did not interrupt")
-                    }
-                }
-                let interrupted = CheckedV1Store::default()
-                    .load_open(&fixture.base.root.path, &fixture.base.model.merge_id)
-                    .unwrap();
-                assert!(
-                    matches!(
-                        interrupted.record().state,
-                        OperationState::Preserving | OperationState::RecoveryRequired
-                    ),
-                    "{target:?} {boundary:?} left a non-recoverable state"
-                );
-                assert!(
-                    interrupted
-                        .record()
-                        .pending_preservation
-                        .as_ref()
-                        .is_some_and(|action| target
-                            .matches(&PhysicalActionKind::Preservation(action.clone())))
-                        || boundary == Boundary::AfterDurableSuccessor
-                );
-                if interrupted.record().pending_preservation.is_some() {
-                    seed_recovery(&fixture.base.root.path, interrupted.record());
-                }
-                let context = fixture.base.context();
-                let mut resume = CountingRuntime {
-                    inner: ReverseRuntime::new(&fixture.base.backend, &context),
-                    target,
-                    executions: 0,
-                };
-                let store = CheckedV1Store::default();
-                let mut response = run(
-                    &store,
-                    &fixture.base.root.path,
-                    &fixture.base.model.merge_id,
-                    if boundary_index % 2 == 0 {
-                        V1LifecycleRequest::Abort
-                    } else {
-                        V1LifecycleRequest::Preserve
-                    },
-                    &mut resume,
-                )
-                .unwrap();
-                for retry in 0..8 {
-                    if response.disposition()
-                        != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
-                    {
-                        break;
-                    }
-                    response = run(
-                        &store,
-                        &fixture.base.root.path,
-                        &fixture.base.model.merge_id,
-                        if retry % 2 == 0 {
-                            V1LifecycleRequest::Preserve
-                        } else {
-                            V1LifecycleRequest::Abort
-                        },
-                        &mut resume,
-                    )
-                    .unwrap();
-                }
-                assert_eq!(
+fn publication_before_physical_recovers_without_repeating_mutation() {
+    assert_root_boundary(RootOwner::Publication, 0, Boundary::BeforePhysical);
+}
+
+#[test]
+fn publication_after_physical_recovers_without_repeating_mutation() {
+    assert_root_boundary(RootOwner::Publication, 1, Boundary::AfterPhysical);
+}
+
+#[test]
+fn publication_after_successor_recovers_without_repeating_mutation() {
+    assert_root_boundary(RootOwner::Publication, 2, Boundary::AfterDurableSuccessor);
+}
+
+#[test]
+fn selected_before_physical_recovers_without_repeating_mutation() {
+    assert_root_boundary(RootOwner::Selected, 0, Boundary::BeforePhysical);
+}
+
+#[test]
+fn selected_after_physical_recovers_without_repeating_mutation() {
+    assert_root_boundary(RootOwner::Selected, 1, Boundary::AfterPhysical);
+}
+
+#[test]
+fn selected_after_successor_recovers_without_repeating_mutation() {
+    assert_root_boundary(RootOwner::Selected, 2, Boundary::AfterDurableSuccessor);
+}
+
+fn assert_root_boundary(owner: RootOwner, boundary_index: usize, boundary: Boundary) {
+    let cases = physical_cases(owner);
+    for (target_index, (handoff, target)) in cases.into_iter().enumerate() {
+        let name = format!("v1-root-matrix-{owner:?}-{target_index}-{boundary_index}",);
+        let mut fixture = root_fixture(owner, &name, handoff);
+        install_handoff(&mut fixture, handoff);
+        fixture.base.seed_open();
+        let context = fixture.base.context();
+        let mut interrupt = InterruptRuntime {
+            inner: ReverseRuntime::new(&fixture.base.backend, &context),
+            target,
+            boundary,
+            physical_complete: false,
+            interrupted: false,
+        };
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(
+                &CheckedV1Store::default(),
+                &fixture.base.root.path,
+                &fixture.base.model.merge_id,
+                V1LifecycleRequest::Preserve,
+                &mut interrupt,
+            )
+        }));
+        assert!(interrupt.interrupted, "{owner:?} {target:?} was not issued");
+        match boundary {
+            Boundary::BeforePhysical => match &first {
+                Ok(Err(_)) => {}
+                Ok(Ok(response)) => assert_eq!(
                     response.disposition(),
-                    V1ResponseDisposition::Terminal(OperationState::Aborted),
-                    "{owner:?} {target:?} {boundary:?}",
-                );
-                assert!(response.current().record().pending_preservation.is_none());
-                let expected = match boundary {
-                    Boundary::BeforePhysical => 1,
-                    Boundary::AfterPhysical if target.has_parent_durability() => 1,
-                    Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => 0,
-                };
-                assert_eq!(resume.executions, expected, "{target:?} {boundary:?}");
-                assert_eq!(
-                fixture
-                    .base
-                    .backend
-                    .preservation_stashes(
-                        &fixture.base.root.path,
-                        &fixture.base.model.merge_id,
-                    )
-                    .unwrap()
-                    .len(),
-                1,
-                "{target:?} {boundary:?}"
-            );
+                    V1ResponseDisposition::Stopped(OperationState::RecoveryRequired),
+                    "{target:?} {boundary:?} did not retain a recoverable journal",
+                ),
+                Err(_) => panic!("{target:?} {boundary:?} unexpectedly panicked"),
+            },
+            Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => {
+                assert!(first.is_err(), "{target:?} {boundary:?} did not interrupt")
             }
         }
+        let interrupted = CheckedV1Store::default()
+            .load_open(&fixture.base.root.path, &fixture.base.model.merge_id)
+            .unwrap();
+        assert!(
+            matches!(
+                interrupted.record().state,
+                OperationState::Preserving | OperationState::RecoveryRequired
+            ),
+            "{target:?} {boundary:?} left a non-recoverable state"
+        );
+        assert!(
+            interrupted
+                .record()
+                .pending_preservation
+                .as_ref()
+                .is_some_and(|action| {
+                    target.matches(&PhysicalActionKind::Preservation(action.clone()))
+                })
+                || boundary == Boundary::AfterDurableSuccessor
+        );
+        if interrupted.record().pending_preservation.is_some() {
+            seed_recovery(&fixture.base.root.path, interrupted.record());
+        }
+        let context = fixture.base.context();
+        let mut resume = CountingRuntime {
+            inner: ReverseRuntime::new(&fixture.base.backend, &context),
+            target,
+            executions: 0,
+        };
+        let store = CheckedV1Store::default();
+        let mut response = run(
+            &store,
+            &fixture.base.root.path,
+            &fixture.base.model.merge_id,
+            if boundary_index.is_multiple_of(2) {
+                V1LifecycleRequest::Abort
+            } else {
+                V1LifecycleRequest::Preserve
+            },
+            &mut resume,
+        )
+        .unwrap_or_else(|error| {
+            panic!("{owner:?} {target:?} {boundary:?} resume failed: {error:?}")
+        });
+        for retry in 0..8 {
+            if response.disposition()
+                != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
+            {
+                break;
+            }
+            response = run(
+                &store,
+                &fixture.base.root.path,
+                &fixture.base.model.merge_id,
+                if retry % 2 == 0 {
+                    V1LifecycleRequest::Preserve
+                } else {
+                    V1LifecycleRequest::Abort
+                },
+                &mut resume,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            response.disposition(),
+            V1ResponseDisposition::Terminal(OperationState::Aborted),
+            "{owner:?} {target:?} {boundary:?}",
+        );
+        assert!(response.current().record().pending_preservation.is_none());
+        let expected = match boundary {
+            Boundary::BeforePhysical => 1,
+            Boundary::AfterPhysical if target.has_parent_durability() => 1,
+            Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => 0,
+        };
+        assert_eq!(resume.executions, expected, "{target:?} {boundary:?}");
+        assert_eq!(
+            fixture
+                .base
+                .backend
+                .preservation_stashes(&fixture.base.root.path, &fixture.base.model.merge_id)
+                .unwrap()
+                .len(),
+            1,
+            "{target:?} {boundary:?}"
+        );
     }
 }
 
@@ -171,7 +181,7 @@ fn seed_recovery(root: &std::path::Path, model: &MergeOperationRecordV1) {
     recovery.recovery_context = Some(RecoveryContextV1 {
         origin_state: RecoveryOriginStateV1::Preserving,
     });
-    std::fs::write(
+    fs::write(
         root.join(format!(".gwz/merge/{}.yaml", recovery.merge_id)),
         serde_yaml::to_string(&recovery).unwrap(),
     )
@@ -184,14 +194,18 @@ enum RootOwner {
     Selected,
 }
 
-fn root_fixture(owner: RootOwner, name: &str, handoff: Handoff) -> RootPreservationFixture {
-    if is_degenerate(handoff) {
-        return dirty_root_degenerate_handoff_fixture(name, matches!(owner, RootOwner::Selected));
-    }
-    match owner {
-        RootOwner::Publication => dirty_root_handoff_fixture(name),
-        RootOwner::Selected => dirty_selected_root_handoff_fixture(name),
-    }
+fn root_fixture(
+    owner: RootOwner,
+    name: &str,
+    handoff: Handoff,
+) -> RootPreservationFixture<GitTestRepository> {
+    dirty_root_handoff_fixture_using(
+        name,
+        matches!(owner, RootOwner::Selected),
+        false,
+        is_degenerate(handoff),
+        make_repository(),
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -282,7 +296,7 @@ fn expected_targets(handoff: Handoff) -> Vec<Target> {
         .collect()
 }
 
-fn install_handoff(fixture: &mut RootPreservationFixture, handoff: Handoff) {
+fn install_handoff(fixture: &mut RootPreservationFixture<GitTestRepository>, handoff: Handoff) {
     if handoff.shape == HandoffShape::NoCandidate {
         install_selected_root_no_candidate_handoff(fixture);
     } else {
@@ -357,7 +371,7 @@ enum Boundary {
 }
 
 struct InterruptRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: Target,
     boundary: Boundary,
     physical_complete: bool,
@@ -422,7 +436,7 @@ impl PhysicalExecutor for InterruptRuntime<'_> {
 }
 
 struct CountingRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: Target,
     executions: usize,
 }

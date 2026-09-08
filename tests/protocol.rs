@@ -1,3 +1,7 @@
+#![allow(
+    clippy::disallowed_methods,
+    reason = "physical source/protocol artifact checks"
+)]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

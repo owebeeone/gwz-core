@@ -2,6 +2,15 @@
 # artifact mutation. Entries which are platform- or feature-specific remain
 # fail-closed when present and harmless when absent.
 disallowed-methods = [
+  { path = "gwz_core::filesystem::FileSystem::create_file", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
+  { path = "gwz_core::filesystem::FileSystem::create_file_at", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
+  { path = "gwz_core::filesystem::FileSystem::create_directory_at", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
+  { path = "gwz_core::filesystem::FileSystem::create_directories", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
+  { path = "gwz_core::filesystem::FileSystem::write_at", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
+  { path = "gwz_core::filesystem::FileSystem::write_all", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
+  { path = "gwz_core::filesystem::FileSystem::rename_at", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
+  { path = "gwz_core::filesystem::FileSystem::remove_file", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
+  { path = "gwz_core::filesystem::FileSystem::remove_file_at", reason = "checked merge readers must not bypass mutation authority through FileSystem", allow-invalid = true },
   { path = "std::fs::write", reason = "merge artifact writers must use a purpose-specific checked entry" },
   { path = "std::fs::rename", reason = "merge artifact writers must use a purpose-specific checked entry" },
   { path = "std::fs::remove_file", reason = "merge artifact writers must use a purpose-specific checked entry" },

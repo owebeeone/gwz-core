@@ -167,7 +167,7 @@ impl RecoveryTarget {
 }
 
 struct InterruptAtPreservationTarget<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: RecoveryTarget,
     after: bool,
     interrupted: bool,

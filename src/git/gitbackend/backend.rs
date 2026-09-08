@@ -8,11 +8,14 @@ pub enum CredentialHelperPolicy {
 }
 
 #[derive(Clone, Debug)]
-pub struct Git2Backend {
+pub struct Git2Repository {
     pub(crate) credential_helpers: CredentialHelperPolicy,
     pub(crate) identities: super::transport_support::identity::Selection,
     pub(crate) observations: super::transport_observations::TransportObservations,
 }
+
+/// Compatibility name for existing callers.
+pub type Git2Backend = Git2Repository;
 
 impl PartialEq for Git2Backend {
     fn eq(&self, other: &Self) -> bool {

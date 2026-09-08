@@ -1,3 +1,4 @@
+use crate::git::{GitIndexEntry, GitRepository, make_repository};
 use std::ffi::OsString;
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -17,9 +18,10 @@ pub(super) fn observe(
     retained: &RetainedPlatformRoot,
     platform: &impl PlatformProviderV1,
 ) -> Result<(IndexSnapshotFacts, Option<RetainedFile>), CheckedFsError> {
-    let repository = git2::Repository::open(retained.root_path()).map_err(git_error)?;
-    let index = repository.index().map_err(git_error)?;
-    let actual_path = index.path().ok_or_else(|| {
+    let index = make_repository()
+        .repository_index(retained.root_path())
+        .map_err(git_error)?;
+    let actual_path = index.path.as_deref().ok_or_else(|| {
         CheckedFsError::ambiguous("Git index", "repository returned an in-memory index")
     })?;
     // Compare canonicalized parents rather than raw spellings: libgit2 may
@@ -47,20 +49,24 @@ pub(super) fn observe(
     let file = retain_index_file(retained.repository(), platform)?;
     let content_digest = file.as_ref().map(hash_file).transpose()?;
     let mut entries = Vec::new();
-    entries.try_reserve_exact(index.len()).map_err(|_| {
-        CheckedFsError::unsupported(
-            PlatformCapability::PrivateNamespaceCollisionScan,
-            "Git index fact allocation failed",
-        )
-    })?;
+    entries
+        .try_reserve_exact(index.entries.len())
+        .map_err(|_| {
+            CheckedFsError::unsupported(
+                PlatformCapability::PrivateNamespaceCollisionScan,
+                "Git index fact allocation failed",
+            )
+        })?;
     let mut worktree = Vec::new();
-    worktree.try_reserve_exact(index.len()).map_err(|_| {
-        CheckedFsError::unsupported(
-            PlatformCapability::PrivateNamespaceCollisionScan,
-            "tracked worktree fact allocation failed",
-        )
-    })?;
-    for entry in index.iter() {
+    worktree
+        .try_reserve_exact(index.entries.len())
+        .map_err(|_| {
+            CheckedFsError::unsupported(
+                PlatformCapability::PrivateNamespaceCollisionScan,
+                "tracked worktree fact allocation failed",
+            )
+        })?;
+    for entry in index.entries.iter() {
         let stage = ((entry.flags >> 12) & 3) as u8;
         let path = GitPathBytes::new(entry.path.clone())?;
         entries.push(LosslessIndexEntry::new(
@@ -70,15 +76,15 @@ pub(super) fn observe(
             entry.flags,
             entry.flags_extended,
             LosslessIndexMetadataV1::new(
-                IndexTimestampV1::new(entry.ctime.seconds(), entry.ctime.nanoseconds())?,
-                IndexTimestampV1::new(entry.mtime.seconds(), entry.mtime.nanoseconds())?,
-                [entry.dev, entry.ino, entry.uid, entry.gid, entry.file_size],
-                entry.id.as_bytes().to_vec(),
+                IndexTimestampV1::new(entry.ctime.0, entry.ctime.1)?,
+                IndexTimestampV1::new(entry.mtime.0, entry.mtime.1)?,
+                entry.stat,
+                entry.object_id.clone(),
             )?,
         )?);
         worktree.push(TrackedWorktreeEntry::new(
             path,
-            worktree_kind(retained, &entry)?,
+            worktree_kind(retained, entry)?,
         ));
     }
     entries.sort_unstable_by(|left, right| {
@@ -128,7 +134,7 @@ fn hash_file(file: &RetainedFile) -> Result<[u8; 32], CheckedFsError> {
 
 fn worktree_kind(
     retained: &RetainedPlatformRoot,
-    entry: &git2::IndexEntry,
+    entry: &GitIndexEntry,
 ) -> Result<TrackedWorktreeKind, CheckedFsError> {
     if entry.mode & 0o170000 == 0o160000 {
         return Ok(TrackedWorktreeKind::Gitlink);
@@ -162,9 +168,9 @@ fn worktree_path(path: &[u8]) -> Option<PathBuf> {
     std::str::from_utf8(path).ok().map(PathBuf::from)
 }
 
-fn git_error(error: git2::Error) -> CheckedFsError {
+fn git_error(error: crate::model::ModelError) -> CheckedFsError {
     CheckedFsError::io(
         "read pre-catalog Git index",
-        io::Error::other(error.message().to_owned()),
+        io::Error::other(error.to_string()),
     )
 }

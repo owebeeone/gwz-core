@@ -2,7 +2,6 @@
 
 use super::super::*;
 use crate::checked_artifact::entry::MergeArtifactTransition;
-use cap_fs_ext::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 pub(super) fn observe_relative(
@@ -25,10 +24,14 @@ pub(super) fn observe_required(root: &Path, expected: &GitCandidateFile) -> Mode
     )
 }
 
-pub(super) fn observe_boundary(root: &Path, expected: &[u8]) -> ModelResult<bool> {
-    let repo = git2::Repository::open(root).map_err(git_error)?;
+pub(super) fn observe_boundary(
+    backend: &impl GitBackend,
+    root: &Path,
+    expected: &[u8],
+) -> ModelResult<bool> {
+    let repo = backend.repository_paths(root)?;
     crate::checked_artifact::entry::observe_merge_preservation_git_directory(
-        repo.path(),
+        &repo.git_dir,
         Path::new("info/exclude"),
         Some(expected),
     )
@@ -83,10 +86,6 @@ pub(super) fn split_relative(path: &Path) -> ModelResult<(PathBuf, std::ffi::OsS
 
 fn evidence_error(detail: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::PreservationEvidenceMismatch, detail.into())
-}
-
-pub(super) fn identity(metadata: &cap_fs_ext::Metadata) -> (u64, u64) {
-    (MetadataExt::dev(metadata), MetadataExt::ino(metadata))
 }
 
 #[cfg(unix)]

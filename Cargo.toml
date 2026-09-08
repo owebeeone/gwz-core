@@ -78,3 +78,10 @@ gwz-local-testrepo = { path = "crates/local-testrepo" }
 
 [build-dependencies]
 sha2 = "0.10"
+
+# The protocol-heavy test matrices repeatedly parse, validate, and hash durable
+# records. In the default unoptimized profile that CPU work dominates the suite;
+# level 1 keeps debug assertions and symbols while making routine test cycles
+# practical.
+[profile.test]
+opt-level = 1

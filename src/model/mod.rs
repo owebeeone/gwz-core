@@ -149,9 +149,10 @@ impl Eq for ModelError {}
 
 impl ModelError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
             code,
-            message: message.into(),
+            message,
             member_id: None,
             member_path: None,
             record_context: None,

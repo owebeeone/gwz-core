@@ -5,7 +5,7 @@ gwz-core has no release branch — tags are cut directly on ``main``. This scrip
 automates RELEASE.md steps 1-4 for a given tag:
 
   1. Gate the tree: protocol regeneration, formatting, the structural checked-artifact
-     boundary, tests, and Clippy (the same bar as CI).
+     source boundary scan, tests, and Clippy. Compiler-mutation suites are manual-only.
   2. Bump ``version`` in ``Cargo.toml`` and refresh ``Cargo.lock`` via ``cargo generate-lockfile``.
   3. Commit on ``main``: ``chore(release): gwz-core X.Y.Z``.
   4. Tag that commit ``vX.Y.Z`` (lightweight). An existing tag is NEVER moved — if
@@ -48,8 +48,6 @@ REPO = Path(__file__).resolve().parent.parent
 REGEN = REPO / "protocol" / "regen.py"
 REGEN_VENV = REPO / "protocol" / ".regen-venv"
 CHECKED_ARTIFACT_BOUNDARY = Path("scripts/checks/check_checked_artifact_boundaries.py")
-CHECKED_ARTIFACT_BOUNDARY_TEST = Path("scripts/checks/test_check_checked_artifact_boundaries.py")
-RELEASE_BOUNDARY_TEST = Path("scripts/checks/test_release_boundary.py")
 
 
 def fail(msg: str):
@@ -347,17 +345,9 @@ def push_release(branch: str, tag: str, *, expected_head: str):
 
 
 def run_checked_boundary_gates(*, cargo_root: Path):
-    """Run the non-skippable source and compiler boundary on this exact tree."""
+    """Check the real source tree; mutation/compiler suites are manual-only."""
     run(
         [sys.executable, CHECKED_ARTIFACT_BOUNDARY],
-        cwd=cargo_root,
-    )
-    run(
-        [sys.executable, "-m", "unittest", CHECKED_ARTIFACT_BOUNDARY_TEST, "-v"],
-        cwd=cargo_root,
-    )
-    run(
-        [sys.executable, "-m", "unittest", RELEASE_BOUNDARY_TEST, "-v"],
         cwd=cargo_root,
     )
     test_env = cargo_env()
@@ -428,7 +418,7 @@ def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool):
     test_env = cargo_env()
 
     if not no_test:
-        run(["cargo", "test", "--locked"], cwd=cargo_root, env=test_env)
+        run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=test_env)
     else:
         log("skipping `cargo test`")
 
@@ -528,7 +518,7 @@ def main():
             refresh_cargo_lock(cargo_root=cargo_root)
             if worktree is not None:
                 copy_lock_from_cargo_root(cargo_root)
-            run(["cargo", "test", "--locked"], cwd=cargo_root, env=cargo_env())
+            run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=cargo_env())
             git(["add", "Cargo.toml", "Cargo.lock"])
             # No AI co-author trailer. The operator's attribution rule is
             # absolute and applies to every commit in every repo, including

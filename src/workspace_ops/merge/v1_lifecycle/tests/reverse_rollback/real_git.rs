@@ -1,13 +1,18 @@
 use super::*;
+use crate::git::Git2Backend;
 use crate::workspace_ops::merge::ConflictFileEvidence;
 use crate::workspace_ops::merge::model::v1::ParticipantRollbackKindV1;
 use crate::workspace_ops::merge::v1_rollback::{
     V1ParticipantRollbackObservation as O, execute_v1_participant_rollback,
     observe_v1_participant_rollback,
 };
+use crate::workspace_ops::tests::commit_file;
 
 #[test]
 fn native_conflict_abort_is_exact_and_preserves_the_before_checkout() {
+    if crate::test_backend::modes().fake_filesystem || crate::test_backend::modes().fake_git {
+        return;
+    }
     let root = TempDir::new("v1-rollback-conflict");
     let backend = Git2Backend::new();
     let member = root.path.join("members/a");
@@ -100,7 +105,7 @@ fn native_conflict_abort_is_exact_and_preserves_the_before_checkout() {
         Some(before.as_str())
     );
     assert!(backend.merge_state(&member).unwrap().is_none());
-    std::fs::write(member.join("untracked"), "drift\n").unwrap();
+    write_for_test(&member.join("untracked"), b"drift\n").unwrap();
     assert_eq!(
         observe_v1_participant_rollback(
             &backend,

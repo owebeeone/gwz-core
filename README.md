@@ -78,7 +78,7 @@ generated protocol output.
 
 ```sh
 cargo fmt
-cargo test
+python scripts/run_tests.py
 cargo fmt --check
 ```
 

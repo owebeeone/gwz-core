@@ -24,7 +24,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn observe_cursor<B: MergeAuth
         let prefix = issue_prefix(current, plan, position)?;
         return phase::observe_pending(backend, current, &plans, plan, action, prefix);
     }
-    verify_bundle_prefix(current, &plans)?;
+    verify_bundle_prefix(backend, current, &plans)?;
 
     for (index, plan) in plans.iter().enumerate() {
         if !backup_complete(current.record(), plan)? {
@@ -117,7 +117,7 @@ fn verify_pending_prefix<B: MergeAuthorityBackend>(
     current_plan: &V1PreservationOwnerPlan,
     action: &PendingPreservationActionV1,
 ) -> ModelResult<()> {
-    verify_pending_bundle_prefix(current, plans, current_plan, action)?;
+    verify_pending_bundle_prefix(backend, current, plans, current_plan, action)?;
     match action {
         PendingPreservationActionV1::BackupRef { .. } => {
             for plan in plans
@@ -169,13 +169,15 @@ fn verify_pending_prefix<B: MergeAuthorityBackend>(
     Ok(())
 }
 
-fn verify_bundle_prefix(
+fn verify_bundle_prefix<B: crate::git::MergeAuthorityBackend>(
+    backend: &B,
     current: &StoredV1Record,
     plans: &[V1PreservationOwnerPlan],
 ) -> ModelResult<()> {
     let owner = plans.last();
-    let exact = v1_bundle_cursor_is_exact(current.location().root(), current.record(), plans)
-        .map_err(|error| attach_plan(error, owner))?;
+    let exact =
+        v1_bundle_cursor_is_exact(backend, current.location().root(), current.record(), plans)
+            .map_err(|error| attach_plan(error, owner))?;
     if !exact {
         return Err(owner.map_or_else(
             || preservation_error("preservation bundle exists for an empty owner set"),
@@ -190,7 +192,8 @@ fn verify_bundle_prefix(
     Ok(())
 }
 
-fn verify_pending_bundle_prefix(
+fn verify_pending_bundle_prefix<B: crate::git::MergeAuthorityBackend>(
+    backend: &B,
     current: &StoredV1Record,
     plans: &[V1PreservationOwnerPlan],
     plan: &V1PreservationOwnerPlan,
@@ -208,9 +211,10 @@ fn verify_pending_bundle_prefix(
         }
     );
     if !before_bundle_write {
-        return verify_bundle_prefix(current, plans);
+        return verify_bundle_prefix(backend, current, plans);
     }
     let observed = v1_bundle_observation(
+        backend,
         current.location().root(),
         current.record(),
         plans,

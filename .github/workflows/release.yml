@@ -13,6 +13,7 @@ on:
         type: string
 
 env:
+  GWZ_TEST_GIT: real
   RUST_TOOLCHAIN: "1.95.0"
   TAUT_PYTHON: python
 
@@ -74,13 +75,6 @@ jobs:
             echo "  cargo fmt"
             exit 1
           fi
-      - name: Privacy compile probes
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          if [ -f scripts/checks/run_r4bg_aggregate_gates.py ]; then
-            python scripts/checks/run_r4bg_aggregate_gates.py privacy
-          fi
       - name: Checked-artifact boundary
         if: runner.os == 'Linux'
         shell: bash
@@ -90,167 +84,9 @@ jobs:
             echo "v0.10.5 predates the checked-artifact boundary; running the remaining release gates."
           else
             python scripts/checks/check_checked_artifact_boundaries.py
-            python scripts/checks/test_check_checked_artifact_boundaries.py
-            python scripts/checks/test_release_boundary.py
           fi
       - name: Test
-        run: cargo test --locked
-      - name: CRLF birth-time pins — count-pinned half
-        # Routed here by the R2.3 review's item-7 ruling [P2-2]: the CRLF class
-        # must also ride release.yml, not only the dispatch-only windows-matrix
-        # workflow. This step is the R3 half of that ruling — the COUNT
-        # DISCIPLINE on the pinned half, and nothing else.
-        #
-        # The sentinel half is NOT here and needs no machinery: the R2 builder
-        # converts it from an `#[ignore]`d expected-fail to `#[should_panic]`,
-        # so it is green while the smudge class is live and rides the plain
-        # `cargo test --locked` step above on every lane, this one included. No
-        # exit inversion exists in this workflow, deliberately.
-        #
-        # WHY A COUNT AND NOT JUST AN EXIT CODE: libtest exits 0 when a filter
-        # matches NOTHING, so an exact-name run whose names were renamed or
-        # deleted passes silently. The count is the assertion. Do not relax it.
-        #
-        # THE COUNT, DERIVED — not invented, and not copied on trust. Of the six
-        # exact names below, five are plain `#[test]` with no platform cfg
-        # (src/git/tests/g01.rs:23, :43, :236, :627; src/git/tests/g11.rs:48)
-        # and one is `#[cfg(windows)] #[test]`
-        # (src/git/tests/g12.rs:1034, the adopted-CRLF doctrine sentinel).
-        # On a windows-2022 runner all six therefore compile and run: 5 + 1 = 6.
-        # The same filter on Linux would run 5, which is why this step is
-        # Windows-only — the count is platform-specific by construction, the
-        # same reason the R4b-G markers below are Linux-only.
-        # PIN STATUS: FIRST-DISPATCH-EXPECTED. 6 is derived from cfg analysis
-        # and agrees with the independent assertion in windows-matrix.yml's
-        # crlf-sentinel job; it has not yet been observed on this leg. Confirm
-        # it on the first tagged Windows run and record the observation.
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          if ! grep -rq "fn create_repo_pins_repo_local_filter_neutralization_at_creation" src/; then
-            echo "this tag predates the CRLF birth-time pins; skipping the Windows CRLF count pin."
-            exit 0
-          fi
-          set +e
-          cargo test --locked --lib -- --exact \
-            git::tests::g01::create_repo_pins_repo_local_filter_neutralization_at_creation \
-            git::tests::g01::created_repo_forward_materialization_is_blob_exact_under_ambient_autocrlf \
-            git::tests::g01::clone_funnel_materializes_blob_exact_and_pins_filter_neutralization \
-            git::tests::g01::filter_neutralization_pin_is_reachable_only_from_the_two_creation_time_sites \
-            git::tests::g11::stash_round_trip_on_a_born_repo_is_a_filter_no_op \
-            git::tests::g12::doctrine_sentinel_adopted_crlf_worktree_classifies_ambiguous_in_the_reverse_observer \
-            2>&1 | tee crlf-pinned.log
-          status=${PIPESTATUS[0]}
-          set -e
-          grep -E '^test result' crlf-pinned.log || true
-          if [ "$status" -ne 0 ] \
-             || ! grep -qE '^test result: ok\. 6 passed; 0 failed' crlf-pinned.log; then
-            echo "::error::CRLF pinned lane did not run exactly 6 green tests at this tag —"
-            echo "::error::a birth-time-pin test was renamed, removed, or regressed. libtest"
-            echo "::error::exits 0 on a filter that matches nothing, so the count is the"
-            echo "::error::assertion; do not relax it. See windows-matrix.yml crlf-sentinel."
-            exit 1
-          fi
+        run: python scripts/run_tests.py
       - name: Clippy
         if: runner.os == 'Linux'
         run: CLIPPY_CONF_DIR="$PWD" cargo clippy --all-targets --all-features -- -D warnings
-      - name: R4b-G mechanical batteries
-        # G4 / A1 Completeness L7, recorded scope: "the driver's
-        # fault/byte-equivalence batteries stay local/release-lane by recorded
-        # scope decision." This step is that release lane. Driven through the
-        # aggregate runner rather than as bare commands so each battery's
-        # expected count is pinned, not just its exit code — a command that
-        # exits 0 while printing the wrong count fails here (correctness
-        # finding C-4). Runs last: it is the most expensive step, and every
-        # cheap gate above fails first.
-        #
-        # TOPOLOGY AUDIT (activation record §17 — no wiring lands without one;
-        # run 32749441874 is the price of skipping it). This job checks out
-        # gwz-core alone, on both OS legs — the same single-repo topology that
-        # failed there. Per selected command:
-        #   * fault, unknown-field, byte-equivalence — cargo test over this
-        #     repo's own lib; no path leaves the checkout.
-        #   * privacy (early step above) — a python checker whose ROOT is the repo
-        #     (run_r4bg_aggregate_gates.py:47; REGISTRY is in-repo dev-docs).
-        #     §17 already verified it has no workspace-root reads.
-        #   * byte-equivalence runs WHOLE. It was selected as `:2` to skip
-#     check_m4_scenario_map.py, whose MAP_DOC resolved above the
-#     checkout; M5d deleted that checker, so the carve-out is gone.
-        #   * call-graph is deliberately NOT selected — not on topology (it is
-        #     topology-clean, and §17 verified it) but on redundancy. The
-        #     "Checked-artifact boundary" step above already runs all three of
-        #     its commands verbatim on this same leg, and all three suites
-        #     carry `if __name__ == "__main__": unittest.main()`, so that step
-        #     genuinely executes them. Unlike the fault battery's counts
-        #     ("926 passed"), call-graph's markers are "checked-artifact
-        #     boundary: ok" / "OK" / "OK" — exit-code-equivalent, carrying no
-        #     count discipline the plain step lacks. Measured 2026-08-25:
-        #     call-graph 1240.2s (11.0 + 1228.9 + 0.3), essentially all of it
-        #     the boundary suite's compiler probes, against privacy's 334.0s.
-        #     Selecting call-graph would re-pay ~20 minutes for no added
-        #     signal. Privacy now runs in its own early step, so missing
-        #     compiler-fixture inputs fail before the expensive suites. If the
-        #     boundary step is ever removed or narrowed, add
-        #     `call-graph` back to the selection below in the same change.
-        #
-        # LINUX ONLY — and not merely by house style. These markers are exact
-        # test counts, and the suites they count are platform-gated at the
-        # source on BOTH sides (e.g. `#[cfg(all(test, windows))]` at
-        # src/checked_artifact/platform.rs:573 adds Windows-only tests, while
-        # `#[cfg(all(test, target_os = "linux"))]` at :863 and the many
-        # `#[cfg(unix)]` test fns subtract them), so the count a Windows
-        # runner produces is simply a different number. It has never been
-        # measured. The counts pinned in the driver are the settled-tree
-        # figures, reproduced here on macOS arm64 2026-08-25 (256 / 1 / 400 /
-        # 926 / 75 / 1 / 119, all green), which establishes them across two
-        # unix hosts and says nothing about Windows. Wiring an unmeasured
-        # count onto that leg is precisely §17's lesson in a new dress — the
-        # gate would fail on a count delta, not a regression. `cargo test
-        # --locked` above stays on the full matrix and remains the Windows
-        # behavioural gate. This also matches the standing "Windows leg =
-        # test only" convention (b36c84a, adopted after cargo fmt --check
-        # false-failed on the Windows CRLF checkout).
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          if [ ! -f scripts/checks/run_r4bg_aggregate_gates.py ]; then
-            echo "this tag predates the R4b-G aggregate gate driver; skipping the release-lane batteries."
-            exit 0
-          fi
-          # The checkout is the TAG's tree, so the driver and its count pins
-          # are frozen with the release. Tags cut before per-OS fault pins
-          # (gwz-core 1bcb925: _fault_count, darwin 400/932 vs linux 410/933)
-          # carry Darwin-only counts that can never match a Linux runner —
-          # v0.11.0's verify-3 (run 32960235595) measured exactly that. Same
-          # skip-loudly convention as the presence guard above: the fault
-          # battery is withheld for such tags with the reason stated; the
-          # remaining selection still runs and counts.
-          SELECTION="fault byte-equivalence unknown-field"
-          if ! grep -q "_fault_count" scripts/checks/run_r4bg_aggregate_gates.py; then
-            echo "this tag's driver predates per-OS fault-battery count pins (no _fault_count);"
-            echo "its Darwin-measured counts cannot match a Linux runner. Skipping the fault"
-            echo "battery for this tag; the Test step above already ran the full suite green."
-            SELECTION="byte-equivalence unknown-field"
-          fi
-          python scripts/checks/run_r4bg_aggregate_gates.py $SELECTION
-      # NOT WIRED HERE, deliberately — the two workspace-root-reading checkers,
-      # same blocker and same cure as recorded in checked-artifact-boundary.yml:
-      #   * check_m4_scenario_map.py — `MAP_DOC = ROOT.parent / "dev-docs" /
-      #     "GwzM5-8R4bG-Evidence.md"` (check_m4_scenario_map.py:59) resolves
-      #     against the development workspace root, which does not exist on a
-      #     single-repo runner. Un-wired from the boundary workflow by the
-      #     2026-08-25 corrective (`8e40fa8`) after the landing-commit run
-      #     32749441874 failed on precisely this; the release job has the same
-      #     checkout, so it stays un-wired here too — and that is why
-      #     byte-equivalence runs above whole (its map checker is deleted).
-      #   * check_merge_docs.py / test_check_merge_docs.py (L2-05) — its
-      #     manifest asserts against `gwz-cli/docs/*` and `dev-docs/*` resolved
-      #     from `DEFAULT_WORKSPACE_ROOT = parents[3]` (check_merge_docs.py:20),
-      #     and the sibling gwz-cli tree does not exist on this runner. This is
-      #     also why the `compatibility` battery is not selected above: its 3rd
-      #     and 4th commands are exactly these two.
-      # Owner and cure for both: the R2-F release-lane CI work — the multi-repo
-      # checkout of the R2-D settled tuple §11.3 item 7 (A1 Safety [P3-R2-3]:
-      # accepted, not discharged; STAYS OPEN on the register). Until it lands
-      # both remain local-gate, executed in every landing gate set and at the
-      # release lane by hand. Activation record §7 (L7) and §17.

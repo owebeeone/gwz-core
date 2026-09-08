@@ -6,7 +6,7 @@
 //! identity invariance). These are the RecordContract §9 exit rows that the
 //! round-1 implementation package left undelivered.
 
-use std::fs;
+use super::fs;
 
 use super::*;
 use crate::model::{ModelError, ModelResult};
@@ -346,11 +346,12 @@ fn expected_bundle_bytes_are_identical_with_and_without_markers() {
         crate::stash::bundle_path(&fixture.root.path, &format!("stash_{}", record.merge_id));
 
     let write = |record: &crate::workspace_ops::merge::model::v1::MergeOperationRecordV1| {
-        if bundle.exists() {
+        if fs::exists(&bundle) {
             fs::remove_file(&bundle).unwrap();
         }
         let plans = v1_preservation_owners(&fixture.backend, &fixture.root.path, record).unwrap();
-        v1_write_bundle_checked(&fixture.root.path, record, &plans, &owner).unwrap();
+        v1_write_bundle_checked(&fixture.backend, &fixture.root.path, record, &plans, &owner)
+            .unwrap();
         fs::read(&bundle).unwrap()
     };
 
@@ -380,7 +381,7 @@ fn expected_bundle_bytes_are_identical_with_and_without_markers() {
 /// Stops the operation immediately after its first durable record write, so a
 /// crash can be injected exactly at the marker-write boundary.
 struct StopAfterFirstDurableWrite<'a> {
-    inner: ReverseRuntime<'a, crate::git::Git2Backend>,
+    inner: ReverseRuntime<'a, crate::git::GitTestRepository>,
     writes: usize,
 }
 
@@ -415,7 +416,7 @@ impl PhysicalExecutor for StopAfterFirstDurableWrite<'_> {
 /// Stops the operation at the first attached-ref reset, leaving the stash
 /// created and every branch still where the record says it is.
 struct StopBeforeReset<'a> {
-    inner: ReverseRuntime<'a, crate::git::Git2Backend>,
+    inner: ReverseRuntime<'a, crate::git::GitTestRepository>,
 }
 
 impl ExactObserver for StopBeforeReset<'_> {

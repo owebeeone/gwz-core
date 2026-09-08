@@ -1534,12 +1534,7 @@ pub(crate) fn request_meta_with_actor_selection(
 
 pub(crate) struct TempDir {
     pub(crate) path: PathBuf,
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
+    pub(crate) _workspace: crate::filesystem::TestFsWorkspace,
 }
 
 // DR-4: `gwz --dry-run init` (the create-workspace shape) used to create the git

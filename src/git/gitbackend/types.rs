@@ -386,3 +386,28 @@ pub struct GitRemote {
     pub url: Option<String>,
     pub push_url: Option<String>,
 }
+
+/// Storage locations reported by Git, including linked-worktree common storage.
+#[derive(Clone, Debug)]
+pub struct GitRepositoryPaths {
+    pub worktree: Option<PathBuf>,
+    pub git_dir: PathBuf,
+    pub common_dir: PathBuf,
+}
+/// Lossless index facts, without borrowing a native Git handle.
+#[derive(Clone, Debug)]
+pub struct GitIndexEntry {
+    pub path: Vec<u8>,
+    pub object_id: Vec<u8>,
+    pub mode: u32,
+    pub flags: u16,
+    pub flags_extended: u16,
+    pub ctime: (i32, u32),
+    pub mtime: (i32, u32),
+    pub stat: [u32; 5],
+}
+#[derive(Clone, Debug)]
+pub struct GitIndexSnapshot {
+    pub path: Option<PathBuf>,
+    pub entries: Vec<GitIndexEntry>,
+}

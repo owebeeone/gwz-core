@@ -1,6 +1,7 @@
 #![forbid(clippy::disallowed_methods)]
 
 use super::*;
+use crate::filesystem::{FileSystem, FsKind, make_filesystem};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -507,37 +508,38 @@ fn read_worktree(
     index: Option<&IndexImage>,
 ) -> ModelResult<Option<WorktreeImage>> {
     let path = root.join(preservation_root::files::raw_path_to_path(raw_path)?);
-    let metadata = match std::fs::symlink_metadata(&path) {
+    let metadata = match make_filesystem().metadata(&path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(crate::git::io_error(error)),
     };
-    if metadata.file_type().is_symlink() {
+    if metadata.kind == FsKind::Symlink {
         return Ok(Some(WorktreeImage::Symlink(
             preservation_root::files::path_to_raw(
-                &std::fs::read_link(path).map_err(crate::git::io_error)?,
+                &make_filesystem()
+                    .link_target(&path)
+                    .map_err(crate::git::io_error)?,
             )?,
         )));
     }
-    if metadata.is_dir() && index.is_some_and(|item| item.mode == 0o160000) {
+    if metadata.kind == FsKind::Directory && index.is_some_and(|item| item.mode == 0o160000) {
         return Ok(Some(WorktreeImage::Gitlink(index.unwrap().oid.clone())));
     }
-    if !metadata.is_file() {
+    if metadata.kind != FsKind::File {
         return Err(preimage_error(format!(
             "unsupported worktree file kind at '{}'",
             path.display()
         )));
     }
     #[cfg(unix)]
-    let executable = {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    };
+    let executable = { metadata.executable };
     #[cfg(not(unix))]
     let executable = index.is_some_and(|item| item.mode & 0o111 != 0);
     Ok(Some(WorktreeImage::Regular {
         executable,
-        bytes: std::fs::read(path).map_err(crate::git::io_error)?,
+        bytes: make_filesystem()
+            .read(&path)
+            .map_err(crate::git::io_error)?,
     }))
 }
 

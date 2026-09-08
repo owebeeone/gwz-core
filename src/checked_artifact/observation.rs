@@ -1,14 +1,9 @@
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-
-#[cfg(unix)]
-use cap_fs_ext::OsMetadataExt;
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, ambient_authority};
-use cap_std::fs::{Dir, OpenOptions};
 
 use super::identity::{self, ObjectIdentity};
 use super::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, ParentState, error};
+use crate::filesystem::{FileSystem, FsDirectory, FsKind, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 impl CheckedArtifact {
@@ -28,25 +23,30 @@ impl CheckedArtifact {
         {
             return Err(error(code, &label, "parent path is noncanonical"));
         }
-        let mut current = Dir::open_ambient_dir(root, ambient_authority()).map_err(|cause| {
+        let filesystem = make_filesystem();
+        let mut current = filesystem.open_directory(root).map_err(|cause| {
             io_op_error(code, &label, "open root for parent preparation", cause)
         })?;
         for component in relative.components() {
             let Component::Normal(component) = component else {
                 return Err(error(code, &label, "parent path is noncanonical"));
             };
-            let metadata = match current.symlink_metadata(component) {
+            let metadata = match filesystem.metadata_at(&current, component) {
                 Ok(metadata) => metadata,
                 Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
-                    current.create_dir(component).map_err(|cause| {
-                        io_op_error(code, &label, "create parent component", cause)
-                    })?;
-                    super::platform::sync_parent(&current).map_err(|cause| {
+                    filesystem
+                        .create_directory_at(&current, component)
+                        .map_err(|cause| {
+                            io_op_error(code, &label, "create parent component", cause)
+                        })?;
+                    filesystem.sync_directory_at(&current).map_err(|cause| {
                         io_op_error(code, &label, "sync parent after creating component", cause)
                     })?;
-                    current.symlink_metadata(component).map_err(|cause| {
-                        io_op_error(code, &label, "reread created component metadata", cause)
-                    })?
+                    filesystem
+                        .metadata_at(&current, component)
+                        .map_err(|cause| {
+                            io_op_error(code, &label, "reread created component metadata", cause)
+                        })?
                 }
                 Err(cause) => {
                     return Err(io_op_error(
@@ -57,16 +57,17 @@ impl CheckedArtifact {
                     ));
                 }
             };
-            if !metadata.is_dir() || metadata.is_symlink() {
+            if metadata.kind != FsKind::Directory {
                 return Err(error(code, &label, "parent component is noncanonical"));
             }
-            let next = current.open_dir_nofollow(component).map_err(|cause| {
-                io_op_error(code, &label, "open parent component no-follow", cause)
-            })?;
-            if metadata_identity(&metadata)
-                != metadata_identity(&next.dir_metadata().map_err(|cause| {
-                    io_op_error(code, &label, "stat opened parent component", cause)
-                })?)
+            let next = filesystem
+                .open_directory_at(&current, component)
+                .map_err(|cause| {
+                    io_op_error(code, &label, "open parent component no-follow", cause)
+                })?;
+            if !filesystem
+                .directory_entry_matches(&current, component, &next)
+                .map_err(|cause| io_op_error(code, &label, "stat opened parent component", cause))?
             {
                 return Err(error(
                     code,
@@ -116,12 +117,15 @@ impl CheckedArtifact {
             split_relative(&relative).map_err(|detail| error(code, &label, detail))?;
         let private_root = policy.artifact_root().to_path_buf();
         let quarantine_parent = policy.private_parent();
-        let root = Dir::open_ambient_dir(policy.artifact_root(), ambient_authority())
+        let filesystem = make_filesystem();
+        let root = filesystem
+            .open_directory(policy.artifact_root())
             .map_err(|cause| io_op_error(code, &label, "open ambient artifact root", cause))?;
         let root_identity = durable_identity(&root, &label, escape)?;
-        let canonical_path_identity = identity::canonical_path_identity(&root, &relative)
-            .map_err(|cause| unsupported(&label, cause))?;
-        let parent = match traverse(&root, &parent_relative)
+        let canonical_path_identity =
+            identity::filesystem_canonical_path_identity(&root, &relative)
+                .map_err(|cause| unsupported(&label, cause))?;
+        let parent = match traverse(&filesystem, &root, &parent_relative)
             .map_err(|cause| io_op_error(code, &label, "traverse to artifact parent", cause))?
         {
             Traversal::Missing => ParentState::Missing,
@@ -156,7 +160,7 @@ impl CheckedArtifact {
         if !self.parent_is_current(identity)? {
             return Ok(CheckedArtifactFact::Invalid);
         }
-        observe_leaf(dir, &self.leaf, self.code, &self.label)
+        observe_leaf(&make_filesystem(), dir, &self.leaf, self.code, &self.label)
     }
 
     pub(super) fn observe_leaf_exact_current(&self) -> ModelResult<LeafObservation> {
@@ -174,7 +178,7 @@ impl CheckedArtifact {
                 "canonical parent changed while observing artifact",
             ));
         }
-        observe_leaf_exact(dir, &self.leaf, self.code, &self.label)
+        observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)
     }
 
     pub(super) fn parent_is_canonical(&self) -> ModelResult<bool> {
@@ -185,25 +189,28 @@ impl CheckedArtifact {
     }
 
     pub(super) fn parent_is_current(&self, expected: &ObjectIdentity) -> ModelResult<bool> {
-        let current = traverse(&self.root, &self.parent_relative).map_err(|cause| {
-            io_op_error(self.code, &self.label, "retraverse artifact parent", cause)
-        })?;
+        let filesystem = make_filesystem();
+        let current =
+            traverse(&filesystem, &self.root, &self.parent_relative).map_err(|cause| {
+                io_op_error(self.code, &self.label, "retraverse artifact parent", cause)
+            })?;
         let Traversal::Open(current) = current else {
             return Ok(false);
         };
-        let observed =
-            identity::object_identity(&current).map_err(|cause| unsupported(&self.label, cause))?;
+        let observed = identity::filesystem_directory_identity(&current)
+            .map_err(|cause| unsupported(&self.label, cause))?;
         Ok(observed == *expected)
     }
 }
 
 pub(super) fn observe_leaf(
-    dir: &Dir,
+    filesystem: &impl FileSystem,
+    dir: &FsDirectory,
     leaf: &OsStr,
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<CheckedArtifactFact> {
-    Ok(observe_leaf_exact(dir, leaf, code, label)?.fact)
+    Ok(observe_leaf_exact(filesystem, dir, leaf, code, label)?.fact)
 }
 
 pub(super) struct LeafObservation {
@@ -212,12 +219,13 @@ pub(super) struct LeafObservation {
 }
 
 pub(super) fn observe_leaf_exact(
-    dir: &Dir,
+    filesystem: &impl FileSystem,
+    dir: &FsDirectory,
     leaf: &OsStr,
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<LeafObservation> {
-    let metadata = match dir.symlink_metadata(leaf) {
+    let metadata = match filesystem.metadata_at(dir, leaf) {
         Ok(metadata) => metadata,
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             return Ok(LeafObservation {
@@ -234,15 +242,13 @@ pub(super) fn observe_leaf_exact(
             ));
         }
     };
-    if !metadata.is_file() || metadata.is_symlink() || executable(&metadata) {
+    if metadata.kind != FsKind::File || metadata.executable {
         return Ok(LeafObservation {
             fact: CheckedArtifactFact::Invalid,
             identity: None,
         });
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
-    let mut file = match dir.open_with(leaf, &options) {
+    let file = match filesystem.open_file_at(dir, leaf) {
         Ok(file) => file,
         Err(cause)
             if matches!(
@@ -257,10 +263,10 @@ pub(super) fn observe_leaf_exact(
         }
         Err(cause) => return Err(io_op_error(code, label, "open artifact no-follow", cause)),
     };
-    let opened = file
-        .metadata()
-        .map_err(|cause| io_op_error(code, label, "read opened artifact metadata", cause))?;
-    if metadata_identity(&opened) != metadata_identity(&metadata) {
+    if !filesystem
+        .file_entry_matches(dir, leaf, &file)
+        .map_err(|cause| io_op_error(code, label, "read opened artifact metadata", cause))?
+    {
         return Ok(LeafObservation {
             fact: CheckedArtifactFact::Invalid,
             identity: None,
@@ -283,7 +289,10 @@ pub(super) fn observe_leaf_exact(
     // Accepted residual, stated: a stable multi-GB foreign object still
     // reserves its stat size fallibly, and is refused typed only if the
     // reservation fails.
-    let bound = opened.len().saturating_add(1);
+    let opened_len = filesystem
+        .file_len(&file)
+        .map_err(|cause| io_op_error(code, label, "read opened artifact metadata", cause))?;
+    let bound = opened_len.saturating_add(1);
     let Ok(capacity) = usize::try_from(bound) else {
         // A leaf larger than this address space is not a canonical artifact.
         return Ok(LeafObservation {
@@ -301,11 +310,21 @@ pub(super) fn observe_leaf_exact(
     // Over-read by exactly one byte so a leaf that grew past its `fstat` fails
     // the existing five-way check below (`opened.len() != bytes.len()`) and is
     // reported `Invalid` — today's arm, kept; no new refusal vocabulary.
-    file.by_ref()
-        .take(bound)
-        .read_to_end(&mut bytes)
-        .map_err(|cause| io_op_error(code, label, "read artifact bytes", cause))?;
-    let after = match dir.symlink_metadata(leaf) {
+    let mut offset = 0_u64;
+    let mut chunk = [0_u8; 8192];
+    while offset < bound {
+        let remaining = usize::try_from((bound - offset).min(chunk.len() as u64))
+            .expect("bounded read chunk fits usize");
+        let read = filesystem
+            .read_at(&file, offset, &mut chunk[..remaining])
+            .map_err(|cause| io_op_error(code, label, "read artifact bytes", cause))?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        offset += read as u64;
+    }
+    let after = match filesystem.metadata_at(dir, leaf) {
         Ok(after) => after,
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             return Ok(LeafObservation {
@@ -322,12 +341,15 @@ pub(super) fn observe_leaf_exact(
             ));
         }
     };
-    if !after.is_file()
-        || after.is_symlink()
-        || executable(&after)
-        || metadata_identity(&after) != metadata_identity(&metadata)
-        || metadata_identity(&after) != metadata_identity(&opened)
-        || opened.len() != bytes.len() as u64
+    if after != metadata
+        || !filesystem
+            .file_entry_matches(dir, leaf, &file)
+            .map_err(|cause| io_op_error(code, label, "rebind artifact leaf", cause))?
+        || filesystem
+            .file_len(&file)
+            .map_err(|cause| io_op_error(code, label, "reread opened artifact metadata", cause))?
+            != opened_len
+        || opened_len != bytes.len() as u64
     {
         return Ok(LeafObservation {
             fact: CheckedArtifactFact::Invalid,
@@ -336,44 +358,57 @@ pub(super) fn observe_leaf_exact(
     }
     Ok(LeafObservation {
         fact: CheckedArtifactFact::Bytes(bytes),
-        identity: Some(identity::file_identity(&file).map_err(|cause| unsupported(label, cause))?),
+        identity: Some(
+            identity::filesystem_file_identity(&file).map_err(|cause| unsupported(label, cause))?,
+        ),
     })
 }
 
-fn metadata_identity(metadata: &cap_fs_ext::Metadata) -> (u64, u64) {
-    (MetadataExt::dev(metadata), MetadataExt::ino(metadata))
+pub(super) fn observe_native_leaf_exact(
+    dir: &cap_std::fs::Dir,
+    leaf: &OsStr,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<LeafObservation> {
+    let directory = crate::filesystem::native::clone_directory_handle(dir)
+        .map_err(|cause| io_op_error(code, label, "retain native artifact parent", cause))?;
+    observe_leaf_exact(&make_filesystem(), &directory, leaf, code, label)
 }
 
 enum Traversal {
     Missing,
     Invalid,
-    Open(Dir),
+    Open(FsDirectory),
 }
 
-fn traverse(root: &Dir, relative: &Path) -> std::io::Result<Traversal> {
-    let mut current = root.try_clone()?;
+fn traverse(
+    filesystem: &impl FileSystem,
+    root: &FsDirectory,
+    relative: &Path,
+) -> std::io::Result<Traversal> {
+    let mut current = filesystem.clone_directory(root)?;
     for component in relative.components() {
         let Component::Normal(component) = component else {
             return Ok(Traversal::Invalid);
         };
-        let metadata = match current.symlink_metadata(component) {
+        let metadata = match filesystem.metadata_at(&current, component) {
             Ok(metadata) => metadata,
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Traversal::Missing);
             }
             Err(cause) => return Err(cause),
         };
-        if !metadata.is_dir() || metadata.is_symlink() {
+        if metadata.kind != FsKind::Directory {
             return Ok(Traversal::Invalid);
         }
-        let next = match current.open_dir_nofollow(component) {
+        let next = match filesystem.open_directory_at(&current, component) {
             Ok(next) => next,
             Err(cause) if cause.kind() == std::io::ErrorKind::PermissionDenied => {
                 return Err(cause);
             }
             Err(_) => return Ok(Traversal::Invalid),
         };
-        if metadata_identity(&metadata) != metadata_identity(&next.dir_metadata()?) {
+        if !filesystem.directory_entry_matches(&current, component, &next)? {
             return Ok(Traversal::Invalid);
         }
         current = next;
@@ -412,16 +447,18 @@ pub(super) enum IdentityGapEscape {
 /// because every one of them means the door cannot bind this directory's
 /// durable identity.
 pub(super) fn directory_handles_ok(directory: &Path) -> bool {
-    Dir::open_ambient_dir(directory, ambient_authority())
-        .is_ok_and(|dir| identity::object_identity(&dir).is_ok())
+    let filesystem = make_filesystem();
+    filesystem
+        .open_directory(directory)
+        .is_ok_and(|dir| identity::filesystem_directory_identity(&dir).is_ok())
 }
 
 fn durable_identity(
-    dir: &Dir,
+    dir: &FsDirectory,
     label: &str,
     escape: IdentityGapEscape,
 ) -> ModelResult<ObjectIdentity> {
-    identity::object_identity(dir).map_err(|cause| match escape {
+    identity::filesystem_directory_identity(dir).map_err(|cause| match escape {
         IdentityGapEscape::Substrate => unsupported(label, cause),
         IdentityGapEscape::ReverseMergeDoor => reverse_door_unsupported(label),
     })
@@ -478,14 +515,4 @@ fn split_relative(path: &Path) -> Result<(PathBuf, OsString), &'static str> {
         parent.push(component);
     }
     Ok((parent, leaf))
-}
-
-#[cfg(unix)]
-fn executable(metadata: &cap_fs_ext::Metadata) -> bool {
-    OsMetadataExt::mode(metadata) & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn executable(_metadata: &cap_fs_ext::Metadata) -> bool {
-    false
 }

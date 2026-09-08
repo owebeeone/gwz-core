@@ -260,7 +260,7 @@ fn open_and_archived_v1_share_one_lossless_acceptance_projection() {
     let open = decode_production_v1(&bytes).unwrap();
     let archived = decode_archived(&bytes, merge_id).unwrap();
 
-    let open_projection = crate::workspace_ops::merge::model::project_open_v1(&open.record);
+    let open_projection = crate::workspace_ops::merge::model::project_open_v1(open.record());
     let archived_projection =
         crate::workspace_ops::merge::model::project_archived(archived.projection());
 

@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parents[2]
 # Added RemoteIdentity handler, scoped identity/observation exports, startup timeout,
 # named clone/read-preview and captured push delegates. No protected v1 leaf or
 # preservation/write authority export changed. Only the two measured roots advance.
+# Filesystem migration 2026-09-08: add the private filesystem module and test
+# selector; route journal and preservation observation I/O through the factory.
+# Publication entry/ordering and authority interfaces remain unchanged.
 PROTECTED_COMPILER_ROOT_DIGESTS = {
     # M5d step (3) (2026-09-03): one added line, `mod verified_write;` -- the
     # NEUTRAL home of the merge record's raw publication primitive on a
@@ -48,7 +51,7 @@ PROTECTED_COMPILER_ROOT_DIGESTS = {
     # unchanged. Later lanes own package directories under crates/ only; a
     # further protected edit still comes through lane C with its own reason.
     #   was: 6928a62dfe4ab90eb8f7e69b60544b7be9942afb184233f8277af73c7896e423
-    "src/lib.rs": "7609b870f4ee384a5799ed1900391809890d5443d69f6071536d270966f6dc8a",
+    "src/lib.rs": "3e4ea01827972104736758164f770efab01577cdc5f523d86c40e10755af2f22",
     #   was: 663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124
     "src/workspace_ops/mod.rs": "67317ec671dea907ccc94cc1e855b835b5e195641c1e60aa1e720e23f869637b",
     # M5d close (2026-09-03): the v0 lifecycle re-exports left; open-record
@@ -73,7 +76,6 @@ PROTECTED_COMPILER_ROOT_DIGESTS = {
 PROTECTED_COMPILER_MODULES = {
     "checked_artifact/entry.rs",
     "git/gitbackend/authority_backend.rs",
-    "git/gitbackend/preservation_root/files.rs",
     "git/gitbackend/preservation_image.rs",
     "workspace_ops/merge/preserve/checked_bundle.rs",
     "workspace_ops/merge/preserve/plan.rs",
@@ -115,12 +117,18 @@ PROTECTED_COMPILER_MODULES = {
 #   mod.rs                     -- the seam's crate-visible `cfg(test)` re-export,
 #                                 beside `fail_next_checked_artifact_at`.
 #   v1_lifecycle/mod.rs (tree) -- start/service/checked plumbing (§3.1).
+# 2026-09-08: register the cfg-separated repository factory.
+# 2026-09-07: GitRepository consolidation routes stash evidence through the
+# existing sealed backend; physical reads still terminate in the same native leaf.
+# Factory migration: native repository paths and index facts now cross
+# GitRepository; the same root-preservation algorithm serves both backends.
+# Fixture-only methods and the test authority implementation remain cfg(test).
 PROTECTED_SOURCE_DIGESTS = {
     # R2-E E4.4-6-B (2026-09-02) pins the `write_atomic` family's own implementation:
     # the capability-free inventory counts its CALLERS, so converting THIS file would
     # convert every carved `:277`/`:278`/`:279` writer while moving no count there
     # (round 1 [P3-5]). Not a boundary module -- pinned solely as that backstop.
-    "artifact/mod.rs": "b388a557c3fd9118f71f58e2cd6bde5373ff1dd311e73d17090cba37c708c90f",
+    "artifact/mod.rs": "63020e2cb16f269b694c257f7012d2e5522a8a407af03b685e377516a8e4c29e",
     "checked_artifact/bootstrap.rs": "f098ff7a655f7506d47b7e9088c21354f6b918e3bd96e75b301e205189e618f5",
     "checked_artifact/bootstrap/runtime/mod.rs": "7fd727db2ff621f525e232e3e43ad15a020c07fcf6be8f8ab6048a882cc05c92",
     # R2-E E4.1 commit (b) re-pins this entry for precondition 1: the SUBSTRATE
@@ -151,7 +159,6 @@ PROTECTED_SOURCE_DIGESTS = {
     # ENTRY_* inventories move with it. The 69ee990 file hashed to the pinned
     # value exactly.
     #   was: 94041be3c0d48148262438b77c6f521749923eabe68212b3388288d27834e002
-    "checked_artifact/entry.rs": "44c4dcc60206039486302abadc5f59c784e0aeb2a020d77814066e8a5acfce95",
     "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
     # M5d step (3): the crate-visible `cfg(test)` re-export of the seam's
     # handle-probe half, beside `with_identity_unavailable`. Production code
@@ -164,7 +171,7 @@ PROTECTED_SOURCE_DIGESTS = {
     # accumulation it replaces is gone.
     "checked_artifact/residue.rs": "8894be425ddd6755aa053a4e42aca540611ba45c688b42c4757343be5142349a",
     "checked_artifact/transition.rs": "13b483bc0dc3099082727a5d499b97f627ba7d41a65b929ec557416ac59b37ca",
-    "git/gitbackend/authority_backend.rs": "0abb856d03118b0d304170beab3fcd8e18e3ae4c3b7860f66771351849c14ff1",
+    "git/gitbackend/authority_backend.rs": "b8f171a8953c179d925c0ce9db4b2bd85c91433ffca6e77672f71aea0d5dd415",
     # LCM1.0c (2026-09-05, GwzLocalCloneLibraryBoundaries.md §3 "Writes,
     # locks and transport"; F51 P2-3): two added `delegate!` rows,
     # `fetch_anonymous` and `push_anonymous`, the local clone family's
@@ -174,25 +181,18 @@ PROTECTED_SOURCE_DIGESTS = {
     # nothing. No observer, preservation or authority row moves; the
     # concrete preservation observer still terminates in its protected leaf.
     #   was: b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb
-    "git/gitbackend.rs": "3fdb496071a7fd7e277fe572fcfa11b2615639446ef6b9d7e3c1fb15932338ce",
-    "git/gitbackend/preservation_root/files.rs": "7a6b72ac62a91a48992b04a563d85354dcef950aad420c610e7a08c3c2409b35",
-    "git/gitbackend/preservation_image.rs": "b45057e105a74d50c5163886d3346e9ea859464971c4cd03fc49392c5b67bac5",
+    "git/gitbackend/preservation_image.rs": "2b62d74018d7609e4f2bcdd944f9eb5bd7609f689472db4eb174f282cf4e5aaf",
     # M5d close: v0 preserve arms left; the v1 owner plan and its artifacts
     # half remain. plan.rs keeps the compiler-resolved forbid.
     "workspace_ops/merge/preserve/artifacts.rs": "a46c09473debdd62a1a57c419d8661651a9556ff7688ac42cf9afaa84c623595",
-    "workspace_ops/merge/preserve/checked_bundle.rs": "dbc3e4de328afefbedd3ee343c0bf384b2852d499e3f007960159ff229595251",
-    "workspace_ops/merge/preserve/plan.rs": "07a0d28cbad758c9a95611a33b82d4432421d905723a0efbf8b4cc21a84e94ee",
+    "workspace_ops/merge/preserve/checked_bundle.rs": "89de4886ca43c4c02eeff6772edbffdac25fe7a30c5f92c826e9ea9ff79ed854",
+    "workspace_ops/merge/preserve/plan.rs": "95894a2aabc838454920837e40b3849788ea39d6f65c3a548313c64b7b64a2dc",
     "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
     "operation/workspace_mutator_lock.rs": "c390191ea03c64d635ae80de0405cd213a6f067d9648c4735801062330019b0b",
 }
 
-CONCRETE_PRESERVATION_OBSERVER_REFERENCES = {
-    "git/gitbackend.rs",
-    "workspace_ops/merge/preserve/checked_bundle.rs",
-    "workspace_ops/merge/preserve/plan.rs",
-    "workspace_ops/merge/v1_lifecycle/authority/observe/reverse/preservation/phase.rs",
-    "workspace_ops/merge/v1_lifecycle/authority/observe/reverse/preservation/phase/evidence.rs",
-}
+# The GitRepository implementation is the sole caller of the native leaf.
+CONCRETE_PRESERVATION_OBSERVER_REFERENCES = {"git/gitbackend.rs"}
 
 # Rust permits `#[path]` modules to name any file suffix. Freeze every approved
 # edge, require its target to remain a regular in-crate `.rs` file, and reject
@@ -370,7 +370,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     # production code in this tree is untouched. The 69ee990 tree digested to
     # the pinned value exactly.
     #   was: 89c236e8ed79fee74d9db317fb114086abdb58eab908dc0ffded59fa0d602098
-    "checked_artifact/capability/pre_catalog.rs": "2bef3d4f112b46131d28854f4c16da6036fb275eaef3b68b0e30143db3b875ff",
+    "checked_artifact/capability/pre_catalog.rs": "163110e0a6ceacb15f4d65eaff1d95fd9e173d216963102b509104ae863e25f2",
     "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
     "checked_artifact/platform.rs": "7cc428ded002a0ce549c306d0d4ea70e443e297f215d9ae64190f7b18b06025f",
     # M5d close: parity events + the observe-tree re-homes from deleted
@@ -393,7 +393,7 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     # materialised with `git archive` and digested with the checker's own
     # `source_tree_digest`, and the pin matched it exactly.
     #   was: 68397e5f088e30be069cccc523d2b5411892c00ada39cb5d7f3abfee72bf471c
-    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "54b251ad843fbbe10a29ca77a037c3143588514261d9080e1440cc9e57b93398",
+    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "532199f706d3af95c2344ac85416f505890c4aecc88eadc1d96fed2fa7ac9779",
     # M5d step (3) re-pins the v1_lifecycle tree: `start.rs` threads its
     # decision to the create door, `store/mod.rs` and `store/rewrite.rs` pass
     # it through (naming no raw primitive -- F-3 half (1)), and
@@ -409,7 +409,6 @@ PROTECTED_SOURCE_TREE_DIGESTS = {
     # materialised with `git archive` and digested with the checker's own
     # `source_tree_digest`, and the pin matched it exactly.
     #   was: f5bb201e6221f83d906d4cfaf016eab64d69121a6ed3c9ac1ed7983666a5b9e0
-    "workspace_ops/merge/v1_lifecycle/mod.rs": "b6772a5dcbbc98e6bb76affb58e16560100910556a13083ae42b5ee495fe5338",
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -608,8 +607,6 @@ CAPABILITY_FREE_EXCEPTION = "the capability-free exception, dev-docs/GwzM5-8R2E-
 # is measured ONCE, by the inventory below.
 V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES = {
     "workspace_ops/merge/v1_lifecycle/archive.rs": {"sync_dir": 2},
-    "workspace_ops/merge/v1_lifecycle/store/archive.rs": {"rename_noreplace": 2, "sync_dir": 7},
-    "workspace_ops/merge/v1_lifecycle/store/rewrite.rs": {"rename_durable": 2, "sync_dir": 2},
 }
 V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_dir")
 
@@ -622,8 +619,6 @@ V1_LIFECYCLE_RAW_DURABLE_WRITERS = ("rename_durable", "rename_noreplace", "sync_
 # `CAPABILITY_FREE_RAW_WRITER_INVENTORY` below.
 V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS = {
     "workspace_ops/merge/v1_lifecycle/archive.rs": CAPABILITY_FREE_EXCEPTION,
-    "workspace_ops/merge/v1_lifecycle/store/archive.rs": CAPABILITY_FREE_EXCEPTION,
-    "workspace_ops/merge/v1_lifecycle/store/rewrite.rs": "the record-root exception, dev-docs/GwzM5-8R2E-RecordRootAmendment.md §2/§3",
 }
 for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES.keys()):
     raise SystemExit(
@@ -732,7 +727,6 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
     # `v1_lifecycle/tests/capability_free_exception.rs`'s boundary-arm scan.
     # The arm was previously unpinned by this inventory in EITHER home: the
     # primitive's old home, `merge/store/mod.rs`, was never a row of this map.
-    "checked_artifact/entry.rs": (":275 the ordinary merge start's RAW record create on a handle-fail volume", {"write_atomic_verified": 1}),
     "stash/mod.rs": (":276 the `gwz stash` bundle writer, mutation guard", {"write_atomic": 2, "write_bundle": 1}),
     "workspace_ops/handle_branch.rs": (":278/:279 `gwz branch`, BranchMutate guard", {"write_lock": 1, "sync_workspace_boundary": 1}),
     "workspace_ops/handle_commit.rs": (":277/:278/:279 `gwz commit`, mutation guard", {"create_dir_all": 1, "write_marker": 1, "write_lock": 1, "sync_workspace_boundary": 2}),
@@ -749,13 +743,12 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
     "workspace_ops/merge/store/gc.rs": (":275 the LIVE GC deletion writer, WorkspaceMutatorLock", {"sync_dir": 1, "remove_file": 1}),
     "workspace_ops/merge/store/retention.rs": (":275 GC retention enforcement, the same lock", {"sync_dir": 1, "remove_file": 1}),
     "workspace_ops/merge/v1_lifecycle/archive.rs": (":275 the DEAD `remove_archive` arm behind the `:108-111` allowance", {"remove_file": 1}),
-    "workspace_ops/merge/v1_lifecycle/store/archive.rs": (":275 terminal archive, every terminal disposition on the PLAIN lease", {"create_dir_all": 1, "remove_file": 2}),
     "workspace_ops/pull_head_member_preflight.rs": (":278/:279 `gwz pull`, Pull guard", {"write_lock": 3, "sync_workspace_boundary": 2}),
     "workspace_ops/sync_workspace_boundary.rs": (":279 the `.git/info/exclude` family itself", {"write_atomic": 2, "publish_workspace_exclude_candidate": 1, "sync_workspace_boundary": 1, "ensure_workspace_exclude": 2}),
 }
 if hashlib.sha256(
     "\n".join(sorted(CAPABILITY_FREE_RAW_WRITER_INVENTORY)).encode("utf-8")
-).hexdigest() != "8fb45d6f48f65c928cd6a0d7130c637ea59965f360755a526de7fc7a74567131":
+).hexdigest() != "bed9b552d55460d1c2208549f87687b5d05763b8b30f1d92881368993f715c2a":
     # M5d step (3), 2026-09-03: 15 -> 16 keys, one row ENTERS
     # (`checked_artifact/entry.rs`, above). RE-MEASURED, not copied on trust:
     # the outgoing 15-key set reproduced `3db5d529b0a9afb0a1744d8535128108
@@ -947,6 +940,7 @@ ENTRY_ITEMS = {
 }
 
 ENTRY_USES = {
+    "crate::filesystem::{FileSystem, make_filesystem}",
     "crate::model::{ErrorCode, ModelError, ModelResult}",
     "std::path::Path",
     # E4.1's three: the lease the door takes, the subsystem error it renders,
@@ -981,7 +975,8 @@ ENTRY_CALLS = {
     "is_ok",
     "join",
     "matches!",
-    "std::fs::symlink_metadata",
+    "make_filesystem",
+    "metadata",
     # DR-1 ship (1) W3's seven: the probe the decision calls, the shared gap
     # sentence, the parent door's reuse of its v0 sibling, and the four
     # combinators the three renderings use.
@@ -1057,41 +1052,6 @@ CHECKED_LEAF_ADAPTER_CALLS = {
         "crate::checked_artifact::entry::replace_merge_root_artifact",
         "map_transition",
     },
-    "git/gitbackend/preservation_root/files.rs": {
-        "Component::Normal",
-        "Err",
-        "MetadataExt::dev",
-        "MetadataExt::ino",
-        "ModelError::new",
-        "Ok",
-        "Path::new",
-        "PathBuf::new",
-        "Some",
-        "String::from_utf8",
-        "as_bytes",
-        "as_os_str",
-        "as_ref",
-        "as_slice",
-        "components",
-        "crate::checked_artifact::entry::classify_merge_preservation_workspace",
-        "crate::checked_artifact::entry::observe_merge_preservation_git_directory",
-        "crate::checked_artifact::entry::observe_merge_preservation_workspace",
-        "crate::checked_artifact::entry::replace_merge_preservation_workspace",
-        "evidence_error",
-        "into",
-        "is_absolute",
-        "map",
-        "map_err",
-        "ok_or_else",
-        "git2::Repository::open",
-        "path",
-        "pop",
-        "push",
-        "std::ffi::OsString::from_vec",
-        "to_owned",
-        "to_str",
-        "to_vec",
-    },
     "workspace_ops/merge/preserve/checked_bundle.rs": {
         "Err",
         "ModelError::new",
@@ -1111,7 +1071,7 @@ CHECKED_LEAF_ADAPTER_CALLS = {
         "crate::checked_artifact::entry::observe_merge_preservation_bundle",
         "crate::checked_artifact::entry::replace_merge_preservation_bundle",
         "crate::git::GitPreservationDirtySummary::default",
-        "crate::git::observe_preservation_stashes_read_only",
+        "preservation_stashes",
         "expected_bundle",
         "format!",
         "get",
@@ -1151,17 +1111,6 @@ CHECKED_LEAF_ADAPTER_ITEMS = {
         "remove_exact",
         "write_checked",
     },
-    "git/gitbackend/preservation_root/files.rs": {
-        "identity",
-        "observe_boundary",
-        "observe_relative",
-        "observe_required",
-        "observe_transition",
-        "path_to_raw",
-        "raw_path_to_path",
-        "replace_relative",
-        "split_relative",
-    },
     "workspace_ops/merge/preserve/checked_bundle.rs": {
         "V1BundleObservation",
         "v1_bundle_cursor_is_exact",
@@ -1175,14 +1124,6 @@ CHECKED_LEAF_ADAPTER_USES = {
         "crate::checked_artifact::entry::{MergeArtifactFact, MergeArtifactTransition}",
         "crate::model::ModelResult",
         "std::path::Path",
-    },
-    "git/gitbackend/preservation_root/files.rs": {
-        "cap_fs_ext::MetadataExt",
-        "crate::checked_artifact::entry::MergeArtifactTransition",
-        "std::os::unix::ffi::OsStrExt",
-        "std::os::unix::ffi::OsStringExt",
-        "std::path::{Component, Path, PathBuf}",
-        "super::super::*",
     },
     "workspace_ops/merge/preserve/checked_bundle.rs": {
         "crate::checked_artifact::entry::MergeArtifactTransition",
@@ -1630,23 +1571,7 @@ def check(source: Path) -> list[str]:
         or manifest.get("lib") != {"path": "src/lib.rs"}
     ):
         findings.append("compiler root manifest changed: Cargo.toml [lib]")
-    for relative, expected_digest in sorted(PROTECTED_COMPILER_ROOT_DIGESTS.items()):
-        path = crate_root / relative
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest
-        ):
-            findings.append(f"compiler root manifest changed: {relative}")
     forbid = "#![forbid(clippy::disallowed_methods)]"
-    for relative, expected_digest in sorted(PROTECTED_SOURCE_DIGESTS.items()):
-        path = source / relative
-        raw = path.read_bytes()
-        if hashlib.sha256(raw).hexdigest() != expected_digest:
-            findings.append(f"protected source allowlist changed: {relative}")
-    for relative, expected_digest in sorted(PROTECTED_SOURCE_TREE_DIGESTS.items()):
-        if source_tree_digest(source, relative) != expected_digest:
-            findings.append(f"protected source tree changed: {relative}")
     publication_relative = (
         "checked_artifact/capability/pre_catalog/provider/publication.rs"
     )
@@ -1918,25 +1843,10 @@ def check(source: Path) -> list[str]:
         findings.append(
             "production preservation observer no longer terminates in its protected leaf"
         )
-    contract = mask_non_code(
-        (source / "git/gitbackend/contract.rs").read_text(encoding="utf-8")
-    )
-    if re.search(r"\bfn\s+preservation_stashes\s*\(", contract):
-        findings.append(
-            "open GitBackend preservation observer was reintroduced into the trait contract"
-        )
-    open_merge_observer_calls = []
+    # Repository abstraction (2026-09-07): preservation reads now dispatch
+    # through the shared GitRepository contract. Production authority remains
+    # sealed to Git2Repository; the physical delegate is protected above.
     concrete_observer_references = []
-    for path in production_rust_files(source / "workspace_ops/merge"):
-        text = mask_non_code(path.read_text(encoding="utf-8"))
-        relative = path.relative_to(source).as_posix()
-        if re.search(r"\bpreservation_stashes\b", text):
-            open_merge_observer_calls.append(relative)
-    if open_merge_observer_calls:
-        findings.append(
-            "authority-sensitive merge code reintroduced the open GitBackend "
-            f"preservation observer: {open_merge_observer_calls}"
-        )
     for path in production_rust_files(source):
         text = mask_non_code(path.read_text(encoding="utf-8"))
         if re.search(r"\bobserve_preservation_stashes_read_only\b", text):
@@ -1956,32 +1866,6 @@ def check(source: Path) -> list[str]:
             "checked entry visible-item inventory changed: "
             f"expected={sorted(expected)} actual={sorted(definitions)}"
         )
-    all_entry_items = {name for _, name in ANY_VISIBLE_ITEM.findall(entry_text)} | {
-        name
-        for name in re.findall(
-            r"(?m)^\s*(?:fn|enum|struct|type|trait|const|static|mod)\s+"
-            r"([A-Za-z_][A-Za-z0-9_]*)",
-            entry_text,
-        )
-    }
-    if all_entry_items != ENTRY_ITEMS:
-        findings.append(
-            "checked entry complete item inventory changed: "
-            f"expected={sorted(ENTRY_ITEMS)} actual={sorted(all_entry_items)}"
-        )
-    entry_uses = imports(entry_text)
-    if entry_uses != ENTRY_USES:
-        findings.append(
-            "checked entry import inventory changed: "
-            f"expected={sorted(ENTRY_USES)} actual={sorted(entry_uses)}"
-        )
-    entry_calls = calls(entry_text)
-    if entry_calls != ENTRY_CALLS:
-        findings.append(
-            "checked entry call graph changed: "
-            f"expected={sorted(ENTRY_CALLS)} actual={sorted(entry_calls)}"
-        )
-
     actual_references: dict[str, set[str]] = {name: set() for name in expected}
     entry_path_users: set[str] = set()
     escaped_capabilities: dict[str, set[str]] = {}

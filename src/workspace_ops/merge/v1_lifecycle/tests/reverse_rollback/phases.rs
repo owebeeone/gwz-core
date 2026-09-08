@@ -37,7 +37,7 @@ fn integrated_participant_classifies_exact_before_after_and_ambiguous() {
         .unwrap(),
         O::After
     );
-    std::fs::write(fixture.member.join("untracked"), "drift\n").unwrap();
+    write_for_test(&fixture.member.join("untracked"), b"drift\n").unwrap();
     assert_eq!(
         observe_v1_participant_rollback(
             &fixture.backend,
@@ -59,11 +59,9 @@ fn integrated_rollback_remains_exact_under_repo_local_autocrlf() {
     // the same key at repository scope, so pinning it repo-locally here (after
     // the fixture commits, which are LF blob + LF worktree with no checkout in
     // between) reproduces the Windows platform semantics on any host.
-    git2::Repository::open(&fixture.member)
-        .unwrap()
-        .config()
-        .unwrap()
-        .set_bool("core.autocrlf", true)
+    fixture
+        .backend
+        .test_set_config(&fixture.member, "core.autocrlf", &["true".into()])
         .unwrap();
     let row = &fixture.model.participants["mem_a"];
     // The config flip alone rewrites nothing: the live worktree is still the
@@ -100,7 +98,9 @@ fn integrated_rollback_remains_exact_under_repo_local_autocrlf() {
         O::After
     );
     assert_eq!(
-        std::fs::read(fixture.member.join("README.md")).unwrap(),
+        make_filesystem()
+            .read(&fixture.member.join("README.md"))
+            .unwrap(),
         b"before\n"
     );
 }
@@ -200,12 +200,14 @@ fn every_evidence_phase_rejects_a_third_state() {
     };
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-head", true, true);
-    std::fs::write(fixture.root.path.join(marker_path(&fixture)), "foreign\n").unwrap();
+    write_for_test(&fixture.root.path.join(marker_path(&fixture)), b"foreign\n").unwrap();
     assert_ambiguous(&fixture, EvidenceRollbackStepV1::EvidenceCommit);
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-boundary", true, true);
     advance(&fixture, 1);
-    std::fs::remove_file(fixture.root.path.join(marker_path(&fixture))).unwrap();
+    make_filesystem()
+        .remove_file(&fixture.root.path.join(marker_path(&fixture)))
+        .unwrap();
     assert_ambiguous(&fixture, EvidenceRollbackStepV1::Boundary);
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-lock", true, true);
@@ -235,7 +237,11 @@ fn every_evidence_phase_rejects_a_third_state() {
         .candidate
         .as_ref()
         .unwrap();
-    std::fs::write(fixture.root.path.join(LOCK_PATH), &candidate.lock_yaml).unwrap();
+    write_for_test(
+        &fixture.root.path.join(LOCK_PATH),
+        candidate.lock_yaml.as_bytes(),
+    )
+    .unwrap();
     assert_ambiguous(&fixture, EvidenceRollbackStepV1::Marker);
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-index", true, true);
@@ -249,12 +255,16 @@ fn every_evidence_phase_rejects_a_third_state() {
         .as_ref()
         .unwrap()
         .marker_yaml;
-    std::fs::write(fixture.root.path.join(marker_path(&fixture)), marker).unwrap();
+    write_for_test(
+        &fixture.root.path.join(marker_path(&fixture)),
+        marker.as_bytes(),
+    )
+    .unwrap();
     assert_ambiguous(&fixture, EvidenceRollbackStepV1::Index);
 
     let fixture = staged_evidence_fixture("v1-rollback-evidence-third-complete", true, true);
     advance(&fixture, 5);
-    std::fs::write(fixture.root.path.join(LOCK_PATH), "foreign\n").unwrap();
+    write_for_test(&fixture.root.path.join(LOCK_PATH), b"foreign\n").unwrap();
     assert_ambiguous(&fixture, EvidenceRollbackStepV1::Complete);
 }
 

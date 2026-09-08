@@ -19,121 +19,162 @@ mod fixtures;
 pub(super) use fixtures::{Lane, MatrixFixture, context, fixture, seed_open, seed_recovery};
 
 #[test]
-fn every_emitted_rollback_physical_and_successor_boundary_recovers_exactly_once() {
-    for lane in [
-        Lane::AbortConflict,
-        Lane::ResetIntegrated,
-        Lane::Evidence,
-        Lane::SelectedRoot,
-    ] {
-        let targets = expected_targets(lane);
-        assert_eq!(
-            targets,
-            expected_targets(lane),
-            "{lane:?} action set drifted"
-        );
-        for (target_index, target) in targets.into_iter().enumerate() {
-            for (request_index, request) in admitted_requests().into_iter().enumerate() {
-                for (boundary_index, boundary) in [
-                    Boundary::BeforePhysical,
-                    Boundary::AfterPhysical,
-                    Boundary::AfterDurableSuccessor,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let fixture = fixture(
-                        lane,
-                        &format!(
-                            "v1-rollback-matrix-{lane:?}-{target_index}-{request_index}-{boundary_index}"
-                        ),
-                    );
-                    seed_open(&fixture.root.path, &fixture.model);
-                    let operation_context = context(&fixture.model);
-                    let mut interrupt = InterruptRuntime {
-                        inner: ReverseRuntime::new(&fixture.backend, &operation_context),
-                        target,
-                        boundary,
-                        physical_complete: false,
-                        interrupted: false,
-                    };
-                    let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        run(
-                            &CheckedV1Store::default(),
-                            &fixture.root.path,
-                            &fixture.model.merge_id,
-                            request,
-                            &mut interrupt,
-                        )
-                    }));
-                    assert!(interrupt.interrupted, "{lane:?} {target:?} was not issued");
-                    match boundary {
-                        Boundary::BeforePhysical => assert!(
-                            matches!(first, Ok(Err(_))),
-                            "{lane:?} {target:?} did not stop before observation"
-                        ),
-                        Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => assert!(
-                            first.is_err(),
-                            "{lane:?} {target:?} {boundary:?} did not interrupt"
-                        ),
-                    }
+fn abort_conflict_boundaries_recover_exactly_once() {
+    assert_lane_boundaries(Lane::AbortConflict);
+}
 
-                    let store = CheckedV1Store::default();
-                    let interrupted = store
-                        .load_open(&fixture.root.path, &fixture.model.merge_id)
-                        .unwrap();
-                    assert_eq!(interrupted.record().state, OperationState::RollingBack);
-                    assert!(
-                        interrupted
-                            .record()
-                            .pending_rollback
-                            .as_ref()
-                            .is_some_and(|action| target.matches(action))
-                            || boundary == Boundary::AfterDurableSuccessor
-                    );
+#[test]
+fn reset_integrated_boundaries_recover_exactly_once() {
+    assert_lane_boundaries(Lane::ResetIntegrated);
+}
 
-                    if interrupted.record().pending_rollback.is_some() {
-                        seed_recovery(&fixture.root.path, interrupted.record());
-                    }
-                    let operation_context = context(&fixture.model);
-                    let mut resume = CountingRuntime {
-                        inner: ReverseRuntime::new(&fixture.backend, &operation_context),
-                        target,
-                        executions: 0,
-                    };
-                    let resume_request =
-                        admitted_requests()[(request_index + 1) % admitted_requests().len()];
-                    let response = run(
-                        &store,
-                        &fixture.root.path,
-                        &fixture.model.merge_id,
-                        resume_request,
-                        &mut resume,
-                    )
-                    .unwrap();
-                    assert_eq!(
-                        response.current().record().state,
-                        OperationState::Aborted,
-                        "{lane:?} {target:?} {boundary:?}"
-                    );
-                    assert_eq!(
-                        response.disposition(),
-                        if resume_request == V1LifecycleRequest::Archive {
-                            V1ResponseDisposition::ArchiveReady
-                        } else {
-                            V1ResponseDisposition::Terminal(OperationState::Aborted)
-                        },
-                        "{lane:?} {target:?} {boundary:?}"
-                    );
-                    assert_eq!(
-                        resume.executions,
-                        usize::from(boundary == Boundary::BeforePhysical),
-                        "{lane:?} {target:?} {boundary:?}"
-                    );
-                    assert!(response.current().record().pending_rollback.is_none());
-                    assert!(response.current().record().recovery_context.is_none());
-                }
+#[test]
+fn evidence_commit_boundaries_recover_exactly_once() {
+    assert_target_boundaries(Lane::Evidence, 0, Target::Evidence(E::EvidenceCommit));
+}
+
+#[test]
+fn evidence_boundary_boundaries_recover_exactly_once() {
+    assert_target_boundaries(Lane::Evidence, 1, Target::Evidence(E::Boundary));
+}
+
+#[test]
+fn evidence_lock_boundaries_recover_exactly_once() {
+    assert_target_boundaries(Lane::Evidence, 2, Target::Evidence(E::Lock));
+}
+
+#[test]
+fn evidence_marker_boundaries_recover_exactly_once() {
+    assert_target_boundaries(Lane::Evidence, 3, Target::Evidence(E::Marker));
+}
+
+#[test]
+fn evidence_index_boundaries_recover_exactly_once() {
+    assert_target_boundaries(Lane::Evidence, 4, Target::Evidence(E::Index));
+}
+
+#[test]
+fn selected_root_boundaries_recover_exactly_once() {
+    assert_lane_boundaries(Lane::SelectedRoot);
+}
+
+fn assert_lane_boundaries(lane: Lane) {
+    let targets = expected_targets(lane);
+    assert_eq!(
+        targets,
+        expected_targets(lane),
+        "{lane:?} action set drifted"
+    );
+    for (target_index, target) in targets.into_iter().enumerate() {
+        assert_target_boundaries(lane, target_index, target);
+    }
+}
+
+fn assert_target_boundaries(lane: Lane, target_index: usize, target: Target) {
+    assert_eq!(
+        expected_targets(lane).get(target_index),
+        Some(&target),
+        "{lane:?} action set drifted"
+    );
+    for (request_index, request) in admitted_requests().into_iter().enumerate() {
+        for (boundary_index, boundary) in [
+            Boundary::BeforePhysical,
+            Boundary::AfterPhysical,
+            Boundary::AfterDurableSuccessor,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let fixture = fixture(
+                lane,
+                &format!(
+                    "v1-rollback-matrix-{lane:?}-{target_index}-{request_index}-{boundary_index}"
+                ),
+            );
+            seed_open(&fixture.root.path, &fixture.model);
+            let operation_context = context(&fixture.model);
+            let mut interrupt = InterruptRuntime {
+                inner: ReverseRuntime::new(&fixture.backend, &operation_context),
+                target,
+                boundary,
+                physical_complete: false,
+                interrupted: false,
+            };
+            let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(
+                    &CheckedV1Store::default(),
+                    &fixture.root.path,
+                    &fixture.model.merge_id,
+                    request,
+                    &mut interrupt,
+                )
+            }));
+            assert!(interrupt.interrupted, "{lane:?} {target:?} was not issued");
+            match boundary {
+                Boundary::BeforePhysical => assert!(
+                    matches!(first, Ok(Err(_))),
+                    "{lane:?} {target:?} did not stop before observation"
+                ),
+                Boundary::AfterPhysical | Boundary::AfterDurableSuccessor => assert!(
+                    first.is_err(),
+                    "{lane:?} {target:?} {boundary:?} did not interrupt"
+                ),
             }
+
+            let store = CheckedV1Store::default();
+            let interrupted = store
+                .load_open(&fixture.root.path, &fixture.model.merge_id)
+                .unwrap();
+            assert_eq!(interrupted.record().state, OperationState::RollingBack);
+            assert!(
+                interrupted
+                    .record()
+                    .pending_rollback
+                    .as_ref()
+                    .is_some_and(|action| target.matches(action))
+                    || boundary == Boundary::AfterDurableSuccessor
+            );
+
+            if interrupted.record().pending_rollback.is_some() {
+                seed_recovery(&fixture.root.path, interrupted.record());
+            }
+            let operation_context = context(&fixture.model);
+            let mut resume = CountingRuntime {
+                inner: ReverseRuntime::new(&fixture.backend, &operation_context),
+                target,
+                executions: 0,
+            };
+            let resume_request =
+                admitted_requests()[(request_index + 1) % admitted_requests().len()];
+            let response = run(
+                &store,
+                &fixture.root.path,
+                &fixture.model.merge_id,
+                resume_request,
+                &mut resume,
+            )
+            .unwrap();
+            assert_eq!(
+                response.current().record().state,
+                OperationState::Aborted,
+                "{lane:?} {target:?} {boundary:?}"
+            );
+            assert_eq!(
+                response.disposition(),
+                if resume_request == V1LifecycleRequest::Archive {
+                    V1ResponseDisposition::ArchiveReady
+                } else {
+                    V1ResponseDisposition::Terminal(OperationState::Aborted)
+                },
+                "{lane:?} {target:?} {boundary:?}"
+            );
+            assert_eq!(
+                resume.executions,
+                usize::from(boundary == Boundary::BeforePhysical),
+                "{lane:?} {target:?} {boundary:?}"
+            );
+            assert!(response.current().record().pending_rollback.is_none());
+            assert!(response.current().record().recovery_context.is_none());
         }
     }
 }
@@ -199,7 +240,7 @@ enum Boundary {
 }
 
 struct InterruptRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: Target,
     boundary: Boundary,
     physical_complete: bool,
@@ -261,7 +302,7 @@ impl PhysicalExecutor for InterruptRuntime<'_> {
 }
 
 struct CountingRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: Target,
     executions: usize,
 }

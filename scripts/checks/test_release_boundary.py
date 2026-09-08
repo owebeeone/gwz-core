@@ -19,6 +19,14 @@ SPEC.loader.exec_module(release)
 
 
 class ReleaseBoundaryTest(unittest.TestCase):
+    def test_release_checks_do_not_launch_mutation_suites(self) -> None:
+        with mock.patch.object(release, "run") as run, mock.patch.object(release, "cargo_env", return_value={}):
+            release.run_checked_boundary_gates(cargo_root=release.REPO)
+        commands = [str(call.args[0]) for call in run.call_args_list]
+        self.assertFalse(any("test_check_checked_artifact_boundaries" in command or
+                             "test_v1_lifecycle_privacy_probe" in command
+                             for command in commands), commands)
+
     def test_release_help_exposes_no_compiler_skip(self) -> None:
         result = subprocess.run(
             [sys.executable, str(RELEASE_PATH), "--help"],

@@ -108,53 +108,43 @@ fn install_real_ambiguity(
     match target {
         Target::Participant(P::AbortConflict) | Target::Participant(P::ResetIntegrated) => {
             let row = &model.participants["mem_a"];
-            std::fs::write(
-                fixture.root.path.join(&row.path).join("README.md"),
-                "real third-form participant checkout\n",
+            write_for_test(
+                &fixture.root.path.join(&row.path).join("README.md"),
+                b"real third-form participant checkout\n",
             )
             .unwrap();
         }
         Target::Evidence(E::EvidenceCommit) => {
             let publication = model.publication.as_ref().unwrap();
             let candidate = publication.candidate.as_ref().unwrap();
-            let repository = git2::Repository::open(&fixture.root.path).unwrap();
-            let composition = repository
-                .find_commit(
-                    publication
-                        .composition_commit
-                        .as_deref()
-                        .unwrap()
-                        .parse()
-                        .unwrap(),
+            let composition = publication.composition_commit.as_deref().unwrap();
+            let third = fixture
+                .backend
+                .test_create_commit(
+                    &fixture.root.path,
+                    &TestCommitSpec::from_index(
+                        "real third-form evidence head",
+                        vec![composition.into()],
+                    ),
                 )
                 .unwrap();
-            let tree = composition.tree().unwrap();
-            let signature = git2::Signature::now("GWZ Test", "gwz-test@example.invalid").unwrap();
-            let third = repository
-                .commit(
-                    None,
-                    &signature,
-                    &signature,
-                    "real third-form evidence head",
-                    &tree,
-                    &[&composition],
+            fixture
+                .backend
+                .test_set_ref(
+                    &fixture.root.path,
+                    &format!("refs/heads/{}", candidate.root_branch),
+                    Some(&TestRefTarget::Direct(third)),
                 )
-                .unwrap();
-            let mut reference = repository
-                .find_reference(&format!("refs/heads/{}", candidate.root_branch))
-                .unwrap();
-            reference
-                .set_target(third, "install real third-form evidence HEAD")
                 .unwrap();
         }
-        Target::Evidence(E::Boundary) => std::fs::write(
-            crate::workspace_ops::workspace_exclude_path(&fixture.root.path),
-            "real third-form boundary\n",
+        Target::Evidence(E::Boundary) => write_for_test(
+            &crate::workspace_ops::workspace_exclude_path(&fixture.root.path),
+            b"real third-form boundary\n",
         )
         .unwrap(),
-        Target::Evidence(E::Lock) => std::fs::write(
-            fixture.root.path.join(LOCK_PATH),
-            "real third-form evidence lock\n",
+        Target::Evidence(E::Lock) => write_for_test(
+            &fixture.root.path.join(LOCK_PATH),
+            b"real third-form evidence lock\n",
         )
         .unwrap(),
         Target::Evidence(E::Marker) => {
@@ -165,9 +155,9 @@ fn install_real_ambiguity(
                 .candidate_marker_path
                 .as_ref()
                 .unwrap();
-            std::fs::write(
-                fixture.root.path.join(marker),
-                "real third-form evidence marker\n",
+            write_for_test(
+                &fixture.root.path.join(marker),
+                b"real third-form evidence marker\n",
             )
             .unwrap();
         }
@@ -179,9 +169,9 @@ fn install_real_ambiguity(
                 .candidate_marker_path
                 .as_ref()
                 .unwrap();
-            std::fs::write(
-                fixture.root.path.join(marker),
-                "real third-form evidence index\n",
+            write_for_test(
+                &fixture.root.path.join(marker),
+                b"real third-form evidence index\n",
             )
             .unwrap();
             fixture
@@ -190,14 +180,14 @@ fn install_real_ambiguity(
                 .unwrap();
         }
         Target::Evidence(E::Complete) => unreachable!(),
-        Target::Root(R::Manifest) => std::fs::write(
-            fixture.root.path.join(WORKSPACE_MANIFEST),
-            "real third-form selected-root manifest\n",
+        Target::Root(R::Manifest) => write_for_test(
+            &fixture.root.path.join(WORKSPACE_MANIFEST),
+            b"real third-form selected-root manifest\n",
         )
         .unwrap(),
-        Target::Root(R::Lock) => std::fs::write(
-            fixture.root.path.join(LOCK_PATH),
-            "real third-form selected-root lock\n",
+        Target::Root(R::Lock) => write_for_test(
+            &fixture.root.path.join(LOCK_PATH),
+            b"real third-form selected-root lock\n",
         )
         .unwrap(),
         Target::Root(R::Complete) => unreachable!(),
@@ -205,7 +195,7 @@ fn install_real_ambiguity(
 }
 
 struct StopAtTarget<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: Target,
     stopped: bool,
 }

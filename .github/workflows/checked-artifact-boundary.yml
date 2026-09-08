@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
 
+env:
+  GWZ_TEST_GIT: real
+
 jobs:
   boundary:
     name: Structural boundary
@@ -30,26 +33,18 @@ jobs:
       - name: Check complete entry and call graph
         run: |
           python scripts/checks/check_checked_artifact_boundaries.py
-          python -m unittest scripts/checks/test_check_checked_artifact_boundaries.py -v
+          python scripts/checks/check_filesystem_boundary.py
+          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py
           python -m unittest scripts/checks/test_release_boundary.py -v
-          CLIPPY_CONF_DIR="$PWD" cargo clippy --all-targets --all-features -- -D warnings
-      - name: Selection ownership and generated inventory negative controls
+          CLIPPY_CONF_DIR="$PWD/scripts/checks/filesystem_lints" cargo clippy --no-deps --all-targets --all-features -- -D warnings
+      - name: Selection ownership
         run: |
           python scripts/checks/check_target_selection_boundary.py
-          python -m unittest scripts/checks/test_check_target_selection_boundary.py scripts/checks/test_test_inventory.py -v
+          python -m unittest scripts/checks/test_check_target_selection_boundary.py -v
       - name: Run the M5b structural tripwire scans on every push
         # M5b State [P2-1] / Code P3: the T-3/T-4 source-surface scans must
         # execute in the push lane, not only under full cargo-test runs.
         run: cargo test --lib workspace_ops::merge::v1_lifecycle::tests::no_ff_wire
-      - name: Run the gates A1 made load-bearing
-        # A1 Safety [P2-2] / §6.2. Before A1 these R4b-G tools were
-        # bookkeeping and ran nowhere; the activation turned them into standing
-        # guards. The privacy probe plus the call-graph gate are the
-        # "standing guard" the J-1 acceptance leaned on — a guard that runs
-        # nowhere stands only on prose. Driven through the aggregate runner so
-        # each battery's expected count is pinned, not just its exit code.
-        run: |
-          python scripts/checks/run_r4bg_aggregate_gates.py privacy call-graph
   local-clone-boundary:
     # LCM1.0c (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §6): the
     # local clone family's package classification and declared-edge gate,

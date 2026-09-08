@@ -1,10 +1,10 @@
-use std::fs::{self, File, Metadata};
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+use crate::filesystem::{FileSystem, FsDirectory, FsIdentity, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 const MERGE_DIR: &str = ".gwz/merge";
@@ -20,7 +20,7 @@ pub(crate) enum CanonicalRecordKind {
 pub(crate) struct CanonicalRecordPath {
     kind: CanonicalRecordKind,
     path: PathBuf,
-    identity: FileIdentity,
+    identity: FsIdentity,
 }
 
 impl CanonicalRecordPath {
@@ -107,49 +107,132 @@ pub(crate) fn acquire_canonical_merge_locations(
     merge_id: &str,
 ) -> ModelResult<CanonicalMergeLocations> {
     validate_merge_id(merge_id)?;
-    let root = root
-        .canonicalize()
-        .map_err(|error| location_error(root, error))?;
-    let root_identity = require_real_directory(&root)?;
+    acquire_filesystem_merge_locations(root, merge_id)
+}
 
-    let gwz = root.join(".gwz");
-    let Some(gwz_identity) = optional_real_directory(&gwz)? else {
+fn absent_locations() -> CanonicalMergeLocations {
+    CanonicalMergeLocations {
+        open: CanonicalRecordLeaf::Absent,
+        archived: CanonicalRecordLeaf::Absent,
+    }
+}
+
+fn acquire_filesystem_merge_locations(
+    root_path: &Path,
+    merge_id: &str,
+) -> ModelResult<CanonicalMergeLocations> {
+    let filesystem = make_filesystem();
+    let root_path = filesystem
+        .canonical_path(root_path)
+        .map_err(|error| location_error(root_path, error))?;
+    let root = filesystem
+        .open_directory(&root_path)
+        .map_err(|error| location_error(&root_path, error))?;
+    let root_identity = filesystem
+        .directory_identity(&root)
+        .map_err(|error| location_error(&root_path, error))?;
+    let gwz_path = root_path.join(".gwz");
+    let Some((gwz, gwz_identity)) = optional_directory(
+        &filesystem,
+        &root,
+        ".gwz".as_ref(),
+        &gwz_path,
+        ErrorCode::MergeRecordUnreadable,
+    )?
+    else {
         return Ok(absent_locations());
     };
-    let merge = root.join(MERGE_DIR);
-    let Some(merge_identity) = optional_real_directory(&merge)? else {
+    let merge_path = root_path.join(MERGE_DIR);
+    let Some((merge, merge_identity)) = optional_directory(
+        &filesystem,
+        &gwz,
+        "merge".as_ref(),
+        &merge_path,
+        ErrorCode::MergeRecordUnreadable,
+    )?
+    else {
         return Ok(absent_locations());
     };
-
-    let open_path = merge.join(format!("{merge_id}.yaml"));
-    let open = read_leaf(&open_path, CanonicalRecordKind::Open)?;
-    let done = root.join(DONE_DIR);
-    let done_identity = optional_archived_directory(&done)?;
-    let archived = match done_identity.as_ref() {
-        Some(_) => read_leaf(
-            &done.join(format!("{merge_id}.yaml")),
+    let leaf_name = format!("{merge_id}.yaml");
+    let open_path = merge_path.join(&leaf_name);
+    let open = read_leaf(
+        &filesystem,
+        &merge,
+        leaf_name.as_ref(),
+        &open_path,
+        CanonicalRecordKind::Open,
+    )?;
+    let done_path = root_path.join(DONE_DIR);
+    let done = optional_directory(
+        &filesystem,
+        &merge,
+        "done".as_ref(),
+        &done_path,
+        ErrorCode::ArchivedRecordUnreadable,
+    )?;
+    let archived = match &done {
+        Some((done, _)) => read_leaf(
+            &filesystem,
+            done,
+            leaf_name.as_ref(),
+            &done_path.join(&leaf_name),
             CanonicalRecordKind::Archived,
         )?,
         None => CanonicalRecordLeaf::Absent,
     };
 
     #[cfg(test)]
-    inject_location_fault(&merge, merge_id);
+    inject_location_fault(&merge_path, merge_id);
 
-    // A parent replacement after either read invalidates both observations.
-    require_same_directory(&root, &root_identity)?;
-    require_same_directory(&gwz, &gwz_identity)?;
-    require_same_directory(&merge, &merge_identity)?;
-    let final_done_identity = optional_archived_directory(&done)?;
-    match (done_identity.as_ref(), final_done_identity.as_ref()) {
-        (Some(before), Some(after)) if before == after => {}
-        (None, None) => {}
-        _ => return Err(changed_parent(&done)),
+    let reopened_root = filesystem
+        .open_directory(&root_path)
+        .map_err(|error| location_error(&root_path, error))?;
+    if filesystem
+        .directory_identity(&reopened_root)
+        .map_err(|error| location_error(&root_path, error))?
+        != root_identity
+        || !filesystem
+            .directory_entry_matches(&root, ".gwz".as_ref(), &gwz)
+            .map_err(|error| location_error(&gwz_path, error))?
+        || filesystem
+            .directory_identity(&gwz)
+            .map_err(|error| location_error(&gwz_path, error))?
+            != gwz_identity
+        || !filesystem
+            .directory_entry_matches(&gwz, "merge".as_ref(), &merge)
+            .map_err(|error| location_error(&merge_path, error))?
+        || filesystem
+            .directory_identity(&merge)
+            .map_err(|error| location_error(&merge_path, error))?
+            != merge_identity
+    {
+        return Err(changed_parent(&merge_path));
     }
-    let final_open = read_leaf(&open_path, CanonicalRecordKind::Open)?;
-    let final_archived = match final_done_identity {
-        Some(_) => read_leaf(
-            &done.join(format!("{merge_id}.yaml")),
+    let final_done = optional_directory(
+        &filesystem,
+        &merge,
+        "done".as_ref(),
+        &done_path,
+        ErrorCode::ArchivedRecordUnreadable,
+    )?;
+    if done.as_ref().map(|(_, identity)| identity)
+        != final_done.as_ref().map(|(_, identity)| identity)
+    {
+        return Err(changed_parent(&done_path));
+    }
+    let final_open = read_leaf(
+        &filesystem,
+        &merge,
+        leaf_name.as_ref(),
+        &open_path,
+        CanonicalRecordKind::Open,
+    )?;
+    let final_archived = match final_done {
+        Some((done, _)) => read_leaf(
+            &filesystem,
+            &done,
+            leaf_name.as_ref(),
+            &done_path.join(&leaf_name),
             CanonicalRecordKind::Archived,
         )?,
         None => CanonicalRecordLeaf::Absent,
@@ -162,96 +245,68 @@ pub(crate) fn acquire_canonical_merge_locations(
     Ok(CanonicalMergeLocations { open, archived })
 }
 
-fn absent_locations() -> CanonicalMergeLocations {
-    CanonicalMergeLocations {
-        open: CanonicalRecordLeaf::Absent,
-        archived: CanonicalRecordLeaf::Absent,
-    }
-}
-
-fn optional_real_directory(path: &Path) -> ModelResult<Option<FileIdentity>> {
-    optional_directory(path, ErrorCode::MergeRecordUnreadable)
-}
-
-fn optional_archived_directory(path: &Path) -> ModelResult<Option<FileIdentity>> {
-    optional_directory(path, ErrorCode::ArchivedRecordUnreadable)
-}
-
-fn optional_directory(path: &Path, code: ErrorCode) -> ModelResult<Option<FileIdentity>> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_dir() => {
-            match identity_at_named_path(path, &metadata)
-                .map_err(|error| location_error_with_code(path, error, code))?
-            {
-                Some(identity) => Ok(Some(identity)),
-                None => Err(changed_parent(path)),
-            }
+fn optional_directory(
+    filesystem: &impl FileSystem,
+    parent: &FsDirectory,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    code: ErrorCode,
+) -> ModelResult<Option<(FsDirectory, FsIdentity)>> {
+    match filesystem.open_directory_at(parent, name) {
+        Ok(directory) => {
+            let identity = filesystem
+                .directory_identity(&directory)
+                .map_err(|error| location_error_with_code(path, error, code))?;
+            Ok(Some((directory, identity)))
         }
-        Ok(_) => Err(location_error_with_code(
-            path,
-            "path is not a real directory",
-            code,
-        )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(location_error_with_code(path, error, code)),
     }
 }
 
-fn require_real_directory(path: &Path) -> ModelResult<FileIdentity> {
-    optional_real_directory(path)?.ok_or_else(|| changed_parent(path))
-}
-
-fn require_same_directory(path: &Path, expected: &FileIdentity) -> ModelResult<()> {
-    let current = require_real_directory(path)?;
-    if expected == &current {
-        Ok(())
-    } else {
-        Err(changed_parent(path))
-    }
-}
-
-fn read_leaf(path: &Path, kind: CanonicalRecordKind) -> ModelResult<CanonicalRecordLeaf> {
-    let before = match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => metadata,
-        Ok(_) => return Err(leaf_error(path, kind, "record leaf is not a regular file")),
+fn read_leaf(
+    filesystem: &impl FileSystem,
+    parent: &FsDirectory,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    kind: CanonicalRecordKind,
+) -> ModelResult<CanonicalRecordLeaf> {
+    let file = match filesystem.open_file_at(parent, name) {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(CanonicalRecordLeaf::Absent);
         }
-        Err(reason) => return Err(leaf_error(path, kind, reason)),
+        Err(error) => return Err(leaf_error(path, kind, error)),
     };
-    let Some(before_identity) =
-        identity_at_named_path(path, &before).map_err(|reason| leaf_error(path, kind, reason))?
-    else {
-        return Err(changed_leaf(path));
-    };
-    let mut file = open_named_path(path).map_err(|reason| leaf_error(path, kind, reason))?;
-    let opened = file
-        .metadata()
-        .map_err(|reason| leaf_error(path, kind, reason))?;
-    let opened_identity =
-        identity_from_file(&file, &opened).map_err(|reason| leaf_error(path, kind, reason))?;
-    if !opened.file_type().is_file() || before_identity != opened_identity {
+    let identity = filesystem
+        .file_identity(&file)
+        .map_err(|error| leaf_error(path, kind, error))?;
+    if !filesystem
+        .file_entry_matches(parent, name, &file)
+        .map_err(|error| leaf_error(path, kind, error))?
+    {
         return Err(changed_leaf(path));
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|reason| leaf_error(path, kind, reason))?;
-    let after = fs::symlink_metadata(path).map_err(|reason| {
-        if reason.kind() == io::ErrorKind::NotFound {
-            changed_leaf(path)
-        } else {
-            leaf_error(path, kind, reason)
-        }
-    })?;
-    let Some(after_identity) =
-        identity_at_named_path(path, &after).map_err(|reason| leaf_error(path, kind, reason))?
-    else {
-        return Err(changed_leaf(path));
-    };
-    if !after.file_type().is_file()
-        || before_identity != after_identity
-        || opened_identity != after_identity
-        || opened.len() != bytes.len() as u64
+    let bytes = filesystem
+        .read_all(&file)
+        .map_err(|error| leaf_error(path, kind, error))?;
+    let reopened = filesystem
+        .open_file_at(parent, name)
+        .map_err(|error| leaf_error(path, kind, error))?;
+    if !filesystem
+        .file_entry_matches(parent, name, &file)
+        .map_err(|error| leaf_error(path, kind, error))?
+        || filesystem
+            .file_identity(&reopened)
+            .map_err(|error| leaf_error(path, kind, error))?
+            != identity
+        || !filesystem
+            .file_entry_matches(parent, name, &reopened)
+            .map_err(|error| leaf_error(path, kind, error))?
+        || filesystem
+            .read_all(&reopened)
+            .map_err(|error| leaf_error(path, kind, error))?
+            != bytes
     {
         return Err(changed_leaf(path));
     }
@@ -259,105 +314,11 @@ fn read_leaf(path: &Path, kind: CanonicalRecordKind) -> ModelResult<CanonicalRec
     Ok(CanonicalRecordLeaf::Exact {
         path: CanonicalRecordPath {
             kind,
-            path: path.to_owned(),
-            identity: opened_identity,
+            path: path.into(),
+            identity,
         },
         bytes: ImmutableBytes(Arc::from(bytes)),
         digest,
-    })
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::workspace_ops::merge) struct FileIdentity {
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(windows)]
-    volume: u32,
-    #[cfg(windows)]
-    index: u64,
-}
-
-#[cfg(unix)]
-pub(in crate::workspace_ops::merge) fn identity_at_named_path(
-    _path: &Path,
-    metadata: &Metadata,
-) -> io::Result<Option<FileIdentity>> {
-    Ok(Some(identity_from_metadata(metadata)))
-}
-
-#[cfg(windows)]
-pub(in crate::workspace_ops::merge) fn identity_at_named_path(
-    path: &Path,
-    metadata: &Metadata,
-) -> io::Result<Option<FileIdentity>> {
-    let file = open_named_path(path)?;
-    let opened = file.metadata()?;
-    if metadata.file_type() != opened.file_type() {
-        return Ok(None);
-    }
-    identity_from_file(&file, &opened).map(Some)
-}
-
-#[cfg(unix)]
-pub(in crate::workspace_ops::merge) fn open_named_path(path: &Path) -> io::Result<File> {
-    File::open(path)
-}
-
-#[cfg(windows)]
-pub(in crate::workspace_ops::merge) fn open_named_path(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let mut options = fs::OpenOptions::new();
-    options
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
-    options.open(path)
-}
-
-#[cfg(unix)]
-pub(in crate::workspace_ops::merge) fn identity_from_file(
-    _file: &File,
-    metadata: &Metadata,
-) -> io::Result<FileIdentity> {
-    Ok(identity_from_metadata(metadata))
-}
-
-#[cfg(unix)]
-fn identity_from_metadata(metadata: &Metadata) -> FileIdentity {
-    use std::os::unix::fs::MetadataExt;
-
-    FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    }
-}
-
-#[cfg(windows)]
-pub(in crate::workspace_ops::merge) fn identity_from_file(
-    file: &File,
-    _metadata: &Metadata,
-) -> io::Result<FileIdentity> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
-    };
-
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: `file` owns a valid handle for the duration of the synchronous
-    // call and `information` is a writable value of the required Win32 type.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(FileIdentity {
-        volume: information.dwVolumeSerialNumber,
-        index: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
     })
 }
 
@@ -468,23 +429,43 @@ fn inject_location_fault(merge: &Path, merge_id: &str) {
     match fault {
         LocationFault::None => {}
         LocationFault::ReplaceParent => {
-            let old = merge.with_extension("observed-old");
-            fs::rename(merge, old).expect("test parent rename succeeds");
-            fs::create_dir(merge).expect("test replacement parent is created");
+            make_filesystem()
+                .rename(
+                    merge,
+                    &merge.with_extension("observed-old"),
+                    crate::filesystem::RenameMode::Replace,
+                )
+                .expect("test parent rename succeeds");
+            make_filesystem()
+                .create_directories(merge)
+                .expect("test replacement parent is created");
         }
-        LocationFault::AppearOpen => {
-            fs::write(open, b"appeared").expect("test open leaf appears");
-        }
+        LocationFault::AppearOpen => crate::filesystem::write_atomic_for_test(&open, b"appeared")
+            .expect("test open leaf appears"),
         LocationFault::ReplaceOpen => {
-            let bytes = fs::read(&open).expect("test open leaf exists");
-            fs::rename(&open, open.with_extension("old")).expect("test open leaf rename succeeds");
-            fs::write(open, bytes).expect("test replacement open leaf is written");
+            let bytes = make_filesystem()
+                .read(&open)
+                .expect("test open leaf exists");
+            make_filesystem()
+                .rename(
+                    &open,
+                    &open.with_extension("old"),
+                    crate::filesystem::RenameMode::Replace,
+                )
+                .expect("test open leaf rename succeeds");
+            crate::filesystem::write_atomic_for_test(&open, &bytes)
+                .expect("test replacement open leaf is written");
         }
         LocationFault::AppearArchived => {
             let done = merge.join("done");
-            fs::create_dir(&done).expect("test archive parent appears");
-            fs::write(done.join(format!("{merge_id}.yaml")), b"appeared")
-                .expect("test archived leaf appears");
+            make_filesystem()
+                .create_directories(&done)
+                .expect("test archive parent appears");
+            crate::filesystem::write_atomic_for_test(
+                &done.join(format!("{merge_id}.yaml")),
+                b"appeared",
+            )
+            .expect("test archived leaf appears");
         }
     }
 }

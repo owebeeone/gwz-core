@@ -2,7 +2,8 @@ use super::*;
 use crate::model::ModelResult;
 use crate::workspace_ops::merge::model::v1::{
     PendingPreservationActionV1, PreservationRefResetPhaseV1 as R, PreservationStashPhaseV1 as S,
-    RecoveryContextV1, RecoveryOriginStateV1,
+    PublicationIndexFormV1 as I, PublicationPrefixV1 as P, RecoveryContextV1,
+    RecoveryOriginStateV1,
 };
 use crate::workspace_ops::merge::v1_lifecycle::authority::{
     BoundExactObservation, BoundObservationRequest, ExecutionDiagnostic, PhysicalActionKind,
@@ -15,174 +16,328 @@ use crate::workspace_ops::merge::v1_lifecycle::service::{
 };
 use crate::workspace_ops::merge::v1_lifecycle::store::CheckedV1Store;
 
-#[test]
-fn every_root_phase_durable_successor_restarts_without_repeating_the_phase() {
-    for owner in [RootOwner::Publication, RootOwner::Selected] {
-        let targets = expected_targets();
-        for (index, target) in targets.into_iter().enumerate() {
-            let fixture = root_fixture(owner, &format!("v1-root-successor-{owner:?}-{index}"));
-            fixture.base.seed_open();
-            let context = fixture.base.context();
-            let mut interrupt = SuccessorInterruptRuntime {
-                inner: ReverseRuntime::new(&fixture.base.backend, &context),
-                target,
-                seen: false,
-            };
-            let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(
-                    &CheckedV1Store::default(),
-                    &fixture.base.root.path,
-                    &fixture.base.model.merge_id,
-                    V1LifecycleRequest::Preserve,
-                    &mut interrupt,
-                )
-            }));
-            assert!(interrupt.seen, "{owner:?} {target:?} was not observed");
-            assert!(first.is_err(), "{owner:?} {target:?} did not interrupt");
+fn root_phase_durable_successor_restarts_without_repeating(
+    owner: RootOwner,
+    target: PhaseTarget,
+    index: usize,
+) {
+    let fixture = root_fixture(owner, &format!("v1-root-successor-{owner:?}-{index}"));
+    fixture.base.seed_open();
+    let context = fixture.base.context();
+    let mut interrupt = SuccessorInterruptRuntime {
+        inner: ReverseRuntime::new(&fixture.base.backend, &context),
+        target,
+        seen: false,
+    };
+    let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(
+            &CheckedV1Store::default(),
+            &fixture.base.root.path,
+            &fixture.base.model.merge_id,
+            V1LifecycleRequest::Preserve,
+            &mut interrupt,
+        )
+    }));
+    assert!(interrupt.seen, "{owner:?} {target:?} was not observed");
+    assert!(first.is_err(), "{owner:?} {target:?} did not interrupt");
 
-            let store = CheckedV1Store::default();
-            let interrupted = store
-                .load_open(&fixture.base.root.path, &fixture.base.model.merge_id)
-                .unwrap();
-            assert_ne!(
-                PhaseTarget::from_record(interrupted.record()),
-                Some(target),
-                "{owner:?} {target:?} successor was not durable",
-            );
-            if interrupted.record().pending_preservation.is_some() {
-                seed_recovery(&fixture.base.root.path, interrupted.record());
-            }
-
-            let context = fixture.base.context();
-            let mut resume = CountingRuntime {
-                inner: ReverseRuntime::new(&fixture.base.backend, &context),
-                target,
-                executions: 0,
-            };
-            let mut response = run(
-                &store,
-                &fixture.base.root.path,
-                &fixture.base.model.merge_id,
-                if index % 2 == 0 {
-                    V1LifecycleRequest::Abort
-                } else {
-                    V1LifecycleRequest::Preserve
-                },
-                &mut resume,
-            )
-            .unwrap();
-            for retry in 0..8 {
-                if response.disposition()
-                    != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
-                {
-                    break;
-                }
-                response = run(
-                    &store,
-                    &fixture.base.root.path,
-                    &fixture.base.model.merge_id,
-                    if retry % 2 == 0 {
-                        V1LifecycleRequest::Abort
-                    } else {
-                        V1LifecycleRequest::Preserve
-                    },
-                    &mut resume,
-                )
-                .unwrap();
-            }
-            assert_eq!(
-                response.disposition(),
-                V1ResponseDisposition::Terminal(OperationState::Aborted),
-                "{owner:?} {target:?}",
-            );
-            assert_eq!(
-                resume.executions, 0,
-                "{owner:?} {target:?} repeated after its durable successor",
-            );
-            assert!(response.current().record().pending_preservation.is_none());
-        }
+    let store = CheckedV1Store::default();
+    let interrupted = store
+        .load_open(&fixture.base.root.path, &fixture.base.model.merge_id)
+        .unwrap();
+    assert_ne!(
+        PhaseTarget::from_record(interrupted.record()),
+        Some(target),
+        "{owner:?} {target:?} successor was not durable",
+    );
+    if interrupted.record().pending_preservation.is_some() {
+        seed_recovery(&fixture.base.root.path, interrupted.record());
     }
+
+    let context = fixture.base.context();
+    let mut resume = CountingRuntime {
+        inner: ReverseRuntime::new(&fixture.base.backend, &context),
+        target,
+        executions: 0,
+    };
+    let mut response = run(
+        &store,
+        &fixture.base.root.path,
+        &fixture.base.model.merge_id,
+        if index.is_multiple_of(2) {
+            V1LifecycleRequest::Abort
+        } else {
+            V1LifecycleRequest::Preserve
+        },
+        &mut resume,
+    )
+    .unwrap();
+    for retry in 0..8 {
+        if response.disposition()
+            != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
+        {
+            break;
+        }
+        response = run(
+            &store,
+            &fixture.base.root.path,
+            &fixture.base.model.merge_id,
+            if retry % 2 == 0 {
+                V1LifecycleRequest::Abort
+            } else {
+                V1LifecycleRequest::Preserve
+            },
+            &mut resume,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        response.disposition(),
+        V1ResponseDisposition::Terminal(OperationState::Aborted),
+        "{owner:?} {target:?}",
+    );
+    assert_eq!(
+        resume.executions, 0,
+        "{owner:?} {target:?} repeated after its durable successor",
+    );
+    assert!(response.current().record().pending_preservation.is_none());
 }
 
-#[test]
-fn every_legal_root_handoff_form_exhausts_the_complete_phase_graph() {
-    use crate::workspace_ops::merge::model::v1::{
-        PublicationIndexFormV1 as I, PublicationPrefixV1 as P,
+macro_rules! root_successor_case {
+    ($name:ident, $owner:expr, $target:expr, $index:expr) => {
+        #[test]
+        fn $name() {
+            root_phase_durable_successor_restarts_without_repeating($owner, $target, $index);
+        }
     };
+}
 
-    for owner in [RootOwner::Publication, RootOwner::Selected] {
-        for (form_index, (prefix, index)) in [
-            (P::Marker, I::Staged),
-            (P::Baseline, I::Pre),
-            (P::Marker, I::Pre),
-            (P::Lock, I::Pre),
-            (P::Boundary, I::Pre),
-            (P::Boundary, I::Staged),
-        ]
-        .into_iter()
-        .enumerate()
+macro_rules! root_successor_cases {
+    ($owner:expr) => {
+        root_successor_case!(backup, $owner, PhaseTarget::Backup, 0);
+        root_successor_case!(
+            stash_normalize_parent,
+            $owner,
+            PhaseTarget::Stash(S::NormalizeParent),
+            1
+        );
+        root_successor_case!(
+            stash_normalize_marker,
+            $owner,
+            PhaseTarget::Stash(S::NormalizeMarker),
+            2
+        );
+        root_successor_case!(
+            stash_normalize_lock,
+            $owner,
+            PhaseTarget::Stash(S::NormalizeLock),
+            3
+        );
+        root_successor_case!(
+            stash_normalize_index,
+            $owner,
+            PhaseTarget::Stash(S::NormalizeIndex),
+            4
+        );
+        root_successor_case!(stash_create, $owner, PhaseTarget::Stash(S::CreateStash), 5);
+        root_successor_case!(
+            stash_restore_index,
+            $owner,
+            PhaseTarget::Stash(S::RestoreIndex),
+            6
+        );
+        root_successor_case!(
+            stash_restore_lock,
+            $owner,
+            PhaseTarget::Stash(S::RestoreLock),
+            7
+        );
+        root_successor_case!(
+            stash_restore_parent,
+            $owner,
+            PhaseTarget::Stash(S::RestoreParent),
+            8
+        );
+        root_successor_case!(
+            stash_restore_marker,
+            $owner,
+            PhaseTarget::Stash(S::RestoreMarker),
+            9
+        );
+        root_successor_case!(
+            stash_write_bundle,
+            $owner,
+            PhaseTarget::Stash(S::WriteBundle),
+            10
+        );
+        root_successor_case!(stash_complete, $owner, PhaseTarget::Stash(S::Complete), 11);
+        root_successor_case!(
+            reset_prepare_parent,
+            $owner,
+            PhaseTarget::Reset(R::PrepareParent),
+            12
+        );
+        root_successor_case!(
+            reset_prepare_marker,
+            $owner,
+            PhaseTarget::Reset(R::PrepareMarker),
+            13
+        );
+        root_successor_case!(
+            reset_prepare_lock,
+            $owner,
+            PhaseTarget::Reset(R::PrepareLock),
+            14
+        );
+        root_successor_case!(
+            reset_prepare_index,
+            $owner,
+            PhaseTarget::Reset(R::PrepareIndex),
+            15
+        );
+        root_successor_case!(reset_ref, $owner, PhaseTarget::Reset(R::ResetRef), 16);
+        root_successor_case!(
+            reset_restore_index,
+            $owner,
+            PhaseTarget::Reset(R::RestoreIndex),
+            17
+        );
+        root_successor_case!(
+            reset_restore_lock,
+            $owner,
+            PhaseTarget::Reset(R::RestoreLock),
+            18
+        );
+        root_successor_case!(
+            reset_restore_parent,
+            $owner,
+            PhaseTarget::Reset(R::RestoreParent),
+            19
+        );
+        root_successor_case!(
+            reset_restore_marker,
+            $owner,
+            PhaseTarget::Reset(R::RestoreMarker),
+            20
+        );
+        root_successor_case!(reset_complete, $owner, PhaseTarget::Reset(R::Complete), 21);
+    };
+}
+
+mod publication {
+    use super::*;
+
+    root_successor_cases!(RootOwner::Publication);
+}
+
+mod selected {
+    use super::*;
+
+    root_successor_cases!(RootOwner::Selected);
+}
+
+fn legal_root_handoff_form_exhausts_complete_phase_graph(
+    owner: RootOwner,
+    form_index: usize,
+    prefix: P,
+    index: I,
+) {
+    let name = format!("v1-root-handoff-{owner:?}-{form_index}");
+    let mut fixture = if (prefix, index) == (P::Marker, I::Staged) {
+        dirty_root_degenerate_handoff_fixture(&name, matches!(owner, RootOwner::Selected))
+    } else {
+        root_fixture(owner, &name)
+    };
+    install_root_handoff(&mut fixture, prefix, index);
+    fixture.base.seed_open();
+    let operation_context = fixture.base.context();
+    let mut runtime = TraceRuntime {
+        inner: ReverseRuntime::new(&fixture.base.backend, &operation_context),
+        targets: Vec::new(),
+    };
+    let store = CheckedV1Store::default();
+    let mut response = run(
+        &store,
+        &fixture.base.root.path,
+        &fixture.base.model.merge_id,
+        V1LifecycleRequest::Preserve,
+        &mut runtime,
+    )
+    .unwrap();
+    for retry in 0..8 {
+        if response.disposition()
+            != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
         {
-            let name = format!("v1-root-handoff-{owner:?}-{form_index}");
-            let mut fixture = if (prefix, index) == (P::Marker, I::Staged) {
-                dirty_root_degenerate_handoff_fixture(&name, matches!(owner, RootOwner::Selected))
+            break;
+        }
+        response = run(
+            &store,
+            &fixture.base.root.path,
+            &fixture.base.model.merge_id,
+            if retry % 2 == 0 {
+                V1LifecycleRequest::Abort
             } else {
-                root_fixture(owner, &name)
-            };
-            install_root_handoff(&mut fixture, prefix, index);
-            fixture.base.seed_open();
-            let operation_context = fixture.base.context();
-            let mut runtime = TraceRuntime {
-                inner: ReverseRuntime::new(&fixture.base.backend, &operation_context),
-                targets: Vec::new(),
-            };
-            let store = CheckedV1Store::default();
-            let mut response = run(
-                &store,
-                &fixture.base.root.path,
-                &fixture.base.model.merge_id,
-                V1LifecycleRequest::Preserve,
-                &mut runtime,
-            )
-            .unwrap();
-            for retry in 0..8 {
-                if response.disposition()
-                    != V1ResponseDisposition::Stopped(OperationState::RecoveryRequired)
-                {
-                    break;
-                }
-                response = run(
-                    &store,
-                    &fixture.base.root.path,
-                    &fixture.base.model.merge_id,
-                    if retry % 2 == 0 {
-                        V1LifecycleRequest::Abort
-                    } else {
-                        V1LifecycleRequest::Preserve
-                    },
-                    &mut runtime,
-                )
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "{owner:?} {prefix:?}/{index:?} retry={retry}: {error:?}; state={:?}; preservation={:?}; rollback={:?}; targets={:?}",
-                        response.current().record().state,
-                        response.current().record().pending_preservation,
-                        response.current().record().pending_rollback,
-                        runtime.targets,
-                    )
-                });
-            }
-            assert_eq!(
-                response.disposition(),
-                V1ResponseDisposition::Terminal(OperationState::Aborted),
-                "{owner:?} {prefix:?}/{index:?}"
-            );
-            assert_eq!(
+                V1LifecycleRequest::Preserve
+            },
+            &mut runtime,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "{owner:?} {prefix:?}/{index:?} retry={retry}: {error:?}; state={:?}; preservation={:?}; rollback={:?}; targets={:?}",
+                response.current().record().state,
+                response.current().record().pending_preservation,
+                response.current().record().pending_rollback,
                 runtime.targets,
-                expected_targets(),
-                "{owner:?} {prefix:?}/{index:?}"
+            )
+        });
+    }
+    assert_eq!(
+        response.disposition(),
+        V1ResponseDisposition::Terminal(OperationState::Aborted),
+        "{owner:?} {prefix:?}/{index:?}"
+    );
+    assert_eq!(
+        runtime.targets,
+        expected_targets(),
+        "{owner:?} {prefix:?}/{index:?}"
+    );
+}
+
+macro_rules! root_handoff_case {
+    ($name:ident, $owner:expr, $form_index:expr, $prefix:expr, $index:expr) => {
+        #[test]
+        fn $name() {
+            legal_root_handoff_form_exhausts_complete_phase_graph(
+                $owner,
+                $form_index,
+                $prefix,
+                $index,
             );
         }
-    }
+    };
+}
+
+macro_rules! root_handoff_cases {
+    ($owner:expr) => {
+        root_handoff_case!(marker_staged, $owner, 0, P::Marker, I::Staged);
+        root_handoff_case!(baseline_pre, $owner, 1, P::Baseline, I::Pre);
+        root_handoff_case!(marker_pre, $owner, 2, P::Marker, I::Pre);
+        root_handoff_case!(lock_pre, $owner, 3, P::Lock, I::Pre);
+        root_handoff_case!(boundary_pre, $owner, 4, P::Boundary, I::Pre);
+        root_handoff_case!(boundary_staged, $owner, 5, P::Boundary, I::Staged);
+    };
+}
+
+mod publication_handoff {
+    use super::*;
+
+    root_handoff_cases!(RootOwner::Publication);
+}
+
+mod selected_handoff {
+    use super::*;
+
+    root_handoff_cases!(RootOwner::Selected);
 }
 
 #[test]
@@ -237,7 +392,7 @@ fn seed_recovery(root: &std::path::Path, model: &MergeOperationRecordV1) {
     recovery.recovery_context = Some(RecoveryContextV1 {
         origin_state: RecoveryOriginStateV1::Preserving,
     });
-    std::fs::write(
+    fs::write(
         root.join(format!(".gwz/merge/{}.yaml", recovery.merge_id)),
         serde_yaml::to_string(&recovery).unwrap(),
     )
@@ -339,7 +494,7 @@ fn expected_evidence_pending_targets() -> Vec<PhaseTarget> {
 }
 
 struct TraceRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     targets: Vec<PhaseTarget>,
 }
 
@@ -370,7 +525,7 @@ impl PhysicalExecutor for TraceRuntime<'_> {
 }
 
 struct SuccessorInterruptRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: PhaseTarget,
     seen: bool,
 }
@@ -404,7 +559,7 @@ impl PhysicalExecutor for SuccessorInterruptRuntime<'_> {
 }
 
 struct CountingRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: PhaseTarget,
     executions: usize,
 }

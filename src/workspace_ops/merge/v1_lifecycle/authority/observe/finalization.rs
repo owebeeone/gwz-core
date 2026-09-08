@@ -1,4 +1,4 @@
-use std::fs;
+use crate::filesystem::{FileSystem, FsKind, make_filesystem};
 use std::path::{Path, PathBuf};
 
 use super::super::*;
@@ -333,8 +333,8 @@ fn verify_real_directory_chains(root: &Path, relatives: &[&str]) -> ModelResult<
         let mut current = root.to_path_buf();
         for component in Path::new(relative).components() {
             current.push(component);
-            match fs::symlink_metadata(&current) {
-                Ok(metadata) if metadata.file_type().is_dir() => {}
+            match make_filesystem().metadata(&current) {
+                Ok(metadata) if metadata.kind == FsKind::Directory => {}
                 Ok(_) => {
                     return Err(root_drift(&format!(
                         "GWZ-owned path parent '{}' is not a real directory",
@@ -450,23 +450,23 @@ fn participant_path(root: &Path, member_id: &str, kind: MergeTargetKind, path: &
 }
 
 fn regular_file_equals(path: &Path, expected: &str) -> ModelResult<bool> {
-    let metadata = match fs::symlink_metadata(path) {
+    let metadata = match make_filesystem().metadata(path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(ModelError::new(ErrorCode::IoError, error.to_string())),
     };
-    if !metadata.file_type().is_file() {
+    if metadata.kind != FsKind::File {
         return Ok(false);
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o111 != 0 {
+        if metadata.executable {
             return Ok(false);
         }
     }
-    let bytes =
-        fs::read(path).map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string()))?;
+    let bytes = make_filesystem()
+        .read(path)
+        .map_err(|error| ModelError::new(ErrorCode::IoError, error.to_string()))?;
     Ok(bytes == expected.as_bytes())
 }
 

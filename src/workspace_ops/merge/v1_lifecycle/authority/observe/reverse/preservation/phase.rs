@@ -50,6 +50,7 @@ pub(super) fn observe_pending<B: MergeAuthorityBackend>(
             phase: S::WriteBundle,
             ..
         } => match v1_bundle_observation(
+            backend,
             current.location().root(),
             current.record(),
             plans,
@@ -175,8 +176,7 @@ fn observe_plain_stash<B: MergeAuthorityBackend>(
             "non-root stash carries a root-only phase",
         ));
     };
-    let stashes =
-        crate::git::observe_preservation_stashes_read_only(&plan.path, &current.record().merge_id)?;
+    let stashes = backend.preservation_stashes(&plan.path, &current.record().merge_id)?;
     let image = backend.preservation_image(&plan.path, true)?;
     let attached = exact_attached_head(backend, plan, head_commit)?;
     if let [stash] = stashes.as_slice()

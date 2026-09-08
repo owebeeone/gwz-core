@@ -157,7 +157,8 @@ fn source_files_containing(needle: &str) -> Vec<String> {
 }
 
 /// True when `relative` is test-only source: a `tests` / `interface_tests`
-/// path component, or a `tests*.rs` / `*_tests.rs` file name.
+/// path component, a `tests*.rs` / `*_tests.rs` file name, or an explicitly
+/// named fixture module.
 ///
 /// [P3-1]: a third clause once treated ANY file containing `#[cfg(test)]` as
 /// test-only. The review measured that as 147 of 681 `src/**.rs` files —
@@ -173,7 +174,7 @@ fn is_test_source(relative: &str) -> bool {
         return true;
     }
     let stem = path.file_stem().and_then(|value| value.to_str()).unwrap();
-    stem.starts_with("tests") || stem.ends_with("_tests")
+    stem.starts_with("tests") || stem.ends_with("_tests") || stem.starts_with("fixture_")
 }
 
 /// Slice of `source` running from the first occurrence of `start` to that

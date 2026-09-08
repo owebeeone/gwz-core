@@ -2,10 +2,9 @@ use super::super::*;
 use super::files;
 use super::{FaultBoundary, fault};
 
-use cap_fs_ext::{DirExt, ambient_authority};
-use cap_std::fs::Dir;
+use crate::filesystem::{FileSystem, FsDirectory, RenameMode, make_filesystem};
 use sha2::{Digest, Sha256};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 const STAGE_PREFIX: &str = ".gwz-markers-";
@@ -21,58 +20,45 @@ pub(super) enum State {
 }
 
 pub(super) struct PinnedConfig {
-    root: Dir,
-    dir: Dir,
-    identity: (u64, u64),
+    root: FsDirectory,
+    dir: FsDirectory,
 }
 
 impl PinnedConfig {
     pub(super) fn open(root: &Path) -> ModelResult<Self> {
-        let root =
-            Dir::open_ambient_dir(root, ambient_authority()).map_err(crate::git::io_error)?;
-        let metadata = root
-            .symlink_metadata("gwz.conf")
+        let filesystem = make_filesystem();
+        let root = filesystem
+            .open_directory(root)
             .map_err(crate::git::io_error)?;
-        if !metadata.is_dir() || metadata.is_symlink() {
-            return Err(evidence_error("gwz.conf parent is missing or replaced"));
-        }
-        let dir = root
-            .open_dir_nofollow("gwz.conf")
+        let dir = filesystem
+            .open_directory_at(&root, OsStr::new("gwz.conf"))
             .map_err(crate::git::io_error)?;
-        let identity = files::identity(&metadata);
-        if identity != files::identity(&dir.dir_metadata().map_err(crate::git::io_error)?) {
+        if !filesystem
+            .directory_entry_matches(&root, OsStr::new("gwz.conf"), &dir)
+            .map_err(crate::git::io_error)?
+        {
             return Err(evidence_error("gwz.conf parent changed while opening"));
         }
-        Ok(Self {
-            root,
-            dir,
-            identity,
-        })
+        Ok(Self { root, dir })
     }
 
     pub(super) fn is_current(&self) -> ModelResult<bool> {
-        let metadata = match self.root.symlink_metadata("gwz.conf") {
-            Ok(value) => value,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(crate::git::io_error(error)),
-        };
-        Ok(metadata.is_dir()
-            && !metadata.is_symlink()
-            && files::identity(&metadata) == self.identity)
+        make_filesystem()
+            .directory_entry_matches(&self.root, OsStr::new("gwz.conf"), &self.dir)
+            .map_err(crate::git::io_error)
     }
 
     pub(super) fn observe(&self, marker_path: &str, staging: &str) -> ModelResult<State> {
         let (_, marker) = files::split_relative(Path::new(marker_path))?;
-        let final_state = directory_state(&self.dir, Path::new(FINAL_NAME), Some(&marker))?;
-        let stage_state = directory_state(&self.dir, Path::new(staging), None)?;
-        let foreign_stage = self
-            .dir
-            .entries()
-            .map_err(crate::git::io_error)?
-            .map(|entry| entry.map(|entry| entry.file_name()))
-            .collect::<Result<Vec<_>, _>>()
+        let filesystem = make_filesystem();
+        let final_state =
+            directory_state(&filesystem, &self.dir, FINAL_NAME.as_ref(), Some(&marker))?;
+        let stage_state = directory_state(&filesystem, &self.dir, staging.as_ref(), None)?;
+        let foreign_stage = filesystem
+            .read_directory_at(&self.dir)
             .map_err(crate::git::io_error)?
             .into_iter()
+            .map(|entry| entry.name)
             .any(|name| name.to_string_lossy().starts_with(STAGE_PREFIX) && name != staging);
         Ok(if !self.is_current()? || foreign_stage {
             State::Invalid
@@ -88,40 +74,52 @@ impl PinnedConfig {
     }
 
     pub(super) fn publish(&self, staging: &str) -> ModelResult<()> {
+        let filesystem = make_filesystem();
         if !self.is_current()? {
             return Err(evidence_error("gwz.conf parent changed before publication"));
         }
-        if directory_state(&self.dir, Path::new(staging), None)? == DirectoryState::Missing {
+        if directory_state(&filesystem, &self.dir, staging.as_ref(), None)?
+            == DirectoryState::Missing
+        {
             fault(FaultBoundary::BeforeParentStageCreate)?;
-            self.dir.create_dir(staging).map_err(crate::git::io_error)?;
+            filesystem
+                .create_directory_at(&self.dir, staging.as_ref())
+                .map_err(crate::git::io_error)?;
             fault(FaultBoundary::AfterParentStageCreate)?;
         }
-        let stage = self
-            .dir
-            .open_dir_nofollow(staging)
+        let stage = filesystem
+            .open_directory_at(&self.dir, staging.as_ref())
             .map_err(crate::git::io_error)?;
-        let mut entries = stage.entries().map_err(crate::git::io_error)?;
-        match entries.next() {
-            Some(Ok(_)) => {
-                return Err(evidence_error(
-                    "marker-parent staging directory is not empty",
-                ));
-            }
-            Some(Err(error)) => return Err(crate::git::io_error(error)),
-            None => {}
+        if !filesystem
+            .read_directory_at(&stage)
+            .map_err(crate::git::io_error)?
+            .is_empty()
+        {
+            return Err(evidence_error(
+                "marker-parent staging directory is not empty",
+            ));
         }
         #[cfg(unix)]
-        sync_dir(&stage)?;
+        filesystem
+            .sync_directory_at(&stage)
+            .map_err(crate::git::io_error)?;
         // Windows denies renaming a directory whose handle lacks DELETE
         // sharing, and `stage` is our own such handle; release it before the
         // publish rename (same edge as the staging-capability drop in
         // pre_catalog/provider/directory_mutation.rs).
-        drop(entries);
         drop(stage);
         fault(FaultBoundary::BeforeParentPublish)?;
-        rename_no_replace(&self.dir, staging, FINAL_NAME)?;
+        filesystem
+            .rename_at(
+                &self.dir,
+                staging.as_ref(),
+                &self.dir,
+                FINAL_NAME.as_ref(),
+                RenameMode::NoReplace,
+            )
+            .map_err(crate::git::io_error)?;
         fault(FaultBoundary::AfterParentPublish)?;
-        barrier_after_publish(&self.dir)?;
+        barrier_after_publish(&filesystem, &self.dir)?;
         if !self.is_current()? {
             return Err(evidence_error("gwz.conf parent changed during publication"));
         }
@@ -129,12 +127,13 @@ impl PinnedConfig {
     }
 
     pub(super) fn barrier(&self, staging: &str) -> ModelResult<()> {
+        let filesystem = make_filesystem();
         if !self.is_current()? {
             return Err(evidence_error(
                 "gwz.conf parent changed before durability barrier",
             ));
         }
-        barrier_platform(&self.dir, staging, FINAL_NAME)?;
+        barrier_platform(&filesystem, &self.dir, staging, FINAL_NAME)?;
         if !self.is_current()? {
             return Err(evidence_error(
                 "gwz.conf parent changed during durability barrier",
@@ -212,244 +211,90 @@ enum DirectoryState {
 }
 
 fn directory_state(
-    dir: &Dir,
-    name: &Path,
+    filesystem: &impl FileSystem,
+    dir: &FsDirectory,
+    name: &OsStr,
     expected: Option<&OsString>,
 ) -> ModelResult<DirectoryState> {
-    let metadata = match dir.symlink_metadata(name) {
+    let child = match filesystem.open_directory_at(dir, name) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(DirectoryState::Missing);
         }
-        Err(error) => return Err(crate::git::io_error(error)),
-    };
-    if !metadata.is_dir() || metadata.is_symlink() {
-        return Ok(DirectoryState::Invalid);
-    }
-    let child = match dir.open_dir_nofollow(name) {
-        Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
             return Err(crate::git::io_error(error));
         }
         Err(_) => return Ok(DirectoryState::Invalid),
     };
-    let entries = child
-        .entries()
-        .map_err(crate::git::io_error)?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<Result<Vec<_>, _>>()
+    let entries = filesystem
+        .read_directory_at(&child)
         .map_err(crate::git::io_error)?;
     Ok(match (entries.as_slice(), expected) {
         ([], _) => DirectoryState::Empty,
-        ([actual], Some(expected)) if actual == expected => DirectoryState::ExpectedLeaf,
+        ([actual], Some(expected)) if &actual.name == expected => DirectoryState::ExpectedLeaf,
         _ => DirectoryState::Invalid,
     })
 }
 
-#[cfg(target_os = "linux")]
-fn sync_dir(dir: &Dir) -> ModelResult<()> {
-    // Same O_PATH substrate as `checked_artifact::platform::sync_parent`
-    // (`GwzArm64EbadfDiagnosis.md`): cap-std directory capabilities are
-    // `O_PATH` on Linux and the kernel refuses `fsync` on them with `EBADF`
-    // before any filesystem code runs, so a dup of the capability cannot
-    // carry the barrier. Reopening `.` through the capability performs no
-    // path re-resolution — the descriptor anchors the lookup, so the result
-    // names the same directory object — and yields a descriptor `fsync`
-    // accepts. Failures stay closed: a dead capability reports the raw OS
-    // error from the reopen itself.
-    let flushable = rustix::fs::openat(
-        dir,
-        c".",
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(std::io::Error::from)
-    .map_err(crate::git::io_error)?;
-    rustix::fs::fsync(&flushable)
-        .map_err(std::io::Error::from)
-        .map_err(crate::git::io_error)
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn sync_dir(dir: &Dir) -> ModelResult<()> {
-    dir.try_clone()
-        .and_then(|value| value.into_std_file().sync_all())
-        .map_err(crate::git::io_error)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn rename_no_replace(dir: &Dir, source: &str, destination: &str) -> ModelResult<()> {
-    rustix::fs::renameat_with(
-        dir,
-        source,
-        dir,
-        destination,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(|error| crate::git::io_error(std::io::Error::from_raw_os_error(error.raw_os_error())))
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn rename_no_replace(_dir: &Dir, _source: &str, _destination: &str) -> ModelResult<()> {
-    Err(ModelError::new(
-        ErrorCode::UnsupportedOperation,
-        "atomic no-replace directory publication is unsupported on this Unix target",
-    ))
+#[cfg(unix)]
+fn barrier_after_publish(filesystem: &impl FileSystem, dir: &FsDirectory) -> ModelResult<()> {
+    sync_parent(filesystem, dir)
 }
 
 #[cfg(unix)]
-fn barrier_after_publish(dir: &Dir) -> ModelResult<()> {
-    sync_parent(dir)
+fn barrier_platform(
+    filesystem: &impl FileSystem,
+    dir: &FsDirectory,
+    _staging: &str,
+    _final_name: &str,
+) -> ModelResult<()> {
+    sync_parent(filesystem, dir)
 }
 
 #[cfg(unix)]
-fn barrier_platform(dir: &Dir, _staging: &str, _final_name: &str) -> ModelResult<()> {
-    sync_parent(dir)
-}
-
-#[cfg(unix)]
-fn sync_parent(dir: &Dir) -> ModelResult<()> {
+fn sync_parent(filesystem: &impl FileSystem, dir: &FsDirectory) -> ModelResult<()> {
     fault(FaultBoundary::BeforeUnixParentSync)?;
-    sync_dir(dir)?;
+    filesystem
+        .sync_directory_at(dir)
+        .map_err(crate::git::io_error)?;
     fault(FaultBoundary::AfterUnixParentSync)
 }
 
 #[cfg(windows)]
-fn rename_no_replace(dir: &Dir, source: &str, destination: &str) -> ModelResult<()> {
-    rename_windows(dir, source, destination)
-}
-
-#[cfg(windows)]
-fn barrier_after_publish(_dir: &Dir) -> ModelResult<()> {
+fn barrier_after_publish(_filesystem: &impl FileSystem, _dir: &FsDirectory) -> ModelResult<()> {
     Ok(())
 }
 
 #[cfg(windows)]
-fn barrier_platform(dir: &Dir, staging: &str, final_name: &str) -> ModelResult<()> {
+fn barrier_platform(
+    filesystem: &impl FileSystem,
+    dir: &FsDirectory,
+    staging: &str,
+    final_name: &str,
+) -> ModelResult<()> {
     fault(FaultBoundary::BeforeWindowsFirstBarrierRename)?;
-    rename_windows(dir, final_name, staging)?;
+    filesystem
+        .rename_at(
+            dir,
+            final_name.as_ref(),
+            dir,
+            staging.as_ref(),
+            RenameMode::NoReplace,
+        )
+        .map_err(crate::git::io_error)?;
     fault(FaultBoundary::AfterWindowsFirstBarrierRename)?;
     fault(FaultBoundary::BeforeWindowsSecondBarrierRename)?;
-    rename_windows(dir, staging, final_name)?;
+    filesystem
+        .rename_at(
+            dir,
+            staging.as_ref(),
+            dir,
+            final_name.as_ref(),
+            RenameMode::NoReplace,
+        )
+        .map_err(crate::git::io_error)?;
     fault(FaultBoundary::AfterWindowsSecondBarrierRename)
 }
-
-#[cfg(windows)]
-fn rename_windows(dir: &Dir, source: &str, destination: &str) -> ModelResult<()> {
-    use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
-    use cap_std::fs::{OpenOptions, OpenOptionsExt};
-    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::*;
-
-    let mut options = OpenOptions::new();
-    options
-        .access_mode(DELETE)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
-        )
-        .follow(cap_fs_ext::FollowSymlinks::No)
-        .maybe_dir(true);
-    let source = dir
-        .open_with(source, &options)
-        .map_err(crate::git::io_error)?;
-    // SetFileInformationByHandle rejects a non-null RootDirectory on
-    // supported Windows runners (os error 87) — same class as the
-    // checked-artifact platform.rs correction: pass an absolute destination
-    // derived from the retained directory handle and a null RootDirectory.
-    // The post-publish `is_current` checks detect a same-user redirect
-    // inside the unavoidable window.
-    let destination_path =
-        windows_destination_path(dir, destination).map_err(crate::git::io_error)?;
-    let name = destination_path.encode_wide().collect::<Vec<_>>();
-    // Windows requires at least the fixed structure size plus the variable
-    // name bytes, even though the fixed structure already contains its
-    // one-element FileName placeholder.
-    let size = std::mem::size_of::<FILE_RENAME_INFO>() + name.len() * 2;
-    let mut storage = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
-    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    unsafe {
-        (*info).Anonymous.ReplaceIfExists = false;
-        (*info).RootDirectory = std::ptr::null_mut();
-        (*info).FileNameLength = u32::try_from(name.len() * 2)
-            .map_err(|_| evidence_error("marker-parent staging name is too long"))?;
-        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        if SetFileInformationByHandle(
-            source.as_raw_handle(),
-            FileRenameInfo,
-            info.cast(),
-            u32::try_from(size).map_err(|_| evidence_error("rename buffer is too large"))?,
-        ) == 0
-        {
-            return Err(crate::git::io_error(std::io::Error::last_os_error()));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn windows_destination_path(dir: &Dir, destination: &str) -> std::io::Result<std::ffi::OsString> {
-    use std::ffi::OsString;
-    use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
-    };
-
-    const MAX_PATH_UNITS: usize = 32_768;
-    let mut buffer = Vec::new();
-    buffer
-        .try_reserve_exact(512)
-        .map_err(|_| std::io::Error::other("allocate Windows destination path"))?;
-    buffer.resize(512, 0);
-    loop {
-        let capacity = u32::try_from(buffer.len()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows destination path buffer is too large",
-            )
-        })?;
-        let length = unsafe {
-            GetFinalPathNameByHandleW(
-                dir.as_raw_handle(),
-                buffer.as_mut_ptr(),
-                capacity,
-                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
-            )
-        };
-        if length == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let length = usize::try_from(length).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows destination path length is invalid",
-            )
-        })?;
-        if length < buffer.len() {
-            buffer.truncate(length);
-            let mut path = std::path::PathBuf::from(OsString::from_wide(&buffer));
-            path.push(destination);
-            return Ok(path.into_os_string());
-        }
-        let required = length.checked_add(1).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows destination path length overflowed",
-            )
-        })?;
-        if required > MAX_PATH_UNITS {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows destination path exceeds the platform bound",
-            ));
-        }
-        buffer
-            .try_reserve_exact(required - buffer.len())
-            .map_err(|_| std::io::Error::other("grow Windows destination path"))?;
-        buffer.resize(required, 0);
-    }
-}
-
 fn evidence_error(detail: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::PreservationEvidenceMismatch, detail.into())
 }

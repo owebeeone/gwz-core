@@ -7,7 +7,9 @@ use super::header::{
 };
 use super::raw_yaml::{StrictYamlError, parse_strict_yaml};
 
-use super::super::model::v1::{CanonicalMergeRecord, MergeOperationRecordV1, validate_v1_record};
+use super::super::model::v1::{
+    CanonicalMergeRecord, MergeOperationRecordV1, ValidatedV1Record, validate_v1_record,
+};
 use super::unknown_fields::{UnknownFieldManifest, UnknownFieldManifestError};
 use crate::model::ModelError;
 
@@ -44,9 +46,19 @@ impl DecodedV0Record {
 pub(crate) struct DecodedV1Record {
     pub(crate) raw: Value,
     pub(crate) header: MergeRecordHeader,
-    pub(crate) record: MergeOperationRecordV1,
+    pub(crate) validated: ValidatedV1Record,
     pub(crate) canonical: CanonicalMergeRecord,
     pub(crate) unknown_fields: UnknownFieldManifest,
+}
+
+impl DecodedV1Record {
+    pub(crate) fn record(&self) -> &MergeOperationRecordV1 {
+        self.validated.record()
+    }
+
+    pub(crate) fn into_record(self) -> MergeOperationRecordV1 {
+        self.validated.into_record()
+    }
 }
 
 #[derive(Debug)]
@@ -118,9 +130,10 @@ pub(crate) fn decode_archived_common(
             let DecodedV1Record {
                 raw,
                 header,
-                record,
+                validated,
                 ..
             } = *decoded;
+            let record = validated.into_record();
             (
                 raw,
                 header,
@@ -226,11 +239,10 @@ fn decode_v1_body(
             header: header.clone(),
             detail: error.to_string(),
         })?;
-    let validated =
-        validate_v1_record(record.clone()).map_err(|error| RecordDecodeError::Validation {
-            header: header.clone(),
-            error: Box::new(error),
-        })?;
+    let validated = validate_v1_record(record).map_err(|error| RecordDecodeError::Validation {
+        header: header.clone(),
+        error: Box::new(error),
+    })?;
     let unknown_fields = UnknownFieldManifest::extract_v1(&raw).map_err(|error| {
         RecordDecodeError::UnknownFields {
             header: header.clone(),
@@ -240,8 +252,8 @@ fn decode_v1_body(
     Ok(DecodedV1Record {
         raw,
         header,
-        record,
-        canonical: CanonicalMergeRecord::from(validated),
+        canonical: CanonicalMergeRecord::from(validated.clone()),
+        validated,
         unknown_fields,
     })
 }

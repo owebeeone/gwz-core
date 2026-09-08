@@ -12,7 +12,7 @@ fn release_workflow_tests_linux_and_windows() {
 fn release_workflow_runs_full_rust_verification() {
     assert!(RELEASE_WORKFLOW.contains("cargo fmt --check"));
     assert!(RELEASE_WORKFLOW.contains("Run 'cargo fmt' from the gwz-core repo root"));
-    assert!(RELEASE_WORKFLOW.contains("cargo test --locked"));
+    assert!(RELEASE_WORKFLOW.contains("python scripts/run_tests.py"));
     assert!(RELEASE_WORKFLOW.contains(
         "CLIPPY_CONF_DIR=\"$PWD\" cargo clippy --all-targets --all-features -- -D warnings"
     ));
@@ -62,11 +62,12 @@ fn checked_artifact_boundary_runs_before_merge_and_on_main_push() {
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("push:"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("branches: [main]"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("check_checked_artifact_boundaries.py"));
-    assert!(CHECKED_ARTIFACT_WORKFLOW.contains("test_check_checked_artifact_boundaries.py"));
+    assert!(!CHECKED_ARTIFACT_WORKFLOW.contains("test_check_checked_artifact_boundaries.py"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("test_release_boundary.py"));
+    assert!(CHECKED_ARTIFACT_WORKFLOW.contains("check_filesystem_boundary.py"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("python-version: \"3.11\""));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains(
-        "CLIPPY_CONF_DIR=\"$PWD\" cargo clippy --all-targets --all-features -- -D warnings"
+        "CLIPPY_CONF_DIR=\"$PWD/scripts/checks/filesystem_lints\" cargo clippy --no-deps --all-targets --all-features -- -D warnings"
     ));
 }
 
@@ -77,11 +78,11 @@ fn local_release_runs_checked_artifact_boundary_before_rust_tests() {
         .find("[sys.executable, CHECKED_ARTIFACT_BOUNDARY]")
         .expect("release gate invokes the boundary checker");
     let tests = release
-        .find("[\"cargo\", \"test\", \"--locked\"]")
+        .find("str(cargo_root / \"scripts\" / \"run_tests.py\")")
         .expect("release gate invokes Rust tests");
     assert!(boundary < tests);
-    assert!(release.contains("CHECKED_ARTIFACT_BOUNDARY_TEST"));
-    assert!(release.contains("RELEASE_BOUNDARY_TEST"));
+    assert!(!release.contains("CHECKED_ARTIFACT_BOUNDARY_TEST"));
+    assert!(!release.contains("RELEASE_BOUNDARY_TEST"));
     assert!(release.contains("cargo\", \"clippy\", \"--all-targets\", \"--all-features"));
     assert!(release.contains("test_env[\"CLIPPY_CONF_DIR\"] = str(cargo_root)"));
 }

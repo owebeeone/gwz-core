@@ -9,15 +9,22 @@ fn global_preflight_failure_mutates_no_earlier_participant() {
     fixture.model.state = OperationState::Halted;
     let member_b = fixture.root.path.join("members/b");
     fixture.backend.create_repo(&member_b).unwrap();
-    let before_b = commit_file(&member_b, "README.md", "before b\n", "before", &[]).unwrap();
-    let result_b = commit_file(
+    let before_b = fixture_commit_file(
+        &fixture.backend,
+        &member_b,
+        "README.md",
+        "before b\n",
+        "before",
+        &[],
+    );
+    let result_b = fixture_commit_file(
+        &fixture.backend,
         &member_b,
         "README.md",
         "result b\n",
         "result",
-        &[before_b.parse().unwrap()],
-    )
-    .unwrap();
+        std::slice::from_ref(&before_b),
+    );
     let mut row_b = fixture.model.participants["mem_a"].clone();
     row_b.path = "members/b".into();
     row_b.before_commit = before_b;
@@ -25,7 +32,7 @@ fn global_preflight_failure_mutates_no_earlier_participant() {
     row_b.resulting_commit = Some(result_b);
     fixture.model.selected_targets.push("mem_b".into());
     fixture.model.participants.insert("mem_b".into(), row_b);
-    std::fs::write(member_b.join("untracked"), "drift\n").unwrap();
+    write_for_test(&member_b.join("untracked"), b"drift\n").unwrap();
 
     let a_before = fixture.backend.head(&fixture.member).unwrap();
     let error =
@@ -63,7 +70,7 @@ fn no_mutation_participants_require_the_exact_clean_before_checkout() {
             row,
         )
         .unwrap();
-        std::fs::write(fixture.member.join("untracked"), "drift\n").unwrap();
+        write_for_test(&fixture.member.join("untracked"), b"drift\n").unwrap();
         assert!(
             verify_v1_no_mutation_participant(
                 &fixture.backend,
@@ -85,27 +92,28 @@ fn selected_root_publication_handoff_rejects_all_unrelated_dirt_before_entry() {
             selected_root_evidence_fixture(&format!("v1-rollback-root-publication-dirt-{kind}"));
         match kind {
             "staged" => {
-                std::fs::write(fixture.root.path.join("unrelated.txt"), "staged\n").unwrap();
+                write_for_test(&fixture.root.path.join("unrelated.txt"), b"staged\n").unwrap();
                 fixture
                     .backend
                     .stage_paths(&fixture.root.path, &["unrelated.txt"])
                     .unwrap();
             }
             "unstaged" => {
-                std::fs::write(
-                    fixture.root.path.join(crate::workspace::WORKSPACE_MANIFEST),
-                    "unrelated edit\n",
+                write_for_test(
+                    &fixture.root.path.join(crate::workspace::WORKSPACE_MANIFEST),
+                    b"unrelated edit\n",
                 )
                 .unwrap();
             }
             "untracked" => {
-                std::fs::write(fixture.root.path.join("unrelated.txt"), "untracked\n").unwrap();
+                write_for_test(&fixture.root.path.join("unrelated.txt"), b"untracked\n").unwrap();
             }
             _ => unreachable!(),
         }
         let head_before = fixture.backend.head(&fixture.root.path).unwrap();
-        let lock_before =
-            std::fs::read(fixture.root.path.join(crate::artifact::LOCK_PATH)).unwrap();
+        let lock_before = make_filesystem()
+            .read(&fixture.root.path.join(crate::artifact::LOCK_PATH))
+            .unwrap();
         let marker = fixture
             .model
             .publication
@@ -114,7 +122,9 @@ fn selected_root_publication_handoff_rejects_all_unrelated_dirt_before_entry() {
             .candidate_marker_path
             .as_ref()
             .unwrap();
-        let marker_before = std::fs::read(fixture.root.path.join(marker)).unwrap();
+        let marker_before = make_filesystem()
+            .read(&fixture.root.path.join(marker))
+            .unwrap();
         let error = preflight_v1_rollback(&fixture.backend, &fixture.root.path, &fixture.model)
             .unwrap_err();
         assert_eq!(error.member_id.as_deref(), Some("@root"), "{kind}");
@@ -124,12 +134,16 @@ fn selected_root_publication_handoff_rejects_all_unrelated_dirt_before_entry() {
             "{kind}"
         );
         assert_eq!(
-            std::fs::read(fixture.root.path.join(crate::artifact::LOCK_PATH)).unwrap(),
+            make_filesystem()
+                .read(&fixture.root.path.join(crate::artifact::LOCK_PATH))
+                .unwrap(),
             lock_before,
             "{kind}"
         );
         assert_eq!(
-            std::fs::read(fixture.root.path.join(marker)).unwrap(),
+            make_filesystem()
+                .read(&fixture.root.path.join(marker))
+                .unwrap(),
             marker_before,
             "{kind}"
         );
@@ -139,31 +153,34 @@ fn selected_root_publication_handoff_rejects_all_unrelated_dirt_before_entry() {
 #[test]
 fn rollback_entry_rejects_semantic_index_flags_for_member_and_selected_root() {
     let member = integrated_fixture("v1-rollback-member-semantic-index");
-    let status = std::process::Command::new("git")
-        .args(["update-index", "--assume-unchanged", "README.md"])
-        .current_dir(&member.member)
-        .status()
+    let mut entries = member.backend.test_read_index(&member.member).unwrap();
+    entries
+        .iter_mut()
+        .find(|entry| entry.path == b"README.md")
+        .unwrap()
+        .assume_valid = true;
+    member
+        .backend
+        .test_replace_index(&member.member, &entries)
         .unwrap();
-    assert!(status.success());
-    std::fs::write(member.member.join("README.md"), "hidden drift\n").unwrap();
+    write_for_test(&member.member.join("README.md"), b"hidden drift\n").unwrap();
     let error =
         preflight_v1_rollback(&member.backend, &member.root.path, &member.model).unwrap_err();
     assert_eq!(error.member_id.as_deref(), Some("mem_a"));
 
     let root = selected_root_evidence_fixture("v1-rollback-root-semantic-index");
-    let status = std::process::Command::new("git")
-        .args([
-            "update-index",
-            "--skip-worktree",
-            crate::workspace::WORKSPACE_MANIFEST,
-        ])
-        .current_dir(&root.root.path)
-        .status()
+    let mut entries = root.backend.test_read_index(&root.root.path).unwrap();
+    entries
+        .iter_mut()
+        .find(|entry| entry.path == crate::workspace::WORKSPACE_MANIFEST.as_bytes())
+        .unwrap()
+        .skip_worktree = true;
+    root.backend
+        .test_replace_index(&root.root.path, &entries)
         .unwrap();
-    assert!(status.success());
-    std::fs::write(
-        root.root.path.join(crate::workspace::WORKSPACE_MANIFEST),
-        "hidden selected-root drift\n",
+    write_for_test(
+        &root.root.path.join(crate::workspace::WORKSPACE_MANIFEST),
+        b"hidden selected-root drift\n",
     )
     .unwrap();
     let error = preflight_v1_rollback(&root.backend, &root.root.path, &root.model).unwrap_err();

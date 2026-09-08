@@ -227,14 +227,14 @@ pub(crate) fn discover_open_v1_record(root: &Path) -> ModelResult<Option<OpenMer
         .map_err(|error| location_unreadable(&path, &open.merge_id, RecordLocation::Open, error))?;
     let decoded = super::record_wire::decode_production_v1(&bytes)
         .map_err(|error| super::store::open_decode_error(&path, &open.merge_id, error))?;
-    validate_merge_id(&decoded.record.merge_id)?;
-    if decoded.record.merge_id != open.merge_id {
+    validate_merge_id(&decoded.record().merge_id)?;
+    if decoded.record().merge_id != open.merge_id {
         return Err(envelope_unreadable(
             &open.merge_id,
             "record id does not match its file name",
         ));
     }
-    Ok(Some(OpenMergeRecord(Box::new(decoded.record))))
+    Ok(Some(OpenMergeRecord(Box::new(decoded.into_record()))))
 }
 
 /// One ARCHIVED record, for suites that assert on a finished merge's durable

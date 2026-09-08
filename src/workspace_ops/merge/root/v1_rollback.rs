@@ -6,17 +6,13 @@
 
 use super::artifact_facts;
 use crate::artifact::LOCK_PATH;
+use crate::filesystem::{FileSystem, FsKind, make_filesystem};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
 use crate::workspace_ops::merge::model::v1::{MergeOperationRecordV1, RootMetadataRollbackStepV1};
 use std::path::Path;
 
-use crate::workspace_ops::merge::record_wire::{
-    FileIdentity, identity_at_named_path, identity_from_file, open_named_path,
-};
-use std::fs::{self, Metadata};
-use std::io::Read;
 use std::path::Component;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,108 +136,103 @@ fn observe_final_artifact(root: &Path, relative: &str) -> ModelResult<Vec<u8>> {
         )));
     }
 
-    let mut parents = Vec::new();
+    observe_final_artifact_through_filesystem(root, relative_path)
+}
+
+fn observe_final_artifact_through_filesystem(root: &Path, relative: &Path) -> ModelResult<Vec<u8>> {
+    let filesystem = make_filesystem();
+    let mut directory = filesystem.open_directory(root).map_err(|error| {
+        root_metadata_error(format!(
+            "failed to inspect selected-root parent '{}': {error}",
+            root.display()
+        ))
+    })?;
+    let mut parents = vec![(
+        root.to_path_buf(),
+        filesystem
+            .directory_identity(&directory)
+            .map_err(|error| root_metadata_error(error.to_string()))?,
+    )];
+    let components = relative.components().collect::<Vec<_>>();
     let mut path = root.to_path_buf();
-    parents.push((path.clone(), require_real_directory(&path)?));
-    let components = relative_path.components().collect::<Vec<_>>();
     for component in components.iter().take(components.len() - 1) {
         path.push(component.as_os_str());
-        parents.push((path.clone(), require_real_directory(&path)?));
+        directory = filesystem
+            .open_directory_at(&directory, component.as_os_str())
+            .map_err(|error| {
+                root_metadata_error(format!(
+                    "failed to inspect selected-root parent '{}': {error}",
+                    path.display()
+                ))
+            })?;
+        parents.push((
+            path.clone(),
+            filesystem
+                .directory_identity(&directory)
+                .map_err(|error| root_metadata_error(error.to_string()))?,
+        ));
     }
-    path.push(components.last().unwrap().as_os_str());
-
-    let before = fs::symlink_metadata(&path).map_err(|error| {
-        root_metadata_error(format!(
-            "failed to inspect selected-root artifact '{}': {error}",
-            path.display()
-        ))
-    })?;
-    if !before.file_type().is_file() || executable(&before) {
+    let leaf = components.last().unwrap().as_os_str();
+    path.push(leaf);
+    let metadata = filesystem
+        .metadata(&path)
+        .map_err(|error| root_metadata_error(error.to_string()))?;
+    if metadata.kind != FsKind::File || metadata.executable {
         return Err(noncanonical_artifact(&path));
     }
-    let before_identity = named_identity(&path, &before)?;
-    let mut file = open_named_path(&path).map_err(|error| {
-        root_metadata_error(format!(
-            "failed to open selected-root artifact '{}': {error}",
-            path.display()
-        ))
-    })?;
-    let opened = file.metadata().map_err(|error| {
-        root_metadata_error(format!(
-            "failed to inspect opened selected-root artifact '{}': {error}",
-            path.display()
-        ))
-    })?;
-    let opened_identity = identity_from_file(&file, &opened).map_err(|error| {
-        root_metadata_error(format!(
-            "failed to identify opened selected-root artifact '{}': {error}",
-            path.display()
-        ))
-    })?;
-    if before_identity != opened_identity {
+    let file = filesystem
+        .open_file_at(&directory, leaf)
+        .map_err(|error| root_metadata_error(error.to_string()))?;
+    let identity = filesystem
+        .file_identity(&file)
+        .map_err(|error| root_metadata_error(error.to_string()))?;
+    if !filesystem
+        .file_entry_matches(&directory, leaf, &file)
+        .map_err(|_| noncanonical_artifact(&path))?
+    {
         return Err(noncanonical_artifact(&path));
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|error| {
-        root_metadata_error(format!(
-            "failed to read selected-root artifact '{}': {error}",
-            path.display()
-        ))
-    })?;
-    let after = fs::symlink_metadata(&path).map_err(|_| noncanonical_artifact(&path))?;
-    let after_identity = named_identity(&path, &after)?;
-    if !after.file_type().is_file()
-        || executable(&after)
-        || before_identity != after_identity
-        || opened_identity != after_identity
-        || opened.len() != bytes.len() as u64
+    let bytes = filesystem
+        .read_all(&file)
+        .map_err(|error| root_metadata_error(error.to_string()))?;
+    let reopened = filesystem
+        .open_file_at(&directory, leaf)
+        .map_err(|_| noncanonical_artifact(&path))?;
+    let after = filesystem
+        .metadata(&path)
+        .map_err(|_| noncanonical_artifact(&path))?;
+    if after.kind != FsKind::File
+        || after.executable
+        || !filesystem
+            .file_entry_matches(&directory, leaf, &file)
+            .map_err(|_| noncanonical_artifact(&path))?
+        || filesystem
+            .file_identity(&reopened)
+            .map_err(|_| noncanonical_artifact(&path))?
+            != identity
+        || !filesystem
+            .file_entry_matches(&directory, leaf, &reopened)
+            .map_err(|_| noncanonical_artifact(&path))?
+        || filesystem
+            .read_all(&reopened)
+            .map_err(|_| noncanonical_artifact(&path))?
+            != bytes
     {
         return Err(noncanonical_artifact(&path));
     }
     for (parent, expected) in parents {
-        let actual = require_real_directory(&parent)?;
-        if expected != actual {
+        let reopened = filesystem
+            .open_directory(&parent)
+            .map_err(|_| noncanonical_artifact(&parent))?;
+        if filesystem
+            .directory_identity(&reopened)
+            .map_err(|_| noncanonical_artifact(&parent))?
+            != expected
+        {
             return Err(noncanonical_artifact(&parent));
         }
     }
     Ok(bytes)
-}
-
-fn require_real_directory(path: &Path) -> ModelResult<FileIdentity> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| {
-        root_metadata_error(format!(
-            "failed to inspect selected-root parent '{}': {error}",
-            path.display()
-        ))
-    })?;
-    if metadata.file_type().is_dir() {
-        named_identity(path, &metadata)
-    } else {
-        Err(noncanonical_artifact(path))
-    }
-}
-
-fn named_identity(path: &Path, metadata: &Metadata) -> ModelResult<FileIdentity> {
-    identity_at_named_path(path, metadata)
-        .map_err(|error| {
-            root_metadata_error(format!(
-                "failed to identify selected-root path '{}': {error}",
-                path.display()
-            ))
-        })?
-        .ok_or_else(|| noncanonical_artifact(path))
-}
-
-#[cfg(unix)]
-fn executable(metadata: &Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn executable(_metadata: &Metadata) -> bool {
-    false
 }
 
 fn noncanonical_artifact(path: &Path) -> ModelError {

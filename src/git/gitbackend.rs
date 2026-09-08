@@ -14,6 +14,7 @@ mod authority_backend;
 mod backend;
 mod comparison;
 mod contract;
+mod factory;
 mod merge_prepared;
 mod merge_recovery;
 mod merge_support;
@@ -37,6 +38,10 @@ mod types;
 pub use authority_backend::MergeAuthorityBackend;
 pub use backend::*;
 pub use contract::*;
+#[cfg(not(test))]
+pub use factory::make_repository;
+#[cfg(test)]
+pub(crate) use factory::make_repository;
 pub use transport_observations::TransportObservations;
 pub(crate) use transport_support::identity::has_options as has_transport_options;
 pub(crate) use transport_support::identity::{
@@ -73,6 +78,105 @@ macro_rules! delegate {
 }
 
 impl GitBackend for Git2Backend {
+    fn repository_index(&self, path: &Path) -> ModelResult<GitIndexSnapshot> {
+        let repo = open_repo(path)?;
+        let index = repo.index().map_err(git_error)?;
+        Ok(GitIndexSnapshot {
+            path: index.path().map(Path::to_path_buf),
+            entries: index
+                .iter()
+                .map(|e| GitIndexEntry {
+                    path: e.path,
+                    object_id: e.id.as_bytes().to_vec(),
+                    mode: e.mode,
+                    flags: e.flags,
+                    flags_extended: e.flags_extended,
+                    ctime: (e.ctime.seconds(), e.ctime.nanoseconds()),
+                    mtime: (e.mtime.seconds(), e.mtime.nanoseconds()),
+                    stat: [e.dev, e.ino, e.uid, e.gid, e.file_size],
+                })
+                .collect(),
+        })
+    }
+    fn repository_paths(&self, path: &Path) -> ModelResult<GitRepositoryPaths> {
+        let repo = open_repo(path)?;
+        Ok(GitRepositoryPaths {
+            worktree: repo.workdir().map(Path::to_path_buf),
+            git_dir: repo.path().to_path_buf(),
+            common_dir: repo.commondir().to_path_buf(),
+        })
+    }
+
+    fn root_preservation_image(
+        &self,
+        root: &Path,
+        clean: &GitRootManagedForm,
+        excluded: &[String],
+    ) -> ModelResult<GitPreservationImage> {
+        preservation_image::capture_normalized(root, clean, excluded)
+    }
+
+    fn validate_root_preservation_spec(
+        &self,
+        root: &Path,
+        spec: &GitRootPreservationSpec,
+    ) -> ModelResult<()> {
+        preservation_root::index::validate_spec(root, spec)
+    }
+
+    fn root_managed_index_matches(
+        &self,
+        root: &Path,
+        form: &GitRootManagedIndexForm,
+    ) -> ModelResult<bool> {
+        preservation_root::index::observe(root, form)
+    }
+
+    fn rewrite_root_managed_index_checked(
+        &self,
+        root: &Path,
+        form: &GitRootManagedIndexForm,
+    ) -> ModelResult<()> {
+        preservation_root::index::rewrite(root, form)
+    }
+
+    #[cfg(test)]
+    delegate!(test_init_repo(repo: &Path, spec: &TestRepoSpec) -> ModelResult<()> => fixture_native::test_init_repo);
+    #[cfg(test)]
+    delegate!(test_create_commit(repo: &Path, spec: &TestCommitSpec) -> ModelResult<String> => fixture_native::test_create_commit);
+    #[cfg(test)]
+    delegate!(test_read_commit(repo: &Path, oid: &str) -> ModelResult<TestCommit> => fixture_native::test_read_commit);
+    #[cfg(test)]
+    delegate!(test_set_ref(repo: &Path, name: &str, target: Option<&TestRefTarget>) -> ModelResult<()> => fixture_native::test_set_ref);
+    #[cfg(test)]
+    delegate!(test_set_head(repo: &Path, state: &TestHead) -> ModelResult<()> => fixture_native::test_set_head);
+    #[cfg(test)]
+    delegate!(test_replace_index(repo: &Path, entries: &[TestIndexEntry]) -> ModelResult<()> => fixture_native::test_replace_index);
+    #[cfg(test)]
+    delegate!(test_read_index(repo: &Path) -> ModelResult<Vec<TestIndexEntry>> => fixture_native::test_read_index);
+    #[cfg(test)]
+    delegate!(test_set_config(repo: &Path, key: &str, values: &[String]) -> ModelResult<()> => fixture_native::test_set_config);
+    #[cfg(test)]
+    delegate!(test_read_config(repo: &Path, key: &str) -> ModelResult<Vec<String>> => fixture_native::test_read_config);
+    #[cfg(test)]
+    delegate!(test_force_checkout(repo: &Path, commit: &str) -> ModelResult<()> => fixture_native::test_force_checkout);
+    #[cfg(test)]
+    delegate!(test_reset_mixed(repo: &Path, commit: &str) -> ModelResult<()> => fixture_native::test_reset_mixed);
+    #[cfg(test)]
+    delegate!(test_set_repository_state(repo: &Path, state: GitRepositoryState, merge_head: Option<&str>) -> ModelResult<()> => fixture_native::test_set_repository_state);
+    #[cfg(test)]
+    delegate!(test_seed_merge_conflict(repo: &Path, before: &str, source: &str) -> ModelResult<GitMergeConflictSnapshot> => fixture_native::test_seed_merge_conflict);
+    #[cfg(test)]
+    delegate!(test_create_commit_from_parent(repo: &Path, parent: &str, message: &str, edits: &[TestCommitFileEdit]) -> ModelResult<String> => fixture_native::test_create_commit_from_parent);
+
+    fn preservation_stashes(
+        &self,
+        path: &Path,
+        merge_id: &str,
+    ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
+        observe_preservation_stashes_read_only(path, merge_id)
+    }
+
     fn transport_observations(&self) -> Option<TransportObservations> {
         Some(self.observations.clone())
     }
@@ -230,9 +334,8 @@ impl Git2Backend {
 
 /// Read native preservation evidence through the fixed production observer.
 ///
-/// Authority-sensitive merge code uses this concrete seam rather than the
-/// open `GitBackend` callback, so an alternative backend cannot substitute a
-/// writer for a read-only observation.
+/// The physical repository implementation delegates here. Merge callers use
+/// GitRepository through the existing sealed production authority boundary.
 #[allow(
     dead_code,
     reason = "compiled ahead of A1 while all v1 consumers remain test-gated"
@@ -243,3 +346,21 @@ pub(crate) fn observe_preservation_stashes_read_only(
 ) -> ModelResult<Vec<GitPreservationStashEvidence>> {
     preservation_image::preservation_stashes(path, merge_id)
 }
+
+#[cfg(test)]
+mod repository_contract_tests;
+
+#[cfg(test)]
+mod fake_repository;
+#[cfg(test)]
+pub(crate) use fake_repository::FakeGitRepository;
+
+#[cfg(test)]
+mod test_types;
+#[cfg(test)]
+pub use test_types::*;
+#[cfg(test)]
+mod fixture_native;
+
+#[cfg(test)]
+pub(crate) use factory::GitTestRepository;

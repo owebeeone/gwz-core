@@ -85,8 +85,8 @@ fn install_baseline_pre_handoff(fixture: &mut RootPreservationFixture) {
         format!("{:x}", sha2::Sha256::digest(baseline_boundary.as_bytes()));
     candidate.baseline_boundary_text = baseline_boundary.clone();
     let marker = fixture.base.root.path.join(&marker_path);
-    std::fs::remove_file(&marker).unwrap();
-    std::fs::write(
+    fs::remove_file(&marker).unwrap();
+    fs::write(
         fixture.base.root.path.join(crate::artifact::LOCK_PATH),
         baseline_lock,
     )
@@ -99,7 +99,7 @@ fn install_baseline_pre_handoff(fixture: &mut RootPreservationFixture) {
             &[marker_path.as_str(), crate::artifact::LOCK_PATH],
         )
         .unwrap();
-    std::fs::remove_dir(marker.parent().unwrap()).unwrap();
+    fs::remove_dir(marker.parent().unwrap()).unwrap();
     crate::workspace_ops::publish_workspace_exclude_candidate(
         &fixture.base.root.path,
         &baseline_boundary,
@@ -179,7 +179,7 @@ fn bundle_consumer_rebarriers_visible_goals_before_advancing() {
             );
             let stash_id = format!("stash_{}", fixture.base.model.merge_id);
             let path = crate::stash::bundle_path(&fixture.base.root.path, &stash_id);
-            let bytes = std::fs::read_to_string(path).unwrap();
+            let bytes = fs::read_to_string(path).unwrap();
             assert_eq!(
                 bytes,
                 crate::stash::StashBundle::from_yaml(&bytes)
@@ -206,7 +206,7 @@ fn root_fixture(owner: RootOwner, name: &str) -> RootPreservationFixture {
 
 fn exercise_fault_at(
     root: &std::path::Path,
-    backend: &Git2Backend,
+    backend: &GitTestRepository,
     model: &MergeOperationRecordV1,
     phase: S,
     fault: CheckedArtifactFault,
@@ -296,8 +296,8 @@ fn exercise_fault_at(
 
 fn seed_open(root: &std::path::Path, model: &MergeOperationRecordV1) {
     let merge_root = root.join(".gwz/merge");
-    std::fs::create_dir_all(&merge_root).unwrap();
-    std::fs::write(
+    fs::create_dir_all(&merge_root).unwrap();
+    fs::write(
         merge_root.join(format!("{}.yaml", model.merge_id)),
         serde_yaml::to_string(model).unwrap(),
     )
@@ -316,7 +316,7 @@ fn context(model: &MergeOperationRecordV1) -> crate::operation::OperationContext
 }
 
 struct DurabilityRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     phase: S,
     fault: CheckedArtifactFault,
     injected: bool,

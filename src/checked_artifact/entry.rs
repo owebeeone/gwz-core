@@ -5,7 +5,9 @@
 
 #![forbid(clippy::disallowed_methods)]
 
-use std::path::Path;
+use crate::filesystem::{FileSystem, FsDirectory, FsKind, make_filesystem};
+use std::ffi::OsStr;
+use std::path::{Component, Path};
 
 use super::bootstrap::{CatalogMutationLeaseV1, probe_workspace_admission};
 use super::capability::CheckedFsError;
@@ -38,7 +40,247 @@ pub(crate) fn observe_merge_root_artifact(
     root: &Path,
     relative: &Path,
 ) -> ModelResult<MergeArtifactFact> {
-    map_fact(root_artifact(root, relative)?.observe()?)
+    observe_filesystem_artifact(
+        root,
+        relative,
+        ErrorCode::MergeRecoveryRequired,
+        &format!("workspace artifact '{}'", relative.display()),
+    )
+}
+
+enum FilesystemParent {
+    Missing,
+    Invalid,
+    Open(FsDirectory),
+}
+
+fn observe_filesystem_artifact(
+    root: &Path,
+    relative: &Path,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<MergeArtifactFact> {
+    let filesystem = make_filesystem();
+    let (parent_relative, leaf) = split_filesystem_relative(relative, code, label)?;
+    let retained_root = filesystem
+        .open_directory(root)
+        .map_err(|cause| artifact_io(code, label, "open ambient artifact root", cause))?;
+    let root_identity = super::identity::filesystem_directory_identity(&retained_root)
+        .map_err(|_| reverse_door_identity_error(label))?;
+    let parent =
+        traverse_filesystem_parent(&filesystem, &retained_root, parent_relative, code, label)?;
+    let FilesystemParent::Open(parent) = parent else {
+        return Ok(match parent {
+            FilesystemParent::Missing => MergeArtifactFact::Missing,
+            FilesystemParent::Invalid => MergeArtifactFact::Invalid,
+            FilesystemParent::Open(_) => unreachable!(),
+        });
+    };
+    let parent_identity = super::identity::filesystem_directory_identity(&parent)
+        .map_err(|_| reverse_door_identity_error(label))?;
+    let before = match filesystem.metadata_at(&parent, leaf) {
+        Ok(metadata) => metadata,
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(MergeArtifactFact::Missing);
+        }
+        Err(cause) => {
+            return Err(artifact_io(
+                code,
+                label,
+                "read artifact leaf metadata",
+                cause,
+            ));
+        }
+    };
+    if before.kind != FsKind::File || before.executable {
+        return Ok(MergeArtifactFact::Invalid);
+    }
+    let file = match filesystem.open_file_at(&parent, leaf) {
+        Ok(file) => file,
+        Err(cause)
+            if matches!(
+                cause.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(MergeArtifactFact::Invalid);
+        }
+        Err(cause) => return Err(artifact_io(code, label, "open artifact no-follow", cause)),
+    };
+    let file_identity = super::identity::filesystem_file_identity(&file)
+        .map_err(|_| reverse_door_identity_error(label))?;
+    if !filesystem
+        .file_entry_matches(&parent, leaf, &file)
+        .map_err(|cause| {
+            artifact_io(
+                code,
+                label,
+                "bind opened artifact to directory entry",
+                cause,
+            )
+        })?
+    {
+        return Ok(MergeArtifactFact::Invalid);
+    }
+    let bytes = filesystem
+        .read_all(&file)
+        .map_err(|cause| artifact_io(code, label, "read artifact bytes", cause))?;
+    let after = match filesystem.metadata_at(&parent, leaf) {
+        Ok(metadata) => metadata,
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(MergeArtifactFact::Invalid);
+        }
+        Err(cause) => {
+            return Err(artifact_io(
+                code,
+                label,
+                "reread artifact leaf metadata",
+                cause,
+            ));
+        }
+    };
+    if before != after
+        || !filesystem
+            .file_entry_matches(&parent, leaf, &file)
+            .map_err(|cause| {
+                artifact_io(code, label, "rebind artifact to directory entry", cause)
+            })?
+        || super::identity::filesystem_file_identity(&file)
+            .map_err(|_| reverse_door_identity_error(label))?
+            != file_identity
+        || !filesystem_parent_is_current(
+            &filesystem,
+            &retained_root,
+            parent_relative,
+            &parent_identity,
+            code,
+            label,
+        )?
+    {
+        return Ok(MergeArtifactFact::Invalid);
+    }
+    let reopened_root = filesystem
+        .open_directory(root)
+        .map_err(|cause| artifact_io(code, label, "reopen ambient artifact root", cause))?;
+    if super::identity::filesystem_directory_identity(&reopened_root)
+        .map_err(|_| reverse_door_identity_error(label))?
+        != root_identity
+    {
+        return Ok(MergeArtifactFact::Invalid);
+    }
+    Ok(MergeArtifactFact::Bytes(bytes))
+}
+
+fn traverse_filesystem_parent(
+    filesystem: &impl FileSystem,
+    root: &FsDirectory,
+    relative: &Path,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<FilesystemParent> {
+    let mut current = filesystem
+        .clone_directory(root)
+        .map_err(|cause| artifact_io(code, label, "retain artifact parent", cause))?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Ok(FilesystemParent::Invalid);
+        };
+        let metadata = match filesystem.metadata_at(&current, name) {
+            Ok(metadata) => metadata,
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(FilesystemParent::Missing);
+            }
+            Err(cause) => {
+                return Err(artifact_io(
+                    code,
+                    label,
+                    "traverse to artifact parent",
+                    cause,
+                ));
+            }
+        };
+        if metadata.kind != FsKind::Directory {
+            return Ok(FilesystemParent::Invalid);
+        }
+        let next = match filesystem.open_directory_at(&current, name) {
+            Ok(next) => next,
+            Err(cause) if cause.kind() != std::io::ErrorKind::PermissionDenied => {
+                return Ok(FilesystemParent::Invalid);
+            }
+            Err(cause) => {
+                return Err(artifact_io(
+                    code,
+                    label,
+                    "traverse to artifact parent",
+                    cause,
+                ));
+            }
+        };
+        if !filesystem
+            .directory_entry_matches(&current, name, &next)
+            .map_err(|cause| artifact_io(code, label, "bind artifact parent component", cause))?
+        {
+            return Ok(FilesystemParent::Invalid);
+        }
+        current = next;
+    }
+    Ok(FilesystemParent::Open(current))
+}
+
+fn filesystem_parent_is_current(
+    filesystem: &impl FileSystem,
+    root: &FsDirectory,
+    relative: &Path,
+    expected: &super::identity::ObjectIdentity,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<bool> {
+    let FilesystemParent::Open(parent) =
+        traverse_filesystem_parent(filesystem, root, relative, code, label)?
+    else {
+        return Ok(false);
+    };
+    super::identity::filesystem_directory_identity(&parent)
+        .map(|observed| observed == *expected)
+        .map_err(|_| reverse_door_identity_error(label))
+}
+
+fn split_filesystem_relative<'path>(
+    path: &'path Path,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<(&'path Path, &'path OsStr)> {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ModelError::new(
+            code,
+            format!("checked {label}: path is not workspace-relative"),
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| ModelError::new(code, format!("checked {label}: artifact has no parent")))?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| ModelError::new(code, format!("checked {label}: artifact has no leaf")))?;
+    Ok((parent, leaf))
+}
+
+fn artifact_io(code: ErrorCode, label: &str, operation: &str, cause: std::io::Error) -> ModelError {
+    ModelError::new(code, format!("checked {label}: {operation}: {cause}"))
+}
+
+fn reverse_door_identity_error(label: &str) -> ModelError {
+    ModelError::new(
+        ErrorCode::UnsupportedOperation,
+        format!(
+            "checked {label}: {}",
+            super::capability::HANDLE_FAIL_REVERSE_DOOR_ESCAPE
+        ),
+    )
 }
 
 pub(crate) fn replace_merge_root_artifact(
@@ -87,7 +329,15 @@ pub(crate) fn observe_merge_preservation_workspace(
     relative: &Path,
     expected: Option<&[u8]>,
 ) -> ModelResult<bool> {
-    observe_expected(preservation_workspace(root, relative)?, expected)
+    matches_expected(
+        filesystem_fact(observe_filesystem_artifact(
+            root,
+            relative,
+            ErrorCode::PreservationEvidenceMismatch,
+            "root preservation artifact",
+        )?),
+        expected,
+    )
 }
 
 pub(crate) fn observe_merge_preservation_git_directory(
@@ -95,7 +345,15 @@ pub(crate) fn observe_merge_preservation_git_directory(
     relative: &Path,
     expected: Option<&[u8]>,
 ) -> ModelResult<bool> {
-    observe_expected(preservation_git_directory(root, relative)?, expected)
+    matches_expected(
+        filesystem_fact(observe_filesystem_artifact(
+            root,
+            relative,
+            ErrorCode::PreservationEvidenceMismatch,
+            "root preservation artifact",
+        )?),
+        expected,
+    )
 }
 
 pub(crate) fn replace_merge_preservation_workspace(
@@ -441,20 +699,6 @@ fn preservation_workspace(root: &Path, relative: &Path) -> ModelResult<CheckedAr
     )
 }
 
-fn preservation_git_directory(root: &Path, relative: &Path) -> ModelResult<CheckedArtifact> {
-    CheckedArtifact::acquire_with_escape(
-        CheckedArtifactPolicy::git_directory(root),
-        relative,
-        ErrorCode::PreservationEvidenceMismatch,
-        "root preservation artifact",
-        IdentityGapEscape::ReverseMergeDoor,
-    )
-}
-
-fn observe_expected(artifact: CheckedArtifact, expected: Option<&[u8]>) -> ModelResult<bool> {
-    matches_expected(artifact.observe()?, expected)
-}
-
 fn observe_expected_durable(
     artifact: CheckedArtifact,
     expected: Option<&[u8]>,
@@ -468,6 +712,14 @@ fn matches_expected(observed: CheckedArtifactFact, expected: Option<&[u8]>) -> M
         (CheckedArtifactFact::Bytes(actual), Some(expected)) => actual == expected,
         _ => false,
     })
+}
+
+fn filesystem_fact(observed: MergeArtifactFact) -> CheckedArtifactFact {
+    match observed {
+        MergeArtifactFact::Missing => CheckedArtifactFact::Missing,
+        MergeArtifactFact::Bytes(bytes) => CheckedArtifactFact::Bytes(bytes),
+        MergeArtifactFact::Invalid => CheckedArtifactFact::Invalid,
+    }
 }
 
 fn replace_expected(
@@ -502,14 +754,6 @@ fn classify_expected(
 fn fact(bytes: Option<&[u8]>) -> CheckedArtifactFact {
     bytes.map_or(CheckedArtifactFact::Missing, |bytes| {
         CheckedArtifactFact::Bytes(bytes.to_vec())
-    })
-}
-
-fn map_fact(value: CheckedArtifactFact) -> ModelResult<MergeArtifactFact> {
-    Ok(match value {
-        CheckedArtifactFact::Missing => MergeArtifactFact::Missing,
-        CheckedArtifactFact::Bytes(bytes) => MergeArtifactFact::Bytes(bytes),
-        CheckedArtifactFact::Invalid => MergeArtifactFact::Invalid,
     })
 }
 
@@ -708,7 +952,7 @@ pub(crate) fn create_merge_store_record(
 /// where the record belongs must refuse, not be followed.
 fn create_merge_store_record_raw(root: &Path, relative: &Path, goal: &[u8]) -> ModelResult<()> {
     let path = root.join(relative);
-    if std::fs::symlink_metadata(&path).is_ok() {
+    if make_filesystem().metadata(&path).is_ok() {
         return Err(ModelError::new(
             ErrorCode::MergeRecoveryRequired,
             format!("merge record '{}' already exists", relative.display()),
@@ -750,3 +994,21 @@ pub(super) fn render_catalog_refusal(label: &str, cause: CheckedFsError) -> Mode
 
 /// E4.1's activation label, spelled once so door and guard cannot drift.
 pub(super) const CATALOG_LABEL: &str = "merge artifact catalog";
+
+#[cfg(test)]
+mod filesystem_observation_tests {
+    use super::*;
+
+    #[test]
+    fn root_level_artifact_uses_the_retained_filesystem_path() {
+        let filesystem = make_filesystem();
+        let workspace = filesystem.test_workspace().unwrap();
+        crate::filesystem::write_for_test(&workspace.path().join("gwz.lock"), b"lock bytes")
+            .unwrap();
+
+        assert_eq!(
+            observe_merge_root_artifact(workspace.path(), Path::new("gwz.lock")).unwrap(),
+            MergeArtifactFact::Bytes(b"lock bytes".to_vec())
+        );
+    }
+}

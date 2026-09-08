@@ -97,36 +97,53 @@ fn assert_final_artifacts(lane: Lane, fixture: &super::service_fault_matrix::Mat
             let publication = fixture.model.publication.as_ref().unwrap();
             let candidate = publication.candidate.as_ref().unwrap();
             assert_eq!(
-                std::fs::read_to_string(crate::workspace_ops::workspace_exclude_path(
-                    &fixture.root.path,
-                ))
+                String::from_utf8(
+                    make_filesystem()
+                        .read(&crate::workspace_ops::workspace_exclude_path(
+                            &fixture.root.path,
+                        ))
+                        .unwrap(),
+                )
                 .unwrap(),
                 candidate.baseline_boundary_text
             );
             assert_eq!(
-                std::fs::read_to_string(fixture.root.path.join(crate::artifact::LOCK_PATH),)
-                    .unwrap(),
+                String::from_utf8(
+                    make_filesystem()
+                        .read(&fixture.root.path.join(crate::artifact::LOCK_PATH))
+                        .unwrap(),
+                )
+                .unwrap(),
                 candidate.baseline_lock_yaml
             );
             assert!(
-                !fixture
-                    .root
-                    .path
-                    .join(publication.candidate_marker_path.as_ref().unwrap())
-                    .exists()
+                make_filesystem()
+                    .metadata(
+                        &fixture
+                            .root
+                            .path
+                            .join(publication.candidate_marker_path.as_ref().unwrap()),
+                    )
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
             );
         }
         Lane::SelectedRoot => {
             assert_eq!(
-                std::fs::read_to_string(
-                    fixture.root.path.join(crate::workspace::WORKSPACE_MANIFEST),
+                String::from_utf8(
+                    make_filesystem()
+                        .read(&fixture.root.path.join(crate::workspace::WORKSPACE_MANIFEST),)
+                        .unwrap(),
                 )
                 .unwrap(),
                 fixture.model.baseline.manifest_yaml.as_deref().unwrap()
             );
             assert_eq!(
-                std::fs::read_to_string(fixture.root.path.join(crate::artifact::LOCK_PATH),)
-                    .unwrap(),
+                String::from_utf8(
+                    make_filesystem()
+                        .read(&fixture.root.path.join(crate::artifact::LOCK_PATH))
+                        .unwrap(),
+                )
+                .unwrap(),
                 fixture.model.baseline.lock_yaml.as_deref().unwrap()
             );
         }
@@ -135,7 +152,7 @@ fn assert_final_artifacts(lane: Lane, fixture: &super::service_fault_matrix::Mat
 }
 
 struct DurabilityRuntime<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     target: Target,
     fault: CheckedArtifactFault,
     injected: bool,

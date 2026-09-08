@@ -1,5 +1,8 @@
 use std::path::{Component, Path};
 
+#[cfg(test)]
+use crate::filesystem::{FileSystem, FsIdentity, make_filesystem};
+use crate::filesystem::{FsDirectory, FsFile};
 use cap_std::fs::{Dir, File};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -151,25 +154,110 @@ impl DurableObjectIdentity {
     }
 }
 
-pub(super) fn object_identity(dir: &Dir) -> std::io::Result<ObjectIdentity> {
-    // M5d step (3)'s test-only seam (`GwzM5-8M5d-Charter.md` §3, 2026-09-03),
-    // armed by `capability::with_handle_probe_unavailable`. The CI hosts are
-    // APFS and ext4, which both answer this probe, so a handle-fail volume
-    // cannot be presented to the doors that take it any other way. The refusal
-    // it answers with is byte-identical to a real overlay's.
-    #[cfg(test)]
-    if super::capability::handle_probe_is_unavailable() {
-        return Err(persistent_identity_unsupported());
-    }
-    platform::dir_object_identity(dir)
-}
-
 pub(super) fn file_identity(file: &File) -> std::io::Result<ObjectIdentity> {
     platform::file_object_identity(file)
 }
 
-pub(super) fn rename_domain(dir: &Dir) -> std::io::Result<RenameDomainProof> {
-    platform::rename_domain(dir)
+pub(super) fn filesystem_directory_identity(
+    directory: &FsDirectory,
+) -> std::io::Result<ObjectIdentity> {
+    #[cfg(test)]
+    if super::capability::handle_probe_is_unavailable() {
+        return Err(persistent_identity_unsupported());
+    }
+    #[cfg(test)]
+    if directory.is_memory() {
+        return memory_identity(make_filesystem().directory_identity(directory)?);
+    }
+    crate::filesystem::native::with_directory(directory, platform::dir_object_identity)?
+}
+
+pub(super) fn filesystem_file_identity(file: &FsFile) -> std::io::Result<ObjectIdentity> {
+    #[cfg(test)]
+    if file.is_memory() {
+        return memory_identity(make_filesystem().file_identity(file)?);
+    }
+    crate::filesystem::native::with_file(file, platform::file_object_identity)?
+}
+
+#[cfg(test)]
+fn memory_identity(identity: FsIdentity) -> std::io::Result<ObjectIdentity> {
+    let namespace = identity.namespace();
+    let object = identity.object();
+    #[cfg(not(windows))]
+    let invocation = InvocationObjectIdentity::Unix {
+        device: namespace,
+        inode: object,
+    };
+    #[cfg(target_os = "linux")]
+    let durable = DurableObjectIdentity::Linux {
+        filesystem_id: namespace.to_be_bytes().to_vec(),
+        handle_type: 1,
+        file_handle: object.to_be_bytes().to_vec(),
+    };
+    #[cfg(target_os = "macos")]
+    let durable = {
+        let mut volume_uuid = [0; 16];
+        volume_uuid[..8].copy_from_slice(&namespace.to_be_bytes());
+        volume_uuid[8..].copy_from_slice(&namespace.to_be_bytes());
+        DurableObjectIdentity::Mac {
+            volume_uuid,
+            persistent_object_id: object.to_be_bytes(),
+        }
+    };
+    #[cfg(windows)]
+    let (durable, invocation) = {
+        let volume_guid = namespace
+            .to_be_bytes()
+            .chunks_exact(2)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        let mut file_id = [0; 16];
+        file_id[..8].copy_from_slice(&object.to_be_bytes());
+        file_id[8..].copy_from_slice(&object.to_be_bytes());
+        (
+            DurableObjectIdentity::Windows {
+                volume_guid: volume_guid.clone(),
+                file_id,
+            },
+            InvocationObjectIdentity::Windows {
+                volume_guid,
+                file_id,
+            },
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    return Err(std::io::ErrorKind::Unsupported.into());
+    Ok(ObjectIdentity {
+        durable,
+        invocation,
+    })
+}
+
+pub(super) fn filesystem_rename_domain(
+    directory: &FsDirectory,
+) -> std::io::Result<RenameDomainProof> {
+    #[cfg(test)]
+    if directory.is_memory() {
+        let namespace = make_filesystem().directory_identity(directory)?.namespace();
+        #[cfg(target_os = "linux")]
+        return Ok(RenameDomainProof::LinuxMountId(namespace));
+        #[cfg(target_os = "macos")]
+        return Ok(RenameDomainProof::MacMountedFileSystem(
+            namespace.to_be_bytes(),
+        ));
+        #[cfg(windows)]
+        return Ok(RenameDomainProof::WindowsMountedVolume(
+            namespace
+                .to_be_bytes()
+                .chunks_exact(2)
+                .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+                .collect(),
+        ));
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        return Err(std::io::ErrorKind::Unsupported.into());
+    }
+    crate::filesystem::native::with_directory(directory, platform::rename_domain)?
 }
 
 pub(super) fn canonical_path_identity(root: &Dir, relative: &Path) -> std::io::Result<Vec<u8>> {
@@ -199,6 +287,41 @@ pub(super) fn canonical_path_identity(root: &Dir, relative: &Path) -> std::io::R
         ));
     }
     Ok(output)
+}
+
+pub(super) fn filesystem_canonical_path_identity(
+    root: &FsDirectory,
+    relative: &Path,
+) -> std::io::Result<Vec<u8>> {
+    #[cfg(test)]
+    if root.is_memory() {
+        let mut output = Vec::new();
+        for component in relative.components() {
+            let Component::Normal(component) = component else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "path identity contains a noncanonical component",
+                ));
+            };
+            let bytes = component.as_encoded_bytes();
+            if bytes.len() > u16::MAX as usize {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "path identity component is too long",
+                ));
+            }
+            output.extend((bytes.len() as u16).to_le_bytes());
+            output.extend(bytes);
+        }
+        if output.len() > 4 * 1024 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "canonical path identity exceeds 4 KiB",
+            ));
+        }
+        return Ok(output);
+    }
+    crate::filesystem::native::with_directory(root, |root| canonical_path_identity(root, relative))?
 }
 
 /// R2-E E4.1 precondition 1, the legacy half.

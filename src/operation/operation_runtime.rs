@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(peak, 2, "two hosts at per_host=1 should overlap to 2");
         assert_eq!(
             par_map_per_host(Vec::<usize>::new(), 4, 8, |_| None, |value| value),
-            Vec::new()
+            Vec::<usize>::new()
         );
     }
 

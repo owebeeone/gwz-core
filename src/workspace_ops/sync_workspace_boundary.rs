@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
 
 use crate::artifact::{LockArtifact, ManifestArtifact};
+use crate::filesystem::{FileSystem, make_filesystem};
 use crate::git::GitBackend;
 use crate::model::ModelResult;
 use crate::workspace::{RUNTIME_DIR, WORKSPACE_DIR};
@@ -72,8 +72,10 @@ pub(crate) fn workspace_exclude_candidate<B: GitBackend>(
     let block = lines.join("\n");
 
     let exclude_path = workspace_exclude_path(root);
-    let existing = match fs::read_to_string(&exclude_path) {
-        Ok(value) => value,
+    let existing = match make_filesystem().read(&exclude_path) {
+        Ok(value) => String::from_utf8(value).map_err(|error| {
+            io_error(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(io_error(error)),
     };

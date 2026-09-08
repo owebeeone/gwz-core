@@ -3,7 +3,6 @@ use super::entry_service::{
     service_fixture_with_later_member,
 };
 use super::*;
-use std::io::Write;
 
 // [2026-09-02, R2-E E4.4-6-B: [P3-8] closes (nothing converts, no snapshot exclusion
 // grows) for every row here too — see `entry_service.rs::collect_files`.]
@@ -28,10 +27,15 @@ fn selected_root_service_entry_rejects_complete_checkout_drift_without_mutation(
 #[test]
 fn selected_root_service_entry_rejects_native_state_without_mutation() {
     let fixture = service_fixture("v1-rollback-service-root-native-state");
-    let merge_head = fixture.model.participants["@root"].source_commit.as_bytes();
-    let mut bytes = merge_head.to_vec();
-    bytes.push(b'\n');
-    std::fs::write(fixture.root.path.join(".git/MERGE_HEAD"), bytes).unwrap();
+    let merge_head = &fixture.model.participants["@root"].source_commit;
+    fixture
+        .backend
+        .test_set_repository_state(
+            &fixture.root.path,
+            crate::git::GitRepositoryState::Merge,
+            Some(merge_head),
+        )
+        .unwrap();
     assert_ne!(
         fixture
             .backend
@@ -48,11 +52,17 @@ fn later_member_semantic_drift_rejects_before_selected_root_mutation() {
     let fixture =
         service_fixture_with_later_member("v1-rollback-service-later-member-semantic-index");
     let member = fixture.root.path.join("members/z");
-    git(
-        &member,
-        &["update-index", "--assume-unchanged", "README.md"],
-    );
-    std::fs::write(member.join("README.md"), "hidden later-member drift\n").unwrap();
+    let mut entries = fixture.backend.test_read_index(&member).unwrap();
+    entries
+        .iter_mut()
+        .find(|entry| entry.path == b"README.md")
+        .unwrap()
+        .assume_valid = true;
+    fixture
+        .backend
+        .test_replace_index(&member, &entries)
+        .unwrap();
+    write_for_test(&member.join("README.md"), b"hidden later-member drift\n").unwrap();
     seed_open(&fixture);
     assert_entry_rejected_without_mutation(&fixture, "later member semantic drift", "mem_z");
 }
@@ -61,25 +71,35 @@ fn install_root_drift(fixture: &super::entry_service::ServiceFixture, case: &str
     let root = &fixture.root.path;
     match case {
         "staged" => {
-            std::fs::write(root.join("staged-drift.txt"), "staged\n").unwrap();
+            write_for_test(&root.join("staged-drift.txt"), b"staged\n").unwrap();
             fixture
                 .backend
                 .stage_paths(root, &["staged-drift.txt"])
                 .unwrap();
         }
         "unstaged" => {
-            std::fs::write(root.join("selected-root.txt"), "unstaged drift\n").unwrap();
+            write_for_test(&root.join("selected-root.txt"), b"unstaged drift\n").unwrap();
         }
         "untracked" => {
-            std::fs::write(root.join("untracked-drift.txt"), "untracked\n").unwrap();
+            write_for_test(&root.join("untracked-drift.txt"), b"untracked\n").unwrap();
         }
         "rename" => {
-            git(root, &["mv", "selected-root.txt", "renamed-root.txt"]);
+            make_filesystem()
+                .rename(
+                    &root.join("selected-root.txt"),
+                    &root.join("renamed-root.txt"),
+                    crate::filesystem::RenameMode::NoReplace,
+                )
+                .unwrap();
         }
         "type-change" => {
-            std::fs::remove_file(root.join("selected-root.txt")).unwrap();
-            std::fs::create_dir(root.join("selected-root.txt")).unwrap();
-            std::fs::write(root.join("selected-root.txt/child"), "type change\n").unwrap();
+            make_filesystem()
+                .remove_file(&root.join("selected-root.txt"))
+                .unwrap();
+            make_filesystem()
+                .create_directories(&root.join("selected-root.txt"))
+                .unwrap();
+            write_for_test(&root.join("selected-root.txt/child"), b"type change\n").unwrap();
         }
         "unresolved" => install_unresolved_index(root),
         _ => unreachable!(),
@@ -87,47 +107,19 @@ fn install_root_drift(fixture: &super::entry_service::ServiceFixture, case: &str
 }
 
 fn install_unresolved_index(root: &std::path::Path) {
-    let repo = git2::Repository::open(root).unwrap();
-    let base = repo.blob(b"base\n").unwrap();
-    let ours = repo.blob(b"ours\n").unwrap();
-    let theirs = repo.blob(b"theirs\n").unwrap();
-    let zero = "0".repeat(40);
-    let input = format!(
-        "0 {zero}\tselected-root.txt\n\
-         100644 {base} 1\tselected-root.txt\n\
-         100644 {ours} 2\tselected-root.txt\n\
-         100644 {theirs} 3\tselected-root.txt\n"
-    );
-    let mut child = std::process::Command::new("git")
-        .args(["update-index", "--index-info"])
-        .current_dir(root)
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
+    let backend = make_repository();
+    let entry = backend
+        .test_read_index(root)
         .unwrap()
-        .write_all(input.as_bytes())
+        .into_iter()
+        .find(|entry| entry.path == b"selected-root.txt")
         .unwrap();
-    assert!(child.wait().unwrap().success());
-    assert!(
-        git2::Repository::open(root)
-            .unwrap()
-            .index()
-            .unwrap()
-            .has_conflicts()
-    );
-}
-
-fn git(root: &std::path::Path, args: &[&str]) {
-    assert!(
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success(),
-        "git {args:?} failed"
-    );
+    let entries = [1, 2, 3]
+        .map(|stage| {
+            let mut entry = entry.clone();
+            entry.stage = stage;
+            entry
+        })
+        .to_vec();
+    backend.test_replace_index(root, &entries).unwrap();
 }

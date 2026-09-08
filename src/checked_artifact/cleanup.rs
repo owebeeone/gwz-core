@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use super::authority::{CheckedArtifactAuthority, RetainedSource, authority_name};
 use super::fault::{CheckedArtifactFault, fault};
 use super::{CheckedArtifact, CheckedArtifactFact, ParentState, error, io_error};
+use crate::filesystem::{FileSystem, make_filesystem};
 use crate::model::ModelResult;
 
 impl CheckedArtifact {
@@ -83,10 +84,10 @@ impl CheckedArtifact {
                     "staged goal is a different-identity duplicate",
                 ));
             }
-            private
-                .remove_file(&staged.name)
+            make_filesystem()
+                .remove_file_at(&private, &staged.name)
                 .map_err(|cause| io_error(self.code, &self.label, cause))?;
-            super::platform::private_barrier(
+            super::platform::filesystem_private_barrier(
                 &private,
                 super::platform::DirentBarrierClass::AnchoredPrivateArea,
                 self.code,
@@ -128,10 +129,10 @@ impl CheckedArtifact {
                     "cleanup evidence changed before source retirement",
                 ));
             }
-            private
-                .remove_file(&source.name)
+            make_filesystem()
+                .remove_file_at(&private, &source.name)
                 .map_err(|cause| io_error(self.code, &self.label, cause))?;
-            super::platform::private_barrier(
+            super::platform::filesystem_private_barrier(
                 &private,
                 super::platform::DirentBarrierClass::AnchoredPrivateArea,
                 self.code,
@@ -219,10 +220,10 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        private
-            .remove_file(&authority_name)
+        make_filesystem()
+            .remove_file_at(&private, OsStr::new(&authority_name))
             .map_err(|cause| io_error(self.code, &self.label, cause))?;
-        super::platform::private_barrier(
+        super::platform::filesystem_private_barrier(
             &private,
             super::platform::DirentBarrierClass::AnchoredPrivateArea,
             self.code,

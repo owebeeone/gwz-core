@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::filesystem::{FileSystem, make_filesystem};
 
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -27,7 +28,9 @@ pub(super) struct RawIndex {
 }
 
 pub(super) fn read(repo: &git2::Repository) -> ModelResult<RawIndex> {
-    let bytes = std::fs::read(repo.path().join("index")).map_err(crate::git::io_error)?;
+    let bytes = make_filesystem()
+        .read(&repo.path().join("index"))
+        .map_err(crate::git::io_error)?;
     parse(&bytes, repo.object_format())
 }
 

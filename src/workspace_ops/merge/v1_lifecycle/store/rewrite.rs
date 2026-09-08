@@ -1,9 +1,9 @@
-use std::fs::{self, File};
-use std::io::{self, Write};
+#![deny(clippy::disallowed_types)]
+use crate::filesystem::{FileSystem, FsFile, FsKind, RenameMode, make_filesystem};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::durable_fs::{rename_durable, sync_dir};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::super::checked::{StoredV1Record, V1MutationLease};
@@ -14,7 +14,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn load_open(root: &Path, merge_id: &str) -> ModelResult<StoredV1Record> {
     validate_merge_id(merge_id)?;
-    let root = root.canonicalize().map_err(io_error)?;
+    let root = make_filesystem().canonical_path(root).map_err(io_error)?;
     let path = root.join(".gwz/merge").join(format!("{merge_id}.yaml"));
     let bytes = read_regular(&path)?;
     StoredV1Record::from_open_bytes(&root, &path, &bytes)
@@ -54,7 +54,7 @@ pub(super) fn create_open(
     crash_recovery: Option<&crate::checked_artifact::entry::CrashRecoveryDecision>,
 ) -> ModelResult<StoredV1Record> {
     validate_merge_id(&record.merge_id)?;
-    let root = root.canonicalize().map_err(io_error)?;
+    let root = make_filesystem().canonical_path(root).map_err(io_error)?;
     let relative = PathBuf::from(".gwz/merge").join(format!("{}.yaml", record.merge_id));
     let path = root.join(&relative);
     if path_exists(&path)? {
@@ -90,8 +90,8 @@ pub(super) fn create_open(
 /// **RECORD-ROOT EXCEPTION (2026-09-02, `GwzM5-8R2E-RecordRootAmendment.md`
 /// §2, operator-authorized).** This rewrite of the exact existing record — the
 /// ROOT of reconciliation, which recovers from nothing in the shipped tree —
-/// keeps `rename_durable(replace = true)` + `sync_dir` permanently, because the
-/// checked boundary's detach-then-publish shape opens a discovery-dead window
+/// keeps atomic replace publication plus a parent-directory barrier, because the
+/// checked-artifact boundary's detach-then-publish shape opens a discovery-dead window
 /// no shipped reconciler closes (§1a, driven); pinned both ways by the O13 row
 /// and `tests/store/record_root_exception.rs`, re-examined at O14's fork.
 pub(super) fn commit(
@@ -120,11 +120,14 @@ pub(super) fn commit(
     let encoded = serde_yaml::to_string(&raw)
         .map(String::into_bytes)
         .map_err(encode_error)?;
-    let (temporary, mut file) = create_temporary(path)?;
-    let staged_write = file.write_all(&encoded).and_then(|()| file.sync_all());
+    let (temporary, file) = create_temporary(path)?;
+    let filesystem = make_filesystem();
+    let staged_write = filesystem
+        .write_all(&file, &encoded)
+        .and_then(|()| filesystem.sync_file(&file));
     drop(file);
     if let Err(error) = staged_write {
-        let _ = fs::remove_file(&temporary);
+        let _ = make_filesystem().remove_file(&temporary);
         return Err(io_error(error));
     }
     let staged = match read_regular(&temporary).and_then(|bytes| {
@@ -139,24 +142,26 @@ pub(super) fn commit(
     }) {
         Ok(staged) => staged,
         Err(error) => {
-            let _ = fs::remove_file(&temporary);
+            let _ = make_filesystem().remove_file(&temporary);
             return Err(error);
         }
     };
     if fault == Some(CommitFault::AfterTemporarySync) {
-        let _ = fs::remove_file(&temporary);
+        let _ = make_filesystem().remove_file(&temporary);
         return Err(recovery(
             "injected checked-store fault after temporary sync",
         ));
     }
-    if let Err(error) = rename_durable(&temporary, path, true) {
-        let _ = fs::remove_file(&temporary);
+    if let Err(error) = filesystem.rename(&temporary, path, RenameMode::Replace) {
+        let _ = make_filesystem().remove_file(&temporary);
         return Err(io_error(error));
     }
     if fault == Some(CommitFault::AfterPublish) {
         return Err(recovery("injected checked-store fault after publication"));
     }
-    sync_dir(path.parent().expect("open record has a parent")).map_err(io_error)?;
+    filesystem
+        .sync_directory(path.parent().expect("open record has a parent"))
+        .map_err(io_error)?;
 
     let published_bytes = read_regular(path)?;
     let published =
@@ -184,20 +189,18 @@ fn require_expected(
     }
 }
 
-fn create_temporary(path: &Path) -> ModelResult<(PathBuf, File)> {
+fn create_temporary(path: &Path) -> ModelResult<(PathBuf, FsFile)> {
     let parent = path
         .parent()
         .ok_or_else(|| recovery("open record path has no parent"))?;
-    fs::create_dir_all(parent).map_err(io_error)?;
+    make_filesystem()
+        .create_directories(parent)
+        .map_err(io_error)?;
     loop {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let candidate =
             path.with_extension(format!("yaml.{}.{}.v1.tmp", std::process::id(), sequence));
-        match File::options()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
+        match make_filesystem().create_file(&candidate) {
             Ok(file) => return Ok((candidate, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error(error)),
@@ -206,20 +209,20 @@ fn create_temporary(path: &Path) -> ModelResult<(PathBuf, File)> {
 }
 
 pub(super) fn read_regular(path: &Path) -> ModelResult<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if !metadata.file_type().is_file() {
+    let kind = make_filesystem().kind(path).map_err(io_error)?;
+    if kind != FsKind::File {
         return Err(unreadable(format!(
             "record path '{}' is not a regular file",
             path.display()
         )));
     }
-    if path.canonicalize().map_err(io_error)? != path {
+    if make_filesystem().canonical_path(path).map_err(io_error)? != path {
         return Err(unreadable(format!(
             "record path '{}' traverses a symbolic link",
             path.display()
         )));
     }
-    fs::read(path).map_err(io_error)
+    make_filesystem().read(path).map_err(io_error)
 }
 
 pub(super) fn validate_merge_id(merge_id: &str) -> ModelResult<()> {
@@ -235,7 +238,7 @@ pub(super) fn validate_merge_id(merge_id: &str) -> ModelResult<()> {
 }
 
 pub(super) fn path_exists(path: &Path) -> ModelResult<bool> {
-    match fs::symlink_metadata(path) {
+    match make_filesystem().kind(path) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(io_error(error)),
@@ -256,4 +259,25 @@ pub(super) fn recovery(detail: impl Into<String>) -> ModelError {
 
 fn unreadable(detail: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::MergeRecordUnreadable, detail)
+}
+
+#[cfg(test)]
+mod filesystem_tests {
+    use super::*;
+
+    #[test]
+    fn record_reader_uses_selected_filesystem() {
+        let filesystem = make_filesystem();
+        let workspace = filesystem.test_workspace().unwrap();
+        let path = workspace.path().join("record.yaml");
+        let file = filesystem.create_file(&path).unwrap();
+        filesystem.write_all(&file, b"record bytes").unwrap();
+        assert_eq!(read_regular(&path).unwrap(), b"record bytes");
+        assert_eq!(
+            read_regular(workspace.path()).unwrap_err().code,
+            ErrorCode::MergeRecordUnreadable
+        );
+        filesystem.remove_file(&path).unwrap();
+        assert!(!path_exists(&path).unwrap());
+    }
 }

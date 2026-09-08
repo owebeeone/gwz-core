@@ -6,6 +6,7 @@ use super::classification::ExactTransition;
 use super::fault::{CheckedArtifactFault, fault};
 use super::observation::{io_op_error, observe_leaf_exact};
 use super::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition, ParentState, error};
+use crate::filesystem::{FileSystem, FsDirectory, make_filesystem};
 use crate::model::ModelResult;
 
 #[cfg(test)]
@@ -19,7 +20,8 @@ impl CheckedArtifact {
         if !self.parent_is_current(identity)? {
             return Ok(CheckedArtifactFact::Invalid);
         }
-        let before = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        let before =
+            observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)?;
         self.sync_dir(
             dir,
             CheckedArtifactFault::BeforeDurability,
@@ -28,7 +30,8 @@ impl CheckedArtifact {
         if !self.parent_is_current(identity)? {
             return Ok(CheckedArtifactFact::Invalid);
         }
-        let after = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        let after =
+            observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)?;
         if before.fact != after.fact || before.identity != after.identity {
             return Ok(CheckedArtifactFact::Invalid);
         }
@@ -215,7 +218,7 @@ impl CheckedArtifact {
                 "source authority changed before detach",
             ));
         }
-        let leaf = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        let leaf = observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)?;
         if let Some(source) = residue.source {
             if source.identity.durable != *expected_identity {
                 return Err(error(
@@ -231,9 +234,11 @@ impl CheckedArtifact {
                 return Ok(());
             }
             if leaf.fact == *expected && leaf.identity.as_ref() == Some(&source.identity) {
-                dir.remove_file(&self.leaf).map_err(|cause| {
-                    io_op_error(self.code, &self.label, "remove managed source leaf", cause)
-                })?;
+                make_filesystem()
+                    .remove_file_at(dir, &self.leaf)
+                    .map_err(|cause| {
+                        io_op_error(self.code, &self.label, "remove managed source leaf", cause)
+                    })?;
                 self.sync_dir(
                     dir,
                     CheckedArtifactFault::BeforeSourceRetirement,
@@ -287,7 +292,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        super::platform::publish_verified_leaf_no_replace(
+        super::platform::publish_verified_filesystem_leaf_no_replace(
             dir,
             &self.leaf,
             &private,
@@ -310,10 +315,16 @@ impl CheckedArtifact {
             CheckedArtifactFault::BeforeSourceRetirement,
             CheckedArtifactFault::AfterSourceRetirement,
         )?;
-        let moved = observe_leaf_exact(&private, source_name.as_ref(), self.code, &self.label)?;
+        let moved = observe_leaf_exact(
+            &make_filesystem(),
+            &private,
+            source_name.as_ref(),
+            self.code,
+            &self.label,
+        )?;
         if moved.fact != *expected
             || moved.identity.as_ref() != Some(&source_identity)
-            || observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?.fact
+            || observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)?.fact
                 != CheckedArtifactFact::Missing
             || !self.parent_is_current(parent_identity)?
         {
@@ -354,7 +365,7 @@ impl CheckedArtifact {
                 "goal authority changed before publication",
             ));
         }
-        let leaf = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        let leaf = observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)?;
         if leaf.fact == CheckedArtifactFact::Bytes(goal.to_vec()) {
             if residue
                 .goal
@@ -388,7 +399,7 @@ impl CheckedArtifact {
             self.code,
             &self.label,
         )?;
-        super::platform::publish_verified_leaf_no_replace(
+        super::platform::publish_verified_filesystem_leaf_no_replace(
             &private,
             &staged.name,
             dir,
@@ -411,7 +422,8 @@ impl CheckedArtifact {
             CheckedArtifactFault::BeforeQuarantineSourceRetirement,
             CheckedArtifactFault::AfterQuarantineSourceRetirement,
         )?;
-        let managed = observe_leaf_exact(dir, &self.leaf, self.code, &self.label)?;
+        let managed =
+            observe_leaf_exact(&make_filesystem(), dir, &self.leaf, self.code, &self.label)?;
         if managed.fact != CheckedArtifactFact::Bytes(goal.to_vec())
             || managed.identity.as_ref() != Some(&staged.identity)
             || !self.parent_is_current(identity)?
@@ -427,12 +439,12 @@ impl CheckedArtifact {
 
     fn sync_dir(
         &self,
-        dir: &cap_std::fs::Dir,
+        dir: &FsDirectory,
         before: CheckedArtifactFault,
         after: CheckedArtifactFault,
     ) -> ModelResult<()> {
         fault(before, self.code, &self.label)?;
-        super::platform::sync_parent(dir).map_err(|cause| {
+        make_filesystem().sync_directory_at(dir).map_err(|cause| {
             io_op_error(
                 self.code,
                 &self.label,
@@ -445,12 +457,12 @@ impl CheckedArtifact {
 
     fn sync_private(
         &self,
-        dir: &cap_std::fs::Dir,
+        dir: &FsDirectory,
         before: CheckedArtifactFault,
         after: CheckedArtifactFault,
     ) -> ModelResult<()> {
         fault(before, self.code, &self.label)?;
-        super::platform::private_barrier(
+        super::platform::filesystem_private_barrier(
             dir,
             super::platform::DirentBarrierClass::AnchoredPrivateArea,
             self.code,

@@ -16,15 +16,18 @@ pub(in crate::workspace_ops::merge) enum V1BundleObservation {
     Ambiguous,
 }
 
-pub(in crate::workspace_ops::merge) fn v1_bundle_observation(
+pub(in crate::workspace_ops::merge) fn v1_bundle_observation<
+    B: crate::git::MergeAuthorityBackend,
+>(
+    backend: &B,
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
     plans: &[V1PreservationOwnerPlan],
     owner: &super::super::model::v1::PreservationOwnerV1,
 ) -> ModelResult<V1BundleObservation> {
     let index = owner_index(plans, owner)?;
-    let before = expected_bundle(record, &plans[..index])?;
-    let after = expected_bundle(record, &plans[..=index])?;
+    let before = expected_bundle(backend, record, &plans[..index])?;
+    let after = expected_bundle(backend, record, &plans[..=index])?;
     let before_bytes = (!before.members.is_empty())
         .then(|| before.to_yaml().map(String::into_bytes))
         .transpose()?;
@@ -45,12 +48,15 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_observation(
     )
 }
 
-pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact(
+pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact<
+    B: crate::git::MergeAuthorityBackend,
+>(
+    backend: &B,
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
     plans: &[V1PreservationOwnerPlan],
 ) -> ModelResult<bool> {
-    let expected = expected_bundle(record, plans)?;
+    let expected = expected_bundle(backend, record, plans)?;
     let bytes = (!expected.members.is_empty())
         .then(|| expected.to_yaml().map(String::into_bytes))
         .transpose()?;
@@ -61,15 +67,18 @@ pub(in crate::workspace_ops::merge) fn v1_bundle_cursor_is_exact(
     )
 }
 
-pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked(
+pub(in crate::workspace_ops::merge) fn v1_write_bundle_checked<
+    B: crate::git::MergeAuthorityBackend,
+>(
+    backend: &B,
     root: &Path,
     record: &super::super::model::v1::MergeOperationRecordV1,
     plans: &[V1PreservationOwnerPlan],
     owner: &super::super::model::v1::PreservationOwnerV1,
 ) -> ModelResult<()> {
     let index = owner_index(plans, owner)?;
-    let before = expected_bundle(record, &plans[..index])?;
-    let after = expected_bundle(record, &plans[..=index])?;
+    let before = expected_bundle(backend, record, &plans[..index])?;
+    let after = expected_bundle(backend, record, &plans[..=index])?;
     let relative = bundle_relative(&after.stash_id);
     let before = (!before.members.is_empty())
         .then(|| before.to_yaml().map(String::into_bytes))
@@ -130,7 +139,8 @@ fn bundle_relative(stash_id: &str) -> PathBuf {
     PathBuf::from(crate::stash::STASH_BUNDLE_DIR).join(format!("{stash_id}.yaml"))
 }
 
-fn expected_bundle(
+fn expected_bundle<B: crate::git::MergeAuthorityBackend>(
+    backend: &B,
     record: &super::super::model::v1::MergeOperationRecordV1,
     plans: &[V1PreservationOwnerPlan],
 ) -> ModelResult<crate::stash::StashBundle> {
@@ -149,9 +159,9 @@ fn expected_bundle(
         let Some(expected_oid) = evidence.stash_object_id.as_deref() else {
             continue;
         };
-        let stashes =
-            crate::git::observe_preservation_stashes_read_only(&plan.path, &record.merge_id)
-                .map_err(|error| attach_owner(error, plan))?;
+        let stashes = backend
+            .preservation_stashes(&plan.path, &record.merge_id)
+            .map_err(|error| attach_owner(error, plan))?;
         let [stash] = stashes.as_slice() else {
             return Err(owner_error(
                 plan,

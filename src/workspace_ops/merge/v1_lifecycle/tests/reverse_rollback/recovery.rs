@@ -21,7 +21,7 @@ fn rolling_back_recovery_accepts_exact_before_and_rejects_third_state() {
     let current = StoredV1Record::for_test(&fixture.root.path, fixture.model.clone()).unwrap();
     rolling_back_verify_recovery_origin(&fixture.backend, &current).unwrap();
 
-    std::fs::write(fixture.member.join("untracked"), "drift\n").unwrap();
+    write_for_test(&fixture.member.join("untracked"), b"drift\n").unwrap();
     let error = match rolling_back_verify_recovery_origin(&fixture.backend, &current) {
         Ok(_) => panic!("ambiguous rollback recovery unexpectedly resumed"),
         Err(error) => error,

@@ -29,9 +29,6 @@ pub(crate) use location::{
 
 #[cfg(test)]
 pub(crate) use archive::archived_fixture_for_test;
-pub(in crate::workspace_ops::merge) use location::{
-    FileIdentity, identity_at_named_path, identity_from_file, open_named_path,
-};
 #[cfg(test)]
 pub(crate) use location::{
     appear_archived_before_final_check_for_test, appear_open_before_final_check_for_test,

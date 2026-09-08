@@ -9,22 +9,22 @@ use preservation::fault;
 #[cfg(test)]
 pub(crate) use preservation::{fail_next_at, run_next_at};
 pub(super) fn prepare_root_preservation_stash(
-    backend: &Git2Backend,
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
 ) -> ModelResult<GitPreparedRootStash> {
-    index::validate_spec(root, spec)?;
+    backend.validate_root_preservation_spec(root, spec)?;
     if !exact_head(backend, root, &spec.attached_branch, &spec.attached_commit)?
         || backend.repository_state(root)? != GitRepositoryState::Clean
-        || !full_form_matches(root, spec, &spec.handoff_form)?
-        || !files::observe_boundary(root, &spec.handoff_boundary)?
+        || !full_form_matches(backend, root, spec, &spec.handoff_form)?
+        || !files::observe_boundary(backend, root, &spec.handoff_boundary)?
     {
         return Err(evidence_error(
             "root preservation preparation requires the exact durable handoff",
         ));
     }
     Ok(GitPreparedRootStash {
-        normalized_image: preservation_image::capture_normalized(
+        normalized_image: backend.root_preservation_image(
             root,
             &spec.attached_clean_form,
             &spec.excluded_worktree_paths,
@@ -32,7 +32,7 @@ pub(super) fn prepare_root_preservation_stash(
     })
 }
 pub(super) fn observe_root_preservation_step(
-    backend: &Git2Backend,
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     step: &GitRootPreservationPhysicalStep,
@@ -41,14 +41,14 @@ pub(super) fn observe_root_preservation_step(
     observe_root_preservation_step_pinned(backend, root, spec, step, guard, None)
 }
 fn observe_root_preservation_step_pinned(
-    backend: &Git2Backend,
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     step: &GitRootPreservationPhysicalStep,
     guard: &GitRootPreservationGuard,
     pinned: Option<&parent::PinnedConfig>,
 ) -> ModelResult<GitRootPreservationStepObservation> {
-    index::validate_spec(root, spec)?;
+    backend.validate_root_preservation_spec(root, spec)?;
     match step {
         GitRootPreservationPhysicalStep::Managed(transition) => {
             observe_managed(backend, root, spec, transition, guard, pinned)
@@ -62,7 +62,7 @@ fn observe_root_preservation_step_pinned(
     }
 }
 pub(super) fn execute_root_preservation_step_checked(
-    backend: &Git2Backend,
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     step: &GitRootPreservationPhysicalStep,
@@ -112,12 +112,12 @@ pub(super) fn execute_root_preservation_step_checked(
     fault(FaultBoundary::Before)?;
     let mutation = match step {
         GitRootPreservationPhysicalStep::Managed(transition) => {
-            mutate_managed(root, spec, transition, pinned.as_ref())?;
+            mutate_managed(backend, root, spec, transition, pinned.as_ref())?;
             GitCheckedPreservationMutation::Applied
         }
         GitRootPreservationPhysicalStep::CreateStash { merge_id } => {
             GitCheckedPreservationMutation::StashCreated(
-                preservation::stash_for_merge_preservation(backend, root, merge_id, true)?,
+                backend.stash_for_merge_preservation(root, merge_id, true)?,
             )
         }
         GitRootPreservationPhysicalStep::ResetAttachedRef => {
@@ -150,7 +150,7 @@ pub(super) fn execute_root_preservation_step_checked(
     Ok(mutation)
 }
 fn observe_managed(
-    backend: &Git2Backend,
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     transition: &GitRootManagedTransition,
@@ -174,15 +174,15 @@ fn observe_managed(
     };
     if backend.repository_state(root)? != GitRepositoryState::Clean
         || !exact_head(backend, root, &spec.attached_branch, commit)?
-        || !files::observe_boundary(root, &spec.handoff_boundary)?
-        || !guard_matches(root, spec, guard, clean)?
+        || !files::observe_boundary(backend, root, &spec.handoff_boundary)?
+        || !guard_matches(backend, root, spec, guard, clean)?
     {
         return Ok(GitRootPreservationStepObservation::Ambiguous);
     }
     let source = form(spec, transition.source);
     let goal = form(spec, transition.goal);
     if transition.object == GitRootManagedObject::MarkerParentDirectory {
-        return observe_parent(root, spec, transition, source, goal, pinned);
+        return observe_parent(backend, root, spec, transition, source, goal, pinned);
     }
     let staging = parent::staging_name(spec, transition.source, transition.goal);
     if matches!(
@@ -208,6 +208,7 @@ fn observe_managed(
         let after = observed == MergeArtifactTransition::After;
         if observed == MergeArtifactTransition::Ambiguous
             || !pattern_matches(
+                backend,
                 root,
                 spec,
                 &staging,
@@ -224,19 +225,19 @@ fn observe_managed(
             GitRootPreservationStepObservation::Before
         });
     }
-    if pattern_matches(root, spec, &staging, transition, true, None)? {
+    if pattern_matches(backend, root, spec, &staging, transition, true, None)? {
         return Ok(GitRootPreservationStepObservation::After);
     }
-    if object_matches(root, spec, &staging, transition.object, source)?
-        && !object_matches(root, spec, &staging, transition.object, goal)?
-        && pattern_matches(root, spec, &staging, transition, false, None)?
+    if object_matches(backend, root, spec, &staging, transition.object, source)?
+        && !object_matches(backend, root, spec, &staging, transition.object, goal)?
+        && pattern_matches(backend, root, spec, &staging, transition, false, None)?
     {
         return Ok(GitRootPreservationStepObservation::Before);
     }
     Ok(GitRootPreservationStepObservation::Ambiguous)
 }
 fn observe_create_stash(
-    backend: &Git2Backend,
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     merge_id: &str,
@@ -247,26 +248,27 @@ fn observe_create_stash(
     };
     if backend.repository_state(root)? != GitRepositoryState::Clean
         || !exact_head(backend, root, &spec.attached_branch, &spec.attached_commit)?
-        || !files::observe_boundary(root, &spec.handoff_boundary)?
-        || !full_form_matches(root, spec, &spec.attached_clean_form)?
+        || !files::observe_boundary(backend, root, &spec.handoff_boundary)?
+        || !full_form_matches(backend, root, spec, &spec.attached_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::Ambiguous);
     }
-    let stashes = preservation_image::decode_stashes(root, merge_id)?;
+    let stashes = backend.preservation_stashes(root, merge_id)?;
     if let [stash] = stashes.as_slice()
         && stash.head_commit == spec.attached_commit
         && stash.image.preimage_sha256 == *sha256
-        && otherwise_clean(root, spec, &spec.attached_clean_form)?
+        && otherwise_clean(backend, root, spec, &spec.attached_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::After);
     }
     if stashes.is_empty()
-        && preservation_image::capture_normalized(
-            root,
-            &spec.attached_clean_form,
-            &spec.excluded_worktree_paths,
-        )?
-        .preimage_sha256
+        && backend
+            .root_preservation_image(
+                root,
+                &spec.attached_clean_form,
+                &spec.excluded_worktree_paths,
+            )?
+            .preimage_sha256
             == *sha256
     {
         return Ok(GitRootPreservationStepObservation::Before);
@@ -274,32 +276,33 @@ fn observe_create_stash(
     Ok(GitRootPreservationStepObservation::Ambiguous)
 }
 fn observe_reset(
-    backend: &Git2Backend,
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     guard: &GitRootPreservationGuard,
 ) -> ModelResult<GitRootPreservationStepObservation> {
     if !matches!(guard, GitRootPreservationGuard::OtherwiseClean)
         || backend.repository_state(root)? != GitRepositoryState::Clean
-        || !files::observe_boundary(root, &spec.handoff_boundary)?
+        || !files::observe_boundary(backend, root, &spec.handoff_boundary)?
     {
         return Ok(GitRootPreservationStepObservation::Ambiguous);
     }
     if exact_head(backend, root, &spec.attached_branch, &spec.restore_commit)?
-        && full_form_matches(root, spec, &spec.restore_clean_form)?
-        && otherwise_clean(root, spec, &spec.restore_clean_form)?
+        && full_form_matches(backend, root, spec, &spec.restore_clean_form)?
+        && otherwise_clean(backend, root, spec, &spec.restore_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::After);
     }
     if exact_head(backend, root, &spec.attached_branch, &spec.attached_commit)?
-        && full_form_matches(root, spec, &spec.attached_clean_form)?
-        && otherwise_clean(root, spec, &spec.attached_clean_form)?
+        && full_form_matches(backend, root, spec, &spec.attached_clean_form)?
+        && otherwise_clean(backend, root, spec, &spec.attached_clean_form)?
     {
         return Ok(GitRootPreservationStepObservation::Before);
     }
     Ok(GitRootPreservationStepObservation::Ambiguous)
 }
 fn pattern_matches(
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     staging: &str,
@@ -338,13 +341,14 @@ fn pattern_matches(
         } else {
             source
         };
-        if !object_matches(root, spec, staging, object, expected)? {
+        if !object_matches(backend, root, spec, staging, object, expected)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 fn observe_parent(
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     transition: &GitRootManagedTransition,
@@ -360,18 +364,21 @@ fn observe_parent(
         source
     };
     if !object_matches(
+        backend,
         root,
         spec,
         &staging,
         GitRootManagedObject::Index,
         surrounding,
     )? || !object_matches(
+        backend,
         root,
         spec,
         &staging,
         GitRootManagedObject::LockWorktree,
         surrounding,
     )? || !object_matches(
+        backend,
         root,
         spec,
         &staging,
@@ -415,6 +422,7 @@ fn marker_parent_matches(
 }
 
 fn object_matches(
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     staging: &str,
@@ -426,7 +434,7 @@ fn object_matches(
             files::observe_relative(root, &expected.marker, expected.index.marker.path_str()?)
         }
         GitRootManagedObject::LockWorktree => files::observe_required(root, &expected.lock),
-        GitRootManagedObject::Index => index::observe(root, &expected.index),
+        GitRootManagedObject::Index => backend.root_managed_index_matches(root, &expected.index),
         GitRootManagedObject::MarkerParentDirectory => {
             marker_parent_matches(root, spec, staging, expected.marker.is_some())
         }
@@ -434,6 +442,7 @@ fn object_matches(
 }
 
 fn full_form_matches(
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     expected: &GitRootManagedForm,
@@ -444,28 +453,38 @@ fn full_form_matches(
         GitRootManagedFormName::Handoff,
     );
     Ok(object_matches(
+        backend,
         root,
         spec,
         &staging,
         GitRootManagedObject::MarkerWorktree,
         expected,
     )? && object_matches(
+        backend,
         root,
         spec,
         &staging,
         GitRootManagedObject::LockWorktree,
         expected,
-    )? && object_matches(root, spec, &staging, GitRootManagedObject::Index, expected)?
-        && object_matches(
-            root,
-            spec,
-            &staging,
-            GitRootManagedObject::MarkerParentDirectory,
-            expected,
-        )?)
+    )? && object_matches(
+        backend,
+        root,
+        spec,
+        &staging,
+        GitRootManagedObject::Index,
+        expected,
+    )? && object_matches(
+        backend,
+        root,
+        spec,
+        &staging,
+        GitRootManagedObject::MarkerParentDirectory,
+        expected,
+    )?)
 }
 
 fn mutate_managed(
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     transition: &GitRootManagedTransition,
@@ -486,7 +505,9 @@ fn mutate_managed(
             Some(&source.lock),
             Some(&goal.lock),
         ),
-        GitRootManagedObject::Index => index::rewrite(root, &goal.index),
+        GitRootManagedObject::Index => {
+            backend.rewrite_root_managed_index_checked(root, &goal.index)
+        }
         GitRootManagedObject::MarkerParentDirectory => pinned
             .expect("parent mutation retains its pinned parent")
             .publish(&parent::staging_name(
@@ -498,37 +519,43 @@ fn mutate_managed(
 }
 
 fn guard_matches(
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     guard: &GitRootPreservationGuard,
     clean: &GitRootManagedForm,
 ) -> ModelResult<bool> {
     match guard {
-        GitRootPreservationGuard::NormalizedPreimage { sha256 } => {
-            Ok(preservation_image::capture_normalized(
+        GitRootPreservationGuard::NormalizedPreimage { sha256 } => Ok(backend
+            .root_preservation_image(
                 root,
                 &spec.attached_clean_form,
                 &spec.excluded_worktree_paths,
             )?
             .preimage_sha256
-                == *sha256)
-        }
-        GitRootPreservationGuard::OtherwiseClean => otherwise_clean(root, spec, clean),
+            == *sha256),
+        GitRootPreservationGuard::OtherwiseClean => otherwise_clean(backend, root, spec, clean),
     }
 }
 
 fn otherwise_clean(
+    backend: &impl GitBackend,
     root: &Path,
     spec: &GitRootPreservationSpec,
     clean: &GitRootManagedForm,
 ) -> ModelResult<bool> {
-    Ok(
-        preservation_image::capture_normalized(root, clean, &spec.excluded_worktree_paths)?.dirty
-            == GitPreservationDirtySummary::default(),
-    )
+    Ok(backend
+        .root_preservation_image(root, clean, &spec.excluded_worktree_paths)?
+        .dirty
+        == GitPreservationDirtySummary::default())
 }
 
-fn exact_head(backend: &Git2Backend, root: &Path, branch: &str, commit: &str) -> ModelResult<bool> {
+fn exact_head(
+    backend: &impl GitBackend,
+    root: &Path,
+    branch: &str,
+    commit: &str,
+) -> ModelResult<bool> {
     let head = backend.head(root)?;
     Ok(!head.is_detached
         && head.branch.as_deref() == Some(branch)

@@ -16,7 +16,7 @@ pub(crate) enum Lane {
 
 pub(crate) struct MatrixFixture {
     pub(crate) root: TempDir,
-    pub(crate) backend: Git2Backend,
+    pub(crate) backend: GitTestRepository,
     pub(crate) model: MergeOperationRecordV1,
 }
 
@@ -39,12 +39,10 @@ pub(crate) fn fixture(lane: Lane, name: &str) -> MatrixFixture {
             } else {
                 ParticipantState::RolledBack
             };
-            let status = std::process::Command::new("git")
-                .args(["reset", "--hard", &row.before_commit])
-                .current_dir(value.root.path.join(&row.path))
-                .status()
+            value
+                .backend
+                .test_force_checkout(&value.root.path.join(&row.path), &row.before_commit)
                 .unwrap();
-            assert!(status.success());
             MatrixFixture {
                 root: value.root,
                 backend: value.backend,
@@ -56,36 +54,47 @@ pub(crate) fn fixture(lane: Lane, name: &str) -> MatrixFixture {
 }
 
 fn conflict_fixture(name: &str) -> MatrixFixture {
-    let root = TempDir::new_git(name);
-    let backend = Git2Backend::new();
+    let root = TempDir::new(name);
+    let backend = make_repository();
+    backend
+        .test_init_repo(&root.path, &TestRepoSpec::default())
+        .unwrap();
     let member = root.path.join("members/a");
-    backend.create_repo(&member).unwrap();
-    let base = commit_file(&member, "README.md", "base\n", "base", &[]).unwrap();
-    backend.branch_create(&member, "feature", &base).unwrap();
-    backend.switch_branch(&member, "feature").unwrap();
-    let source = commit_file(
+    backend
+        .test_init_repo(&member, &TestRepoSpec::default())
+        .unwrap();
+    let base = fixture_commit_file(&backend, &member, "README.md", "base\n", "base", &[]);
+    backend
+        .test_set_ref(
+            &member,
+            "refs/heads/feature",
+            Some(&TestRefTarget::Direct(base.clone())),
+        )
+        .unwrap();
+    backend
+        .test_set_head(&member, &TestHead::Attached("refs/heads/feature".into()))
+        .unwrap();
+    let source = fixture_commit_file(
+        &backend,
         &member,
         "README.md",
         "source\n",
         "source",
-        &[base.parse().unwrap()],
-    )
-    .unwrap();
-    backend.switch_branch(&member, "main").unwrap();
-    let before = commit_file(
+        std::slice::from_ref(&base),
+    );
+    backend
+        .test_set_head(&member, &TestHead::Attached("refs/heads/main".into()))
+        .unwrap();
+    let before = fixture_commit_file(
+        &backend,
         &member,
         "README.md",
         "target\n",
         "target",
-        &[base.parse().unwrap()],
-    )
-    .unwrap();
-    let result = backend
-        .merge_upstream_checked(&member, "main", &before, &source, "merge", None)
-        .unwrap();
-    assert!(result.commit.is_none());
+        std::slice::from_ref(&base),
+    );
     let snapshot = backend
-        .merge_conflict_snapshot(&member, &before, &source)
+        .test_seed_merge_conflict(&member, &before, &source)
         .unwrap();
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     model.state = OperationState::RollingBack;
@@ -98,7 +107,11 @@ fn conflict_fixture(name: &str) -> MatrixFixture {
     row.state = ParticipantState::Conflicted;
     row.resulting_commit = None;
     row.expected_merge_head = Some(source);
-    row.conflict_paths = result.conflicts;
+    row.conflict_paths = snapshot
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
     row.conflict_snapshot = snapshot
         .files
         .into_iter()
@@ -116,52 +129,54 @@ fn conflict_fixture(name: &str) -> MatrixFixture {
 
 fn selected_root_fixture(name: &str) -> MatrixFixture {
     let root = TempDir::new(name);
-    let backend = Git2Backend::new();
-    backend.create_repo(&root.path).unwrap();
-    use std::io::Write;
-    let mut exclude = std::fs::OpenOptions::new()
-        .append(true)
-        .open(crate::workspace_ops::workspace_exclude_path(&root.path))
+    let backend = make_repository();
+    backend
+        .test_init_repo(&root.path, &TestRepoSpec::default())
         .unwrap();
-    writeln!(exclude, "/.gwz/").unwrap();
-    std::fs::create_dir_all(root.path.join("gwz.conf")).unwrap();
+    let exclude_path = crate::workspace_ops::workspace_exclude_path(&root.path);
+    let mut exclude = make_filesystem().read(&exclude_path).unwrap();
+    exclude.extend_from_slice(b"/.gwz/\n");
+    write_for_test(&exclude_path, &exclude).unwrap();
+    make_filesystem()
+        .create_directories(&root.path.join("gwz.conf"))
+        .unwrap();
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     let manifest = model.baseline.manifest_yaml.clone().unwrap();
     let lock = model.baseline.lock_yaml.clone().unwrap();
-    let manifest_commit = commit_file(
+    let manifest_commit = fixture_commit_file(
+        &backend,
         &root.path,
         WORKSPACE_MANIFEST,
         &manifest,
         "baseline manifest",
         &[],
-    )
-    .unwrap();
-    let before = commit_file(
+    );
+    let before = fixture_commit_file(
+        &backend,
         &root.path,
         LOCK_PATH,
         &lock,
         "baseline lock",
-        &[manifest_commit.parse().unwrap()],
-    )
-    .unwrap();
+        std::slice::from_ref(&manifest_commit),
+    );
     let result_manifest = format!("{manifest}# selected-root result\n");
     let result_lock = format!("{lock}# selected-root result\n");
-    let result_manifest_commit = commit_file(
+    let result_manifest_commit = fixture_commit_file(
+        &backend,
         &root.path,
         WORKSPACE_MANIFEST,
         &result_manifest,
         "result manifest",
-        &[before.parse().unwrap()],
-    )
-    .unwrap();
-    let result = commit_file(
+        std::slice::from_ref(&before),
+    );
+    let result = fixture_commit_file(
+        &backend,
         &root.path,
         LOCK_PATH,
         &result_lock,
         "result lock",
-        &[result_manifest_commit.parse().unwrap()],
-    )
-    .unwrap();
+        std::slice::from_ref(&result_manifest_commit),
+    );
 
     model.state = OperationState::RollingBack;
     model.baseline.root_head = Some(before.clone());
@@ -169,18 +184,7 @@ fn selected_root_fixture(name: &str) -> MatrixFixture {
     model.baseline.manifest_commit_sha256 = Some(digest(&manifest));
     model.baseline.lock_commit_sha256 = Some(digest(&lock));
     model.selected_targets = vec!["@root".into()];
-    git2::Repository::open(&root.path)
-        .unwrap()
-        .find_reference("refs/heads/main")
-        .unwrap()
-        .set_target(before.parse().unwrap(), "seed post-participant rollback")
-        .unwrap();
-    let status = std::process::Command::new("git")
-        .args(["reset", "--mixed", &before])
-        .current_dir(&root.path)
-        .status()
-        .unwrap();
-    assert!(status.success());
+    backend.test_reset_mixed(&root.path, &before).unwrap();
     let mut row = model.participants.remove("mem_a").unwrap();
     row.path = ".".into();
     row.target_kind = MergeTargetKind::Root;
@@ -204,10 +208,10 @@ fn digest(bytes: &str) -> String {
 
 pub(crate) fn seed_open(root: &std::path::Path, model: &MergeOperationRecordV1) {
     let merge_root = root.join(".gwz/merge");
-    std::fs::create_dir_all(&merge_root).unwrap();
-    std::fs::write(
-        merge_root.join(format!("{}.yaml", model.merge_id)),
-        serde_yaml::to_string(model).unwrap(),
+    make_filesystem().create_directories(&merge_root).unwrap();
+    write_for_test(
+        &merge_root.join(format!("{}.yaml", model.merge_id)),
+        serde_yaml::to_string(model).unwrap().as_bytes(),
     )
     .unwrap();
 }

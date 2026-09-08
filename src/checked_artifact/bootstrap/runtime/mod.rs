@@ -62,11 +62,11 @@ impl WorkspaceRuntimeLease {
         &self.workspace_git_dir_path
     }
 
-    fn workspace_root_handle(&self) -> &cap_std::fs::Dir {
+    fn workspace_root_handle(&self) -> &crate::filesystem::FsDirectory {
         self.workspace_root.handle()
     }
 
-    fn workspace_git_dir_handle(&self) -> &cap_std::fs::Dir {
+    fn workspace_git_dir_handle(&self) -> &crate::filesystem::FsDirectory {
         self.workspace_git_dir.handle()
     }
 
@@ -235,7 +235,9 @@ fn revalidate_workspace_catalog_target(
     )
 }
 
-fn try_advisory_lock(file: cap_std::fs::File) -> Result<Option<AdvisoryLock>, CheckedFsError> {
+fn try_advisory_lock(
+    file: crate::filesystem::FsFile,
+) -> Result<Option<AdvisoryLock>, CheckedFsError> {
     AdvisoryLock::try_acquire(file).map_err(|source| {
         if source.kind() == io::ErrorKind::Unsupported {
             CheckedFsError::unsupported(PlatformCapability::RuntimeAdvisoryLock, source.to_string())

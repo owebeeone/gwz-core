@@ -157,8 +157,19 @@ fn bundle_collision_is_rejected_before_any_preservation_mutation() {
 fn add_failed_member(fixture: &mut PreservationFixture, materialize: bool) {
     let path = fixture.root.path.join("members/b");
     let before = if materialize {
-        fixture.backend.create_repo(&path).unwrap();
-        commit_file(&path, "README.md", "before b\n", "before b", &[]).unwrap()
+        fixture
+            .backend
+            .test_init_repo(&path, &TestRepoSpec::default())
+            .unwrap();
+        fixture_commit_file(
+            &fixture.backend,
+            &path,
+            "README.md",
+            "before b\n",
+            "before b",
+            &[],
+        )
+        .unwrap()
     } else {
         fixture.before.clone()
     };

@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use cap_std::fs::Dir;
+use crate::filesystem::FsDirectory;
 
 use crate::model::{ErrorCode, ModelError};
 
@@ -132,7 +132,7 @@ enum ParentState {
     Missing,
     Invalid,
     Open {
-        dir: Dir,
+        dir: FsDirectory,
         identity: identity::ObjectIdentity,
     },
 }
@@ -143,7 +143,7 @@ enum ParentState {
 /// retained parent and reobserve the exact expected leaf immediately before
 /// their handle-relative linearization point.
 struct CheckedArtifact {
-    root: Dir,
+    root: FsDirectory,
     root_identity: identity::ObjectIdentity,
     canonical_path_identity: Vec<u8>,
     parent_relative: PathBuf,

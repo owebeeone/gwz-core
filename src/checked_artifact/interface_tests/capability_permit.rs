@@ -183,10 +183,10 @@ fn the_legacy_leaf_edges_use_one_source_associated_publication_seam() {
     let residue = include_str!("../residue.rs");
     let callers = format!("{transition}\n{residue}");
 
-    assert!(platform.contains("fn publish_verified_leaf_no_replace("));
+    assert!(platform.contains("fn publish_verified_filesystem_leaf_no_replace("));
     assert_eq!(
         platform
-            .matches("fn publish_verified_leaf_no_replace(")
+            .matches("fn publish_verified_filesystem_leaf_no_replace(")
             .count(),
         1,
         "the legacy leaf publication is one sealed composition, not a family"
@@ -194,12 +194,14 @@ fn the_legacy_leaf_edges_use_one_source_associated_publication_seam() {
     // Edges E18/E19 in transition.rs and E20/E21 in residue.rs.
     assert_eq!(
         transition
-            .matches("publish_verified_leaf_no_replace(")
+            .matches("publish_verified_filesystem_leaf_no_replace(")
             .count(),
         2
     );
     assert_eq!(
-        residue.matches("publish_verified_leaf_no_replace(").count(),
+        residue
+            .matches("publish_verified_filesystem_leaf_no_replace(")
+            .count(),
         2
     );
     for token in [
@@ -295,7 +297,7 @@ fn the_family_staging_name_is_derived_and_allocates_no_retry_name() {
     assert!(residue.contains(r#"let prefix = family_prefix(&family);"#));
     // Both converted edges take the shared resume-aware opener, so neither can
     // drift back to an unconditional `create_new`.
-    assert_eq!(residue.matches("self.staging_options(").count(), 2);
+    assert_eq!(residue.matches("self.open_staging(").count(), 2);
     assert_eq!(residue.matches("scratch_name(").count(), 2);
 }
 
@@ -484,9 +486,10 @@ fn the_shared_leaf_reader_bounds_its_read_by_its_own_fstat() {
     // on exactly this (run 33498089904, 2026-09-01).
     let observation = include_str!("../observation.rs").replace("\r\n", "\n");
 
-    assert!(observation.contains("let bound = opened.len().saturating_add(1);"));
+    assert!(observation.contains("let bound = opened_len.saturating_add(1);"));
     assert!(observation.contains("bytes\n        .try_reserve_exact(capacity)"));
-    assert!(observation.contains(".take(bound)"));
+    assert!(observation.contains("while offset < bound"));
+    assert!(observation.contains(".read_at(&file, offset,"));
     assert!(
         !observation.contains("file.read_to_end(&mut bytes)"),
         "the shared leaf reader regressed to an unbounded read"

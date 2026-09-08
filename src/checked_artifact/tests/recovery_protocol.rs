@@ -112,8 +112,8 @@ fn workspace_policy_proves_one_opened_atomic_rename_domain() {
     };
 
     assert_eq!(
-        identity::rename_domain(managed).unwrap(),
-        identity::rename_domain(&private).unwrap()
+        identity::filesystem_rename_domain(managed).unwrap(),
+        identity::filesystem_rename_domain(&private).unwrap()
     );
 }
 

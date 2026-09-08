@@ -2,11 +2,10 @@
 
 use std::ffi::OsStr;
 
-use cap_std::fs::Dir;
-
 use crate::checked_artifact::capability::{
     CheckedFsError, HostPlatform, PathComponentMode, PathEquivalenceProvider,
 };
+use crate::filesystem::{FileSystem, FsDirectory, make_filesystem};
 
 pub(super) const MAX_CATALOG_ALIAS_PARENT_ENTRIES_V1: usize = 4_096;
 const MAX_CATALOG_ALIAS_NAME_UNITS_V1: usize = 255;
@@ -14,7 +13,7 @@ const MAX_CATALOG_ALIAS_NAME_BYTES_V1: usize = 510;
 const MAX_CATALOG_ALIAS_AGGREGATE_BYTES_V1: usize = 2_088_960;
 
 pub(super) fn reject_equivalent_alias(
-    parent: &Dir,
+    parent: &FsDirectory,
     expected: &OsStr,
     label: &'static str,
 ) -> Result<(), CheckedFsError> {
@@ -23,7 +22,7 @@ pub(super) fn reject_equivalent_alias(
 }
 
 fn reject_equivalent_alias_with_mode(
-    parent: &Dir,
+    parent: &FsDirectory,
     expected: &OsStr,
     mode: PathComponentMode,
     label: &'static str,
@@ -33,17 +32,15 @@ fn reject_equivalent_alias_with_mode(
     }
     let mut entries = 0usize;
     let mut aggregate_bytes = 0usize;
-    for entry in parent
-        .entries()
+    for entry in make_filesystem()
+        .read_directory_at(parent)
         .map_err(|source| CheckedFsError::io("enumerate catalog lease parent", source))?
     {
-        let entry =
-            entry.map_err(|source| CheckedFsError::io("read catalog lease parent", source))?;
         entries = entries.checked_add(1).ok_or_else(alias_capacity_error)?;
         if entries > MAX_CATALOG_ALIAS_PARENT_ENTRIES_V1 {
             return Err(alias_capacity_error());
         }
-        let observed = entry.file_name();
+        let observed = entry.name;
         let (_, encoded_bytes) = native_name_charge(&observed)?;
         aggregate_bytes = aggregate_bytes
             .checked_add(encoded_bytes)
@@ -161,7 +158,7 @@ fn alias_capacity_error() -> CheckedFsError {
 
 #[cfg(test)]
 pub(super) fn reject_equivalent_alias_with_mode_for_test(
-    parent: &Dir,
+    parent: &FsDirectory,
     expected: &OsStr,
     mode: PathComponentMode,
 ) -> Result<(), CheckedFsError> {

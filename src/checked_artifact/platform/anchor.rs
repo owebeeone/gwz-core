@@ -130,7 +130,7 @@ use cap_std::fs::{Dir, OpenOptions};
 use super::super::CheckedArtifactFact;
 use super::super::fault::{CheckedArtifactFault, fault};
 use super::super::identity::{self, ObjectIdentity};
-use super::super::observation::observe_leaf_exact;
+use super::super::observation::observe_native_leaf_exact;
 use super::{
     LeafPublicationSourceV1, error, io_error, leaf_is_resident, prepare_roaming_target,
     publish_verified_leaf_no_replace, roundtrip_name, verify_leaf_bytes,
@@ -553,7 +553,7 @@ fn retired_name(ordinal: u32) -> String {
 }
 
 fn verify(dir: &Dir, name: &OsStr, code: ErrorCode, label: &str) -> ModelResult<ObjectIdentity> {
-    let observed = observe_leaf_exact(dir, name, code, label)?;
+    let observed = observe_native_leaf_exact(dir, name, code, label)?;
     if observed.fact != CheckedArtifactFact::Bytes(ANCHOR_BYTES.to_vec()) {
         return Err(error(
             code,

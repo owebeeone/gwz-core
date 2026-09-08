@@ -71,13 +71,10 @@ fn clean_owner_at_anchor_creates_no_fake_preservation_artifact() {
             .unwrap()
             .is_none()
     );
-    assert!(
-        !crate::stash::bundle_path(
-            &fixture.root.path,
-            &format!("stash_{}", fixture.model.merge_id),
-        )
-        .exists()
-    );
+    assert!(!fs::exists(crate::stash::bundle_path(
+        &fixture.root.path,
+        &format!("stash_{}", fixture.model.merge_id),
+    )));
 }
 
 #[test]
@@ -167,12 +164,13 @@ fn advanced_head_after_durable_stash_intent_is_rejected_without_stashing() {
         Some(PendingPreservationActionV1::Stash { .. })
     ));
 
-    let advanced = commit_file(
+    let advanced = fixture_commit_file(
+        &fixture.backend,
         &fixture.member,
         "advanced-after-intent.txt",
         "advanced after stash intent\n",
         "advance after stash intent",
-        &[fixture.result.parse().unwrap()],
+        std::slice::from_ref(&fixture.result),
     )
     .unwrap();
     let record_path = fixture
@@ -218,18 +216,17 @@ fn root_handoff_mapping_pins_every_non_degenerate_publishing_pair() {
     let publication = fixture.base.model.publication.as_ref().unwrap();
     let candidate = publication.candidate.as_ref().unwrap().clone();
     let marker_path = publication.candidate_marker_path.as_ref().unwrap().clone();
-    let repository = git2::Repository::open(&fixture.base.root.path).unwrap();
     let baseline_lock_oid = git2::Oid::hash_object_ext(
         git2::ObjectType::Blob,
         candidate.baseline_lock_yaml.as_bytes(),
-        repository.object_format(),
+        git2::ObjectFormat::Sha1,
     )
     .unwrap()
     .to_string();
     let candidate_lock_oid = git2::Oid::hash_object_ext(
         git2::ObjectType::Blob,
         candidate.lock_yaml.as_bytes(),
-        repository.object_format(),
+        git2::ObjectFormat::Sha1,
     )
     .unwrap()
     .to_string();
@@ -369,7 +366,7 @@ fn dirty_anchor_fixture(name: &str) -> PreservationFixture {
 }
 
 struct FailFirstPreservationExecution<'a> {
-    inner: ReverseRuntime<'a, Git2Backend>,
+    inner: ReverseRuntime<'a, GitTestRepository>,
     failed: bool,
 }
 

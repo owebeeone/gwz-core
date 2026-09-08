@@ -127,6 +127,74 @@ impl OverlapTracker {
 }
 
 impl GitBackend for TrackingBackend {
+    fn test_init_repo(&self, _repo: &Path, _spec: &crate::git::TestRepoSpec) -> ModelResult<()> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+    fn test_create_commit(
+        &self,
+        _repo: &Path,
+        _spec: &crate::git::TestCommitSpec,
+    ) -> ModelResult<String> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+    fn test_read_commit(&self, _repo: &Path, _oid: &str) -> ModelResult<crate::git::TestCommit> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+    fn test_set_ref(
+        &self,
+        _repo: &Path,
+        _name: &str,
+        _target: Option<&crate::git::TestRefTarget>,
+    ) -> ModelResult<()> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+    fn test_set_head(&self, _repo: &Path, _state: &crate::git::TestHead) -> ModelResult<()> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+    fn test_replace_index(
+        &self,
+        _repo: &Path,
+        _entries: &[crate::git::TestIndexEntry],
+    ) -> ModelResult<()> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+    fn test_read_index(&self, _repo: &Path) -> ModelResult<Vec<crate::git::TestIndexEntry>> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+    fn test_set_config(&self, _repo: &Path, _key: &str, _values: &[String]) -> ModelResult<()> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+    fn test_read_config(&self, _repo: &Path, _key: &str) -> ModelResult<Vec<String>> {
+        Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "fixture operation is not supported by this transfer spy",
+        ))
+    }
+
     fn is_repository(&self, _path: &Path) -> ModelResult<bool> {
         Ok(true)
     }

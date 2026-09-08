@@ -11,14 +11,18 @@ mod service_ambiguity_matrix;
 mod service_durability;
 mod service_fault_matrix;
 
-use crate::git::{Git2Backend, GitBackend};
+use crate::filesystem::{FileSystem, make_filesystem, write_for_test};
+use crate::git::{
+    GitBackend, GitTestRepository, TestCommitSpec, TestHead, TestRefTarget, TestRepoSpec,
+    make_repository,
+};
 use crate::workspace_ops::merge::model::v1::MergeOperationRecordV1;
 use crate::workspace_ops::merge::{MergeTargetKind, OperationState, ParticipantState};
-use crate::workspace_ops::tests::{TempDir, commit_file};
+use crate::workspace_ops::tests::TempDir;
 
 struct ParticipantFixture {
     root: TempDir,
-    backend: Git2Backend,
+    backend: GitTestRepository,
     member: std::path::PathBuf,
     before: String,
     result: String,
@@ -26,23 +30,24 @@ struct ParticipantFixture {
 }
 
 fn integrated_fixture(name: &str) -> ParticipantFixture {
-    let root = TempDir::new_git(name);
-    // Pin conversion off at creation (safe: created empty, never cloned) —
-    // these suites compare worktree bytes with blob bytes on Windows runners.
-    crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
-    let backend = Git2Backend::new();
+    let root = TempDir::new(name);
+    let backend = make_repository();
+    backend
+        .test_init_repo(&root.path, &TestRepoSpec::default())
+        .unwrap();
     let member = root.path.join("members/a");
-    backend.create_repo(&member).unwrap();
-    crate::workspace_ops::tests::pin_fixture_autocrlf(&member);
-    let before = commit_file(&member, "README.md", "before\n", "before", &[]).unwrap();
-    let result = commit_file(
+    backend
+        .test_init_repo(&member, &TestRepoSpec::default())
+        .unwrap();
+    let before = fixture_commit_file(&backend, &member, "README.md", "before\n", "before", &[]);
+    let result = fixture_commit_file(
+        &backend,
         &member,
         "README.md",
         "result\n",
         "result",
-        &[before.parse::<git2::Oid>().unwrap()],
-    )
-    .unwrap();
+        std::slice::from_ref(&before),
+    );
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     model.state = OperationState::RollingBack;
     let row = model.participants.get_mut("mem_a").unwrap();
@@ -65,7 +70,7 @@ fn integrated_fixture(name: &str) -> ParticipantFixture {
 
 struct EvidenceFixture {
     root: TempDir,
-    backend: Git2Backend,
+    backend: GitTestRepository,
     model: MergeOperationRecordV1,
 }
 
@@ -81,29 +86,30 @@ fn staged_evidence_fixture(
     use sha2::{Digest, Sha256};
 
     let root = TempDir::new(name);
-    let backend = Git2Backend::new();
-    backend.create_repo(&root.path).unwrap();
-    crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
+    let backend = make_repository();
+    backend
+        .test_init_repo(&root.path, &TestRepoSpec::default())
+        .unwrap();
     let mut model = crate::workspace_ops::merge::model::v1::test_record();
     if change_lock {
-        use std::io::Write;
-        let mut exclude = std::fs::OpenOptions::new()
-            .append(true)
-            .open(crate::workspace_ops::workspace_exclude_path(&root.path))
-            .unwrap();
-        writeln!(exclude, "/members/a/").unwrap();
+        let exclude = crate::workspace_ops::workspace_exclude_path(&root.path);
+        let mut bytes = make_filesystem().read(&exclude).unwrap();
+        bytes.extend_from_slice(b"/members/a/\n");
+        write_for_test(&exclude, &bytes).unwrap();
         let member = root.path.join("members/a");
-        backend.create_repo(&member).unwrap();
-        crate::workspace_ops::tests::pin_fixture_autocrlf(&member);
-        let member_before = commit_file(&member, "README.md", "before\n", "before", &[]).unwrap();
-        let member_result = commit_file(
+        backend
+            .test_init_repo(&member, &TestRepoSpec::default())
+            .unwrap();
+        let member_before =
+            fixture_commit_file(&backend, &member, "README.md", "before\n", "before", &[]);
+        let member_result = fixture_commit_file(
+            &backend,
             &member,
             "README.md",
             "result\n",
             "result",
-            &[member_before.parse().unwrap()],
-        )
-        .unwrap();
+            std::slice::from_ref(&member_before),
+        );
         let row = model.participants.get_mut("mem_a").unwrap();
         row.path = "members/a".into();
         row.target_kind = MergeTargetKind::Member;
@@ -121,25 +127,28 @@ fn staged_evidence_fixture(
     }
     let baseline_manifest = model.baseline.manifest_yaml.clone().unwrap();
     let baseline_lock = model.baseline.lock_yaml.clone().unwrap();
-    std::fs::create_dir_all(root.path.join("gwz.conf/markers")).unwrap();
-    let manifest_commit = commit_file(
+    make_filesystem()
+        .create_directories(&root.path.join("gwz.conf/markers"))
+        .unwrap();
+    let manifest_commit = fixture_commit_file(
+        &backend,
         &root.path,
         crate::workspace::WORKSPACE_MANIFEST,
         &baseline_manifest,
         "manifest",
         &[],
-    )
-    .unwrap();
-    let baseline = commit_file(
+    );
+    let baseline = fixture_commit_file(
+        &backend,
         &root.path,
         LOCK_PATH,
         &baseline_lock,
         "baseline",
-        &[manifest_commit.parse().unwrap()],
-    )
-    .unwrap();
+        &[manifest_commit],
+    );
     let boundary_path = crate::workspace_ops::workspace_exclude_path(&root.path);
-    let baseline_boundary = std::fs::read_to_string(&boundary_path).unwrap();
+    let baseline_boundary =
+        String::from_utf8(make_filesystem().read(&boundary_path).unwrap()).unwrap();
     let candidate_boundary = if change_boundary {
         format!("{baseline_boundary}candidate boundary\n")
     } else {
@@ -199,8 +208,12 @@ fn staged_evidence_fixture(
     let publication = model.publication.as_ref().unwrap();
     let candidate = publication.candidate.as_ref().unwrap();
     let marker_path = publication.candidate_marker_path.as_ref().unwrap();
-    std::fs::write(root.path.join(LOCK_PATH), &candidate.lock_yaml).unwrap();
-    std::fs::write(root.path.join(marker_path), &candidate.marker_yaml).unwrap();
+    write_for_test(&root.path.join(LOCK_PATH), candidate.lock_yaml.as_bytes()).unwrap();
+    write_for_test(
+        &root.path.join(marker_path),
+        candidate.marker_yaml.as_bytes(),
+    )
+    .unwrap();
     backend
         .stage_paths(&root.path, &[LOCK_PATH, marker_path.as_str()])
         .unwrap();
@@ -209,4 +222,30 @@ fn staged_evidence_fixture(
         backend,
         model,
     }
+}
+
+fn fixture_commit_file(
+    backend: &GitTestRepository,
+    path: &std::path::Path,
+    relative: &str,
+    contents: &str,
+    message: &str,
+    parents: &[String],
+) -> String {
+    write_for_test(&path.join(relative), contents.as_bytes()).unwrap();
+    backend.stage_paths(path, &[relative]).unwrap();
+    let commit = backend
+        .test_create_commit(path, &TestCommitSpec::from_index(message, parents.to_vec()))
+        .unwrap();
+    backend
+        .test_set_ref(
+            path,
+            "refs/heads/main",
+            Some(&TestRefTarget::Direct(commit.clone())),
+        )
+        .unwrap();
+    backend
+        .test_set_head(path, &TestHead::Attached("refs/heads/main".into()))
+        .unwrap();
+    commit
 }

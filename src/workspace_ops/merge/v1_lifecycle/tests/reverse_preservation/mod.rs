@@ -1,5 +1,6 @@
 mod durable_cursor;
 mod entry;
+mod factory_contract;
 mod faults;
 mod invariants;
 mod phases;
@@ -10,9 +11,11 @@ mod root_durability;
 mod root_fault_matrix;
 mod root_successor_matrix;
 
-use std::fs;
-
-use crate::git::{Git2Backend, GitBackend};
+use crate::filesystem::{FileSystem, make_filesystem};
+use crate::git::{
+    GitBackend, GitTestRepository, TestCommitSpec, TestHead, TestRefTarget, TestRepoSpec,
+    make_repository,
+};
 use crate::operation::{ActionKind, OperationContext};
 use crate::workspace_ops::merge::model::v1::{
     MergeOperationRecordV1, PreservationPublicationHandoffV1, PublicationIndexFormV1,
@@ -22,12 +25,59 @@ use crate::workspace_ops::merge::{
     MergeTargetKind, OperationState, ParticipantState, PublicationCandidateHash,
     PublicationProgress, PublicationStep,
 };
-use crate::workspace_ops::tests::{TempDir, commit_file};
+use crate::workspace_ops::tests::TempDir;
 use sha2::{Digest, Sha256};
 
-pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct PreservationFixture {
+mod fs {
+    use super::*;
+    use std::io;
+
+    pub(super) fn create_dir_all(path: impl AsRef<std::path::Path>) -> io::Result<()> {
+        make_filesystem().create_directories(path.as_ref())
+    }
+
+    pub(super) fn write(
+        path: impl AsRef<std::path::Path>,
+        bytes: impl AsRef<[u8]>,
+    ) -> io::Result<()> {
+        let filesystem = make_filesystem();
+        let path = path.as_ref();
+        match filesystem.remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let file = filesystem.create_file(path)?;
+        filesystem.write_all(&file, bytes.as_ref())
+    }
+
+    pub(super) fn read(path: impl AsRef<std::path::Path>) -> io::Result<Vec<u8>> {
+        make_filesystem().read(path.as_ref())
+    }
+
+    pub(super) fn read_to_string(path: impl AsRef<std::path::Path>) -> io::Result<String> {
+        String::from_utf8(read(path)?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    pub(super) fn remove_file(path: impl AsRef<std::path::Path>) -> io::Result<()> {
+        make_filesystem().remove_file(path.as_ref())
+    }
+
+    pub(super) fn remove_dir(path: impl AsRef<std::path::Path>) -> io::Result<()> {
+        make_filesystem().remove_directory(path.as_ref())
+    }
+
+    pub(super) fn exists(path: impl AsRef<std::path::Path>) -> bool {
+        make_filesystem().metadata(path.as_ref()).is_ok()
+    }
+}
+
+pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct PreservationFixture<
+    B = GitTestRepository,
+> {
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) root: TempDir,
-    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) backend: Git2Backend,
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) backend: B,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) member: std::path::PathBuf,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) before: String,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) result: String,
@@ -35,7 +85,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct PreservationFi
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) model: MergeOperationRecordV1,
 }
 
-impl PreservationFixture {
+impl<B> PreservationFixture<B> {
     fn current(&self) -> crate::workspace_ops::merge::v1_lifecycle::checked::StoredV1Record {
         crate::workspace_ops::merge::v1_lifecycle::checked::StoredV1Record::for_test(
             &self.root.path,
@@ -67,36 +117,37 @@ impl PreservationFixture {
 }
 
 fn integrated_fixture(name: &str) -> PreservationFixture {
-    let root = TempDir::new_git(name);
-    // Pin conversion off at creation (safe: created empty, never cloned) —
-    // these suites compare worktree bytes with blob bytes on Windows runners.
-    crate::workspace_ops::tests::pin_fixture_autocrlf(&root.path);
-    // Pin the boundary mode at creation: the runner images' git template tree
-    // ships an executable `info/exclude` that repository creation copies, and
-    // every root gate reading it then refuses (see the helper's doctrine).
-    crate::workspace_ops::merge::v1_lifecycle::tests::fixtures::pin_fixture_boundary_mode(
-        &root.path,
-    );
+    integrated_fixture_using(name, make_repository())
+}
+
+fn integrated_fixture_using<B: GitBackend>(name: &str, backend: B) -> PreservationFixture<B> {
+    let root = TempDir::new(name);
+    backend
+        .test_init_repo(&root.path, &TestRepoSpec::default())
+        .unwrap();
     fs::create_dir_all(root.path.join(crate::stash::STASH_BUNDLE_DIR)).unwrap();
-    let backend = Git2Backend::new();
     let member = root.path.join("members/a");
-    backend.create_repo(&member).unwrap();
-    crate::workspace_ops::tests::pin_fixture_autocrlf(&member);
-    let before = commit_file(&member, "README.md", "before\n", "before", &[]).unwrap();
-    let result = commit_file(
+    backend
+        .test_init_repo(&member, &TestRepoSpec::default())
+        .unwrap();
+    let before =
+        fixture_commit_file(&backend, &member, "README.md", "before\n", "before", &[]).unwrap();
+    let result = fixture_commit_file(
+        &backend,
         &member,
         "README.md",
         "merged\n",
         "merge result",
-        &[before.parse().unwrap()],
+        std::slice::from_ref(&before),
     )
     .unwrap();
-    let protected = commit_file(
+    let protected = fixture_commit_file(
+        &backend,
         &member,
         "feature.txt",
         "post-merge commit\n",
         "post merge",
-        &[result.parse().unwrap()],
+        std::slice::from_ref(&result),
     )
     .unwrap();
 
@@ -148,29 +199,41 @@ fn dirty_integrated_fixture(name: &str) -> PreservationFixture {
     fixture
 }
 
-fn add_integrated_member(
-    fixture: &mut PreservationFixture,
+fn add_integrated_member<B: GitBackend>(
+    fixture: &mut PreservationFixture<B>,
     member_id: &str,
     relative_path: &str,
 ) -> (std::path::PathBuf, String, String, String) {
     let path = fixture.root.path.join(relative_path);
-    fixture.backend.create_repo(&path).unwrap();
-    crate::workspace_ops::tests::pin_fixture_autocrlf(&path);
-    let before = commit_file(&path, "README.md", "before b\n", "before b", &[]).unwrap();
-    let result = commit_file(
+    fixture
+        .backend
+        .test_init_repo(&path, &TestRepoSpec::default())
+        .unwrap();
+    let before = fixture_commit_file(
+        &fixture.backend,
+        &path,
+        "README.md",
+        "before b\n",
+        "before b",
+        &[],
+    )
+    .unwrap();
+    let result = fixture_commit_file(
+        &fixture.backend,
         &path,
         "README.md",
         "merged b\n",
         "merge result b",
-        &[before.parse().unwrap()],
+        std::slice::from_ref(&before),
     )
     .unwrap();
-    let protected = commit_file(
+    let protected = fixture_commit_file(
+        &fixture.backend,
         &path,
         "protected-b.txt",
         "post-merge b\n",
         "post merge b",
-        &[result.parse().unwrap()],
+        std::slice::from_ref(&result),
     )
     .unwrap();
     let mut row = fixture.model.participants["mem_a"].clone();
@@ -199,8 +262,10 @@ fn add_integrated_member(
     (path, before, result, protected)
 }
 
-pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct RootPreservationFixture {
-    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) base: PreservationFixture,
+pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) struct RootPreservationFixture<
+    B = GitTestRepository,
+> {
+    pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) base: PreservationFixture<B>,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) anchor: String,
     pub(in crate::workspace_ops::merge::v1_lifecycle::reverse) protected: String,
 }
@@ -234,16 +299,28 @@ fn dirty_root_handoff_fixture_with_owner(
     include_later_member: bool,
     degenerate_candidate: bool,
 ) -> RootPreservationFixture {
-    let mut base = integrated_fixture(name);
+    dirty_root_handoff_fixture_using(
+        name,
+        selected_root_owner,
+        include_later_member,
+        degenerate_candidate,
+        make_repository(),
+    )
+}
+
+fn dirty_root_handoff_fixture_using<B: GitBackend>(
+    name: &str,
+    selected_root_owner: bool,
+    include_later_member: bool,
+    degenerate_candidate: bool,
+    backend: B,
+) -> RootPreservationFixture<B> {
+    let mut base = integrated_fixture_using(name, backend);
     base.backend
         .set_branch_target_checked(&base.member, "main", &base.protected, &base.result)
         .unwrap();
     if include_later_member {
         add_integrated_member(&mut base, "mem_z", "members/z");
-    }
-    if git2::Repository::open(&base.root.path).is_err() {
-        base.backend.create_repo(&base.root.path).unwrap();
-        crate::workspace_ops::tests::pin_fixture_autocrlf(&base.root.path);
     }
     fs::create_dir_all(base.root.path.join("gwz.conf")).unwrap();
     let manifest = base.model.baseline.manifest_yaml.clone().unwrap();
@@ -283,7 +360,8 @@ fn dirty_root_handoff_fixture_with_owner(
         &crate::artifact::LockArtifact::from_yaml(&lock).unwrap(),
     )
     .unwrap();
-    let first = commit_file(
+    let first = fixture_commit_file(
+        &base.backend,
         &base.root.path,
         crate::workspace::WORKSPACE_MANIFEST,
         &manifest,
@@ -291,12 +369,13 @@ fn dirty_root_handoff_fixture_with_owner(
         &[],
     )
     .unwrap();
-    let root_baseline = commit_file(
+    let root_baseline = fixture_commit_file(
+        &base.backend,
         &base.root.path,
         crate::artifact::LOCK_PATH,
         &lock,
         "baseline lock",
-        &[first.parse().unwrap()],
+        std::slice::from_ref(&first),
     )
     .unwrap();
     base.model.baseline.root_head = Some(root_baseline.clone());
@@ -310,12 +389,13 @@ fn dirty_root_handoff_fixture_with_owner(
             Some(format!("{:x}", Sha256::digest(manifest.as_bytes())));
         base.model.baseline.lock_commit_sha256 =
             Some(format!("{:x}", Sha256::digest(lock.as_bytes())));
-        let root_result = commit_file(
+        let root_result = fixture_commit_file(
+            &base.backend,
             &base.root.path,
             "selected-root.txt",
             "selected root result\n",
             "selected root result",
-            &[root_baseline.parse().unwrap()],
+            std::slice::from_ref(&root_baseline),
         )
         .unwrap();
         let mut row = base.model.participants["mem_a"].clone();
@@ -412,13 +492,19 @@ fn dirty_root_handoff_fixture_with_owner(
         })
         .collect();
 
-    let repository = git2::Repository::open(&base.root.path).unwrap();
-    repository
-        .find_reference("refs/heads/main")
-        .unwrap()
-        .set_target(anchor.parse().unwrap(), "install composition fixture")
+    base.backend
+        .test_set_ref(
+            &base.root.path,
+            "refs/heads/main",
+            Some(&TestRefTarget::Direct(anchor.clone())),
+        )
         .unwrap();
-    repository.set_head("refs/heads/main").unwrap();
+    base.backend
+        .test_set_head(
+            &base.root.path,
+            &TestHead::Attached("refs/heads/main".into()),
+        )
+        .unwrap();
     let publication = base.model.publication.as_ref().unwrap();
     let candidate = publication.candidate.as_ref().unwrap();
     let marker_path = publication.candidate_marker_path.as_ref().unwrap();
@@ -440,12 +526,13 @@ fn dirty_root_handoff_fixture_with_owner(
         )
         .unwrap();
     crate::workspace_ops::publish_workspace_exclude_candidate(&base.root.path, &boundary).unwrap();
-    let protected = commit_file(
+    let protected = fixture_commit_file(
+        &base.backend,
         &base.root.path,
         "root-protected.txt",
         "protected root commit\n",
         "protected root",
-        &[anchor.parse().unwrap()],
+        std::slice::from_ref(&anchor),
     )
     .unwrap();
     fs::write(
@@ -476,8 +563,8 @@ fn dirty_root_handoff_fixture_with_owner(
     }
 }
 
-fn install_root_handoff(
-    fixture: &mut RootPreservationFixture,
+fn install_root_handoff<B: GitBackend>(
+    fixture: &mut RootPreservationFixture<B>,
     prefix: PublicationPrefixV1,
     index: PublicationIndexFormV1,
 ) {
@@ -521,7 +608,7 @@ fn install_root_handoff(
 
     let marker = fixture.base.root.path.join(&marker_path);
     fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    if marker.exists() {
+    if fs::exists(&marker) {
         fs::remove_file(&marker).unwrap();
     }
     fs::write(
@@ -577,7 +664,7 @@ fn install_root_handoff(
         Some(PreservationPublicationHandoffV1::Candidate { prefix, index });
 }
 
-fn install_selected_root_no_candidate_handoff(fixture: &mut RootPreservationFixture) {
+fn install_selected_root_no_candidate_handoff<B>(fixture: &mut RootPreservationFixture<B>) {
     let selected_anchor = fixture.base.model.participants["@root"]
         .resulting_commit
         .clone()
@@ -597,15 +684,13 @@ fn evidence_pending_non_root_fixture(name: &str) -> PreservationFixture {
     );
 
     let baseline = fixture.base.model.baseline.root_head.clone().unwrap();
-    let repository = git2::Repository::open(&fixture.base.root.path).unwrap();
-    let object = repository
-        .find_object(baseline.parse().unwrap(), None)
-        .unwrap();
-    repository
-        .reset(&object, git2::ResetType::Hard, None)
+    fixture
+        .base
+        .backend
+        .test_force_checkout(&fixture.base.root.path, &baseline)
         .unwrap();
     let root_untracked = fixture.base.root.path.join("root-untracked.txt");
-    if root_untracked.exists() {
+    if fs::exists(&root_untracked) {
         fs::remove_file(root_untracked).unwrap();
     }
 
@@ -639,4 +724,25 @@ fn evidence_pending_non_root_fixture(name: &str) -> PreservationFixture {
     .unwrap();
 
     fixture.base
+}
+
+fn fixture_commit_file<B: GitBackend>(
+    backend: &B,
+    path: &std::path::Path,
+    relative: &str,
+    contents: &str,
+    message: &str,
+    parents: &[String],
+) -> crate::model::ModelResult<String> {
+    fs::write(path.join(relative), contents).unwrap();
+    backend.stage_paths(path, &[relative])?;
+    let commit =
+        backend.test_create_commit(path, &TestCommitSpec::from_index(message, parents.to_vec()))?;
+    backend.test_set_ref(
+        path,
+        "refs/heads/main",
+        Some(&TestRefTarget::Direct(commit.clone())),
+    )?;
+    backend.test_set_head(path, &TestHead::Attached("refs/heads/main".into()))?;
+    Ok(commit)
 }

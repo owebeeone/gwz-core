@@ -13,7 +13,10 @@ struct CanonicalEntry {
     extended_flags: u16,
 }
 
-pub(super) fn validate_spec(root: &Path, spec: &GitRootPreservationSpec) -> ModelResult<()> {
+pub(in crate::git::gitbackend) fn validate_spec(
+    root: &Path,
+    spec: &GitRootPreservationSpec,
+) -> ModelResult<()> {
     let repo = open_repo(root)?;
     let marker = spec.managed_marker_path.as_str();
     let prefix = format!("{}/", crate::artifact::MARKER_DIR);
@@ -170,7 +173,10 @@ fn present_fact(
     }))
 }
 
-pub(super) fn observe(root: &Path, expected: &GitRootManagedIndexForm) -> ModelResult<bool> {
+pub(in crate::git::gitbackend) fn observe(
+    root: &Path,
+    expected: &GitRootManagedIndexForm,
+) -> ModelResult<bool> {
     let repo = open_repo(root)?;
     let index = super::index_format::read(&repo)?;
     validate_marker_namespace(&index, fact_path(&expected.marker))?;
@@ -223,7 +229,10 @@ fn observe_fact(
     }
 }
 
-pub(super) fn rewrite(root: &Path, goal: &GitRootManagedIndexForm) -> ModelResult<()> {
+pub(in crate::git::gitbackend) fn rewrite(
+    root: &Path,
+    goal: &GitRootManagedIndexForm,
+) -> ModelResult<()> {
     let repo = open_repo(root)?;
     let raw_before = super::index_format::read(&repo)?;
     validate_marker_namespace(&raw_before, fact_path(&goal.marker))?;

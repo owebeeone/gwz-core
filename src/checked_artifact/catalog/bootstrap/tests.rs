@@ -633,14 +633,11 @@ fn a_legacy_drive_after_bootstrap_leaves_the_catalog_recoverable() {
     // platforms and carried into the Windows first-dispatch obligation:
     // `platform::prepare_private` is the only planter of
     // `.ca1-durability-anchor-<32hex>` (Windows arm, `platform.rs:687-695`),
-    // and the only production files NAMING it are its definer and its one
-    // caller — `residue.rs:102`, inside the legacy writer's `open_private`.
+    // and its filesystem adapter now lives beside it in `platform.rs`; no
+    // legacy writer outside that boundary names the native primitive.
     // The catalog's directory therefore cannot acquire an anchor, on any
     // platform, by construction rather than by test.
-    assert_eq!(
-        production_namers_of_prepare_private(),
-        ["platform.rs", "residue.rs"]
-    );
+    assert_eq!(production_namers_of_prepare_private(), ["platform.rs"]);
 
     // Still recoverable — the criterion itself.
     retained.revalidate_for_test().unwrap();

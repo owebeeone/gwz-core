@@ -9,6 +9,8 @@ use crate::checked_artifact::capability::{
     CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1, HostPlatform,
     PathComponentMode, PathEquivalenceProvider, SupportedFilesystemProfile,
 };
+use crate::filesystem::{FileSystem, FsKind, make_filesystem};
+use crate::git::{GitRepository, make_repository};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CatalogAssociationDirectoryBindingV1 {
@@ -42,10 +44,12 @@ pub(super) struct RetainedCatalogGitAssociationV1 {
 
 impl RetainedCatalogGitAssociationV1 {
     pub(super) fn retain(path: &Path) -> Result<Self, CheckedFsError> {
-        let repository = git2::Repository::open(path).map_err(git_error)?;
+        let repository = make_repository()
+            .repository_paths(path)
+            .map_err(git_error)?;
         let (request_binding, request) =
             RetainedAssociationDirectoryV1::retain(path, "catalog repository/worktree request")?;
-        let (worktree_binding, worktree) = match repository.workdir() {
+        let (worktree_binding, worktree) = match repository.worktree.as_deref() {
             Some(path) => {
                 let (binding, retained) =
                     RetainedAssociationDirectoryV1::retain(path, "catalog worktree")?;
@@ -54,11 +58,11 @@ impl RetainedCatalogGitAssociationV1 {
             None => (None, None),
         };
         let (actual_git_binding, actual_git_directory) = RetainedAssociationDirectoryV1::retain(
-            repository.path(),
+            &repository.git_dir,
             "catalog actual Git directory",
         )?;
         let (common_git_binding, common_git_directory) = RetainedAssociationDirectoryV1::retain(
-            repository.commondir(),
+            &repository.common_dir,
             "catalog common Git directory",
         )?;
         let binding = CatalogGitAssociationBindingV1 {
@@ -105,12 +109,14 @@ impl RetainedCatalogGitAssociationV1 {
             "catalog common Git directory",
         )?;
 
-        let repository =
-            git2::Repository::open(&self.binding.request.canonical_path).map_err(git_error)?;
-        let actual = canonical_directory(repository.path(), "catalog actual Git directory")?;
-        let common = canonical_directory(repository.commondir(), "catalog common Git directory")?;
+        let repository = make_repository()
+            .repository_paths(&self.binding.request.canonical_path)
+            .map_err(git_error)?;
+        let actual = canonical_directory(&repository.git_dir, "catalog actual Git directory")?;
+        let common = canonical_directory(&repository.common_dir, "catalog common Git directory")?;
         let worktree = repository
-            .workdir()
+            .worktree
+            .as_deref()
             .map(|path| canonical_directory(path, "catalog worktree"))
             .transpose()?;
         if actual != self.binding.actual_git_directory.canonical_path
@@ -194,20 +200,24 @@ impl RetainedAssociationDirectoryV1 {
 }
 
 fn canonical_directory(path: &Path, label: &'static str) -> Result<PathBuf, CheckedFsError> {
-    let input = std::fs::symlink_metadata(path)
+    let filesystem = make_filesystem();
+    let input = filesystem
+        .metadata(path)
         .map_err(|source| CheckedFsError::io("observe catalog association input", source))?;
-    if !input.is_dir() || input.file_type().is_symlink() {
+    if input.kind != FsKind::Directory {
         return Err(CheckedFsError::ambiguous(
             label,
             "expected a no-follow directory",
         ));
     }
-    std::fs::canonicalize(path)
+    filesystem
+        .canonical_path(path)
         .map_err(|source| CheckedFsError::io("canonicalize catalog association directory", source))
         .and_then(|canonical| {
-            let metadata = std::fs::symlink_metadata(&canonical)
+            let metadata = filesystem
+                .metadata(&canonical)
                 .map_err(|source| CheckedFsError::io("observe catalog association", source))?;
-            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            if metadata.kind != FsKind::Directory {
                 return Err(CheckedFsError::ambiguous(
                     label,
                     "expected a no-follow directory",
@@ -217,9 +227,9 @@ fn canonical_directory(path: &Path, label: &'static str) -> Result<PathBuf, Chec
         })
 }
 
-fn git_error(error: git2::Error) -> CheckedFsError {
+fn git_error(error: crate::model::ModelError) -> CheckedFsError {
     CheckedFsError::io(
         "open catalog target repository",
-        std::io::Error::other(error.message().to_owned()),
+        std::io::Error::other(error.to_string()),
     )
 }

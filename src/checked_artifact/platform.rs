@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 
 use cap_std::fs::Dir;
 
+use crate::filesystem::{FileSystem, FsDirectory, RenameMode, make_filesystem};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 /// The closed durability-anchor protocol (R2-D Phase 4 Step 4.2, freeze §4.3 row
@@ -238,6 +239,113 @@ pub(super) fn publish_verified_leaf_no_replace(
         return Err(error(code, label, "publication source bytes changed"));
     }
     rename_open_source(&handle, destination_dir, destination, false, code, label)
+}
+
+pub(super) fn publish_verified_filesystem_leaf_no_replace(
+    source_dir: &FsDirectory,
+    source: &OsStr,
+    destination_dir: &FsDirectory,
+    destination: &OsStr,
+    expected: &LeafPublicationSourceV1<'_>,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
+    let filesystem = make_filesystem();
+    let handle = filesystem
+        .open_file_at(source_dir, source)
+        .map_err(|cause| io_error(code, label, cause))?;
+    let observed = super::identity::filesystem_file_identity(&handle).map_err(|cause| {
+        ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            format!("checked {label}: durable filesystem identity is unsupported: {cause}"),
+        )
+    })?;
+    if observed != *expected.identity
+        || !filesystem
+            .file_entry_matches(source_dir, source, &handle)
+            .map_err(|cause| io_error(code, label, cause))?
+    {
+        return Err(error(code, label, "publication source identity changed"));
+    }
+    let opened_len = filesystem
+        .file_len(&handle)
+        .map_err(|cause| io_error(code, label, cause))?;
+    let bound = opened_len.saturating_add(1);
+    let capacity = usize::try_from(bound)
+        .map_err(|_| error(code, label, "publication source is too large"))?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(capacity).map_err(|_| {
+        error(
+            code,
+            label,
+            "publication source verification allocation failed",
+        )
+    })?;
+    let mut offset = 0_u64;
+    let mut chunk = [0_u8; 8192];
+    while offset < bound {
+        let remaining = usize::try_from((bound - offset).min(chunk.len() as u64))
+            .expect("bounded publication read chunk fits usize");
+        match filesystem.read_at(&handle, offset, &mut chunk[..remaining]) {
+            Ok(0) => break,
+            Ok(count) => {
+                bytes.extend_from_slice(&chunk[..count]);
+                offset += count as u64;
+            }
+            Err(cause) if cause.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(cause) => return Err(io_error(code, label, cause)),
+        }
+    }
+    if bytes != expected.bytes
+        || !filesystem
+            .file_entry_matches(source_dir, source, &handle)
+            .map_err(|cause| io_error(code, label, cause))?
+    {
+        return Err(error(code, label, "publication source bytes changed"));
+    }
+    filesystem
+        .rename_at(
+            source_dir,
+            source,
+            destination_dir,
+            destination,
+            RenameMode::NoReplace,
+        )
+        .map_err(|cause| io_error(code, label, cause))
+}
+
+pub(super) fn prepare_filesystem_private(
+    dir: &FsDirectory,
+    create: bool,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
+    if dir.is_memory() {
+        return make_filesystem()
+            .sync_directory_at(dir)
+            .map_err(|cause| io_error(code, label, cause));
+    }
+    crate::filesystem::native::with_directory(dir, |native| {
+        prepare_private(native, create, code, label)
+    })
+    .map_err(|cause| io_error(code, label, cause))?
+}
+
+pub(super) fn filesystem_private_barrier(
+    dir: &FsDirectory,
+    class: DirentBarrierClass<'_>,
+    code: ErrorCode,
+    label: &str,
+) -> ModelResult<()> {
+    if dir.is_memory() {
+        return make_filesystem()
+            .sync_directory_at(dir)
+            .map_err(|cause| io_error(code, label, cause));
+    }
+    crate::filesystem::native::with_directory(dir, |native| {
+        private_barrier(native, class, code, label)
+    })
+    .map_err(|cause| io_error(code, label, cause))?
 }
 
 #[cfg(not(windows))]
@@ -529,7 +637,7 @@ pub(super) fn prepare_roaming_target(
 /// inspection of its own.
 fn leaf_is_resident(dir: &Dir, name: &OsStr, code: ErrorCode, label: &str) -> ModelResult<bool> {
     Ok(
-        super::observation::observe_leaf_exact(dir, name, code, label)?.fact
+        super::observation::observe_native_leaf_exact(dir, name, code, label)?.fact
             != super::CheckedArtifactFact::Missing,
     )
 }
@@ -543,7 +651,7 @@ fn verify_leaf_bytes(
     code: ErrorCode,
     label: &str,
 ) -> ModelResult<super::identity::ObjectIdentity> {
-    let observed = super::observation::observe_leaf_exact(dir, name, code, label)?;
+    let observed = super::observation::observe_native_leaf_exact(dir, name, code, label)?;
     if observed.fact != super::CheckedArtifactFact::Bytes(bytes.to_vec()) {
         return Err(error(code, label, "roaming anchor alias bytes are invalid"));
     }
