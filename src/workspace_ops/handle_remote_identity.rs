@@ -1,11 +1,13 @@
 use std::path::Path;
 
 use super::*;
-use crate::git::{GitBackend, resolve_ssh_identity_path, validate_ssh_identity_file};
+use crate::git::{
+    GitBackend, MergeAuthorityBackend, resolve_ssh_identity_path, validate_ssh_identity_file,
+};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OpenMergeCommand, OperationRequest};
 
-pub fn handle_remote_identity<B: GitBackend>(
+pub fn handle_remote_identity<B: GitBackend + MergeAuthorityBackend>(
     backend: &B,
     start: &Path,
     request: crate::RemoteIdentityRequest,
@@ -13,7 +15,7 @@ pub fn handle_remote_identity<B: GitBackend>(
 ) -> ModelResult<crate::RemoteIdentityResponse> {
     let context = OperationRequest::RemoteIdentity(request.clone()).context(operation_id)?;
     let dry = request.meta.dry_run.unwrap_or(false);
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let access = acquire_workspace_mutation_guard_in(
         &services,
         start,
@@ -22,7 +24,7 @@ pub fn handle_remote_identity<B: GitBackend>(
         dry || request.op == crate::RemoteIdentityOp::Get,
     )?;
     let root = access.root();
-    let manifest = crate::artifact::read_manifest(root)?;
+    let manifest = crate::artifact::read_manifest_in(services.filesystem(), root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     if request.remote.trim().is_empty() {
         return Err(ModelError::new(

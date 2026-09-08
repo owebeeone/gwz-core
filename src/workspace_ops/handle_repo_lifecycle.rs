@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 use crate::artifact::{
     self, ArtifactSourceKind, ManifestArtifact, ManifestMember, RemoteArtifact,
     ResolvedMemberArtifact,
 };
-use crate::git::GitBackend;
+use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::{EventEmitter, EventSink, OpenMergeCommand, OperationRequest};
 use crate::workspace::MemberPath;
@@ -41,13 +40,13 @@ pub fn handle_clone_repo_member<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::CloneRepoMemberResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    let services = crate::operation_context::OperationServices::existing();
     let context =
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::CloneRepoMemberResponse> = (|| {
         let dry_run = request.meta.dry_run.unwrap_or(false);
@@ -64,7 +63,7 @@ where
             OpenMergeCommand::RepoMutate,
             reconcile_authority(_guard.as_ref(), dry_run),
         )?;
-        let mut manifest = artifact::read_manifest(&root)?;
+        let mut manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
         assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
         let plan = single_source_plan(&manifest, &request)?;
         let member_root = root.join(plan.path.as_str());
@@ -127,7 +126,7 @@ where
         let (member, locked, verified_commits, warning) = match inspected {
             Ok(inspected) => inspected,
             Err(error) => {
-                let _ = fs::remove_dir_all(&member_root);
+                let _ = services.filesystem().remove_tree(&member_root);
                 emitter.operation_finished();
                 return Err(error);
             }
@@ -136,30 +135,35 @@ where
         manifest.members.push(member.clone());
         let lock = (|| {
             manifest.validate()?;
-            let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+            let mut lock =
+                read_lock_or_empty_in(services.filesystem(), &root, &manifest.workspace.id)?;
             lock.members.insert(member.id.clone(), locked.clone());
             Ok::<_, ModelError>(lock)
         })();
         let lock = match lock {
             Ok(lock) => lock,
             Err(error) => {
-                let _ = fs::remove_dir_all(&member_root);
+                let _ = services.filesystem().remove_tree(&member_root);
                 emitter.operation_finished();
                 return Err(error);
             }
         };
-        // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: repo lifecycle runs under `guarded_workspace_root(RepoMutate)`, so all three writer pairs stay raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
-        if let Err(error) = artifact::write_manifest_and_lock(&root, &manifest, &lock) {
-            let published = artifact::read_manifest(&root)
+        // Publish through this invocation's filesystem, then refresh the local Git boundary.
+        if let Err(error) =
+            artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)
+        {
+            let published = artifact::read_manifest_in(services.filesystem(), &root)
                 .map(|current| current.members.iter().any(|item| item.id == member.id))
                 .unwrap_or(false);
             if !published {
-                let _ = fs::remove_dir_all(&member_root);
+                let _ = services.filesystem().remove_tree(&member_root);
             }
             emitter.operation_finished();
             return Err(error);
         }
-        if let Err(error) = sync_workspace_boundary(backend, &root, &manifest, &lock) {
+        if let Err(error) =
+            sync_workspace_boundary_in(services.filesystem(), backend, &root, &manifest, &lock)
+        {
             emitter.operation_finished();
             return Err(error);
         }
@@ -199,9 +203,9 @@ pub fn handle_detach_repo_member<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::DetachRepoMemberResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let context =
         OperationRequest::DetachRepoMember(request.clone()).context(operation_id.into())?;
     let selector = validate_single_detach_selector(request.meta.selection.as_ref())?;
@@ -219,7 +223,7 @@ where
         OpenMergeCommand::RepoMutate,
         reconcile_authority(_guard.as_ref(), dry_run),
     )?;
-    let mut manifest = artifact::read_manifest(&root)?;
+    let mut manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let index = resolve_detach_member_index(&manifest, &selector)?;
     let member = manifest.members[index].clone();
@@ -241,10 +245,10 @@ where
 
     manifest.members[index].active = false;
     manifest.validate()?;
-    let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+    let mut lock = read_lock_or_empty_in(services.filesystem(), &root, &manifest.workspace.id)?;
     lock.members.remove(&member.id);
-    artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-    sync_workspace_boundary(backend, &root, &manifest, &lock)?;
+    artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)?;
+    sync_workspace_boundary_in(services.filesystem(), backend, &root, &manifest, &lock)?;
 
     let mut response = response_envelope(
         context,
@@ -277,9 +281,9 @@ pub fn handle_attach_repo_member<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::AttachRepoMemberResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let context =
         OperationRequest::AttachRepoMember(request.clone()).context(operation_id.into())?;
     let member_id = validate_single_attach_selector(request.meta.selection.as_ref())?;
@@ -297,7 +301,7 @@ where
         OpenMergeCommand::RepoMutate,
         reconcile_authority(_guard.as_ref(), dry_run),
     )?;
-    let mut manifest = artifact::read_manifest(&root)?;
+    let mut manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
     let index = manifest
         .members
@@ -355,11 +359,13 @@ where
     emitter.operation_started();
     emitter.member_started(&prepared.member.id, &prepared.member.path);
     apply_prepared_attach(&mut manifest, &prepared)?;
-    let mut lock = read_lock_or_empty(&root, &manifest.workspace.id)?;
+    let mut lock = read_lock_or_empty_in(services.filesystem(), &root, &manifest.workspace.id)?;
     lock.members
         .insert(prepared.member.id.clone(), prepared.locked.clone());
-    artifact::write_manifest_and_lock(&root, &manifest, &lock)?;
-    if let Err(error) = sync_workspace_boundary(backend, &root, &manifest, &lock) {
+    artifact::write_manifest_and_lock_in(services.filesystem(), &root, &manifest, &lock)?;
+    if let Err(error) =
+        sync_workspace_boundary_in(services.filesystem(), backend, &root, &manifest, &lock)
+    {
         emitter.operation_finished();
         return Err(error);
     }

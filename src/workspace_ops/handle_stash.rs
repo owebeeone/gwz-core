@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::artifact::{self, ArtifactSourceKind, ManifestArtifact, ManifestMember};
 use crate::git::{
     GitBackend, GitStashPushOptions, GitStashRestoreOptions, GitStashTarget, GitStatus,
-    GitStatusOptions,
+    GitStatusOptions, MergeAuthorityBackend,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OpenMergeCommand, OperationRequest};
@@ -31,9 +31,9 @@ pub fn handle_stash<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::StashResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let context = OperationRequest::Stash(request.clone()).context(operation_id.into())?;
     let (_guard, root) = if request.op == crate::StashOp::List {
         (
@@ -65,9 +65,9 @@ where
             reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
         )?;
     }
-    let manifest = artifact::read_manifest(&root)?;
+    let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let lock = artifact::read_lock(&root)?;
+    let lock = artifact::read_lock_in(services.filesystem(), &root)?;
 
     match request.op {
         crate::StashOp::Push => handle_stash_push(backend, root, manifest, request, context),

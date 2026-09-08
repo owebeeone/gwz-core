@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::artifact::{
     self, CreatedByArtifact, LockArtifact, ManifestArtifact, ManifestMember, ResolvedMemberArtifact,
 };
-use crate::git::{GitBackend, git_host};
+use crate::git::{GitBackend, MergeAuthorityBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
     EventEmitter, EventSink, OpenMergeCommand, OperationRequest, par_map_per_host, resolve_jobs,
@@ -21,10 +21,10 @@ pub fn handle_snapshot<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::SnapshotResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
     let context = OperationRequest::Snapshot(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let access = acquire_workspace_mutation_guard_in(
         &services,
         start,
@@ -97,10 +97,10 @@ pub fn handle_capture<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::CaptureResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
     let context = OperationRequest::Capture(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let access = acquire_workspace_mutation_guard_in(
         &services,
         start,
@@ -157,12 +157,12 @@ pub fn handle_materialize<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::MaterializeResponse>
 where
-    B: GitBackend + Sync,
+    B: GitBackend + MergeAuthorityBackend + Sync,
 {
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::MaterializeResponse> = (|| {
         let (_guard, root) = guarded_workspace_root_in(
@@ -697,7 +697,7 @@ pub fn handle_pull_snapshot<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::PullSnapshotResponse>
 where
-    B: GitBackend + Sync,
+    B: GitBackend + MergeAuthorityBackend + Sync,
 {
     let context = OperationRequest::PullSnapshot(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;

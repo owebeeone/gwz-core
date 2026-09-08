@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 use crate::artifact::{self, ManifestArtifact, ResolvedMemberArtifact};
-use crate::git::{GitBackend, GitHeadState};
+use crate::git::{GitBackend, GitHeadState, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OpenMergeCommand, OperationRequest};
 
@@ -31,10 +31,10 @@ pub fn handle_commit<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::CommitResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
     let context = OperationRequest::Commit(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let access = acquire_workspace_mutation_guard_in(
         &services,
         start,
@@ -44,9 +44,9 @@ where
     )?;
     let root = access.root().to_path_buf();
     assert_conf_unmodified_for(backend, &root, OpenMergeCommand::Commit, access.writes())?;
-    let manifest = artifact::read_manifest(&root)?;
+    let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let lock = artifact::read_lock(&root)?;
+    let lock = artifact::read_lock_in(services.filesystem(), &root)?;
     let selected_targets = resolve_action_targets(
         &manifest,
         request.meta.selection.as_ref(),
@@ -190,7 +190,7 @@ where
     if committed_member {
         // Observe → re-lock from the post-commit member HEADs (the capture machinery).
         let members = observed_member_map(backend, &root, &manifest, &lock, &selected)?;
-        let mut next = read_lock_or_empty(&root, &manifest.workspace.id)?;
+        let mut next = read_lock_or_empty_in(services.filesystem(), &root, &manifest.workspace.id)?;
         for (member_id, state) in &members {
             next.members.insert(member_id.clone(), state.clone());
         }
@@ -230,12 +230,24 @@ where
         )?;
         // Refresh the boundary excludes + stage gwz.conf so the lock update and marker
         // land in the root commit.
-        sync_workspace_boundary(backend, &root, &manifest, &lock_for_boundary)?;
+        sync_workspace_boundary_in(
+            services.filesystem(),
+            backend,
+            &root,
+            &manifest,
+            &lock_for_boundary,
+        )?;
     } else if committed_member {
         // Refresh the boundary excludes + stage gwz.conf so the lock update (the
         // post-commit member HEADs) lands in the root commit when the root is selected —
         // and, when it is not, stays staged in the root index for the user to commit.
-        sync_workspace_boundary(backend, &root, &manifest, &lock_for_boundary)?;
+        sync_workspace_boundary_in(
+            services.filesystem(),
+            backend,
+            &root,
+            &manifest,
+            &lock_for_boundary,
+        )?;
     }
 
     // Commit the root last. This covers both the lock update from member commits
@@ -249,7 +261,7 @@ where
     };
 
     let mut rows = if committed_member {
-        let next = artifact::read_lock(&root)?;
+        let next = artifact::read_lock_in(services.filesystem(), &root)?;
         locked_member_responses(&manifest, &next.members)
     } else {
         Vec::new()

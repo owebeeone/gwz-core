@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::artifact::{self, ManifestArtifact, ManifestMember};
-use crate::git::{GitBackend, GitBranch};
+use crate::git::{GitBackend, GitBranch, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OpenMergeCommand, OperationContext, OperationRequest};
 
@@ -15,9 +15,9 @@ pub fn handle_branch<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::BranchResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     if request.op == crate::BranchOp::Merge {
         return Err(ModelError::new(
             ErrorCode::DeprecatedOperation,
@@ -51,20 +51,22 @@ where
             reconcile_authority(_guard.as_ref(), request.meta.dry_run.unwrap_or(false)),
         )?;
     }
-    let manifest = artifact::read_manifest(&root)?;
+    let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let lock = artifact::read_lock(&root)?;
+    let lock = artifact::read_lock_in(services.filesystem(), &root)?;
     let selected = resolve_locked_action_selection(
         &manifest,
         &lock,
         request.meta.selection.as_ref(),
         crate::ActionKind::Branch,
     )?;
-    let repos = selected_member_repos(backend, &root, &manifest, &selected)?;
+    let repos = selected_member_repos(&services, backend, &root, &manifest, &selected)?;
 
     match request.op {
         crate::BranchOp::List => list_branches(backend, context, &repos),
-        crate::BranchOp::Create => create_branch(backend, &root, request, context, &repos),
+        crate::BranchOp::Create => {
+            create_branch(&services, backend, &root, request, context, &repos)
+        }
         crate::BranchOp::Delete => delete_branch(backend, request, context, &repos),
         crate::BranchOp::Merge => unreachable!("deprecated above"),
     }
@@ -86,6 +88,7 @@ struct CreatePlan {
 }
 
 fn selected_member_repos<B: GitBackend>(
+    services: &crate::operation_context::OperationServices,
     backend: &B,
     root: &Path,
     manifest: &ManifestArtifact,
@@ -110,7 +113,7 @@ fn selected_member_repos<B: GitBackend>(
         }
         let member = manifest_member(manifest, member_id)?;
         let path = root.join(&member.path);
-        if !path.exists() || !backend.is_repository(&path)? {
+        if services.filesystem().metadata(&path).is_err() || !backend.is_repository(&path)? {
             return Err(ModelError::new(
                 ErrorCode::MemberNotFound,
                 format!("member '{member_id}' is not materialized"),
@@ -164,6 +167,7 @@ fn list_branches<B: GitBackend>(
 }
 
 fn create_branch<B: GitBackend>(
+    services: &crate::operation_context::OperationServices,
     backend: &B,
     root: &Path,
     request: crate::BranchRequest,
@@ -175,7 +179,7 @@ fn create_branch<B: GitBackend>(
     let switch_after_create = request.switch_after_create.unwrap_or(false);
     let plans = create_preflight(backend, repos, &branch, start_ref, switch_after_create)?;
     if switch_after_create {
-        validate_root_branch_participants(backend, root, &plans)?;
+        validate_root_branch_participants(services, backend, root, &plans)?;
     }
 
     if request.meta.dry_run.unwrap_or(false) {
@@ -252,14 +256,14 @@ fn create_branch<B: GitBackend>(
     }
 
     let response_members = if switch_after_create && !observed_states.is_empty() {
-        let manifest = artifact::read_manifest(root)?;
-        let mut next = read_lock_or_empty(root, &manifest.workspace.id)?;
+        let manifest = artifact::read_manifest_in(services.filesystem(), root)?;
+        let mut next = read_lock_or_empty_in(services.filesystem(), root, &manifest.workspace.id)?;
         for (member_id, observed) in &observed_states {
             next.members.insert(member_id.clone(), observed.clone());
         }
         // CAPABILITY-FREE EXCEPTION, §10 rows `:278`/`:279`: `gwz branch` is under the mutation guard, so this lock and boundary pair stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
         artifact::write_lock(root, &next)?;
-        sync_workspace_boundary(backend, root, &manifest, &next)?;
+        sync_workspace_boundary_in(services.filesystem(), backend, root, &manifest, &next)?;
         locked_member_responses(&manifest, &observed_states)
     } else {
         Vec::new()
@@ -325,6 +329,7 @@ fn delete_branch<B: GitBackend>(
 }
 
 fn validate_root_branch_participants<B: GitBackend>(
+    services: &crate::operation_context::OperationServices,
     backend: &B,
     root: &Path,
     plans: &[CreatePlan],
@@ -350,7 +355,7 @@ fn validate_root_branch_participants<B: GitBackend>(
         .ok_or_else(refused)?;
     let destination =
         ManifestArtifact::from_yaml(std::str::from_utf8(&bytes).map_err(|_| refused())?)?;
-    let current = artifact::read_manifest(root)?;
+    let current = artifact::read_manifest_in(services.filesystem(), root)?;
     if destination.workspace.id != current.workspace.id {
         return Err(refused());
     }

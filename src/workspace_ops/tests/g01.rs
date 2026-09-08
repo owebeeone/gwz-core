@@ -333,6 +333,8 @@ pub(crate) fn pull_head_fetches_selected_members_in_parallel() {
     let temp = TempDir::new("pull-parallel");
     handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
     let backend = TrackingBackend::new(2);
+    let world = crate::operation_context::TestWorld::physical();
+    let services = world.context();
     write_pull_fixture(
         temp.path(),
         vec![
@@ -351,7 +353,8 @@ pub(crate) fn pull_head_fetches_selected_members_in_parallel() {
         ],
     );
 
-    let response = handle_pull_head_with_events(
+    let response = handle_pull_head_with_events_in(
+        &services,
         &backend,
         temp.path(),
         pull_head_request(),
@@ -372,6 +375,8 @@ pub(crate) fn push_runs_selected_members_in_parallel() {
     let temp = TempDir::new("push-parallel");
     handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
     let backend = TrackingBackend::new(2);
+    let world = crate::operation_context::TestWorld::physical();
+    let services = world.context();
     write_pull_fixture(
         temp.path(),
         vec![
@@ -390,7 +395,8 @@ pub(crate) fn push_runs_selected_members_in_parallel() {
         ],
     );
 
-    let response = handle_push_with_events(
+    let response = handle_push_with_events_in(
+        &services,
         &backend,
         temp.path(),
         push_request(None, None),

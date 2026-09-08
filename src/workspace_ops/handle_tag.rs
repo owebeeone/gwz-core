@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::artifact;
-use crate::git::GitBackend;
+use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OpenMergeCommand, OperationRequest};
 
@@ -19,12 +19,12 @@ pub fn handle_tag<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::TagResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::TagResponse> = (|| {
         let dry_run = request.meta.dry_run.unwrap_or(false);
@@ -52,9 +52,9 @@ where
                 access.writes(),
             )?;
         }
-        let manifest = artifact::read_manifest(&root)?;
+        let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
         assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-        let lock = artifact::read_lock(&root)?;
+        let lock = artifact::read_lock_in(services.filesystem(), &root)?;
         let selected = resolve_locked_action_selection(
             &manifest,
             &lock,

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::artifact::{self, ArtifactSourceKind, ManifestMember};
-use crate::git::{GitBackend, GitHeadState, git_host};
+use crate::git::{GitBackend, GitHeadState, MergeAuthorityBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
     EventEmitter, EventSink, NullSink, OpenMergeCommand, OperationRequest, par_map_per_host,
@@ -17,7 +17,7 @@ pub fn handle_push<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::PushResponse>
 where
-    B: GitBackend + Sync,
+    B: GitBackend + MergeAuthorityBackend + Sync,
 {
     handle_push_with_events(backend, start, request, operation_id, &NullSink)
 }
@@ -30,12 +30,26 @@ pub fn handle_push_with_events<B>(
     events: &dyn EventSink,
 ) -> ModelResult<crate::PushResponse>
 where
-    B: GitBackend + Sync,
+    B: GitBackend + MergeAuthorityBackend + Sync,
 {
-    let services = crate::operation_context::OperationServices::existing();
-    let context = OperationRequest::Push(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
+    let services = crate::operation_context::OperationServices::for_merge(backend);
+    handle_push_with_events_in(&services, backend, start, request, operation_id, events)
+}
+
+pub(crate) fn handle_push_with_events_in<B>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &Path,
+    request: crate::PushRequest,
+    operation_id: impl Into<String>,
+    events: &dyn EventSink,
+) -> ModelResult<crate::PushResponse>
+where
+    B: GitBackend + Sync,
+{
+    let context = OperationRequest::Push(request.clone()).context(operation_id.into())?;
     let error_context = context.clone();
     let result: ModelResult<crate::PushResponse> = (|| {
         let (_guard, root) = guarded_workspace_root_in(

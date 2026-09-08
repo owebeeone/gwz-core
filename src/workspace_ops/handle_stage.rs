@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::artifact;
-use crate::git::GitBackend;
+use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{OpenMergeCommand, OperationRequest};
 
@@ -20,10 +20,10 @@ pub fn handle_stage<B>(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::StageResponse>
 where
-    B: GitBackend,
+    B: GitBackend + MergeAuthorityBackend,
 {
     let context = OperationRequest::Stage(request.clone()).context(operation_id.into())?;
-    let services = crate::operation_context::OperationServices::existing();
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     let _access = acquire_workspace_mutation_guard_in(
         &services,
         start,
@@ -37,9 +37,9 @@ where
     // and `@root` stages the workspace root. A pre-0.14 (v0) record refuses
     // above, in the mutation guard, with the charter §2 sentence.
     if let Some(open) = merge::discover_open_v1_record(&root)? {
-        return handle_open_merge_stage(backend, &root, open.view(), &request, context);
+        return handle_open_merge_stage(&services, backend, &root, open.view(), &request, context);
     }
-    let manifest = artifact::read_manifest(&root)?;
+    let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
 
     // Only active designations own operation paths. Historical rows may overlap an
@@ -98,9 +98,9 @@ where
     // Git examines the worktree. Inactive checkouts remain excluded while present.
     // `.git/info/exclude` is a mutation, so a dry run never refreshes it.
     if !dry_run && targets.iter().any(|target| target.member_path.is_none()) {
-        let lock = artifact::read_lock(&root)?;
+        let lock = artifact::read_lock_in(services.filesystem(), &root)?;
         // CAPABILITY-FREE EXCEPTION, §10 row `:279`: `gwz stage` is under the mutation guard, so this boundary writer stays raw permanently (2026-09-02, GwzM5-8R2E-CapabilityFreeAmendment.md §3).
-        ensure_workspace_exclude(backend, &root, &manifest, &lock)?;
+        ensure_workspace_exclude_in(services.filesystem(), backend, &root, &manifest, &lock)?;
     }
 
     // Stage each target repo. An unmaterialized repo is an error if a pathspec named it
@@ -136,6 +136,7 @@ where
 }
 
 fn handle_open_merge_stage<B: GitBackend>(
+    services: &crate::operation_context::OperationServices,
     backend: &B,
     root: &Path,
     record: merge::MergeStatusRecordView<'_>,
@@ -158,7 +159,7 @@ fn handle_open_merge_stage<B: GitBackend>(
             all,
         )?;
         if narrowed {
-            let manifest = artifact::read_manifest(root)?;
+            let manifest = artifact::read_manifest_in(services.filesystem(), root)?;
             SelectionScope::resolve(&manifest, request.meta.selection.as_ref())?
                 .constrain(routed)?
         } else {
