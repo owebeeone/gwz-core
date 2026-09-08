@@ -23,7 +23,9 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Stage(request.clone()).context(operation_id.into())?;
-    let _access = acquire_workspace_mutation_guard(
+    let services = crate::operation_context::OperationContext::existing();
+    let _access = acquire_workspace_mutation_guard_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::StageConflictResolution,

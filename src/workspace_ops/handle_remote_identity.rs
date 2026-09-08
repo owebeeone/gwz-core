@@ -13,7 +13,9 @@ pub fn handle_remote_identity<B: GitBackend>(
 ) -> ModelResult<crate::RemoteIdentityResponse> {
     let context = OperationRequest::RemoteIdentity(request.clone()).context(operation_id)?;
     let dry = request.meta.dry_run.unwrap_or(false);
-    let access = acquire_workspace_mutation_guard(
+    let services = crate::operation_context::OperationContext::existing();
+    let access = acquire_workspace_mutation_guard_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RemoteIdentity,

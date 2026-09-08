@@ -43,6 +43,7 @@ pub fn handle_clone_repo_member<B>(
 where
     B: GitBackend,
 {
+    let services = crate::operation_context::OperationContext::existing();
     let context =
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
@@ -50,7 +51,8 @@ where
     let error_context = context.clone();
     let result: ModelResult<crate::CloneRepoMemberResponse> = (|| {
         let dry_run = request.meta.dry_run.unwrap_or(false);
-        let (_guard, root) = guarded_workspace_root(
+        let (_guard, root) = guarded_workspace_root_in(
+            &services,
             start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::RepoMutate,
@@ -199,11 +201,13 @@ pub fn handle_detach_repo_member<B>(
 where
     B: GitBackend,
 {
+    let services = crate::operation_context::OperationContext::existing();
     let context =
         OperationRequest::DetachRepoMember(request.clone()).context(operation_id.into())?;
     let selector = validate_single_detach_selector(request.meta.selection.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root(
+    let (_guard, root) = guarded_workspace_root_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
@@ -275,11 +279,13 @@ pub fn handle_attach_repo_member<B>(
 where
     B: GitBackend,
 {
+    let services = crate::operation_context::OperationContext::existing();
     let context =
         OperationRequest::AttachRepoMember(request.clone()).context(operation_id.into())?;
     let member_id = validate_single_attach_selector(request.meta.selection.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root(
+    let (_guard, root) = guarded_workspace_root_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,

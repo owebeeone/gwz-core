@@ -17,6 +17,7 @@ pub fn handle_branch<B>(
 where
     B: GitBackend,
 {
+    let services = crate::operation_context::OperationContext::existing();
     if request.op == crate::BranchOp::Merge {
         return Err(ModelError::new(
             ErrorCode::DeprecatedOperation,
@@ -30,7 +31,8 @@ where
             resolve_workspace_root(start, request.meta.workspace.as_ref())?,
         )
     } else {
-        guarded_workspace_root(
+        guarded_workspace_root_in(
+            &services,
             start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::BranchMutate,

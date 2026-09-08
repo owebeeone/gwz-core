@@ -45,7 +45,8 @@ pub fn handle_create_workspace(
     }
     ensure_workspace_git_repo(&root)?;
     let backend = Git2Backend::new();
-    let _guard = WorkspaceMutatorLock::acquire(&root)?;
+    let services = crate::operation_context::OperationContext::for_merge(&backend);
+    let _guard = WorkspaceMutatorLock::acquire_in(&services, &root)?;
 
     let manifest = ManifestArtifact {
         schema: artifact::WORKSPACE_SCHEMA.to_owned(),
@@ -89,6 +90,7 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::CreateRepo(request.clone()).context(operation_id.into())?;
+    let services = crate::operation_context::OperationContext::existing();
     if request
         .initial_branch
         .as_ref()
@@ -101,7 +103,8 @@ where
     }
 
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root(
+    let (_guard, root) = guarded_workspace_root_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
@@ -254,8 +257,10 @@ where
 {
     let context =
         OperationRequest::AddExistingRepo(request.clone()).context(operation_id.into())?;
+    let services = crate::operation_context::OperationContext::existing();
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root(
+    let (_guard, root) = guarded_workspace_root_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
@@ -468,8 +473,10 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::RepoSync(request.clone()).context(operation_id.into())?;
+    let services = crate::operation_context::OperationContext::existing();
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root(
+    let (_guard, root) = guarded_workspace_root_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,

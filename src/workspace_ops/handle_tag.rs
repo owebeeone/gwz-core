@@ -22,6 +22,7 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
+    let services = crate::operation_context::OperationContext::existing();
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();
@@ -33,7 +34,8 @@ where
                 resolve_workspace_root(start, request.meta.workspace.as_ref())?,
             )
         } else {
-            let access = acquire_workspace_mutation_guard(
+            let access = acquire_workspace_mutation_guard_in(
+                &services,
                 start,
                 request.meta.workspace.as_ref(),
                 OpenMergeCommand::TagMutate,

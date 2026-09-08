@@ -4,7 +4,7 @@ use super::super::{
     FileMergeStore, MergeStore, discover_open_envelope_before_manifest, gc, start, status,
     v1_lifecycle, validate_merge_request,
 };
-use super::mutation_guard::guarded_workspace_root;
+use super::mutation_guard::guarded_workspace_root_in;
 use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::ModelResult;
 use crate::operation::{EventSink, OperationRequest};
@@ -133,6 +133,7 @@ where
     B: MergeAuthorityBackend,
 {
     let operation_id = operation_id.into();
+    let services = crate::operation_context::OperationContext::for_merge(backend);
     let store = FileMergeStore;
     let clock = SystemClock;
     let mut ids = OperationScopedIds::new(&operation_id);
@@ -147,6 +148,7 @@ where
         start,
         request,
         operation_id,
+        &services,
         true,
         &AuthorityV1Router { backend },
     )
@@ -162,6 +164,7 @@ fn handle_merge_invocation<B, S, C, I>(
     start: &Path,
     request: crate::MergeRequest,
     operation_id: String,
+    services: &crate::operation_context::OperationContext,
     enforce_start_gate: bool,
     v1: &dyn V1Router,
 ) -> ModelResult<crate::MergeResponse>
@@ -193,7 +196,8 @@ where
         let context = OperationRequest::Merge(request.clone()).context(operation_id)?;
         let (_start_guard, effective_start) =
             if enforce_start_gate && request.op == crate::MergeOp::Start {
-                guarded_workspace_root(
+                guarded_workspace_root_in(
+                    services,
                     start,
                     request.meta.workspace.as_ref(),
                     crate::operation::OpenMergeCommand::MergeStart,
@@ -208,6 +212,7 @@ where
             &effective_start,
             request,
             context,
+            services,
             &emitter,
             v1,
             _start_guard,
@@ -222,6 +227,7 @@ fn dispatch_merge<B, S, C, I>(
     start: &Path,
     request: crate::MergeRequest,
     context: crate::operation::OperationContext,
+    services: &crate::operation_context::OperationContext,
     emitter: &crate::operation::EventEmitter<'_>,
     v1: &dyn V1Router,
     start_guard: Option<super::WorkspaceMutationGuard>,
@@ -270,6 +276,7 @@ where
             dependencies.store,
             &root,
             request.merge_id.as_deref(),
+            services,
             &context,
         ),
     }

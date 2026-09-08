@@ -1,8 +1,13 @@
 use super::super::*;
 use super::write_open_v1_record;
 use crate::model::ErrorCode;
+use crate::operation_context::{OperationContext, TestWorld};
 use crate::workspace_ops::tests::TempDir;
 use std::path::Path;
+
+fn physical_context() -> OperationContext {
+    TestWorld::physical().context()
+}
 
 #[test]
 fn authoritative_guard_retains_mutator_lock_until_drop() {
@@ -12,7 +17,9 @@ fn authoritative_guard_retains_mutator_lock_until_drop() {
         root: Some(root.path().to_string_lossy().into_owned()),
         workspace_id: None,
     };
-    let guard = acquire_workspace_mutation_guard(
+    let context = physical_context();
+    let guard = acquire_workspace_mutation_guard_in(
+        &context,
         root.path(),
         Some(&workspace),
         crate::operation::OpenMergeCommand::Push,
@@ -21,13 +28,13 @@ fn authoritative_guard_retains_mutator_lock_until_drop() {
     .unwrap();
     assert!(guard.writes().is_some());
     assert!(
-        crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
+        crate::operation::WorkspaceMutatorLock::try_acquire_in(&context, root.path())
             .unwrap()
             .is_none()
     );
     drop(guard);
     assert!(
-        crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
+        crate::operation::WorkspaceMutatorLock::try_acquire_in(&context, root.path())
             .unwrap()
             .is_some()
     );
@@ -42,7 +49,9 @@ fn dry_run_guard_checks_the_effective_root_without_taking_the_mutator_lock() {
         workspace_id: None,
     };
 
-    let (guard, resolved) = guarded_workspace_root(
+    let context = physical_context();
+    let (guard, resolved) = guarded_workspace_root_in(
+        &context,
         Path::new("/unrelated/cwd"),
         Some(&workspace),
         crate::operation::OpenMergeCommand::MergeStart,
@@ -54,7 +63,7 @@ fn dry_run_guard_checks_the_effective_root_without_taking_the_mutator_lock() {
     assert_eq!(resolved, root.path());
     assert!(!root.path().join(crate::workspace::RUNTIME_DIR).exists());
     assert!(
-        crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
+        crate::operation::WorkspaceMutatorLock::try_acquire_in(&context, root.path())
             .unwrap()
             .is_some()
     );
@@ -70,7 +79,9 @@ fn a_dry_run_acquisition_yields_no_write_authority() {
         root: Some(root.path().to_string_lossy().into_owned()),
         workspace_id: None,
     };
-    let access = acquire_workspace_mutation_guard(
+    let context = physical_context();
+    let access = acquire_workspace_mutation_guard_in(
+        &context,
         root.path(),
         Some(&workspace),
         crate::operation::OpenMergeCommand::Push,
@@ -99,6 +110,7 @@ fn the_authoritative_guard_blocks_a_mutation_against_an_open_v1_record() {
         root: Some(root.path().to_string_lossy().into_owned()),
         workspace_id: None,
     };
+    let context = physical_context();
 
     for blocked in [
         crate::operation::OpenMergeCommand::Commit,
@@ -110,10 +122,15 @@ fn the_authoritative_guard_blocks_a_mutation_against_an_open_v1_record() {
         crate::operation::OpenMergeCommand::BranchMutate,
     ] {
         for dry_run in [false, true] {
-            let error =
-                acquire_workspace_mutation_guard(root.path(), Some(&workspace), blocked, dry_run)
-                    .err()
-                    .expect("a Block row must refuse against an open v1 record");
+            let error = acquire_workspace_mutation_guard_in(
+                &context,
+                root.path(),
+                Some(&workspace),
+                blocked,
+                dry_run,
+            )
+            .err()
+            .expect("a Block row must refuse against an open v1 record");
             assert_eq!(
                 error.code,
                 ErrorCode::OpenOperation,
@@ -133,14 +150,15 @@ fn the_authoritative_guard_blocks_a_mutation_against_an_open_v1_record() {
             }
             // The refusal released the mutator lock it took to check.
             assert!(
-                crate::operation::WorkspaceMutatorLock::try_acquire(root.path())
+                crate::operation::WorkspaceMutatorLock::try_acquire_in(&context, root.path())
                     .unwrap()
                     .is_some()
             );
         }
     }
 
-    let allowed = acquire_workspace_mutation_guard(
+    let allowed = acquire_workspace_mutation_guard_in(
+        &context,
         root.path(),
         Some(&workspace),
         crate::operation::OpenMergeCommand::Status,
@@ -163,7 +181,9 @@ fn the_guard_admits_stage_and_resolves_the_root_from_an_open_v1_record() {
     let nested = root.path().join("members/a/src");
     std::fs::create_dir_all(&nested).unwrap();
 
-    let access = acquire_workspace_mutation_guard(
+    let context = physical_context();
+    let access = acquire_workspace_mutation_guard_in(
+        &context,
         &nested,
         None,
         crate::operation::OpenMergeCommand::StageConflictResolution,

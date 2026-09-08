@@ -70,7 +70,8 @@ impl WorkspaceMutationAccess {
     }
 }
 
-pub fn acquire_workspace_mutation_guard(
+pub(crate) fn acquire_workspace_mutation_guard_in(
+    services: &crate::operation_context::OperationContext,
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
     command: crate::operation::OpenMergeCommand,
@@ -90,7 +91,7 @@ pub fn acquire_workspace_mutation_guard(
     } else {
         crate::workspace_ops::resolve_workspace_root(start, workspace)?
     };
-    let lock = WorkspaceMutatorLock::acquire(&root)?;
+    let lock = WorkspaceMutatorLock::acquire_in(services, &root)?;
     // A1: by envelope, for the reason `enforce_workspace_open_merge_gate`
     // states — the v0 store's decoder cannot read an open v1 record, and a
     // version error here replaced the open-merge remedy with misdirection.
@@ -104,9 +105,26 @@ pub fn acquire_workspace_mutation_guard(
     })
 }
 
+/// Compatibility acquisition for entry points that do not yet accept services.
+pub fn acquire_workspace_mutation_guard(
+    start: &Path,
+    workspace: Option<&crate::WorkspaceRef>,
+    command: crate::operation::OpenMergeCommand,
+    dry_run: bool,
+) -> ModelResult<WorkspaceMutationAccess> {
+    acquire_workspace_mutation_guard_in(
+        &crate::operation_context::OperationContext::existing(),
+        start,
+        workspace,
+        command,
+        dry_run,
+    )
+}
+
 /// Resolve and enforce a gated dry-run without taking the mutator lock, or
 /// retain the authoritative guard for a real mutation.
-pub(crate) fn guarded_workspace_root(
+pub(crate) fn guarded_workspace_root_in(
+    services: &crate::operation_context::OperationContext,
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
     command: crate::operation::OpenMergeCommand,
@@ -119,7 +137,7 @@ pub(crate) fn guarded_workspace_root(
             crate::workspace_ops::resolve_workspace_root(start, workspace)?,
         ));
     }
-    let guard = acquire_workspace_mutation_guard(start, workspace, command, false)?
+    let guard = acquire_workspace_mutation_guard_in(services, start, workspace, command, false)?
         .into_guard()
         .expect("a non-dry-run acquisition always yields the mutating arm");
     let root = guard.root().to_path_buf();

@@ -29,6 +29,7 @@ where
 {
     let context =
         OperationRequest::InitFromSources(request.clone()).context(operation_id.into())?;
+    let services = crate::operation_context::OperationContext::existing();
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();
@@ -102,7 +103,7 @@ where
         }
 
         ensure_workspace_git_repo(&root)?;
-        let _guard = WorkspaceMutatorLock::acquire(&root)?;
+        let _guard = WorkspaceMutatorLock::acquire_in(&services, &root)?;
         let mut lock = LockArtifact {
             schema: artifact::LOCK_SCHEMA.to_owned(),
             workspace_id,

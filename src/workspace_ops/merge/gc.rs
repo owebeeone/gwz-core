@@ -181,9 +181,10 @@ pub(super) fn handle_gc<B: GitBackend, S: MergeStore>(
     store: &S,
     root: &Path,
     merge_id: Option<&str>,
+    services: &crate::operation_context::OperationContext,
     context: &OperationContext,
 ) -> ModelResult<crate::MergeResponse> {
-    let _guard = WorkspaceMutatorLock::acquire(root)?;
+    let _guard = WorkspaceMutatorLock::acquire_in(services, root)?;
     // By envelope. A v0 occupancy is refused by charter §2's own sentence
     // before this one, because "cannot collect while merge X is open" invites
     // a recovery this binary will not perform.

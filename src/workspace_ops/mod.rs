@@ -48,7 +48,6 @@ pub use handle_stash::*;
 pub use handle_tag::*;
 pub(crate) use historical_identity::*;
 pub(crate) use materialize_preflight::*;
-pub(crate) use merge::guarded_workspace_root;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use merge::{
@@ -70,6 +69,7 @@ pub use merge::{
     WorkspaceMutationGuard, acquire_workspace_mutation_guard, enforce_workspace_open_merge_gate,
     handle_merge, handle_merge_with_events,
 };
+pub(crate) use merge::{acquire_workspace_mutation_guard_in, guarded_workspace_root_in};
 pub(crate) use normalize_path::*;
 pub(crate) use pathspec_routing::*;
 pub use pull_head_member_preflight::*;

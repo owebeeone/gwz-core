@@ -24,7 +24,9 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Snapshot(request.clone()).context(operation_id.into())?;
-    let access = acquire_workspace_mutation_guard(
+    let services = crate::operation_context::OperationContext::existing();
+    let access = acquire_workspace_mutation_guard_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::Snapshot,
@@ -98,7 +100,9 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Capture(request.clone()).context(operation_id.into())?;
-    let access = acquire_workspace_mutation_guard(
+    let services = crate::operation_context::OperationContext::existing();
+    let access = acquire_workspace_mutation_guard_in(
+        &services,
         start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::Capture,
@@ -156,11 +160,13 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
+    let services = crate::operation_context::OperationContext::existing();
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::MaterializeResponse> = (|| {
-        let (_guard, root) = guarded_workspace_root(
+        let (_guard, root) = guarded_workspace_root_in(
+            &services,
             start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::Materialize,

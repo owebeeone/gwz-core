@@ -55,7 +55,8 @@ pub(crate) use record_wire::{
     observe_checked_owner_v0_from_canonical,
 };
 pub(crate) use runtime::{
-    MergeDependencies, enforce_open_merge_stage_targets, guarded_workspace_root,
+    MergeDependencies, acquire_workspace_mutation_guard_in, enforce_open_merge_stage_targets,
+    guarded_workspace_root_in,
 };
 pub use runtime::{
     WorkspaceMutationGuard, acquire_workspace_mutation_guard, enforce_workspace_open_merge_gate,
