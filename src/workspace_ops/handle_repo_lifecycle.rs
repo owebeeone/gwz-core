@@ -67,7 +67,7 @@ where
         assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
         let plan = single_source_plan(&manifest, &request)?;
         let member_root = root.join(plan.path.as_str());
-        ensure_member_target_available(&member_root)?;
+        ensure_member_target_available_in(services.filesystem(), &member_root)?;
         backend.validate_transport_remotes(&["origin".into()])?;
         backend.validate_url_identity(None, "origin", &plan.source.url)?;
 

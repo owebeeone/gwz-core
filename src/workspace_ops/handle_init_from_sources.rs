@@ -5,6 +5,7 @@ use crate::artifact::{
     self, ArtifactSourceKind, DesiredRefArtifact, LockArtifact, ManifestArtifact, ManifestMember,
     RemoteArtifact, ResolvedMemberArtifact, WorkspaceHeader,
 };
+use crate::filesystem::FileSystem;
 use crate::git::{GitBackend, GitHeadState, MergeAuthorityBackend, git_host};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::{
@@ -94,7 +95,7 @@ where
             members: Vec::new(),
         };
         let plans = init_source_plans(&manifest, &request.sources)?;
-        preflight_init_execution_targets(&root, &plans)?;
+        preflight_init_execution_targets_in(services.filesystem(), &root, &plans)?;
         backend.validate_transport_remotes(&["origin".into()])?;
         for plan in &plans {
             backend.validate_url_identity(None, "origin", &plan.source.url)?;
@@ -367,7 +368,8 @@ pub(crate) fn assert_init_target_is_head(
     }
 }
 
-pub(crate) fn preflight_init_execution_targets(
+pub(crate) fn preflight_init_execution_targets_in(
+    filesystem: &dyn FileSystem,
     root: &Path,
     plans: &[InitSourcePlan],
 ) -> ModelResult<()> {
@@ -389,7 +391,7 @@ pub(crate) fn preflight_init_execution_targets(
                 "fresh init custom remote names are not supported in v0",
             ));
         }
-        ensure_member_target_available(&root.join(plan.path.as_str()))?;
+        ensure_member_target_available_in(filesystem, &root.join(plan.path.as_str()))?;
     }
     Ok(())
 }

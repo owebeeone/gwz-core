@@ -947,11 +947,6 @@ pub(crate) fn ensure_member_target_available_in(
     Ok(())
 }
 
-/// Compatibility adapter for operation families not yet carrying services.
-pub(crate) fn ensure_member_target_available(path: &Path) -> ModelResult<()> {
-    ensure_member_target_available_in(&crate::filesystem::make_filesystem(), path)
-}
-
 pub(crate) fn read_lock_or_empty(root: &Path, workspace_id: &str) -> ModelResult<LockArtifact> {
     read_lock_or_empty_in(&crate::filesystem::make_filesystem(), root, workspace_id)
 }
