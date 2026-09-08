@@ -98,6 +98,124 @@ fn fetch_anonymous_imports_an_explicit_refspec_without_persisting_a_remote() {
 }
 
 #[test]
+fn fetch_anonymous_imports_head_from_an_unrelated_local_repository() {
+    let temp = TempDir::new("fetch-anon-head");
+    let source = temp.path().join("source");
+    let receiver = temp.path().join("receiver");
+    let source_commit = init_repo_with_commit(&source, false, "source");
+    init_repo_with_commit(&receiver, false, "receiver");
+    let backend = Git2Backend::without_credential_helpers();
+
+    backend
+        .fetch_anonymous(
+            &receiver,
+            &source.to_string_lossy(),
+            &[&format!("+HEAD:{IMPORT_REF}")],
+        )
+        .expect("anonymous local HEAD import");
+    assert_eq!(
+        backend.read_ref(&receiver, IMPORT_REF).unwrap().as_deref(),
+        Some(source_commit.as_str())
+    );
+}
+
+#[test]
+fn fetch_anonymous_imports_a_workspace_root_commit_with_unavailable_gitlinks() {
+    let temp = TempDir::new("fetch-anon-gitlink");
+    let source = temp.path().join("source");
+    let receiver = temp.path().join("receiver");
+    init_repo_with_commit(&source, false, "source");
+    init_repo_with_commit(&receiver, false, "receiver");
+    let repository = git2::Repository::open(&source).unwrap();
+    let signature = git2::Signature::new(
+        "GWZ Fixture",
+        "fixture@example.invalid",
+        &git2::Time::new(1_700_000_001, 0),
+    )
+    .unwrap();
+    let parent = repository.head().unwrap().peel_to_commit().unwrap();
+    let base = parent.tree().unwrap();
+    let mut tree = repository.treebuilder(Some(&base)).unwrap();
+    let gitlink = git2::Oid::from_str("1111111111111111111111111111111111111111").unwrap();
+    tree.insert("member", gitlink, 0o160000).unwrap();
+    let tree = repository.find_tree(tree.write().unwrap()).unwrap();
+    let source_commit = repository
+        .commit(
+            Some("refs/heads/main"),
+            &signature,
+            &signature,
+            "workspace root",
+            &tree,
+            &[&parent],
+        )
+        .unwrap()
+        .to_string();
+    let backend = Git2Backend::without_credential_helpers();
+
+    backend
+        .fetch_anonymous(
+            &receiver,
+            &source.to_string_lossy(),
+            &[&format!("+HEAD:{IMPORT_REF}")],
+        )
+        .expect("anonymous local workspace-root import");
+    assert_eq!(
+        backend.read_ref(&receiver, IMPORT_REF).unwrap().as_deref(),
+        Some(source_commit.as_str())
+    );
+}
+
+#[test]
+fn fetch_anonymous_imports_when_receiver_has_a_tree_checkpoint_ref() {
+    let temp = TempDir::new("fetch-anon-tree-ref");
+    let source = temp.path().join("source");
+    let receiver = temp.path().join("receiver");
+    let source_commit = init_repo_with_commit(&source, false, "source");
+    init_repo_with_commit(&receiver, false, "receiver");
+
+    // Codex checkpoint refs are direct refs to trees. libgit2's local
+    // transport wrongly feeds every receiver ref to a commit revwalk. Seed
+    // the same tree in both repositories so that its local-transport bug is
+    // exercised instead of being hidden by a missing-object error.
+    let source_repository = git2::Repository::open(&source).unwrap();
+    let tree = source_repository
+        .treebuilder(None)
+        .unwrap()
+        .write()
+        .unwrap();
+    let receiver_repository = git2::Repository::open(&receiver).unwrap();
+    assert_eq!(
+        tree,
+        receiver_repository
+            .treebuilder(None)
+            .unwrap()
+            .write()
+            .unwrap()
+    );
+    receiver_repository
+        .reference(
+            "refs/codex/checkpoints/tree",
+            tree,
+            true,
+            "test tree checkpoint",
+        )
+        .unwrap();
+
+    let backend = Git2Backend::without_credential_helpers();
+    backend
+        .fetch_anonymous(
+            &receiver,
+            &source.to_string_lossy(),
+            &[&format!("+HEAD:{IMPORT_REF}")],
+        )
+        .expect("anonymous local import falls back for tree checkpoint refs");
+    assert_eq!(
+        backend.read_ref(&receiver, IMPORT_REF).unwrap().as_deref(),
+        Some(source_commit.as_str())
+    );
+}
+
+#[test]
 fn anonymous_ports_refuse_non_local_peers_and_empty_refspecs_before_any_effect() {
     let temp = TempDir::new("fetch-anon-refuse");
     let receiver = temp.path().join("receiver");

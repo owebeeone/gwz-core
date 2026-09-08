@@ -315,12 +315,52 @@ pub(super) fn fetch_anonymous(
     // the port contract, outside its promise.
     options.update_fetchhead(false);
     options.download_tags(git2::AutotagOption::None);
-    remote_handle
-        .fetch(refspecs, Some(&mut options), Some("gwz local import"))
-        .map_err(git_error)?;
+    if let Err(error) = remote_handle.fetch(refspecs, Some(&mut options), Some("gwz local import"))
+    {
+        // libgit2's file transport walks every ref in the receiver while it
+        // builds the pack.  A perfectly valid direct ref to a tree (for
+        // example Codex's checkpoint refs) is then treated as a commit and
+        // makes the whole import fail with `object is not a committish`.
+        // Core Git accepts those refs, and local import must work in a
+        // workspace that contains them.  Keep libgit2 as the normal path;
+        // use Git only for that library defect.
+        if error.message() == "object is not a committish" {
+            fetch_anonymous_with_git(path, &peer, refspecs)?;
+        } else {
+            return Err(git_error(error));
+        }
+    }
     Ok(GitFetchResult {
         remote: url.to_owned(),
     })
+}
+
+fn fetch_anonymous_with_git(path: &Path, peer: &str, refspecs: &[&str]) -> ModelResult<()> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("fetch")
+        .arg("--no-write-fetch-head")
+        .arg("--no-tags")
+        .arg(peer)
+        .args(refspecs)
+        .output()
+        .map_err(|error| {
+            ModelError::new(
+                ErrorCode::GitCommandFailed,
+                format!("failed to run Git local import fallback: {error}"),
+            )
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(ModelError::new(
+        ErrorCode::GitCommandFailed,
+        format!(
+            "Git local import fallback failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    ))
 }
 
 pub(super) fn push_anonymous(
