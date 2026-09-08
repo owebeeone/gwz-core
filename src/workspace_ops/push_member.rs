@@ -53,7 +53,7 @@ where
     let error_context = context.clone();
     let result: ModelResult<crate::PushResponse> = (|| {
         let (_guard, root) = guarded_workspace_root_in(
-            &services,
+            services,
             start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::Push,
@@ -231,9 +231,8 @@ where
             let path = root.join(&response.member_path);
             let result = backend
                 .ls_remote_url(&path, &plan.url, &plan.remote, Some(&path))
-                .map(|advertised| {
+                .inspect(|_advertised| {
                     read_preflight.record(&path, &plan.remote, &plan.url);
-                    advertised
                 })
                 .and_then(|_| {
                     if response.member_id == "@root" {

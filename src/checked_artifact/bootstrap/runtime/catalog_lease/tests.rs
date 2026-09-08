@@ -362,7 +362,7 @@ fn try_acquire(
     context: &crate::operation_context::OperationServices,
     requests: impl IntoIterator<Item = CatalogLeaseTargetRequestV1>,
 ) -> Result<Option<CatalogLeaseSetV1>, CheckedFsError> {
-    CatalogLeaseSetV1::try_acquire_in(&context, CatalogLeaseTargetBatchV1::try_new(requests)?)
+    CatalogLeaseSetV1::try_acquire_in(context, CatalogLeaseTargetBatchV1::try_new(requests)?)
 }
 
 fn assert_catalog_roles_absent(parent: &Path) {

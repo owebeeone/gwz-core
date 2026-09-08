@@ -52,7 +52,7 @@ where
             )
         } else {
             let access = acquire_workspace_mutation_guard_in(
-                &services,
+                services,
                 start,
                 request.meta.workspace.as_ref(),
                 OpenMergeCommand::TagMutate,

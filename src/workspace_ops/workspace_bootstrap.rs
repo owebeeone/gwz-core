@@ -72,7 +72,7 @@ where
     let context =
         OperationContext::from_meta(operation_id.into(), ActionKind::InitFromSources, &meta)?;
     let (_guard, root) = guarded_workspace_root_in(
-        &services,
+        services,
         start,
         meta.workspace.as_ref(),
         OpenMergeCommand::InitUpdate,

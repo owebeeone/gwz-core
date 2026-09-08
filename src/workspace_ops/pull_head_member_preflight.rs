@@ -62,7 +62,7 @@ where
     let result: ModelResult<crate::PullHeadResponse> = (|| {
         let dry_run = request.meta.dry_run.unwrap_or(false);
         let (_guard, root) = guarded_workspace_root_in(
-            &services,
+            services,
             start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::Pull,

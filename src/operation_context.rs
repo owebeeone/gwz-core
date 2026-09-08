@@ -1,7 +1,9 @@
 use crate::filesystem::FileSystem;
 #[cfg(test)]
 use crate::filesystem::native_filesystem;
-use crate::git::{Git2Repository, GitRepository};
+#[cfg(test)]
+use crate::git::Git2Repository;
+use crate::git::GitRepository;
 #[cfg(test)]
 use std::path::Path;
 use std::sync::Arc;
@@ -48,10 +50,12 @@ impl OperationServices {
     /// This is always native. Tests choose `TestWorld` explicitly; a public
     /// operation must never silently switch its dependencies because a test
     /// executable set a process-wide mode.
+    #[cfg(test)]
     pub(crate) fn existing() -> Self {
         Self::native()
     }
 
+    #[cfg(test)]
     pub(crate) fn native() -> Self {
         let repository = Git2Repository::new();
         Self {

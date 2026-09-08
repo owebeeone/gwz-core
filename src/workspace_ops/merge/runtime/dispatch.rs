@@ -222,6 +222,7 @@ where
     result
 }
 
+#[allow(clippy::too_many_arguments)] // The dispatcher bridges independently-owned operation services.
 fn dispatch_merge<B, S, C, I>(
     dependencies: MergeDependencies<'_, B, S, C, I>,
     start: &Path,
