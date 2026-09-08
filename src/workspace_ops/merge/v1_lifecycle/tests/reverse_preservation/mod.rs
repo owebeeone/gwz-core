@@ -161,7 +161,7 @@ fn integrated_fixture_using<B: GitBackend>(name: &str, backend: B) -> Preservati
     integrated_fixture_in(
         name,
         backend,
-        crate::operation_context::OperationServices::existing(),
+        crate::operation_context::TestWorld::physical().context(),
     )
 }
 
@@ -391,7 +391,7 @@ fn dirty_root_handoff_fixture_using<B: GitBackend>(
         include_later_member,
         degenerate_candidate,
         backend,
-        crate::operation_context::OperationServices::existing(),
+        crate::operation_context::TestWorld::physical().context(),
     )
 }
 

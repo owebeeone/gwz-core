@@ -280,7 +280,9 @@ mod tests {
 
     /// The real guard a non-dry-run handler holds, over the workspace under test.
     fn held(root: &Path) -> WorkspaceMutationGuard {
-        crate::workspace_ops::acquire_workspace_mutation_guard(
+        let services = crate::operation_context::TestWorld::physical().context();
+        crate::workspace_ops::acquire_workspace_mutation_guard_in(
+            &services,
             root,
             None,
             OpenMergeCommand::RepoMutate,
