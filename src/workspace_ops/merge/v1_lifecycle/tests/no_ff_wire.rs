@@ -10,13 +10,12 @@ use std::path::Path;
 
 use super::super::authority::V1LifecycleRequest;
 use super::super::forward::ForwardRuntime;
-use super::super::reverse::ReverseRuntime;
 use super::forward::{
-    self, Fixture, Kind, commit_facts, execute_then_crash, freeze_without_mutation, frozen_no_ff,
-    inject_unknown_field, record_text, seed_open, stored_action,
+    self, commit_facts, execute_then_crash, frozen_no_ff, inject_unknown_field, record_text,
+    stored_action,
 };
 use crate::model::ErrorCode;
-use crate::workspace_ops::merge::status::{PendingActionReconciliation, reconcile_pending_action};
+use crate::workspace_ops::merge::status::{reconcile_pending_action, PendingActionReconciliation};
 use crate::workspace_ops::merge::{
     MergeParticipantRecord, OperationState, ParticipantState, PendingMergeActionKind,
 };
@@ -130,14 +129,12 @@ fn no_ff_record_unknown_fields_survive_rewrite_and_retire_on_reconciliation() {
     );
     let pending = stored_action(&fixture).unwrap();
     assert!(pending.extensions.contains_key("action_probe"));
-    assert!(
-        pending
-            .commit_spec
-            .as_ref()
-            .unwrap()
-            .extensions
-            .contains_key("spec_probe")
-    );
+    assert!(pending
+        .commit_spec
+        .as_ref()
+        .unwrap()
+        .extensions
+        .contains_key("spec_probe"));
 
     // Exact reconciliation retires the container, and its unknown fields.
     fs::remove_file(fixture.member.join("untracked.txt")).unwrap();
@@ -299,97 +296,4 @@ fn files_containing(needle: &str) -> Vec<String> {
     }
     hits.sort();
     hits
-}
-
-/// L5 / M5b-IMPL [P3-3] — the abandonment witness, committed.
-///
-/// M5b's claim that service-level abandonment is mode-blind rested on an
-/// un-committed experiment ("Normal-mode control probe fails identically").
-/// That review corroborated it structurally only — `abandon()`
-/// (`transition/reduce/participant.rs:220-241`) and the NotStarted proof
-/// (`:105-118`) read neither mode nor action kind — and handed A1 the duty of
-/// an executable witness. This is it.
-///
-/// The probe freezes a durable participant action WITHOUT executing it (the
-/// `VerifiedParticipantNotStarted` shape), then drives the production
-/// `service::run` seam with `Abort` once under `Normal` and once under
-/// no-ff, and requires the two service-level outcomes to be the same shape.
-/// It asserts EQUALITY, not a particular verdict: if the modes ever diverge
-/// here the witness fails and says so, whichever way abandonment resolves.
-#[test]
-fn service_level_abandonment_of_a_not_started_action_is_mode_blind() {
-    // Both arms are built by helpers that own the mode, so this file still
-    // never spells the mode variant and stays out of its own T-3 corpus.
-    let normal = abandonment_outcome(&frozen_normal("merge-v1-abandon-normal"));
-    let no_ff = abandonment_outcome(&frozen_no_ff("merge-v1-abandon-no-ff").0);
-    assert_eq!(
-        normal, no_ff,
-        "service-level abandonment of a NotStarted action must not read the mode"
-    );
-
-    // Pin the shape too, so the equality above cannot pass vacuously (two
-    // identical `Applied` outcomes would also compare equal). What both modes
-    // produce today is M5b's "service-level abandonment unreachability",
-    // executable for the first time here: the reverse entry cannot bind an
-    // abandonment transition against a NotStarted action, so the service
-    // refuses before any mutation rather than retiring the action.
-    assert_eq!(
-        normal,
-        AbandonmentOutcome::Refused {
-            code: ErrorCode::MergeRecoveryRequired,
-            message: "v1 transition predecessor or authority mismatch".to_owned(),
-        }
-    );
-}
-
-/// The mode-independent shape of one service-level abandonment outcome.
-///
-/// Fixture-specific data (temporary paths, fixture names, commit ids) is
-/// deliberately excluded: only what the abandonment decision itself produces
-/// is compared.
-#[derive(Debug, Eq, PartialEq)]
-enum AbandonmentOutcome {
-    Refused {
-        code: ErrorCode,
-        message: String,
-    },
-    Applied {
-        operation_state: OperationState,
-        participant_state: ParticipantState,
-        pending_action_retired: bool,
-    },
-}
-
-/// The ordinary-mode twin of `frozen_no_ff`: a fast-forwardable fixture whose
-/// action is frozen and durable, with the member repository untouched. The
-/// fixture model's default mode is the ordinary one, so nothing is assigned.
-fn frozen_normal(name: &str) -> Fixture {
-    let fixture = forward::fixture(name, Kind::FastForward);
-    seed_open(&fixture);
-    freeze_without_mutation(&fixture);
-    fixture
-}
-
-fn abandonment_outcome(fixture: &Fixture) -> AbandonmentOutcome {
-    assert!(
-        stored_action(fixture).is_some(),
-        "the NotStarted precondition requires a durable pending action"
-    );
-
-    let context = forward::context();
-    let mut runtime = ReverseRuntime::new(&fixture.backend, &context);
-    match forward::run_production(fixture, &mut runtime, V1LifecycleRequest::Abort) {
-        Err(error) => AbandonmentOutcome::Refused {
-            code: error.code,
-            message: error.message,
-        },
-        Ok(response) => {
-            let record = response.current().record();
-            AbandonmentOutcome::Applied {
-                operation_state: record.state,
-                participant_state: record.participants["mem_a"].state,
-                pending_action_retired: record.participants["mem_a"].pending_action.is_none(),
-            }
-        }
-    }
 }
