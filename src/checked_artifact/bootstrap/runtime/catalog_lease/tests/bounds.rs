@@ -198,6 +198,7 @@ fn native_case_sensitive_parent_reports_sensitive_and_bypasses_fold_rejections()
     use crate::checked_artifact::capability::{
         DurableIdentityProvider, HostPlatform, PathEquivalenceProvider,
     };
+    use crate::filesystem::{FileSystem, make_filesystem};
 
     let parent = TempRepo::new("native-case-sensitive");
     let sensitive_parent = parent.path().join("cs-parent");
@@ -233,8 +234,13 @@ fn native_case_sensitive_parent_reports_sensitive_and_bypasses_fold_rejections()
         fs::read(sensitive_parent.join("TARGET")).unwrap(),
         b"upper\n"
     );
-    let lower = retained.handle().open("target").unwrap();
-    let upper = retained.handle().open("TARGET").unwrap();
+    let filesystem = make_filesystem();
+    let lower = filesystem
+        .open_file_at(retained.handle(), OsStr::new("target"))
+        .unwrap();
+    let upper = filesystem
+        .open_file_at(retained.handle(), OsStr::new("TARGET"))
+        .unwrap();
     let lower_identity = HostPlatform.file_identity(&lower).unwrap();
     let upper_identity = HostPlatform.file_identity(&upper).unwrap();
     assert_ne!(lower_identity.durable(), upper_identity.durable());
