@@ -617,10 +617,11 @@ for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCL
 # `:275`-`:279` durable writer reached from `gwz repo create`, `init-from-sources`,
 # an ordinary merge, `gwz commit`, either abort form, GC, or an operation under
 # the mutation guard (read BROADLY: commit, stage, materialize, branch, repo
-# lifecycle, pull, stash) KEEPS its raw publication primitive PERMANENTLY --
-# converting one would place its operation on the durable-identity probe, which
-# the list forbids. A DATED EXCEPTION, not unfinished work: no E4 step owes the
-# conversion and E4.7 does not retire it.
+# lifecycle, pull, stash) remains capability-free. This does not require direct
+# raw filesystem spelling: when a driver uses `FileSystem`, the capability-free
+# implementation preserves that behavior without acquiring the checked-artifact
+# capability. A DATED EXCEPTION, not unfinished work: no E4 step owes a
+# durable-identity conversion and E4.7 does not retire it.
 #
 # Mechanism: O13's above -- count per primitive per file on masked source,
 # fail-closed both ways -- with the amendment's three generalizations. (i) An
@@ -712,13 +713,16 @@ CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
     # The arm was previously unpinned by this inventory in EITHER home: the
     # primitive's old home, `merge/store/mod.rs`, was never a row of this map.
     "stash/mod.rs": (":276 the `gwz stash` bundle writer, mutation guard", {"write_atomic": 2, "write_bundle": 1}),
-    "workspace_ops/handle_branch.rs": (":278/:279 `gwz branch`, BranchMutate guard", {"write_lock": 1, "sync_workspace_boundary": 1}),
-    "workspace_ops/handle_commit.rs": (":277/:278/:279 `gwz commit`, mutation guard", {"create_dir_all": 1, "write_marker": 1, "write_lock": 1, "sync_workspace_boundary": 2}),
-    "workspace_ops/handle_create_repo.rs": (":278/:279 workspace create (bare lock), repo create and add-existing (RepoMutate guard)", {"write_manifest_and_lock": 4, "sync_workspace_boundary": 4}),
-    "workspace_ops/handle_init_from_sources.rs": (":278/:279 `init-from-sources`, bare lock", {"write_manifest_and_lock": 1, "sync_workspace_boundary": 1}),
+    # Filesystem-boundary migration (2026-09-08): these capability-free
+    # drivers now use FileSystem. A zero pin preserves the named carved row
+    # while refusing any reintroduction of a direct raw writer.
+    "workspace_ops/handle_branch.rs": (":278/:279 `gwz branch`, BranchMutate guard", {"write_lock": 1}),
+    "workspace_ops/handle_commit.rs": (":277/:278/:279 `gwz commit`, mutation guard", {"create_dir_all": 1, "write_marker": 1, "write_lock": 1}),
+    "workspace_ops/handle_create_repo.rs": (":278/:279 workspace create (bare lock), repo create and add-existing (RepoMutate guard)", {}),
+    "workspace_ops/handle_init_from_sources.rs": (":278/:279 `init-from-sources`, bare lock", {}),
     "workspace_ops/handle_materialize.rs": (":278/:279 `gwz materialize`, mutation guard", {"write_lock": 3, "sync_workspace_boundary": 3}),
-    "workspace_ops/handle_repo_lifecycle.rs": (":278/:279 repo lifecycle, RepoMutate guard", {"write_manifest_and_lock": 3, "sync_workspace_boundary": 3}),
-    "workspace_ops/handle_stage.rs": (":279 `gwz stage`, mutation guard", {"ensure_workspace_exclude": 1}),
+    "workspace_ops/handle_repo_lifecycle.rs": (":278/:279 repo lifecycle, RepoMutate guard", {}),
+    "workspace_ops/handle_stage.rs": (":279 `gwz stage`, mutation guard", {}),
     "workspace_ops/handle_stash/commands.rs": (":276 `gwz stash`'s bundle callers, StashMutate guard", {"remove_file": 1, "write_bundle": 6}),
     # M5d close: five v0-engine rows left with the engine (finalize.rs and
     # store/archived.rs as whole files; abort/evidence.rs, abort/preflight.rs
