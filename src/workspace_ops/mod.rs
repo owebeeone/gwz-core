@@ -66,8 +66,8 @@ pub(crate) use merge::{
 #[allow(unused_imports)]
 pub(crate) use merge::{OperationState, ParticipantState, RecordVersion};
 pub use merge::{
-    WorkspaceMutationGuard, enforce_workspace_open_merge_gate, handle_merge,
-    handle_merge_with_events,
+    WorkspaceMutationGuard, acquire_workspace_mutation_guard_with_services,
+    enforce_workspace_open_merge_gate, handle_merge, handle_merge_with_events,
 };
 pub(crate) use merge::{acquire_workspace_mutation_guard_in, guarded_workspace_root_in};
 pub(crate) use normalize_path::*;
