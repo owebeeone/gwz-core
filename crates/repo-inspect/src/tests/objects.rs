@@ -142,7 +142,9 @@ fn tree_edges_exclude_a_gitlink_owned_by_a_member_repository() {
         .expect("outer commit")
         .tree()
         .expect("outer tree");
-    let mut builder = repository.treebuilder(Some(&base_tree)).expect("tree builder");
+    let mut builder = repository
+        .treebuilder(Some(&base_tree))
+        .expect("tree builder");
     builder
         .insert("member", member_commit, 0o160000)
         .expect("gitlink entry");
@@ -153,9 +155,15 @@ fn tree_edges_exclude_a_gitlink_owned_by_a_member_repository() {
         .read_object(&id(ObjectFormat::Sha1, tree), &ReadLimits::default())
         .expect("outer tree reads without the member object");
     assert_eq!(record.kind, ObjectKind::Tree);
-    assert_eq!(record.edges, vec![id(ObjectFormat::Sha1, base_tree.get(0).expect("blob").id())]);
     assert_eq!(
-        reader.read_object(&id(ObjectFormat::Sha1, member_commit), &ReadLimits::default()),
+        record.edges,
+        vec![id(ObjectFormat::Sha1, base_tree.get(0).expect("blob").id())]
+    );
+    assert_eq!(
+        reader.read_object(
+            &id(ObjectFormat::Sha1, member_commit),
+            &ReadLimits::default()
+        ),
         Err(ReadError::Missing {
             oid: id(ObjectFormat::Sha1, member_commit)
         })
