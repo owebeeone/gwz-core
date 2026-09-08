@@ -19,10 +19,7 @@ pub trait MergeAuthorityBackend: super::contract::GitBackend + sealed::Sealed {}
 
 impl sealed::Sealed for super::backend::Git2Backend {
     fn operation_services(&self) -> crate::operation_context::OperationServices {
-        crate::operation_context::OperationServices::from_services(
-            self.filesystem.clone(),
-            std::sync::Arc::new(self.clone()),
-        )
+        self.operation_services()
     }
 }
 impl MergeAuthorityBackend for super::backend::Git2Backend {}

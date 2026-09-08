@@ -21,10 +21,27 @@ pub fn handle_tag<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let services = crate::operation_context::OperationServices::for_merge(backend);
+    handle_tag_with_services(&services, backend, start, request, operation_id)
+}
+
+/// Execute a tag operation with the services composed by the command driver.
+///
+/// New command boundaries should use this entry point. `handle_tag` remains
+/// for source compatibility while clients migrate.
+pub fn handle_tag_with_services<B>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &std::path::Path,
+    request: crate::TagRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::TagResponse>
+where
+    B: GitBackend + MergeAuthorityBackend,
+{
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::TagResponse> = (|| {
         let dry_run = request.meta.dry_run.unwrap_or(false);

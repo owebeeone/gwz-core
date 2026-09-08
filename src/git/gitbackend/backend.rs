@@ -57,6 +57,19 @@ impl Git2Backend {
         }
     }
 
+    /// Compose the filesystem and repository services for one operation from
+    /// this exact production backend.
+    ///
+    /// Command drivers pass the returned opaque value to core entry points;
+    /// they do not select a fake or native implementation through global
+    /// process state.
+    pub fn operation_services(&self) -> crate::operation_context::OperationServices {
+        crate::operation_context::OperationServices::from_services(
+            self.filesystem.clone(),
+            std::sync::Arc::new(self.clone()),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn before_next_prepared_execution(callback: impl FnOnce() + 'static) {
         BEFORE_PREPARED_EXECUTION.with(|slot| {
