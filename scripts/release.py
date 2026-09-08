@@ -258,6 +258,25 @@ def bump_cargo_version(version: str) -> bool:
     return True
 
 
+def bump_bazel_version(version: str) -> bool:
+    """Keep the Bazel artifact's package version aligned with Cargo."""
+    path = REPO / "BUILD.bazel"
+    text = path.read_text(encoding="utf-8")
+    updated, count = re.subn(
+        r'^(\s*version\s*=\s*)"[^"]*"',
+        rf'\g<1>"{version}"',
+        text,
+        flags=re.M,
+    )
+    if count != 1:
+        fail("expected one package version in BUILD.bazel")
+    if updated == text:
+        return False
+    path.write_text(updated, encoding="utf-8", newline="\n")
+    log(f"bumped BUILD.bazel version -> {version}")
+    return True
+
+
 def assert_lock_current(*, cargo_root: Path):
     """Fail fast when Cargo.lock does not match Cargo.toml (e.g. new dep without lock update)."""
     result = run(
@@ -512,7 +531,8 @@ def main():
         )
 
         toml_changed = bump_cargo_version(version)
-        if toml_changed:
+        bazel_changed = bump_bazel_version(version)
+        if toml_changed or bazel_changed:
             if worktree is not None:
                 sync_manifests_to_worktree(worktree)
             refresh_cargo_lock(cargo_root=cargo_root)
@@ -520,7 +540,7 @@ def main():
                 copy_lock_from_cargo_root(cargo_root)
             if not args.no_test:
                 run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=cargo_env())
-            git(["add", "Cargo.toml", "Cargo.lock"])
+            git(["add", "Cargo.toml", "Cargo.lock", "BUILD.bazel"])
             # No AI co-author trailer. The operator's attribution rule is
             # absolute and applies to every commit in every repo, including
             # commits authored by tooling — and the settings-level enforcement
