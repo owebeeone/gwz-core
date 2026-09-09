@@ -872,7 +872,7 @@ pub fn normalize_absolute_path(path: &Path, label: &str) -> ModelResult<PathBuf>
     if !path.is_absolute() {
         return Err(invalid(format!("{label} must be an absolute path")));
     }
-    Ok(normalize_path(path))
+    Ok(lexical_normalize(path))
 }
 
 /// Bind a raw filesystem operand to an already-captured invocation directory.

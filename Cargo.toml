@@ -46,6 +46,7 @@ gwz-work-detector = { path = "crates/work-detector" }
 gwz-workspace-install = { path = "crates/workspace-install" }
 cap-fs-ext = "4"
 cap-std = "4"
+cfg-if = "1"
 git2 = { version = "0.21", features = ["https", "ssh", "unstable-sha256"] }
 taut-shape = { git = "https://github.com/owebeeone/taut-shape-rs", rev = "7fd171b737f25cb6c356845eb68164d35326ffb0", package = "taut-shape" }
 serde = { version = "1", features = ["derive"] }

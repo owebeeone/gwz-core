@@ -169,3 +169,65 @@ fn nothing_specified_is_invalid_request() {
     .unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidRequest);
 }
+
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        #[test]
+        fn windows_routing_unifies_dos_and_verbatim_prefixes_for_existing_and_deleted_operands() {
+            let root = Path::new(r"\\?\C:\workspace");
+            let caller = Path::new(r"C:\workspace");
+            let member_paths = members(&["member"]);
+
+            let ordinary_existing = route_pathspec(
+                root,
+                &member_paths,
+                caller,
+                r"C:\workspace\member\existing.txt",
+            )
+            .unwrap();
+            assert_eq!(ordinary_existing, RoutedPathspec {
+                member_path: Some("member".to_owned()),
+                pathspec: "existing.txt".to_owned(),
+            });
+
+            let deleted = route_pathspec(
+                root,
+                &member_paths,
+                caller,
+                r"C:\workspace\deleted.txt",
+            )
+            .unwrap();
+            assert_eq!(deleted, RoutedPathspec {
+                member_path: None,
+                pathspec: "deleted.txt".to_owned(),
+            });
+
+            let verbatim = route_pathspec(
+                Path::new(r"C:\workspace"),
+                &member_paths,
+                caller,
+                r"\\?\C:\workspace\member\verbatim.txt",
+            )
+            .unwrap();
+            assert_eq!(verbatim, RoutedPathspec {
+                member_path: Some("member".to_owned()),
+                pathspec: "verbatim.txt".to_owned(),
+            });
+        }
+
+        #[test]
+        fn windows_routing_accepts_a_dos_caller_under_a_verbatim_workspace_root() {
+            let routed = route_pathspec(
+                Path::new(r"\\?\C:\workspace"),
+                &members(&["member"]),
+                Path::new(r"c:\workspace\member"),
+                "relative.txt",
+            )
+            .unwrap();
+            assert_eq!(routed, RoutedPathspec {
+                member_path: Some("member".to_owned()),
+                pathspec: "relative.txt".to_owned(),
+            });
+        }
+    }
+}
