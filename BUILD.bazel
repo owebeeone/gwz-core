@@ -40,7 +40,7 @@ _LOCAL_CLONE_LIBRARIES = [
 # visible to cargo when building from the outer workspace).
 rust_library(
     name = "gwz_core",
-    version = "1.0.7",
+    version = "1.0.8",
     rustc_env_files = ["build.env"],
     stamp = 1,
     srcs = glob(["src/**/*.rs"]),
