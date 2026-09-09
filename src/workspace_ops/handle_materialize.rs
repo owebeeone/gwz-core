@@ -23,11 +23,12 @@ pub fn handle_snapshot<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Snapshot(request.clone()).context(operation_id.into())?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let access = acquire_workspace_mutation_guard_in(
         &services,
-        start,
+        &start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::Snapshot,
         request.meta.dry_run.unwrap_or(false),
@@ -99,11 +100,12 @@ pub fn handle_capture<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Capture(request.clone()).context(operation_id.into())?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let access = acquire_workspace_mutation_guard_in(
         &services,
-        start,
+        &start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::Capture,
         request.meta.dry_run.unwrap_or(false),
@@ -159,15 +161,16 @@ pub fn handle_materialize<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
-    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::MaterializeResponse> = (|| {
         let (_guard, root) = guarded_workspace_root_in(
             &services,
-            start,
+            &start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::Materialize,
             request.meta.dry_run.unwrap_or(false),
@@ -540,6 +543,7 @@ where
 /// checking out their locked commits.
 pub fn handle_clone_workspace_request<B>(
     backend: &B,
+    start: &Path,
     request: crate::CloneWorkspaceRequest,
     operation_id: impl Into<String>,
     events: &dyn EventSink,
@@ -548,12 +552,7 @@ where
     B: GitBackend + Sync,
 {
     let context = OperationRequest::CloneWorkspace(request.clone()).context(operation_id.into())?;
-    let start = std::env::current_dir().map_err(|_| {
-        ModelError::new(
-            ErrorCode::IoError,
-            "cannot resolve clone invocation directory",
-        )
-    })?;
+    let start = invocation_start(start, &request.meta)?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();
@@ -564,7 +563,7 @@ where
                 "--dry-run is not supported for clone",
             ));
         }
-        let target_path = PathBuf::from(&request.target);
+        let target_path = resolve_invocation_path(&start, &request.target)?;
         // Refuse to clone over an existing workspace rather than corrupt it.
         if target_path.join(WORKSPACE_MANIFEST).exists() {
             return Err(ModelError::new(
@@ -704,6 +703,7 @@ where
 /// Compatibility wrapper for the Rust CLI command path.
 pub fn handle_clone_workspace<B>(
     backend: &B,
+    start: &Path,
     meta: crate::RequestMeta,
     url: &str,
     target: &str,
@@ -715,6 +715,7 @@ where
 {
     handle_clone_workspace_request(
         backend,
+        start,
         crate::CloneWorkspaceRequest {
             meta,
             url: url.to_owned(),
@@ -738,8 +739,9 @@ pub fn handle_pull_snapshot<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::PullSnapshot(request.clone()).context(operation_id.into())?;
-    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::PullSnapshotResponse> = (|| {
@@ -753,7 +755,7 @@ where
         };
         let mut response = handle_materialize(
             backend,
-            start,
+            &start,
             materialize,
             context.operation_id.clone(),
             events,

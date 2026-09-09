@@ -11,7 +11,7 @@ pub(super) fn target_entries(
     include_unmaterialized: bool,
     action: crate::ActionKind,
 ) -> ModelResult<Vec<crate::MemberEntry>> {
-    let root = resolve_workspace_root(start, meta.workspace.as_ref())?;
+    let root = resolve_request_workspace_root(start, meta)?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, meta.workspace.as_ref())?;
 

@@ -132,6 +132,7 @@ pub fn handle_merge_with_events<B>(
 where
     B: MergeAuthorityBackend,
 {
+    let start = crate::workspace_ops::invocation_start(start, &request.meta)?;
     let operation_id = operation_id.into();
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let store = FileMergeStore;
@@ -145,7 +146,7 @@ where
             ids: &mut ids,
             events,
         },
-        start,
+        &start,
         request,
         operation_id,
         &services,
@@ -327,7 +328,7 @@ fn resolve_recovery_root(
     if let Some(found) = discover_open_envelope_before_manifest(start)? {
         return Ok(found.root);
     }
-    crate::workspace_ops::resolve_workspace_root(start, request.meta.workspace.as_ref())
+    crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)
 }
 
 struct SystemClock;

@@ -5,13 +5,13 @@ use crate::artifact::{ArtifactSourceKind, LockArtifact, ManifestArtifact, Snapsh
 use crate::diff::{
     Endpoint, ParsedRevisionArg, RevContext, candidate_repos, classify_operands_for_command,
     default_rev_resolver, missing_exact_local_tags, parse_revision_arg_with_snapshot_ids,
-    parse_tagged_revision_args, read_referenced_snapshots, resolved_cwd_rel,
+    parse_tagged_revision_args, read_referenced_snapshots,
     validate_exact_tag_narrowing,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::{
     SelectedTarget, assert_workspace_id, join_cwd, lexical_normalize, owning_member,
-    resolve_action_targets, resolve_workspace_root, route_pathspec,
+    resolve_action_targets, route_pathspec,
 };
 
 use super::{
@@ -61,11 +61,10 @@ pub(super) fn open_request_histories(
 ) -> ModelResult<CommitLogHistories> {
     // Invocation grammar is rejected before workspace or repository access.
     let filters = CommitLogFilters::from_request(request)?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let operand_cwd = crate::workspace_ops::invocation_start(start, &request.meta)?;
+    let root = crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)?;
     let manifest = crate::artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
-    let cwd_rel = resolved_cwd_rel(start, &root)
-        .unwrap_or_else(|| request.workspace_cwd.clone().unwrap_or_default());
 
     let tagged = request.tagged.unwrap_or(false);
     let (revision_args, tag_names, mut pathspecs) = if tagged {
@@ -75,7 +74,7 @@ pub(super) fn open_request_histories(
         let classified = {
             let context = RevContext {
                 repos: candidate_repos(&root, &manifest),
-                cwd: root.join(&cwd_rel),
+                cwd: operand_cwd.clone(),
                 workspace_root: root.clone(),
                 resolve: &default_rev_resolver,
             };
@@ -128,7 +127,7 @@ pub(super) fn open_request_histories(
         &snapshots,
         lock.as_ref(),
     );
-    let plans = route_pathspecs(&root, &manifest, &cwd_rel, &pathspecs, plans)?;
+    let plans = route_pathspecs(&root, &manifest, &operand_cwd, &pathspecs, plans)?;
     let plans = if tagged {
         narrow_to_exact_tags(plans, &tag_names)?
     } else {
@@ -232,7 +231,7 @@ fn validate_selected_operands(
 fn route_pathspecs(
     root: &Path,
     manifest: &ManifestArtifact,
-    cwd_rel: &str,
+    operand_cwd: &Path,
     pathspecs: &[String],
     plans: Vec<TargetPlan>,
 ) -> ModelResult<Vec<TargetPlan>> {
@@ -246,7 +245,7 @@ fn route_pathspecs(
         .filter(|member| member.active)
         .map(|member| member.path.clone())
         .collect();
-    let cwd = root.join(cwd_rel);
+    let cwd = operand_cwd;
     let mut root_specs = Vec::new();
     let mut member_specs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut root_touched = false;
@@ -255,9 +254,9 @@ fn route_pathspecs(
     for spec in pathspecs {
         let parsed = GitPathspec::parse(spec);
         let routing_cwd = if parsed.top {
-            repository_root_for_cwd(root, &member_paths, &cwd)
+            repository_root_for_cwd(root, &member_paths, cwd)
         } else {
-            cwd.clone()
+            cwd.to_path_buf()
         };
         let routed = route_pathspec(root, &member_paths, &routing_cwd, parsed.payload)?;
         let rewritten = parsed.with_payload(&routed.pathspec);

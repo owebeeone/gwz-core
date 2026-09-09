@@ -55,16 +55,17 @@ pub fn handle_clone_local_workspace<B>(
 where
     B: GitBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context =
         OperationRequest::CloneLocalWorkspace(request.clone()).context(operation_id.into())?;
     let emitter = EventEmitter::new(&context, events, 0);
     emitter.operation_started();
     let result = (|| {
         let validated = validate_clone_local(&request)?;
-        let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+        let root = resolve_request_workspace_root(&start, &request.meta)?;
         let report = create::clone_local(
             backend,
-            start,
+            &start,
             &root,
             &validated,
             open_merge_probe,
@@ -97,6 +98,7 @@ pub fn handle_local_family<B>(
 where
     B: GitBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::LocalFamily(request.clone()).context(operation_id.into())?;
     let emitter = EventEmitter::new(&context, events, 0);
     emitter.operation_started();
@@ -108,7 +110,7 @@ where
             ValidatedLocalFamily::Dispose { .. } => "local dispose",
             ValidatedLocalFamily::Disband => "local disband",
         };
-        let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+        let root = resolve_request_workspace_root(&start, &request.meta)?;
         let observation = family_merge::family_store()
             .read_view(&FamilyLocation::new(&root))
             .map_err(|error| errors::store_in(what, &error))?;
@@ -139,7 +141,7 @@ where
             ValidatedLocalFamily::Dispose {
                 name, keep: true, ..
             } => {
-                let report = dispose::keep(start, &root, &name, open_merge_probe)?;
+                let report = dispose::keep(&start, &root, &name, open_merge_probe)?;
                 Ok(crate::LocalFamilyResponse {
                     response: envelope(crate::AggregateStatus::Ok, Some(report.message(&name))),
                     members: Vec::new(),
@@ -154,7 +156,7 @@ where
                 keep: false,
                 waivers,
             } => {
-                let report = dispose::delete(start, &root, &name, &waivers, open_merge_probe)?;
+                let report = dispose::delete(&start, &root, &name, &waivers, open_merge_probe)?;
                 Ok(crate::LocalFamilyResponse {
                     response: envelope(crate::AggregateStatus::Ok, Some(report.message(&name))),
                     members: Vec::new(),
@@ -197,8 +199,9 @@ pub fn handle_merge_with_local_family<B>(
 where
     B: MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     if request.local_source_name.is_none() {
-        return handle_merge_with_events(backend, start, request, operation_id, events);
+        return handle_merge_with_events(backend, &start, request, operation_id, events);
     }
-    family_merge::handle(backend, start, request, operation_id.into(), events)
+    family_merge::handle(backend, &start, request, operation_id.into(), events)
 }

@@ -1,10 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::artifact::{self, ArtifactSourceKind, LockArtifact, ManifestMember};
 use crate::git::{GitBackend, GitHeadState, GitStatus as BackendGitStatus};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{ActionKind, OperationRequest};
-use crate::workspace::discover_workspace_root;
 
 use super::*;
 
@@ -18,7 +17,7 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Status(request.clone()).context(operation_id.into())?;
-    let workspace_root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let workspace_root = crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)?;
     let manifest = artifact::read_manifest(&workspace_root)?;
     if let Some(expected) = request
         .meta
@@ -96,17 +95,6 @@ where
         },
         workspace_git_status,
     })
-}
-
-pub(crate) fn resolve_workspace_root(
-    start: &Path,
-    workspace: Option<&crate::WorkspaceRef>,
-) -> ModelResult<PathBuf> {
-    if let Some(root) = workspace.and_then(|workspace| workspace.root.as_ref()) {
-        Ok(PathBuf::from(root))
-    } else {
-        discover_workspace_root(start)
-    }
 }
 
 pub(crate) fn read_lock_optional(root: &Path) -> ModelResult<Option<LockArtifact>> {
