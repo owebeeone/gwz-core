@@ -181,7 +181,10 @@ mod tests {
         request.meta.dry_run = None;
         let response =
             super::handle_remote_identity(&backend, temp.path(), request.clone(), "set").unwrap();
-        let expected = temp.path().join("key=one").to_str().unwrap().to_owned();
+        let expected = crate::workspace_ops::normalize_path(&temp.path().join("key=one"))
+            .to_str()
+            .unwrap()
+            .to_owned();
         assert_eq!(
             repo.config()
                 .unwrap()

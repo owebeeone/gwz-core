@@ -3,10 +3,16 @@ use super::write_open_v1_record;
 use crate::model::ErrorCode;
 use crate::operation_context::{OperationServices, TestWorld};
 use crate::workspace_ops::tests::TempDir;
-use std::path::Path;
 
 fn physical_context() -> OperationServices {
     TestWorld::physical().context()
+}
+
+fn assert_same_physical_path(actual: &std::path::Path, expected: &std::path::Path) {
+    assert_eq!(
+        crate::workspace_ops::normalize_path(actual),
+        crate::workspace_ops::normalize_path(expected)
+    );
 }
 
 #[test]
@@ -49,10 +55,11 @@ fn dry_run_guard_checks_the_effective_root_without_taking_the_mutator_lock() {
         workspace_id: None,
     };
 
+    let executor = TempDir::new("merge-dry-run-no-lock-executor");
     let context = physical_context();
     let (guard, resolved) = guarded_workspace_root_in(
         &context,
-        Path::new("/unrelated/cwd"),
+        executor.path(),
         Some(&workspace),
         crate::operation::OpenMergeCommand::MergeStart,
         true,
@@ -60,7 +67,7 @@ fn dry_run_guard_checks_the_effective_root_without_taking_the_mutator_lock() {
     .unwrap();
 
     assert!(guard.is_none());
-    assert_eq!(resolved, root.path());
+    assert_same_physical_path(&resolved, root.path());
     assert!(!root.path().join(crate::workspace::RUNTIME_DIR).exists());
     assert!(
         crate::operation::WorkspaceMutatorLock::try_acquire_in(&context, root.path())
@@ -90,7 +97,7 @@ fn a_dry_run_acquisition_yields_no_write_authority() {
     .unwrap();
     assert!(access.is_dry_run());
     assert!(access.writes().is_none());
-    assert_eq!(access.root(), root.path());
+    assert_same_physical_path(access.root(), root.path());
 }
 
 /// **The guard's v1 twin, and the second half of the shipped defect.** The
@@ -166,7 +173,7 @@ fn the_authoritative_guard_blocks_a_mutation_against_an_open_v1_record() {
     )
     .unwrap();
     assert!(allowed.writes().is_some());
-    assert_eq!(allowed.root(), root.path());
+    assert_same_physical_path(allowed.root(), root.path());
 }
 
 /// `add` is the `Conditional` row: the guard admits it against an open v1

@@ -386,9 +386,13 @@ pub(crate) fn clone_workspace_clones_root_and_materializes_missing_members() {
             .collect::<Vec<_>>(),
         (0..collected.len() as i64).collect::<Vec<_>>()
     );
+    let normalized_target = normalize_path(&target);
     assert!(collected.iter().any(|event| {
         event.kind == crate::EventKind::MemberStarted
-            && event.member_path.as_deref() == target.to_str()
+            && event
+                .member_path
+                .as_deref()
+                .is_some_and(|path| normalize_path(Path::new(path)) == normalized_target)
     }));
     assert!(collected.iter().any(|event| {
         event.kind == crate::EventKind::MemberStarted

@@ -212,7 +212,7 @@
       "path": "gwz-cli/docs/Workflows.md",
       "required": [
         {"id": "workflows_lane_recipe", "value": "## Work In An Isolated Lane"},
-        {"id": "workflows_root_selection", "value": "gwz --target @root merge --remote A"},
+        {"id": "workflows_root_selection", "value": "gwz --target @all merge --remote A", "comment": "The workflow selects every target and immediately states that this includes the root and member commits."},
         {"id": "workflows_links_the_guide", "value": "[Local Clones](LocalClones.md)"}
       ],
       "forbidden": [

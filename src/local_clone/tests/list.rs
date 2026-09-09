@@ -67,6 +67,14 @@ fn list_from(start: &Path) -> crate::LocalFamilyResponse {
     .expect("list observes")
 }
 
+fn assert_same_physical_path(actual: Option<&str>, expected: &Path, message: &str) {
+    assert_eq!(
+        actual.map(|path| crate::workspace_ops::normalize_path(Path::new(path))),
+        Some(crate::workspace_ops::normalize_path(expected)),
+        "{message}"
+    );
+}
+
 fn tree_digest(root: &Path) -> Vec<(PathBuf, u64)> {
     let mut entries = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -119,10 +127,10 @@ fn the_family_lists_root_and_a_ready_from_the_root_and_from_the_clone() {
             ("A".to_owned(), 0, 1, 0, "../root-A".to_owned()),
         ]
     );
-    assert_eq!(
+    assert_same_physical_path(
         from_root.root_path.as_deref(),
-        Some(fixture.root.to_str().unwrap()),
-        "the root names itself"
+        &fixture.root,
+        "the root names itself",
     );
     let from_a = list_from(&dest);
     assert_eq!(
@@ -130,10 +138,10 @@ fn the_family_lists_root_and_a_ready_from_the_root_and_from_the_clone() {
         rows(&from_root),
         "the same family through A's pointer"
     );
-    assert_eq!(
+    assert_same_physical_path(
         from_a.root_path.as_deref(),
-        Some(fixture.root.to_str().unwrap()),
-        "from a clone, root_path is the index's directory reached through the pointer"
+        &fixture.root,
+        "from a clone, root_path is the index's directory reached through the pointer",
     );
     // Listing from inside a member directory still finds the family.
     let from_inside = list_from(&dest.join("app"));
