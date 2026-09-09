@@ -237,10 +237,9 @@ pub(super) fn validate_prepared_merge_upstream_in_repo(
                     expected,
                     source,
                     &mut merge_index,
-                )? {
-                    if tree_oid.to_string() == prepared_commit.tree_oid {
-                        return Ok(kind);
-                    }
+                )? && tree_oid.to_string() == prepared_commit.tree_oid
+                {
+                    return Ok(kind);
                 }
                 return Err(prepared_merge_mismatch(
                     "prepared clean merge now has conflicts",
