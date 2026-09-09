@@ -229,5 +229,17 @@ cfg_if::cfg_if! {
                 pathspec: "relative.txt".to_owned(),
             });
         }
+
+        #[test]
+        fn windows_routing_rejects_a_shared_textual_but_external_base_prefix() {
+            let error = route_pathspec(
+                Path::new(r"\\?\C:\workspace"),
+                &members(&["member"]),
+                Path::new(r"C:\workspace"),
+                r"C:\workspace-other\outside.txt",
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::PathEscape);
+        }
     }
 }
