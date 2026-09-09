@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::InvocationContext;
 use crate::artifact::{read_lock, read_manifest, read_snapshot};
 use crate::git::{Git2Backend, GitBackend};
 use crate::model::ErrorCode;
 use crate::operation::NullSink;
-use crate::InvocationContext;
 
 use super::*;
 
@@ -13,6 +13,8 @@ use super::*;
 pub(crate) fn path_diagnostics_report_operand_base_candidate_and_allowed_root() {
     let workspace = TempDir::new("diagnostic-workspace");
     let caller = TempDir::new("diagnostic-caller");
+    let caller_path = lexical_normalize(caller.path());
+    let workspace_path = lexical_normalize(workspace.path());
     handle_create_workspace(create_workspace_request(workspace.path()), "op_create").unwrap();
     let mut meta = request_meta_with_workspace();
     meta.workspace.as_mut().unwrap().root = Some(workspace.path().to_string_lossy().into_owned());
@@ -20,36 +22,57 @@ pub(crate) fn path_diagnostics_report_operand_base_candidate_and_allowed_root() 
         caller_cwd: caller.path().to_string_lossy().into_owned(),
     });
     let error = handle_add_existing_repo(
-        &Git2Backend::new(), workspace.path(),
+        &Git2Backend::new(),
+        workspace.path(),
         crate::AddExistingRepoRequest {
-            meta: meta.clone(), repository_path: "missing-repo".to_owned(),
-            member_path: None, member_id: None, source_id: None,
-        }, "op_reject",
-    ).unwrap_err();
+            meta: meta.clone(),
+            repository_path: "missing-repo".to_owned(),
+            member_path: None,
+            member_id: None,
+            source_id: None,
+        },
+        "op_reject",
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::GitCommandFailed);
-    for fact in ["missing-repo".to_owned(), caller.path().display().to_string(),
-                 caller.path().join("missing-repo").display().to_string(),
-                 "--root selects the workspace".to_owned()] {
+    for fact in [
+        "missing-repo".to_owned(),
+        caller_path.display().to_string(),
+        caller_path.join("missing-repo").display().to_string(),
+        "--root selects the workspace".to_owned(),
+    ] {
         assert!(error.message.contains(&fact), "{error:?} lacks {fact}");
     }
     Git2Backend::new().create_repo(caller.path()).unwrap();
     let error = handle_add_existing_repo(
-        &Git2Backend::new(), workspace.path(),
+        &Git2Backend::new(),
+        workspace.path(),
         crate::AddExistingRepoRequest {
-            meta, repository_path: ".".to_owned(),
-            member_path: None, member_id: None, source_id: None,
-        }, "op_reject_outside",
-    ).unwrap_err();
+            meta,
+            repository_path: ".".to_owned(),
+            member_path: None,
+            member_id: None,
+            source_id: None,
+        },
+        "op_reject_outside",
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::PathEscape);
-    for fact in [caller.path().display().to_string(), workspace.path().display().to_string(),
-                 "--root selects the workspace".to_owned()] {
+    for fact in [
+        caller_path.display().to_string(),
+        workspace_path.display().to_string(),
+        "--root selects the workspace".to_owned(),
+    ] {
         assert!(error.message.contains(&fact), "{error:?} lacks {fact}");
     }
     let error = route_pathspec(workspace.path(), &[], caller.path(), "README.md").unwrap_err();
     assert_eq!(error.code, ErrorCode::PathEscape);
-    for fact in ["README.md".to_owned(), caller.path().display().to_string(),
-                 caller.path().join("README.md").display().to_string(),
-                 workspace.path().display().to_string()] {
+    for fact in [
+        "README.md".to_owned(),
+        caller_path.display().to_string(),
+        caller_path.join("README.md").display().to_string(),
+        workspace_path.display().to_string(),
+    ] {
         assert!(error.message.contains(&fact), "{error:?} lacks {fact}");
     }
 }
@@ -58,13 +81,21 @@ pub(crate) fn path_diagnostics_report_operand_base_candidate_and_allowed_root() 
 pub(crate) fn local_git_sources_bind_to_the_serialized_caller_but_remotes_do_not() {
     let caller = TempDir::new("git-source-caller");
     let source = resolve_invocation_git_source(caller.path(), "../source").unwrap();
-    assert_eq!(source, caller.path().parent().unwrap().join("source").to_string_lossy());
+    assert_eq!(
+        source,
+        lexical_normalize(caller.path())
+            .parent()
+            .unwrap()
+            .join("source")
+            .to_string_lossy()
+    );
     assert_eq!(
         resolve_invocation_git_source(caller.path(), "git@example.test:org/source.git").unwrap(),
         "git@example.test:org/source.git"
     );
     assert_eq!(
-        resolve_invocation_git_source(caller.path(), "https://example.test/org/source.git").unwrap(),
+        resolve_invocation_git_source(caller.path(), "https://example.test/org/source.git")
+            .unwrap(),
         "https://example.test/org/source.git"
     );
 }
@@ -110,7 +141,7 @@ pub(crate) fn serialized_invocation_context_overrides_an_unrelated_executor_star
     fs::create_dir_all(workspace.path().join("gwz.conf")).unwrap();
     fs::write(workspace.path().join("gwz.conf/gwz.yml"), "workspace: {}\n").unwrap();
     let resolved = resolve_request_workspace_root(executor.path(), &meta).unwrap();
-    assert_eq!(resolved, workspace.path());
+    assert_eq!(resolved, lexical_normalize(workspace.path()));
 }
 
 #[test]
@@ -125,7 +156,9 @@ pub(crate) fn serialized_context_refuses_relative_caller_and_root() {
         ..Default::default()
     };
     assert_eq!(
-        invocation_start(executor.path(), &relative_cwd).unwrap_err().code,
+        invocation_start(executor.path(), &relative_cwd)
+            .unwrap_err()
+            .code,
         ErrorCode::InvalidRequest
     );
 
@@ -625,7 +658,10 @@ pub(crate) fn repo_sync_refreshes_existing_member_remotes_without_rewriting_lock
         "op_repo_sync_noop",
     )
     .unwrap();
-    assert_eq!(noop.response.meta.aggregate_status, crate::AggregateStatus::Noop);
+    assert_eq!(
+        noop.response.meta.aggregate_status,
+        crate::AggregateStatus::Noop
+    );
     assert_eq!(
         noop.response.meta.message.as_deref(),
         Some(
@@ -633,9 +669,14 @@ pub(crate) fn repo_sync_refreshes_existing_member_remotes_without_rewriting_lock
         )
     );
     assert!(repo_path.join("preserved.txt").is_file());
-    assert!(noop.response.members.single().lock_difference_reasons.as_ref().is_some_and(
-        |reasons| reasons.contains(&crate::LockDifferenceReason::DirtyWorktree)
-    ));
+    assert!(
+        noop.response
+            .members
+            .single()
+            .lock_difference_reasons
+            .as_ref()
+            .is_some_and(|reasons| reasons.contains(&crate::LockDifferenceReason::DirtyWorktree))
+    );
 }
 
 #[test]

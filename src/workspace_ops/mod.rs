@@ -66,10 +66,13 @@ pub(crate) use merge::{
 #[allow(unused_imports)]
 pub(crate) use merge::{OperationState, ParticipantState, RecordVersion};
 pub use merge::{
-    WorkspaceMutationGuard, acquire_workspace_mutation_guard_for_request_with_services, acquire_workspace_mutation_guard_with_services,
-    enforce_workspace_open_merge_gate, enforce_workspace_open_merge_gate_for_request, handle_merge, handle_merge_with_events,
+    WorkspaceMutationGuard, acquire_workspace_mutation_guard_for_request_with_services,
+    acquire_workspace_mutation_guard_with_services, enforce_workspace_open_merge_gate,
+    enforce_workspace_open_merge_gate_for_request, handle_merge, handle_merge_with_events,
 };
-pub(crate) use merge::{acquire_workspace_mutation_guard_for_request_in, guarded_workspace_root_for_request_in};
+pub(crate) use merge::{
+    acquire_workspace_mutation_guard_for_request_in, guarded_workspace_root_for_request_in,
+};
 pub(crate) use normalize_path::*;
 pub(crate) use pathspec_routing::*;
 pub use pull_head_member_preflight::*;

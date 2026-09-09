@@ -27,10 +27,7 @@ where
     }
     let context = OperationRequest::Branch(request.clone()).context(operation_id.into())?;
     let (_guard, root) = if request.op == crate::BranchOp::List {
-        (
-            None,
-            resolve_request_workspace_root(&start, &request.meta)?,
-        )
+        (None, resolve_request_workspace_root(&start, &request.meta)?)
     } else {
         guarded_workspace_root_for_request_in(
             &services,

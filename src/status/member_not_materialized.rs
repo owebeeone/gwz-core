@@ -214,8 +214,7 @@ mod tests {
         );
         // Same commit/branch but detached -> Differs.
         assert_eq!(
-            lock_comparison_from_lock(Some(&lock), &member(), &head(None, true), &clean)
-                .lock_match,
+            lock_comparison_from_lock(Some(&lock), &member(), &head(None, true), &clean).lock_match,
             crate::LockMatch::Differs
         );
         // Same commit/branch but dirty -> Differs (uncommitted changes can't be verified).

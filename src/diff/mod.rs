@@ -28,8 +28,8 @@ pub use classify::{
 };
 pub(crate) use git_diff::build_repo_diff;
 pub use git_diff::{ComparisonSpec, diff_repo, reject_unsupported_options, resolve_comparison};
-pub use handle_diff::{DiffOutcome, handle_diff};
 pub(crate) use handle_diff::read_referenced_snapshots;
+pub use handle_diff::{DiffOutcome, handle_diff};
 pub use log_service::{
     DiffLog, DiffLogRegistry, LogReadRequest, LogReadResponse, LogReadState, LogRecord,
 };

@@ -47,10 +47,7 @@ where
     let result: ModelResult<crate::TagResponse> = (|| {
         let dry_run = request.meta.dry_run.unwrap_or(false);
         let (_access, root) = if request.op == crate::TagOp::List {
-            (
-                None,
-                resolve_request_workspace_root(&start, &request.meta)?,
-            )
+            (None, resolve_request_workspace_root(&start, &request.meta)?)
         } else {
             let access = acquire_workspace_mutation_guard_for_request_in(
                 services,

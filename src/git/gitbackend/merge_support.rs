@@ -76,66 +76,110 @@ pub(super) fn in_memory_merge_index(
         .map_err(git_error)
 }
 
-/// A lane root's lock and marker files are generated snapshots. If they are
-/// the only source-side changes, retain the receiving root's live snapshot
-/// while recording the lane root as a merge parent. User-authored root files
-/// keep the normal conflict path.
-pub(super) fn generated_root_metadata_only_merge(
+/// Reconcile generated root metadata conflicts while preserving the otherwise
+/// clean in-memory merge result. The workspace manifest must be identical in
+/// both inputs, so this cannot admit a topology change.
+pub(super) fn reconcile_generated_root_metadata_conflicts(
     repo: &git2::Repository,
     target: git2::Oid,
     source: git2::Oid,
-    merge_index: &git2::Index,
-) -> ModelResult<bool> {
+    merge_index: &mut git2::Index,
+) -> ModelResult<Option<git2::Oid>> {
     let conflicts = conflict_paths(merge_index)?;
     if conflicts.is_empty()
         || !conflicts
             .iter()
             .all(|path| generated_root_metadata_path(Path::new(path)))
     {
-        return Ok(false);
+        return Ok(None);
     }
-    let base = repo.merge_base(target, source).map_err(git_error)?;
-    let base_tree = repo
-        .find_commit(base)
-        .and_then(|commit| commit.tree())
-        .map_err(git_error)?;
     let target_tree = repo
         .find_commit(target)
         .and_then(|commit| commit.tree())
         .map_err(git_error)?;
-    if target_tree
-        .get_path(Path::new(crate::workspace::WORKSPACE_MANIFEST))
-        .is_err()
-    {
-        return Ok(false);
-    }
     let source_tree = repo
         .find_commit(source)
         .and_then(|commit| commit.tree())
         .map_err(git_error)?;
-    let diff = repo
-        .diff_tree_to_tree(Some(&base_tree), Some(&source_tree), None)
-        .map_err(git_error)?;
-    let mut changed = false;
-    for delta in diff.deltas() {
-        changed = true;
-        if !delta
-            .old_file()
-            .path()
-            .is_none_or(generated_root_metadata_path)
-            || !delta
-                .new_file()
-                .path()
-                .is_none_or(generated_root_metadata_path)
-        {
-            return Ok(false);
-        }
+    if !same_workspace_manifest(&target_tree, &source_tree)? {
+        return Ok(None);
     }
-    Ok(changed)
+    for path in conflicts {
+        reset_generated_conflict_to_target(repo, merge_index, &target_tree, Path::new(&path))?;
+    }
+    if merge_index.has_conflicts() {
+        return Err(ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "generated root metadata reconciliation left index conflicts",
+        ));
+    }
+    merge_index.write_tree_to(repo).map(Some).map_err(git_error)
 }
 
 fn generated_root_metadata_path(path: &Path) -> bool {
     path == Path::new(crate::artifact::LOCK_PATH) || path.starts_with("gwz.conf/markers")
+}
+
+fn same_workspace_manifest(
+    target_tree: &git2::Tree<'_>,
+    source_tree: &git2::Tree<'_>,
+) -> ModelResult<bool> {
+    let manifest = Path::new(crate::workspace::WORKSPACE_MANIFEST);
+    let target = match target_tree.get_path(manifest) {
+        Ok(entry) => entry,
+        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
+        Err(error) => return Err(git_error(error)),
+    };
+    let source = match source_tree.get_path(manifest) {
+        Ok(entry) => entry,
+        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
+        Err(error) => return Err(git_error(error)),
+    };
+    Ok(target.kind() == Some(git2::ObjectType::Blob)
+        && source.kind() == Some(git2::ObjectType::Blob)
+        && target.id() == source.id()
+        && target.filemode() == source.filemode())
+}
+
+fn reset_generated_conflict_to_target(
+    repo: &git2::Repository,
+    index: &mut git2::Index,
+    target_tree: &git2::Tree<'_>,
+    path: &Path,
+) -> ModelResult<()> {
+    match index.remove_path(path) {
+        Ok(()) => {}
+        Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+        Err(error) => return Err(git_error(error)),
+    }
+    let target = match target_tree.get_path(path) {
+        Ok(entry) => entry,
+        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(()),
+        Err(error) => return Err(git_error(error)),
+    };
+    let blob = repo.find_blob(target.id()).map_err(git_error)?;
+    let file_size = u32::try_from(blob.size()).map_err(|_| {
+        ModelError::new(
+            ErrorCode::GitCommandFailed,
+            "generated root metadata blob is too large for the index",
+        )
+    })?;
+    index
+        .add(&git2::IndexEntry {
+            ctime: git2::IndexTime::new(0, 0),
+            mtime: git2::IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: target.filemode() as u32,
+            uid: 0,
+            gid: 0,
+            file_size,
+            id: target.id(),
+            flags: 0,
+            flags_extended: 0,
+            path: path.as_os_str().as_encoded_bytes().to_vec(),
+        })
+        .map_err(git_error)
 }
 
 pub(super) fn validate_prepared_merge_upstream_in_repo(
@@ -186,14 +230,15 @@ pub(super) fn validate_prepared_merge_upstream_in_repo(
             let tree = repo
                 .find_tree(tree_oid)
                 .map_err(|_| prepared_merge_mismatch("recorded tree object is unavailable"))?;
-            let merge_index = in_memory_merge_index(repo, expected, source)?;
+            let mut merge_index = in_memory_merge_index(repo, expected, source)?;
             if merge_index.has_conflicts() {
-                if generated_root_metadata_only_merge(repo, expected, source, &merge_index)? {
-                    let target_tree = repo
-                        .find_commit(expected)
-                        .and_then(|commit| commit.tree())
-                        .map_err(git_error)?;
-                    if target_tree.id().to_string() == prepared_commit.tree_oid {
+                if let Some(tree_oid) = reconcile_generated_root_metadata_conflicts(
+                    repo,
+                    expected,
+                    source,
+                    &mut merge_index,
+                )? {
+                    if tree_oid.to_string() == prepared_commit.tree_oid {
                         return Ok(kind);
                     }
                 }

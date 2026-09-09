@@ -337,7 +337,9 @@ where
             ErrorCode::GitCommandFailed,
             format!(
                 "repository operand {:?} resolved to {} from caller directory {}; it is not a Git repository. --root selects the workspace; it does not change the base of relative operands.",
-                request.repository_path, repo_path.display(), start.display()
+                request.repository_path,
+                repo_path.display(),
+                start.display()
             ),
         ));
     }
@@ -949,7 +951,11 @@ pub fn resolve_request_workspace_root(
     meta: &crate::RequestMeta,
 ) -> ModelResult<PathBuf> {
     let caller_start = invocation_start(start, meta)?;
-    resolve_workspace_root_from_caller(&caller_start, meta.workspace.as_ref(), meta.invocation.is_some())
+    resolve_workspace_root_from_caller(
+        &caller_start,
+        meta.workspace.as_ref(),
+        meta.invocation.is_some(),
+    )
 }
 
 fn resolve_workspace_root_from_caller(

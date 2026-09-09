@@ -48,14 +48,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gwz_family_model::{
-    resolve_remote_token, BoundMember, FamilyView, RemoteToken, Resolution, Verb,
+    BoundMember, FamilyView, RemoteToken, Resolution, Verb, resolve_remote_token,
 };
 use gwz_family_store_contract::{
     FamilyLocation, FamilyObservation, FamilySession, FamilyStore, StoreError,
 };
 use gwz_local_import::{
-    pair_participants, prepare_import, ImportEffect, ImportError, ImportRequest, ImportedSource,
-    NeverCancelled, Participant, SourceSelector,
+    ImportEffect, ImportError, ImportRequest, ImportedSource, NeverCancelled, Participant,
+    SourceSelector, pair_participants, prepare_import,
 };
 use gwz_repo_contract::RepoKey;
 
@@ -68,8 +68,8 @@ use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, EventSink, OperationRequest};
 use crate::workspace_ops::{
-    assert_workspace_id, handle_merge_with_events, open_merge_probe, resolve_merge_targets,
-    resolve_request_workspace_root, SelectedTarget,
+    SelectedTarget, assert_workspace_id, handle_merge_with_events, open_merge_probe,
+    resolve_merge_targets, resolve_request_workspace_root,
 };
 
 /// Step 4: resolve the family selector against the observed family

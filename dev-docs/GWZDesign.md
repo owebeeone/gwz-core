@@ -7,7 +7,7 @@ Status: accepted
 Rejected repository operands report the supplied spelling, resolved execution
 path and captured caller base. PathEscape reports those facts and the allowed
 workspace root. Codes remain unchanged; `--root` chooses the workspace and
-never changes operand cwd. A failed manifest read at a literal `@root` or `@all`
+never changes operand cwd. A failed manifest read or workspace runtime open at a literal `@root` or `@all`
 directory adds a selector-versus-path hint; a valid workspace at that name is
 accepted normally. Both drivers retain the core diagnostic in every rendering.
 
@@ -19,6 +19,16 @@ an in-memory merge index can contain identical entries in different orders.
 Canonicalize comparison order without folding path case or dropping any entry;
 real content, stage and mode changes remain drift. This applies to both recovery
 admission and capture of the original conflict snapshot.
+
+## Generated root metadata conflict reconciliation (2026-09-10)
+
+When every root conflict is in generated lock/marker paths and source/target
+workspace manifests have identical blob IDs and modes, retain the receiving
+side of those conflicting generated entries. Preserve all other entries of the
+ordinary in-memory merge result, including cleanly merged documentation. Both
+merge preparation and prepared-state validation use the same reconciled tree.
+Ordinary root-file conflicts and manifest differences keep normal conflict
+handling; this does not admit topology changes or discard root source history.
 
 ## Accepted debt recovery amendment (2026-09-06)
 

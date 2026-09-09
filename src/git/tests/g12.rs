@@ -51,6 +51,106 @@ fn seed_conflict(path: &Path) -> (String, String) {
     (rev_parse(path, "HEAD"), source)
 }
 
+fn seed_generated_root_metadata_conflict(path: &Path, ordinary_conflict: bool) -> (String, String) {
+    let backend = Git2Backend::new();
+    backend.create_repo(path).unwrap();
+    fs::create_dir_all(path.join("gwz.conf")).unwrap();
+    fs::write(
+        path.join(crate::workspace::WORKSPACE_MANIFEST),
+        "schema: gwz.workspace/v0\n",
+    )
+    .unwrap();
+    fs::write(path.join(crate::artifact::LOCK_PATH), "base lock\n").unwrap();
+    fs::write(path.join("README.md"), "base readme\n").unwrap();
+    run_git(path, &["add", "-A"]);
+    run_git(path, &["commit", "-m", "base"]);
+    let base = rev_parse(path, "HEAD");
+
+    run_git(path, &["branch", "feature"]);
+    run_git(path, &["checkout", "feature"]);
+    fs::write(path.join(crate::artifact::LOCK_PATH), "source lock\n").unwrap();
+    fs::create_dir_all(path.join("dev-docs")).unwrap();
+    fs::write(path.join("dev-docs/from-lane.md"), "lane documentation\n").unwrap();
+    if ordinary_conflict {
+        fs::write(path.join("README.md"), "source readme\n").unwrap();
+    }
+    run_git(path, &["add", "-A"]);
+    run_git(path, &["commit", "-m", "source"]);
+    let source = rev_parse(path, "HEAD");
+
+    run_git(path, &["checkout", "main"]);
+    fs::write(path.join(crate::artifact::LOCK_PATH), "target lock\n").unwrap();
+    if ordinary_conflict {
+        fs::write(path.join("README.md"), "target readme\n").unwrap();
+    }
+    run_git(path, &["add", "-A"]);
+    run_git(path, &["commit", "-m", "target"]);
+    let target = rev_parse(path, "HEAD");
+    assert_ne!(target, base);
+    (target, source)
+}
+
+#[test]
+fn generated_root_metadata_repair_retains_clean_lane_documentation() {
+    let temp = TempDir::new("merge-generated-root-metadata-doc");
+    let repo = temp.path().join("repo");
+    let (target, source) = seed_generated_root_metadata_conflict(&repo, false);
+    let backend = Git2Backend::new();
+
+    let prepared = backend
+        .prepare_merge_upstream_checked(&repo, "main", &target, &source, None)
+        .unwrap();
+    let GitPreparedMerge::Commit(prepared_commit) = &prepared else {
+        panic!("generated metadata repair must prepare a merge commit")
+    };
+
+    backend
+        .validate_prepared_merge_upstream_state(&repo, "main", &target, &source, &prepared)
+        .unwrap();
+    let result = backend
+        .execute_prepared_merge_upstream_checked(
+            &repo,
+            "main",
+            &target,
+            &source,
+            "merge lane root documentation",
+            &prepared,
+        )
+        .unwrap();
+    let commit = result.commit.unwrap();
+    assert!(
+        backend
+            .commit_matches_prepared_merge(
+                &repo,
+                &commit,
+                &target,
+                &source,
+                "merge lane root documentation",
+                prepared_commit,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("dev-docs/from-lane.md")).unwrap(),
+        "lane documentation\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join(crate::artifact::LOCK_PATH)).unwrap(),
+        "target lock\n"
+    );
+}
+
+#[test]
+fn generated_root_metadata_repair_leaves_ordinary_root_conflicts_unresolved() {
+    let temp = TempDir::new("merge-generated-root-metadata-unmanaged");
+    let repo = temp.path().join("repo");
+    let (target, source) = seed_generated_root_metadata_conflict(&repo, true);
+    let prepared = Git2Backend::new()
+        .prepare_merge_upstream_checked(&repo, "main", &target, &source, None)
+        .unwrap();
+    assert_eq!(prepared, GitPreparedMerge::ExpectedConflict);
+}
+
 #[test]
 fn merge_analysis_classifies_without_mutating_the_repository() {
     let temp = TempDir::new("merge-analysis");

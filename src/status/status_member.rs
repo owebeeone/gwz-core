@@ -17,7 +17,8 @@ where
     B: GitBackend,
 {
     let context = OperationRequest::Status(request.clone()).context(operation_id.into())?;
-    let workspace_root = crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)?;
+    let workspace_root =
+        crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)?;
     let manifest = artifact::read_manifest(&workspace_root)?;
     if let Some(expected) = request
         .meta

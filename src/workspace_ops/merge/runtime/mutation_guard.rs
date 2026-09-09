@@ -106,7 +106,8 @@ fn acquire_workspace_mutation_guard_at_root(
     command: crate::operation::OpenMergeCommand,
     dry_run: bool,
 ) -> ModelResult<WorkspaceMutationAccess> {
-    let lock = WorkspaceMutatorLock::acquire_in(services, &root)?;
+    let lock = WorkspaceMutatorLock::acquire_in(services, &root)
+        .map_err(|error| crate::artifact::workspace_path_hint(&root, error))?;
     // A1: by envelope, for the reason `enforce_workspace_open_merge_gate`
     // states — the v0 store's decoder cannot read an open v1 record, and a
     // version error here replaced the open-merge remedy with misdirection.

@@ -59,8 +59,9 @@ pub(crate) use runtime::{
     enforce_open_merge_stage_targets, guarded_workspace_root_for_request_in,
 };
 pub use runtime::{
-    WorkspaceMutationGuard, acquire_workspace_mutation_guard_for_request_with_services, acquire_workspace_mutation_guard_with_services,
-    enforce_workspace_open_merge_gate, enforce_workspace_open_merge_gate_for_request, handle_merge, handle_merge_with_events,
+    WorkspaceMutationGuard, acquire_workspace_mutation_guard_for_request_with_services,
+    acquire_workspace_mutation_guard_with_services, enforce_workspace_open_merge_gate,
+    enforce_workspace_open_merge_gate_for_request, handle_merge, handle_merge_with_events,
 };
 pub(in crate::workspace_ops) use status::MergeStatusRecordView;
 pub(crate) use store::{FileMergeStore, MergeStore};

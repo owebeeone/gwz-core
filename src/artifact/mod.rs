@@ -395,19 +395,22 @@ pub(crate) fn read_manifest_in(
         let text = filesystem
             .read(&root.join(WORKSPACE_MANIFEST))
             .map_err(manifest_io_error)?;
-        let text = String::from_utf8(text)
-            .map_err(|error| manifest_io_error(io::Error::new(io::ErrorKind::InvalidData, error)))?;
+        let text = String::from_utf8(text).map_err(|error| {
+            manifest_io_error(io::Error::new(io::ErrorKind::InvalidData, error))
+        })?;
         ManifestArtifact::from_yaml(&text)
     })();
-    result.map_err(|mut error: ModelError| {
-        if let Some(name @ ("@root" | "@all")) = root.file_name().and_then(|name| name.to_str()) {
-            error.message.push_str(&format!(
-                "; could not read a workspace at {}. --root expects a directory path; to select repositories use --target {name}",
-                root.display()
-            ));
-        }
-        error
-    })
+    result.map_err(|error| workspace_path_hint(root, error))
+}
+
+pub(crate) fn workspace_path_hint(root: &Path, mut error: ModelError) -> ModelError {
+    if let Some(name @ ("@root" | "@all")) = root.file_name().and_then(|name| name.to_str()) {
+        error.message.push_str(&format!(
+            "; workspace directory is {}. --root expects a directory path; to select repositories use --target {name}",
+            root.display()
+        ));
+    }
+    error
 }
 
 pub fn write_manifest(root: &Path, artifact: &ManifestArtifact) -> ModelResult<()> {
@@ -1110,7 +1113,10 @@ pub(crate) mod tests {
             let root = temp.path().join(name);
             let error = read_manifest(&root).unwrap_err();
             assert_eq!(error.code, ErrorCode::ManifestNotFound);
-            assert!(error.message.contains(&format!("--target {name}")), "{error:?}");
+            assert!(
+                error.message.contains(&format!("--target {name}")),
+                "{error:?}"
+            );
             assert!(error.message.contains(&root.display().to_string()));
             write_manifest(&root, &sample_manifest()).unwrap();
             assert_eq!(read_manifest(&root).unwrap(), sample_manifest());

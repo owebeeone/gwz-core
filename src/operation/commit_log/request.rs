@@ -5,8 +5,7 @@ use crate::artifact::{ArtifactSourceKind, LockArtifact, ManifestArtifact, Snapsh
 use crate::diff::{
     Endpoint, ParsedRevisionArg, RevContext, candidate_repos, classify_operands_for_command,
     default_rev_resolver, missing_exact_local_tags, parse_revision_arg_with_snapshot_ids,
-    parse_tagged_revision_args, read_referenced_snapshots,
-    validate_exact_tag_narrowing,
+    parse_tagged_revision_args, read_referenced_snapshots, validate_exact_tag_narrowing,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::{
