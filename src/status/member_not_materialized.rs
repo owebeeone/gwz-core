@@ -2,32 +2,65 @@ use crate::artifact::{LockArtifact, ManifestMember};
 use crate::git::{GitHeadState, GitStatus as BackendGitStatus};
 use crate::model::ModelError;
 
-pub(crate) fn lock_match(
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LockComparison {
+    pub(crate) lock_match: crate::LockMatch,
+    pub(crate) reasons: Vec<crate::LockDifferenceReason>,
+}
+
+pub(crate) fn lock_comparison(
+    locked: Option<&crate::artifact::ResolvedMemberArtifact>,
+    head: Option<&GitHeadState>,
+    status: Option<&BackendGitStatus>,
+) -> LockComparison {
+    let (Some(locked), Some(head), Some(status)) = (locked, head, status) else {
+        return LockComparison {
+            lock_match: if locked.is_none() {
+                crate::LockMatch::Missing
+            } else {
+                crate::LockMatch::Unknown
+            },
+            reasons: vec![if locked.is_none() {
+                crate::LockDifferenceReason::MissingLockEntry
+            } else {
+                crate::LockDifferenceReason::UnavailableObservations
+            }],
+        };
+    };
+    let mut reasons = Vec::new();
+    if status.is_dirty {
+        reasons.push(crate::LockDifferenceReason::DirtyWorktree);
+    }
+    if locked.commit != head.commit {
+        reasons.push(crate::LockDifferenceReason::Commit);
+    }
+    if locked.branch != head.branch {
+        reasons.push(crate::LockDifferenceReason::Branch);
+    }
+    if locked.detached.unwrap_or(false) != head.is_detached {
+        reasons.push(crate::LockDifferenceReason::Attachment);
+    }
+    LockComparison {
+        lock_match: if reasons.is_empty() {
+            crate::LockMatch::Matches
+        } else {
+            crate::LockMatch::Differs
+        },
+        reasons,
+    }
+}
+
+pub(crate) fn lock_comparison_from_lock(
     lock: Option<&LockArtifact>,
     member: &ManifestMember,
     head: &GitHeadState,
     status: &BackendGitStatus,
-) -> crate::LockMatch {
-    let Some(lock) = lock else {
-        return crate::LockMatch::Missing;
-    };
-    let Some(locked) = lock.members.get(&member.id) else {
-        return crate::LockMatch::Missing;
-    };
-    // F11: `Matches` means the live member is PROVABLY the locked state — a clean worktree
-    // (uncommitted changes can't be verified against the recorded commit) sitting on the
-    // locked commit, branch, and attachment. Any divergence, dirtiness included, is
-    // `Differs`. Previously only commit + a dirty bool were compared, so a member on a
-    // different branch or detached could still read `Matches`.
-    let matches = !status.is_dirty
-        && locked.commit == head.commit
-        && locked.branch == head.branch
-        && locked.detached.unwrap_or(false) == head.is_detached;
-    if matches {
-        crate::LockMatch::Matches
-    } else {
-        crate::LockMatch::Differs
-    }
+) -> LockComparison {
+    lock_comparison(
+        lock.and_then(|lock| lock.members.get(&member.id)),
+        Some(head),
+        Some(status),
+    )
 }
 
 pub(crate) fn member_not_materialized(
@@ -36,6 +69,7 @@ pub(crate) fn member_not_materialized(
     lock: Option<&LockArtifact>,
 ) -> crate::MemberResponse {
     let locked = lock.and_then(|lock| lock.members.get(&member.id));
+    let comparison = lock_comparison(locked, None, None);
     crate::MemberResponse {
         member_id: member.id.clone(),
         member_path: member.path.clone(),
@@ -69,7 +103,8 @@ pub(crate) fn member_not_materialized(
         }),
         git_status: None,
         target_kind: Some(crate::TargetKind::Member),
-        lock_match: Some(crate::LockMatch::Missing),
+        lock_match: Some(comparison.lock_match),
+        lock_difference_reasons: Some(comparison.reasons),
     }
 }
 
@@ -98,6 +133,7 @@ pub(crate) fn member_error(
         git_status: None,
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
+        lock_difference_reasons: None,
     }
 }
 
@@ -161,28 +197,56 @@ mod tests {
         dirty.is_dirty = true;
 
         assert_eq!(
-            lock_match(Some(&lock), &member(), &head(Some("main"), false), &clean),
+            lock_comparison_from_lock(Some(&lock), &member(), &head(Some("main"), false), &clean)
+                .lock_match,
             crate::LockMatch::Matches
         );
         // Same commit, different branch -> Differs (was wrongly Matches before F11).
         assert_eq!(
-            lock_match(
+            lock_comparison_from_lock(
                 Some(&lock),
                 &member(),
                 &head(Some("feature"), false),
-                &clean
-            ),
+                &clean,
+            )
+            .lock_match,
             crate::LockMatch::Differs
         );
         // Same commit/branch but detached -> Differs.
         assert_eq!(
-            lock_match(Some(&lock), &member(), &head(None, true), &clean),
+            lock_comparison_from_lock(Some(&lock), &member(), &head(None, true), &clean)
+                .lock_match,
             crate::LockMatch::Differs
         );
         // Same commit/branch but dirty -> Differs (uncommitted changes can't be verified).
         assert_eq!(
-            lock_match(Some(&lock), &member(), &head(Some("main"), false), &dirty),
+            lock_comparison_from_lock(Some(&lock), &member(), &head(Some("main"), false), &dirty)
+                .lock_match,
             crate::LockMatch::Differs
+        );
+        assert_eq!(
+            lock_comparison_from_lock(Some(&lock), &member(), &head(Some("main"), false), &dirty)
+                .reasons,
+            vec![crate::LockDifferenceReason::DirtyWorktree]
+        );
+    }
+
+    #[test]
+    fn missing_or_unobserved_state_is_not_reported_as_matching() {
+        assert_eq!(
+            lock_comparison(None, None, None),
+            LockComparison {
+                lock_match: crate::LockMatch::Missing,
+                reasons: vec![crate::LockDifferenceReason::MissingLockEntry],
+            }
+        );
+        let lock = locked_main_at("c0ffee");
+        assert_eq!(
+            lock_comparison(Some(&lock.members["mem_app"]), None, None),
+            LockComparison {
+                lock_match: crate::LockMatch::Unknown,
+                reasons: vec![crate::LockDifferenceReason::UnavailableObservations],
+            }
         );
     }
 }

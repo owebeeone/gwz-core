@@ -606,6 +606,16 @@ SCHEMA = schema(
          differs=2,
          missing=3),
 
+    # Concrete facts explaining why a live member cannot be proven equal to
+    # its lock entry. The enum supplements LockMatch; it does not replace it.
+    LockDifferenceReason=Enum(
+         dirty_worktree=0,
+         commit=1,
+         branch=2,
+         attachment=3,
+         missing_lock_entry=4,
+         unavailable_observations=5),
+
     # Phase of a member's in-flight Git transfer, for progress events.
     GitProgressPhase=Enum(
          enumerating=0,
@@ -1602,7 +1612,9 @@ SCHEMA = schema(
         # Whether the current member state matches the lock.
         lock_match=F(9, Ref.LockMatch, optional=True),
         # Concrete target kind for this response.
-        target_kind=F(10, Ref.TargetKind, optional=True)),
+        target_kind=F(10, Ref.TargetKind, optional=True),
+        # Facts preventing lock equality, when comparison was attempted.
+        lock_difference_reasons=F(11, List(Ref.LockDifferenceReason), optional=True)),
 
     # Standard response payload for request/response operations.
     ResponseEnvelope=Msg(

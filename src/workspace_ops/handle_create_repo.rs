@@ -268,6 +268,8 @@ where
         vec![ok_member(
             &manifest_member,
             &locked,
+            Some(&head),
+            Some(&status),
             crate::MemberStatus::Ok,
         )],
     );
@@ -419,6 +421,8 @@ where
                     vec![ok_member(
                         &prepared.member,
                         &prepared.locked,
+                        Some(&backend.head(&repo_path)?),
+                        Some(&backend.status(&repo_path)?),
                         crate::MemberStatus::Ok,
                     )],
                 );
@@ -511,6 +515,8 @@ where
         vec![ok_member(
             &manifest_member,
             &locked,
+            Some(&head),
+            Some(&status),
             crate::MemberStatus::Ok,
         )],
     );
@@ -564,6 +570,7 @@ where
     )?;
     let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
+    let lock = artifact::read_lock_in(services.filesystem(), &root)?;
     let selected = resolve_action_ids(
         &manifest,
         request.meta.selection.as_ref(),
@@ -584,7 +591,14 @@ where
                 "member not found",
             ));
         };
-        match repo_sync_plan_member(backend, &root, member, dry_run, request.private) {
+        match repo_sync_plan_member(
+            backend,
+            &root,
+            member,
+            lock.members.get(&member.id),
+            dry_run,
+            request.private,
+        ) {
             Ok(plan) => {
                 responses.push(plan.response.clone());
                 plans.push((index, plan));
@@ -617,9 +631,15 @@ where
         artifact::write_manifest_in(services.filesystem(), &root, &next)?;
     }
 
-    Ok(crate::RepoSyncResponse {
-        response: response_envelope(context, repo_sync_aggregate(&responses), responses),
-    })
+    let aggregate_status = repo_sync_aggregate(&responses);
+    let mut response = response_envelope(context, aggregate_status, responses);
+    if aggregate_status == crate::AggregateStatus::Noop {
+        response.meta.message = Some(
+            "Repository metadata already matches local Git configuration; sync does not change worktree contents."
+                .to_owned(),
+        );
+    }
+    Ok(crate::RepoSyncResponse { response })
 }
 
 #[derive(Clone, Debug)]
@@ -633,6 +653,7 @@ fn repo_sync_plan_member<B>(
     backend: &B,
     root: &Path,
     member: &ManifestMember,
+    locked: Option<&ResolvedMemberArtifact>,
     dry_run: bool,
     private: Option<bool>,
 ) -> Result<RepoSyncPlan, Box<crate::MemberResponse>>
@@ -708,6 +729,7 @@ where
     }
     let changed = &next != member;
     let state = resolved_member(&next, &head, &status);
+    let comparison = crate::status::lock_comparison(locked, Some(&head), Some(&status));
     let response_status = if dry_run && changed {
         crate::MemberStatus::Planned
     } else if changed {
@@ -735,7 +757,8 @@ where
             state: Some(protocol_state(&next, &state)),
             git_status: None,
             target_kind: Some(crate::TargetKind::Member),
-            lock_match: None,
+            lock_match: Some(comparison.lock_match),
+            lock_difference_reasons: (!comparison.reasons.is_empty()).then_some(comparison.reasons),
         },
     })
 }
@@ -798,6 +821,7 @@ fn repo_sync_member_error(
         git_status: None,
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
+        lock_difference_reasons: None,
     }
 }
 

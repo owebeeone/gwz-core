@@ -466,6 +466,35 @@ pub(crate) fn repo_sync_refreshes_existing_member_remotes_without_rewriting_lock
         None
     );
     assert_eq!(read_lock(temp.path()).unwrap(), original_lock);
+
+    fs::write(repo_path.join("preserved.txt"), "keep this work\n").unwrap();
+    let noop = handle_repo_sync(
+        &backend,
+        temp.path(),
+        crate::RepoSyncRequest {
+            private: None,
+            meta: crate::RequestMeta {
+                selection: Some(crate::Selection {
+                    paths: vec!["repos/app".to_owned()],
+                    ..Default::default()
+                }),
+                ..request_meta_with_workspace()
+            },
+        },
+        "op_repo_sync_noop",
+    )
+    .unwrap();
+    assert_eq!(noop.response.meta.aggregate_status, crate::AggregateStatus::Noop);
+    assert_eq!(
+        noop.response.meta.message.as_deref(),
+        Some(
+            "Repository metadata already matches local Git configuration; sync does not change worktree contents."
+        )
+    );
+    assert!(repo_path.join("preserved.txt").is_file());
+    assert!(noop.response.members.single().lock_difference_reasons.as_ref().is_some_and(
+        |reasons| reasons.contains(&crate::LockDifferenceReason::DirtyWorktree)
+    ));
 }
 
 #[test]

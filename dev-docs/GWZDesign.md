@@ -950,6 +950,15 @@ Workspace-relative paths must stay relative; workspace roots may be absolute.
 Action requests are typed messages. Responses use a shared envelope so the CLI,
 UI, and future daemon can render every operation with one code path.
 
+`MemberResponse.lock_match` is an observation claim, not a mutation-success
+claim. `matches` requires a clean live worktree with the locked commit, branch,
+and attachment; `lock_difference_reasons` carries the concrete divergent facts.
+When an operation did not observe the live repository, it returns `unknown`
+with `unavailable_observations` rather than claiming equality. A dirty-only
+difference says only that uncommitted content cannot be compared to the lock.
+No-op commit, repository sync, and up-to-date merge responses remain successful
+but state that no commit, metadata change, or content transfer occurred.
+
 Long-running actions return `accepted` plus an `operation_id`, then emit
 `OperationEvent` messages and finish with `OperationResult`. Short actions may
 return a final response without an operation id.

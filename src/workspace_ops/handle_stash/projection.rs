@@ -34,6 +34,7 @@ pub(super) fn stash_target_response(
         git_status: None,
         target_kind: Some(target_kind),
         lock_match: None,
+        lock_difference_reasons: None,
     }
 }
 

@@ -105,6 +105,7 @@ pub(crate) fn member_execution_to_protocol(member: &MemberExecution) -> crate::M
         git_status: None,
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
+        lock_difference_reasons: None,
     }
 }
 

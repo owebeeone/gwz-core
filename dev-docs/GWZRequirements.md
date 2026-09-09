@@ -897,8 +897,16 @@ Member status MUST include:
 - active state
 - materialization state
 - lock match state
+- structured lock-difference facts when equality cannot be proven
 - dirty state when available
 - errors
+
+`matches` requires a clean observed worktree on the locked commit, branch and
+attachment. A dirty worktree differs because its uncommitted contents cannot be
+proven equal to a commit; that does not imply registration is inconsistent.
+Responses without a live observation MUST report `unknown`, never `matches`.
+Benign no-change operations remain successful and MUST identify that no commit,
+metadata update, or merge transfer occurred.
 
 ### REQ-112: File Change Observation
 

@@ -667,6 +667,7 @@ pub(crate) fn member_plan_to_protocol(member: &MemberPlan) -> crate::MemberRespo
         git_status: None,
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
+        lock_difference_reasons: None,
     }
 }
 
