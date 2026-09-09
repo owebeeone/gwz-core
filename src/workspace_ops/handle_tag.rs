@@ -52,10 +52,10 @@ where
                 resolve_request_workspace_root(&start, &request.meta)?,
             )
         } else {
-            let access = acquire_workspace_mutation_guard_in(
+            let access = acquire_workspace_mutation_guard_for_request_in(
                 services,
                 &start,
-                request.meta.workspace.as_ref(),
+                &request.meta,
                 OpenMergeCommand::TagMutate,
                 dry_run,
             )?;

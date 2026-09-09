@@ -26,10 +26,10 @@ where
     let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Snapshot(request.clone()).context(operation_id.into())?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    let access = acquire_workspace_mutation_guard_in(
+    let access = acquire_workspace_mutation_guard_for_request_in(
         &services,
         &start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::Snapshot,
         request.meta.dry_run.unwrap_or(false),
     )?;
@@ -103,10 +103,10 @@ where
     let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Capture(request.clone()).context(operation_id.into())?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    let access = acquire_workspace_mutation_guard_in(
+    let access = acquire_workspace_mutation_guard_for_request_in(
         &services,
         &start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::Capture,
         request.meta.dry_run.unwrap_or(false),
     )?;
@@ -168,10 +168,10 @@ where
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::MaterializeResponse> = (|| {
-        let (_guard, root) = guarded_workspace_root_in(
+        let (_guard, root) = guarded_workspace_root_for_request_in(
             &services,
             &start,
-            request.meta.workspace.as_ref(),
+            &request.meta,
             OpenMergeCommand::Materialize,
             request.meta.dry_run.unwrap_or(false),
         )?;
@@ -551,8 +551,10 @@ pub fn handle_clone_workspace_request<B>(
 where
     B: GitBackend + Sync,
 {
-    let context = OperationRequest::CloneWorkspace(request.clone()).context(operation_id.into())?;
+    let mut request = request;
     let start = invocation_start(start, &request.meta)?;
+    request.url = resolve_invocation_git_source(&start, &request.url)?;
+    let context = OperationRequest::CloneWorkspace(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();
@@ -702,6 +704,34 @@ where
 
 /// Compatibility wrapper for the Rust CLI command path.
 pub fn handle_clone_workspace<B>(
+    backend: &B,
+    meta: crate::RequestMeta,
+    url: &str,
+    target: &str,
+    operation_id: impl Into<String>,
+    events: &dyn EventSink,
+) -> ModelResult<crate::MaterializeResponse>
+where
+    B: GitBackend + Sync,
+{
+    let target_path = Path::new(target);
+    if !target_path.is_absolute() {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "legacy clone target must be an absolute path",
+        ));
+    }
+    let start = target_path.parent().ok_or_else(|| {
+        ModelError::new(
+            ErrorCode::InvalidRequest,
+            "legacy clone target must have an absolute parent directory",
+        )
+    })?;
+    handle_clone_workspace_at(backend, start, meta, url, target, operation_id, events)
+}
+
+/// Clone wrapper for a driver that has captured an explicit caller directory.
+pub fn handle_clone_workspace_at<B>(
     backend: &B,
     start: &Path,
     meta: crate::RequestMeta,

@@ -5,8 +5,104 @@ use crate::artifact::{read_lock, read_manifest, read_snapshot};
 use crate::git::{Git2Backend, GitBackend};
 use crate::model::ErrorCode;
 use crate::operation::NullSink;
+use crate::InvocationContext;
 
 use super::*;
+
+#[test]
+pub(crate) fn local_git_sources_bind_to_the_serialized_caller_but_remotes_do_not() {
+    let caller = TempDir::new("git-source-caller");
+    let source = resolve_invocation_git_source(caller.path(), "../source").unwrap();
+    assert_eq!(source, caller.path().parent().unwrap().join("source").to_string_lossy());
+    assert_eq!(
+        resolve_invocation_git_source(caller.path(), "git@example.test:org/source.git").unwrap(),
+        "git@example.test:org/source.git"
+    );
+    assert_eq!(
+        resolve_invocation_git_source(caller.path(), "https://example.test/org/source.git").unwrap(),
+        "https://example.test/org/source.git"
+    );
+}
+
+#[test]
+pub(crate) fn outside_caller_allows_absolute_workspace_operands_but_rejects_relative_ones() {
+    let workspace = TempDir::new("pathspec-workspace");
+    let caller = TempDir::new("pathspec-caller");
+    let absolute = workspace.path().join("README.md");
+
+    let routed = route_pathspec(
+        workspace.path(),
+        &[],
+        caller.path(),
+        absolute.to_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(routed.member_path, None);
+    assert_eq!(routed.pathspec, "README.md");
+
+    let error = route_pathspec(workspace.path(), &[], caller.path(), "README.md").unwrap_err();
+    assert_eq!(error.code, ErrorCode::PathEscape);
+}
+
+#[test]
+pub(crate) fn serialized_invocation_context_overrides_an_unrelated_executor_start() {
+    let workspace = TempDir::new("invocation-workspace");
+    let caller = workspace.path().join("member");
+    fs::create_dir_all(&caller).unwrap();
+    let executor = TempDir::new("invocation-executor");
+    let meta = crate::RequestMeta {
+        request_id: "req_context".to_owned(),
+        schema_version: "gwz.protocol/v0".to_owned(),
+        invocation: Some(InvocationContext {
+            caller_cwd: caller.to_string_lossy().into_owned(),
+        }),
+        ..Default::default()
+    };
+
+    let resolved = resolve_request_workspace_root(executor.path(), &meta).unwrap_err();
+    assert_eq!(resolved.code, ErrorCode::WorkspaceNotFound);
+
+    fs::create_dir_all(workspace.path().join("gwz.conf")).unwrap();
+    fs::write(workspace.path().join("gwz.conf/gwz.yml"), "workspace: {}\n").unwrap();
+    let resolved = resolve_request_workspace_root(executor.path(), &meta).unwrap();
+    assert_eq!(resolved, workspace.path());
+}
+
+#[test]
+pub(crate) fn serialized_context_refuses_relative_caller_and_root() {
+    let executor = TempDir::new("invocation-reject");
+    let relative_cwd = crate::RequestMeta {
+        request_id: "req_relative_cwd".to_owned(),
+        schema_version: "gwz.protocol/v0".to_owned(),
+        invocation: Some(InvocationContext {
+            caller_cwd: "member".to_owned(),
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        invocation_start(executor.path(), &relative_cwd).unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+
+    let relative_root = crate::RequestMeta {
+        request_id: "req_relative_root".to_owned(),
+        schema_version: "gwz.protocol/v0".to_owned(),
+        workspace: Some(crate::WorkspaceRef {
+            root: Some("workspace".to_owned()),
+            workspace_id: None,
+        }),
+        invocation: Some(InvocationContext {
+            caller_cwd: executor.path().to_string_lossy().into_owned(),
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_request_workspace_root(executor.path(), &relative_root)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+}
 
 #[test]
 pub(crate) fn create_workspace_writes_empty_manifest_and_lock() {

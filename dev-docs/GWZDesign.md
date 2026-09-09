@@ -948,7 +948,9 @@ in-process core APIs may supply an explicit absolute `start` as an adapter for
 the same context, but that adapter never reads ambient cwd. Diff and log retain
 their workspace-relative logical cwd for reporting; an invocation outside the
 workspace has no such logical cwd and resolves operands from the captured
-absolute caller directory, preserving ordinary escape checks.
+absolute caller directory, preserving ordinary escape checks. A Git source that
+is a local path uses the same base before it reaches the backend; scheme URLs
+(including `file://`) and scp-style Git sources retain their wire spelling.
 
 Action requests are typed messages. Responses use a shared envelope so the CLI,
 UI, and future daemon can render every operation with one code path.

@@ -32,10 +32,10 @@ where
             resolve_request_workspace_root(&start, &request.meta)?,
         )
     } else {
-        guarded_workspace_root_in(
+        guarded_workspace_root_for_request_in(
             &services,
             &start,
-            request.meta.workspace.as_ref(),
+            &request.meta,
             OpenMergeCommand::BranchMutate,
             request.meta.dry_run.unwrap_or(false),
         )?

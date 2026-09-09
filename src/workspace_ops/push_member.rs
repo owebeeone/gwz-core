@@ -53,10 +53,10 @@ where
     let context = OperationRequest::Push(request.clone()).context(operation_id.into())?;
     let error_context = context.clone();
     let result: ModelResult<crate::PushResponse> = (|| {
-        let (_guard, root) = guarded_workspace_root_in(
+        let (_guard, root) = guarded_workspace_root_for_request_in(
             services,
             start,
-            request.meta.workspace.as_ref(),
+            &request.meta,
             OpenMergeCommand::Push,
             request.meta.dry_run.unwrap_or(false),
         )?;

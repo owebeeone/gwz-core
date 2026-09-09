@@ -48,14 +48,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gwz_family_model::{
-    BoundMember, FamilyView, RemoteToken, Resolution, Verb, resolve_remote_token,
+    resolve_remote_token, BoundMember, FamilyView, RemoteToken, Resolution, Verb,
 };
 use gwz_family_store_contract::{
     FamilyLocation, FamilyObservation, FamilySession, FamilyStore, StoreError,
 };
 use gwz_local_import::{
-    ImportEffect, ImportError, ImportRequest, ImportedSource, NeverCancelled, Participant,
-    SourceSelector, pair_participants, prepare_import,
+    pair_participants, prepare_import, ImportEffect, ImportError, ImportRequest, ImportedSource,
+    NeverCancelled, Participant, SourceSelector,
 };
 use gwz_repo_contract::RepoKey;
 
@@ -68,8 +68,8 @@ use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, EventSink, OperationRequest};
 use crate::workspace_ops::{
-    SelectedTarget, assert_workspace_id, handle_merge_with_events, open_merge_probe,
-    resolve_merge_targets, resolve_workspace_root,
+    assert_workspace_id, handle_merge_with_events, open_merge_probe, resolve_merge_targets,
+    resolve_request_workspace_root, SelectedTarget,
 };
 
 /// Step 4: resolve the family selector against the observed family
@@ -254,7 +254,7 @@ fn prepare<B: MergeAuthorityBackend>(
     let selector = validate_family_merge(request)?;
     let what = format!("local family merge from `{}`", selector.token.as_str());
     let store_error = |error: &StoreError| errors::store_in(&what, error);
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let root = resolve_request_workspace_root(start, &request.meta)?;
     let store = family_store();
     let observation = store
         .read_view(&FamilyLocation::new(&root))

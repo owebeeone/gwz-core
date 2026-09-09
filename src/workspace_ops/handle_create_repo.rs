@@ -141,10 +141,10 @@ where
     }
 
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         services,
         start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
@@ -314,10 +314,10 @@ where
     let context =
         OperationRequest::AddExistingRepo(request.clone()).context(operation_id.into())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         services,
         start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
@@ -557,10 +557,10 @@ where
 {
     let context = OperationRequest::RepoSync(request.clone()).context(operation_id.into())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         services,
         start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
@@ -885,6 +885,23 @@ pub fn resolve_invocation_path(start: &Path, value: &str) -> ModelResult<PathBuf
         start_dir(&start).join(path)
     };
     normalize_absolute_path(&candidate, "resolved path")
+}
+
+/// Bind a local Git source path to the explicit invocation directory.
+///
+/// Network URLs, `file://` URLs, and scp-style Git syntax retain their wire
+/// spelling. Every other value is a local filesystem operand and is made
+/// absolute before it reaches the Git backend.
+pub fn resolve_invocation_git_source(start: &Path, source: &str) -> ModelResult<String> {
+    if source.is_empty() {
+        return Err(invalid("Git source must not be empty"));
+    }
+    if source.contains("://") || crate::git::git_host(source).is_some() {
+        return Ok(source.to_owned());
+    }
+    Ok(resolve_invocation_path(start, source)?
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// Resolve the workspace addressed by one request using its serialized caller

@@ -36,10 +36,10 @@ where
     let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Commit(request.clone()).context(operation_id.into())?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    let access = acquire_workspace_mutation_guard_in(
+    let access = acquire_workspace_mutation_guard_for_request_in(
         &services,
         &start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::Commit,
         request.meta.dry_run.unwrap_or(false),
     )?;

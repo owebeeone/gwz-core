@@ -28,7 +28,11 @@ pub fn handle_init_from_sources<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
+    let mut request = request;
     let start = invocation_start(start, &request.meta)?;
+    for source in &mut request.sources {
+        source.url = resolve_invocation_git_source(&start, &source.url)?;
+    }
     let context =
         OperationRequest::InitFromSources(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;

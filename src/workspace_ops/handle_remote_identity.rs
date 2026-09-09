@@ -17,10 +17,10 @@ pub fn handle_remote_identity<B: GitBackend + MergeAuthorityBackend>(
     let context = OperationRequest::RemoteIdentity(request.clone()).context(operation_id)?;
     let dry = request.meta.dry_run.unwrap_or(false);
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    let access = acquire_workspace_mutation_guard_in(
+    let access = acquire_workspace_mutation_guard_for_request_in(
         &services,
         &start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::RemoteIdentity,
         dry || request.op == crate::RemoteIdentityOp::Get,
     )?;

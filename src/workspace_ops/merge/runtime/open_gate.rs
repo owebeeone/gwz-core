@@ -6,29 +6,58 @@ use super::super::{
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-/// Central pre-dispatch guard used by synchronous drivers. Recovery discovery
-/// intentionally precedes manifest parsing so an invalid in-flight root merge
-/// cannot make the gate disappear.
+/// Central pre-dispatch guard used by synchronous drivers.
 ///
-/// A1: discovery is by ENVELOPE, not through the v0 store. `discover_open`
-/// reads with the v0-only decoder, so an open v1 record answered
-/// `UnsupportedRecordVersion` here and this gate — which owns the only message
-/// that names `merge status`, `merge continue` and `merge abort` — was never
-/// reached. `merge start` already classified first (`start.rs`); every other
-/// gated command now does the same.
+/// This legacy adapter accepts an explicit start directory. Serialized requests
+/// should use [`enforce_workspace_open_merge_gate_for_request`].
 pub fn enforce_workspace_open_merge_gate(
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
     command: crate::operation::OpenMergeCommand,
 ) -> ModelResult<()> {
+    let root = if workspace
+        .and_then(|workspace| workspace.root.as_ref())
+        .is_some()
+    {
+        Some(crate::workspace_ops::resolve_workspace_root(
+            start, workspace,
+        )?)
+    } else {
+        discover_open_envelope_before_manifest(start)?.map(|envelope| envelope.root)
+    };
+    enforce_workspace_open_merge_gate_at_root(root.as_deref(), command)
+}
+
+/// Enforce the open-merge gate from the request's serialized caller context.
+pub fn enforce_workspace_open_merge_gate_for_request(
+    start: &Path,
+    meta: &crate::RequestMeta,
+    command: crate::operation::OpenMergeCommand,
+) -> ModelResult<()> {
+    let caller_start = crate::workspace_ops::invocation_start(start, meta)?;
+    let root = if meta
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.root.as_ref())
+        .is_some()
+    {
+        Some(crate::workspace_ops::resolve_request_workspace_root(
+            start, meta,
+        )?)
+    } else {
+        discover_open_envelope_before_manifest(&caller_start)?.map(|envelope| envelope.root)
+    };
+    enforce_workspace_open_merge_gate_at_root(root.as_deref(), command)
+}
+
+fn enforce_workspace_open_merge_gate_at_root(
+    root: Option<&Path>,
+    command: crate::operation::OpenMergeCommand,
+) -> ModelResult<()> {
     if command.gate_decision() == crate::operation::OpenMergeGateDecision::NotGated {
         return Ok(());
     }
-    let open = if let Some(root) = workspace.and_then(|workspace| workspace.root.as_ref()) {
-        classify_open_record(Path::new(root))?
-    } else {
-        discover_open_envelope_before_manifest(start)?
-    };
+    let open = root.map_or_else(|| Ok(None), classify_open_record)?;
     enforce_open_merge_gate_for_envelope(open.as_ref(), command)
 }
 

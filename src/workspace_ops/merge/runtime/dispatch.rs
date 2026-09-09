@@ -4,7 +4,7 @@ use super::super::{
     FileMergeStore, MergeStore, discover_open_envelope_before_manifest, gc, start, status,
     v1_lifecycle, validate_merge_request,
 };
-use super::mutation_guard::guarded_workspace_root_in;
+use super::mutation_guard::guarded_workspace_root_for_request_in;
 use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::ModelResult;
 use crate::operation::{EventSink, OperationRequest};
@@ -197,10 +197,10 @@ where
         let context = OperationRequest::Merge(request.clone()).context(operation_id)?;
         let (_start_guard, effective_start) =
             if enforce_start_gate && request.op == crate::MergeOp::Start {
-                guarded_workspace_root_in(
+                guarded_workspace_root_for_request_in(
                     services,
                     start,
-                    request.meta.workspace.as_ref(),
+                    &request.meta,
                     crate::operation::OpenMergeCommand::MergeStart,
                     request.meta.dry_run.unwrap_or(false),
                 )?

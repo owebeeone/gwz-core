@@ -62,10 +62,10 @@ where
     let error_context = context.clone();
     let result: ModelResult<crate::PullHeadResponse> = (|| {
         let dry_run = request.meta.dry_run.unwrap_or(false);
-        let (_guard, root) = guarded_workspace_root_in(
+        let (_guard, root) = guarded_workspace_root_for_request_in(
             services,
             start,
-            request.meta.workspace.as_ref(),
+            &request.meta,
             OpenMergeCommand::Pull,
             dry_run,
         )?;
