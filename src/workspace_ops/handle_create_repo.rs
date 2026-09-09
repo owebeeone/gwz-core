@@ -342,7 +342,16 @@ where
         ));
     }
 
-    let member_path = existing_repo_member_path(&root, &repo_path, request.member_path.as_ref())?;
+    let member_path = existing_repo_member_path(&root, &repo_path, request.member_path.as_ref())
+        .map_err(|mut error| {
+            if error.code == ErrorCode::PathEscape {
+                error.message.push_str(&format!(
+                    "; repository operand {:?} resolved to {} from caller directory {}; allowed workspace root is {}. --root selects the workspace; it does not change the base of relative operands.",
+                    request.repository_path, repo_path.display(), start.display(), root.display()
+                ));
+            }
+            error
+        })?;
     reject_existing_active_member_path_overlap(&manifest, &member_path)?;
 
     if let Some(requested_id) = request.member_id.as_ref()

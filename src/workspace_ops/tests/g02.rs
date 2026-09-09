@@ -22,13 +22,26 @@ pub(crate) fn path_diagnostics_report_operand_base_candidate_and_allowed_root() 
     let error = handle_add_existing_repo(
         &Git2Backend::new(), workspace.path(),
         crate::AddExistingRepoRequest {
-            meta, repository_path: "missing-repo".to_owned(),
+            meta: meta.clone(), repository_path: "missing-repo".to_owned(),
             member_path: None, member_id: None, source_id: None,
         }, "op_reject",
     ).unwrap_err();
     assert_eq!(error.code, ErrorCode::GitCommandFailed);
     for fact in ["missing-repo".to_owned(), caller.path().display().to_string(),
                  caller.path().join("missing-repo").display().to_string(),
+                 "--root selects the workspace".to_owned()] {
+        assert!(error.message.contains(&fact), "{error:?} lacks {fact}");
+    }
+    Git2Backend::new().create_repo(caller.path()).unwrap();
+    let error = handle_add_existing_repo(
+        &Git2Backend::new(), workspace.path(),
+        crate::AddExistingRepoRequest {
+            meta, repository_path: ".".to_owned(),
+            member_path: None, member_id: None, source_id: None,
+        }, "op_reject_outside",
+    ).unwrap_err();
+    assert_eq!(error.code, ErrorCode::PathEscape);
+    for fact in [caller.path().display().to_string(), workspace.path().display().to_string(),
                  "--root selects the workspace".to_owned()] {
         assert!(error.message.contains(&fact), "{error:?} lacks {fact}");
     }
