@@ -189,11 +189,68 @@ pub(super) fn comparable_index_entries(
     index: &git2::Index,
     excluded: &BTreeSet<Vec<u8>>,
 ) -> Vec<(Vec<u8>, u32, git2::Oid, u16)> {
-    index
+    let mut entries: Vec<_> = index
         .iter()
         .filter(|entry| !excluded.contains(&entry.path))
         .map(|entry| (entry.path, entry.mode, entry.id, (entry.flags >> 12) & 3))
-        .collect()
+        .collect();
+    // Disk indexes may use case-insensitive lookup order while an in-memory
+    // merge index uses byte order. Compare the same exact entries canonically.
+    entries.sort_unstable();
+    entries
+}
+
+#[cfg(test)]
+mod index_comparison_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_index_comparison_ignores_case_sort_order_but_preserves_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.ignorecase", true)
+            .unwrap();
+        let mut disk = repo.index().unwrap();
+        let mut memory = git2::Index::new().unwrap();
+        for path in [b"a.txt".as_slice(), b"Z.txt".as_slice()] {
+            let entry = git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: 0o100644,
+                uid: 0,
+                gid: 0,
+                file_size: 0,
+                id: repo.blob(b"original").unwrap(),
+                flags: 0,
+                flags_extended: 0,
+                path: path.to_vec(),
+            };
+            disk.add(&entry).unwrap();
+            memory.add(&entry).unwrap();
+        }
+        let paths = |index: &git2::Index| index.iter().map(|e| e.path).collect::<Vec<_>>();
+        assert_ne!(
+            paths(&disk),
+            paths(&memory),
+            "fixture must exercise distinct index ordering"
+        );
+        let excluded = BTreeSet::new();
+        assert_eq!(
+            comparable_index_entries(&disk, &excluded),
+            comparable_index_entries(&memory, &excluded)
+        );
+        let mut changed = memory.get_path(Path::new("a.txt"), 0).unwrap();
+        changed.id = repo.blob(b"changed").unwrap();
+        memory.add(&changed).unwrap();
+        assert_ne!(
+            comparable_index_entries(&disk, &excluded),
+            comparable_index_entries(&memory, &excluded)
+        );
+    }
 }
 
 pub(super) fn validate_recovery_index(

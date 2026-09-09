@@ -2,6 +2,15 @@
 
 Status: accepted
 
+## Merge recovery index comparison (2026-09-10)
+
+Recovery compares index content by path, stage, mode and object ID, independent
+of enumeration order. A disk index configured for case-insensitive lookup and
+an in-memory merge index can contain identical entries in different orders.
+Canonicalize comparison order without folding path case or dropping any entry;
+real content, stage and mode changes remain drift. This applies to both recovery
+admission and capture of the original conflict snapshot.
+
 ## Accepted debt recovery amendment (2026-09-06)
 
 The operator approved the workspace `dev-docs/GwzDebtRecovery.md` plan.
