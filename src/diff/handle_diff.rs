@@ -71,6 +71,8 @@ pub fn handle_diff(
     let _ = operation_id;
     let operand_cwd = crate::workspace_ops::invocation_start(start, &request.meta)?;
     let root = crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)?;
+    let (routing_root, routing_cwd) =
+        crate::workspace_ops::normalize_routing_bases(&root, &operand_cwd);
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
 
@@ -93,8 +95,8 @@ pub fn handle_diff(
         let classified = {
             let ctx = super::RevContext {
                 repos: super::candidate_repos(&root, &manifest),
-                cwd: operand_cwd.clone(),
-                workspace_root: root.clone(),
+                cwd: routing_cwd.clone(),
+                workspace_root: routing_root.clone(),
                 resolve: &super::default_rev_resolver,
             };
             super::classify_operands(&request.operands, &manifest, &ctx)?
@@ -137,8 +139,8 @@ pub fn handle_diff(
         &manifest,
         request.meta.selection.as_ref(),
         &comparison,
-        &root,
-        &operand_cwd,
+        &routing_root,
+        &routing_cwd,
         &pathspecs,
         &snapshots,
         &oracle,

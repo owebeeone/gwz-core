@@ -8,6 +8,17 @@ pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     lexical_normalize(&canonical)
 }
 
+/// Resolve the existing workspace and caller bases to physical paths for
+/// containment and routing comparisons. This consumes explicit request context;
+/// it never reads the executor's current directory. A caller outside the
+/// workspace remains outside after normalization and is rejected by routing.
+pub(crate) fn normalize_routing_bases(
+    workspace_root: &Path,
+    caller_cwd: &Path,
+) -> (PathBuf, PathBuf) {
+    (normalize_path(workspace_root), normalize_path(caller_cwd))
+}
+
 /// Normalize `.` and `..` without requiring the operand to exist.
 ///
 /// Routing uses this for raw pathspecs, so it deliberately does not resolve

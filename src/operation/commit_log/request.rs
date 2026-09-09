@@ -62,6 +62,8 @@ pub(super) fn open_request_histories(
     let filters = CommitLogFilters::from_request(request)?;
     let operand_cwd = crate::workspace_ops::invocation_start(start, &request.meta)?;
     let root = crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)?;
+    let (routing_root, routing_cwd) =
+        crate::workspace_ops::normalize_routing_bases(&root, &operand_cwd);
     let manifest = crate::artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
 
@@ -73,8 +75,8 @@ pub(super) fn open_request_histories(
         let classified = {
             let context = RevContext {
                 repos: candidate_repos(&root, &manifest),
-                cwd: operand_cwd.clone(),
-                workspace_root: root.clone(),
+                cwd: routing_cwd.clone(),
+                workspace_root: routing_root.clone(),
                 resolve: &default_rev_resolver,
             };
             classify_operands_for_command(&request.operands, &manifest, &context, "gwz log")?
@@ -126,7 +128,7 @@ pub(super) fn open_request_histories(
         &snapshots,
         lock.as_ref(),
     );
-    let plans = route_pathspecs(&root, &manifest, &operand_cwd, &pathspecs, plans)?;
+    let plans = route_pathspecs(&routing_root, &manifest, &routing_cwd, &pathspecs, plans)?;
     let plans = if tagged {
         narrow_to_exact_tags(plans, &tag_names)?
     } else {
