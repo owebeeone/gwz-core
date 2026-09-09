@@ -14,6 +14,8 @@ pub(in crate::checked_artifact) enum DurableObjectIdentityV1 {
         volume_uuid: [u8; 16],
         persistent_object_id: [u8; 8],
     },
+    /// Historical wire label for a local Windows volume GUID and nonzero 128-bit file ID.
+    /// This does not require any particular filesystem name.
     WindowsNtfs {
         volume_guid_utf16: Vec<u16>,
         file_id_128: [u8; 16],
@@ -85,7 +87,7 @@ impl DurableObjectIdentityV1 {
         if volume_guid_utf16.is_empty() || file_id_128 == [0; 16] {
             return Err(CheckedFsError::unsupported(
                 PlatformCapability::DurableObjectIdentity,
-                "NTFS identity needs a volume GUID and nonzero 128-bit file ID",
+                "Windows identity needs a volume GUID and nonzero 128-bit file ID",
             ));
         }
         Ok(Self::WindowsNtfs {

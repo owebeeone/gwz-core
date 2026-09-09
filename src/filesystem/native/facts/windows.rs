@@ -49,7 +49,7 @@ pub(crate) fn parent_mode(parent: &Dir) -> Result<FsLookupMode, FsProbeError> {
     {
         return Err(query_error(
             FsCapability::PathEquivalence,
-            "query NTFS per-directory case mode",
+            "query Windows per-directory case mode",
         ));
     }
     Ok(if info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR == 0 {
@@ -101,7 +101,12 @@ fn identity(value: &impl AsRawHandle) -> Result<FsObjectIdentity, FsProbeError> 
 
 fn facts(value: &impl AsRawHandle) -> Result<(Vec<u16>, [u8; 16]), FsProbeError> {
     let handle = value.as_raw_handle();
-    require_ntfs(handle)?;
+    let flags = filesystem_flags(handle)?;
+    let file_id = admit_file_identity(flags, || query_file_id(handle))?;
+    Ok((volume_guid(handle)?, file_id))
+}
+
+fn query_file_id(handle: std::os::windows::io::RawHandle) -> Result<[u8; 16], FsProbeError> {
     let mut info = FILE_ID_INFO::default();
     if unsafe {
         GetFileInformationByHandleEx(
@@ -114,39 +119,60 @@ fn facts(value: &impl AsRawHandle) -> Result<(Vec<u16>, [u8; 16]), FsProbeError>
     {
         return Err(query_error(
             FsCapability::PersistentFilesystemIdentity,
-            "query NTFS 128-bit file identity",
+            "query Windows 128-bit file identity",
         ));
     }
-    let volume_guid = volume_guid(handle)?;
-    if info.FileId.Identifier == [0; 16] {
-        return Err(FsProbeError::unsupported(
-            FsCapability::PersistentFilesystemIdentity,
-            "NTFS returned a zero file identity",
-        ));
-    }
-    Ok((volume_guid, info.FileId.Identifier))
+    Ok(info.FileId.Identifier)
 }
 
-/// The Windows admission gate. DR-1 W2 KEEPS it (charter §3.2 and the
-/// operator's ruling of 2026-09-03, §0.1 "Windows keeps `require_ntfs`"):
-/// unlike Linux, this name test has no verified capability replacement yet,
-/// and its replacement — `GetVolumeInformationByHandleW`'s
-/// `FILE_SUPPORTS_OPEN_BY_FILE_ID` flag, which NTFS and ReFS set and
-/// FAT/exFAT do not — is not to be built blind from a host that cannot run
-/// the Windows matrix. It is charter §8 item 3 and the next Windows-verified
-/// step's work.
-fn require_ntfs(handle: std::os::windows::io::RawHandle) -> Result<(), FsProbeError> {
-    if filesystem_name(handle)? != "NTFS" {
+/// Windows winnt.h FILE_SUPPORTS_OPEN_BY_FILE_ID. The flag is necessary;
+/// a successful nonzero identity probe is independently required.
+const FILE_SUPPORTS_OPEN_BY_FILE_ID: u32 = 0x0100_0000;
+
+fn admit_file_identity(
+    flags: u32,
+    probe: impl FnOnce() -> Result<[u8; 16], FsProbeError>,
+) -> Result<[u8; 16], FsProbeError> {
+    if flags & FILE_SUPPORTS_OPEN_BY_FILE_ID == 0 {
         return Err(FsProbeError::unsupported(
             FsCapability::PersistentFilesystemIdentity,
-            "only local NTFS is an admitted Windows profile",
+            "volume does not report FILE_SUPPORTS_OPEN_BY_FILE_ID",
         ));
     }
-    Ok(())
+    let file_id = probe()?;
+    if file_id == [0; 16] {
+        return Err(FsProbeError::unsupported(
+            FsCapability::PersistentFilesystemIdentity,
+            "filesystem returned a zero 128-bit file identity",
+        ));
+    }
+    Ok(file_id)
 }
 
-/// The one `GetVolumeInformationByHandleW` name fetch: the gate above
-/// compares it to `NTFS`, the volume description reports it verbatim.
+fn filesystem_flags(handle: std::os::windows::io::RawHandle) -> Result<u32, FsProbeError> {
+    let mut flags = 0;
+    if unsafe {
+        GetVolumeInformationByHandleW(
+            handle,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut flags,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0
+    {
+        return Err(query_error(
+            FsCapability::PersistentFilesystemIdentity,
+            "query Windows filesystem capability flags",
+        ));
+    }
+    Ok(flags)
+}
+
+/// Optional diagnostic label, queried independently from admission flags.
 fn filesystem_name(handle: std::os::windows::io::RawHandle) -> Result<String, FsProbeError> {
     let mut filesystem = [0_u16; 32];
     if unsafe {
@@ -191,7 +217,7 @@ fn final_path(
     if length == 0 || length as usize >= path.len() {
         return Err(query_error(
             FsCapability::PersistentFilesystemIdentity,
-            "query local NTFS volume GUID",
+            "query local volume GUID",
         ));
     }
     path.truncate(length as usize);
@@ -251,6 +277,58 @@ fn query_error(capability: FsCapability, operation: &'static str) -> FsProbeErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_identity_survives_reopen_and_rename_but_distinguishes_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+        parent_mode(&directory).unwrap();
+        directory.write("original", b"identity fixture").unwrap();
+        let first = file_identity(&directory.open("original").unwrap()).unwrap();
+        let reopened = file_identity(&directory.open("original").unwrap()).unwrap();
+        assert_eq!(first, reopened);
+        directory.rename("original", &directory, "renamed").unwrap();
+        assert_eq!(
+            first,
+            file_identity(&directory.open("renamed").unwrap()).unwrap()
+        );
+        directory.write("original", b"replacement fixture").unwrap();
+        assert_ne!(
+            first,
+            file_identity(&directory.open("original").unwrap()).unwrap()
+        );
+        dir_identity(&directory).unwrap();
+    }
+
+    #[test]
+    fn capability_gate_requires_flag_and_successful_identity_probe() {
+        for diagnostic_name in [Some("NTFS"), Some("ReFS"), Some("future"), None] {
+            let _ = diagnostic_name; // Diagnostics are intentionally not an admission input.
+            assert!(admit_file_identity(0x0100_0000, || Ok([1; 16])).is_ok());
+            assert!(matches!(
+                admit_file_identity(0, || Ok([1; 16])),
+                Err(FsProbeError::Unsupported { .. })
+            ));
+            assert!(matches!(
+                admit_file_identity(0x0100_0000, || Ok([0; 16])),
+                Err(FsProbeError::Unsupported { .. })
+            ));
+            assert!(matches!(
+                admit_file_identity(0x0100_0000, || Err(FsProbeError::io(
+                    "probe",
+                    io::Error::from_raw_os_error(5)
+                ))),
+                Err(FsProbeError::Io { .. })
+            ));
+            assert!(matches!(
+                admit_file_identity(0x0100_0000, || Err(FsProbeError::unsupported(
+                    FsCapability::PersistentFilesystemIdentity,
+                    "probe unsupported"
+                ))),
+                Err(FsProbeError::Unsupported { .. })
+            ));
+        }
+    }
 
     #[test]
     fn a_unc_final_path_classifies_remote_and_a_volume_guid_path_does_not() {

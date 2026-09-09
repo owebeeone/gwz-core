@@ -2084,3 +2084,16 @@ The following are intentionally not designed in detail for v0:
 - bare repository/worktree/mirror-cache storage
 - remote capability enforcement
 - persistent operation event logs
+
+## Filesystem capability admission (2026-09-10)
+
+Filesystem names are diagnostic labels, never admission criteria. Windows
+requires FILE_SUPPORTS_OPEN_BY_FILE_ID, a successful nonzero 128-bit FileIdInfo
+probe, a local volume GUID, and the existing required case and handle probes.
+An unavailable or undecodable diagnostic name cannot reject those capabilities.
+Unsupported capabilities retain warning versus --filesystem-strict refusal
+semantics; operational probe errors retain their error classification.
+WindowsNtfsFileId128V1 and WindowsNtfs remain historical serialized identifiers
+for this capability contract. Block cloning is a separate capability and does
+not establish crash recovery support. This supersedes the old Windows name-gate
+exception in GwzM5-8DR1-WarnOrRefuse-Charter.md.

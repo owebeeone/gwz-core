@@ -881,7 +881,7 @@ fn a_reverse_checked_door_on_a_handle_fail_volume_names_the_one_escape() {
             "--preserve",
             "APFS",
             "ext4",
-            "NTFS",
+            "Windows volume proving persistent file IDs",
         ] {
             assert!(refusal.message.contains(named), "{}", refusal.message);
         }

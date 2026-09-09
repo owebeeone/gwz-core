@@ -47,6 +47,8 @@ pub(super) enum SupportedFilesystemProfile {
     /// this is not"). Rename it only with that migration.
     LinuxExt4FsIocGetFsUuidV1,
     MacPersistentObjectIdV1,
+    /// Historical stored label: Windows capability flags, nonzero file ID and local volume GUID.
+    /// The filesystem name is not an admission criterion.
     WindowsNtfsFileId128V1,
 }
 
@@ -111,7 +113,7 @@ impl SupportedFilesystemProfile {
 pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem does not expose the persistent file handles and durable filesystem identity \
      that crash recovery for checked merge artifacts requires; run the workspace on one that does \
      (on Linux any filesystem answering FS_IOC_GETFSUUID — ext4, xfs and f2fs do, btrfs, tmpfs and \
-     network mounts do not; a local APFS or HFS+ volume on macOS; NTFS on Windows). Run without \
+     network mounts do not; a local APFS or HFS+ volume on macOS; a local Windows volume proving open-by-ID support and nonzero 128-bit file IDs). Run without \
      --filesystem-strict to proceed without crash recovery, or clear a merge already open with \
      `gwz merge --abort`, which needs no such filesystem unless it must re-verify checked \
      artifacts — a preservation bundle, a selected root's manifest and lock, or the merge's \
@@ -142,8 +144,7 @@ pub(super) const PERSISTENT_FILESYSTEM_IDENTITY_REMEDY: &str = "this filesystem 
 /// path).
 pub(super) const HANDLE_FAIL_REVERSE_DOOR_ESCAPE: &str = "this filesystem does not expose the persistent file handles that reversing a merge through the \
      checked boundary requires. One escape works from here: copy the whole workspace onto a volume \
-     that proves them (a local APFS or HFS+ volume on macOS; ext4, xfs or f2fs on Linux; NTFS on \
-     Windows) and run `gwz merge --abort` there, adding `--preserve` if that was the door that \
+     that proves them (a local APFS or HFS+ volume on macOS; ext4, xfs or f2fs on Linux; a local Windows volume proving persistent file IDs) and run `gwz merge --abort` there, adding `--preserve` if that was the door that \
      refused";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -157,7 +158,7 @@ pub(super) enum PlatformCapability {
     DurableObjectIdentity,
     /// R2-E E4.1: the SUBSTRATE the checked catalog needs — persistent file
     /// handles (Linux `name_to_handle_at`, macOS `ATTR_CMN_OBJPERMANENTID`,
-    /// NTFS 128-bit file ids) and a mount identity. Its absence is the one
+    /// Windows 128-bit file ids) and a mount identity. Its absence is the one
     /// platform gap a user meets on a supported OS, so it is the only value
     /// carrying a [`PERSISTENT_FILESYSTEM_IDENTITY_REMEDY`].
     PersistentFilesystemIdentity,
