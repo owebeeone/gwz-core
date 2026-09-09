@@ -162,7 +162,7 @@ fn handle_open_merge_stage<B: GitBackend>(
         // Same rule as the ordinary pathspec branch: an explicit selection constrains where
         // routed pathspecs may stage.
         let routed =
-            resolve_stage_targets(root, &member_paths, &operand_cwd, &request.pathspecs, all)?;
+            resolve_stage_targets(root, &member_paths, operand_cwd, &request.pathspecs, all)?;
         if narrowed {
             let manifest = artifact::read_manifest_in(services.filesystem(), root)?;
             SelectionScope::resolve(&manifest, request.meta.selection.as_ref())?

@@ -200,6 +200,7 @@ pub fn plan_diff(
 /// Physical-path form of [`plan_diff`] for a serialized invocation. The caller
 /// supplies both the resolved workspace root and the captured operand cwd, so
 /// an executor's own current directory cannot influence routing.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_diff_at(
     manifest: &ManifestArtifact,
     selection: Option<&crate::Selection>,
