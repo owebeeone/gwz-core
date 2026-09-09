@@ -1340,7 +1340,12 @@ fn an_unregistered_bare_repository_refuses_before_family_allocation() {
         error.message.contains("unregistered Git repositories"),
         "{error}"
     );
-    assert!(error.message.contains("vendor/mirror.git"), "{error}");
+    assert!(
+        error
+            .message
+            .contains(&Path::new("vendor").join("mirror.git").display().to_string()),
+        "{error}"
+    );
     assert!(family_files_absent(&fixture.root));
     assert!(!dest.exists());
 }

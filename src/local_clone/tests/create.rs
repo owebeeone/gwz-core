@@ -302,7 +302,12 @@ fn an_unregistered_repository_in_the_workspace_root_refuses_before_family_alloca
         error.message.contains("unregistered Git repositories"),
         "{error}"
     );
-    assert!(error.message.contains("artifacts/rogue"), "{error}");
+    assert!(
+        error
+            .message
+            .contains(&Path::new("artifacts").join("rogue").display().to_string()),
+        "{error}"
+    );
     assert!(
         family_files_absent(&fixture.root),
         "the rejected source must not found a family"
