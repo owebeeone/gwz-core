@@ -27,7 +27,18 @@ impl RefusingServer {
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
-                        let _ = stream.read(&mut [0; 4096]);
+                        // TCP may split one request across reads. Closing with
+                        // unread request bytes can reset the connection before
+                        // libgit2 receives the intended HTTP refusal.
+                        let mut request = Vec::new();
+                        while !request.ends_with(b"\r\n\r\n") {
+                            let mut byte = [0];
+                            match stream.read(&mut byte) {
+                                Ok(1) => request.push(byte[0]),
+                                _ => break,
+                            }
+                            assert!(request.len() <= 65536, "fixture request too large");
+                        }
                         let challenge = if status == 401 {
                             "WWW-Authenticate: Basic realm=\"fixture\"\r\n"
                         } else {

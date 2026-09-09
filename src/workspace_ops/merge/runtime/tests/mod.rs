@@ -1,13 +1,14 @@
 use super::*;
+use crate::workspace_ops::tests::TempDir;
 use std::path::Path;
 
-fn request() -> crate::MergeRequest {
+fn request(root: &Path) -> crate::MergeRequest {
     crate::MergeRequest {
         meta: crate::RequestMeta {
             request_id: "req".to_owned(),
             schema_version: "gwz.v0".to_owned(),
             workspace: Some(crate::WorkspaceRef {
-                root: Some(".".to_owned()),
+                root: Some(root.to_string_lossy().into_owned()),
                 workspace_id: None,
             }),
             ..crate::RequestMeta::default()
@@ -58,8 +59,9 @@ pub(super) fn write_open_v1_record(root: &Path) -> String {
 
 #[test]
 fn public_handler_exposes_the_frozen_service_entry() {
+    let root = TempDir::new("merge-public-handler");
     let backend = crate::git::Git2Backend::new();
-    let response = handle_merge(&backend, Path::new("."), request(), "op_1").unwrap();
+    let response = handle_merge(&backend, root.path(), request(root.path()), "op_1").unwrap();
     assert_eq!(response.state, crate::MergeOperationState::Idle);
 }
 

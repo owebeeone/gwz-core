@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn status_on_unmaterialized_member_reports_missing_not_failure() {
+    fn status_on_unmaterialized_member_reports_unknown_lock_state_not_failure() {
         // Right after a bare `git clone` of a workspace root, members are
         // declared in gwz.conf but their working trees were never cloned. That
         // is an expected, recoverable state, not a git failure.
@@ -147,7 +147,13 @@ mod tests {
         assert_eq!(member.status, crate::MemberStatus::Noop);
         assert!(member.error.is_none());
         assert!(member.git_status.is_none());
-        assert_eq!(member.lock_match, Some(crate::LockMatch::Missing));
+        // The lock entry exists, but no member repository is materialized to
+        // observe its head, branch, attachment, or worktree state.
+        assert_eq!(member.lock_match, Some(crate::LockMatch::Unknown));
+        assert_eq!(
+            member.lock_difference_reasons,
+            Some(vec![crate::LockDifferenceReason::UnavailableObservations])
+        );
         let state = member.state.as_ref().expect("member state present");
         assert!(!state.materialized);
         assert_eq!(state.commit.as_deref(), Some(commit.as_str()));
