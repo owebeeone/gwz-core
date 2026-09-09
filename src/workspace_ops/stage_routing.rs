@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-use super::pathspec_routing::{join_cwd, lexical_normalize, route_pathspec};
+use super::lexical_normalize;
+use super::pathspec_routing::{join_cwd, route_pathspec};
 
 /// A repo to stage into plus its repo-relative pathspecs. `member_path == None` is the
 /// workspace root repo; `Some(path)` is the member at `root/<path>`.
@@ -32,6 +33,8 @@ pub(crate) fn resolve_stage_targets(
     pathspecs: &[String],
     all: bool,
 ) -> ModelResult<Vec<StageTarget>> {
+    let root = lexical_normalize(root);
+    let cwd = lexical_normalize(cwd);
     // member_path (None == root) -> (repo-relative pathspecs, explicit?)
     let mut groups: BTreeMap<Option<String>, (BTreeSet<String>, bool)> = BTreeMap::new();
 
@@ -51,7 +54,7 @@ pub(crate) fn resolve_stage_targets(
     }
 
     for spec in pathspecs {
-        let routed = route_pathspec(root, member_paths, cwd, spec)?;
+        let routed = route_pathspec(&root, member_paths, &cwd, spec)?;
         match routed.member_path {
             // The pathspec names this member directly → explicit.
             Some(member) => add(&mut groups, Some(member), routed.pathspec, true),
@@ -59,8 +62,8 @@ pub(crate) fn resolve_stage_targets(
                 // Root-territory path: stage it in the root repo (explicit), and fan out
                 // into every member contained within this pathspec (D2, fan-out — members
                 // are excluded from the root, so a root-side `.` would never reach them).
-                let rel = lexical_normalize(&join_cwd(cwd, spec));
-                let rel = rel.strip_prefix(root).unwrap_or(&rel);
+                let rel = lexical_normalize(&join_cwd(&cwd, spec));
+                let rel = rel.strip_prefix(&root).unwrap_or(&rel);
                 add(&mut groups, None, routed.pathspec, true);
                 for member in member_paths {
                     if rel.as_os_str().is_empty() || Path::new(member).starts_with(rel) {

@@ -15,9 +15,11 @@
 //! [`route_pathspec`]; the diff planner (`crate::diff::plan`) is the second
 //! caller. Pure — no filesystem access.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
+
+use super::lexical_normalize;
 
 /// Which repo owns a routed pathspec, plus the pathspec rewritten repo-relative.
 ///
@@ -46,8 +48,10 @@ pub(crate) fn route_pathspec(
     cwd: &Path,
     spec: &str,
 ) -> ModelResult<RoutedPathspec> {
-    let abs = lexical_normalize(&join_cwd(cwd, spec));
-    let rel = abs.strip_prefix(root).map_err(|_| {
+    let root = lexical_normalize(root);
+    let cwd = lexical_normalize(cwd);
+    let abs = lexical_normalize(&join_cwd(&cwd, spec));
+    let rel = abs.strip_prefix(&root).map_err(|_| {
         ModelError::new(
             ErrorCode::PathEscape,
             format!(
@@ -91,24 +95,6 @@ pub(crate) fn join_cwd(cwd: &Path, spec: &str) -> PathBuf {
     } else {
         cwd.join(path)
     }
-}
-
-/// Lexically resolve `.` / `..` without touching the filesystem (unlike
-/// `normalize_path`, which canonicalizes — wrong for not-yet-existing or deleted
-/// paths, and for symlinks).
-pub(crate) fn lexical_normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(value) => out.push(value),
-            Component::RootDir | Component::Prefix(_) => out.push(component.as_os_str()),
-        }
-    }
-    out
 }
 
 /// Repo-relative pathspec string: the repo root itself (empty) becomes ".", and
