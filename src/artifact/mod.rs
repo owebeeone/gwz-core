@@ -391,12 +391,23 @@ pub(crate) fn read_manifest_in(
     filesystem: &dyn FileSystem,
     root: &Path,
 ) -> ModelResult<ManifestArtifact> {
-    let text = filesystem
-        .read(&root.join(WORKSPACE_MANIFEST))
-        .map_err(manifest_io_error)?;
-    let text = String::from_utf8(text)
-        .map_err(|error| manifest_io_error(io::Error::new(io::ErrorKind::InvalidData, error)))?;
-    ManifestArtifact::from_yaml(&text)
+    let result = (|| {
+        let text = filesystem
+            .read(&root.join(WORKSPACE_MANIFEST))
+            .map_err(manifest_io_error)?;
+        let text = String::from_utf8(text)
+            .map_err(|error| manifest_io_error(io::Error::new(io::ErrorKind::InvalidData, error)))?;
+        ManifestArtifact::from_yaml(&text)
+    })();
+    result.map_err(|mut error: ModelError| {
+        if let Some(name @ ("@root" | "@all")) = root.file_name().and_then(|name| name.to_str()) {
+            error.message.push_str(&format!(
+                "; could not read a workspace at {}. --root expects a directory path; to select repositories use --target {name}",
+                root.display()
+            ));
+        }
+        error
+    })
 }
 
 pub fn write_manifest(root: &Path, artifact: &ManifestArtifact) -> ModelResult<()> {
@@ -1090,6 +1101,22 @@ pub(crate) mod tests {
                 .is_ok(),
             "the integrity marker must publish in the supplied memory filesystem"
         );
+    }
+
+    #[test]
+    fn path_diagnostics_hint_selectors_only_when_literal_workspace_read_fails() {
+        let temp = TempDir::new("selector-path-diagnostic");
+        for name in ["@root", "@all"] {
+            let root = temp.path().join(name);
+            let error = read_manifest(&root).unwrap_err();
+            assert_eq!(error.code, ErrorCode::ManifestNotFound);
+            assert!(error.message.contains(&format!("--target {name}")), "{error:?}");
+            assert!(error.message.contains(&root.display().to_string()));
+            write_manifest(&root, &sample_manifest()).unwrap();
+            assert_eq!(read_manifest(&root).unwrap(), sample_manifest());
+        }
+        let error = read_manifest(&temp.path().join("ordinary")).unwrap_err();
+        assert!(!error.message.contains("--target"));
     }
 
     #[test]

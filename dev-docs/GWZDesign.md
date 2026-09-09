@@ -2,6 +2,15 @@
 
 Status: accepted
 
+## Resolved-path diagnostics (2026-09-10)
+
+Rejected repository operands report the supplied spelling, resolved execution
+path and captured caller base. PathEscape reports those facts and the allowed
+workspace root. Codes remain unchanged; `--root` chooses the workspace and
+never changes operand cwd. A failed manifest read at a literal `@root` or `@all`
+directory adds a selector-versus-path hint; a valid workspace at that name is
+accepted normally. Both drivers retain the core diagnostic in every rendering.
+
 ## Merge recovery index comparison (2026-09-10)
 
 Recovery compares index content by path, stage, mode and object ID, independent

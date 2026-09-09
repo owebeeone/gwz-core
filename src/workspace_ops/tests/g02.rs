@@ -10,6 +10,38 @@ use crate::InvocationContext;
 use super::*;
 
 #[test]
+pub(crate) fn path_diagnostics_report_operand_base_candidate_and_allowed_root() {
+    let workspace = TempDir::new("diagnostic-workspace");
+    let caller = TempDir::new("diagnostic-caller");
+    handle_create_workspace(create_workspace_request(workspace.path()), "op_create").unwrap();
+    let mut meta = request_meta_with_workspace();
+    meta.workspace.as_mut().unwrap().root = Some(workspace.path().to_string_lossy().into_owned());
+    meta.invocation = Some(InvocationContext {
+        caller_cwd: caller.path().to_string_lossy().into_owned(),
+    });
+    let error = handle_add_existing_repo(
+        &Git2Backend::new(), workspace.path(),
+        crate::AddExistingRepoRequest {
+            meta, repository_path: "missing-repo".to_owned(),
+            member_path: None, member_id: None, source_id: None,
+        }, "op_reject",
+    ).unwrap_err();
+    assert_eq!(error.code, ErrorCode::GitCommandFailed);
+    for fact in ["missing-repo".to_owned(), caller.path().display().to_string(),
+                 caller.path().join("missing-repo").display().to_string(),
+                 "--root selects the workspace".to_owned()] {
+        assert!(error.message.contains(&fact), "{error:?} lacks {fact}");
+    }
+    let error = route_pathspec(workspace.path(), &[], caller.path(), "README.md").unwrap_err();
+    assert_eq!(error.code, ErrorCode::PathEscape);
+    for fact in ["README.md".to_owned(), caller.path().display().to_string(),
+                 caller.path().join("README.md").display().to_string(),
+                 workspace.path().display().to_string()] {
+        assert!(error.message.contains(&fact), "{error:?} lacks {fact}");
+    }
+}
+
+#[test]
 pub(crate) fn local_git_sources_bind_to_the_serialized_caller_but_remotes_do_not() {
     let caller = TempDir::new("git-source-caller");
     let source = resolve_invocation_git_source(caller.path(), "../source").unwrap();

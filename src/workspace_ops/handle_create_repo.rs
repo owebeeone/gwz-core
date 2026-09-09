@@ -335,7 +335,10 @@ where
     if !backend.is_repository(&repo_path)? {
         return Err(ModelError::new(
             ErrorCode::GitCommandFailed,
-            "repository_path is not a git repository",
+            format!(
+                "repository operand {:?} resolved to {} from caller directory {}; it is not a Git repository. --root selects the workspace; it does not change the base of relative operands.",
+                request.repository_path, repo_path.display(), start.display()
+            ),
         ));
     }
 

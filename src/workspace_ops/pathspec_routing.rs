@@ -50,7 +50,10 @@ pub(crate) fn route_pathspec(
     let rel = abs.strip_prefix(root).map_err(|_| {
         ModelError::new(
             ErrorCode::PathEscape,
-            format!("pathspec '{spec}' is outside the workspace"),
+            format!(
+                "pathspec {spec:?} resolved to {} from caller directory {}, outside the allowed workspace root {}. --root selects the workspace; it does not change the base of relative operands.",
+                abs.display(), cwd.display(), root.display()
+            ),
         )
     })?;
 
