@@ -22,11 +22,12 @@ pub fn handle_stage<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Stage(request.clone()).context(operation_id.into())?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let _access = acquire_workspace_mutation_guard_in(
         &services,
-        start,
+        &start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::StageConflictResolution,
         request.meta.dry_run.unwrap_or(false),

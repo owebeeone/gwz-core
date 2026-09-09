@@ -42,9 +42,10 @@ pub fn handle_clone_repo_member<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context =
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
-    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
@@ -52,7 +53,7 @@ where
         let dry_run = request.meta.dry_run.unwrap_or(false);
         let (_guard, root) = guarded_workspace_root_in(
             &services,
-            start,
+            &start,
             request.meta.workspace.as_ref(),
             OpenMergeCommand::RepoMutate,
             dry_run,
@@ -206,6 +207,7 @@ pub fn handle_detach_repo_member<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let context =
         OperationRequest::DetachRepoMember(request.clone()).context(operation_id.into())?;
@@ -213,7 +215,7 @@ where
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root_in(
         &services,
-        start,
+        &start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
         dry_run,
@@ -284,6 +286,7 @@ pub fn handle_attach_repo_member<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let context =
         OperationRequest::AttachRepoMember(request.clone()).context(operation_id.into())?;
@@ -291,7 +294,7 @@ where
     let dry_run = request.meta.dry_run.unwrap_or(false);
     let (_guard, root) = guarded_workspace_root_in(
         &services,
-        start,
+        &start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RepoMutate,
         dry_run,

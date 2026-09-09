@@ -2513,6 +2513,23 @@ impl TransportOptions {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct InvocationContext {
+    pub caller_cwd: String,
+}
+impl InvocationContext {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.caller_cwd.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            caller_cwd: c.try_get(1)?.try_text()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct RequestMeta {
     pub request_id: String,
     pub schema_version: String,
@@ -2522,6 +2539,7 @@ pub struct RequestMeta {
     pub dry_run: Option<bool>,
     pub attribution: Option<OperationAttribution>,
     pub transport: Option<TransportOptions>,
+    pub invocation: Option<InvocationContext>,
 }
 impl RequestMeta {
     pub fn to_cbor(&self) -> Cbor {
@@ -2534,6 +2552,7 @@ impl RequestMeta {
             (6, match &self.dry_run { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (7, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (8, match &self.transport { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (9, match &self.invocation { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2546,6 +2565,7 @@ impl RequestMeta {
             dry_run: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             attribution: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
             transport: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(TransportOptions::from_cbor(v)?) } },
+            invocation: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(InvocationContext::from_cbor(v)?) } },
         })
     }
 }

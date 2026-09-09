@@ -40,10 +40,11 @@ pub fn handle_pull_head_with_events<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
-    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let start = invocation_start(start, &request.meta)?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    handle_pull_head_with_events_in(&services, backend, start, request, operation_id, events)
+    handle_pull_head_with_events_in(&services, backend, &start, request, operation_id, events)
 }
 
 pub(crate) fn handle_pull_head_with_events_in<B>(

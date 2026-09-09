@@ -13,12 +13,13 @@ pub fn handle_remote_identity<B: GitBackend + MergeAuthorityBackend>(
     request: crate::RemoteIdentityRequest,
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::RemoteIdentityResponse> {
+    let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::RemoteIdentity(request.clone()).context(operation_id)?;
     let dry = request.meta.dry_run.unwrap_or(false);
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let access = acquire_workspace_mutation_guard_in(
         &services,
-        start,
+        &start,
         request.meta.workspace.as_ref(),
         OpenMergeCommand::RemoteIdentity,
         dry || request.op == crate::RemoteIdentityOp::Get,
@@ -34,7 +35,7 @@ pub fn handle_remote_identity<B: GitBackend + MergeAuthorityBackend>(
     }
     let desired = match (request.op, request.private_key_path.as_deref()) {
         (crate::RemoteIdentityOp::Set, Some(value)) => {
-            let path = resolve_ssh_identity_path(start, value)?;
+            let path = resolve_ssh_identity_path(&start, value)?;
             validate_ssh_identity_file(&path)?;
             Some(
                 path.to_str()

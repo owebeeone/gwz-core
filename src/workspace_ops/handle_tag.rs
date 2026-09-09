@@ -39,8 +39,9 @@ pub fn handle_tag_with_services<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
-    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::TagResponse> = (|| {
@@ -48,12 +49,12 @@ where
         let (_access, root) = if request.op == crate::TagOp::List {
             (
                 None,
-                resolve_workspace_root(start, request.meta.workspace.as_ref())?,
+                resolve_request_workspace_root(&start, &request.meta)?,
             )
         } else {
             let access = acquire_workspace_mutation_guard_in(
                 services,
-                start,
+                &start,
                 request.meta.workspace.as_ref(),
                 OpenMergeCommand::TagMutate,
                 dry_run,

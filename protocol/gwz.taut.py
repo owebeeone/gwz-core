@@ -1061,8 +1061,9 @@ SCHEMA = schema(
         default_identity=F(1, STR, optional=True),
         remote_identities=F(2, List(Ref.RemoteSshIdentity))),
 
-    # Caller context is serialized with each request so a dispatcher on a
-    # different worker can preserve the caller's path namespace.
+    # The caller filesystem context captured before this request is serialized.
+    # It is an absolute path in the execution filesystem; receivers never infer
+    # relative path meaning from their own process working directory.
     InvocationContext=Msg(
         caller_cwd=F(1, STR)),
 
