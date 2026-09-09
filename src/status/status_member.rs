@@ -216,6 +216,7 @@ where
         }
     };
 
+    let comparison = lock_comparison_from_lock(lock, member, &head, &status);
     let response = crate::MemberResponse {
         member_id: member.id.clone(),
         member_path: member.path.clone(),
@@ -226,7 +227,8 @@ where
         state: None,
         git_status: Some(protocol_git_status(member, &head, &status)),
         target_kind: Some(crate::TargetKind::Member),
-        lock_match: Some(lock_match(lock, member, &head, &status)),
+        lock_match: Some(comparison.lock_match),
+        lock_difference_reasons: (!comparison.reasons.is_empty()).then_some(comparison.reasons),
     };
     StatusMemberReport {
         response,

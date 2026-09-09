@@ -154,6 +154,30 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
         if added != [expected]:
             raise ValueError(f"{name}.private must be the optional boolean at tag {tag}")
         message["fields"].remove(added[0])
+    # Outcome reporting adds a reason enum plus an optional MemberResponse
+    # projection. Removing both proves every earlier wire shape is unchanged.
+    projected["enums"] = [
+        enum for enum in projected["enums"] if enum["name"] != "LockDifferenceReason"
+    ]
+    member_response = next(
+        message for message in projected["messages"] if message["name"] == "MemberResponse"
+    )
+    added = [
+        field
+        for field in member_response["fields"]
+        if field["name"] == "lock_difference_reasons"
+    ]
+    expected = {
+        "name": "lock_difference_reasons",
+        "tag": 11,
+        "type": {"k": "list", "elem": {"k": "enum", "name": "LockDifferenceReason"}},
+        "optional": True,
+        "transient": False,
+        "merge": None,
+    }
+    if added != [expected]:
+        raise ValueError("MemberResponse.lock_difference_reasons must be optional at tag 11")
+    member_response["fields"].remove(added[0])
     return projected
 
 

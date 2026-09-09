@@ -128,8 +128,12 @@ where
     };
     let will_mutate = !members_to_commit.is_empty() || root_has_changes;
     if !will_mutate {
+        let mut response = response_envelope(context, crate::AggregateStatus::Noop, Vec::new());
+        response.meta.message = Some(
+            "No commit was created because no selected changes were staged.".to_owned(),
+        );
         return Ok(crate::CommitResponse {
-            response: response_envelope(context, crate::AggregateStatus::Ok, Vec::new()),
+            response,
         });
     }
     // Everything above is planning and validation; a dry run stops before the first write.
@@ -307,6 +311,7 @@ fn root_commit_response<B: GitBackend>(
         git_status: None,
         target_kind: Some(crate::TargetKind::Root),
         lock_match: None,
+        lock_difference_reasons: None,
     })
 }
 

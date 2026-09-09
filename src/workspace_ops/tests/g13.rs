@@ -298,7 +298,11 @@ fn commit_with_nothing_to_commit_is_a_success_noop() {
         handle_commit(&backend, temp.path(), commit_request(), "op_commit_noop").unwrap();
     assert_eq!(
         response.response.meta.aggregate_status,
-        crate::AggregateStatus::Ok
+        crate::AggregateStatus::Noop
+    );
+    assert_eq!(
+        response.response.meta.message.as_deref(),
+        Some("No commit was created because no selected changes were staged.")
     );
     assert!(response.response.members.is_empty(), "no members committed");
     assert_eq!(

@@ -195,6 +195,7 @@ where
                     git_status: None,
                     target_kind: Some(crate::TargetKind::Member),
                     lock_match: Some(crate::LockMatch::Matches),
+        lock_difference_reasons: None,
                 };
                 Ok((manifest_member, locked, response))
             },
@@ -299,6 +300,7 @@ impl InitSourcePlan {
             git_status: None,
             target_kind: Some(crate::TargetKind::Member),
             lock_match: None,
+        lock_difference_reasons: None,
         }
     }
 }

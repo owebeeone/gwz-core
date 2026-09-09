@@ -1358,6 +1358,35 @@ impl LockMatch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LockDifferenceReason {
+    #[default] DirtyWorktree,
+    Commit,
+    Branch,
+    Attachment,
+    MissingLockEntry,
+    UnavailableObservations,
+}
+impl LockDifferenceReason {
+    pub fn wire(self) -> i64 { match self {
+        Self::DirtyWorktree => 0,
+        Self::Commit => 1,
+        Self::Branch => 2,
+        Self::Attachment => 3,
+        Self::MissingLockEntry => 4,
+        Self::UnavailableObservations => 5,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::DirtyWorktree,
+        1 => Self::Commit,
+        2 => Self::Branch,
+        3 => Self::Attachment,
+        4 => Self::MissingLockEntry,
+        5 => Self::UnavailableObservations,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LockDifferenceReason", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum GitProgressPhase {
     #[default] Enumerating,
     Counting,
@@ -4148,6 +4177,7 @@ pub struct MemberResponse {
     pub git_status: Option<GitStatus>,
     pub lock_match: Option<LockMatch>,
     pub target_kind: Option<TargetKind>,
+    pub lock_difference_reasons: Option<Vec<LockDifferenceReason>>,
 }
 impl MemberResponse {
     pub fn to_cbor(&self) -> Cbor {
@@ -4162,6 +4192,7 @@ impl MemberResponse {
             (8, match &self.git_status { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (9, match &self.lock_match { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
             (10, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (11, match &self.lock_difference_reasons { Some(v) => Cbor::Array(v.iter().map(|x| Cbor::Int(x.wire())).collect()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4176,6 +4207,7 @@ impl MemberResponse {
             git_status: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(GitStatus::from_cbor(v)?) } },
             lock_match: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(LockMatch::from_wire(v.try_int()?)?) } },
             target_kind: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
+            lock_difference_reasons: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| Ok(LockDifferenceReason::from_wire(x.try_int()?)?)).collect::<Result<Vec<_>, DecodeError>>()?) } },
         })
     }
 }

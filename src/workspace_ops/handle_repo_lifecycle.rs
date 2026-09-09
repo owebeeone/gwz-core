@@ -5,7 +5,7 @@ use crate::artifact::{
     self, ArtifactSourceKind, ManifestArtifact, ManifestMember, RemoteArtifact,
     ResolvedMemberArtifact,
 };
-use crate::git::{GitBackend, MergeAuthorityBackend};
+use crate::git::{GitBackend, GitHeadState, GitStatus, MergeAuthorityBackend};
 use crate::model::{ErrorCode, MemberId, ModelError, ModelResult, SourceId};
 use crate::operation::{EventEmitter, EventSink, OpenMergeCommand, OperationRequest};
 use crate::workspace::MemberPath;
@@ -121,10 +121,10 @@ where
                 remotes: observed_remotes(&remotes),
             };
             let locked = resolved_member(&member, &head, &status);
-            Ok::<_, ModelError>((member, locked, verified_commits, warning))
+            Ok::<_, ModelError>((member, locked, head, status, verified_commits, warning))
         })();
 
-        let (member, locked, verified_commits, warning) = match inspected {
+        let (member, locked, head, status, verified_commits, warning) = match inspected {
             Ok(inspected) => inspected,
             Err(error) => {
                 let _ = services.filesystem().remove_tree(&member_root);
@@ -177,7 +177,13 @@ where
         let mut response = response_envelope(
             context,
             crate::AggregateStatus::Ok,
-            vec![ok_member(&member, &locked, crate::MemberStatus::Ok)],
+            vec![ok_member(
+                &member,
+                &locked,
+                Some(&head),
+                Some(&status),
+                crate::MemberStatus::Ok,
+            )],
         );
         response.meta.message = warning.or_else(|| {
         (!plan.reused_source_members.is_empty()).then(|| {
@@ -265,6 +271,7 @@ where
             git_status: None,
             target_kind: Some(crate::TargetKind::Member),
             lock_match: Some(crate::LockMatch::Missing),
+        lock_difference_reasons: None,
         }],
     );
     response.meta.message = Some(format!(
@@ -331,6 +338,7 @@ where
                 git_status: None,
                 target_kind: Some(crate::TargetKind::Member),
                 lock_match: None,
+        lock_difference_reasons: None,
             }],
         );
         response.meta.message = Some(format!("{} is already attached", member.id));
@@ -375,6 +383,9 @@ where
     }
     emitter.member_finished(&prepared.member.id, &prepared.member.path);
     emitter.operation_finished();
+    let member_root = root.join(&prepared.member.path);
+    let head = backend.head(&member_root)?;
+    let status = backend.status(&member_root)?;
 
     let mut response = response_envelope(
         context,
@@ -382,6 +393,8 @@ where
         vec![ok_member(
             &prepared.member,
             &prepared.locked,
+            Some(&head),
+            Some(&status),
             crate::MemberStatus::Ok,
         )],
     );
@@ -642,14 +655,18 @@ pub(crate) fn planned_member(
         git_status: None,
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
+        lock_difference_reasons: None,
     }
 }
 
 pub(crate) fn ok_member(
     member: &ManifestMember,
     locked: &ResolvedMemberArtifact,
+    head: Option<&GitHeadState>,
+    git_status: Option<&GitStatus>,
     status: crate::MemberStatus,
 ) -> crate::MemberResponse {
+    let comparison = crate::status::lock_comparison(Some(locked), head, git_status);
     crate::MemberResponse {
         member_id: member.id.clone(),
         member_path: member.path.clone(),
@@ -660,7 +677,8 @@ pub(crate) fn ok_member(
         state: Some(protocol_state(member, locked)),
         git_status: None,
         target_kind: Some(crate::TargetKind::Member),
-        lock_match: Some(crate::LockMatch::Matches),
+        lock_match: Some(comparison.lock_match),
+        lock_difference_reasons: (!comparison.reasons.is_empty()).then_some(comparison.reasons),
     }
 }
 

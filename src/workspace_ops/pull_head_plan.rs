@@ -116,6 +116,7 @@ impl PullHeadPlan {
             git_status: None,
             target_kind: Some(crate::TargetKind::Member),
             lock_match: None,
+        lock_difference_reasons: None,
         }
     }
 }
@@ -229,6 +230,7 @@ pub(crate) fn pull_result_response(
         git_status: None,
         target_kind: Some(crate::TargetKind::Member),
         lock_match: conflicts.is_empty().then_some(crate::LockMatch::Matches),
+        lock_difference_reasons: None,
     }
 }
 
