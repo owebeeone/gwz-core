@@ -32,10 +32,11 @@ pub fn handle_push_with_events<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
-    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let start = invocation_start(start, &request.meta)?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    handle_push_with_events_in(&services, backend, start, request, operation_id, events)
+    handle_push_with_events_in(&services, backend, &start, request, operation_id, events)
 }
 
 pub(crate) fn handle_push_with_events_in<B>(
@@ -52,10 +53,10 @@ where
     let context = OperationRequest::Push(request.clone()).context(operation_id.into())?;
     let error_context = context.clone();
     let result: ModelResult<crate::PushResponse> = (|| {
-        let (_guard, root) = guarded_workspace_root_in(
+        let (_guard, root) = guarded_workspace_root_for_request_in(
             services,
             start,
-            request.meta.workspace.as_ref(),
+            &request.meta,
             OpenMergeCommand::Push,
             request.meta.dry_run.unwrap_or(false),
         )?;

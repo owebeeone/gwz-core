@@ -33,18 +33,19 @@ pub fn handle_stash<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let context = OperationRequest::Stash(request.clone()).context(operation_id.into())?;
     let (_guard, root) = if request.op == crate::StashOp::List {
         (
             None,
-            resolve_workspace_root(start, request.meta.workspace.as_ref())?,
+            resolve_request_workspace_root(&start, &request.meta)?,
         )
     } else {
-        guarded_workspace_root_in(
+        guarded_workspace_root_for_request_in(
             &services,
-            start,
-            request.meta.workspace.as_ref(),
+            &start,
+            &request.meta,
             OpenMergeCommand::StashMutate,
             request.meta.dry_run.unwrap_or(false),
         )?

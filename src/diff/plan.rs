@@ -184,6 +184,32 @@ pub fn plan_diff(
     snapshots: &[SnapshotArtifact],
     oracle: &dyn MaterializationOracle,
 ) -> ModelResult<DiffPlan> {
+    let workspace_root = std::path::Path::new("/__gwz_ws__");
+    plan_diff_at(
+        manifest,
+        selection,
+        comparison,
+        workspace_root,
+        &workspace_root.join(cwd_rel),
+        pathspecs,
+        snapshots,
+        oracle,
+    )
+}
+
+/// Physical-path form of [`plan_diff`] for a serialized invocation. The caller
+/// supplies both the resolved workspace root and the captured operand cwd, so
+/// an executor's own current directory cannot influence routing.
+pub fn plan_diff_at(
+    manifest: &ManifestArtifact,
+    selection: Option<&crate::Selection>,
+    comparison: &ParsedComparison,
+    workspace_root: &std::path::Path,
+    operand_cwd: &std::path::Path,
+    pathspecs: &[String],
+    snapshots: &[SnapshotArtifact],
+    oracle: &dyn MaterializationOracle,
+) -> ModelResult<DiffPlan> {
     let explicit_selection = has_explicit_target_selection(selection);
     let has_snapshot = comparison.has_snapshot();
 
@@ -287,7 +313,14 @@ pub fn plan_diff(
     // (5) Pathspec intersection: narrow candidates and attach repo-relative
     // pathspecs. Pathspecs never add an excluded target back.
     if !pathspecs.is_empty() {
-        targets = intersect_pathspecs(manifest, cwd_rel, pathspecs, targets, oracle)?;
+        targets = intersect_pathspecs(
+            manifest,
+            workspace_root,
+            operand_cwd,
+            pathspecs,
+            targets,
+            oracle,
+        )?;
     }
 
     Ok(DiffPlan { targets, excluded })
@@ -497,7 +530,8 @@ fn root_exclude_prefixes(manifest: &ManifestArtifact) -> Vec<String> {
 /// An empty-but-valid intersection is a clean no-diff result, not an error.
 fn intersect_pathspecs(
     manifest: &ManifestArtifact,
-    cwd_rel: &str,
+    workspace_root: &std::path::Path,
+    operand_cwd: &std::path::Path,
     pathspecs: &[String],
     targets: Vec<PlannedTarget>,
     oracle: &dyn MaterializationOracle,
@@ -508,13 +542,6 @@ fn intersect_pathspecs(
         .filter(|member| member.active)
         .map(|member| member.path.clone())
         .collect();
-    // Route against a synthetic workspace root so the escape check is
-    // workspace-relative (AD10), not client-absolute. A non-`/` sentinel is
-    // required: `..` above the workspace top must escape *out* of the sentinel so
-    // `strip_prefix` fails (a `/` root would silently clamp `/..` back to `/`).
-    let ws_root = std::path::Path::new("/__gwz_ws__");
-    let cwd = ws_root.join(cwd_rel);
-
     // Accumulate repo-relative pathspecs per candidate scope, plus whether root
     // was targeted at all.
     let mut root_specs: Vec<String> = Vec::new();
@@ -524,7 +551,7 @@ fn intersect_pathspecs(
     let mut members_touched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for spec in pathspecs {
-        let routed = route_pathspec(ws_root, &member_paths, &cwd, spec)?;
+        let routed = route_pathspec(workspace_root, &member_paths, operand_cwd, spec)?;
         match routed.member_path {
             Some(member_path) => {
                 // A pathspec naming a member directly is explicit: an
@@ -545,8 +572,8 @@ fn intersect_pathspecs(
                 // member). Members strictly under the pathspec get whole-repo
                 // scope, accumulated here as the routing primitive's `.` and
                 // normalized to the empty whole-repo list by `dedup_sorted`.
-                let rel = lexical_normalize(&join_cwd(&cwd, spec));
-                let rel = rel.strip_prefix(ws_root).unwrap_or(&rel);
+                let rel = lexical_normalize(&join_cwd(operand_cwd, spec));
+                let rel = rel.strip_prefix(workspace_root).unwrap_or(&rel);
                 for member_path in &member_paths {
                     if (rel.as_os_str().is_empty()
                         || std::path::Path::new(member_path).starts_with(rel))

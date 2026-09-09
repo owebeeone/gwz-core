@@ -4,7 +4,7 @@ use super::super::{
     FileMergeStore, MergeStore, discover_open_envelope_before_manifest, gc, start, status,
     v1_lifecycle, validate_merge_request,
 };
-use super::mutation_guard::guarded_workspace_root_in;
+use super::mutation_guard::guarded_workspace_root_for_request_in;
 use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::ModelResult;
 use crate::operation::{EventSink, OperationRequest};
@@ -132,6 +132,7 @@ pub fn handle_merge_with_events<B>(
 where
     B: MergeAuthorityBackend,
 {
+    let start = crate::workspace_ops::invocation_start(start, &request.meta)?;
     let operation_id = operation_id.into();
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let store = FileMergeStore;
@@ -145,7 +146,7 @@ where
             ids: &mut ids,
             events,
         },
-        start,
+        &start,
         request,
         operation_id,
         &services,
@@ -196,10 +197,10 @@ where
         let context = OperationRequest::Merge(request.clone()).context(operation_id)?;
         let (_start_guard, effective_start) =
             if enforce_start_gate && request.op == crate::MergeOp::Start {
-                guarded_workspace_root_in(
+                guarded_workspace_root_for_request_in(
                     services,
                     start,
-                    request.meta.workspace.as_ref(),
+                    &request.meta,
                     crate::operation::OpenMergeCommand::MergeStart,
                     request.meta.dry_run.unwrap_or(false),
                 )?
@@ -327,7 +328,7 @@ fn resolve_recovery_root(
     if let Some(found) = discover_open_envelope_before_manifest(start)? {
         return Ok(found.root);
     }
-    crate::workspace_ops::resolve_workspace_root(start, request.meta.workspace.as_ref())
+    crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)
 }
 
 struct SystemClock;

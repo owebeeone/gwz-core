@@ -56,7 +56,8 @@ where
     B: GitBackend + MergeAuthorityBackend,
 {
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    handle_update_workspace_bootstrap_in(&services, backend, start, meta, operation_id)
+    let start = invocation_start(start, &meta)?;
+    handle_update_workspace_bootstrap_in(&services, backend, &start, meta, operation_id)
 }
 
 pub(crate) fn handle_update_workspace_bootstrap_in<B>(
@@ -71,10 +72,10 @@ where
 {
     let context =
         OperationContext::from_meta(operation_id.into(), ActionKind::InitFromSources, &meta)?;
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         services,
         start,
-        meta.workspace.as_ref(),
+        &meta,
         OpenMergeCommand::InitUpdate,
         meta.dry_run.unwrap_or(false),
     )?;

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::artifact::{
     self, ArtifactSourceKind, DesiredRefArtifact, LockArtifact, ManifestArtifact, ManifestMember,
@@ -28,17 +28,22 @@ pub fn handle_init_from_sources<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
+    let mut request = request;
+    let start = invocation_start(start, &request.meta)?;
+    for source in &mut request.sources {
+        source.url = resolve_invocation_git_source(&start, &source.url)?;
+    }
     let context =
         OperationRequest::InitFromSources(request.clone()).context(operation_id.into())?;
-    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::InitFromSourcesResponse> = (|| {
         let root = if request.workspace_root.trim().is_empty() {
-            start.to_path_buf()
+            start.clone()
         } else {
-            PathBuf::from(&request.workspace_root)
+            resolve_invocation_path(&start, &request.workspace_root)?
         };
         if request.sources.is_empty() {
             return Err(invalid("init from sources requires at least one source"));

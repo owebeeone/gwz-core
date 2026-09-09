@@ -38,7 +38,12 @@ where
 {
     let context =
         OperationRequest::CreateWorkspace(request.clone()).context(operation_id.into())?;
-    let root = PathBuf::from(&request.workspace_root);
+    let root = if request.meta.invocation.is_some() {
+        let caller_start = invocation_start(Path::new(&request.workspace_root), &request.meta)?;
+        resolve_invocation_path(&caller_start, &request.workspace_root)?
+    } else {
+        normalize_absolute_path(Path::new(&request.workspace_root), "workspace root")?
+    };
     preflight_create_workspace(&root)?;
     preflight_workspace_bootstrap_files_in(
         services.filesystem(),
@@ -109,7 +114,8 @@ where
     B: GitBackend + MergeAuthorityBackend,
 {
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    handle_create_repo_in(&services, backend, start, request, operation_id)
+    let start = invocation_start(start, &request.meta)?;
+    handle_create_repo_in(&services, backend, &start, request, operation_id)
 }
 
 pub(crate) fn handle_create_repo_in<B>(
@@ -135,10 +141,10 @@ where
     }
 
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         services,
         start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
@@ -293,7 +299,8 @@ where
     B: GitBackend + MergeAuthorityBackend,
 {
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    handle_add_existing_repo_in(&services, backend, start, request, operation_id)
+    let start = invocation_start(start, &request.meta)?;
+    handle_add_existing_repo_in(&services, backend, &start, request, operation_id)
 }
 
 pub(crate) fn handle_add_existing_repo_in<B>(
@@ -309,10 +316,10 @@ where
     let context =
         OperationRequest::AddExistingRepo(request.clone()).context(operation_id.into())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         services,
         start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
@@ -540,7 +547,8 @@ where
     B: GitBackend + MergeAuthorityBackend,
 {
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    handle_repo_sync_in(&services, backend, start, request, operation_id)
+    let start = invocation_start(start, &request.meta)?;
+    handle_repo_sync_in(&services, backend, &start, request, operation_id)
 }
 
 pub(crate) fn handle_repo_sync_in<B>(
@@ -555,10 +563,10 @@ where
 {
     let context = OperationRequest::RepoSync(request.clone()).context(operation_id.into())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         services,
         start,
-        request.meta.workspace.as_ref(),
+        &request.meta,
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
@@ -855,11 +863,99 @@ pub fn resolve_workspace_root(
     start: &Path,
     workspace: Option<&crate::WorkspaceRef>,
 ) -> ModelResult<PathBuf> {
-    if let Some(root) = workspace.and_then(|workspace| workspace.root.as_ref()) {
-        Ok(PathBuf::from(root))
-    } else {
-        discover_workspace_root(start)
+    let caller_start = normalize_absolute_path(start, "invocation caller_cwd")?;
+    resolve_workspace_root_from_caller(&caller_start, workspace, false)
+}
+
+/// Resolve the caller directory recorded with a request.
+///
+/// Serialized requests carry their caller context explicitly, so a receiver
+/// never borrows meaning from its own process directory. The absent-context arm
+/// keeps direct, in-process callers source-compatible: their supplied `start`
+/// is the same explicit context and must already be absolute.
+pub fn invocation_start(start: &Path, meta: &crate::RequestMeta) -> ModelResult<PathBuf> {
+    let supplied = meta
+        .invocation
+        .as_ref()
+        .map(|context| Path::new(&context.caller_cwd))
+        .unwrap_or(start);
+    if meta.invocation.is_some()
+        && meta
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.root.as_ref())
+            .is_some_and(|root| !Path::new(root).is_absolute())
+    {
+        return Err(invalid("workspace root must be an absolute path"));
     }
+    normalize_absolute_path(supplied, "invocation caller_cwd")
+}
+
+/// Normalize one absolute path without interpreting it against process state.
+pub fn normalize_absolute_path(path: &Path, label: &str) -> ModelResult<PathBuf> {
+    if !path.is_absolute() {
+        return Err(invalid(format!("{label} must be an absolute path")));
+    }
+    Ok(normalize_path(path))
+}
+
+/// Bind a raw filesystem operand to an already-captured invocation directory.
+pub fn resolve_invocation_path(start: &Path, value: &str) -> ModelResult<PathBuf> {
+    let start = normalize_absolute_path(start, "invocation caller_cwd")?;
+    let path = Path::new(value);
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        start_dir(&start).join(path)
+    };
+    normalize_absolute_path(&candidate, "resolved path")
+}
+
+/// Bind a local Git source path to the explicit invocation directory.
+///
+/// Network URLs, `file://` URLs, and scp-style Git syntax retain their wire
+/// spelling. Every other value is a local filesystem operand and is made
+/// absolute before it reaches the Git backend.
+pub fn resolve_invocation_git_source(start: &Path, source: &str) -> ModelResult<String> {
+    if source.is_empty() {
+        return Err(invalid("Git source must not be empty"));
+    }
+    if source.contains("://") || crate::git::git_host(source).is_some() {
+        return Ok(source.to_owned());
+    }
+    Ok(resolve_invocation_path(start, source)?
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// Resolve the workspace addressed by one request using its serialized caller
+/// context. An explicit root from a serialized request is already caller-bound
+/// and therefore must be absolute. The legacy adapter is allowed to qualify a
+/// relative root against its explicitly supplied absolute `start`.
+pub fn resolve_request_workspace_root(
+    start: &Path,
+    meta: &crate::RequestMeta,
+) -> ModelResult<PathBuf> {
+    let caller_start = invocation_start(start, meta)?;
+    resolve_workspace_root_from_caller(&caller_start, meta.workspace.as_ref(), meta.invocation.is_some())
+}
+
+fn resolve_workspace_root_from_caller(
+    caller_start: &Path,
+    workspace: Option<&crate::WorkspaceRef>,
+    serialized: bool,
+) -> ModelResult<PathBuf> {
+    if let Some(root) = workspace.and_then(|workspace| workspace.root.as_ref()) {
+        let root = Path::new(root);
+        if root.is_absolute() {
+            return normalize_absolute_path(root, "workspace root");
+        }
+        if serialized {
+            return Err(invalid("workspace root must be an absolute path"));
+        }
+        return resolve_invocation_path(caller_start, root.to_string_lossy().as_ref());
+    }
+    discover_workspace_root(caller_start)
 }
 
 pub(crate) fn assert_workspace_id(

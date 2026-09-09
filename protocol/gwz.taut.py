@@ -1071,6 +1071,12 @@ SCHEMA = schema(
         default_identity=F(1, STR, optional=True),
         remote_identities=F(2, List(Ref.RemoteSshIdentity))),
 
+    # The caller filesystem context captured before this request is serialized.
+    # It is an absolute path in the execution filesystem; receivers never infer
+    # relative path meaning from their own process working directory.
+    InvocationContext=Msg(
+        caller_cwd=F(1, STR)),
+
     # Common operation metadata supplied by every request.
     RequestMeta=Msg(
         # Caller-owned correlation id; echoed in every response/event.
@@ -1083,7 +1089,8 @@ SCHEMA = schema(
         # Plan without mutation when supported by the handler.
         dry_run=F(6, BOOL, optional=True),
         attribution=F(7, Ref.OperationAttribution, optional=True),
-        transport=F(8, Ref.TransportOptions, optional=True)),
+        transport=F(8, Ref.TransportOptions, optional=True),
+        invocation=F(9, Ref.InvocationContext, optional=True)),
 
     # Common operation metadata returned by responses.
     ResponseMeta=Msg(

@@ -22,12 +22,18 @@ pub fn handle_stage<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
+    let operand_cwd = if request.meta.invocation.is_some() {
+        normalize_absolute_path(Path::new(&request.cwd), "stage cwd")?
+    } else {
+        resolve_invocation_path(&start, &request.cwd)?
+    };
     let context = OperationRequest::Stage(request.clone()).context(operation_id.into())?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    let _access = acquire_workspace_mutation_guard_in(
+    let _access = acquire_workspace_mutation_guard_for_request_in(
         &services,
-        start,
-        request.meta.workspace.as_ref(),
+        &start,
+        &request.meta,
         OpenMergeCommand::StageConflictResolution,
         request.meta.dry_run.unwrap_or(false),
     )?;
@@ -37,7 +43,15 @@ where
     // and `@root` stages the workspace root. A pre-0.14 (v0) record refuses
     // above, in the mutation guard, with the charter §2 sentence.
     if let Some(open) = merge::discover_open_v1_record(&root)? {
-        return handle_open_merge_stage(&services, backend, &root, open.view(), &request, context);
+        return handle_open_merge_stage(
+            &services,
+            backend,
+            &root,
+            open.view(),
+            &request,
+            &operand_cwd,
+            context,
+        );
     }
     let manifest = artifact::read_manifest_in(services.filesystem(), &root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
@@ -76,13 +90,8 @@ where
         // Pathspec routing is selection-blind, so an explicit `--target` must constrain the
         // routed targets: a root-territory pathspec fans out across every member and would
         // otherwise stage outside the requested scope.
-        let routed = resolve_stage_targets(
-            &root,
-            &member_paths,
-            Path::new(&request.cwd),
-            &request.pathspecs,
-            all,
-        )?;
+        let routed =
+            resolve_stage_targets(&root, &member_paths, &operand_cwd, &request.pathspecs, all)?;
         if narrowed {
             SelectionScope::resolve(&manifest, request.meta.selection.as_ref())?
                 .constrain(routed)?
@@ -141,6 +150,7 @@ fn handle_open_merge_stage<B: GitBackend>(
     root: &Path,
     record: merge::MergeStatusRecordView<'_>,
     request: &crate::StageRequest,
+    operand_cwd: &Path,
     context: crate::operation::OperationContext,
 ) -> ModelResult<crate::StageResponse> {
     let member_paths = merge::root::open_merge_stage_member_paths(backend, root, record)?;
@@ -151,13 +161,8 @@ fn handle_open_merge_stage<B: GitBackend>(
     } else {
         // Same rule as the ordinary pathspec branch: an explicit selection constrains where
         // routed pathspecs may stage.
-        let routed = resolve_stage_targets(
-            root,
-            &member_paths,
-            Path::new(&request.cwd),
-            &request.pathspecs,
-            all,
-        )?;
+        let routed =
+            resolve_stage_targets(root, &member_paths, &operand_cwd, &request.pathspecs, all)?;
         if narrowed {
             let manifest = artifact::read_manifest_in(services.filesystem(), root)?;
             SelectionScope::resolve(&manifest, request.meta.selection.as_ref())?

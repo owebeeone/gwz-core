@@ -42,18 +42,21 @@ pub fn handle_clone_repo_member<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let mut request = request;
+    let start = invocation_start(start, &request.meta)?;
+    request.source.url = resolve_invocation_git_source(&start, &request.source.url)?;
     let context =
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
-    let scoped_backend = backend.with_transport(start, request.meta.transport.as_ref())?;
+    let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let error_context = context.clone();
     let result: ModelResult<crate::CloneRepoMemberResponse> = (|| {
         let dry_run = request.meta.dry_run.unwrap_or(false);
-        let (_guard, root) = guarded_workspace_root_in(
+        let (_guard, root) = guarded_workspace_root_for_request_in(
             &services,
-            start,
-            request.meta.workspace.as_ref(),
+            &start,
+            &request.meta,
             OpenMergeCommand::RepoMutate,
             dry_run,
         )?;
@@ -212,15 +215,16 @@ pub fn handle_detach_repo_member<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let context =
         OperationRequest::DetachRepoMember(request.clone()).context(operation_id.into())?;
     let selector = validate_single_detach_selector(request.meta.selection.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         &services,
-        start,
-        request.meta.workspace.as_ref(),
+        &start,
+        &request.meta,
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;
@@ -291,15 +295,16 @@ pub fn handle_attach_repo_member<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    let start = invocation_start(start, &request.meta)?;
     let services = crate::operation_context::OperationServices::for_merge(backend);
     let context =
         OperationRequest::AttachRepoMember(request.clone()).context(operation_id.into())?;
     let member_id = validate_single_attach_selector(request.meta.selection.as_ref())?;
     let dry_run = request.meta.dry_run.unwrap_or(false);
-    let (_guard, root) = guarded_workspace_root_in(
+    let (_guard, root) = guarded_workspace_root_for_request_in(
         &services,
-        start,
-        request.meta.workspace.as_ref(),
+        &start,
+        &request.meta,
         OpenMergeCommand::RepoMutate,
         dry_run,
     )?;

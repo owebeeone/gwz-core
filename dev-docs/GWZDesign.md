@@ -947,6 +947,20 @@ is the design contract; exact syntax may adjust to the taut compiler.
 Timestamps are `INT` milliseconds since the Unix epoch UTC. Paths are strings.
 Workspace-relative paths must stay relative; workspace roots may be absolute.
 
+Every serialized command request carries an invocation context with the caller's
+absolute working directory. Drivers capture it once before dispatch or async
+handoff. Relative roots and caller-relative operands use that serialized base;
+the receiver must never substitute its own process working directory. Drivers
+serialize an explicit workspace root as an absolute normalized path. When the
+root is omitted, core discovers it from the invocation context. The older
+in-process core APIs may supply an explicit absolute `start` as an adapter for
+the same context, but that adapter never reads ambient cwd. Diff and log retain
+their workspace-relative logical cwd for reporting; an invocation outside the
+workspace has no such logical cwd and resolves operands from the captured
+absolute caller directory, preserving ordinary escape checks. A Git source that
+is a local path uses the same base before it reaches the backend; scheme URLs
+(including `file://`) and scp-style Git sources retain their wire spelling.
+
 Action requests are typed messages. Responses use a shared envelope so the CLI,
 UI, and future daemon can render every operation with one code path.
 

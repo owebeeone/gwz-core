@@ -178,6 +178,27 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
     if added != [expected]:
         raise ValueError("MemberResponse.lock_difference_reasons must be optional at tag 11")
     member_response["fields"].remove(added[0])
+    # InvocationContext and RequestMeta.invocation (tag 9) carry the caller's
+    # serialized path base. Removing the additive pair restores every older
+    # message shape, including RequestMeta's existing fields.
+    projected["messages"] = [
+        message
+        for message in projected["messages"]
+        if message["name"] != "InvocationContext"
+    ]
+    request_meta = next(message for message in projected["messages"] if message["name"] == "RequestMeta")
+    added = [field for field in request_meta["fields"] if field["name"] == "invocation"]
+    expected = {
+        "name": "invocation",
+        "tag": 9,
+        "type": {"k": "msg", "name": "InvocationContext"},
+        "optional": True,
+        "transient": False,
+        "merge": None,
+    }
+    if added != [expected]:
+        raise ValueError("RequestMeta.invocation must be the optional InvocationContext at tag 9")
+    request_meta["fields"].remove(added[0])
     return projected
 
 

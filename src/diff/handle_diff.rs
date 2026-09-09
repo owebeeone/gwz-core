@@ -34,17 +34,17 @@ use crate::protocol::generated::{
     DiffOutputFormat, DiffOutputLogRef, DiffRepoScope, DiffRepoSummary, DiffRequest, DiffStatus,
     DiffSummary, ResponseEnvelope, ResponseMeta,
 };
-use crate::workspace_ops::{assert_workspace_id, resolve_workspace_root};
+use crate::workspace_ops::assert_workspace_id;
 
 use super::log_service::DiffLogRegistry;
 use super::output::{ProducerEntry, ProducerOptions, ProducerTarget, run_producer};
-use super::plan::{DiffPlan, PlanScope, PlannedTarget};
+use super::plan::{DiffPlan, PlanScope, PlannedTarget, plan_diff_at};
 use super::render::{PrefixPolicy, RenderOptions, ScopeRender};
 use super::tagged::narrow_plan_to_exact_tags;
 use super::{
     RepoDiffAlgorithm, RepoDiffComparison, RepoDiffEntry, RepoDiffManifest, RepoDiffOptions,
     RepoDiffStatus, RepoDiffWhitespace, diff_repo, parse_comparison_with_snapshot_ids,
-    parse_tagged_comparison, plan_diff, reject_unsupported_options, resolve_comparison,
+    parse_tagged_comparison, reject_unsupported_options, resolve_comparison,
 };
 
 /// The outcome of a `diff` planning call: the wire response plus, when patch
@@ -69,7 +69,8 @@ pub fn handle_diff(
     registry: &DiffLogRegistry,
 ) -> ModelResult<DiffOutcome> {
     let _ = operation_id;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let operand_cwd = crate::workspace_ops::invocation_start(start, &request.meta)?;
+    let root = crate::workspace_ops::resolve_request_workspace_root(start, &request.meta)?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
 
@@ -80,15 +81,6 @@ pub fn handle_diff(
     // revision or a pathspec, decided per git's rule (see `super::classify`). The
     // revision half feeds `parse_comparison`; the pathspec half is prepended to
     // the explicit `--` pathspecs below.
-    // The workspace-relative logical cwd (AD10). The client sends one in
-    // `workspace_cwd`, but it is computed against the raw invocation cwd (which,
-    // without `--root`, is *not* the discovered workspace root) — so a bare path
-    // operand entered from a member subdir would stat against the wrong base.
-    // Recompute it here against the *resolved* `root` and the physical `start`
-    // dir, which is authoritative; fall back to the client value only when `start`
-    // cannot be expressed under `root`.
-    let cwd_rel = resolved_cwd_rel(start, &root)
-        .unwrap_or_else(|| request.workspace_cwd.clone().unwrap_or_default());
     let tagged = request.tagged.unwrap_or(false);
     let (comparison, tag_names, classified_pathspecs) = if tagged {
         let (comparison, tag_names) = parse_tagged_comparison(
@@ -101,7 +93,7 @@ pub fn handle_diff(
         let classified = {
             let ctx = super::RevContext {
                 repos: super::candidate_repos(&root, &manifest),
-                cwd: root.join(&cwd_rel),
+                cwd: operand_cwd.clone(),
                 workspace_root: root.clone(),
                 resolve: &super::default_rev_resolver,
             };
@@ -141,11 +133,12 @@ pub fn handle_diff(
     let mut pathspecs = classified_pathspecs;
     pathspecs.extend(request.explicit_pathspecs.iter().cloned());
     let oracle = FsMaterializationOracle { root: root.clone() };
-    let mut plan = plan_diff(
+    let mut plan = plan_diff_at(
         &manifest,
         request.meta.selection.as_ref(),
         &comparison,
-        &cwd_rel,
+        &root,
+        &operand_cwd,
         &pathspecs,
         &snapshots,
         &oracle,
@@ -243,23 +236,6 @@ pub fn handle_diff(
         },
         log_id: Some(log_id),
     })
-}
-
-/// The physical invocation dir (`start`) expressed relative to the resolved
-/// workspace `root`, as a forward-slash, workspace-relative path (`""` at the
-/// root, `gwz-py`, `gwz-py/native/src`, …). This is the authoritative logical cwd
-/// for operand/pathspec routing (AD10): unlike the client-supplied
-/// `workspace_cwd`, it is computed against the *discovered* root, so it is correct
-/// even when the CLI was invoked from a member subdir without `--root`.
-///
-/// Both paths are canonicalized first so symlinks and `..` compare correctly.
-/// Returns `None` when `start` is not under `root` (the caller then falls back to
-/// the client value), so an out-of-tree invocation degrades rather than misroutes.
-pub(crate) fn resolved_cwd_rel(start: &Path, root: &Path) -> Option<String> {
-    let start_abs = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
-    let root_abs = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let rel = start_abs.strip_prefix(&root_abs).ok()?;
-    Some(rel.to_string_lossy().replace('\\', "/"))
 }
 
 /// One planned target after resolution + diff: the repo path, its resolved

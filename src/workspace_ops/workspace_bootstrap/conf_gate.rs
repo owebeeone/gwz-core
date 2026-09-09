@@ -281,7 +281,7 @@ mod tests {
     /// The real guard a non-dry-run handler holds, over the workspace under test.
     fn held(root: &Path) -> WorkspaceMutationGuard {
         let services = crate::operation_context::TestWorld::physical().context();
-        crate::workspace_ops::acquire_workspace_mutation_guard_in(
+        crate::workspace_ops::acquire_workspace_mutation_guard_with_services(
             &services,
             root,
             None,

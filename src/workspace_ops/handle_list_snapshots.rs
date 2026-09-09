@@ -12,7 +12,7 @@ pub fn handle_list_snapshots(
     operation_id: impl Into<String>,
 ) -> ModelResult<crate::ListSnapshotsResponse> {
     let context = OperationRequest::ListSnapshots(request.clone()).context(operation_id.into())?;
-    let root = resolve_workspace_root(start, request.meta.workspace.as_ref())?;
+    let root = resolve_request_workspace_root(start, &request.meta)?;
     let manifest = artifact::read_manifest(&root)?;
     assert_workspace_id(&manifest, request.meta.workspace.as_ref())?;
 
