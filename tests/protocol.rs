@@ -199,6 +199,7 @@ fn log_addition_preserves_the_complete_pre_log_wire_projection() {
 #[test]
 fn repo_sync_request_and_response_round_trip() {
     let request = RepoSyncRequest {
+        private: Some(true),
         meta: RequestMeta {
             request_id: "req-sync".to_owned(),
             schema_version: "gwz.v0".to_owned(),

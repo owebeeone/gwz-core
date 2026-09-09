@@ -442,6 +442,7 @@ pub(crate) fn write_pull_fixture(root: &Path, members: Vec<(&str, &str, &str, &s
                 .iter()
                 .map(
                     |(member_id, path, remote_url, _)| crate::artifact::ManifestMember {
+                        private: false,
                         id: (*member_id).to_owned(),
                         path: (*path).to_owned(),
                         source_kind: crate::artifact::ArtifactSourceKind::Git,

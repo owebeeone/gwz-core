@@ -222,6 +222,7 @@ where
     };
 
     let manifest_member = ManifestMember {
+        private: false,
         id: member_id.clone(),
         path: member_path.as_str().to_owned(),
         source_kind: ArtifactSourceKind::Git,
@@ -471,6 +472,7 @@ where
         &reused_source_members,
     )?;
     let manifest_member = ManifestMember {
+        private: false,
         id: member_id.clone(),
         path: member_path.as_str().to_owned(),
         source_kind: ArtifactSourceKind::Git,
@@ -582,7 +584,7 @@ where
                 "member not found",
             ));
         };
-        match repo_sync_plan_member(backend, &root, member, dry_run) {
+        match repo_sync_plan_member(backend, &root, member, dry_run, request.private) {
             Ok(plan) => {
                 responses.push(plan.response.clone());
                 plans.push((index, plan));
@@ -632,6 +634,7 @@ fn repo_sync_plan_member<B>(
     root: &Path,
     member: &ManifestMember,
     dry_run: bool,
+    private: Option<bool>,
 ) -> Result<RepoSyncPlan, Box<crate::MemberResponse>>
 where
     B: GitBackend,
@@ -696,6 +699,9 @@ where
     })?;
 
     let mut next = member.clone();
+    if let Some(private) = private {
+        next.private = private;
+    }
     next.remotes = sync_member_remotes(&member.remotes, &git_remotes);
     if !next.remotes.is_empty() {
         next.desired = Some(desired_from_head(&head));

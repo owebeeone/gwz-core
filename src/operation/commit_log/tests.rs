@@ -2184,6 +2184,7 @@ fn log_request(operands: &[&str], explicit_pathspecs: &[&str], tagged: bool) -> 
 
 fn member(id: &str, path: &str, active: bool) -> ManifestMember {
     ManifestMember {
+        private: false,
         id: id.to_owned(),
         path: path.to_owned(),
         source_kind: ArtifactSourceKind::Git,

@@ -244,6 +244,7 @@ fn inactive_nested_history_does_not_steal_stage_routing_from_active_owner() {
 
     let mut manifest = crate::artifact::read_manifest(temp.path()).unwrap();
     manifest.members.push(crate::artifact::ManifestMember {
+        private: false,
         id: "mem_historical".to_owned(),
         path: "remote/historical".to_owned(),
         source_kind: crate::artifact::ArtifactSourceKind::Git,

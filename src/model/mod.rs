@@ -258,6 +258,7 @@ pub struct SourceSpec {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemberSpec {
+    pub private: bool,
     pub id: MemberId,
     pub path: String,
     pub source_id: SourceId,
@@ -285,6 +286,7 @@ impl MemberSpec {
             desired.validate()?;
         }
         Ok(Self {
+            private: false,
             id,
             path: path.into(),
             source_id,

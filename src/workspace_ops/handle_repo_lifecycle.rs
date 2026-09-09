@@ -111,6 +111,7 @@ where
                 &plan.reused_source_members,
             )?;
             let member = ManifestMember {
+                private: false,
                 id: plan.member_id.clone(),
                 path: plan.path.as_str().to_owned(),
                 source_kind: ArtifactSourceKind::Git,

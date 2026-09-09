@@ -109,6 +109,7 @@ mod tests {
 
     fn member() -> ManifestMember {
         ManifestMember {
+            private: false,
             id: "mem_app".to_owned(),
             path: "repos/app".to_owned(),
             source_kind: ArtifactSourceKind::Git,

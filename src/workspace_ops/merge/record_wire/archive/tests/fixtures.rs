@@ -39,6 +39,7 @@ fn manifest_yaml() -> String {
             id: "ws_archive".to_owned(),
         },
         members: vec![ManifestMember {
+            private: false,
             id: "mem_a".to_owned(),
             path: "members/a".to_owned(),
             source_kind: ArtifactSourceKind::Git,
@@ -301,6 +302,7 @@ pub(super) fn add_unselected_member(record: &mut MergeOperationRecordV0) {
     let mut manifest =
         ManifestArtifact::from_yaml(record.baseline.manifest_yaml.as_deref().unwrap()).unwrap();
     manifest.members.push(ManifestMember {
+        private: false,
         id: "mem_b".to_owned(),
         path: "members/b".to_owned(),
         source_kind: ArtifactSourceKind::Git,

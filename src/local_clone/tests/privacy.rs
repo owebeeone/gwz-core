@@ -474,6 +474,7 @@ fn no_family_binding_is_a_git_remote_and_capture_and_repo_sync_write_none() {
             &backend,
             workspace,
             crate::RepoSyncRequest {
+                private: None,
                 meta: meta("req-sync"),
             },
             "op-sync",

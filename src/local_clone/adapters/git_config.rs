@@ -274,6 +274,7 @@ mod tests {
                 id: "ws_test".to_owned(),
             },
             members: vec![crate::artifact::ManifestMember {
+                private: false,
                 id: "mem_app".to_owned(),
                 path: "app".to_owned(),
                 source_kind: crate::artifact::ArtifactSourceKind::Git,

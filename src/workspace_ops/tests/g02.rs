@@ -309,6 +309,7 @@ fn manifest_writers_refuse_contention_before_read_modify_write() {
         &backend,
         temp.path(),
         crate::RepoSyncRequest {
+            private: None,
             meta: request_meta_with_workspace(),
         },
         "op_sync_contended",
@@ -420,6 +421,7 @@ pub(crate) fn repo_sync_refreshes_existing_member_remotes_without_rewriting_lock
         &backend,
         temp.path(),
         crate::RepoSyncRequest {
+            private: None,
             meta: crate::RequestMeta {
                 selection: Some(crate::Selection {
                     paths: vec!["repos/app".to_owned()],
@@ -489,6 +491,7 @@ pub(crate) fn repo_sync_dry_run_plans_without_mutating_manifest() {
         &backend,
         temp.path(),
         crate::RepoSyncRequest {
+            private: None,
             meta: crate::RequestMeta {
                 dry_run: Some(true),
                 selection: Some(crate::Selection {

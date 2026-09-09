@@ -214,6 +214,7 @@ where
             plans,
             MaterializeApplyOptions {
                 rewrite_lock,
+                skip_private_access: request.target.kind == crate::MaterializeTargetKind::Lock,
                 follow_branch_head,
                 policy: request.meta.policy.as_ref(),
             },
@@ -280,6 +281,7 @@ where
 
 struct MaterializeApplyOptions<'a> {
     rewrite_lock: bool,
+    skip_private_access: bool,
     // True for the lock target (and clone): detached:false members follow their branch
     // head. False for snapshot/tag: pin the recorded commit so the capture is reproducible.
     follow_branch_head: bool,
@@ -300,38 +302,73 @@ where
 {
     let MaterializeApplyOptions {
         rewrite_lock,
+        skip_private_access,
         follow_branch_head,
         policy,
     } = options;
     // F2: the fresh clones this op will create — rolled back on any mid-batch
     // failure (Q6 reject-partial) so no orphan repos are left behind.
-    let fresh_clone_paths: Vec<_> = plans
-        .iter()
-        .filter(|plan| plan.clone_url.is_some())
-        .map(|plan| root.join(&plan.state.path))
-        .collect();
+    let mut fresh_clone_paths = Vec::new();
+    for plan in plans.iter().filter(|plan| plan.clone_url.is_some()) {
+        let path = root.join(&plan.state.path);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fresh_clone_paths.push(path);
+            }
+            Err(error) => return Err(ModelError::new(ErrorCode::IoError, error.to_string())),
+        }
+    }
     let outcomes = par_map_per_host(
         plans,
         resolve_jobs(policy.and_then(|policy| policy.concurrency)),
         resolve_per_host(policy.and_then(|policy| policy.max_connections_per_host)),
         |plan| plan.clone_url.as_deref().and_then(git_host),
-        |plan| -> ModelResult<(String, ResolvedMemberArtifact, crate::MemberResponse)> {
+        |plan| -> ModelResult<Option<(String, ResolvedMemberArtifact, crate::MemberResponse)>> {
             let member_root = root.join(&plan.state.path);
-            emitter.member_started(&plan.member_id, &plan.state.path);
-            if let Some(url) = plan.clone_url.as_deref() {
-                let remote = materialize_clone_remote(manifest, &plan.member_id)?;
-                backend.clone_repo_named(url, &member_root, &remote.name, &|progress| {
-                    emitter.member_progress(&plan.member_id, &plan.state.path, progress)
-                })?;
-            }
-            // Look up the manifest member first: its fetch remote drives the
-            // tracking-branch checkout below, and its identity labels the observed
-            // state recorded afterward.
             let member = manifest
                 .members
                 .iter()
                 .find(|member| member.id == plan.member_id)
                 .ok_or_else(|| ModelError::new(ErrorCode::MemberNotFound, "member not found"))?;
+            let quiet_clone = skip_private_access && member.private && plan.clone_url.is_some();
+            if !quiet_clone {
+                emitter.member_started(&plan.member_id, &plan.state.path);
+            }
+            if let Some(url) = plan.clone_url.as_deref() {
+                let remote = materialize_clone_remote(manifest, &plan.member_id)?;
+                let existed_before = !fresh_clone_paths.contains(&member_root);
+                let clone =
+                    backend.clone_repo_named(url, &member_root, &remote.name, &|progress| {
+                        if !quiet_clone {
+                            emitter.member_progress(&plan.member_id, &plan.state.path, progress);
+                        }
+                    });
+                match clone {
+                    Err(error)
+                        if quiet_clone
+                            && !existed_before
+                            && error.code == ErrorCode::RemoteRejected =>
+                    {
+                        match std::fs::remove_dir_all(&member_root) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => {
+                                return Err(ModelError::new(ErrorCode::IoError, error.to_string()));
+                            }
+                        }
+                        if let Some(observations) = backend.transport_observations() {
+                            observations.forget_private_clone(&member_root);
+                        }
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                    Ok(_) => {}
+                }
+                if quiet_clone {
+                    emitter.member_started(&plan.member_id, &plan.state.path);
+                }
+            }
             match &plan.state.branch {
                 Some(branch) if plan.state.detached != Some(true) => {
                     // AD3(c): the member tracks `branch` (detached:false). Pick the checkout
@@ -387,7 +424,7 @@ where
             let status = backend.status(&member_root)?;
             let observed = resolved_member(member, &head, &status);
             let response = materialized_response(member, &plan.state, &observed);
-            Ok((plan.member_id.clone(), observed, response))
+            Ok(Some((plan.member_id.clone(), observed, response)))
         },
     );
     let mut responses = Vec::with_capacity(outcomes.len());
@@ -395,10 +432,11 @@ where
     let mut first_error = None;
     for outcome in outcomes {
         match outcome {
-            Ok((member_id, observed, response)) => {
+            Ok(Some((member_id, observed, response))) => {
                 observed_states.push((member_id, observed));
                 responses.push(response);
             }
+            Ok(None) => {}
             Err(error) => {
                 if first_error.is_none() {
                     first_error = Some(error);
@@ -651,6 +689,7 @@ where
         plans,
         MaterializeApplyOptions {
             rewrite_lock,
+            skip_private_access: true,
             follow_branch_head: true,
             policy: materialize.meta.policy.as_ref(),
         },

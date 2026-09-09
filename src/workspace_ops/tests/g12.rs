@@ -42,6 +42,7 @@ fn manifest_with_members(paths: &[(&str, bool)]) -> ManifestArtifact {
             .iter()
             .enumerate()
             .map(|(index, (path, active))| ManifestMember {
+                private: false,
                 id: format!("mem_manifest_{index}"),
                 path: (*path).to_owned(),
                 source_kind: ArtifactSourceKind::Git,

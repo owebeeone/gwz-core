@@ -53,6 +53,7 @@ pub(crate) fn record() -> MergeOperationRecordV1 {
             id: "ws_test".to_owned(),
         },
         members: vec![ManifestMember {
+            private: false,
             id: "mem_a".to_owned(),
             path: "members/a".to_owned(),
             source_kind: ArtifactSourceKind::Git,

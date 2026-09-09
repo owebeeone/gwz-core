@@ -2739,6 +2739,7 @@ pub struct MemberSpec {
     pub active: bool,
     pub desired: Option<DesiredRef>,
     pub remotes: Vec<RemoteSpec>,
+    pub private: Option<bool>,
 }
 impl MemberSpec {
     pub fn to_cbor(&self) -> Cbor {
@@ -2750,6 +2751,7 @@ impl MemberSpec {
             (5, Cbor::Bool(self.active)),
             (6, match &self.desired { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (7, Cbor::Array(self.remotes.iter().map(|x| x.to_cbor()).collect())),
+            (8, match &self.private { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2761,6 +2763,7 @@ impl MemberSpec {
             active: c.try_get(5)?.try_bool()?,
             desired: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(DesiredRef::from_cbor(v)?) } },
             remotes: c.try_get(7)?.try_array()?.iter().map(|x| RemoteSpec::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            private: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
         })
     }
 }
@@ -4445,16 +4448,19 @@ impl CreateRepoRequest {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct RepoSyncRequest {
     pub meta: RequestMeta,
+    pub private: Option<bool>,
 }
 impl RepoSyncRequest {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.meta.to_cbor()),
+            (2, match &self.private { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
         Ok(Self {
             meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+            private: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
         })
     }
 }

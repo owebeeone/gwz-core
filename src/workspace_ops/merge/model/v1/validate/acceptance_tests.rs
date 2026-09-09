@@ -56,6 +56,7 @@ fn manifest(include_member: bool) -> String {
         },
         members: if include_member {
             vec![ManifestMember {
+                private: false,
                 id: "mem_a".to_owned(),
                 path: "members/a".to_owned(),
                 source_kind: ArtifactSourceKind::Git,

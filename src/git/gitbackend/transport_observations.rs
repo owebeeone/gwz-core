@@ -35,6 +35,18 @@ impl TransportObservations {
             .collect()
     }
 
+    /// An explicitly private member's refused fresh clone is intentionally quiet.
+    pub(crate) fn forget_private_clone(&self, path: &Path) {
+        let path = path.to_string_lossy();
+        self.rows
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retain(|attempt| {
+                let row = attempt.0.lock().unwrap_or_else(|error| error.into_inner());
+                row.operation != crate::TransportOperation::Clone || row.repository_path != path
+            });
+    }
+
     pub(crate) fn begin(
         &self,
         path: &Path,

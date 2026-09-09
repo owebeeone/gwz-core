@@ -166,6 +166,7 @@ where
                 emitter.member_finished(&plan.member_id, plan.path.as_str());
                 let remotes = backend.remotes(&member_root)?;
                 let manifest_member = ManifestMember {
+                    private: false,
                     id: plan.member_id.clone(),
                     path: plan.path.as_str().to_owned(),
                     source_kind: ArtifactSourceKind::Git,

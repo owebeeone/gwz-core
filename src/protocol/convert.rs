@@ -258,6 +258,7 @@ impl From<&model::DesiredRef> for generated::DesiredRef {
 impl From<&model::MemberSpec> for generated::MemberSpec {
     fn from(value: &model::MemberSpec) -> Self {
         Self {
+            private: value.private.then_some(true),
             member_id: value.id.to_string(),
             path: value.path.clone(),
             source_id: value.source_id.to_string(),

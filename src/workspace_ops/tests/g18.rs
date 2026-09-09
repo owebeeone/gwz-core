@@ -12,6 +12,7 @@ use super::*;
 fn member(id: &str, path: &str) -> ManifestMember {
     let name = path.rsplit('/').next().unwrap_or(path);
     ManifestMember {
+        private: false,
         id: id.to_owned(),
         path: path.to_owned(),
         source_kind: ArtifactSourceKind::Git,

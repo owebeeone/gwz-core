@@ -72,6 +72,7 @@ impl Workspace {
         );
         let mut manifest = artifact::read_manifest(&self.root).unwrap();
         manifest.members.push(ManifestMember {
+            private: false,
             id: member_id.to_owned(),
             path: path.to_owned(),
             source_kind: ArtifactSourceKind::Git,

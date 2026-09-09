@@ -188,6 +188,7 @@ fn acceptance_ready(
 
 fn member(id: &str, path: &str, source_id: &str) -> ManifestMember {
     ManifestMember {
+        private: false,
         id: id.into(),
         path: path.into(),
         source_kind: ArtifactSourceKind::Git,

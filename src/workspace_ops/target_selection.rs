@@ -512,6 +512,7 @@ mod tests {
 
     fn member(id: &str, path: &str, active: bool) -> ManifestMember {
         ManifestMember {
+            private: false,
             id: id.to_owned(),
             path: path.to_owned(),
             source_kind: ArtifactSourceKind::Git,

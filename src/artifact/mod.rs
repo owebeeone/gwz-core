@@ -81,6 +81,9 @@ pub struct WorkspaceHeader {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ManifestMember {
+    /// Access refusals for fresh clones may be quietly skipped; not remote visibility.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub private: bool,
     pub id: String,
     pub path: String,
     #[serde(rename = "type")]
@@ -90,6 +93,10 @@ pub struct ManifestMember {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desired: Option<DesiredRefArtifact>,
     pub remotes: Vec<RemoteArtifact>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl ManifestMember {
@@ -1284,6 +1291,7 @@ pub(crate) mod tests {
                 id: "ws_01".to_owned(),
             },
             members: vec![ManifestMember {
+                private: false,
                 id: "mem_01".to_owned(),
                 path: "repos/example".to_owned(),
                 source_kind: ArtifactSourceKind::Git,

@@ -173,7 +173,9 @@ pub(crate) fn explicit_credential(
     let username = username_from_url.unwrap_or("git");
     if allowed_types.is_ssh_key() {
         if *ssh_attempts != 0 {
-            return Err(git2::Error::from_str(
+            return Err(git2::Error::new(
+                git2::ErrorCode::Auth,
+                git2::ErrorClass::Callback,
                 "selected SSH identity was rejected or unavailable (encrypted file keys require exact-agent support, which is unavailable); no agent fallback was attempted",
             ));
         }
@@ -183,7 +185,9 @@ pub(crate) fn explicit_credential(
     if allowed_types.is_username() {
         return git2::Cred::username(username);
     }
-    Err(git2::Error::from_str(
+    Err(git2::Error::new(
+        git2::ErrorCode::Auth,
+        git2::ErrorClass::Callback,
         "remote did not accept selected SSH authentication; no credential fallback was attempted",
     ))
 }
@@ -201,7 +205,9 @@ pub(crate) fn remote_credential(
         // we have nothing else — return an error so it stops rather than looping forever.
         *ssh_attempts += 1;
         if *ssh_attempts > 1 {
-            return Err(git2::Error::from_str(
+            return Err(git2::Error::new(
+                git2::ErrorCode::Auth,
+                git2::ErrorClass::Callback,
                 "SSH key authentication failed (no usable identity in the ssh-agent); \
                  run `ssh-add` or check your SSH setup",
             ));
@@ -221,7 +227,9 @@ pub(crate) fn remote_credential(
     if allowed_types.is_default() {
         return git2::Cred::default();
     }
-    Err(git2::Error::from_str(
+    Err(git2::Error::new(
+        git2::ErrorCode::Auth,
+        git2::ErrorClass::Callback,
         "GWZ could not acquire credentials for the requested remote",
     ))
 }

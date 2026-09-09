@@ -491,6 +491,7 @@ pub(crate) fn push_remote_binds_from_the_request_field_first_and_the_policy_seco
     use crate::workspace_ops::push_member::{resolve_push_remote, resolve_root_push_remote};
 
     let member = crate::artifact::ManifestMember {
+        private: false,
         id: "mem_app".to_owned(),
         path: "repos/app".to_owned(),
         source_kind: crate::artifact::ArtifactSourceKind::Git,

@@ -55,7 +55,9 @@ pub(super) fn clone_repo_named(
         Some(attempt.clone()),
         Some(progress),
     ));
-    let repo = builder.clone(url, path).map_err(git_error)?;
+    let repo = builder
+        .clone(url, path)
+        .map_err(|error| clone_error(url, error))?;
     attempt.succeeded();
     pin_creation_time_filter_neutralization(&repo)?;
     Ok(GitCloneResult {
@@ -566,4 +568,119 @@ pub(super) fn read_remote_file(
             .content()
             .to_vec(),
     ))
+}
+
+/// Preserve transport access refusals as a typed error at the clone boundary.
+/// libgit2 exposes HTTP statuses and SSH remote stderr as messages, so match
+/// only its known refusal forms within the corresponding transport class.
+fn clone_error(url: &str, error: git2::Error) -> ModelError {
+    let message = error.message().trim().to_ascii_lowercase();
+    let access_refused = error.code() == git2::ErrorCode::Auth && !message.contains("proxy")
+        || error.class() == git2::ErrorClass::Http
+            && matches!(
+                message.as_str(),
+                "unexpected http status code: 401"
+                    | "unexpected http status code: 403"
+                    | "unexpected http status code: 404"
+                    | "request failed with status code: 401"
+                    | "request failed with status code: 403"
+                    | "request failed with status code: 404"
+                    | "server requires authentication that we do not support"
+                    | "server authentication required but no callback set"
+            )
+        || error.class() == git2::ErrorClass::Ssh
+            && (message == "error: repository not found."
+                || message == "repository not found."
+                || (message.starts_with("error: permission to ")
+                    && message.contains(" denied to ")));
+    if crate::git::git_host(url).is_some() && access_refused {
+        ModelError::new(ErrorCode::RemoteRejected, error.message())
+    } else {
+        git_error(error)
+    }
+}
+
+#[cfg(test)]
+mod private_clone_access_tests {
+    use super::*;
+
+    #[test]
+    fn clone_access_classification_does_not_hide_other_failures() {
+        for (code, class, message, denied) in [
+            (
+                git2::ErrorCode::Auth,
+                git2::ErrorClass::Ssh,
+                "authentication failed",
+                true,
+            ),
+            (
+                git2::ErrorCode::GenericError,
+                git2::ErrorClass::Ssh,
+                "ERROR: Repository not found.",
+                true,
+            ),
+            (
+                git2::ErrorCode::GenericError,
+                git2::ErrorClass::Ssh,
+                "ERROR: Permission to owner/repo.git denied to user.",
+                true,
+            ),
+            (
+                git2::ErrorCode::GenericError,
+                git2::ErrorClass::Http,
+                "unexpected http status code: 404",
+                true,
+            ),
+            (
+                git2::ErrorCode::GenericError,
+                git2::ErrorClass::Http,
+                "unexpected http status code: 500",
+                false,
+            ),
+            (
+                git2::ErrorCode::Auth,
+                git2::ErrorClass::Http,
+                "proxy authentication required",
+                false,
+            ),
+            (
+                git2::ErrorCode::GenericError,
+                git2::ErrorClass::Ssh,
+                "invalid or unknown remote ssh hostkey",
+                false,
+            ),
+            (
+                git2::ErrorCode::NotFound,
+                git2::ErrorClass::Reference,
+                "reference not found",
+                false,
+            ),
+            (
+                git2::ErrorCode::GenericError,
+                git2::ErrorClass::Os,
+                "permission denied writing checkout",
+                false,
+            ),
+        ] {
+            let error = git2::Error::new(code, class, message);
+            assert_eq!(
+                clone_error("https://example.invalid/repo", error).code
+                    == ErrorCode::RemoteRejected,
+                denied,
+                "{message}"
+            );
+        }
+        assert_eq!(
+            clone_error(
+                "/local/repo",
+                git2::Error::new(
+                    git2::ErrorCode::Auth,
+                    git2::ErrorClass::Ssh,
+                    "authentication failed"
+                )
+            )
+            .code,
+            ErrorCode::GitCommandFailed
+        );
+    }
 }

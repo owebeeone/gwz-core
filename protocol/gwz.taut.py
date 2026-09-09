@@ -1152,7 +1152,9 @@ SCHEMA = schema(
         # Inactive members remain recorded but are skipped by default selection.
         active=F(5, BOOL),
         desired=F(6, Ref.DesiredRef, optional=True),
-        remotes=F(7, List(Ref.RemoteSpec))),
+        remotes=F(7, List(Ref.RemoteSpec)),
+        # Explicit policy to quietly skip private-member clone access refusals.
+        private=F(8, BOOL, optional=True)),
 
     # Explicit workspace materialization target.
     MaterializeTarget=Msg(
@@ -1703,7 +1705,9 @@ SCHEMA = schema(
 
     # Refresh configured member metadata from local Git config.
     RepoSyncRequest=Msg(
-        meta=F(1, Ref.RequestMeta)),
+        meta=F(1, Ref.RequestMeta),
+        # None preserves policy; true marks private, false restores public behavior.
+        private=F(2, BOOL, optional=True)),
 
     # Clone and register one repository as a workspace member.
     CloneRepoMemberRequest=Msg(

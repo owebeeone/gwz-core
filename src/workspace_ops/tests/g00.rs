@@ -748,6 +748,7 @@ pub(crate) fn write_materialize_fixture(root: &Path, remote_url: &str, commit: &
                 id: "ws_ops".to_owned(),
             },
             members: vec![crate::artifact::ManifestMember {
+                private: false,
                 id: "mem_app".to_owned(),
                 path: "repos/app".to_owned(),
                 source_kind: crate::artifact::ArtifactSourceKind::Git,
@@ -779,3 +780,5 @@ pub(crate) struct RemoteFixture {
     pub(crate) source: PathBuf,
     pub(crate) remote: PathBuf,
 }
+
+mod private_members;

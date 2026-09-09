@@ -1084,3 +1084,22 @@ WindowsNtfsFileId128V1 and WindowsNtfs remain historical serialized identifiers
 for this capability contract. Block cloning is a separate capability and does
 not establish crash recovery support. This supersedes the old Windows name-gate
 exception in GwzM5-8DR1-WarnOrRefuse-Charter.md.
+
+## Private member clone access policy (2026-09-10)
+
+A manifest member may declare `private: true`; omission or false preserves the
+existing public/default behavior. This is explicit access-failure policy, not
+remote visibility enforcement or concealment of the manifest. During workspace
+clone and lock materialization, an access refusal cloning a missing private
+member is silently skipped. Successful members remain, the skipped member's
+manifest and lock entry remain intact, and the operation succeeds unless another
+error requires failure. No progress event, response member, diagnostic or transport
+observation may disclose the skipped clone. Successfully cloned private members
+are reported normally. No general suppression applies to local I/O, corrupt
+repositories, missing revisions, configuration errors or failures of the root
+clone. Snapshot/tag materialization and existing-member operations retain their
+existing semantics. This is a narrow exception to the atomic/partial-operation
+defaults, not a general best-effort mode. `repo sync <member> --private` and
+`--public` update this policy through the managed manifest writer; ordinary sync
+preserves it. CLI and Python use the same core request. No encryption, hidden
+extension manifest or GitHub visibility changes are part of this feature.
