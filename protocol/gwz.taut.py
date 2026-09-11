@@ -816,7 +816,10 @@ SCHEMA = schema(
          # refused (design §5.2: an interrupted deletion is not forceable).
          # Manual cleanup, then an explicit dispose removes the stale row;
          # `--keep` detaches the remainder.
-         disposal_incomplete=71),
+         disposal_incomplete=71,
+         # A requested URL scheme cannot be derived for a known-host URL
+         # (2026-09-12, gwz-dev dev-docs/GwzUrlSchemePlan.md §2.5).
+         url_scheme_unavailable=72),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(
@@ -1067,9 +1070,25 @@ SCHEMA = schema(
         credential_offered=F(6, BOOL),
         authenticated=F(7, BOOL, optional=True),
         public_key_fingerprint=F(8, STR, optional=True)),
+    # URL scheme preference for members on known hosts (github.com, gitlab.com,
+    # bitbucket.org); `manifest` means the URL as written. Added 2026-09-12
+    # (gwz-dev dev-docs/GwzUrlSchemePlan.md §2.7).
+    UrlScheme=Enum(manifest=0, ssh=1, https=2),
+    # Where the effective scheme came from, as far as core can know.
+    UrlSchemeSource=Enum(default=0, request=1, workspace=2),
+    # How one member's clone URL was chosen by this operation.
+    MemberUrlResolution=Msg(
+        manifest_url=F(1, STR),
+        effective_url=F(2, STR),
+        scheme=F(3, Ref.UrlScheme),
+        source=F(4, Ref.UrlSchemeSource),
+        derived=F(5, BOOL),
+        host_known=F(6, BOOL)),
     TransportOptions=Msg(
         default_identity=F(1, STR, optional=True),
-        remote_identities=F(2, List(Ref.RemoteSshIdentity))),
+        remote_identities=F(2, List(Ref.RemoteSshIdentity)),
+        # Requested URL scheme; absent means the workspace preference, then manifest.
+        url_scheme=F(3, Ref.UrlScheme, optional=True)),
 
     # The caller filesystem context captured before this request is serialized.
     # It is an absolute path in the execution filesystem; receivers never infer
@@ -1621,7 +1640,9 @@ SCHEMA = schema(
         # Concrete target kind for this response.
         target_kind=F(10, Ref.TargetKind, optional=True),
         # Facts preventing lock equality, when comparison was attempted.
-        lock_difference_reasons=F(11, List(Ref.LockDifferenceReason), optional=True)),
+        lock_difference_reasons=F(11, List(Ref.LockDifferenceReason), optional=True),
+        # How the clone URL was chosen, for a member cloned by this operation.
+        url_resolution=F(12, Ref.MemberUrlResolution, optional=True)),
 
     # Standard response payload for request/response operations.
     ResponseEnvelope=Msg(

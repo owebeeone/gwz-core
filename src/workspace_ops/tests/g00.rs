@@ -240,6 +240,7 @@ fn materialize_uses_the_named_fetch_remote_for_clone_identity() {
     .unwrap();
     let mut request = materialize_lock_request(false);
     request.meta.transport = Some(crate::TransportOptions {
+        url_scheme: None,
         default_identity: None,
         remote_identities: vec![crate::RemoteSshIdentity {
             remote: "upstream".into(),
@@ -315,6 +316,7 @@ pub(crate) fn clone_workspace_clones_root_and_materializes_missing_members() {
     fs::write(&key, "unused fixture").unwrap();
     let invalid_meta = crate::RequestMeta {
         transport: Some(crate::TransportOptions {
+            url_scheme: None,
             default_identity: None,
             remote_identities: vec![crate::RemoteSshIdentity {
                 remote: "typo".into(),

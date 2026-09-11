@@ -79,6 +79,7 @@ where
                 target_kind: Some(crate::TargetKind::Member),
                 lock_match: Some(crate::LockMatch::Differs),
                 lock_difference_reasons: None,
+                url_resolution: None,
             },
         });
     }

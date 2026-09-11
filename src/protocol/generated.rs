@@ -1587,6 +1587,7 @@ pub enum GwzErrorCode {
     UnwaivedHazard,
     UnknownEvidence,
     DisposalIncomplete,
+    UrlSchemeUnavailable,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1662,6 +1663,7 @@ impl GwzErrorCode {
         Self::UnwaivedHazard => 69,
         Self::UnknownEvidence => 70,
         Self::DisposalIncomplete => 71,
+        Self::UrlSchemeUnavailable => 72,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1736,6 +1738,7 @@ impl GwzErrorCode {
         69 => Self::UnwaivedHazard,
         70 => Self::UnknownEvidence,
         71 => Self::DisposalIncomplete,
+        72 => Self::UrlSchemeUnavailable,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }
@@ -2152,6 +2155,46 @@ impl TransportOperation {
     }) }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum UrlScheme {
+    #[default] Manifest,
+    Ssh,
+    Https,
+}
+impl UrlScheme {
+    pub fn wire(self) -> i64 { match self {
+        Self::Manifest => 0,
+        Self::Ssh => 1,
+        Self::Https => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Manifest,
+        1 => Self::Ssh,
+        2 => Self::Https,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "UrlScheme", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum UrlSchemeSource {
+    #[default] Default,
+    Request,
+    Workspace,
+}
+impl UrlSchemeSource {
+    pub fn wire(self) -> i64 { match self {
+        Self::Default => 0,
+        Self::Request => 1,
+        Self::Workspace => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Default,
+        1 => Self::Request,
+        2 => Self::Workspace,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "UrlSchemeSource", value: v }),
+    }) }
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct WorkspaceRef {
     pub root: Option<String>,
@@ -2522,21 +2565,56 @@ impl TransportObservation {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct MemberUrlResolution {
+    pub manifest_url: String,
+    pub effective_url: String,
+    pub scheme: UrlScheme,
+    pub source: UrlSchemeSource,
+    pub derived: bool,
+    pub host_known: bool,
+}
+impl MemberUrlResolution {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.manifest_url.clone())),
+            (2, Cbor::Text(self.effective_url.clone())),
+            (3, Cbor::Int(self.scheme.wire())),
+            (4, Cbor::Int(self.source.wire())),
+            (5, Cbor::Bool(self.derived)),
+            (6, Cbor::Bool(self.host_known)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            manifest_url: c.try_get(1)?.try_text()?,
+            effective_url: c.try_get(2)?.try_text()?,
+            scheme: UrlScheme::from_wire(c.try_get(3)?.try_int()?)?,
+            source: UrlSchemeSource::from_wire(c.try_get(4)?.try_int()?)?,
+            derived: c.try_get(5)?.try_bool()?,
+            host_known: c.try_get(6)?.try_bool()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TransportOptions {
     pub default_identity: Option<String>,
     pub remote_identities: Vec<RemoteSshIdentity>,
+    pub url_scheme: Option<UrlScheme>,
 }
 impl TransportOptions {
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, match &self.default_identity { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (2, Cbor::Array(self.remote_identities.iter().map(|x| x.to_cbor()).collect())),
+            (3, match &self.url_scheme { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
         Ok(Self {
             default_identity: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             remote_identities: c.try_get(2)?.try_array()?.iter().map(|x| RemoteSshIdentity::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
+            url_scheme: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(UrlScheme::from_wire(v.try_int()?)?) } },
         })
     }
 }
@@ -4198,6 +4276,7 @@ pub struct MemberResponse {
     pub lock_match: Option<LockMatch>,
     pub target_kind: Option<TargetKind>,
     pub lock_difference_reasons: Option<Vec<LockDifferenceReason>>,
+    pub url_resolution: Option<MemberUrlResolution>,
 }
 impl MemberResponse {
     pub fn to_cbor(&self) -> Cbor {
@@ -4213,6 +4292,7 @@ impl MemberResponse {
             (9, match &self.lock_match { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
             (10, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
             (11, match &self.lock_difference_reasons { Some(v) => Cbor::Array(v.iter().map(|x| Cbor::Int(x.wire())).collect()), None => Cbor::Null }),
+            (12, match &self.url_resolution { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4228,6 +4308,7 @@ impl MemberResponse {
             lock_match: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(LockMatch::from_wire(v.try_int()?)?) } },
             target_kind: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
             lock_difference_reasons: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| Ok(LockDifferenceReason::from_wire(x.try_int()?)?)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+            url_resolution: { let v = c.try_get(12)?; if v.is_null() { None } else { Some(MemberUrlResolution::from_cbor(v)?) } },
         })
     }
 }

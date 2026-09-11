@@ -80,6 +80,7 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::UnwaivedHazard => Self::UnwaivedHazard,
             model::ErrorCode::UnknownEvidence => Self::UnknownEvidence,
             model::ErrorCode::DisposalIncomplete => Self::DisposalIncomplete,
+            model::ErrorCode::UrlSchemeUnavailable => Self::UrlSchemeUnavailable,
         }
     }
 }

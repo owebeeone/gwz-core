@@ -131,6 +131,10 @@ pub enum ErrorCode {
     /// dispose removes the stale row, or `--keep` detaches the remainder
     /// (wire `disposal_incomplete` = 71; LCM2.2).
     DisposalIncomplete,
+    /// A requested URL scheme (`--url-scheme ssh|https`) cannot be derived for a
+    /// known-host URL, for example a nonstandard port (wire `url_scheme_unavailable`
+    /// = 72; gwz-dev dev-docs/GwzUrlSchemePlan.md §2.5).
+    UrlSchemeUnavailable,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -106,6 +106,7 @@ pub(crate) fn member_execution_to_protocol(member: &MemberExecution) -> crate::M
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
         lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 

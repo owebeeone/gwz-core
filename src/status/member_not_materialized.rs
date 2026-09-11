@@ -105,6 +105,7 @@ pub(crate) fn member_not_materialized(
         target_kind: Some(crate::TargetKind::Member),
         lock_match: Some(comparison.lock_match),
         lock_difference_reasons: Some(comparison.reasons),
+        url_resolution: None,
     }
 }
 
@@ -134,6 +135,7 @@ pub(crate) fn member_error(
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
         lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 

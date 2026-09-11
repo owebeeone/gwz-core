@@ -14,6 +14,9 @@ API and from workspace artifact YAML schemas.
 
 | Service | Method | Role | Shape | Params | Out |
 | --- | --- | --- | --- | --- | --- |
+| GwzCore | configure_transport_runtime | in | unary | request: TransportRuntimeRequest | value: TransportRuntimeResponse |
+| GwzCore | remote_identity | in | unary | request: RemoteIdentityRequest | value: RemoteIdentityResponse |
+| GwzCore | transport_capabilities | in | unary | request: TransportCapabilitiesRequest | value: TransportCapabilitiesResponse |
 | GwzCore | create_workspace | in | unary | request: CreateWorkspaceRequest | value: CreateWorkspaceResponse |
 | GwzCore | init_from_sources | in | unary | request: InitFromSourcesRequest | value: InitFromSourcesResponse |
 | GwzCore | clone_workspace | in | unary | request: CloneWorkspaceRequest | value: CloneWorkspaceResponse |
@@ -26,6 +29,7 @@ API and from workspace artifact YAML schemas.
 | GwzCore | materialize | in | unary | request: MaterializeRequest | value: MaterializeResponse |
 | GwzCore | status | in | unary | request: StatusRequest | value: StatusResponse |
 | GwzCore | ls | in | unary | request: LsRequest | value: LsResponse |
+| GwzCore | resolve_forall_targets | in | unary | request: LsRequest | value: LsResponse |
 | GwzCore | snapshot | in | unary | request: SnapshotRequest | value: SnapshotResponse |
 | GwzCore | list_snapshots | in | unary | request: ListSnapshotsRequest | value: ListSnapshotsResponse |
 | GwzCore | tag | in | unary | request: TagRequest | value: TagResponse |
@@ -118,6 +122,7 @@ has no service method and no handler that executes commands.
 | log | 26 |
 | clone_local_workspace | 27 |
 | local_family | 28 |
+| remote_identity | 29 |
 
 ### TagOp
 
@@ -601,6 +606,17 @@ has no service method and no handler that executes commands.
 | differs | 2 |
 | missing | 3 |
 
+### LockDifferenceReason
+
+| Member | Wire |
+| --- | --- |
+| dirty_worktree | 0 |
+| commit | 1 |
+| branch | 2 |
+| attachment | 3 |
+| missing_lock_entry | 4 |
+| unavailable_observations | 5 |
+
 ### GitProgressPhase
 
 | Member | Wire |
@@ -726,6 +742,7 @@ has no service method and no handler that executes commands.
 | unwaived_hazard | 69 |
 | unknown_evidence | 70 |
 | disposal_incomplete | 71 |
+| url_scheme_unavailable | 72 |
 
 ### MergeRecordRequiredWave
 
@@ -852,6 +869,57 @@ has no service method and no handler that executes commands.
 | entry | 0 |
 | degradation | 1 |
 
+### RemoteIdentityOp
+
+| Member | Wire |
+| --- | --- |
+| get | 0 |
+| set | 1 |
+| unset | 2 |
+
+### TransportCredentialMethod
+
+| Member | Wire |
+| --- | --- |
+| unknown | 0 |
+| file | 1 |
+| agent | 2 |
+| helper | 3 |
+
+### TransportSelectionSource
+
+| Member | Wire |
+| --- | --- |
+| ambient | 0 |
+| invocation_remote | 1 |
+| invocation_default | 2 |
+| local_configuration | 3 |
+
+### TransportOperation
+
+| Member | Wire |
+| --- | --- |
+| clone | 0 |
+| fetch | 1 |
+| push | 2 |
+| read_advertisement | 3 |
+
+### UrlScheme
+
+| Member | Wire |
+| --- | --- |
+| manifest | 0 |
+| ssh | 1 |
+| https | 2 |
+
+### UrlSchemeSource
+
+| Member | Wire |
+| --- | --- |
+| default | 0 |
+| request | 1 |
+| workspace | 2 |
+
 ## Messages
 
 ### WorkspaceRef
@@ -911,6 +979,102 @@ has no service method and no handler that executes commands.
 | progress_min_interval_ms | 7 | int | yes | no | - |
 | max_connections_per_host | 8 | int | yes | no | - |
 
+### RemoteSshIdentity
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| remote | 1 | str | no | no | - |
+| private_key_path | 2 | str | no | no | - |
+
+### RemoteIdentityRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+| remote | 2 | str | no | no | - |
+| op | 3 | RemoteIdentityOp | no | no | - |
+| private_key_path | 4 | str | yes | no | - |
+
+### RemoteIdentityEntry
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| member_id | 1 | str | no | no | - |
+| member_path | 2 | str | no | no | - |
+| remote | 3 | str | no | no | - |
+| private_key_path | 4 | str | yes | no | - |
+
+### RemoteIdentityResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+| identities | 2 | List<RemoteIdentityEntry> | no | no | - |
+
+### TransportRuntimeRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| server_timeout_ms | 1 | int | no | no | - |
+| schema_version | 2 | str | no | no | - |
+
+### TransportRuntimeResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| server_timeout_ms | 1 | int | no | no | - |
+
+### TransportCapabilitiesRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| schema_version | 1 | str | no | no | - |
+
+### TransportCapabilitiesResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| file_identity | 1 | bool | no | no | - |
+| exact_agent_identity | 2 | bool | no | no | - |
+
+### TransportObservation
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| repository_path | 1 | str | no | no | - |
+| remote | 2 | str | no | no | - |
+| operation | 3 | TransportOperation | no | no | - |
+| credential_method | 4 | TransportCredentialMethod | no | no | - |
+| selection_source | 5 | TransportSelectionSource | no | no | - |
+| credential_offered | 6 | bool | no | no | - |
+| authenticated | 7 | bool | yes | no | - |
+| public_key_fingerprint | 8 | str | yes | no | - |
+
+### MemberUrlResolution
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| manifest_url | 1 | str | no | no | - |
+| effective_url | 2 | str | no | no | - |
+| scheme | 3 | UrlScheme | no | no | - |
+| source | 4 | UrlSchemeSource | no | no | - |
+| derived | 5 | bool | no | no | - |
+| host_known | 6 | bool | no | no | - |
+
+### TransportOptions
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| default_identity | 1 | str | yes | no | - |
+| remote_identities | 2 | List<RemoteSshIdentity> | no | no | - |
+| url_scheme | 3 | UrlScheme | yes | no | - |
+
+### InvocationContext
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| caller_cwd | 1 | str | no | no | - |
+
 ### RequestMeta
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -922,6 +1086,8 @@ has no service method and no handler that executes commands.
 | policy | 5 | OperationPolicy | yes | no | - |
 | dry_run | 6 | bool | yes | no | - |
 | attribution | 7 | OperationAttribution | yes | no | - |
+| transport | 8 | TransportOptions | yes | no | - |
+| invocation | 9 | InvocationContext | yes | no | - |
 
 ### ResponseMeta
 
@@ -934,6 +1100,7 @@ has no service method and no handler that executes commands.
 | operation_id | 5 | str | yes | no | - |
 | message | 6 | str | yes | no | - |
 | attribution | 7 | OperationAttribution | yes | no | - |
+| transport | 8 | List<TransportObservation> | yes | no | - |
 
 ### MergeRecordCompatibilityContext
 
@@ -995,6 +1162,7 @@ has no service method and no handler that executes commands.
 | active | 5 | bool | no | no | - |
 | desired | 6 | DesiredRef | yes | no | - |
 | remotes | 7 | List<RemoteSpec> | no | no | - |
+| private | 8 | bool | yes | no | - |
 
 ### MaterializeTarget
 
@@ -1480,6 +1648,8 @@ has no service method and no handler that executes commands.
 | git_status | 8 | GitStatus | yes | no | - |
 | lock_match | 9 | LockMatch | yes | no | - |
 | target_kind | 10 | TargetKind | yes | no | - |
+| lock_difference_reasons | 11 | List<LockDifferenceReason> | yes | no | - |
+| url_resolution | 12 | MemberUrlResolution | yes | no | - |
 
 ### ResponseEnvelope
 
@@ -1524,6 +1694,7 @@ has no service method and no handler that executes commands.
 | members | 7 | List<MemberResponse> | no | no | - |
 | errors | 8 | List<GwzError> | no | no | - |
 | attribution | 9 | OperationAttribution | yes | no | - |
+| transport | 10 | List<TransportObservation> | yes | no | - |
 
 ### CreateWorkspaceRequest
 
@@ -1576,6 +1747,7 @@ has no service method and no handler that executes commands.
 | Field | Tag | Type | Optional | Transient | Merge |
 | --- | --- | --- | --- | --- | --- |
 | meta | 1 | RequestMeta | no | no | - |
+| private | 2 | bool | yes | no | - |
 
 ### CloneRepoMemberRequest
 

@@ -310,6 +310,7 @@ fn root_commit_response<B: GitBackend>(
         target_kind: Some(crate::TargetKind::Root),
         lock_match: None,
         lock_difference_reasons: None,
+        url_resolution: None,
     })
 }
 

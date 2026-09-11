@@ -462,6 +462,7 @@ where
             target_kind: Some(crate::TargetKind::Member),
             lock_match: None,
             lock_difference_reasons: None,
+            url_resolution: None,
         };
     }
 
@@ -478,6 +479,7 @@ where
             target_kind: Some(crate::TargetKind::Member),
             lock_match: None,
             lock_difference_reasons: None,
+            url_resolution: None,
         },
         Err(error) if error.code == ErrorCode::MissingRemote => {
             push_member_error(member, source_kind, error, crate::MemberStatus::Failed)
@@ -557,6 +559,7 @@ where
             target_kind: Some(crate::TargetKind::Root),
             lock_match: None,
             lock_difference_reasons: None,
+            url_resolution: None,
         };
     }
 
@@ -573,6 +576,7 @@ where
             target_kind: Some(crate::TargetKind::Root),
             lock_match: None,
             lock_difference_reasons: None,
+            url_resolution: None,
         },
         Err(error) if error.code == ErrorCode::MissingRemote => {
             push_root_error(error, crate::MemberStatus::Failed)
@@ -703,6 +707,7 @@ pub(crate) fn push_member_error(
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
         lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 
@@ -730,6 +735,7 @@ pub(crate) fn push_root_error(
         target_kind: Some(crate::TargetKind::Root),
         lock_match: None,
         lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 

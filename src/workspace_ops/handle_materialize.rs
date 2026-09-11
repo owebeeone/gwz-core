@@ -1037,6 +1037,7 @@ fn branch_switch_preflight<B: GitBackend>(
             target_kind: Some(crate::TargetKind::Member),
             lock_match: Some(crate::LockMatch::Differs),
             lock_difference_reasons: None,
+            url_resolution: None,
         });
     }
     Ok(plans)
@@ -1067,6 +1068,7 @@ pub(crate) fn locked_member_responses(
                 lock_difference_reasons: Some(vec![
                     crate::LockDifferenceReason::UnavailableObservations,
                 ]),
+                url_resolution: None,
             }
         })
         .collect()
@@ -1179,6 +1181,7 @@ pub(crate) fn materialized_response(
         target_kind: Some(crate::TargetKind::Member),
         lock_match: Some(lock_match),
         lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 

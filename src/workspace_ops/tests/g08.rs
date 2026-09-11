@@ -28,6 +28,7 @@ fn unknown_identity_override_refuses_before_root_publication() {
                     ..Default::default()
                 }),
                 transport: Some(crate::TransportOptions {
+                    url_scheme: None,
                     default_identity: None,
                     remote_identities: vec![crate::RemoteSshIdentity {
                         remote: "typo".into(),

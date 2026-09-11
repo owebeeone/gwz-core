@@ -35,6 +35,7 @@ pub(super) fn stash_target_response(
         target_kind: Some(target_kind),
         lock_match: None,
         lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 

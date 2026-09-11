@@ -117,6 +117,7 @@ impl PullHeadPlan {
             target_kind: Some(crate::TargetKind::Member),
             lock_match: None,
             lock_difference_reasons: None,
+            url_resolution: None,
         }
     }
 }
@@ -231,6 +232,7 @@ pub(crate) fn pull_result_response(
         target_kind: Some(crate::TargetKind::Member),
         lock_match: conflicts.is_empty().then_some(crate::LockMatch::Matches),
         lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 

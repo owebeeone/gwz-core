@@ -276,6 +276,7 @@ where
             target_kind: Some(crate::TargetKind::Member),
             lock_match: Some(crate::LockMatch::Missing),
             lock_difference_reasons: None,
+            url_resolution: None,
         }],
     );
     response.meta.message = Some(format!(
@@ -344,6 +345,7 @@ where
                 target_kind: Some(crate::TargetKind::Member),
                 lock_match: None,
                 lock_difference_reasons: None,
+                url_resolution: None,
             }],
         );
         response.meta.message = Some(format!("{} is already attached", member.id));
@@ -661,6 +663,7 @@ pub(crate) fn planned_member(
         target_kind: Some(crate::TargetKind::Member),
         lock_match: None,
         lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 
@@ -684,6 +687,7 @@ pub(crate) fn ok_member(
         target_kind: Some(crate::TargetKind::Member),
         lock_match: Some(comparison.lock_match),
         lock_difference_reasons: (!comparison.reasons.is_empty()).then_some(comparison.reasons),
+        url_resolution: None,
     }
 }
 

@@ -237,6 +237,7 @@ fn default_merge_pull_applies_a_planned_root_fast_forward_after_member_preflight
     fs::write(&key, "unused identity fixture").unwrap();
     let mut invalid = pull_head_request_with_sync(crate::SyncBehavior::Merge);
     invalid.meta.transport = Some(crate::TransportOptions {
+        url_scheme: None,
         default_identity: None,
         remote_identities: vec![crate::RemoteSshIdentity {
             remote: "typo".into(),

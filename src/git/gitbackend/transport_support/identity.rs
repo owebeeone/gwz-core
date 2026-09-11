@@ -348,6 +348,7 @@ mod tests {
             .with_transport(
                 temp.path(),
                 Some(&crate::TransportOptions {
+                    url_scheme: None,
                     default_identity: Some("key".into()),
                     remote_identities: vec![],
                 }),
@@ -422,6 +423,7 @@ mod tests {
     fn explicit_precedence_and_equals_in_paths_are_preserved() {
         let temp = tempfile::tempdir().unwrap();
         let options = crate::TransportOptions {
+            url_scheme: None,
             default_identity: Some("default=key".into()),
             remote_identities: vec![crate::RemoteSshIdentity {
                 remote: "origin".into(),
@@ -462,6 +464,7 @@ mod tests {
             private_key_path: "key".into(),
         };
         let mut options = crate::TransportOptions {
+            url_scheme: None,
             default_identity: None,
             remote_identities: vec![entry.clone(), entry.clone()],
         };

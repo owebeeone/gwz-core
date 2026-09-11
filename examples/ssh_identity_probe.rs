@@ -99,6 +99,7 @@ fn product_probe(
         base.set_remote_identity(&path, "origin", Some(key.ok_or("missing key")?))?;
     }
     let options = gwz_core::TransportOptions {
+        url_scheme: None,
         default_identity: if mode == "file" {
             Some(key.ok_or("missing key")?.to_owned())
         } else {

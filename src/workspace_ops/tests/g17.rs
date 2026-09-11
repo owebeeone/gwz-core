@@ -29,6 +29,7 @@ fn remote_tag_operations_refuse_unused_identity_overrides() {
             ..Default::default()
         });
         request.meta.transport = Some(crate::TransportOptions {
+            url_scheme: None,
             default_identity: None,
             remote_identities: vec![crate::RemoteSshIdentity {
                 remote: "typo".into(),

@@ -1187,6 +1187,15 @@ fn error_code_wire_values_are_pinned() {
     assert_eq!(GwzErrorCode::UnwaivedHazard.wire(), 69);
     assert_eq!(GwzErrorCode::UnknownEvidence.wire(), 70);
     assert_eq!(GwzErrorCode::DisposalIncomplete.wire(), 71);
+    assert_eq!(GwzErrorCode::UrlSchemeUnavailable.wire(), 72);
+    assert_eq!(
+        GwzErrorCode::from_wire(72).ok(),
+        Some(GwzErrorCode::UrlSchemeUnavailable)
+    );
+    assert_eq!(
+        gwz_core::GwzErrorCode::from(gwz_core::model::ErrorCode::UrlSchemeUnavailable),
+        GwzErrorCode::UrlSchemeUnavailable
+    );
     let disposal = [
         GwzErrorCode::UnwaivedHazard,
         GwzErrorCode::UnknownEvidence,

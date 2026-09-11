@@ -120,7 +120,18 @@ from taut.ir.load import load_schema
 # reusing LsRequest/LsResponse. Measured: removing that single method from the
 # new IR reproduces e99ce51a85b439fb03bb43df5beb3a33156048b8212d3f2fc609ba2db163db32
 # exactly. No message, enum, field or existing method changes.
-PRE_LOG_WIRE_SHA256 = "8aa25038218daf2d085b62bb37fb4438afd06bb77628746dac80efe53a56e76c"
+# Moved deliberately again on 2026-09-12 by the URL-scheme feature (gwz-dev
+# dev-docs/GwzUrlSchemePlan.md §2.7, step 1.2), which adds exactly: enum
+# UrlScheme (manifest=0, ssh=1, https=2), enum UrlSchemeSource (default=0,
+# request=1, workspace=2), message MemberUrlResolution (six fields, tags 1-6),
+# the optional TransportOptions.url_scheme (tag 3), the optional
+# MemberResponse.url_resolution (tag 12) and GwzErrorCode.url_scheme_unavailable
+# (72). No existing message, field, slot or method changed. MEASURED additive,
+# not assumed: the projection was rendered on both trees and diffed -- 113
+# added lines, 0 removed lines; the previous pin below reproduced exactly on
+# the pre-change tree (gwz-core 200be4e).
+#   was: 8aa25038218daf2d085b62bb37fb4438afd06bb77628746dac80efe53a56e76c
+PRE_LOG_WIRE_SHA256 = "111103e545198a90e1348460713653f8bcfa59122aba54ef3f7437a1174a6ba5"
 LOG_METHODS = {"log", "log.output"}
 
 
