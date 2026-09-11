@@ -176,6 +176,17 @@ pub fn scheme_only_difference(manifest_url: &str, observed_url: &str) -> bool {
         .is_ok_and(|resolution| resolution.effective_url == observed_url)
 }
 
+/// The scheme a URL is written in: `Ssh` for the scp-like and `ssh://` forms,
+/// `Https` for `https://`, `None` for anything else, on any host.
+pub fn written_scheme(url: &str) -> Option<UrlScheme> {
+    let parsed = parse_git_url(url)?;
+    match parsed.form {
+        Form::Scp | Form::Ssh => Some(UrlScheme::Ssh),
+        Form::Https => Some(UrlScheme::Https),
+        Form::Other(_) => None,
+    }
+}
+
 /// True for the two ssh forms, scp-like and `ssh://`, on any host.
 pub fn uses_ssh(url: &str) -> bool {
     parse_git_url(url).is_some_and(|parsed| matches!(parsed.form, Form::Scp | Form::Ssh))

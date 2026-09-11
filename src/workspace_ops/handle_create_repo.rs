@@ -598,6 +598,12 @@ where
         request.meta.selection.as_ref(),
         crate::ActionKind::RepoSync,
     )?;
+    let destructive_allowed = request
+        .meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.destructive)
+        == Some(crate::DestructiveBehavior::Allow);
 
     let mut plans = Vec::new();
     let mut responses = Vec::new();
@@ -620,6 +626,7 @@ where
             lock.members.get(&member.id),
             dry_run,
             request.private,
+            destructive_allowed,
         ) {
             Ok(plan) => {
                 responses.push(plan.response.clone());
@@ -654,8 +661,16 @@ where
     }
 
     let aggregate_status = repo_sync_aggregate(&responses);
+    let scheme_only = responses
+        .iter()
+        .filter(|response| response.url_resolution.is_some())
+        .count();
     let mut response = response_envelope(context, aggregate_status, responses);
-    if aggregate_status == crate::AggregateStatus::Noop {
+    if scheme_only > 0 {
+        response.meta.message = Some(format!(
+            "{scheme_only} member remote(s) differ from the manifest only by URL scheme, a clone-time preference, and keep the recorded URL; pass --force to record the configured form"
+        ));
+    } else if aggregate_status == crate::AggregateStatus::Noop {
         response.meta.message = Some(
             "Repository metadata already matches local Git configuration; sync does not change worktree contents."
                 .to_owned(),
@@ -678,6 +693,7 @@ fn repo_sync_plan_member<B>(
     locked: Option<&ResolvedMemberArtifact>,
     dry_run: bool,
     private: Option<bool>,
+    destructive_allowed: bool,
 ) -> Result<RepoSyncPlan, Box<crate::MemberResponse>>
 where
     B: GitBackend,
@@ -746,6 +762,34 @@ where
         next.private = private;
     }
     next.remotes = sync_member_remotes(&member.remotes, &git_remotes);
+    // A configured remote that differs from the manifest only by URL scheme on a
+    // known host is the mark of a `--url-scheme` clone, not a different
+    // repository: keep the manifest URL and report the difference. `--force`
+    // records the configured form as before.
+    let mut scheme_only = None;
+    if !destructive_allowed {
+        for synced in &mut next.remotes {
+            let Some(recorded) = member.remotes.iter().find(|remote| remote.name == synced.name)
+            else {
+                continue;
+            };
+            if crate::git::scheme_only_difference(&recorded.url, &synced.url) {
+                if scheme_only.is_none()
+                    && let Some(scheme) = crate::git::written_scheme(&synced.url)
+                {
+                    scheme_only = Some(crate::MemberUrlResolution {
+                        manifest_url: recorded.url.clone(),
+                        effective_url: synced.url.clone(),
+                        scheme: scheme.into(),
+                        source: crate::UrlSchemeSource::Default,
+                        derived: true,
+                        host_known: true,
+                    });
+                }
+                synced.url = recorded.url.clone();
+            }
+        }
+    }
     if !next.remotes.is_empty() {
         next.desired = Some(desired_from_head(&head));
     }
@@ -781,7 +825,7 @@ where
             target_kind: Some(crate::TargetKind::Member),
             lock_match: Some(comparison.lock_match),
             lock_difference_reasons: (!comparison.reasons.is_empty()).then_some(comparison.reasons),
-            url_resolution: None,
+            url_resolution: scheme_only,
         },
     })
 }

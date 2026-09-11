@@ -330,3 +330,87 @@ fn a_refusal_error_carries_member_context() {
     assert!(error.message.starts_with("member 'mem_x' (repos/x): "), "{}", error.message);
     assert!(error.message.contains("empty repository path"), "{}", error.message);
 }
+
+#[test]
+fn repo_sync_keeps_a_manifest_url_that_differs_only_by_scheme_unless_forced() {
+    let temp = TempDir::new("url-scheme-sync");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+    handle_create_repo(
+        &backend,
+        temp.path(),
+        create_repo_request("repos/app", None, None),
+        "member",
+    )
+    .unwrap();
+    let mut manifest = read_manifest(temp.path()).unwrap();
+    manifest.members[0].remotes = vec![crate::artifact::RemoteArtifact {
+        name: "origin".to_owned(),
+        url: "git@github.com:o/r.git".to_owned(),
+        fetch: true,
+        push: true,
+    }];
+    crate::artifact::write_manifest(temp.path(), &manifest).unwrap();
+    backend
+        .add_remote(&temp.path().join("repos/app"), "origin", "https://github.com/o/r.git")
+        .unwrap();
+
+    let response = handle_repo_sync(
+        &backend,
+        temp.path(),
+        crate::RepoSyncRequest {
+            private: None,
+            meta: request_meta(),
+        },
+        "sync",
+    )
+    .unwrap();
+    let member = &response.response.members[0];
+    let resolution = member.url_resolution.as_ref().expect("scheme-only drift is reported");
+    assert_eq!(resolution.manifest_url, "git@github.com:o/r.git");
+    assert_eq!(resolution.effective_url, "https://github.com/o/r.git");
+    assert_eq!(resolution.scheme, crate::UrlScheme::Https);
+    assert!(resolution.derived);
+    assert_eq!(
+        read_manifest(temp.path()).unwrap().members[0].remotes[0].url,
+        "git@github.com:o/r.git",
+        "the manifest keeps the recorded URL"
+    );
+    let message = response.response.meta.message.clone().unwrap_or_default();
+    assert!(message.contains("only by URL scheme"), "{message}");
+    assert!(message.contains("--force"), "{message}");
+
+    let forced = handle_repo_sync(
+        &backend,
+        temp.path(),
+        crate::RepoSyncRequest {
+            private: None,
+            meta: request_meta_with_force(),
+        },
+        "sync",
+    )
+    .unwrap();
+    assert!(forced.response.members[0].url_resolution.is_none());
+    assert_eq!(
+        read_manifest(temp.path()).unwrap().members[0].remotes[0].url,
+        "https://github.com/o/r.git",
+        "--force records the configured form"
+    );
+
+    // A remote that names a different repository is synced as before.
+    backend
+        .add_remote(&temp.path().join("repos/app"), "upstream", "https://github.com/o/other.git")
+        .unwrap();
+    let other = handle_repo_sync(
+        &backend,
+        temp.path(),
+        crate::RepoSyncRequest {
+            private: None,
+            meta: request_meta(),
+        },
+        "sync",
+    )
+    .unwrap();
+    assert!(other.response.members[0].url_resolution.is_none());
+    assert_eq!(read_manifest(temp.path()).unwrap().members[0].remotes.len(), 2);
+}
