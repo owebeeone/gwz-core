@@ -186,8 +186,9 @@ where
         if request.target.kind == crate::MaterializeTargetKind::Branch {
             return handle_materialize_branch(backend, root, manifest, request, context);
         }
+        let scheme = resolve_url_scheme(Some(&root), requested_url_scheme(&request.meta))?;
         let (plans, rewrite_lock) =
-            prepare_materialize_execution(backend, &root, &manifest, &request)?;
+            prepare_materialize_execution(backend, &root, &manifest, &request, scheme)?;
         validate_materialize_identities(backend, &manifest, &plans, &[])?;
         let dry_run = request.meta.dry_run.unwrap_or(false);
         if dry_run {
@@ -220,12 +221,16 @@ where
                 skip_private_access: request.target.kind == crate::MaterializeTargetKind::Lock,
                 follow_branch_head,
                 policy: request.meta.policy.as_ref(),
+                url_scheme: scheme.scheme,
             },
             context,
             &emitter,
         );
         emitter.operation_finished();
-        response
+        let response = response?;
+        // Remember an explicitly requested scheme only once the members are in place.
+        record_workspace_url_scheme(&root, scheme, "materialize")?;
+        Ok(response)
     })();
     result
         .map_err(|error| super::publication::attach_transport_error(backend, error, &error_context))
@@ -240,6 +245,7 @@ fn prepare_materialize_execution<B>(
     root: &Path,
     manifest: &ManifestArtifact,
     request: &crate::MaterializeRequest,
+    scheme: EffectiveUrlScheme,
 ) -> ModelResult<(Vec<MaterializePlan>, bool)>
 where
     B: GitBackend,
@@ -278,6 +284,7 @@ where
         &target_lock,
         &selected,
         destructive_allowed,
+        scheme,
     )?;
     Ok((plans, rewrite_lock))
 }
@@ -289,6 +296,8 @@ struct MaterializeApplyOptions<'a> {
     // head. False for snapshot/tag: pin the recorded commit so the capture is reproducible.
     follow_branch_head: bool,
     policy: Option<&'a crate::OperationPolicy>,
+    /// The scheme in force, for the remedy hints on ssh failures.
+    url_scheme: crate::git::UrlScheme,
 }
 
 fn apply_materialize_plans<B>(
@@ -308,6 +317,7 @@ where
         skip_private_access,
         follow_branch_head,
         policy,
+        url_scheme,
     } = options;
     // F2: the fresh clones this op will create — rolled back on any mid-batch
     // failure (Q6 reject-partial) so no orphan repos are left behind.
@@ -365,7 +375,9 @@ where
                         }
                         return Ok(None);
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        return Err(with_member_context(error, member, plan.clone_url.as_deref(), url_scheme));
+                    }
                     Ok(_) => {}
                 }
                 if quiet_clone {
@@ -426,7 +438,8 @@ where
             let head = backend.head(&member_root)?;
             let status = backend.status(&member_root)?;
             let observed = resolved_member(member, &head, &status);
-            let response = materialized_response(member, &plan.state, &observed);
+            let response =
+                materialized_response(member, &plan.state, &observed, plan.url_resolution.clone());
             Ok(Some((plan.member_id.clone(), observed, response)))
         },
     );
@@ -518,7 +531,7 @@ where
         let head = backend.head(&member_root)?;
         let status = backend.status(&member_root)?;
         let observed = resolved_member(member, &head, &status);
-        responses.push(materialized_response(member, &observed, &observed));
+        responses.push(materialized_response(member, &observed, &observed, None));
         observed_states.push((member_id.clone(), observed));
     }
 
@@ -554,6 +567,11 @@ where
     let mut request = request;
     let start = invocation_start(start, &request.meta)?;
     request.url = resolve_invocation_git_source(&start, &request.url)?;
+    // No workspace exists yet, so only the request can name a scheme; the root
+    // URL is derived like a member URL and a refusal stops before any network.
+    let scheme = resolve_url_scheme(None, requested_url_scheme(&request.meta))?;
+    let root_resolution = resolve_root_url(&request.url, scheme)?;
+    request.url = root_resolution.effective_url.clone();
     let context = OperationRequest::CloneWorkspace(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
@@ -616,8 +634,15 @@ where
             .unwrap_or(0);
         let emitter = EventEmitter::new(&context, events, progress_interval);
         emitter.operation_started();
-        let response =
-            clone_workspace_with_emitter(backend, request, target_path, context, &emitter);
+        let response = clone_workspace_with_emitter(
+            backend,
+            request,
+            target_path,
+            context,
+            &emitter,
+            scheme,
+            &root_resolution,
+        );
         emitter.operation_finished();
         response
     })();
@@ -635,6 +660,8 @@ fn clone_workspace_with_emitter<B>(
     target_path: PathBuf,
     context: crate::operation::OperationContext,
     emitter: &EventEmitter<'_>,
+    scheme: EffectiveUrlScheme,
+    root_resolution: &crate::git::UrlResolution,
 ) -> ModelResult<crate::CloneWorkspaceResponse>
 where
     B: GitBackend + Sync,
@@ -643,9 +670,14 @@ where
     // Emit the root repository clone as a member-like lifecycle so consumers can render
     // the full one-shot clone operation without a separate event schema.
     emitter.member_started("workspace_root", &target_display);
-    backend.clone_repo_with_progress(&request.url, &target_path, &|progress| {
-        emitter.member_progress("workspace_root", &target_display, progress)
-    })?;
+    backend
+        .clone_repo_with_progress(&request.url, &target_path, &|progress| {
+            emitter.member_progress("workspace_root", &target_display, progress)
+        })
+        .map_err(|error| ModelError {
+            message: append_url_scheme_hint(error.message, &request.url, scheme.scheme),
+            ..error
+        })?;
     emitter.member_finished("workspace_root", &target_display);
 
     // Verify the cloned repository really is a GWZ workspace before mutating it.
@@ -680,10 +712,10 @@ where
     let manifest = artifact::read_manifest(&target_path)?;
     assert_workspace_id(&manifest, materialize.meta.workspace.as_ref())?;
     let (plans, rewrite_lock) =
-        prepare_materialize_execution(backend, &target_path, &manifest, &materialize)?;
+        prepare_materialize_execution(backend, &target_path, &manifest, &materialize, scheme)?;
     validate_materialize_identities(backend, &manifest, &plans, &["origin".into()])?;
     // Clone materializes the lock target: detached:false members land on their branch head.
-    let response = apply_materialize_plans(
+    let mut response = apply_materialize_plans(
         backend,
         &target_path,
         &manifest,
@@ -693,10 +725,20 @@ where
             skip_private_access: true,
             follow_branch_head: true,
             policy: materialize.meta.policy.as_ref(),
+            url_scheme: scheme.scheme,
         },
         context,
         emitter,
     )?;
+    // Remember an explicitly requested scheme in the new workspace, and say when the
+    // root itself was reached through a derived URL.
+    record_workspace_url_scheme(&target_path, scheme, "clone")?;
+    if root_resolution.derived {
+        response.response.meta.message = Some(format!(
+            "cloned the workspace root from {} (derived from {})",
+            root_resolution.effective_url, root_resolution.manifest_url
+        ));
+    }
     Ok(crate::CloneWorkspaceResponse {
         response: response.response,
     })
@@ -1161,6 +1203,7 @@ pub(crate) fn materialized_response(
     member: &ManifestMember,
     planned: &ResolvedMemberArtifact,
     observed: &ResolvedMemberArtifact,
+    url_resolution: Option<crate::MemberUrlResolution>,
 ) -> crate::MemberResponse {
     // F1: lock_match is computed from the observed commit vs the planned target,
     // never claimed unverified.
@@ -1181,8 +1224,28 @@ pub(crate) fn materialized_response(
         target_kind: Some(crate::TargetKind::Member),
         lock_match: Some(lock_match),
         lock_difference_reasons: None,
-        url_resolution: None,
+        url_resolution,
     }
+}
+
+/// Attributes a member clone failure to its member and appends the URL-scheme
+/// remedy when the failure is one the alternate scheme would sidestep.
+fn with_member_context(
+    mut error: ModelError,
+    member: &ManifestMember,
+    clone_url: Option<&str>,
+    url_scheme: crate::git::UrlScheme,
+) -> ModelError {
+    if error.member_id.is_none() {
+        error.member_id = Some(member.id.clone());
+    }
+    if error.member_path.is_none() {
+        error.member_path = Some(member.path.clone());
+    }
+    if let Some(url) = clone_url {
+        error.message = append_url_scheme_hint(std::mem::take(&mut error.message), url, url_scheme);
+    }
+    error
 }
 
 pub(crate) fn tag_error(error: ModelError) -> ModelError {
@@ -1219,19 +1282,25 @@ fn validate_materialize_identities<B: GitBackend>(
     plans: &[MaterializePlan],
     previous_names: &[String],
 ) -> ModelResult<()> {
+    // Identity checks look at the URL that will actually be cloned, so an SSH
+    // identity override for a remote that resolves to https is refused up front.
     let remotes = plans
         .iter()
-        .filter(|plan| plan.clone_url.is_some())
-        .map(|plan| materialize_clone_remote(manifest, &plan.member_id))
+        .filter_map(|plan| {
+            plan.clone_url.as_deref().map(|url| {
+                materialize_clone_remote(manifest, &plan.member_id)
+                    .map(|remote| (remote.name.clone(), url.to_owned()))
+            })
+        })
         .collect::<ModelResult<Vec<_>>>()?;
     let names = previous_names
         .iter()
         .cloned()
-        .chain(remotes.iter().map(|remote| remote.name.clone()))
+        .chain(remotes.iter().map(|(name, _)| name.clone()))
         .collect::<Vec<_>>();
     backend.validate_transport_remotes(&names)?;
-    for remote in remotes {
-        backend.validate_url_identity(None, &remote.name, &remote.url)?;
+    for (name, url) in remotes {
+        backend.validate_url_identity(None, &name, &url)?;
     }
     Ok(())
 }

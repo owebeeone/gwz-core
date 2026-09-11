@@ -788,3 +788,4 @@ pub(crate) struct RemoteFixture {
 }
 
 mod private_members;
+mod url_scheme;

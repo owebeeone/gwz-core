@@ -8,13 +8,13 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-struct RefusingServer {
-    url: String,
+pub(super) struct RefusingServer {
+    pub(super) url: String,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl RefusingServer {
-    fn new(status: u16) -> Self {
+    pub(super) fn new(status: u16) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/private.git", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();

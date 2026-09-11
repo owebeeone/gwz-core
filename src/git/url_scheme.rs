@@ -176,6 +176,11 @@ pub fn scheme_only_difference(manifest_url: &str, observed_url: &str) -> bool {
         .is_ok_and(|resolution| resolution.effective_url == observed_url)
 }
 
+/// True for the two ssh forms, scp-like and `ssh://`, on any host.
+pub fn uses_ssh(url: &str) -> bool {
+    parse_git_url(url).is_some_and(|parsed| matches!(parsed.form, Form::Scp | Form::Ssh))
+}
+
 /// The two derivable forms: [`UrlScheme`] without its no-op `Manifest`.
 #[derive(Clone, Copy)]
 enum Target {

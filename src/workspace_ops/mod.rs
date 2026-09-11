@@ -30,6 +30,7 @@ mod target_listing;
 mod target_selection;
 #[cfg(test)]
 mod tests;
+mod url_scheme_state;
 mod workspace_bootstrap;
 
 pub(crate) use branch_switch::*;
@@ -83,3 +84,4 @@ pub(crate) use sync_workspace_boundary::*;
 pub use target_listing::resolve_forall_targets;
 pub(crate) use target_selection::*;
 pub use workspace_bootstrap::*;
+pub(crate) use url_scheme_state::*;
