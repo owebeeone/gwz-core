@@ -216,13 +216,19 @@ fn candidate_hashes_are_exact(publication: &PublicationProgress) -> bool {
     let Some(marker_path) = publication.candidate_marker_path.as_deref() else {
         return false;
     };
-    let mut expected = [
+    let mut expected = vec![
         (
             crate::artifact::LOCK_PATH,
             digest(candidate.lock_yaml.as_bytes()),
         ),
         (marker_path, digest(candidate.marker_yaml.as_bytes())),
     ];
+    if let Some(integrity) = &candidate.conf_integrity {
+        expected.push((
+            crate::artifact::CONF_INTEGRITY_MARKER_PATH,
+            digest(integrity.yaml.as_bytes()),
+        ));
+    }
     expected.sort_by(|left, right| left.0.cmp(right.0));
     publication.candidate_hashes.len() == expected.len()
         && publication

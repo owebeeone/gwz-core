@@ -86,7 +86,7 @@ pub(in crate::workspace_ops::merge) fn candidate_files_view(
     view: super::status::MergeStatusRecordView<'_>,
 ) -> ModelResult<Vec<GitCandidateFile>> {
     let candidate = candidate_view(view)?;
-    Ok(vec![
+    let mut files = vec![
         GitCandidateFile {
             path: artifact::LOCK_PATH.to_owned(),
             bytes: candidate.lock_yaml.as_bytes().to_vec(),
@@ -98,7 +98,9 @@ pub(in crate::workspace_ops::merge) fn candidate_files_view(
                 .ok_or_else(|| unreadable("candidate marker path is missing"))?,
             bytes: candidate.marker_yaml.as_bytes().to_vec(),
         },
-    ])
+    ];
+    super::integrity::append_candidate(candidate, &mut files);
+    Ok(files)
 }
 
 pub(in crate::workspace_ops::merge) fn composition_message_view(

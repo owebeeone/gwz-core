@@ -154,15 +154,27 @@ pub(in crate::workspace_ops::merge) fn execute_v1_evidence_rollback<B: GitBacken
             candidate.lock_yaml.as_bytes(),
             candidate.baseline_lock_yaml.as_bytes(),
         ),
-        EvidenceRollbackStepV1::Marker => artifact_facts::remove_exact(
-            filesystem,
-            root,
-            marker_path_v1(record)?,
-            candidate.marker_yaml.as_bytes(),
-        ),
-        EvidenceRollbackStepV1::Index => backend
-            .stage_paths(root, &[artifact::LOCK_PATH, marker_path_v1(record)?])
-            .map(|_| ()),
+        EvidenceRollbackStepV1::Marker => {
+            super::super::integrity::restore(filesystem, root, candidate)?;
+            artifact_facts::remove_exact(
+                filesystem,
+                root,
+                marker_path_v1(record)?,
+                candidate.marker_yaml.as_bytes(),
+            )
+        }
+        EvidenceRollbackStepV1::Index => {
+            let files = super::super::acceptance::v1_candidate_files(record)?;
+            backend
+                .stage_paths(
+                    root,
+                    &files
+                        .iter()
+                        .map(|file| file.path.as_str())
+                        .collect::<Vec<_>>(),
+                )
+                .map(|_| ())
+        }
         EvidenceRollbackStepV1::Complete => Err(root_error(
             "complete evidence rollback has no physical mutation",
         )),
@@ -271,7 +283,9 @@ fn file_states(
     pending: Option<EvidenceRollbackStepV1>,
 ) -> ModelResult<EvidenceFileStates> {
     let candidate = candidate_v1(record)?;
-    Ok(EvidenceFileStates {
+    let (integrity_baseline, integrity_published) =
+        super::super::integrity::states(filesystem, root, candidate)?;
+    let mut states = EvidenceFileStates {
         boundary: if pending == Some(EvidenceRollbackStepV1::Boundary) {
             transition_file(artifact_facts::classify_write(
                 filesystem,
@@ -321,7 +335,11 @@ fn file_states(
         },
         boundary_noop: candidate.boundary_text == candidate.baseline_boundary_text,
         lock_noop: candidate.lock_yaml == candidate.baseline_lock_yaml,
-    })
+    };
+    if !integrity_baseline && (!integrity_published || states.marker == FileState::Baseline) {
+        states.marker = FileState::Other;
+    }
+    Ok(states)
 }
 
 fn transition_file(value: artifact_facts::RegularFileTransition) -> FileState {
@@ -370,14 +388,13 @@ fn index_state<B: GitBackend>(
         &crate::workspace_ops::merge::acceptance::v1_candidate_files(record)?,
         &[],
     )?;
-    let after = backend.index_entries_match_candidate_files(
-        root,
-        &[GitCandidateFile {
-            path: artifact::LOCK_PATH.into(),
-            bytes: candidate.baseline_lock_yaml.as_bytes().to_vec(),
-        }],
-        std::slice::from_ref(marker),
-    )?;
+    let mut baseline_files = vec![GitCandidateFile {
+        path: artifact::LOCK_PATH.into(),
+        bytes: candidate.baseline_lock_yaml.as_bytes().to_vec(),
+    }];
+    let mut absent = vec![marker.clone()];
+    super::super::integrity::append_baseline(candidate, &mut baseline_files, &mut absent);
+    let after = backend.index_entries_match_candidate_files(root, &baseline_files, &absent)?;
     Ok(match (before, after) {
         (true, false) => FileState::Candidate,
         (false, true) => FileState::Baseline,

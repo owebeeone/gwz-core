@@ -212,6 +212,15 @@ pub(in crate::workspace_ops::merge) fn validate_candidate_semantics_for_v1(
         .accepted_workspace
         .as_ref()
         .ok_or_else(|| candidate_error(record))?;
+    if let Some(integrity) = &candidate.conf_integrity
+        && integrity.yaml
+            != crate::artifact::conf_integrity_for_bytes(
+                accepted.metadata_base.manifest_exact_yaml.as_bytes(),
+                candidate.lock_yaml.as_bytes(),
+            )?
+    {
+        return Err(candidate_error(record));
+    }
     let root_before = match &accepted.root.base {
         AcceptedRootBaseV1::BornAttached { commit, .. }
         | AcceptedRootBaseV1::BornDetached { commit } => Some(commit.as_str()),

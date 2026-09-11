@@ -2,6 +2,28 @@
 
 Status: accepted
 
+## Configuration integrity recovery (2026-09-11)
+
+`gwz init --update --commit` commits the accepted configuration and managed
+bootstrap output in the root repository. `--force` retains its existing meaning:
+explicitly accept readable edited configuration and overwrite edited managed
+instructions. Without it, hand-edit detection still applies. The commit includes
+the manifest, existing lock, integrity marker, managed instructions and any
+agent-reference/settings files changed by this update. It must exclude unrelated
+staged work, preserve its index and worktree state, and avoid empty commits.
+Dry runs neither stage nor commit. Output identifies the committed paths and ID.
+
+Local clone readiness requires committed manifest/lock configuration and a born
+root, but a valid uncommitted integrity marker is admitted and preserved verbatim,
+including its index state. Invalid uncommitted marker state refuses before allocation.
+Merge composition publishes the integrity marker with the lock in the same commit;
+interruption and rollback retain exact ownership checks for that generated file.
+New publication candidates capture an optional integrity baseline and derived
+output. Existing candidates without that field keep their original file set and
+recovery semantics. Initial staged, verifying markers in unborn roots are captured
+and restored exactly on rollback. Recovery commits honor Git clean filters while
+the integrity marker continues to describe the actual configuration on disk.
+
 ## Resolved-path diagnostics (2026-09-10)
 
 Rejected repository operands report the supplied spelling, resolved execution

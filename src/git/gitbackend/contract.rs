@@ -786,6 +786,17 @@ pub trait GitRepository {
     ) -> ModelResult<GitScopedCommitResult> {
         unsupported_backend("commit_gwz_paths_checked")
     }
+    /// Commit staged configuration and named bootstrap outputs only. Uses an
+    /// isolated index, preserves unrelated staged work, and returns None for no change.
+    fn commit_bootstrap_paths_checked(
+        &self,
+        _root: &Path,
+        _expected_head: Option<&str>,
+        _paths: &[&str],
+        _message: &str,
+    ) -> ModelResult<Option<GitScopedCommitResult>> {
+        unsupported_backend("commit_bootstrap_paths_checked")
+    }
     /// Verify and recover an already-published scoped commit from its exact
     /// parent, message, candidate paths, and candidate bytes.
     fn verify_gwz_paths_commit(

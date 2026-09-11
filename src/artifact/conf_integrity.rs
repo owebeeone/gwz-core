@@ -218,6 +218,24 @@ pub(crate) fn canonical_conf_integrity_marker_in(
     if files.is_empty() {
         return Ok(None);
     }
+    render_marker(files).map(Some)
+}
+
+/// Derive a marker from frozen publication bytes rather than mutable disk state.
+pub(crate) fn conf_integrity_for_bytes(manifest: &[u8], lock: &[u8]) -> ModelResult<String> {
+    render_marker(BTreeMap::from([
+        (
+            GUARDED_CONF_PATHS[0].into(),
+            format!("sha256:{}", sha256_hex(manifest)),
+        ),
+        (
+            GUARDED_CONF_PATHS[1].into(),
+            format!("sha256:{}", sha256_hex(lock)),
+        ),
+    ]))
+}
+
+fn render_marker(files: BTreeMap<String, String>) -> ModelResult<String> {
     let marker = ConfIntegrityMarker {
         schema: CONF_INTEGRITY_SCHEMA.to_owned(),
         files,
@@ -228,7 +246,7 @@ pub(crate) fn canonical_conf_integrity_marker_in(
             format!("failed to serialize the conf-integrity marker: {err}"),
         )
     })?;
-    Ok(Some(format!("{MARKER_BANNER}{yaml}")))
+    Ok(format!("{MARKER_BANNER}{yaml}"))
 }
 
 fn read_marker_in(
@@ -277,7 +295,8 @@ fn hand_edit_refusal(paths: &[String]) -> ModelError {
              `gwz repo <add|clone|create|detach|attach|sync>`; there is no rename or move verb, so \
              relocate a member with `gwz repo detach` and then re-add it at the new path. \
              Recovery: revert the hand edit (`git checkout -- {WORKSPACE_DIR}`), or accept the \
-             current on-disk state with `gwz init --update --force`.",
+             current on-disk state with `gwz init --update --force`. Add `--commit` to record \
+             the accepted configuration and updated bootstrap files without including unrelated staged work.",
             paths.join(", "),
         ),
     )

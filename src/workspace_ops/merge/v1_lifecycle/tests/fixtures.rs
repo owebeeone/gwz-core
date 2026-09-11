@@ -273,6 +273,7 @@ pub(in crate::workspace_ops::merge::v1_lifecycle) fn candidate_payload(
             marker_id: marker_id.into(),
             root_branch: "main".into(),
             actor_id: "agent_test".into(),
+            conf_integrity: None,
             baseline_lock_yaml: accepted.metadata_base.lock_exact_yaml,
             lock_yaml: accepted.lock.exact_yaml.clone(),
             marker_sha256: digest(&marker),

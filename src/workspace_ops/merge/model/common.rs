@@ -184,10 +184,20 @@ pub(crate) struct PublicationProgress {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ConfIntegrityPublication {
+    pub baseline: Option<Vec<u8>>,
+    pub yaml: String,
+    #[serde(default, flatten)]
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PublicationCandidate {
     pub marker_id: String,
     pub root_branch: String,
     pub actor_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conf_integrity: Option<ConfIntegrityPublication>,
     pub baseline_lock_yaml: String,
     pub lock_yaml: String,
     pub marker_yaml: String,

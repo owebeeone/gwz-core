@@ -222,7 +222,7 @@ pub(super) fn action_member(action: &PhysicalActionKind) -> Option<&str> {
 }
 
 /// `VerifyingPublication -> Complete` is v0's `verify_publication` returning
-/// true (`finalize.rs:297-317`): the one commit that earns the four artifacts.
+/// true (`finalize.rs:297-317`): the commit that earns the publication artifact reports.
 fn publication_became_verified(
     before: &MergeOperationRecordV1,
     after: &MergeOperationRecordV1,
@@ -247,6 +247,13 @@ fn emit_publication_artifacts(emitter: &EventEmitter<'_>, record: &MergeOperatio
     emitter.artifact_written(marker);
     emitter.artifact_written(crate::artifact::LOCK_PATH);
     emitter.artifact_written(".git/info/exclude");
+    if publication
+        .candidate
+        .as_ref()
+        .is_some_and(|candidate| candidate.conf_integrity.is_some())
+    {
+        emitter.artifact_written(crate::artifact::CONF_INTEGRITY_MARKER_PATH);
+    }
 }
 
 fn open_record_path(merge_id: &str) -> String {

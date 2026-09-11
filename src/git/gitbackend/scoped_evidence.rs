@@ -14,7 +14,96 @@ pub(super) fn commit_gwz_paths_checked(
     message: &str,
 ) -> ModelResult<GitScopedCommitResult> {
     let candidates = validate_scoped_candidates(candidate_files, message)?;
+    commit_candidates(
+        root,
+        expected_head,
+        candidates,
+        message,
+        true,
+        "gwz merge composition",
+    )?
+    .ok_or_else(|| ModelError::new(ErrorCode::InternalError, "missing scoped commit"))
+}
+
+pub(super) fn commit_bootstrap_paths_checked(
+    _backend: &Git2Backend,
+    root: &Path,
+    expected_head: Option<&str>,
+    paths: &[&str],
+    message: &str,
+) -> ModelResult<Option<GitScopedCommitResult>> {
+    const PATHS: &[&str] = &[
+        "gwz.conf/gwz.yml",
+        "gwz.conf/gwz.lock.yml",
+        "gwz.conf/markers/conf-integrity.yml",
+        "AGENTS_GWZ.md",
+        "AGENTS.md",
+        ".claude/settings.json",
+    ];
+    let mut seen = BTreeSet::new();
+    if paths.is_empty()
+        || message.contains('\0')
+        || paths
+            .iter()
+            .any(|path| !PATHS.contains(path) || !seen.insert(*path))
+    {
+        return Err(ModelError::new(
+            ErrorCode::InvalidRequest,
+            "bootstrap commit requires unique managed bootstrap paths",
+        ));
+    }
     let repo = open_repo(root)?;
+    let index = repo.index().map_err(git_error)?;
+    if repo.state() != git2::RepositoryState::Clean || index.has_conflicts() {
+        return Err(recovery_drift(
+            "bootstrap commit requires a resolved index and no native Git operation",
+        ));
+    }
+    let mut files = Vec::new();
+    for path in paths {
+        let entry = index
+            .get_path(Path::new(path), 0)
+            .ok_or_else(|| recovery_drift(format!("bootstrap path is not staged: {path}")))?;
+        if entry.mode != 0o100644 || entry.flags & 0x8000 != 0 || entry.flags_extended != 0 {
+            return Err(recovery_drift(format!(
+                "bootstrap path is not an ordinary unsuppressed file: {path}"
+            )));
+        }
+        let blob = repo.find_blob(entry.id).map_err(git_error)?;
+        files.push(GitCandidateFile {
+            path: (*path).into(),
+            bytes: blob.content().to_vec(),
+        });
+    }
+    let mut candidates = files.iter().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.path.cmp(&right.path));
+    commit_candidates(
+        root,
+        expected_head,
+        candidates,
+        message,
+        false,
+        "gwz init --update --commit",
+    )
+}
+
+fn commit_candidates(
+    root: &Path,
+    expected_head: Option<&str>,
+    candidates: Vec<&GitCandidateFile>,
+    message: &str,
+    allow_empty: bool,
+    reflog_message: &str,
+) -> ModelResult<Option<GitScopedCommitResult>> {
+    let repo = open_repo(root)?;
+    if !allow_empty
+        && (repo.state() != git2::RepositoryState::Clean
+            || repo.index().map_err(git_error)?.has_conflicts())
+    {
+        return Err(recovery_drift(
+            "scoped commit requires a resolved root outside a native Git operation",
+        ));
+    }
     let ref_name = scoped_attached_head_ref(&repo)?;
     let expected = expected_head
         .map(|value| parse_existing_commit(&repo, value))
@@ -70,6 +159,14 @@ pub(super) fn commit_gwz_paths_checked(
     let tree = repo.find_tree(tree_oid).map_err(git_error)?;
     verify_scoped_candidate_tree(&repo, parent_tree.as_ref(), &tree, &candidates)?;
 
+    if !allow_empty
+        && parent_tree
+            .as_ref()
+            .is_some_and(|parent| parent.id() == tree_oid)
+    {
+        return Ok(None);
+    }
+
     run_before_scoped_commit_ref_lock();
     let mut transaction = repo.transaction().map_err(git_error)?;
     transaction.lock_ref("HEAD").map_err(git_error)?;
@@ -88,21 +185,16 @@ pub(super) fn commit_gwz_paths_checked(
         .map_err(git_error)?;
     verify_scoped_commit_object(&repo, commit_oid, expected, tree_oid, message, &signature)?;
     transaction
-        .set_target(
-            &ref_name,
-            commit_oid,
-            Some(&signature),
-            "gwz merge composition",
-        )
+        .set_target(&ref_name, commit_oid, Some(&signature), reflog_message)
         .map_err(git_error)?;
     transaction.commit().map_err(git_error)?;
     verify_scoped_commit_publication(&repo, &ref_name, commit_oid, tree_oid, &candidates)?;
 
-    Ok(GitScopedCommitResult {
+    Ok(Some(GitScopedCommitResult {
         commit: commit_oid.to_string(),
         tree: tree_oid.to_string(),
         candidate_hashes,
-    })
+    }))
 }
 
 pub(super) fn verify_gwz_paths_commit(

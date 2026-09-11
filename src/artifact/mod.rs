@@ -19,7 +19,8 @@ pub use conf_integrity::{
     refresh_conf_integrity_marker,
 };
 pub(crate) use conf_integrity::{
-    canonical_conf_integrity_marker, inspect_conf_integrity_in, refresh_conf_integrity_marker_in,
+    canonical_conf_integrity_marker, conf_integrity_for_bytes, inspect_conf_integrity_in,
+    refresh_conf_integrity_marker_in,
 };
 pub use merge_marker::{
     MarkerMergeArtifact, MarkerMergeParticipantArtifact, MarkerMergeTargetKind,
@@ -553,7 +554,15 @@ pub(crate) fn write_atomic_in(
     path: &Path,
     contents: impl AsRef<str>,
 ) -> ModelResult<()> {
-    let staged = stage_durably(filesystem, path, contents.as_ref())?;
+    write_atomic_bytes_in(filesystem, path, contents.as_ref().as_bytes())
+}
+
+pub(crate) fn write_atomic_bytes_in(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    contents: &[u8],
+) -> ModelResult<()> {
+    let staged = stage_durably(filesystem, path, contents)?;
     publish_staged(filesystem, &staged, path)
 }
 
@@ -579,8 +588,9 @@ pub(crate) fn write_manifest_and_lock_in(
 ) -> ModelResult<()> {
     let manifest_path = root.join(WORKSPACE_MANIFEST);
     let lock_path = root.join(LOCK_PATH);
-    let manifest_staged = stage_durably(filesystem, &manifest_path, &manifest.to_yaml()?)?;
-    let lock_staged = stage_durably(filesystem, &lock_path, &lock.to_yaml()?)?;
+    let manifest_staged =
+        stage_durably(filesystem, &manifest_path, manifest.to_yaml()?.as_bytes())?;
+    let lock_staged = stage_durably(filesystem, &lock_path, lock.to_yaml()?.as_bytes())?;
     publish_staged(filesystem, &manifest_staged, &manifest_path)?;
     publish_staged(filesystem, &lock_staged, &lock_path)?;
     // One refresh after both are published: the marker never records a half-written pair.
@@ -589,7 +599,11 @@ pub(crate) fn write_manifest_and_lock_in(
 
 /// Write `contents` to a unique temp beside `path` and fsync it, returning the staged temp
 /// path. On success the bytes are durably on disk, ready for `publish_staged`.
-fn stage_durably(filesystem: &dyn FileSystem, path: &Path, contents: &str) -> ModelResult<PathBuf> {
+fn stage_durably(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    contents: &[u8],
+) -> ModelResult<PathBuf> {
     if let Some(parent) = path.parent() {
         filesystem.create_directories(parent).map_err(io_error)?;
     }
@@ -599,9 +613,7 @@ fn stage_durably(filesystem: &dyn FileSystem, path: &Path, contents: &str) -> Mo
         // writable handle we wrote through — do NOT reopen read-only, because Windows
         // rejects FlushFileBuffers on a read-only handle with ERROR_ACCESS_DENIED.
         let file = filesystem.create_file(&tmp_path).map_err(io_error)?;
-        filesystem
-            .write_all(&file, contents.as_bytes())
-            .map_err(io_error)?;
+        filesystem.write_all(&file, contents).map_err(io_error)?;
         filesystem.sync_file(&file).map_err(io_error)
     };
     if let Err(err) = write() {

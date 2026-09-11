@@ -125,6 +125,7 @@ impl GitRepository for GitTestRepository {
     forward!(execute_root_preservation_step_checked(_root: &Path, _spec: &GitRootPreservationSpec, _step: &GitRootPreservationPhysicalStep, _guard: &GitRootPreservationGuard,) -> ModelResult<GitCheckedPreservationMutation>);
     forward!(index_matches_candidate_files(_path: &Path, _expected_files: &[GitCandidateFile], _absent_paths: &[String],) -> ModelResult<bool>);
     forward!(index_entries_match_candidate_files(_path: &Path, _expected_files: &[GitCandidateFile], _absent_paths: &[String],) -> ModelResult<bool>);
+    forward!(commit_bootstrap_paths_checked(_root: &Path, _expected_head: Option<&str>, _paths: &[&str], _message: &str,) -> ModelResult<Option<GitScopedCommitResult>>);
     forward!(commit_gwz_paths_checked(_root: &Path, _expected_head: Option<&str>, _candidate_files: &[GitCandidateFile], _message: &str,) -> ModelResult<GitScopedCommitResult>);
     forward!(verify_gwz_paths_commit(_root: &Path, _commit: &str, _expected_parent: Option<&str>, _candidate_files: &[GitCandidateFile], _message: &str,) -> ModelResult<GitScopedCommitResult>);
     forward!(rollback_gwz_paths_commit_checked(_root: &Path, _branch: &str, _commit: &str, _expected_parent: Option<&str>, _candidate_files: &[GitCandidateFile], _message: &str,) -> ModelResult<()>);

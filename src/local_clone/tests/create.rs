@@ -21,6 +21,8 @@ use crate::model::ErrorCode;
 use crate::operation::NullSink;
 use crate::workspace_ops::{handle_clone_local_workspace, open_merge_probe};
 
+mod integrity;
+
 fn clone_request(name: &str) -> crate::CloneLocalWorkspaceRequest {
     crate::CloneLocalWorkspaceRequest {
         meta: meta("req-clone-local"),

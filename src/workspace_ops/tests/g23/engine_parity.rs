@@ -47,6 +47,9 @@ fn artifact_class(path: &str) -> String {
     if path.starts_with("git:@root/") {
         return "git:@root/<commit>".to_owned();
     }
+    if path == crate::artifact::CONF_INTEGRITY_MARKER_PATH {
+        return path.to_owned();
+    }
     if path.starts_with(&format!("{}/", crate::artifact::MARKER_DIR)) {
         return format!("{}/<marker>.yaml", crate::artifact::MARKER_DIR);
     }
@@ -357,8 +360,8 @@ fn an_ordinary_and_a_no_ff_merge_report_the_same_shape() {
     assert!(row.live_commit.is_some(), "R-7: `live_commit` is decorated");
     assert_eq!(
         publication_artifacts(&no_ff_events).len(),
-        4,
-        "E-6: the four publication artifacts, in the documented order"
+        5,
+        "E-6: the publication artifacts including configuration integrity, in the documented order"
     );
     assert_eq!(
         no_ff_events
@@ -370,7 +373,7 @@ fn an_ordinary_and_a_no_ff_merge_report_the_same_shape() {
     );
 }
 
-/// The four composition-evidence artifacts, in stream order.
+/// Composition-evidence artifacts, including configuration integrity, in stream order.
 /// `gwz-cli/docs/MachineOutput.md:396-406` pins both the set and the order.
 fn publication_artifacts(shapes: &[EventShape]) -> Vec<String> {
     let expected = [
@@ -378,6 +381,7 @@ fn publication_artifacts(shapes: &[EventShape]) -> Vec<String> {
         &format!("{}/<marker>.yaml", crate::artifact::MARKER_DIR),
         crate::artifact::LOCK_PATH,
         ".git/info/exclude",
+        crate::artifact::CONF_INTEGRITY_MARKER_PATH,
     ]
     .map(str::to_owned);
     let found = shapes

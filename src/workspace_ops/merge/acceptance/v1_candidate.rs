@@ -8,8 +8,11 @@ use crate::artifact::{
 use crate::git::GitCandidateFile;
 use crate::git::GitHeadState;
 use crate::model::{ErrorCode, ModelError, ModelResult};
-#[cfg(test)]
-use crate::workspace_ops::merge::PublicationProgress;
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        use crate::workspace_ops::merge::PublicationProgress;
+    }
+}
 use crate::workspace_ops::merge::marker::{
     marker_merge_from_v1_acceptance, selected_v1_result_changed,
 };
@@ -17,6 +20,7 @@ use crate::workspace_ops::merge::model::v1::{AcceptedRootBaseV1, MergeOperationR
 use crate::workspace_ops::merge::{OperationState, PublicationCandidate, PublicationStep};
 
 pub(in crate::workspace_ops::merge) struct V1CandidateBuildInput<'a> {
+    pub(in crate::workspace_ops::merge) baseline_conf_integrity: Option<Vec<u8>>,
     pub(in crate::workspace_ops::merge) marker_id: &'a str,
     pub(in crate::workspace_ops::merge) actor_id: &'a str,
     pub(in crate::workspace_ops::merge) root_head: &'a GitHeadState,
@@ -105,6 +109,14 @@ pub(in crate::workspace_ops::merge) fn build_v1_candidate(
         marker_id: input.marker_id.into(),
         root_branch: root_branch.into(),
         actor_id: input.actor_id.into(),
+        conf_integrity: Some(crate::workspace_ops::merge::ConfIntegrityPublication {
+            baseline: input.baseline_conf_integrity,
+            extensions: BTreeMap::new(),
+            yaml: crate::artifact::conf_integrity_for_bytes(
+                accepted.metadata_base.manifest_exact_yaml.as_bytes(),
+                accepted.lock.exact_yaml.as_bytes(),
+            )?,
+        }),
         baseline_lock_yaml: accepted.metadata_base.lock_exact_yaml.clone(),
         lock_yaml: accepted.lock.exact_yaml.clone(),
         marker_sha256: digest(&marker_yaml),
@@ -172,7 +184,7 @@ pub(in crate::workspace_ops::merge) fn candidate_files(
         .candidate_marker_path
         .as_ref()
         .ok_or_else(|| candidate_error(record, "candidate marker path is missing"))?;
-    Ok(vec![
+    let mut files = vec![
         GitCandidateFile {
             path: crate::artifact::LOCK_PATH.into(),
             bytes: candidate.lock_yaml.as_bytes().to_vec(),
@@ -181,7 +193,9 @@ pub(in crate::workspace_ops::merge) fn candidate_files(
             path: marker_path.clone(),
             bytes: candidate.marker_yaml.as_bytes().to_vec(),
         },
-    ])
+    ];
+    super::super::integrity::append_candidate(candidate, &mut files);
+    Ok(files)
 }
 
 pub(in crate::workspace_ops::merge) fn composition_message(
@@ -253,6 +267,7 @@ mod tests {
         let built = build_v1_candidate(
             &record,
             V1CandidateBuildInput {
+                baseline_conf_integrity: None,
                 marker_id: "01987b0c-2f75-7c4a-9a32-8fd22f7d7c91",
                 actor_id: "agent_test",
                 root_head: &root_head,

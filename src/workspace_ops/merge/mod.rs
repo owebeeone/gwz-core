@@ -1,6 +1,7 @@
 mod acceptance;
 mod gc;
 mod integration;
+mod integrity;
 pub(crate) mod marker;
 mod model;
 mod open_record;

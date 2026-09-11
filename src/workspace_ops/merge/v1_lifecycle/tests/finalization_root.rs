@@ -167,7 +167,13 @@ fn unborn_publication_uses_the_exact_checked_first_commit_candidate() {
     assert_eq!(record.state, OperationState::Completed);
     let publication = record.publication.as_ref().unwrap();
     let composition = publication.composition_commit.as_ref().unwrap();
-    assert_eq!(publication.candidate_hashes.len(), 2);
+    assert_eq!(publication.candidate_hashes.len(), 3);
+    assert!(
+        publication
+            .candidate_hashes
+            .iter()
+            .any(|entry| entry.path == crate::artifact::CONF_INTEGRITY_MARKER_PATH)
+    );
     backend
         .verify_gwz_paths_commit(
             &root.path,
@@ -187,6 +193,39 @@ fn unborn_publication_uses_the_exact_checked_first_commit_candidate() {
             .unwrap()
             .parent_count(),
         0
+    );
+}
+
+#[test]
+fn unborn_publication_accepts_the_valid_initially_staged_integrity_marker() {
+    let (root, backend, model, _) = unborn_fixture("unborn-enrolled-marker", true);
+    crate::artifact::refresh_conf_integrity_marker(&root.path).unwrap();
+    backend
+        .stage_paths(&root.path, &[crate::artifact::CONF_INTEGRITY_MARKER_PATH])
+        .unwrap();
+    seed_open(&root, &model);
+    let context = context();
+    let mut runtime = RecordingRuntime::new(&backend, &context);
+    let response = super::super::service::run_test(
+        &super::super::store::CheckedV1Store::default(),
+        &root.path,
+        &model.merge_id,
+        super::super::authority::V1LifecycleRequest::Continue,
+        &mut runtime,
+    )
+    .unwrap();
+    assert_eq!(response.current().record().state, OperationState::Completed);
+    assert_eq!(
+        crate::artifact::inspect_conf_integrity(&root.path),
+        crate::artifact::ConfIntegrityVerdict::Verified
+    );
+    assert!(
+        !backend
+            .status(&root.path)
+            .unwrap()
+            .files
+            .iter()
+            .any(|file| file.path == crate::artifact::CONF_INTEGRITY_MARKER_PATH)
     );
 }
 

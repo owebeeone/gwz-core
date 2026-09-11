@@ -11,7 +11,30 @@ use claude_settings::{CLAUDE_SETTINGS_PATH, ensure_claude_settings_in};
 pub(crate) use conf_gate::{assert_conf_unmodified_for, reconcile_authority};
 
 mod claude_settings;
+mod commit;
 mod conf_gate;
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod commit_tests;
+    }
+}
+
+/// Refresh bootstrap files, optionally committing the accepted configuration.
+pub fn handle_update_workspace_bootstrap_with_commit<B>(
+    backend: &B,
+    start: &Path,
+    meta: crate::RequestMeta,
+    commit: bool,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::ResponseEnvelope>
+where
+    B: GitBackend + MergeAuthorityBackend,
+{
+    let services = crate::operation_context::OperationServices::for_merge(backend);
+    let start = invocation_start(start, &meta)?;
+    update_with_commit_in(&services, backend, &start, meta, commit, operation_id)
+}
 
 pub const AGENTS_GWZ_PATH: &str = "AGENTS_GWZ.md";
 pub const AGENTS_PATH: &str = "AGENTS.md";
@@ -70,6 +93,17 @@ pub(crate) fn handle_update_workspace_bootstrap_in<B>(
 where
     B: GitBackend,
 {
+    update_with_commit_in(services, backend, start, meta, false, operation_id)
+}
+
+fn update_with_commit_in<B: GitBackend>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &Path,
+    meta: crate::RequestMeta,
+    commit: bool,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::ResponseEnvelope> {
     let context =
         OperationContext::from_meta(operation_id.into(), ActionKind::InitFromSources, &meta)?;
     let (_guard, root) = guarded_workspace_root_for_request_in(
@@ -81,6 +115,16 @@ where
     )?;
     let dry_run = meta.dry_run.unwrap_or(false);
     let force = force_bootstrap_overwrite(&meta);
+    let commit_head = if commit {
+        Some(commit::preflight(backend, &root)?)
+    } else {
+        None
+    };
+    let before = if commit {
+        commit::optional_outputs(services.filesystem(), &root)?
+    } else {
+        Vec::new()
+    };
     // `--force` is the single sanctioned way to accept a hand-edited gwz.conf: it reads
     // past the integrity gate and records the current on-disk state as the new baseline.
     //
@@ -118,6 +162,25 @@ where
             "accepted the current on-disk {} state as the gwz-written baseline",
             crate::workspace::WORKSPACE_DIR
         ));
+    }
+    if let Some(head) = commit_head {
+        if dry_run {
+            outcome.notes.push("would commit accepted configuration and updated bootstrap files; unrelated staged work is preserved".into());
+        } else {
+            let note = commit::publish(
+                services.filesystem(),
+                backend,
+                &root,
+                head.as_deref(),
+                &before,
+            )?;
+            if note.is_some() {
+                outcome.status = BootstrapUpdateStatus::Updated;
+            }
+            outcome.notes.push(
+                note.unwrap_or_else(|| "no configuration or bootstrap changes to commit".into()),
+            );
+        }
     }
     let mut response = response_envelope(context, outcome.status.aggregate_status(), Vec::new());
     response.meta.message = Some(outcome.message());

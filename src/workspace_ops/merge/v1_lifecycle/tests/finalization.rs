@@ -11,6 +11,8 @@ use crate::workspace_ops::merge::{
 };
 use crate::workspace_ops::tests::{TempDir, commit_file};
 
+mod integrity_tests;
+
 #[test]
 fn concrete_finalizer_freezes_acceptance_and_publishes_exact_candidate() {
     let (root, backend, model) = fixture("merge-v1-finalization-happy", true);
@@ -38,6 +40,11 @@ fn concrete_finalizer_freezes_acceptance_and_publishes_exact_candidate() {
     });
 
     assert_eq!(response.current().record().state, OperationState::Completed);
+    assert_eq!(
+        crate::artifact::inspect_conf_integrity(&root.path),
+        crate::artifact::ConfIntegrityVerdict::Verified,
+        "composition must leave its configuration marker current"
+    );
     let record = response.current().record();
     let accepted = record.accepted_workspace.as_ref().unwrap();
     let publication = record.publication.as_ref().unwrap();
@@ -69,6 +76,12 @@ fn concrete_finalizer_freezes_acceptance_and_publishes_exact_candidate() {
             .unwrap()
     );
     let status = backend.status(&root.path).unwrap();
+    assert!(
+        !status
+            .files
+            .iter()
+            .any(|file| file.path == crate::artifact::CONF_INTEGRITY_MARKER_PATH)
+    );
     assert!(status.files.iter().any(|file| {
         file.path == "user-staged.txt" && file.index_status == "A" && file.worktree_status == " "
     }));

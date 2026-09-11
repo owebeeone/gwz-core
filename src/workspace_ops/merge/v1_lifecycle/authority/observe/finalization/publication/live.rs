@@ -127,16 +127,35 @@ pub(super) fn snapshot<B: MergeAuthorityBackend>(
     let Some(prefix) = classify_candidate_publication_for_v1(record, &observation)? else {
         return Ok(None);
     };
-    let pre = backend.index_entries_match_candidate_files(
+    let mut before_files = vec![GitCandidateFile {
+        path: LOCK_PATH.into(),
+        bytes: candidate.baseline_lock_yaml.as_bytes().to_vec(),
+    }];
+    let mut absent = vec![marker_path.clone()];
+    crate::workspace_ops::merge::integrity::append_baseline(
+        candidate,
+        &mut before_files,
+        &mut absent,
+    );
+    let pre = backend.index_entries_match_candidate_files(root, &before_files, &absent)?;
+    let (integrity_baseline, integrity_published) = crate::workspace_ops::merge::integrity::states(
+        current.context().filesystem(),
         root,
-        &[GitCandidateFile {
-            path: LOCK_PATH.into(),
-            bytes: candidate.baseline_lock_yaml.as_bytes().to_vec(),
-        }],
-        std::slice::from_ref(marker_path),
+        candidate,
     )?;
+    if !integrity_baseline && !integrity_published {
+        return Ok(None);
+    }
+    let ready_for_staging = prefix == CandidatePublicationPrefix::Boundary
+        || (prefix == CandidatePublicationPrefix::Marker
+            && candidate.lock_yaml == candidate.baseline_lock_yaml
+            && candidate.boundary_text == candidate.baseline_boundary_text);
+    if !integrity_baseline && !ready_for_staging {
+        return Ok(None);
+    }
     let candidate_files = v1_candidate_files(record)?;
-    let staged = backend.index_entries_match_candidate_files(root, &candidate_files, &[])?;
+    let staged = integrity_published
+        && backend.index_entries_match_candidate_files(root, &candidate_files, &[])?;
     let candidate_paths = candidate_files
         .iter()
         .map(|file| file.path.as_str())
@@ -316,6 +335,7 @@ mod tests {
             marker_id: "01987b0c-2f75-7c4a-9a32-8fd22f7d7c91".into(),
             root_branch: "main".into(),
             actor_id: "agent_test".into(),
+            conf_integrity: None,
             baseline_lock_yaml: "baseline lock".into(),
             lock_yaml: if lock_same {
                 "baseline lock".into()

@@ -110,13 +110,23 @@ pub(super) fn publication<B: MergeAuthorityBackend>(
             )?;
         }
         PublicationPhysicalAction::StageIndex => {
-            let marker = progress.candidate_marker_path.as_deref().ok_or_else(|| {
+            let _marker = progress.candidate_marker_path.as_deref().ok_or_else(|| {
                 ModelError::new(
                     ErrorCode::MergeRecordUnreadable,
                     "candidate marker path is missing",
                 )
             })?;
-            backend.stage_paths(root, &[LOCK_PATH, marker])?;
+            crate::workspace_ops::merge::integrity::publish(
+                current.context().filesystem(),
+                root,
+                candidate,
+            )?;
+            let files = v1_candidate_files(record)?;
+            let paths = files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>();
+            backend.stage_paths(root, &paths)?;
         }
     }
     Ok(())

@@ -31,6 +31,7 @@ fn finalization_emits_verified_composition_artifacts_in_order() {
         publication.candidate_marker_path.clone().unwrap(),
         crate::artifact::LOCK_PATH.to_owned(),
         ".git/info/exclude".to_owned(),
+        crate::artifact::CONF_INTEGRITY_MARKER_PATH.to_owned(),
     ];
     let artifacts = sink
         .take()

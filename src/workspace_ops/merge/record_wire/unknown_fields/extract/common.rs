@@ -406,6 +406,7 @@ fn extract_candidate(
             "root_branch",
             "actor_id",
             "baseline_lock_yaml",
+            "conf_integrity",
             "lock_yaml",
             "marker_yaml",
             "baseline_boundary_text",
@@ -416,7 +417,18 @@ fn extract_candidate(
         ],
         &child(path, "candidate"),
         manifest,
-    )
+    )?;
+    if let Some(integrity) = field(mapping(value, "publication candidate")?, "conf_integrity")
+        .filter(|value| !value.is_null())
+    {
+        collect_unknown(
+            mapping(integrity, "configuration integrity publication")?,
+            &["baseline", "yaml"],
+            &child(&child(path, "candidate"), "conf_integrity"),
+            manifest,
+        )?;
+    }
+    Ok(())
 }
 
 fn extract_operation_drift(

@@ -304,9 +304,10 @@ pub(crate) fn clone_local<B: GitBackend>(
 }
 
 /// A local family needs a durable source root. Ordinary worktree dirt is
-/// deliberately copied verbatim, but an unborn root or uncommitted managed
-/// configuration means `gwz init`/member registration has not been completed
-/// yet. Copying that shape manufactures a second incomplete workspace.
+/// deliberately copied verbatim, but an unborn root or uncommitted manifest/lock
+/// means `gwz init`/member registration has not been completed yet. The generated
+/// integrity marker is checked by `capture_source`: valid edited bytes and their
+/// index state are preserved, while invalid source work refuses before allocation.
 fn ensure_source_is_ready_for_local_clone<B: GitBackend>(
     backend: &B,
     root: &Path,
@@ -317,11 +318,7 @@ fn ensure_source_is_ready_for_local_clone<B: GitBackend>(
         findings.push("the workspace root has no committed HEAD".to_owned());
     }
 
-    let managed = [
-        WORKSPACE_MANIFEST,
-        artifact::LOCK_PATH,
-        artifact::CONF_INTEGRITY_MARKER_PATH,
-    ];
+    let managed = [WORKSPACE_MANIFEST, artifact::LOCK_PATH];
     let changed: Vec<_> = backend
         .status(root)?
         .files

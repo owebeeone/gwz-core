@@ -162,6 +162,7 @@ fn candidate(record: &MergeOperationRecordV0, accepted_lock: &str) -> Publicatio
         marker_id: MARKER_ID.to_owned(),
         root_branch: "main".to_owned(),
         actor_id: "agent_archive".to_owned(),
+        conf_integrity: None,
         baseline_lock_yaml: record.baseline.lock_yaml.clone().unwrap(),
         lock_yaml: accepted_lock.to_owned(),
         marker_yaml: marker_yaml.clone(),

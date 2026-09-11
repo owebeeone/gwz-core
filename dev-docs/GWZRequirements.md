@@ -2,6 +2,15 @@
 
 Status: complete
 
+## Configuration recovery requirements (2026-09-11)
+
+An explicit `init --update --commit` MUST commit only accepted configuration and
+bootstrap output, preserve unrelated staged work, and make no empty commit.
+`--force` MUST remain explicit for accepting hand edits. Dry runs MUST not mutate.
+A local clone MUST preserve a verifying uncommitted integrity marker and MUST NOT
+misclassify it as incomplete workspace registration. Merge composition MUST commit
+the marker matching its final lock and preserve resumable publication and rollback.
+
 ## Debt recovery requirements adopted 2026-09-06
 
 The accepted debt recovery amendment in `GWZDesign.md` supersedes conflicting

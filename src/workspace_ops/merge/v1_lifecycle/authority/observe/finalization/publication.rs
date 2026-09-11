@@ -362,6 +362,12 @@ fn prepare_candidate<B: MergeAuthorityBackend>(
     let built = build_v1_candidate(
         record,
         V1CandidateBuildInput {
+            baseline_conf_integrity: crate::workspace_ops::merge::integrity::capture_baseline(
+                current.context().filesystem(),
+                backend,
+                current.location().root(),
+                root_head.commit.as_deref(),
+            )?,
             marker_id: &marker_id,
             actor_id,
             root_head: &root_head,

@@ -17,6 +17,7 @@ that finds an uncommitted hand edit.
 - There is no rename or move verb. To relocate or rename a member, `gwz repo detach` it and then re-add it at the new path or name.
 - This ensures `gwz.lock.yml` and `gwz.yml` stay synchronized with the actual filesystem state.
 - If you have already hand-edited these files, revert the edit and run the equivalent `gwz` command. To accept the current on-disk state instead, run `gwz init --update --force`.
+- Add `--commit` to commit the accepted configuration and updated bootstrap files together; unrelated staged work stays staged.
 - Note that `--force` there authorizes two things at once: overwriting a locally edited `AGENTS_GWZ.md` and accepting the current `gwz.conf` state. Use it deliberately.
 - **Never manually edit this file.** It is system-managed. Change agent instructions via the `gwz` template and `gwz init --update`.
 
