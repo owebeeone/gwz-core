@@ -19,14 +19,14 @@ env:
 
 jobs:
   verify:
-    name: Verify (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-24.04
-          - windows-2022
+    # The Linux leg of the tagged both-OS verification, and the only gate the
+    # `publish` job below waits on (plan D5 of dev-docs/GwzCratesIoPlan.md).
+    # It is a job of its own, not a matrix leg, because `needs:` names a job:
+    # a matrix would make `needs: verify` wait for Windows too, and a matrix
+    # job's outputs are not per leg, so there is no per-leg signal to gate on.
+    # `verify-windows` below runs the same suite on Windows, independently.
+    name: Verify (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -66,7 +66,6 @@ jobs:
       - name: Install taut-proto
         run: python -m pip install --upgrade pip "taut-proto==0.9.1"
       - name: Format
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           if ! cargo fmt --check; then
@@ -76,7 +75,6 @@ jobs:
             exit 1
           fi
       - name: Checked-artifact boundary
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           tag="${{ github.event.release.tag_name || inputs.tag }}"
@@ -88,5 +86,144 @@ jobs:
       - name: Test
         run: python scripts/run_tests.py
       - name: Clippy
-        if: runner.os == 'Linux'
         run: CLIPPY_CONF_DIR="$PWD" cargo clippy --all-targets --all-features -- -D warnings
+
+  verify-windows:
+    # The Windows leg of the same tagged verification. Deliberately not a
+    # dependency of `publish`: plan D5 gates publishing on the Linux
+    # verification, so a Windows-only failure fails the release run and its
+    # required check without holding fourteen crates back.
+    name: Verify (windows-2022)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: release-tag
+        name: Resolve release tag
+        shell: bash
+        run: |
+          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$tag" ]; then
+            echo "verifying selected workflow commit $GITHUB_SHA"
+            git rev-parse --verify "$GITHUB_SHA"
+            exit 0
+          fi
+          case "$tag" in
+            v[0-9]*.[0-9]*.[0-9]*)
+              ;;
+            *)
+              echo "release tag must look like v0.1.0, got '$tag'" >&2
+              exit 1
+              ;;
+          esac
+          git rev-parse --verify "refs/tags/$tag"
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy --component rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Show Rust version
+        run: rustc --version
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install taut-proto
+        run: python -m pip install --upgrade pip "taut-proto==0.9.1"
+      - name: Test
+        run: python scripts/run_tests.py
+
+  publish:
+    # crates.io publication (plan D5 and step S2.1 of
+    # dev-docs/GwzCratesIoPlan.md, ADOPTED 2026-09-13). Publishing runs here
+    # and never from a laptop.
+    #
+    # What it does: `scripts/publish_crates.py` asserts the tag against every
+    # manifest version (the S1.2 lockstep gate), then walks the publish order
+    # the same gate derives -- the thirteen published internals in dependency
+    # order, then gwz-core -- and for each crate skips the version crates.io
+    # already holds or publishes it with `cargo publish --locked --no-verify`,
+    # polling crates.io until the new version is visible before the next crate
+    # is built against it. The job is therefore idempotent per crate: a
+    # `workflow_dispatch` retry on the same tag resumes at the crate that
+    # failed instead of re-uploading anything, and `--no-verify` is honest
+    # because the release script packaged the whole workspace before the tag
+    # existed (S1.4/S1.5).
+    #
+    # Authentication, token then Trusted Publishing (D5, S2.2, S2.3):
+    # crates.io accepts the FIRST publication of a new name only with an API
+    # token, so the S2.2 rehearsal stores one as the `CARGO_REGISTRY_TOKEN`
+    # secret of the `crates-io` environment and this job prefers it when it is
+    # set. `rust-lang/crates-io-auth-action` fails until a trusted publisher
+    # exists for a crate, which is why it is `continue-on-error`. Once S2.3
+    # has configured trusted publishers and deleted that secret, the OIDC
+    # token from `id-token: write` is the only credential this job has.
+    #
+    # `timeout-minutes: 240` because the first run waits out crates.io's
+    # new-crate rate limit -- five names at once, then one every ten minutes,
+    # about eighty minutes for thirteen (plan U1, S2.2).
+    name: Publish to crates.io
+    runs-on: ubuntu-24.04
+    needs: verify
+    # A tag is what is published; a dispatch that only verifies the selected
+    # workflow ref has nothing to publish, so this job skips rather than fails.
+    if: github.event.release.tag_name != '' || inputs.tag != ''
+    environment: crates-io
+    permissions:
+      contents: read
+      # Trusted Publishing exchanges this OIDC token for a crates.io token.
+      id-token: write
+    timeout-minutes: 240
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # A secret cannot be tested in an `if:` and cannot be compared in a
+      # step's own condition, so reduce it to a string here, where `secrets`
+      # is in scope, and branch on that string below. The value is a boolean
+      # about the secret, never the secret.
+      HAVE_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve release tag
+        shell: bash
+        run: |
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*)
+              ;;
+            *)
+              echo "publishing needs an existing release tag, got '$TAG'" >&2
+              exit 1
+              ;;
+          esac
+          git rev-parse --verify "refs/tags/$TAG"
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy --component rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Show Rust version
+        run: rustc --version
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Authenticate to crates.io by Trusted Publishing
+        id: auth
+        continue-on-error: true
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish the crates in dependency order
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ env.HAVE_TOKEN == 'true' && secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error title=No crates.io credential::Trusted Publishing returned no token and the crates-io environment has no CARGO_REGISTRY_TOKEN secret. The first publication of a new crate name needs a token (plan S2.2); afterwards a trusted publisher must exist for each crate (plan S2.3)."
+            exit 1
+          fi
+          python scripts/publish_crates.py --tag "$TAG"

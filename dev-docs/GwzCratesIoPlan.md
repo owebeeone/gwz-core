@@ -135,10 +135,12 @@ The gwz-core repository at 1.0.11:
 - U4. Whether stable cargo's sixty-second index wait is enough between
   crates on this account, or whether the publish loop must poll the index
   itself (uv needed nightly's `-Zpublish-timeout` at ten minutes).
-- U5. Whether `cargo package` can verify an internal crate before its
-  dependencies exist on the registry (it cannot build against unpublished
-  versions; S1.4 uses `--no-verify` locally and relies on publish-time
-  verification the first time).
+- U5. **Answered (S1.4, 2026-09-13): no, and not even with `--no-verify`** --
+  packaging one crate alone resolves its *published* manifest against the
+  registry, where the release's internal versions do not exist yet, so the
+  gates package all fifteen together with
+  `cargo package --workspace --no-verify --locked` and publish-time
+  verification is what checks each crate in isolation the first time.
 - U6. Whether docs.rs builds each crate cleanly (the build script runs `git`
   and tolerates its absence; docs.rs has no network for `taut-shape` beyond
   the registry, which is fine).
@@ -287,9 +289,13 @@ not limits.
   `timeout-minutes: 240` so the first run's waits fit. `workflow_dispatch`
   with a tag reuses the same job for retries. Authentication per D5:
   `rust-lang/crates-io-auth-action` with `id-token: write`, overridden by
-  the `CARGO_REGISTRY_TOKEN` environment secret when it is set. The
-  verification job gains the `cargo package --no-verify --locked` pass from
-  S1.4 so `--no-verify` at publish time is honest.
+  the `CARGO_REGISTRY_TOKEN` environment secret when it is set. What makes
+  `--no-verify` at publish time honest is the release script's pre-tag gate,
+  not a pass in the verification job: a per-crate `cargo package -p <crate>`
+  cannot resolve the unpublished internal versions a release introduces (U5,
+  measured in S1.4), so S1.5 packages the whole workspace in one
+  `cargo package --workspace --no-verify --locked` before the tag exists and
+  the publish job rests on that.
 - **S2.2: first publication and rehearsal** *(operator plus evidence)*.
   The operator creates a crates.io token scoped to publishing new crates with a seven-day expiry, exactly as the
   bootstrap how-to describes, and stores it as the `CARGO_REGISTRY_TOKEN`
@@ -428,3 +434,4 @@ its publish job is token-free by design.
   is `cargo package --workspace --no-verify --locked` rather than one
   `-p <crate>` per crate, for the U5 reason S1.4 measured; the publish order
   decides which archives must exist when it finishes.
+- 2026-09-13: S2.1 done: publish job in release.yml gated on Linux verification, scripts/publish_crates.py with skip, rate-limit wait and index polling; token-or-OIDC authentication; CI now runs the S1.5 and S2.1 unit tests.

@@ -36,6 +36,11 @@ jobs:
           python scripts/checks/check_filesystem_boundary.py
           python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py
           python -m unittest scripts/checks/test_release_boundary.py -v
+          # The release script's internal-version bump (plan S1.5) and the
+          # crates.io publisher the release workflow runs (S2.1). This job
+          # names its unittest modules one by one, so a module nobody adds
+          # here is a module CI never runs.
+          python -m unittest scripts/test_release_bump.py scripts/test_publish_crates.py -v
           CLIPPY_CONF_DIR="$PWD/scripts/checks/filesystem_lints" cargo clippy --no-deps --all-targets --all-features -- -D warnings
       - name: Selection ownership
         run: |

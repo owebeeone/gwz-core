@@ -57,6 +57,53 @@ fn release_workflow_only_runs_for_explicit_releases() {
 }
 
 #[test]
+fn release_workflow_gates_publication_on_the_linux_verification_alone() {
+    // Plan D5 / S2.1 (dev-docs/GwzCratesIoPlan.md): publishing waits on the
+    // Linux verification and must not wait on Windows. `needs:` names a job,
+    // and a matrix job has no per-leg signal to name (its outputs are shared),
+    // so the two legs are separate jobs here and `publish` needs the Linux one.
+    assert!(RELEASE_WORKFLOW.contains("name: Verify (ubuntu-24.04)"));
+    assert!(RELEASE_WORKFLOW.contains("name: Verify (windows-2022)"));
+    assert!(!RELEASE_WORKFLOW.contains("strategy:"));
+    assert!(!RELEASE_WORKFLOW.contains("matrix.os"));
+    assert!(RELEASE_WORKFLOW.contains("needs: verify\n"));
+    assert!(!RELEASE_WORKFLOW.contains("needs: verify-windows"));
+}
+
+#[test]
+fn release_workflow_publishes_the_crates_through_the_one_publisher_script() {
+    // S2.1: one script owns the order, the skip, the rate-limit wait and the
+    // index poll, so the workflow holds no per-crate list of its own.
+    assert!(RELEASE_WORKFLOW.contains("python scripts/publish_crates.py --tag \"$TAG\""));
+    assert!(RELEASE_WORKFLOW.contains("environment: crates-io"));
+    assert!(RELEASE_WORKFLOW.contains("id-token: write"));
+    assert!(RELEASE_WORKFLOW.contains("timeout-minutes: 240"));
+    assert!(!RELEASE_WORKFLOW.contains("cargo publish -p"));
+}
+
+#[test]
+fn release_workflow_prefers_the_first_publication_token_over_trusted_publishing() {
+    // D5, S2.2 and S2.3: crates.io accepts the first publication of a new name
+    // only with a token, so the auth action is allowed to fail while no
+    // trusted publisher exists, and the environment secret wins while it is
+    // set. A secret cannot be tested in an `if:`, hence the HAVE_TOKEN string.
+    assert!(RELEASE_WORKFLOW.contains("rust-lang/crates-io-auth-action@v1"));
+    assert!(RELEASE_WORKFLOW.contains("continue-on-error: true"));
+    assert!(RELEASE_WORKFLOW.contains("HAVE_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}"));
+    assert!(RELEASE_WORKFLOW.contains(
+        "CARGO_REGISTRY_TOKEN: ${{ env.HAVE_TOKEN == 'true' && secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}"
+    ));
+}
+
+#[test]
+fn checked_artifact_boundary_runs_the_release_and_publish_unit_tests() {
+    // S1.5 and S2.1 wiring: this job names its unittest modules one by one, so
+    // each new module has to be named here or CI never runs it.
+    assert!(CHECKED_ARTIFACT_WORKFLOW.contains("scripts/test_release_bump.py"));
+    assert!(CHECKED_ARTIFACT_WORKFLOW.contains("scripts/test_publish_crates.py"));
+}
+
+#[test]
 fn checked_artifact_boundary_runs_before_merge_and_on_main_push() {
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("pull_request:"));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("push:"));
