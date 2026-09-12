@@ -413,3 +413,12 @@ its publish job is token-free by design.
 - 2026-09-13: ADOPTED by the operator; no review round. Phase 1 begins with S1.1.
 - 2026-09-13: S1.3 done: gwz-core on taut-shape 0.9.2 from crates.io; full suite 2123 passed, 0 failed; outer workspace patched to the sibling checkout (U3 answered).
 - 2026-09-13: S1.2 done: 32 internal dependency edges versioned at 0.0.1; check_crate_versions.py gates the lockstep line in run_tests.py and CI; REQ-165 amended.
+- 2026-09-13: S1.4 done: include lists on gwz-core and the thirteen published
+  internals, every pattern anchored with a leading `/` because an `include`
+  list overrides `.gitignore` and an unanchored `README.md`/`LICENSE` matched
+  at any depth; gwz-core packages at 1.7 MiB compressed (8.5 MiB, 735 files);
+  U2 answered. U5 answered harder than expected: `cargo package --no-verify`
+  still resolves the published manifest against the registry, so a per-crate
+  pass fails for every internal that has an internal edge; `cargo package
+  --workspace --no-verify --locked` co-packages all fifteen (cargo 1.95) and
+  is what the gates use.

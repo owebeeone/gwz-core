@@ -11,6 +11,11 @@ description = "An internal component crate of GWZ's local clone: bounded read-on
 repository = "https://github.com/owebeeone/gwz-core"
 readme = "README.md"
 keywords = ["gwz", "git", "workspace", "internal"]
+# What the registry package carries (dev-docs/GwzCratesIoPlan.md D4). No
+# `LICENSE` entry: the SPDX `license` field above is what crates.io reads, and
+# the repository's single GPL-2.0-only text is not copied per crate.
+# Anchored with a leading `/`, as gwz-core's own list explains.
+include = ["/Cargo.toml", "/src/**", "/README.md"]
 
 [lib]
 path = "src/lib.rs"
