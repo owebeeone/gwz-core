@@ -3,7 +3,7 @@
 # dependencies: repo-contract (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
 [package]
 name = "gwz-history-check"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
@@ -21,7 +21,7 @@ include = ["/Cargo.toml", "/src/**", "/README.md"]
 path = "src/lib.rs"
 
 [dependencies]
-gwz-repo-contract = { path = "../repo-contract", version = "0.0.1" }
+gwz-repo-contract = { path = "../repo-contract", version = "0.0.2" }
 
 [dev-dependencies]
 gwz-repo-contract = { path = "../repo-contract", features = ["contract-tests"] }
