@@ -56,6 +56,7 @@ def main() -> None:
     options, cargo_args = parser.parse_known_args()
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")], check=True)
+    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake")
     if filesystem_result and "--no-fail-fast" not in cargo_args:
         raise SystemExit(filesystem_result)

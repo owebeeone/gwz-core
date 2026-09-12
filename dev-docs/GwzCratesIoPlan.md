@@ -412,3 +412,4 @@ its publish job is token-free by design.
   Awaiting S0.1.
 - 2026-09-13: ADOPTED by the operator; no review round. Phase 1 begins with S1.1.
 - 2026-09-13: S1.3 done: gwz-core on taut-shape 0.9.2 from crates.io; full suite 2123 passed, 0 failed; outer workspace patched to the sibling checkout (U3 answered).
+- 2026-09-13: S1.2 done: 32 internal dependency edges versioned at 0.0.1; check_crate_versions.py gates the lockstep line in run_tests.py and CI; REQ-165 amended.

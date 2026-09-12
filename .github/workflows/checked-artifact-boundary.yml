@@ -67,6 +67,21 @@ jobs:
         run: |
           python scripts/checks/check_local_clone_boundaries.py
           python -m unittest scripts/checks/test_check_local_clone_boundaries.py -v
+      - name: Crate version lockstep and registry metadata gate
+        # S1.2 of dev-docs/GwzCratesIoPlan.md (D1/D2/D8, adopted 2026-09-13).
+        # gwz-core carries the product version; the fourteen crates under
+        # crates/ share their own 0.0.N line, every internal dependency edge
+        # names that version beside its `path`, every internal dev edge stays
+        # path-only, nothing depends on git, and each of the thirteen published
+        # crates carries repository/readme/license/description while the
+        # dev-only fixtures crate alone keeps `publish = false`. These are the
+        # assertions crates.io makes at publish time, made here on every push
+        # instead. Its inputs are gwz-core's own manifests, so unlike the
+        # pin-drift gate below the LIVE check resolves on this single-repo
+        # checkout, not only its synthetic fixtures.
+        run: |
+          python scripts/checks/check_crate_versions.py
+          python -m unittest scripts/checks/test_check_crate_versions.py -v
       - name: Bazel pin-drift gate, its unit tests and negative fixtures
         # LCM1.0c follow-up 4 (lane C, 2026-09-06). Under workspace layout
         # Option A the outer gwz-dev workspace's Bazel hub for gwz-cli

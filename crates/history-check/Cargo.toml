@@ -16,7 +16,7 @@ keywords = ["gwz", "git", "workspace", "internal"]
 path = "src/lib.rs"
 
 [dependencies]
-gwz-repo-contract = { path = "../repo-contract" }
+gwz-repo-contract = { path = "../repo-contract", version = "0.0.1" }
 
 [dev-dependencies]
 gwz-repo-contract = { path = "../repo-contract", features = ["contract-tests"] }

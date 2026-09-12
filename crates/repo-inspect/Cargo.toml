@@ -19,7 +19,7 @@ keywords = ["gwz", "git", "workspace", "internal"]
 path = "src/lib.rs"
 
 [dependencies]
-gwz-repo-contract = { path = "../repo-contract" }
+gwz-repo-contract = { path = "../repo-contract", version = "0.0.1" }
 git2 = { version = "0.21", default-features = false, features = ["unstable-sha256"] }
 
 [dev-dependencies]

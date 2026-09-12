@@ -22,7 +22,7 @@ keywords = ["gwz", "git", "workspace", "internal"]
 path = "src/lib.rs"
 
 [dependencies]
-gwz-copy-contract = { path = "../copy-contract" }
+gwz-copy-contract = { path = "../copy-contract", version = "0.0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

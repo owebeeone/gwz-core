@@ -35,7 +35,7 @@ path = "src/lib.rs"
 contract-tests = ["gwz-repo-contract/contract-tests"]
 
 [dependencies]
-gwz-repo-contract = { path = "../repo-contract" }
+gwz-repo-contract = { path = "../repo-contract", version = "0.0.1" }
 # `unstable-sha256` is what makes a SHA-256 fixture repository constructible
 # (`ObjectFormat::Sha256`); `default-features = false` keeps the https/ssh
 # transports out of a fixture build, exactly as `gwz-repo-inspect` declares it.

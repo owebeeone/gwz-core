@@ -21,10 +21,10 @@ path = "src/lib.rs"
 test-support = []
 
 [dependencies]
-gwz-family-model = { path = "../family-model" }
-gwz-family-store-contract = { path = "../family-store-contract" }
-gwz-repo-contract = { path = "../repo-contract" }
-gwz-work-detector = { path = "../work-detector" }
+gwz-family-model = { path = "../family-model", version = "0.0.1" }
+gwz-family-store-contract = { path = "../family-store-contract", version = "0.0.1" }
+gwz-repo-contract = { path = "../repo-contract", version = "0.0.1" }
+gwz-work-detector = { path = "../work-detector", version = "0.0.1" }
 
 [dev-dependencies]
 gwz-family-store-contract = { path = "../family-store-contract", features = ["contract-tests"] }

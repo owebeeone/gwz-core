@@ -1059,11 +1059,17 @@ still carries `local_source_name`.
 ### REQ-165: Independent Local-Clone Libraries
 
 New local-clone copy, inspection, policy, storage and orchestration logic
-MUST live in separate private path crates under `crates/`, classified and
+MUST live in separate path crates under `crates/`, published to crates.io as
+internal component crates in lockstep with gwz-core's release train
+(`dev-docs/GwzCratesIoPlan.md` D1 and D8), or kept `publish = false` when
+dev-only, classified and
 dependency-gated by `scripts/checks/check_local_clone_boundaries.py`. No such
 crate MAY depend on `gwz-core`, a driver, generated protocol types,
 checked-artifact code, or the full-system test harness, in any dependency
 kind. Core keeps only thin composition adapters under `local_clone/`.
+
+Amended 2026-09-13: "private" dropped when the crates became publishable; the
+boundary rules are unchanged.
 
 Every such crate MUST expose `cargo test -p <crate> --lib` as its fast test
 command from both the outer workspace and a standalone core checkout.
