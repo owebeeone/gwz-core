@@ -4,12 +4,18 @@
 gwz-core has no release branch — tags are cut directly on ``main``. This script
 automates RELEASE.md steps 1-4 for a given tag:
 
-  1. Gate the tree: protocol regeneration, formatting, the structural checked-artifact
-     source boundary scan, tests, and Clippy. Compiler-mutation suites are manual-only.
-  2. Bump ``version`` in ``Cargo.toml`` and refresh ``Cargo.lock`` via ``cargo generate-lockfile``.
+  1. Gate the tree: protocol regeneration, formatting, the crate-version lockstep
+     check, the structural checked-artifact source boundary scan, tests, and Clippy.
+     Compiler-mutation suites are manual-only.
+  2. Bump ``version`` in ``Cargo.toml``, advance the internal ``0.0.N`` line across
+     the fourteen crates under ``crates/`` and every internal dependency edge
+     (dev-docs/GwzCratesIoPlan.md D2), and refresh ``Cargo.lock`` via
+     ``cargo generate-lockfile``.
   3. Commit on ``main``: ``chore(release): gwz-core X.Y.Z``.
-  4. Tag that commit ``vX.Y.Z`` (lightweight). An existing tag is NEVER moved — if
-     ``vX.Y.Z`` already points elsewhere the script aborts.
+  4. On that exact commit, re-run the lockstep check against the tag and package
+     every publishable crate, then tag it ``vX.Y.Z`` (lightweight). An existing tag
+     is NEVER moved — if ``vX.Y.Z`` already points elsewhere the script aborts.
+     Publishing to crates.io happens in CI, never here (plan D5).
 
 Requires a clean working tree (land feature work first). The commit is skipped when
 ``Cargo.toml`` already carries the target version. Re-running after a successful release
@@ -48,6 +54,20 @@ REPO = Path(__file__).resolve().parent.parent
 REGEN = REPO / "protocol" / "regen.py"
 REGEN_VENV = REPO / "protocol" / ".regen-venv"
 CHECKED_ARTIFACT_BOUNDARY = Path("scripts/checks/check_checked_artifact_boundaries.py")
+CRATE_VERSIONS = Path("scripts/checks/check_crate_versions.py")
+CRATES_DIR = "crates"
+MANIFEST = "Cargo.toml"
+# The internal crates share their own lockstep line, `0.0.N`, bumped by one at
+# every gwz-core release while gwz-core carries the product version
+# (dev-docs/GwzCratesIoPlan.md D2). Every `0.0.x` version is semver-incompatible
+# with every other, so a caret edge on the line resolves exactly one version and
+# the number itself tells a reader the crate is not a supported API.
+INTERNAL_VERSION = re.compile(r"^0\.0\.([0-9]+)$")
+# A dependency table whose entries survive into the published manifest. A
+# `[dev-dependencies]` edge does not: cargo drops a path-only dev edge, so the
+# bump must leave those alone or it would demand a version that never publishes.
+VERSIONED_KINDS = ("dependencies", "build-dependencies")
+TABLE_HEADER = re.compile(r"^\s*\[([^\]]+)\]")
 
 
 def fail(msg: str):
@@ -146,7 +166,17 @@ def remove_standalone_worktree(path: Path):
 
 
 def sync_manifests_to_worktree(worktree: Path):
-    shutil.copy2(REPO / "Cargo.toml", worktree / "Cargo.toml")
+    """Carry every bumped manifest across, not just the root one.
+
+    The lock is regenerated in the worktree, and it pins the internal crates by
+    the version their own manifests declare; a worktree that still held the
+    previous `0.0.N` would produce a lock that disagrees with the committed
+    manifests (plan D2).
+    """
+    for manifest in [REPO / MANIFEST, *crate_manifests()]:
+        destination = worktree / manifest.relative_to(REPO)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(manifest, destination)
 
 
 def git(args, **kw) -> subprocess.CompletedProcess:
@@ -235,6 +265,176 @@ def read_package_version() -> str:
     if not match:
         fail("no top-level `version = \"...\"` found in Cargo.toml")
     return match.group(1)
+
+
+def crate_manifests(root: Path = REPO) -> list[Path]:
+    """Every internal crate manifest under `crates/`, in a stable order."""
+    manifests = sorted((root / CRATES_DIR).glob(f"*/{MANIFEST}"))
+    if not manifests:
+        fail(f"no crate manifest under {root / CRATES_DIR} -- is this a gwz-core checkout?")
+    return manifests
+
+
+def read_internal_version(root: Path = REPO) -> str:
+    """The one `0.0.N` version the crates under `crates/` share (plan D2).
+
+    Read with `tomllib`, the way `scripts/checks/check_crate_versions.py` reads
+    it, so this and the gate cannot disagree about what the tree says. The
+    rewriting below is textual; only the reading is structural.
+    """
+    seen: dict[str, list[str]] = {}
+    for manifest in crate_manifests(root):
+        package = tomllib.loads(manifest.read_text(encoding="utf-8")).get("package")
+        name = package.get("name") if isinstance(package, dict) else None
+        version = package.get("version") if isinstance(package, dict) else None
+        if not isinstance(name, str) or not isinstance(version, str):
+            fail(f"{manifest}: [package] needs both a name and a version")
+        seen.setdefault(version, []).append(name)
+    if len(seen) != 1:
+        detail = "; ".join(
+            f"{version}: {', '.join(sorted(names))}" for version, names in sorted(seen.items())
+        )
+        fail(
+            "the crates under crates/ disagree on the internal version, and the release bump "
+            f"advances them as one lockstep line (plan D2) -- {detail}"
+        )
+    version = next(iter(seen))
+    if not INTERNAL_VERSION.match(version):
+        fail(
+            f"the internal crates are at {version}, which is not on the 0.0.N line the release "
+            "bump advances (plan D2)"
+        )
+    return version
+
+
+def next_internal_version(current: str) -> str:
+    """`0.0.N` -> `0.0.N+1`."""
+    match = INTERNAL_VERSION.match(current)
+    if match is None:
+        fail(f"internal version {current!r} is not `0.0.N`")
+    return f"0.0.{int(match.group(1)) + 1}"
+
+
+def internal_edges_at(text: str, version: str) -> int:
+    """How many `gwz-*` edges of a publishable table require `version`.
+
+    Structural count, used only to check the textual rewrite below against what
+    the manifest actually declares: a `gwz-*` edge spelled some way the line
+    regex does not reach (a multi-line inline table, say) would otherwise be
+    left behind silently, and the release would carry one stale edge.
+    """
+    total = 0
+    tables = tomllib.loads(text)
+    candidates = [tables]
+    targets = tables.get("target")
+    if isinstance(targets, dict):
+        candidates.extend(table for table in targets.values() if isinstance(table, dict))
+    for table in candidates:
+        for kind in VERSIONED_KINDS:
+            entries = table.get(kind)
+            if not isinstance(entries, dict):
+                continue
+            for key, value in entries.items():
+                spec = value if isinstance(value, dict) else {"version": value}
+                package = str(spec.get("package", key))
+                if package.startswith("gwz-") and spec.get("version") == version:
+                    total += 1
+    return total
+
+
+def rewrite_internal_edges(text: str, current: str, version: str) -> tuple[str, int]:
+    """Move every `gwz-*` edge of a publishable table onto `version`.
+
+    Line-targeted, like `bump_cargo_version`, so comments, ordering and inline
+    formatting survive and the manifest is never re-serialized. The enclosing
+    table is tracked so a `[dev-dependencies]` edge is left alone.
+    """
+    edge = re.compile(
+        r'^(?P<head>gwz-[A-Za-z0-9_-]*\s*=\s*\{.*?version\s*=\s*)"' + re.escape(current) + '"'
+    )
+    lines = text.split("\n")
+    kind = ""
+    rewritten = 0
+    for index, line in enumerate(lines):
+        header = TABLE_HEADER.match(line)
+        if header is not None:
+            kind = header.group(1).rsplit(".", 1)[-1].strip()
+            continue
+        if kind not in VERSIONED_KINDS:
+            continue
+        updated, count = edge.subn(rf'\g<head>"{version}"', line, count=1)
+        if count:
+            lines[index] = updated
+            rewritten += 1
+    return "\n".join(lines), rewritten
+
+
+def bump_internal_version(current: str, version: str, root: Path = REPO) -> bool:
+    """Advance the internal line in the fourteen crates and on every edge.
+
+    Rewrites `[package].version` in each crate manifest and every `gwz-*` edge
+    of a `[dependencies]` or `[build-dependencies]` table -- gwz-core's and the
+    crates' own, target-specific tables included. Returns True when anything
+    changed, so a second run on an already-bumped tree is a no-op the caller
+    can see. `scripts/checks/check_crate_versions.py` is the gate that proves
+    the result; this only has to produce it. `root` is the checkout to rewrite,
+    which the tests point at a copy of the manifests.
+    """
+    package_version = re.compile(r'^(version\s*=\s*)"' + re.escape(current) + '"', flags=re.M)
+    changed = False
+    for manifest in [root / MANIFEST, *crate_manifests(root)]:
+        text = manifest.read_text(encoding="utf-8")
+        expected = internal_edges_at(text, current)
+        updated = text
+        if manifest != root / MANIFEST:
+            updated = package_version.sub(rf'\g<1>"{version}"', updated, count=1)
+        updated, rewritten = rewrite_internal_edges(updated, current, version)
+        if rewritten != expected:
+            fail(
+                f"{manifest}: rewrote {rewritten} internal edge(s) at {current} but the manifest "
+                f"declares {expected}; an edge is spelled in a way the bump cannot reach, so fix "
+                "it by hand before releasing"
+            )
+        if updated == text:
+            continue
+        manifest.write_text(updated, encoding="utf-8", newline="\n")
+        changed = True
+    if changed:
+        log(f"bumped the internal crate line {current} -> {version} (14 crates and their edges)")
+    else:
+        log(f"internal crate line already at {version}")
+    return changed
+
+
+def release_commit_message(version: str) -> str:
+    return f"chore(release): gwz-core {version}"
+
+
+def assert_internal_line_is_not_a_hand_bump(version: str) -> None:
+    """Refuse to tag a tree whose product version was bumped without the internals.
+
+    Reached only when `Cargo.toml` already carries the target version and no
+    tag exists. This script writes the product version and the internal `0.0.N`
+    line in one commit, so such a tree is either the work of an earlier run
+    that stopped before tagging -- in which case the internal line moved with
+    it -- or a hand bump, in which case the internal line is still the previous
+    release's and two releases would share it (plan D2). Nothing in the tree
+    tells the two apart, so the release commit this script writes has to be in
+    history; otherwise this refuses rather than guessing.
+    """
+    message = release_commit_message(version)
+    found = git(
+        ["log", "--format=%s", "-n", "200", "HEAD"], capture=True, check=False
+    ).stdout.splitlines()
+    if message in found:
+        log(f"release commit for {version} is already in history; internal line came with it")
+        return
+    fail(
+        f"Cargo.toml is already at {version} but no `{message}` commit exists, so the internal "
+        f"0.0.N line (now {read_internal_version()}) cannot be shown to have been advanced for "
+        "this release; reset the hand-written version bump and re-run, or advance the internal "
+        "line deliberately first"
+    )
 
 
 def bump_cargo_version(version: str) -> bool:
@@ -409,11 +609,83 @@ def require_exact_clean_release_tree(
         fail(f"release gate tree is dirty {phase} the exact-target gate:\n{dirty}")
 
 
+def read_publish_order(*, cargo_root: Path) -> list[str]:
+    """The publish order, derived from the manifests by the lockstep gate.
+
+    Read from `check_crate_versions.py --print-publish-order` rather than
+    written down here, so a new internal crate or a new internal edge cannot
+    leave this script packaging the wrong set in the wrong order.
+    """
+    result = run(
+        [sys.executable, CRATE_VERSIONS, "--root", cargo_root, "--print-publish-order"],
+        cwd=cargo_root,
+        capture=True,
+    )
+    names = result.stdout.split()
+    if not names or names[-1] != "gwz-core":
+        fail(f"--print-publish-order did not end at gwz-core: {names}")
+    return names
+
+
+def gate_release_publication(*, cargo_root: Path, expected_head: str, tag: str):
+    """What a crates.io publish needs, on the exact commit about to be tagged.
+
+    The lockstep gate with the tag (plan S1.2: gwz-core's version equals the
+    tag's, the internals share their `0.0.N` line, every edge names it, nothing
+    comes from git, every published crate carries its registry metadata), then
+    one packaging pass over every crate in publish order, so `--no-verify` at
+    publish time (plan D5) rests on a package cargo has actually assembled
+    here.
+
+    The pass is `cargo package --workspace`, not one `cargo package -p <crate>`
+    per crate in the order: even with `--no-verify`, packaging one crate alone
+    resolves its *published* manifest against the registry, and the internal
+    versions a release introduces are not there yet, so every internal that has
+    an internal edge fails outright (plan U5, measured in S1.4). `--workspace`
+    resolves the siblings against each other. The publish order still decides
+    which `.crate` files must exist when the pass finishes, so a crate that
+    quietly packages nothing is a failed gate.
+
+    Separate from `gate_exact_release_commit` because it needs the tag, and it
+    re-asserts the exact clean tree around itself so the fence is the same.
+    """
+    require_exact_clean_release_tree(
+        cargo_root=cargo_root, expected_head=expected_head, phase="before"
+    )
+    run([sys.executable, CRATE_VERSIONS, "--root", cargo_root, "--tag", tag], cwd=cargo_root)
+    order = read_publish_order(cargo_root=cargo_root)
+    product = read_package_version()
+    internal = read_internal_version()
+    expected = {
+        name: cargo_root
+        / "target"
+        / "package"
+        / f"{name}-{product if name == 'gwz-core' else internal}.crate"
+        for name in order
+    }
+    for archive in expected.values():
+        archive.unlink(missing_ok=True)
+    run(["cargo", "package", "--workspace", "--no-verify", "--locked"], cwd=cargo_root)
+    missing = [name for name, archive in expected.items() if not archive.is_file()]
+    if missing:
+        fail(
+            "the packaging pass produced no archive for "
+            + ", ".join(missing)
+            + f" of the {len(order)} crate(s) that publish; crates.io is fed exactly these "
+            "packages, so a missing one is a release that cannot complete (plan S1.4, D5)"
+        )
+    log(f"packaged {len(order)} publishable crate(s) in publish order: {', '.join(order)}")
+    require_exact_clean_release_tree(
+        cargo_root=cargo_root, expected_head=expected_head, phase="after"
+    )
+
+
 def finalize_new_release(
     *, cargo_root: Path, expected_head: str, branch: str, tag: str, push: bool
 ):
     """Gate the exact immutable target immediately before tag publication."""
     gate_exact_release_commit(cargo_root=cargo_root, expected_head=expected_head)
+    gate_release_publication(cargo_root=cargo_root, expected_head=expected_head, tag=tag)
     ensure_tag(tag, expected_head)
     if push:
         push_release(branch, tag, expected_head=expected_head)
@@ -433,6 +705,12 @@ def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool):
 
     run_fmt_check(cargo_root=cargo_root)
     assert_lock_current(cargo_root=cargo_root)
+    # The lockstep line before anything expensive: a crate off the internal
+    # 0.0.N line, an unversioned internal edge or a git dependency makes the
+    # release unpublishable, and none of it needs a build to see (plan S1.2).
+    # Without the tag here -- the tag is checked on the exact commit, once the
+    # version bump has landed (gate_release_publication).
+    run([sys.executable, CRATE_VERSIONS, "--root", cargo_root], cwd=cargo_root)
     run_checked_boundary_gates(cargo_root=cargo_root)
     test_env = cargo_env()
 
@@ -520,6 +798,7 @@ def main():
     try:
         if release_already_cut:
             gate_exact_release_commit(cargo_root=cargo_root, expected_head=head)
+            gate_release_publication(cargo_root=cargo_root, expected_head=head, tag=tag)
             if args.push:
                 push_release(args.branch, tag, expected_head=head)
             return
@@ -533,6 +812,11 @@ def main():
         toml_changed = bump_cargo_version(version)
         bazel_changed = bump_bazel_version(version)
         if toml_changed or bazel_changed:
+            # The product version and the internal `0.0.N` line move together,
+            # in one commit, so a release is never split across the two lines
+            # (plan D2).
+            internal = read_internal_version()
+            bump_internal_version(internal, next_internal_version(internal))
             if worktree is not None:
                 sync_manifests_to_worktree(worktree)
             refresh_cargo_lock(cargo_root=cargo_root)
@@ -540,12 +824,15 @@ def main():
                 copy_lock_from_cargo_root(cargo_root)
             if not args.no_test:
                 run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=cargo_env())
-            git(["add", "Cargo.toml", "Cargo.lock", "BUILD.bazel"])
+            staged = [
+                str(manifest.relative_to(REPO).as_posix()) for manifest in crate_manifests()
+            ]
+            git(["add", "Cargo.toml", "Cargo.lock", "BUILD.bazel", *staged])
             # No AI co-author trailer. The operator's attribution rule is
             # absolute and applies to every commit in every repo, including
             # commits authored by tooling — and the settings-level enforcement
             # that covers agent-authored commits does not reach this script.
-            message = f"chore(release): gwz-core {version}"
+            message = release_commit_message(version)
             git(["commit", "-m", message])
             head = git(["rev-parse", "HEAD"], capture=True).stdout.strip()
             log(f"release commit -> {head[:10]}  (gwz-core {version})")
@@ -553,6 +840,7 @@ def main():
             current = read_package_version()
             if current != version:
                 fail(f"Cargo.toml version is {current}, expected {version} for {tag}")
+            assert_internal_line_is_not_a_hand_bump(version)
             log(f"{args.branch} already at version {version}; no new commit needed")
 
         finalize_new_release(

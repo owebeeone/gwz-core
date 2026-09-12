@@ -14,6 +14,15 @@ split to manage. **Release tags are cut directly off `main`.**
 2. Bump `version` in `Cargo.toml`, commit `chore(release): gwz-core X.Y.Z`.
 3. Tag that commit `vX.Y.Z` (lightweight; never moves an existing tag).
 
+In the same commit as the product version bump, the script also advances the
+internal `0.0.N` line that the fourteen crates under `crates/` share — their own
+`[package].version` and every internal dependency edge in gwz-core's manifest and
+in theirs (see [dev-docs/GwzCratesIoPlan.md](dev-docs/GwzCratesIoPlan.md) D2). On the
+exact commit it is about to tag it then runs the crate-version lockstep gate against
+that tag and packages every published crate, so a later `--no-verify` upload rests on
+a package cargo has really assembled; publishing to crates.io itself happens in CI
+(plan D5, Phase 2), never in this script.
+
 Requires a clean working tree — land feature work first. If the protocol schema
 (`protocol/gwz.taut.py`) changed, regenerate and commit **before** running the script:
 

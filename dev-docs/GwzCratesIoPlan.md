@@ -422,3 +422,9 @@ its publish job is token-free by design.
   pass fails for every internal that has an internal edge; `cargo package
   --workspace --no-verify --locked` co-packages all fifteen (cargo 1.95) and
   is what the gates use.
+- 2026-09-13: S1.5 done: release.py advances the internal line, runs
+  check_crate_versions.py with the tag and packages every published crate
+  before tagging; publish order derived from the manifests. The packaging pass
+  is `cargo package --workspace --no-verify --locked` rather than one
+  `-p <crate>` per crate, for the U5 reason S1.4 measured; the publish order
+  decides which archives must exist when it finishes.

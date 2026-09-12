@@ -110,6 +110,11 @@ class ReleaseBoundaryTest(unittest.TestCase):
             ),
             mock.patch.object(
                 release,
+                "gate_release_publication",
+                side_effect=lambda **_kwargs: calls.append("publication"),
+            ),
+            mock.patch.object(
+                release,
                 "ensure_tag",
                 side_effect=lambda *_args: calls.append("tag"),
             ),
@@ -127,7 +132,10 @@ class ReleaseBoundaryTest(unittest.TestCase):
                 push=True,
             )
 
-        self.assertEqual(calls, ["gate", "tag", "push"])
+        # The crates.io lockstep check and the packaging pass (plan S1.5) are
+        # gates on the exact target too: both run before the tag exists and
+        # before anything is pushed.
+        self.assertEqual(calls, ["gate", "publication", "tag", "push"])
 
     def test_atomic_push_sources_branch_and_tag_from_the_gated_sha(self) -> None:
         expected = "a" * 40

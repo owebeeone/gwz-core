@@ -14,6 +14,11 @@ without it, and a crate count that drifts from fourteen. Each fixture is a
 synthetic manifest tree in a temporary directory, so the checker -- not cargo
 -- is the rejector, and each assertion requires the finding to NAME the
 offending crate.
+
+Also here, because the ordering lives in the same script: `--print-publish-order`
+over the real checkout prints fourteen names ending at `gwz-core`, places every
+crate after its dependencies, and agrees with plan section 1's layers; a
+synthetic cycle has no order at all.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 
@@ -48,6 +54,26 @@ INTERNAL = (
     "gwz-local-disposal",
 )
 FIXTURES_CRATE = "gwz-local-testrepo"
+# Plan section 1's dependency layers, which fix the publish order, for the
+# fifteen-crate publish set minus the unpublished fixtures crate. The layer of
+# a crate must be strictly above every crate it depends on; `gwz-core` is the
+# composition root and publishes last.
+PLAN_LAYERS = {
+    "gwz-repo-contract": 1,
+    "gwz-copy-contract": 1,
+    "gwz-family-model": 1,
+    "gwz-family-store-contract": 2,
+    "gwz-work-detector": 2,
+    "gwz-history-check": 2,
+    "gwz-repo-factory": 2,
+    "gwz-repo-inspect": 2,
+    "gwz-refcopy": 2,
+    "gwz-family-store": 3,
+    "gwz-local-import": 3,
+    "gwz-workspace-install": 3,
+    "gwz-local-disposal": 4,
+    "gwz-core": 5,
+}
 # One crate carries both edge kinds so the dependency rules have a target.
 EDGE_CRATE = "gwz-family-store"
 EDGE_TARGET = "gwz-family-model"
@@ -222,6 +248,86 @@ class CrateVersionGateTests(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("crate versions: ok (", result.stdout)
+
+    # --- the publish order ---
+
+    def real_order(self) -> list[str]:
+        """`--print-publish-order` over the real checkout, as a publisher reads it."""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--root", str(REAL_ROOT), "--print-publish-order"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        return result.stdout.split()
+
+    def real_requirements(self) -> dict[str, set[str]]:
+        """Each published crate's internal edges, from the real manifests."""
+        core, crates = self.gate.discover(REAL_ROOT)
+        published = {crate.name for crate in crates if crate.name not in self.gate.UNPUBLISHED}
+        requirements = {
+            crate.name: self.gate.internal_requirements(crate, published)
+            for crate in crates
+            if crate.name in published
+        }
+        requirements[core.name] = published
+        return requirements
+
+    def test_the_publish_order_prints_fourteen_names_ending_at_the_core(self) -> None:
+        order = self.real_order()
+        self.assertEqual(14, len(order), order)
+        self.assertEqual("gwz-core", order[-1])
+        self.assertEqual(len(set(order)), len(order), order)
+        self.assertNotIn(FIXTURES_CRATE, order)
+        self.assertEqual(set(PLAN_LAYERS), set(order))
+
+    def test_the_publish_order_places_every_crate_after_its_dependencies(self) -> None:
+        order = self.real_order()
+        position = {name: index for index, name in enumerate(order)}
+        requirements = self.real_requirements()
+        for name in order:
+            for dependency in sorted(requirements[name]):
+                self.assertLess(
+                    position[dependency],
+                    position[name],
+                    f"{name} publishes before its dependency {dependency}: {order}",
+                )
+
+    def test_the_publish_order_matches_the_plan_layers(self) -> None:
+        # Plan section 1's layers are the claim; the manifests are the fact.
+        # Every declared edge must cross from a higher layer to a lower one,
+        # and each layer must hold the crates the plan puts in it.
+        requirements = self.real_requirements()
+        for name, needs in sorted(requirements.items()):
+            for dependency in sorted(needs):
+                self.assertGreater(
+                    PLAN_LAYERS[name],
+                    PLAN_LAYERS[dependency],
+                    f"{name} (layer {PLAN_LAYERS[name]}) depends on {dependency} "
+                    f"(layer {PLAN_LAYERS[dependency]}), which plan section 1 does not allow",
+                )
+        sizes = Counter(PLAN_LAYERS.values())
+        self.assertEqual({1: 3, 2: 6, 3: 3, 4: 1, 5: 1}, dict(sizes))
+        self.assertEqual(set(self.real_order()), set(PLAN_LAYERS))
+
+    def test_a_dependency_cycle_has_no_publish_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = write_tree(
+                Path(temporary) / "gwz-core",
+                edit={
+                    EDGE_TARGET: (
+                        'keywords = ["gwz", "git", "workspace", "internal"]',
+                        'keywords = ["gwz", "git", "workspace", "internal"]\n\n'
+                        "[dependencies]\n"
+                        f'{EDGE_CRATE} = {{ path = "../{directory_of(EDGE_CRATE)}", '
+                        'version = "0.0.1" }',
+                    )
+                },
+            )
+            core, crates = self.gate.discover(root)
+            with self.assertRaises(self.gate.GateError):
+                self.gate.publish_order(core, crates)
 
     # --- gwz-core's product version ---
 

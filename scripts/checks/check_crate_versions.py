@@ -39,10 +39,18 @@ Not checked here, deliberately: gwz-core's own registry metadata and the
 `include` lists (plan S1.4), the crates' roles and dependency edges
 (`check_local_clone_boundaries.py`), and anything that needs a build.
 
+Also derived here, because the manifests are the only honest source for it:
+`--print-publish-order` prints the order a publisher must follow -- the
+thirteen published internals in dependency order, then `gwz-core` -- one name
+per line. The release script (plan S1.5) and the CI publish job (S2.1) consume
+those lines instead of carrying a hand-written list that a new crate or a new
+edge would silently invalidate.
+
 Usage (from gwz-core):
     python3 scripts/checks/check_crate_versions.py
     python3 scripts/checks/check_crate_versions.py --root <gwz-core>
     python3 scripts/checks/check_crate_versions.py --tag v1.0.12
+    python3 scripts/checks/check_crate_versions.py --print-publish-order
 """
 
 from __future__ import annotations
@@ -161,6 +169,61 @@ def dependency_tables(table: dict):
                 entries = cfg_table.get(kind)
                 if isinstance(entries, dict):
                     yield kind, f"[target.'{cfg}'.{kind}]", entries
+
+
+def internal_requirements(crate: Manifest, published: set[str]) -> set[str]:
+    """The published internal crates one crate needs at publish time."""
+    needs: set[str] = set()
+    for kind, _where, entries in dependency_tables(crate.table):
+        if kind not in VERSIONED_KINDS:
+            # A dev edge is dropped from the published manifest, so it does not
+            # constrain the publish order the way a normal or build edge does.
+            continue
+        for key in sorted(entries):
+            value = entries[key]
+            spec = value if isinstance(value, dict) else {"version": value}
+            package = str(spec.get("package", key))
+            if package in published:
+                needs.add(package)
+    return needs
+
+
+def publish_order(core: Manifest, crates: list[Manifest]) -> list[str]:
+    """The thirteen published internals in dependency order, then `gwz-core`.
+
+    Kahn's algorithm over the internal edges of the versioned tables, taking
+    the alphabetically first ready crate at every step, so the order is a
+    function of the manifests alone and not of directory iteration. `gwz-core`
+    is last because it is the composition root that depends on all thirteen;
+    `gwz-local-testrepo` is absent because it does not publish (plan D1) and
+    reaches nothing but dev-dependency tables. A cycle is an error, not a
+    finding: there is no order to print.
+    """
+    published = {crate.name for crate in crates if crate.name not in UNPUBLISHED}
+    remaining = {
+        crate.name: internal_requirements(crate, published)
+        for crate in crates
+        if crate.name in published
+    }
+    order: list[str] = []
+    placed: set[str] = set()
+    while remaining:
+        ready = sorted(name for name, needs in remaining.items() if needs <= placed)
+        if not ready:
+            blocked = ", ".join(
+                f"{name} needs {', '.join(sorted(needs - placed))}"
+                for name, needs in sorted(remaining.items())
+            )
+            raise GateError(
+                f"the internal dependency edges have no publish order: {blocked}; a cycle "
+                "cannot be published, since every crate is built against the registry"
+            )
+        chosen = ready[0]
+        order.append(chosen)
+        placed.add(chosen)
+        del remaining[chosen]
+    order.append(core.name)
+    return order
 
 
 def check_core_version(core: Manifest, tag: str | None, findings: list[str]) -> str:
@@ -356,7 +419,23 @@ def main() -> int:
         "--tag",
         help="release tag `vX.Y.Z` or `vX.Y.Z-rc.N`; gwz-core's version must equal its version",
     )
+    parser.add_argument(
+        "--print-publish-order",
+        action="store_true",
+        help="print the publish order (the published internals, then gwz-core), one name per "
+        "line, and exit without running the gate",
+    )
     args = parser.parse_args()
+    if args.print_publish_order:
+        try:
+            core, crates = discover(args.root.resolve())
+            names = publish_order(core, crates)
+        except GateError as error:
+            print(f"crate versions: error: {error}", file=sys.stderr)
+            return 2
+        for name in names:
+            print(name)
+        return 0
     tag_version = None
     if args.tag is not None:
         match = RELEASE_TAG.match(args.tag)
