@@ -277,8 +277,12 @@ not limits.
 ### Phase 2: the CI publisher (milestone: publishing a gwz-core GitHub release publishes fourteen crates in order, idempotently)
 
 - **S2.1: the publish job** *(gwz-core `.github/workflows/release.yml`;
-  ~120 lines)*. A `publish` job with `needs: verify` restricted to the Linux
-  matrix leg, `environment: crates-io`, `permissions: contents: read`. Steps:
+  ~120 lines)*. A `publish` job with `environment: crates-io` and
+  `permissions: contents: read`. Because `needs:` names a job and a matrix
+  job has no per-leg signal to name, the verification matrix is split into a
+  `verify` job on ubuntu and a `verify-windows` job, with both check names
+  unchanged, and `publish` declares `needs: verify`: the Linux verification
+  gates publication and the Windows leg cannot block it. Steps:
   check out the tag; assert the tag and all fourteen published versions agree (S1.2
   check); for each crate in the section 1 order, query
   `https://crates.io/api/v1/crates/<name>/<version>` and skip when present,

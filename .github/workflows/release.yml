@@ -177,6 +177,11 @@ jobs:
       # Trusted Publishing exchanges this OIDC token for a crates.io token.
       id-token: write
     timeout-minutes: 240
+    # Two runs must never interleave the publish order: the per-crate skip
+    # makes a rerun safe, not concurrent runs.
+    concurrency:
+      group: crates-io-publish
+      cancel-in-progress: false
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       # A secret cannot be tested in an `if:` and cannot be compared in a
