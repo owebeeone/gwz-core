@@ -12,8 +12,12 @@ gwz-core root, no build):
 
 - LBT-001: every package directory under `crates/` is classified; a classified
   package that must be present exists, its Cargo name equals its inventory
-  key, it is `publish = false`, carries explicit `edition`/`rust-version`
-  (no workspace inheritance) and is not a workspace root of its own.
+  key, a `harness` package is `publish = false`, every package carries explicit
+  `edition`/`rust-version` (no workspace inheritance) and none is a workspace
+  root of its own. The thirteen published internals are deliberately no longer
+  `publish = false` (dev-docs/GwzCratesIoPlan.md D1, adopted 2026-09-13); their
+  registry metadata and the lockstep version line are gated by S1.2's
+  `check_crate_versions.py`, not here.
 - Layout Option A (operator ruling 2026-09-05; LCM1.0c follow-up 2): the
   gwz-core manifest declares the `[workspace]` whose members are the
   libraries, every present classified crate is one of its members, and the
@@ -220,8 +224,8 @@ def check_package(
     packages = inventory["packages"]
     role_edges = inventory.get("role_edges", {})
 
-    if package.publish is not False:
-        findings.append(f"{package.name}: must set `publish = false` (private path crate)")
+    if role == "harness" and package.publish is not False:
+        findings.append(f"{package.name}: must set `publish = false` (dev-only harness package)")
     if not isinstance(package.edition, str):
         findings.append(f"{package.name}: needs an explicit `edition` (no workspace inheritance)")
     if not isinstance(package.rust_version, str):

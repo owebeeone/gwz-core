@@ -10,12 +10,14 @@
 # GwzLocalClone-LCM1.0c-ReviewState.md P3-3).
 [package]
 name = "gwz-family-store"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
-description = "GWZ local clone: the sole family metadata writer (FamilyStore implementation)."
-publish = false
+description = "An internal component crate of GWZ: GWZ local clone: the sole family metadata writer (FamilyStore implementation)."
+repository = "https://github.com/owebeeone/gwz-core"
+readme = "README.md"
+keywords = ["gwz", "git", "workspace", "internal"]
 
 [lib]
 path = "src/lib.rs"
