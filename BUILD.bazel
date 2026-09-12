@@ -35,9 +35,10 @@ _LOCAL_CLONE_LIBRARIES = [
 # Third-party deps -- git2 (native: libgit2-sys/libssh2-sys/libz-sys/openssl-sys), cap-std,
 # cap-fs-ext, serde, serde_yaml, yaml-rust2, url, chrono, regex, ... -- come from
 # @gwz_core_crates, resolved from //gwz-core:Cargo.lock. taut-shape arrives the same way:
-# this workspace's lock pins it to the git rev in Cargo.toml (the outer workspace's [patch]
-# to the sibling taut-shape-rs checkout is only visible to the @crates hub, as it is only
-# visible to cargo when building from the outer workspace).
+# this workspace's lock pins the crates.io release named in Cargo.toml, and the hub is
+# crate.from_cargo over that lock, so it follows the registry version automatically (the
+# outer workspace's [patch.crates-io] to the sibling taut-shape-rs checkout is only visible
+# to the @crates hub, as it is only visible to cargo when building from the outer workspace).
 rust_library(
     name = "gwz_core",
     version = "1.0.11",

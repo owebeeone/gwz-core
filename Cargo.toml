@@ -48,7 +48,7 @@ cap-fs-ext = "4"
 cap-std = "4"
 cfg-if = "1"
 git2 = { version = "0.21", features = ["https", "ssh", "unstable-sha256"] }
-taut-shape = { git = "https://github.com/owebeeone/taut-shape-rs", rev = "7fd171b737f25cb6c356845eb68164d35326ffb0", package = "taut-shape" }
+taut-shape = "0.9.2"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 yaml-rust2 = { version = "0.11", default-features = false }
