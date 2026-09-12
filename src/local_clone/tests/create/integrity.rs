@@ -7,6 +7,15 @@ fn clone_preserves_a_valid_marker_repair_and_its_index_state() {
     for staged in [false, true] {
         let fixture = family_workspace("valid-marker-repair");
         let backend = Git2Backend::without_credential_helpers();
+        // The production backend commits the changed lock below. Do not borrow
+        // an author identity from the developer's global Git config: hosted
+        // runners have none, and Git then refuses the commit.
+        let repo = git2::Repository::open(&fixture.root).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "GWZ Fixture").unwrap();
+        config
+            .set_str("user.email", "fixture@example.invalid")
+            .unwrap();
         // Reproduce a composition that committed a changed lock with a stale marker.
         let lock = fs::read_to_string(fixture.root.join(LOCK_PATH)).unwrap();
         fs::write(fixture.root.join(LOCK_PATH), format!("# merged\n{lock}")).unwrap();
