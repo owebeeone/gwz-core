@@ -166,7 +166,9 @@ pub fn record_workspace_url_scheme(
     })?;
     artifact::write_atomic(
         &path,
-        format!("# Written by gwz: local runtime state, not committed. Clear with --url-scheme manifest.\n{yaml}"),
+        format!(
+            "# Written by gwz: local runtime state, not committed. Clear with --url-scheme manifest.\n{yaml}"
+        ),
     )
 }
 

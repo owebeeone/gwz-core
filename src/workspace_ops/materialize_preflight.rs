@@ -55,9 +55,13 @@ where
             // The manifest URL is a preference: derive the requested form for a
             // known host, refuse what cannot be derived, pass other hosts through.
             let manifest_url = first_remote_url(member)?;
-            let resolution = crate::git::derive(&manifest_url, scheme.scheme).map_err(|refusal| {
-                url_scheme_refusal_error(&refusal, Some((member.id.as_str(), state.path.as_str())))
-            })?;
+            let resolution =
+                crate::git::derive(&manifest_url, scheme.scheme).map_err(|refusal| {
+                    url_scheme_refusal_error(
+                        &refusal,
+                        Some((member.id.as_str(), state.path.as_str())),
+                    )
+                })?;
             let record = protocol_url_resolution(&resolution, scheme.source);
             (Some(resolution.effective_url), Some(record))
         };

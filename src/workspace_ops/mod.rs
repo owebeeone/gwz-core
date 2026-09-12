@@ -83,5 +83,5 @@ pub(crate) use stage_workspace_git_metadata::*;
 pub(crate) use sync_workspace_boundary::*;
 pub use target_listing::resolve_forall_targets;
 pub(crate) use target_selection::*;
-pub use workspace_bootstrap::*;
 pub(crate) use url_scheme_state::*;
+pub use workspace_bootstrap::*;

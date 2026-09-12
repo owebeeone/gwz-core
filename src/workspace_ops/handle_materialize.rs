@@ -376,7 +376,12 @@ where
                         return Ok(None);
                     }
                     Err(error) => {
-                        return Err(with_member_context(error, member, plan.clone_url.as_deref(), url_scheme));
+                        return Err(with_member_context(
+                            error,
+                            member,
+                            plan.clone_url.as_deref(),
+                            url_scheme,
+                        ));
                     }
                     Ok(_) => {}
                 }

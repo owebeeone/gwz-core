@@ -769,7 +769,10 @@ where
     let mut scheme_only = None;
     if !destructive_allowed {
         for synced in &mut next.remotes {
-            let Some(recorded) = member.remotes.iter().find(|remote| remote.name == synced.name)
+            let Some(recorded) = member
+                .remotes
+                .iter()
+                .find(|remote| remote.name == synced.name)
             else {
                 continue;
             };
