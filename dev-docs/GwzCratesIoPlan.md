@@ -123,30 +123,29 @@ The gwz-core repository at 1.0.11:
 
 ## 2. What is not confirmed
 
-- U1. That the publish job's wait-and-retry across thirteen new names,
-  about eighty minutes at the default limit, sits comfortably inside the
-  job's `timeout-minutes` and the runner's six-hour ceiling (S2.2 measures
-  it).
+- U1. **Answered (S2.2, 2026-09-12): yes.** The publish job created
+  thirteen names and published gwz-core in 73 minutes 11 seconds with seven
+  620-second waits, under a third of its 240-minute timeout.
 - U2. That gwz-core's package stays under 10 MB compressed once an
   `include` list is in place (measured in S1.4).
 - U3. That gwz-core behaves identically on `taut-shape` 0.9.2 from the
   registry as on the pinned ancestor revision (the full suite in S1.3
   decides).
-- U4. Whether stable cargo's sixty-second index wait is enough between
-  crates on this account, or whether the publish loop must poll the index
-  itself (uv needed nightly's `-Zpublish-timeout` at ten minutes).
+- U4. **Answered (S2.2): stable cargo's wait is enough.** Every crate was
+  visible on the publisher's first index poll after `cargo publish` returned.
 - U5. **Answered (S1.4, 2026-09-13): no, and not even with `--no-verify`** --
   packaging one crate alone resolves its *published* manifest against the
   registry, where the release's internal versions do not exist yet, so the
   gates package all fifteen together with
   `cargo package --workspace --no-verify --locked` and publish-time
   verification is what checks each crate in isolation the first time.
-- U6. Whether docs.rs builds each crate cleanly (the build script runs `git`
-  and tolerates its absence; docs.rs has no network for `taut-shape` beyond
-  the registry, which is fine).
-- U7. Whether crates.io's ten-minute refill counts from the last successful
-  publish or from the last rejected attempt; the loop assumes the former and
-  waits a little longer than ten minutes so either answer works.
+- U6. **Answered (checked 2026-09-14): yes.** docs.rs built all fourteen
+  rehearsal crates, and each crate page serves its README.
+- U7. **Answered (S2.2): neither.** crates.io refills new-crate tokens on a
+  fixed ten-minute grid; every refusal named a retry time on the same grid
+  whenever the attempt was made. The grid fixes when the last name can
+  publish, so the flat 620-second wait costs nothing against honouring the
+  retry time.
 
 ## 3. Scope decisions (proposed; the operator confirms or changes them at S0.1)
 
@@ -313,6 +312,9 @@ not limits.
   names publish at once and the other eight one every ten minutes at
   crates.io's default limit (U1). Record the run and timings in
   `gwz-core/dev-docs/GwzCratesIo-Rehearsal-YYYYMMDD.md`.
+  Done 2026-09-12, recorded in `GwzCratesIo-Rehearsal-20260912.md`. The
+  internals went out at 0.0.2, because the release script advances the
+  internal line with every product bump.
 - **S2.3: trusted publishers, and the token retired** *(operator; ~15
   minutes of clicking)*. On crates.io, configure a trusted publisher for all
   fifteen crates (owner `owebeeone`, repository `gwz-core` and workflow
@@ -320,6 +322,10 @@ not limits.
   for `gwz`, environment `crates-io`), then delete the `CARGO_REGISTRY_TOKEN`
   secret and revoke the token on crates.io. From here on nothing publishes
   with a token, and the how-to gains a closing note saying so.
+  The secret was deleted on 2026-09-14, once every name existed. Revoking the
+  token and configuring the fourteen gwz-core trusted publishers remain. The
+  `gwz` entry waits for S3.2, which decides the workflow file crates.io must
+  trust.
 
 ### Phase 3: the CLI on the registry core (milestone: `cargo install gwz` installs the released CLI)
 
@@ -439,3 +445,12 @@ its publish job is token-free by design.
   `-p <crate>` per crate, for the U5 reason S1.4 measured; the publish order
   decides which archives must exist when it finishes.
 - 2026-09-13: S2.1 done: publish job in release.yml gated on Linux verification, scripts/publish_crates.py with skip, rate-limit wait and index polling; token-or-OIDC authentication; CI now runs the S1.5 and S2.1 unit tests.
+- 2026-09-12: S2.2 done: run 34718460081 published the thirteen internals
+  at 0.0.2 and gwz-core 1.0.12-rc.1 in 73 minutes with seven automatic
+  rate-limit waits; U1, U4 and U7 answered. The Windows verification leg
+  failed on a CRLF-sensitive assertion in `tests/publish_workflow.rs`, which
+  by D5 did not gate publication.
+- 2026-09-14: the assertion compares whole lines (gwz-core `7b3831c`),
+  proven under CRLF and LF; docs.rs confirmed all fourteen builds (U6); the
+  `CARGO_REGISTRY_TOKEN` environment secret was deleted. S2.3's trusted
+  publishers and the token revocation are the operator's next steps.
