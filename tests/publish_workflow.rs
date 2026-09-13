@@ -66,7 +66,13 @@ fn release_workflow_gates_publication_on_the_linux_verification_alone() {
     assert!(RELEASE_WORKFLOW.contains("name: Verify (windows-2022)"));
     assert!(!RELEASE_WORKFLOW.contains("strategy:"));
     assert!(!RELEASE_WORKFLOW.contains("matrix.os"));
-    assert!(RELEASE_WORKFLOW.contains("needs: verify\n"));
+    // Compare whole lines: a Windows checkout rewrites the workflow with CRLF
+    // endings, and `lines()` strips either ending.
+    assert!(
+        RELEASE_WORKFLOW
+            .lines()
+            .any(|line| line.trim() == "needs: verify")
+    );
     assert!(!RELEASE_WORKFLOW.contains("needs: verify-windows"));
 }
 
