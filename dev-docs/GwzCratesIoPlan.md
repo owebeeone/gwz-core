@@ -210,6 +210,17 @@ The gwz-core repository at 1.0.11:
 - D7. **gwz-py stays on the git-tag pin.** Its publish workflow and its
   provenance parity test assume a git-built core; moving it to the registry
   is an open item (O1), not part of this plan.
+  **Under review, 2026-09-14.** S3.1 found that D7 breaks gwz-py's next
+  release. gwz-py's release script and publish workflow build the CLI from
+  gwz-cli at the shared tag, and that CLI now links the crates.io gwz-core,
+  which reports `revision=unavailable dirty=unknown` and a digest of the
+  packaged sources. gwz-py's native extension still builds gwz-core from the
+  git tag and reports the commit and a digest that includes `crates/`. So
+  `test_native_module_reports_compiled_core_provenance` fails on revision,
+  dirty state and digest, before any wheel is built. Options: move gwz-py to
+  the registry pin (both sides then embed the same published core); build its
+  test CLI against the git core through a patch; or relax the test to compare
+  only the version. The operator decides before Phase 4.
 - D8. **Publishing does not stabilise the internals' API.** Each internal
   crate's README and description say it is internal to GWZ, versioned in
   lockstep, with no compatibility promise beyond gwz-core's own; depend on
@@ -322,10 +333,16 @@ not limits.
   for `gwz`, environment `crates-io`), then delete the `CARGO_REGISTRY_TOKEN`
   secret and revoke the token on crates.io. From here on nothing publishes
   with a token, and the how-to gains a closing note saying so.
-  The secret was deleted on 2026-09-14, once every name existed. Revoking the
-  token and configuring the fourteen gwz-core trusted publishers remain. The
-  `gwz` entry waits for S3.2, which decides the workflow file crates.io must
-  trust.
+  Done 2026-09-14. The secret was deleted once every name existed. The operator
+  added trusted publishers for the fourteen gwz-core crates and set each to
+  trusted-publishing-only. Run 34788250937 then authenticated with no secret
+  present: crates.io exchanged the workflow's GitHub identity for a token, and
+  the publisher skipped all fourteen already-published crates. crates.io scopes
+  that token to the crates whose configuration matches repository, workflow and
+  environment, so the run proves those values for at least one crate; each
+  crate's own entry is proven at its next publish, and a mismatch stops the job
+  at that crate, resumable by dispatch once corrected. The `gwz` entry waits for
+  S3.2, which decides the workflow file crates.io must trust.
 
 ### Phase 3: the CLI on the registry core (milestone: `cargo install gwz` installs the released CLI)
 
@@ -349,6 +366,12 @@ not limits.
   dist-generated `release.yml` is hand-constrained; regenerating it with
   `dist generate` to pick up the publish job must preserve those
   constraints, which the step verifies by diff.
+  crates.io derives the workflow filename from the OIDC `workflow_ref` claim,
+  which names the calling workflow, so with `publish-jobs` the trusted
+  publisher for `gwz` names repository `gwz-cli` and workflow `release.yml`,
+  not the called workflow file, plus the environment the publishing job
+  declares. gwz-cli's CI runs no Python unit tests today, so this step also
+  wires in `scripts/test_release.py` from S3.1.
 - **S3.3: documentation** *(gwz-core `RELEASE.md`, gwz-cli `RELEASE.md`,
   `docs/QuickStart.md`, gwz-dev `AGENTS_GWZ.md` and `README.md`; ~80
   lines)*. The release order taut-shape, gwz-core, gwz, and gwz-py; what
@@ -405,6 +428,11 @@ its publish job is token-free by design.
   thirteen names held before Phase 2 is ready; this plan does not do that,
   because S2.2 creates them with real 0.0.1 pre-release content and the
   names are obscure enough that squatting is not a live risk.
+- O7. Every gwz-core version bump leaves the gwz-dev root `Cargo.lock` and
+  gwz-py's `Cargo.lock` recording the previous gwz-core and internal versions,
+  because gwz-core's release script only refreshes its own lock. A stale root
+  lock makes `cargo test -p gwz --locked` refuse to run. Until a script owns
+  it, refresh both locks and commit them after each core cut.
 
 ## 7. Adoption trail
 
@@ -454,3 +482,21 @@ its publish job is token-free by design.
   proven under CRLF and LF; docs.rs confirmed all fourteen builds (U6); the
   `CARGO_REGISTRY_TOKEN` environment secret was deleted. S2.3's trusted
   publishers and the token revocation are the operator's next steps.
+- 2026-09-14: S2.3 done: trusted publishers configured by the operator for
+  the fourteen gwz-core crates, all set to trusted-publishing-only; run
+  34788250937 authenticated through Trusted Publishing with no secret and
+  skipped every crate. The temporary token lasts thirty minutes and the auth
+  action revokes it when the job ends. Phase 3 begins with S3.1.
+- 2026-09-14: S3.1 done (gwz-cli `df13369`, `dc77521`, `907e1da`). The `gwz`
+  package has registry metadata and an anchored include list. gwz-cli's
+  `scripts/release.py` waits for gwz-core on crates.io, writes the exact pin
+  (migrating the old git+tag line once), checks that the lock takes gwz-core
+  and the internals from crates.io, and runs `cargo package --locked -p gwz`
+  before committing. README and QuickStart document `cargo install gwz` from
+  1.0.12. Proof: `gwz` packaged and built from crates.io sources alone against
+  gwz-core 1.0.12-rc.1 and the 0.0.2 internals, and the binary reports
+  `gwz 1.0.12-rc.1`. Found on the way: the gwz-py provenance break recorded
+  under D7, and the lockfile drift recorded as O7, with both locks refreshed.
+  Left for S3.3: gwz-cli `RELEASE.md` still names a `gwz-cli-vA.B.C` tag,
+  gwz-core `RELEASE.md` still says gwz-cli pins by git tag, and gwz-cli
+  `docs/Install.md` lists only `cargo install --git`.
