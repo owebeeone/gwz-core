@@ -298,6 +298,7 @@ where
                                 remote_check: None,
                             },
                             &BTreeMap::new(),
+                            &super::publication::ReadPreflight::default(),
                         )?;
                     }
                     backend

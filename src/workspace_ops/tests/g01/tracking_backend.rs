@@ -140,6 +140,13 @@ impl TrackingBackend {
         self.model().repository(path).remotes.push(remote);
     }
 
+    /// Capture every refspec `prepare_push` returns for `path` as forced. A
+    /// request gives every repository one refspec, so only the double can mix
+    /// forced and ordinary transfers in one push.
+    pub(crate) fn force_pushes(&self, path: &Path) {
+        self.model().repository(path).forced_pushes = true;
+    }
+
     pub(crate) fn fetch_refspecs(&self, path: &Path, remote: &str) -> Option<Vec<String>> {
         self.model()
             .repositories
@@ -298,6 +305,7 @@ struct ConfiguredRepository {
     materialized: bool,
     head: crate::git::GitHeadState,
     remotes: Vec<ConfiguredRemote>,
+    forced_pushes: bool,
 }
 
 /// An unconfigured repository gets the double's original answers.
@@ -311,6 +319,7 @@ impl Default for ConfiguredRepository {
                 is_detached: false,
             },
             remotes: Vec::new(),
+            forced_pushes: false,
         }
     }
 }
@@ -771,7 +780,11 @@ impl GitBackend for TrackingBackend {
             })?;
         // Capture the source as an object id, as `Git2Backend` does. The double
         // models explicit `refs/` destinations only.
-        let prefix = if refspec.starts_with('+') { "+" } else { "" };
+        let prefix = if refspec.starts_with('+') || repository.forced_pushes {
+            "+"
+        } else {
+            ""
+        };
         let plain = refspec.strip_prefix('+').unwrap_or(refspec);
         let (source, destination) = plain.split_once(':').unwrap_or((plain, plain));
         let object = if source.is_empty() {
