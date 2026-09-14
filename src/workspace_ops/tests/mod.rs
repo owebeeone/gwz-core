@@ -26,6 +26,7 @@ mod g22;
 mod g23;
 mod g24;
 mod g25;
+mod g26;
 
 pub(crate) use g00::*;
 pub(crate) use g01::*;

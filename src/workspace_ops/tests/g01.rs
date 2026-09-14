@@ -6,7 +6,7 @@ use crate::operation::NullSink;
 
 use super::*;
 
-mod tracking_backend;
+pub(super) mod tracking_backend;
 
 use tracking_backend::{AnonymousTransfer, TEST_COMMIT, TrackingBackend};
 
