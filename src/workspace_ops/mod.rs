@@ -18,6 +18,7 @@ mod merge;
 mod normalize_path;
 mod pathspec_routing;
 mod publication;
+mod publication_url;
 mod pull_head_barrier;
 mod pull_head_member_preflight;
 mod pull_head_merge_preflight;
