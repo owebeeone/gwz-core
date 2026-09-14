@@ -528,3 +528,17 @@ its publish job is token-free by design.
 - 2026-09-14: the operator chose to relax gwz-py's provenance check rather
   than move gwz-py to the crates.io core or build its test CLI against git
   (D7, new S3.4). S3.3 leaves `AGENTS_GWZ.md` alone: gwz manages that file.
+- 2026-09-14: S3.4 done (gwz-py `d29cb8c`). `compare_core_provenance` keeps
+  the strict rule when both sides carry a git revision, and otherwise requires
+  the same gwz-core version and `build=` kind, naming the rule on failure.
+  Proven both ways: 845 gwz-py tests passed with both sides built from the
+  local tree under the strict rule, and the provenance test passed against a
+  CLI built from crates.io gwz-core 1.0.12-rc.1 under the version and build
+  kind rule.
+- 2026-09-14: S3.3 done (gwz-core `2aa8825`, gwz-cli `40358b8`, gwz-py
+  `f20c30a`). The three RELEASE.md files describe the release order, both
+  publish jobs and their retries, the one-time `gwz` trusted publisher, the
+  internal-crate policy and crates.io versus git provenance. gwz-cli
+  `docs/Install.md` adds `cargo install gwz` from 1.0.12. Phase 3 is complete;
+  Phase 4 waits on the `gwz` trusted publisher and a push of all four
+  repositories.
