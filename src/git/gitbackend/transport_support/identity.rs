@@ -200,7 +200,7 @@ fn resolve_remote(
     if !url.starts_with("ssh://") && !scp {
         if remote.is_some_and(|remote| backend.identities.remotes.contains_key(remote)) {
             return Err(invalid(
-                "a per-remote SSH identity override names a non-SSH destination",
+                "a per-remote SSH identity override names a non-SSH destination; use --identity PATH, which non-SSH destinations ignore, or no override for that remote",
             ));
         }
         // An invocation-wide SSH default does not change HTTPS authentication.

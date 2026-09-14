@@ -4,14 +4,12 @@
 //! ([`same_repository`]), so a deliberately unusable push URL (`DISABLE`, a
 //! fork) falls through to the next rule. Selection is pure: the caller supplies
 //! the member's remote or the effective scheme.
-//! Design: gwz-dev dev-docs/GwzUrlSchemePushPlan.md §3.1 and §3.2. Nothing calls
-//! this until that plan's step 2.1, hence the `dead_code` allowances.
+//! Design: gwz-dev dev-docs/GwzUrlSchemePushPlan.md §3.1 and §3.2.
 
 use crate::git::{GitRemote, UrlScheme, same_repository};
 
 /// What the workspace holds for one dependency's member.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub(super) enum DependencyMember<'a> {
     /// Materialized, with the checkout's remote named by the committed fetch
     /// remote; `None` when no remote has that name.
@@ -36,14 +34,12 @@ pub(super) enum ReadUrlRule {
 
 /// The URL every read of one dependency uses, and the rule that chose it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(super) struct ReadUrl {
     pub url: String,
     pub rule: ReadUrlRule,
 }
 
 /// Chooses a dependency's read URL; the first rule that applies wins.
-#[allow(dead_code)]
 pub(super) fn select_read_url(committed: &str, member: DependencyMember<'_>) -> ReadUrl {
     let remote = match member {
         DependencyMember::Materialized(remote) => remote,

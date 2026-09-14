@@ -1,12 +1,16 @@
 //! Root publication is a dependency barrier, not a cross-server transaction.
-//! Inspect the exact source commit, prove its lock dependencies at committed
-//! fetch URLs, then freeze the push source so a branch move cannot swap its lock.
+//! Inspect the exact source commit, prove its lock dependencies through the
+//! read URLs of their committed fetch remotes, then freeze the push source so a
+//! branch move cannot swap its lock.
 use std::path::Path;
 
 use crate::artifact::{self, ArtifactSourceKind, LockArtifact, ManifestArtifact};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
+
+use super::publication_url::{DependencyMember, ReadUrlRule, select_read_url};
+use super::url_scheme_state::{requested_url_scheme, resolve_push_url_scheme};
 
 /// Remote reads completed before any publication starts.  The identity owner is
 /// part of the key: the same URL reached with a different repository's SSH
@@ -76,17 +80,17 @@ pub(super) fn checked_root_request<B: GitBackend>(
         if dependency_was_published(&dependency, published) {
             continue;
         }
-        let materialized = backend.is_repository(&dependency.path)?;
+        let identity_repo = dependency.identity_repo();
         let advertised = backend.ls_remote_url(
             root,
-            &dependency.url,
+            &dependency.read_url,
             &dependency.remote,
-            materialized.then_some(dependency.path.as_path()),
+            identity_repo,
         )?;
         let mut available = advertised
             .iter()
             .any(|reference| reference.target == dependency.commit);
-        if !available && materialized {
+        if !available && identity_repo.is_some() {
             for reference in &advertised {
                 if backend
                     .is_ancestor(&dependency.path, &dependency.commit, &reference.target)
@@ -98,8 +102,14 @@ pub(super) fn checked_root_request<B: GitBackend>(
             }
         }
         if !available {
+            // Name the URL that was read when it is not the committed one.
+            let read_through = if dependency.read_url == dependency.url {
+                String::new()
+            } else {
+                format!(" (read through {})", dependency.read_url)
+            };
             return Err(refused(format!(
-                "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}; publish the member, or fetch its advertised history and retry",
+                "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}{read_through}; publish the member, or fetch its advertised history and retry",
                 dependency.member_id, dependency.commit, dependency.remote
             )));
         }
@@ -113,6 +123,8 @@ pub(super) fn checked_root_request<B: GitBackend>(
 /// exact; an ahead member still receives the ordinary remote proof below.
 /// Ordinary and forced pushes both count: the `+` prefix decides only whether
 /// the remote may rewind the destination, not which object it now holds.
+/// The push must have gone to the dependency's read URL, which every other
+/// read of it uses.
 pub(super) fn dependency_was_published(
     dependency: &PublicationDependency,
     published: &std::collections::BTreeMap<String, crate::git::GitPreparedPush>,
@@ -121,7 +133,7 @@ pub(super) fn dependency_was_published(
         return false;
     };
     plan.remote == dependency.remote
-        && plan.url == dependency.url
+        && plan.url == dependency.read_url
         && plan.refspecs.iter().any(|refspec| {
             refspec
                 .strip_prefix('+')
@@ -137,18 +149,30 @@ pub(super) struct PublicationDependency {
     pub path: std::path::PathBuf,
     pub commit: String,
     pub remote: String,
+    /// The committed fetch URL, which names the repository to prove.
     pub url: String,
+    /// The one URL every read of this dependency uses, and the rule of
+    /// [`select_read_url`] that chose it.
+    pub read_url: String,
+    pub read_rule: ReadUrlRule,
+}
+
+impl PublicationDependency {
+    /// The repository whose SSH configuration reads of this dependency use:
+    /// none for a member that is not materialized, the only case rule 3 chooses.
+    fn identity_repo(&self) -> Option<&Path> {
+        (self.read_rule != ReadUrlRule::EffectiveScheme).then_some(self.path.as_path())
+    }
 }
 
 pub(super) fn validate_dependency_identity<B: GitBackend>(
     backend: &B,
     dependency: &PublicationDependency,
 ) -> ModelResult<()> {
-    let materialized = backend.is_repository(&dependency.path)?;
     backend.validate_url_identity(
-        materialized.then_some(dependency.path.as_path()),
+        dependency.identity_repo(),
         &dependency.remote,
-        &dependency.url,
+        &dependency.read_url,
     )
 }
 
@@ -196,20 +220,18 @@ pub(super) fn preflight_dependencies_with_reads<B: GitBackend>(
     reads: &mut ReadPreflight,
 ) -> ModelResult<()> {
     for dependency in root_dependencies(backend, root, request)? {
-        let materialized = backend.is_repository(&dependency.path)?;
-        if !materialized {
-            backend.ls_remote_url(root, &dependency.url, &dependency.remote, None)?;
+        let Some(identity_repo) = dependency.identity_repo() else {
+            backend.ls_remote_url(root, &dependency.read_url, &dependency.remote, None)?;
             continue;
-        }
-        let identity_repo = dependency.path.as_path();
-        if !reads.contains(identity_repo, &dependency.remote, &dependency.url) {
+        };
+        if !reads.contains(identity_repo, &dependency.remote, &dependency.read_url) {
             backend.ls_remote_url(
                 root,
-                &dependency.url,
+                &dependency.read_url,
                 &dependency.remote,
                 Some(identity_repo),
             )?;
-            reads.record(identity_repo, &dependency.remote, &dependency.url);
+            reads.record(identity_repo, &dependency.remote, &dependency.read_url);
         }
     }
     Ok(())
@@ -256,6 +278,10 @@ pub(super) fn root_dependencies<B: GitBackend>(
                 "committed manifest and lock identify different workspaces",
             ));
         }
+        // Only a member that is not materialized reads through the effective
+        // scheme, so it is resolved on first need: an unreadable preference
+        // refuses only a publication that would use it.
+        let mut effective_scheme = None;
         for (id, state) in &lock.members {
             if state.source_kind != ArtifactSourceKind::Git {
                 return Err(ModelError::new(
@@ -288,12 +314,34 @@ pub(super) fn root_dependencies<B: GitBackend>(
             }
             let remote = member.remotes.iter().find(|remote| remote.fetch)
                 .ok_or_else(|| refused(format!("committed lock member {id} has no fetch URL; publish it and record its remote before publishing root")))?;
+            let path = root.join(&member.path);
+            let read = if backend.is_repository(&path)? {
+                // Local configuration only; no network.
+                let remotes = backend.remotes(&path)?;
+                let configured = remotes
+                    .iter()
+                    .find(|candidate| candidate.name == remote.name);
+                select_read_url(&remote.url, DependencyMember::Materialized(configured))
+            } else {
+                let scheme = match effective_scheme {
+                    Some(scheme) => scheme,
+                    None => {
+                        let scheme =
+                            resolve_push_url_scheme(root, requested_url_scheme(&request.meta))?;
+                        effective_scheme = Some(scheme);
+                        scheme
+                    }
+                };
+                select_read_url(&remote.url, DependencyMember::Unmaterialized(scheme))
+            };
             dependencies.push(PublicationDependency {
                 member_id: id.clone(),
-                path: root.join(&member.path),
+                path,
                 commit: oid.to_owned(),
                 remote: remote.name.clone(),
                 url: remote.url.clone(),
+                read_url: read.url,
+                read_rule: read.rule,
             });
         }
     }

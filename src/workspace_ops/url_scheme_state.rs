@@ -67,11 +67,37 @@ pub fn requested_url_scheme(meta: &crate::RequestMeta) -> Option<UrlScheme> {
         .map(UrlScheme::from)
 }
 
+/// The remedy for an unreadable record where the operation takes a scheme.
+const CLEAR_REMEDY: &str = "delete the file, or run with --url-scheme manifest to clear it";
+
+/// The remedy for an unreadable record on push, which takes no scheme to clear
+/// it with and must not suggest a materialize.
+const PUSH_REMEDY: &str = "delete or repair the file";
+
 /// Resolves the effective scheme: the request, then the workspace record when a
 /// workspace root is known, then `manifest`.
 pub fn resolve_url_scheme(
     root: Option<&Path>,
     requested: Option<UrlScheme>,
+) -> ModelResult<EffectiveUrlScheme> {
+    resolve_url_scheme_with_remedy(root, requested, CLEAR_REMEDY)
+}
+
+/// The scheme a push reads a dependency that is not materialized through,
+/// resolved as [`resolve_url_scheme`] resolves it. An unreadable record names
+/// only the remedies a push has.
+pub(crate) fn resolve_push_url_scheme(
+    root: &Path,
+    requested: Option<UrlScheme>,
+) -> ModelResult<UrlScheme> {
+    resolve_url_scheme_with_remedy(Some(root), requested, PUSH_REMEDY)
+        .map(|effective| effective.scheme)
+}
+
+fn resolve_url_scheme_with_remedy(
+    root: Option<&Path>,
+    requested: Option<UrlScheme>,
+    remedy: &str,
 ) -> ModelResult<EffectiveUrlScheme> {
     if let Some(scheme) = requested {
         return Ok(EffectiveUrlScheme {
@@ -80,7 +106,7 @@ pub fn resolve_url_scheme(
         });
     }
     if let Some(root) = root
-        && let Some(scheme) = read_workspace_url_scheme(root)?
+        && let Some(scheme) = read_workspace_url_scheme(root, remedy)?
     {
         return Ok(EffectiveUrlScheme {
             scheme,
@@ -91,8 +117,8 @@ pub fn resolve_url_scheme(
 }
 
 /// Reads the recorded preference; `None` when no record exists. A record that
-/// cannot be understood is refused, naming the file and the remedy.
-pub fn read_workspace_url_scheme(root: &Path) -> ModelResult<Option<UrlScheme>> {
+/// cannot be understood is refused, naming the file and `remedy`.
+pub fn read_workspace_url_scheme(root: &Path, remedy: &str) -> ModelResult<Option<UrlScheme>> {
     let path = root.join(URL_SCHEME_STATE_PATH);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -110,7 +136,7 @@ pub fn read_workspace_url_scheme(root: &Path) -> ModelResult<Option<UrlScheme>> 
         ModelError::new(
             ErrorCode::InvalidRequest,
             format!(
-                "workspace URL-scheme preference {} is unreadable: {detail}; delete the file, or run with --url-scheme manifest to clear it",
+                "workspace URL-scheme preference {} is unreadable: {detail}; {remedy}",
                 path.display()
             ),
         )

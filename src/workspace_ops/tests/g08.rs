@@ -850,6 +850,75 @@ fn root_dependency_identity_is_checked_before_member_publication() {
     }
 }
 
+/// Push plan step 2.1 (§3.3, D4): a per-remote SSH identity for a remote whose
+/// read URL is https refuses before any read or transfer, naming `--identity`.
+/// The root's own SSH destination accepts the override, so a root-only push is
+/// refused by its dependency's read URL alone; a whole push also by the
+/// member's own push.
+#[test]
+fn a_remote_identity_for_an_https_read_url_refuses_before_any_transfer() {
+    for root_only in [false, true] {
+        let temp = TempDir::new("push-https-read-identity");
+        let backend = Git2Backend::without_credential_helpers();
+        handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+        // Nothing listens here; the refusal must come before any connection.
+        backend
+            .add_remote(temp.path(), "origin", "ssh://git@127.0.0.1:1/root.git")
+            .unwrap();
+        let app = temp.path().join("repos/app");
+        backend.create_repo(&app).unwrap();
+        backend
+            .add_remote(&app, "origin", "https://github.com/o/app.git")
+            .unwrap();
+        let commit = commit_file(&app, "README.md", "one", "one", &[]).unwrap();
+        write_pull_fixture(
+            temp.path(),
+            vec![("mem_app", "repos/app", "git@github.com:o/app.git", &commit)],
+        );
+        set_identity(temp.path());
+        backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+        backend.commit(temp.path(), "lock", false).unwrap();
+        let key = temp.path().join("key");
+        std::fs::write(&key, "fixture: this key must never be offered").unwrap();
+        let response = handle_push(
+            &backend,
+            temp.path(),
+            crate::PushRequest {
+                meta: crate::RequestMeta {
+                    selection: root_only.then(|| crate::Selection {
+                        targets: vec!["@root".into()],
+                        ..Default::default()
+                    }),
+                    transport: Some(crate::TransportOptions {
+                        url_scheme: None,
+                        default_identity: None,
+                        remote_identities: vec![crate::RemoteSshIdentity {
+                            remote: "origin".into(),
+                            private_key_path: key.to_str().unwrap().into(),
+                        }],
+                    }),
+                    ..request_meta_with_workspace()
+                },
+                ..Default::default()
+            },
+            "push",
+        )
+        .unwrap();
+        assert!(response.response.meta.transport.is_none(), "{root_only}");
+        let rows = &response.response.members;
+        assert_eq!(rows.len(), if root_only { 1 } else { 2 });
+        for row in rows {
+            assert_eq!(row.status, crate::MemberStatus::Rejected);
+            let message = &row.error.as_ref().unwrap().message;
+            assert!(
+                message.contains("non-SSH destination; use --identity PATH"),
+                "{}: {message}",
+                row.member_id
+            );
+        }
+    }
+}
+
 #[test]
 fn member_push_freezes_source_and_destination_before_transfer_events() {
     struct MoveSource {
@@ -1042,16 +1111,20 @@ fn root_rejection_preserves_member_publication_and_root_retry_is_cloneable() {
 fn a_completed_member_push_counts_as_publication_with_or_without_force() {
     use crate::git::GitPreparedPush;
     use crate::workspace_ops::publication::{PublicationDependency, dependency_was_published};
+    use crate::workspace_ops::publication_url::ReadUrlRule;
     use std::collections::BTreeMap;
 
     let commit = "0123456789abcdef0123456789abcdef01234567";
-    let url = "ssh://git.invalid/app.git";
+    // The read URL, which the member push must have reached.
+    let url = "https://github.com/o/app.git";
     let dependency = PublicationDependency {
         member_id: "mem_app".to_owned(),
         path: std::path::PathBuf::from("repos/app"),
         commit: commit.to_owned(),
         remote: "origin".to_owned(),
-        url: url.to_owned(),
+        url: "git@github.com:o/app.git".to_owned(),
+        read_url: url.to_owned(),
+        read_rule: ReadUrlRule::PushDestination,
     };
     let published = |refspec: &str, remote: &str, url: &str| {
         BTreeMap::from([(
@@ -1087,6 +1160,12 @@ fn a_completed_member_push_counts_as_publication_with_or_without_force() {
     assert!(!dependency_was_published(
         &dependency,
         &published(&ordinary, "origin", "ssh://elsewhere.invalid/app.git")
+    ));
+    // Only the read URL counts, even though the committed URL names the same
+    // repository.
+    assert!(!dependency_was_published(
+        &dependency,
+        &published(&ordinary, "origin", &dependency.url)
     ));
     assert!(!dependency_was_published(&dependency, &BTreeMap::new()));
 }
