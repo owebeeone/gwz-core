@@ -24,6 +24,7 @@ mod pull_head_member_preflight;
 mod pull_head_merge_preflight;
 mod pull_head_plan;
 mod push_member;
+mod push_state;
 mod stage_routing;
 mod stage_workspace_git_metadata;
 mod sync_workspace_boundary;
