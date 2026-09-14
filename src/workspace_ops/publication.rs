@@ -1,41 +1,124 @@
 //! Root publication is a dependency barrier, not a cross-server transaction.
-//! Inspect the exact source commit, prove its lock dependencies through the
-//! read URLs of their committed fetch remotes, then freeze the push source so a
-//! branch move cannot swap its lock.
-use std::path::Path;
+//! It freezes the exact root source object, so a branch move cannot swap its
+//! lock, and proves every lock dependency available through the read URL of
+//! its committed fetch remote before the root transfer.
+//!
+//! The proof comes from this operation (gwz-dev
+//! `dev-docs/GwzUrlSchemePushPlan.md` §3.5 rule 1, D8 and D9): a destination's
+//! advertisement, read at most once and kept for later questions, or an
+//! accepted push of the locked commit or of a descendant. A forced or deleting
+//! transfer anywhere in the operation voids both, and every dependency is then
+//! read again after the member transfers.
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+use std::path::{Path, PathBuf};
 
 use crate::artifact::{self, ArtifactSourceKind, LockArtifact, ManifestArtifact};
-use crate::git::GitBackend;
+use crate::git::{GitBackend, GitPreparedPush, GitRemoteRef};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace::WORKSPACE_MANIFEST;
 
 use super::publication_url::{DependencyMember, ReadUrlRule, select_read_url};
 use super::url_scheme_state::{requested_url_scheme, resolve_push_url_scheme};
 
-/// Remote reads completed before any publication starts.  The identity owner is
-/// part of the key: the same URL reached with a different repository's SSH
-/// configuration still needs its own authentication check.
+/// The advertisements this operation has read, each kept for one destination:
+/// its identity repository (none for a dependency that is not materialized),
+/// remote name and read URL. The identity owner is part of the key: the same
+/// URL reached with a different repository's SSH configuration still needs its
+/// own authentication check.
 #[derive(Default)]
 pub(super) struct ReadPreflight {
-    checked: std::collections::BTreeSet<(std::path::PathBuf, String, String)>,
+    kept: BTreeMap<(Option<PathBuf>, String, String), Vec<GitRemoteRef>>,
+    /// Set when the operation makes a forced or deleting transfer.
+    voided: bool,
 }
 
 impl ReadPreflight {
-    pub(super) fn record(&mut self, identity_repo: &Path, remote: &str, url: &str) {
-        self.checked.insert((
-            identity_repo.to_path_buf(),
+    /// A destination's advertisement, read only when this operation has not
+    /// kept one for it yet.
+    pub(super) fn read<B: GitBackend>(
+        &mut self,
+        backend: &B,
+        path: &Path,
+        url: &str,
+        remote: &str,
+        identity_repo: Option<&Path>,
+    ) -> ModelResult<&[GitRemoteRef]> {
+        let key = (
+            identity_repo.map(Path::to_path_buf),
             remote.to_owned(),
             url.to_owned(),
-        ));
+        );
+        let advertised = match self.kept.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                entry.insert(backend.ls_remote_url(path, url, remote, identity_repo)?)
+            }
+        };
+        Ok(advertised.as_slice())
     }
 
-    fn contains(&self, identity_repo: &Path, remote: &str, url: &str) -> bool {
-        self.checked.contains(&(
-            identity_repo.to_path_buf(),
+    fn kept(
+        &self,
+        identity_repo: Option<&Path>,
+        remote: &str,
+        url: &str,
+    ) -> Option<&[GitRemoteRef]> {
+        let key = (
+            identity_repo.map(Path::to_path_buf),
             remote.to_owned(),
             url.to_owned(),
-        ))
+        );
+        self.kept.get(&key).map(Vec::as_slice)
     }
+
+    /// Whether the kept advertisement of a selected repository's destination
+    /// already shows every destination ref of `plan` at its source object, so
+    /// the transfer would change nothing. A deletion always transfers.
+    pub(super) fn already_on_origin(&self, path: &Path, plan: &GitPreparedPush) -> bool {
+        let Some(advertised) = self.kept(Some(path), &plan.remote, &plan.url) else {
+            return false;
+        };
+        !plan.refspecs.is_empty()
+            && plan.refspecs.iter().all(|refspec| {
+                refspec_parts(refspec).is_some_and(|(source, destination)| {
+                    !source.is_empty()
+                        && advertised.iter().any(|reference| {
+                            reference.name == destination && reference.target == source
+                        })
+                })
+            })
+    }
+
+    /// Note the transfers this operation makes before its root proof. A forced
+    /// or deleting transfer can rewind any destination, and URLs cannot tell
+    /// which destinations share a repository, so after one no kept
+    /// advertisement and no accepted push counts as evidence: the proof reads
+    /// every dependency again.
+    pub(super) fn expect_transfers<'a>(
+        &mut self,
+        plans: impl IntoIterator<Item = &'a GitPreparedPush>,
+    ) {
+        if plans.into_iter().any(may_rewind) {
+            self.kept.clear();
+            self.voided = true;
+        }
+    }
+}
+
+/// A captured refspec's source and destination, without its `+`.
+fn refspec_parts(refspec: &str) -> Option<(&str, &str)> {
+    refspec.strip_prefix('+').unwrap_or(refspec).split_once(':')
+}
+
+/// Whether a captured transfer can take history away from its destination: a
+/// forced (`+`) or deleting refspec. An ordinary transfer is refused unless it
+/// fast-forwards.
+fn may_rewind(plan: &GitPreparedPush) -> bool {
+    plan.refspecs.iter().any(|refspec| {
+        refspec.starts_with('+')
+            || refspec_parts(refspec).is_none_or(|(source, _)| source.is_empty())
+    })
 }
 
 pub(super) fn freeze_root_request<B: GitBackend>(
@@ -69,39 +152,40 @@ pub(super) fn freeze_root_request<B: GitBackend>(
     Ok(pinned)
 }
 
+/// Prove every dependency of the frozen root source after member transfers. A
+/// destination this operation pushed to is proven by that push (D8), and any
+/// other by its advertisement kept from before the transfers when that shows
+/// the commit available (D9). Anything else is read, and so is everything once
+/// the operation makes a forced or deleting transfer.
 pub(super) fn checked_root_request<B: GitBackend>(
     backend: &B,
     root: &Path,
     request: &crate::PushRequest,
-    published: &std::collections::BTreeMap<String, crate::git::GitPreparedPush>,
+    published: &BTreeMap<String, GitPreparedPush>,
+    reads: &ReadPreflight,
 ) -> ModelResult<crate::PushRequest> {
     let pinned = freeze_root_request(backend, root, request)?;
     for dependency in root_dependencies(backend, root, &pinned)? {
-        if dependency_was_published(&dependency, published) {
+        let identity_repo = dependency.identity_repo();
+        let proven = if reads.voided {
+            false
+        } else if pushed_to(&dependency, published).is_some() {
+            dependency_was_published(backend, &dependency, published)
+        } else {
+            reads
+                .kept(identity_repo, &dependency.remote, &dependency.read_url)
+                .is_some_and(|advertised| available(backend, &dependency, advertised))
+        };
+        if proven {
             continue;
         }
-        let identity_repo = dependency.identity_repo();
         let advertised = backend.ls_remote_url(
             root,
             &dependency.read_url,
             &dependency.remote,
             identity_repo,
         )?;
-        let mut available = advertised
-            .iter()
-            .any(|reference| reference.target == dependency.commit);
-        if !available && identity_repo.is_some() {
-            for reference in &advertised {
-                if backend
-                    .is_ancestor(&dependency.path, &dependency.commit, &reference.target)
-                    .unwrap_or(false)
-                {
-                    available = true;
-                    break;
-                }
-            }
-        }
-        if !available {
+        if !available(backend, &dependency, &advertised) {
             // Name the URL that was read when it is not the committed one.
             let read_through = if dependency.read_url == dependency.url {
                 String::new()
@@ -117,30 +201,63 @@ pub(super) fn checked_root_request<B: GitBackend>(
     Ok(pinned)
 }
 
-/// A completed member push of the exact commit in the frozen root lock is
-/// stronger evidence than a second read advertisement: that remote accepted
-/// the object during this operation.  Keep the comparison intentionally
-/// exact; an ahead member still receives the ordinary remote proof below.
-/// Ordinary and forced pushes both count: the `+` prefix decides only whether
-/// the remote may rewind the destination, not which object it now holds.
-/// The push must have gone to the dependency's read URL, which every other
-/// read of it uses.
-pub(super) fn dependency_was_published(
+/// Whether an advertisement proves the dependency's commit available: the
+/// commit is advertised, or, for a materialized member, is an ancestor of an
+/// advertised object.
+fn available<B: GitBackend>(
+    backend: &B,
     dependency: &PublicationDependency,
-    published: &std::collections::BTreeMap<String, crate::git::GitPreparedPush>,
+    advertised: &[GitRemoteRef],
 ) -> bool {
-    let Some(plan) = published.get(&dependency.member_id) else {
+    advertised
+        .iter()
+        .any(|reference| reference.target == dependency.commit)
+        || (dependency.identity_repo().is_some()
+            && advertised.iter().any(|reference| {
+                backend
+                    .is_ancestor(&dependency.path, &dependency.commit, &reference.target)
+                    .unwrap_or(false)
+            }))
+}
+
+/// This operation's accepted push to the dependency's destination: its
+/// member's push through the same remote to its read URL, which every other
+/// read of it uses.
+fn pushed_to<'a>(
+    dependency: &PublicationDependency,
+    published: &'a BTreeMap<String, GitPreparedPush>,
+) -> Option<&'a GitPreparedPush> {
+    published
+        .get(&dependency.member_id)
+        .filter(|plan| plan.remote == dependency.remote && plan.url == dependency.read_url)
+}
+
+/// A member push to the dependency's destination that the remote accepted
+/// during this operation is stronger evidence than a read (D8). A remote
+/// accepts a ref update only with the full history of the new object, so the
+/// push proves the locked commit when that is a pushed source or an ancestor
+/// of one; an ancestry error proves nothing. Ordinary and forced pushes both
+/// count: the `+` prefix decides only whether the remote may rewind the
+/// destination, not which object it now holds. A forced or deleting transfer
+/// voids this evidence for the whole operation instead
+/// ([`ReadPreflight::expect_transfers`]).
+pub(super) fn dependency_was_published<B: GitBackend>(
+    backend: &B,
+    dependency: &PublicationDependency,
+    published: &BTreeMap<String, GitPreparedPush>,
+) -> bool {
+    let Some(plan) = pushed_to(dependency, published) else {
         return false;
     };
-    plan.remote == dependency.remote
-        && plan.url == dependency.read_url
-        && plan.refspecs.iter().any(|refspec| {
-            refspec
-                .strip_prefix('+')
-                .unwrap_or(refspec.as_str())
-                .split_once(':')
-                .map(|(source, _)| source == dependency.commit)
-                .unwrap_or(false)
+    plan.refspecs
+        .iter()
+        .filter_map(|refspec| refspec_parts(refspec))
+        .any(|(source, _)| {
+            source == dependency.commit
+                || (!source.is_empty()
+                    && backend
+                        .is_ancestor(&dependency.path, &dependency.commit, source)
+                        .unwrap_or(false))
         })
 }
 
@@ -208,11 +325,11 @@ pub(super) fn preflight_dependencies<B: GitBackend>(
     preflight_dependencies_with_reads(backend, root, request, &mut ReadPreflight::default())
 }
 
-/// Confirm that every root-lock dependency has read access before any push.
-/// Previously checked destinations can be reused only in this pre-transfer
-/// phase. `checked_root_request` deliberately reads again after member pushes,
-/// except for members this operation just published, to prove the pinned
-/// objects are now advertised.
+/// Read every root-lock dependency's destination before any transfer, which
+/// confirms read access, and keep each advertisement. A destination this
+/// operation has already read is answered from its kept advertisement.
+/// [`checked_root_request`] decides availability after the member transfers,
+/// from these reads where §3.5 rule 1 allows (D9).
 pub(super) fn preflight_dependencies_with_reads<B: GitBackend>(
     backend: &B,
     root: &Path,
@@ -220,19 +337,13 @@ pub(super) fn preflight_dependencies_with_reads<B: GitBackend>(
     reads: &mut ReadPreflight,
 ) -> ModelResult<()> {
     for dependency in root_dependencies(backend, root, request)? {
-        let Some(identity_repo) = dependency.identity_repo() else {
-            backend.ls_remote_url(root, &dependency.read_url, &dependency.remote, None)?;
-            continue;
-        };
-        if !reads.contains(identity_repo, &dependency.remote, &dependency.read_url) {
-            backend.ls_remote_url(
-                root,
-                &dependency.read_url,
-                &dependency.remote,
-                Some(identity_repo),
-            )?;
-            reads.record(identity_repo, &dependency.remote, &dependency.read_url);
-        }
+        reads.read(
+            backend,
+            root,
+            &dependency.read_url,
+            &dependency.remote,
+            dependency.identity_repo(),
+        )?;
     }
     Ok(())
 }

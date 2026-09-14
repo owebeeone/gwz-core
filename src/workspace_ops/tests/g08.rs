@@ -1136,36 +1136,54 @@ fn a_completed_member_push_counts_as_publication_with_or_without_force() {
             },
         )])
     };
+    // D8 (step 3.3): the push proves the commit when the commit is a pushed
+    // source or an ancestor of one; an ancestry error proves nothing.
+    use super::g01::tracking_backend::TrackingBackend;
+    let backend = TrackingBackend::new(1);
+    let (descendant, other, shallow) = (
+        "1111111111111111111111111111111111111111",
+        "fedcba9876543210fedcba9876543210fedcba98",
+        "2222222222222222222222222222222222222222",
+    );
+    backend.set_ancestry(commit, descendant, Ok(true));
+    backend.set_ancestry(commit, other, Ok(false));
+    backend.set_ancestry(commit, shallow, Err("shallow history"));
+    let was_published = |refspec: &str, remote: &str, url: &str| {
+        dependency_was_published(&backend, &dependency, &published(refspec, remote, url))
+    };
     let ordinary = format!("{commit}:refs/heads/main");
-    let forced = format!("+{commit}:refs/heads/main");
     // The ordinary form is the case the shortcut used to miss, which cost
     // every published member a second remote read after its push.
-    assert!(dependency_was_published(
-        &dependency,
-        &published(&ordinary, "origin", url)
+    assert!(was_published(&ordinary, "origin", url));
+    assert!(was_published(
+        &format!("+{commit}:refs/heads/main"),
+        "origin",
+        url
     ));
-    assert!(dependency_was_published(
-        &dependency,
-        &published(&forced, "origin", url)
+    assert!(was_published(
+        &format!("{descendant}:refs/heads/main"),
+        "origin",
+        url
     ));
-    let other = "fedcba9876543210fedcba9876543210fedcba98:refs/heads/main";
-    assert!(!dependency_was_published(
-        &dependency,
-        &published(other, "origin", url)
-    ));
-    assert!(!dependency_was_published(
-        &dependency,
-        &published(&ordinary, "upstream", url)
-    ));
-    assert!(!dependency_was_published(
-        &dependency,
-        &published(&ordinary, "origin", "ssh://elsewhere.invalid/app.git")
+    for unrelated in [other, shallow] {
+        assert!(!was_published(
+            &format!("{unrelated}:refs/heads/main"),
+            "origin",
+            url
+        ));
+    }
+    assert!(!was_published(&ordinary, "upstream", url));
+    assert!(!was_published(
+        &ordinary,
+        "origin",
+        "ssh://elsewhere.invalid/app.git"
     ));
     // Only the read URL counts, even though the committed URL names the same
     // repository.
+    assert!(!was_published(&ordinary, "origin", &dependency.url));
     assert!(!dependency_was_published(
+        &backend,
         &dependency,
-        &published(&ordinary, "origin", &dependency.url)
+        &BTreeMap::new()
     ));
-    assert!(!dependency_was_published(&dependency, &BTreeMap::new()));
 }

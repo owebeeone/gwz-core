@@ -230,12 +230,10 @@ where
                 .get(&response.member_id)
                 .expect("selected publication captured");
             let path = root.join(&response.member_path);
-            let result = backend
-                .ls_remote_url(&path, &plan.url, &plan.remote, Some(&path))
-                .inspect(|_advertised| {
-                    read_preflight.record(&path, &plan.remote, &plan.url);
-                })
-                .and_then(|_| {
+            let result = read_preflight
+                .read(backend, &path, &plan.url, &plan.remote, Some(&path))
+                .map(|_advertised| ())
+                .and_then(|()| {
                     if response.member_id == "@root" {
                         super::publication::preflight_dependencies_with_reads(
                             backend,
@@ -263,6 +261,26 @@ where
                 response: response_envelope(context, crate::AggregateStatus::Rejected, preflight),
             });
         }
+
+        // §3.5 rule 1: a repository whose kept advertisement already shows every
+        // destination ref at its source object has nothing to publish and is not
+        // pushed. A root found so is still proven below.
+        for response in &mut preflight {
+            let path = root.join(&response.member_path);
+            let on_origin = response.status == crate::MemberStatus::Planned
+                && plans
+                    .get(&response.member_id)
+                    .is_some_and(|plan| read_preflight.already_on_origin(&path, plan));
+            if on_origin {
+                plans.remove(&response.member_id);
+                response.status = crate::MemberStatus::Noop;
+                if let Some(planned) = response.planned.as_mut() {
+                    planned.action = crate::PlannedAction::Noop;
+                    planned.message = Some("already on origin".to_owned());
+                }
+            }
+        }
+        read_preflight.expect_transfers(plans.values());
 
         let progress_interval = request
             .meta
@@ -343,6 +361,7 @@ where
                     &root,
                     root_request.as_ref().expect("selected root was captured"),
                     &published,
+                    &read_preflight,
                 ) {
                     Ok(_) => {
                         let mut response = preflight
@@ -350,11 +369,10 @@ where
                             .find(|row| row.member_id == "@root")
                             .expect("root preflight row")
                             .clone();
-                        finish_prepared_push(
-                            backend
-                                .push_prepared(&root, plans.get("@root").expect("root captured")),
-                            &mut response,
-                        );
+                        // A root already on origin is proven, and not pushed.
+                        if let Some(plan) = plans.get("@root") {
+                            finish_prepared_push(backend.push_prepared(&root, plan), &mut response);
+                        }
                         response
                     }
                     Err(error) => push_root_error(error, crate::MemberStatus::Rejected),
