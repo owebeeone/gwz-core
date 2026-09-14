@@ -39,6 +39,7 @@ fn unknown_identity_override_refuses_before_root_publication() {
             },
             remote: None,
             refspec: None,
+            remote_check: None,
         },
         "push",
     );
@@ -96,6 +97,7 @@ fn member_rejection_leaves_selected_root_remote_unchanged() {
             meta: request_meta_with_workspace(),
             remote: None,
             refspec: None,
+            remote_check: None,
         },
         "op_push_barrier",
     )
@@ -177,6 +179,7 @@ fn root_only_push_requires_the_committed_locks_member_objects() {
             },
             remote: None,
             refspec: None,
+            remote_check: None,
         };
         let refused = handle_push(
             &backend,
@@ -297,6 +300,7 @@ pub(crate) fn push_includes_workspace_root_by_default() {
             meta: request_meta_with_workspace(),
             remote: None,
             refspec: None,
+            remote_check: None,
         },
         "op_push",
     )
@@ -562,6 +566,7 @@ pub(crate) fn push_request(
         },
         remote: None,
         refspec: None,
+        remote_check: None,
     }
 }
 
@@ -576,6 +581,7 @@ pub(crate) fn push_request_explicit(
         },
         remote: remote.map(ToOwned::to_owned),
         refspec: refspec.map(ToOwned::to_owned),
+        remote_check: None,
     }
 }
 
@@ -682,6 +688,7 @@ fn root_push_freezes_source_before_transfer_events() {
             },
             remote: None,
             refspec: None,
+            remote_check: None,
         },
         "push",
         &MoveHead(temp.path().to_owned()),
@@ -747,6 +754,7 @@ fn root_publication_refuses_unimplemented_source_availability_contracts() {
                 },
                 remote: None,
                 refspec: None,
+                remote_check: None,
             },
             "push",
         )
@@ -825,6 +833,7 @@ fn root_dependency_identity_is_checked_before_member_publication() {
                 meta: request_meta_with_workspace(),
                 remote: None,
                 refspec: None,
+                remote_check: None,
             },
             "push",
         )
@@ -954,6 +963,7 @@ fn root_rejection_preserves_member_publication_and_root_retry_is_cloneable() {
             meta: request_meta_with_workspace(),
             remote: None,
             refspec: None,
+            remote_check: None,
         },
         "push",
     )
@@ -999,6 +1009,7 @@ fn root_rejection_preserves_member_publication_and_root_retry_is_cloneable() {
             },
             remote: None,
             refspec: Some("+refs/heads/main:refs/heads/main".into()),
+            remote_check: None,
         },
         "explicit-force-retry",
     )

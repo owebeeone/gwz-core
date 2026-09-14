@@ -131,7 +131,15 @@ from taut.ir.load import load_schema
 # added lines, 0 removed lines; the previous pin below reproduced exactly on
 # the pre-change tree (gwz-core 200be4e).
 #   was: 8aa25038218daf2d085b62bb37fb4438afd06bb77628746dac80efe53a56e76c
-PRE_LOG_WIRE_SHA256 = "111103e545198a90e1348460713653f8bcfa59122aba54ef3f7437a1174a6ba5"
+# Moved deliberately again on 2026-09-14 by the push plan (gwz-dev
+# dev-docs/GwzUrlSchemePushPlan.md D7, step 3.2), which adds exactly: enum
+# RemoteCheck (changed=0, always=1) and the optional PushRequest.remote_check
+# (tag 4). No existing message, field, slot or method changed. MEASURED
+# additive, not assumed: the projection was rendered on both trees and diffed
+# -- 18 added lines, 0 removed lines; the previous pin below reproduced exactly
+# on the pre-change tree (gwz-core c9c7a98).
+#   was: 111103e545198a90e1348460713653f8bcfa59122aba54ef3f7437a1174a6ba5
+PRE_LOG_WIRE_SHA256 = "6262b4b4d06c07b9ea7fa2d432c3921899f901bebaeeab006b6c4cd9e023c1f5"
 LOG_METHODS = {"log", "log.output"}
 
 

@@ -121,6 +121,7 @@ where
                         meta: request.meta.clone(),
                         remote: Some(remote.into()),
                         refspec: Some(refspec.clone()),
+                        remote_check: None,
                     };
                     for dependency in
                         super::publication::root_dependencies(backend, &root, &frozen)?
@@ -169,6 +170,7 @@ where
                                 meta: request.meta.clone(),
                                 remote: Some(remote.into()),
                                 refspec: Some(refspec.clone()),
+                                remote_check: None,
                             },
                         )?;
                     }
@@ -293,6 +295,7 @@ where
                                 meta: request.meta.clone(),
                                 remote: Some(remote.into()),
                                 refspec: Some(refspec),
+                                remote_check: None,
                             },
                             &BTreeMap::new(),
                         )?;
