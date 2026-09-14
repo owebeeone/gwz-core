@@ -1026,3 +1026,56 @@ fn root_rejection_preserves_member_publication_and_root_retry_is_cloneable() {
         Some(member_commit)
     );
 }
+
+#[test]
+fn a_completed_member_push_counts_as_publication_with_or_without_force() {
+    use crate::git::GitPreparedPush;
+    use crate::workspace_ops::publication::{PublicationDependency, dependency_was_published};
+    use std::collections::BTreeMap;
+
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let url = "ssh://git.invalid/app.git";
+    let dependency = PublicationDependency {
+        member_id: "mem_app".to_owned(),
+        path: std::path::PathBuf::from("repos/app"),
+        commit: commit.to_owned(),
+        remote: "origin".to_owned(),
+        url: url.to_owned(),
+    };
+    let published = |refspec: &str, remote: &str, url: &str| {
+        BTreeMap::from([(
+            "mem_app".to_owned(),
+            GitPreparedPush {
+                remote: remote.to_owned(),
+                url: url.to_owned(),
+                refspecs: vec![refspec.to_owned()],
+            },
+        )])
+    };
+    let ordinary = format!("{commit}:refs/heads/main");
+    let forced = format!("+{commit}:refs/heads/main");
+    // The ordinary form is the case the shortcut used to miss, which cost
+    // every published member a second remote read after its push.
+    assert!(dependency_was_published(
+        &dependency,
+        &published(&ordinary, "origin", url)
+    ));
+    assert!(dependency_was_published(
+        &dependency,
+        &published(&forced, "origin", url)
+    ));
+    let other = "fedcba9876543210fedcba9876543210fedcba98:refs/heads/main";
+    assert!(!dependency_was_published(
+        &dependency,
+        &published(other, "origin", url)
+    ));
+    assert!(!dependency_was_published(
+        &dependency,
+        &published(&ordinary, "upstream", url)
+    ));
+    assert!(!dependency_was_published(
+        &dependency,
+        &published(&ordinary, "origin", "ssh://elsewhere.invalid/app.git")
+    ));
+    assert!(!dependency_was_published(&dependency, &BTreeMap::new()));
+}

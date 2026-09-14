@@ -111,7 +111,9 @@ pub(super) fn checked_root_request<B: GitBackend>(
 /// stronger evidence than a second read advertisement: that remote accepted
 /// the object during this operation.  Keep the comparison intentionally
 /// exact; an ahead member still receives the ordinary remote proof below.
-fn dependency_was_published(
+/// Ordinary and forced pushes both count: the `+` prefix decides only whether
+/// the remote may rewind the destination, not which object it now holds.
+pub(super) fn dependency_was_published(
     dependency: &PublicationDependency,
     published: &std::collections::BTreeMap<String, crate::git::GitPreparedPush>,
 ) -> bool {
@@ -123,7 +125,8 @@ fn dependency_was_published(
         && plan.refspecs.iter().any(|refspec| {
             refspec
                 .strip_prefix('+')
-                .and_then(|value| value.split_once(':'))
+                .unwrap_or(refspec.as_str())
+                .split_once(':')
                 .map(|(source, _)| source == dependency.commit)
                 .unwrap_or(false)
         })
@@ -183,8 +186,9 @@ pub(super) fn preflight_dependencies<B: GitBackend>(
 
 /// Confirm that every root-lock dependency has read access before any push.
 /// Previously checked destinations can be reused only in this pre-transfer
-/// phase. `checked_root_request` deliberately reads again after member pushes
-/// to prove the pinned objects are now advertised.
+/// phase. `checked_root_request` deliberately reads again after member pushes,
+/// except for members this operation just published, to prove the pinned
+/// objects are now advertised.
 pub(super) fn preflight_dependencies_with_reads<B: GitBackend>(
     backend: &B,
     root: &Path,
