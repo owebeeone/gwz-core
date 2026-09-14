@@ -176,6 +176,16 @@ pub fn scheme_only_difference(manifest_url: &str, observed_url: &str) -> bool {
         .is_ok_and(|resolution| resolution.effective_url == observed_url)
 }
 
+/// True when `candidate` reaches the repository `committed` names, as far as
+/// URLs alone can tell: the two are equal, or `candidate` is the other scheme's
+/// form of `committed` on a known host ([`scheme_only_difference`]). Any other
+/// spelling is a different repository — an unknown host, another `.git` suffix,
+/// or an uppercase host, a user or a port in `candidate` — so the answer may
+/// call one repository two, never two repositories one.
+pub fn same_repository(committed: &str, candidate: &str) -> bool {
+    candidate == committed || scheme_only_difference(committed, candidate)
+}
+
 /// The scheme a URL is written in: `Ssh` for the scp-like and `ssh://` forms,
 /// `Https` for `https://`, `None` for anything else, on any host.
 pub fn written_scheme(url: &str) -> Option<UrlScheme> {
@@ -599,6 +609,51 @@ mod tests {
         ] {
             let shown = format!("{manifest} vs {observed}");
             assert!(!scheme_only_difference(manifest, observed), "{shown}");
+        }
+    }
+
+    /// Committed URL, candidate URL, and whether they are the same repository,
+    /// with `HOST` standing in for each known host and `UPPER` for it in
+    /// uppercase. Kept one row per line, like `ROWS`.
+    #[rustfmt::skip]
+    const SAME_REPOSITORY: [(&str, &str, bool); 20] = [
+        // The committed URL itself, on any host or none.
+        ("git@HOST:o/r.git",            "git@HOST:o/r.git",            true),
+        ("ssh://git@HOST:2222/o/r.git", "ssh://git@HOST:2222/o/r.git", true),
+        ("git@example.com:o/r.git",     "git@example.com:o/r.git",     true),
+        ("/Users/x/repo",               "/Users/x/repo",               true),
+        // The other scheme's form; only the committed URL is normalised.
+        ("git@HOST:o/r.git",            "https://HOST/o/r.git",        true),
+        ("https://HOST/o/r.git",        "git@HOST:o/r.git",            true),
+        ("ssh://git@HOST/o/r.git",      "https://HOST/o/r.git",        true),
+        ("git@UPPER:o/r.git",           "https://HOST/o/r.git",        true),
+        // An unknown host, a `.git` suffix, an uppercase host, a user, a
+        // default port, an `ssh://` spelling, a nonstandard port.
+        ("git@example.com:o/r.git",     "https://example.com/o/r.git", false),
+        ("git@HOST:o/r.git",            "https://HOST/o/r",            false),
+        ("git@HOST:o/r.git",            "https://UPPER/o/r.git",       false),
+        ("git@HOST:o/r.git",            "https://user@HOST/o/r.git",   false),
+        ("https://HOST/o/r.git",        "deploy@HOST:o/r.git",         false),
+        ("git@HOST:o/r.git",            "https://HOST:443/o/r.git",    false),
+        ("https://HOST/o/r.git",        "ssh://git@HOST:22/o/r.git",   false),
+        ("git@HOST:o/r.git",            "ssh://git@HOST/o/r.git",      false),
+        ("git@HOST:o/r.git",            "https://HOST:8443/o/r.git",   false),
+        ("ssh://git@HOST:2222/o/r.git", "https://HOST/o/r.git",        false),
+        // Another repository, and an unusable push URL.
+        ("git@HOST:o/r.git",            "git@HOST:fork/r.git",         false),
+        ("git@HOST:o/r.git",            "DISABLE",                     false),
+    ];
+
+    #[test]
+    fn same_repository_is_equality_or_a_scheme_only_difference() {
+        for host in KNOWN {
+            let upper = host.to_ascii_uppercase();
+            for (committed, candidate, same) in SAME_REPOSITORY {
+                let committed = committed.replace("HOST", host).replace("UPPER", &upper);
+                let candidate = candidate.replace("HOST", host).replace("UPPER", &upper);
+                let shown = format!("{committed} vs {candidate}");
+                assert_eq!(same_repository(&committed, &candidate), same, "{shown}");
+            }
         }
     }
 }
