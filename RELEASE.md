@@ -38,18 +38,50 @@ python scripts/release.py vX.Y.Z              # verify + bump + commit + tag (no
 python scripts/release.py vX.Y.Z --push       # also push main + tag to origin
 ```
 
-## Order relative to gwz-cli
+## Release order
 
-**Always release gwz-core before gwz-cli.** gwz-cli's `release` branch pins gwz-core by
-git tag; [gwz-cli/scripts/release.py](../gwz-cli/scripts/release.py) verifies that tag
-exists on the gwz-core remote before it reconciles the `release` branch. If you run the
-gwz-cli script first, it will fail until the gwz-core tag is pushed.
+**Always release gwz-core before gwz-cli, and let its crates.io publish job finish first.**
+gwz-cli's `release` branch pins `gwz-core = "=X.Y.Z"` from crates.io, not the git tag:
+[gwz-cli/scripts/release.py](../gwz-cli/scripts/release.py) checks that the gwz-core tag exists
+(its parity tests read gwz-core's fixtures from a clone at the tag) and then waits for gwz-core
+`X.Y.Z` on crates.io before it reconciles the `release` branch.
 
-Typical sequence when both crates need a release:
+A full release goes out in this order:
 
-1. **gwz-core** — land on `main`, then `python scripts/release.py vX.Y.Z --push`
-2. **gwz-cli** — `python scripts/release.py vX.Y.Z --push` (same gwz-core tag; gwz-cli
-   version is independent — see [gwz-cli/RELEASE.md](../gwz-cli/RELEASE.md))
+1. **taut-shape**, only when gwz-core needs a change from it. gwz-core depends on `taut-shape`
+   from crates.io, so that change is released from taut-shape-rs first.
+2. **gwz-core**: land on `main`, run `python scripts/release.py vX.Y.Z --push`, then publish the
+   GitHub release for `vX.Y.Z`, which runs `.github/workflows/release.yml`.
+3. **gwz-core's crates.io publish job** in that run must finish (see below).
+4. **gwz-cli**: `python scripts/release.py vX.Y.Z --push` in gwz-cli, then its GitHub release,
+   which builds the binaries and publishes the `gwz` crate (see
+   [gwz-cli/RELEASE.md](../gwz-cli/RELEASE.md)).
+5. **gwz-py** at the same tag (see [gwz-py/RELEASE.md](../gwz-py/RELEASE.md)). Its `release`
+   branch still pins gwz-core by git tag.
+
+## The crates.io publish job
+
+The `publish` job of `.github/workflows/release.yml` publishes to crates.io; nothing publishes
+from a laptop. The Linux verification job (`verify`) gates it, and the Windows leg does not. It
+runs `scripts/publish_crates.py`, which checks the tag against every manifest version and then
+publishes the thirteen published internal crates and gwz-core, in the dependency order derived
+from the manifests. It skips a version crates.io already holds, and waits until each new version
+is visible before it publishes the next crate. When crates.io refuses a new crate name because
+too many were published in a short period, it waits a little over ten minutes and tries that
+crate once more. It authenticates only by Trusted Publishing: each crate has a trusted publisher
+for this repository, workflow `release.yml` and environment `crates-io`, and is set to
+trusted-publishing-only on crates.io, and the environment keeps no token secret. Any other
+publish error stops the job at that crate. Retry a partial run by dispatching `release.yml` with
+the tag (Run workflow, `tag` = `vX.Y.Z`); the crates already published are skipped.
+
+The internal crates are published so that gwz-core can be built from crates.io. Publishing does
+not stabilise their API: each is internal to GWZ, versioned in lockstep, with no compatibility
+promise beyond gwz-core's own; depend on `gwz-core`.
+
+A gwz-core built from crates.io reports `revision=unavailable dirty=unknown` in its build
+provenance (the `core` line of `gwz --build-info`), with a digest of the packaged sources. A
+build from git reports the commit, whether the checkout was dirty, and a digest of the
+checkout's sources, so the two digests differ even for the same commit (plan D4).
 
 ## Manual process
 
@@ -63,9 +95,10 @@ If you prefer not to use the script, the steps are the same:
 
 ## Downstream
 
-**gwz-cli** pins a gwz-core release by tag and builds against it on its `release` branch.
-After you publish a new gwz-core tag, bump gwz-cli's `release` branch to pin it — see
-[gwz-cli/RELEASE.md](../gwz-cli/RELEASE.md).
+**gwz-cli** pins the gwz-core release published on crates.io, `gwz-core = "=X.Y.Z"`, on its
+`release` branch, and its release script waits for that version on crates.io before it
+reconciles the branch; see [gwz-cli/RELEASE.md](../gwz-cli/RELEASE.md). **gwz-py** still pins
+gwz-core by git tag on its `release` branch; see [gwz-py/RELEASE.md](../gwz-py/RELEASE.md).
 
 ## Slow compiler probes are manual-only
 
