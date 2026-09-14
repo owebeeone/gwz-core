@@ -140,6 +140,15 @@ impl TrackingBackend {
         self.model().repository(path).remotes.push(remote);
     }
 
+    /// Create the lightweight tag `name` at `commit`, which `tag_list` and
+    /// `read_ref` of `refs/tags/<name>` then answer.
+    pub(crate) fn set_tag(&self, path: &Path, name: &str, commit: &str) {
+        self.model()
+            .repository(path)
+            .tags
+            .insert(name.to_owned(), commit.to_owned());
+    }
+
     pub(crate) fn fetch_refspecs(&self, path: &Path, remote: &str) -> Option<Vec<String>> {
         self.model()
             .repositories
@@ -217,6 +226,12 @@ impl TrackingBackend {
             .collect()
     }
 
+    /// Every `validate_url_identity` call as `(identity repo, remote, URL)`, in
+    /// arrival order. The double accepts each one.
+    pub(crate) fn url_identity_checks(&self) -> Vec<(Option<PathBuf>, String, String)> {
+        self.model().identity_checks.clone()
+    }
+
     fn model(&self) -> MutexGuard<'_, Model> {
         self.model.lock().unwrap()
     }
@@ -237,6 +252,7 @@ struct Model {
     stores: Vec<BTreeMap<String, String>>,
     served: BTreeMap<String, usize>,
     calls: Vec<RemoteCall>,
+    identity_checks: Vec<(Option<PathBuf>, String, String)>,
 }
 
 impl Model {
@@ -298,6 +314,8 @@ struct ConfiguredRepository {
     materialized: bool,
     head: crate::git::GitHeadState,
     remotes: Vec<ConfiguredRemote>,
+    /// Lightweight tags: each name maps to its commit.
+    tags: BTreeMap<String, String>,
 }
 
 /// An unconfigured repository gets the double's original answers.
@@ -311,12 +329,13 @@ impl Default for ConfiguredRepository {
                 is_detached: false,
             },
             remotes: Vec::new(),
+            tags: BTreeMap::new(),
         }
     }
 }
 
-/// Resolve the attached branch ref, or a full object id, of a configured
-/// repository.
+/// Resolve the attached branch ref, a tag ref, or a full object id, of a
+/// configured repository.
 fn resolve(repository: &ConfiguredRepository, name: &str) -> Option<String> {
     let name = name.strip_suffix("^{commit}").unwrap_or(name);
     let branch = repository
@@ -326,6 +345,9 @@ fn resolve(repository: &ConfiguredRepository, name: &str) -> Option<String> {
         .map(|branch| format!("refs/heads/{branch}"));
     if branch.as_deref() == Some(name) {
         return repository.head.commit.clone();
+    }
+    if let Some(tag) = name.strip_prefix("refs/tags/") {
+        return repository.tags.get(tag).cloned();
     }
     (name.len() == 40 && name.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| name.to_owned())
 }
@@ -512,8 +534,9 @@ impl GitBackend for TrackingBackend {
         })
     }
 
-    fn tag_list(&self, _path: &Path) -> ModelResult<Vec<String>> {
-        Ok(Vec::new())
+    fn tag_list(&self, path: &Path) -> ModelResult<Vec<String>> {
+        let repository = self.configured(path).unwrap_or_default();
+        Ok(repository.tags.into_keys().collect())
     }
 
     fn tag_delete(&self, _path: &Path, _name: &str) -> ModelResult<()> {
@@ -833,6 +856,20 @@ impl GitBackend for TrackingBackend {
             remote: plan.remote.clone(),
             refspec: plan.refspecs.first().cloned().unwrap_or_default(),
         })
+    }
+
+    fn validate_url_identity(
+        &self,
+        identity_repo: Option<&Path>,
+        remote: &str,
+        url: &str,
+    ) -> ModelResult<()> {
+        self.model().identity_checks.push((
+            identity_repo.map(Path::to_path_buf),
+            remote.to_owned(),
+            url.to_owned(),
+        ));
+        Ok(())
     }
 
     fn fetch_anonymous(

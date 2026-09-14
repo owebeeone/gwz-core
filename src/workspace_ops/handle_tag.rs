@@ -39,6 +39,22 @@ pub fn handle_tag_with_services<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
+    handle_tag_in(services, backend, start, request, operation_id)
+}
+
+/// Execute a tag operation with composed services on any backend. The body
+/// needs no merge authority, so crate tests can drive tag publication through a
+/// recording backend, as `handle_push_with_events_in` allows for push.
+pub(crate) fn handle_tag_in<B>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &std::path::Path,
+    request: crate::TagRequest,
+    operation_id: impl Into<String>,
+) -> ModelResult<crate::TagResponse>
+where
+    B: GitBackend,
+{
     let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Tag(request.clone()).context(operation_id.into())?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;

@@ -14,6 +14,8 @@ use crate::workspace_ops::url_scheme_state::{
 use super::g01::tracking_backend::{ConfiguredRemote, RemoteCall, TEST_COMMIT, TrackingBackend};
 use super::*;
 
+mod tag_publication;
+
 const MEMBERS: usize = 2;
 const MAIN: &str = "refs/heads/main";
 const ROOT_SSH: &str = "git@github.com:o/root.git";
