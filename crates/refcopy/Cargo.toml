@@ -9,7 +9,7 @@
 # unavoidable.
 [package]
 name = "gwz-refcopy"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
@@ -27,7 +27,7 @@ include = ["/Cargo.toml", "/src/**", "/README.md"]
 path = "src/lib.rs"
 
 [dependencies]
-gwz-copy-contract = { path = "../copy-contract", version = "0.0.2" }
+gwz-copy-contract = { path = "../copy-contract", version = "0.0.3" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

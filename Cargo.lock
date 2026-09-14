@@ -103,9 +103,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.4.5"
+version = "1.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "005ec2760ca554fae18df7a11195552ec576cd665632a881bc011d5bb2fd4d80"
+checksum = "a3eb0f42d6c360dc3f8a821f6bf2fdea7f72bfd36b3076eb0e6d1e9e0752fff4"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -304,11 +304,11 @@ dependencies = [
 
 [[package]]
 name = "gwz-copy-contract"
-version = "0.0.2"
+version = "0.0.3"
 
 [[package]]
 name = "gwz-core"
-version = "1.0.12-rc.1"
+version = "1.0.12"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -349,11 +349,11 @@ dependencies = [
 
 [[package]]
 name = "gwz-family-model"
-version = "0.0.2"
+version = "0.0.3"
 
 [[package]]
 name = "gwz-family-store"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-family-model",
  "gwz-family-store-contract",
@@ -364,21 +364,21 @@ dependencies = [
 
 [[package]]
 name = "gwz-family-store-contract"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-family-model",
 ]
 
 [[package]]
 name = "gwz-history-check"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-repo-contract",
 ]
 
 [[package]]
 name = "gwz-local-disposal"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-family-model",
  "gwz-family-store-contract",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "gwz-local-import"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-family-model",
  "gwz-repo-contract",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "gwz-local-testrepo"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "git2",
  "gwz-repo-contract",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "gwz-refcopy"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-copy-contract",
  "libc",
@@ -416,18 +416,18 @@ dependencies = [
 
 [[package]]
 name = "gwz-repo-contract"
-version = "0.0.2"
+version = "0.0.3"
 
 [[package]]
 name = "gwz-repo-factory"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-repo-contract",
 ]
 
 [[package]]
 name = "gwz-repo-inspect"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "git2",
  "gwz-repo-contract",
@@ -436,14 +436,14 @@ dependencies = [
 
 [[package]]
 name = "gwz-work-detector"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-repo-contract",
 ]
 
 [[package]]
 name = "gwz-workspace-install"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "gwz-copy-contract",
  "gwz-family-model",
@@ -1064,18 +1064,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec"
-version = "1.13.2"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cf0ded5c4e56918d8f8a339e1bb67d038d3bc6d144ac407904015ba2e4cde9b"
-dependencies = [
- "tinyvec_macros",
-]
-
-[[package]]
-name = "tinyvec_macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "typenum"

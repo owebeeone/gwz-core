@@ -3,7 +3,7 @@
 # family-model (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
 [package]
 name = "gwz-family-store-contract"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
@@ -25,4 +25,4 @@ path = "src/lib.rs"
 contract-tests = []
 
 [dependencies]
-gwz-family-model = { path = "../family-model", version = "0.0.2" }
+gwz-family-model = { path = "../family-model", version = "0.0.3" }
