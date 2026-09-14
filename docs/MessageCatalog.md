@@ -920,6 +920,13 @@ has no service method and no handler that executes commands.
 | request | 1 |
 | workspace | 2 |
 
+### RemoteCheck
+
+| Member | Wire |
+| --- | --- |
+| changed | 0 |
+| always | 1 |
+
 ## Messages
 
 ### WorkspaceRef
@@ -1908,6 +1915,7 @@ has no service method and no handler that executes commands.
 | meta | 1 | RequestMeta | no | no | - |
 | remote | 2 | str | yes | no | - |
 | refspec | 3 | str | yes | no | - |
+| remote_check | 4 | RemoteCheck | yes | no | - |
 
 ### StashRequest
 

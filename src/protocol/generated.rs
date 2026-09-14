@@ -2195,6 +2195,23 @@ impl UrlSchemeSource {
     }) }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum RemoteCheck {
+    #[default] Changed,
+    Always,
+}
+impl RemoteCheck {
+    pub fn wire(self) -> i64 { match self {
+        Self::Changed => 0,
+        Self::Always => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Changed,
+        1 => Self::Always,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "RemoteCheck", value: v }),
+    }) }
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct WorkspaceRef {
     pub root: Option<String>,
@@ -5040,6 +5057,7 @@ pub struct PushRequest {
     pub meta: RequestMeta,
     pub remote: Option<String>,
     pub refspec: Option<String>,
+    pub remote_check: Option<RemoteCheck>,
 }
 impl PushRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -5047,6 +5065,7 @@ impl PushRequest {
             (1, self.meta.to_cbor()),
             (2, match &self.remote { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (3, match &self.refspec { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (4, match &self.remote_check { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -5054,6 +5073,7 @@ impl PushRequest {
             meta: RequestMeta::from_cbor(c.try_get(1)?)?,
             remote: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             refspec: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            remote_check: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(RemoteCheck::from_wire(v.try_int()?)?) } },
         })
     }
 }

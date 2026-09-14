@@ -1892,13 +1892,22 @@ SCHEMA = schema(
         meta=F(1, Ref.RequestMeta),
         snapshot_id=F(2, STR)),
 
+    # How a push checks remotes. `changed`: repositories unchanged since the
+    # last fetch or push are not checked for changes or pushed, though a push
+    # that contacts the root still reads each dependency. `always`: every
+    # selected repository and root dependency is read (`--check-remotes`).
+    # Added 2026-09-14 (gwz-dev dev-docs/GwzUrlSchemePushPlan.md D7, §3.5).
+    RemoteCheck=Enum(changed=0, always=1),
+
     # Push selected members.
     PushRequest=Msg(
         meta=F(1, Ref.RequestMeta),
         # Remote override for this request.
         remote=F(2, STR, optional=True),
         # Refspec override for this request.
-        refspec=F(3, STR, optional=True)),
+        refspec=F(3, STR, optional=True),
+        # Requested remote check; absent means `changed`.
+        remote_check=F(4, Ref.RemoteCheck, optional=True)),
 
     # Coordinate native Git stash operations across selected members.
     StashRequest=Msg(
