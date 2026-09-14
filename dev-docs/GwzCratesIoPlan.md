@@ -542,3 +542,10 @@ its publish job is token-free by design.
   `docs/Install.md` adds `cargo install gwz` from 1.0.12. Phase 3 is complete;
   Phase 4 waits on the `gwz` trusted publisher and a push of all four
   repositories.
+- 2026-09-14: S4.1 and S4.3 done: GWZ 1.0.12 released. gwz-core `2e240ae`
+  published its fourteen crates through Trusted Publishing in 49 seconds;
+  gwz-cli `8d02eb3` published the `gwz` crate and the binaries; gwz-py
+  `a6f1583` published to PyPI. `cargo install gwz` and `cargo add gwz-core`
+  were proven from crates.io, and docs.rs built all fifteen crates. The run is
+  recorded in `GwzCratesIo-Release-20260914.md`. S4.2, the yanks, is the
+  operator's; O5's bootstrap cleanup follows it.
